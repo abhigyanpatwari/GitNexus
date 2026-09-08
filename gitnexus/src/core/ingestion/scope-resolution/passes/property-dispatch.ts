@@ -82,7 +82,16 @@ export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
  * Two shapes, and the difference matters:
  *
  *   - BARE (`{ handler: onClick }`, `register(onTick)`) — the name is resolved
- *     up the lexical chain, which is what an unqualified name means.
+ *     up the lexical chain, which is what an unqualified name means. Be exact
+ *     about what that walk does, because it is not a plain lexical lookup:
+ *     `findCallableBindingInScope` applies the callable predicate WHILE walking,
+ *     so a scope binding the name to a parameter or a local contributes nothing
+ *     and the walk continues outward. A nearer non-callable binding is stepped
+ *     over — the same shape the qualified path guards against below, unguarded
+ *     here. Pre-existing (#2437) and out of scope for #3399; reachable in JS/TS
+ *     (`function outer(handler) { return { h: handler }; }` beside a top-level
+ *     `function handler`), and narrow in Zig, which rejects a local shadowing a
+ *     container declaration.
  *
  *   - QUALIFIED (`bridge.accessor(Element.getNamespaceUri, …)`) — the source
  *     WROTE the owner, so the lexical chain is the wrong instrument. It gives
@@ -94,12 +103,13 @@ export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
  *     allows a same-named callable in a nested container, Zig included.
  *
  * So a qualified site resolves through its receiver: name the owner, then take
- * the member off that owner. An owner is either a CLASS-like container or a
- * MODULE — `Element.getNamespaceUri` and `utils.compare` are the same shape
+ * the member off that owner. An owner is either a MODULE or a CLASS-like
+ * container — `utils.compare` and `Element.getNamespaceUri` are the same shape
  * written against the two kinds of namespace a language has, and the member-call
- * path already resolves both (receiver-bound-calls Case 2 / Case 1). Both are
- * tried here for the same reason: see `findNamespaceValueRefTarget` for why a
- * module receiver cannot simply be declined.
+ * path already resolves both (receiver-bound-calls Case 1 / Case 2). Both are
+ * tried here, MODULE FIRST: see `findNamespaceValueRefTarget` for why a module
+ * receiver cannot simply be declined, and the comment on the call below for why
+ * the container channel must not go first.
  *
  * If neither channel names the owner, or the owner is named but owns no such
  * callable, this DECLINES rather than falling back to the lexical walk.
@@ -130,6 +140,25 @@ function resolveValueRefTarget(
   if (receiverName === undefined) {
     return findCallableBindingInScope(site.inScope, site.name, scopes);
   }
+  // NAMESPACE FIRST, and the order is load-bearing. `findClassBindingInScope`
+  // does not stop at the scope chain: when its `isClassLike` walk misses — and a
+  // namespace handle binds a Module, so it always misses — it falls back to
+  // `scopes.qualifiedNames`, a WORKSPACE-wide index, and answers with the unique
+  // def of that name anywhere in the repo. Trying it first therefore lets a
+  // same-named container in a file this one never imported preempt the `@import`
+  // this file actually wrote:
+  //
+  //     const dom_utils = @import("dom_utils.zig");   // namespace-only module
+  //     … bridge.accessor(dom_utils.compare, …)       // → decoy.zig's compare
+  //
+  // The shadow guard below cannot catch it: the import binds at MODULE scope,
+  // which the guard treats as the floor. An import written in this file is the
+  // strongest statement about what the name means here, so it outranks a global
+  // guess — and when the handle is not an import of this file, this answers
+  // nothing and the container channel runs exactly as before.
+  const viaNamespace = findNamespaceValueRefTarget(site, filePath, receiverName, scopes);
+  if (viaNamespace !== undefined) return viaNamespace;
+
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
   if (owner !== undefined) {
     // The container lookup is a CLASS-ONLY walk: `walkScopeChain` filters by
@@ -155,9 +184,7 @@ function resolveValueRefTarget(
     if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
     return member;
   }
-  // A receiver that is not class-like may still be a MODULE — the other kind of
-  // owner a qualified name can have. See `findNamespaceValueRefTarget`.
-  return findNamespaceValueRefTarget(site, filePath, receiverName, scopes);
+  return undefined;
 }
 
 /**

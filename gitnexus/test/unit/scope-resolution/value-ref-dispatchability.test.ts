@@ -31,6 +31,15 @@
  * This test fails instead. If it fails, do not relax it: go and decide what
  * `callableValueReferenceBoundaries` should do about a mixed symbol (the
  * options are recorded at the exclusion site), then update this file.
+ *
+ * WHAT IT DOES NOT COVER, stated so the green tick is not read as more than it
+ * is. It reads query SOURCES, so a capture synthesized in code rather than
+ * matched by a rule — the mechanism `@reference.static-gated` uses — can break
+ * the partition with this test green. A provider adding one has to come here by
+ * hand. Languages that own no query and delegate to another's captures (Vue →
+ * `emitTsScopeCaptures` / `emitJsScopeCaptures`) are covered transitively, by
+ * the rules they borrow, which is why the last case asserts on query OWNERS
+ * rather than on the set of languages that can emit a value-ref.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -132,10 +141,14 @@ describe('value-ref dispatchability partition', () => {
     expect(rules.filter((r) => r.includes(PROPERTY_KEY))).toEqual([]);
   });
 
-  it('no OTHER language emits a value-ref capture', () => {
-    // The three above are hand-classified. A fourth language emitting
+  it('no OTHER language OWNS a value-ref rule', () => {
+    // The three above are hand-classified. A fourth query declaring
     // `value-ref` has not been classified by anyone, so the exclusion's premise
     // is unverified for it — classify it here and in the exclusion's comment.
+    // "Owns", not "emits": Vue has no query of its own and borrows TypeScript's
+    // and JavaScript's captures, so it inherits their classification rather than
+    // needing one. A capture synthesized in code owns no rule either and is
+    // invisible here — see the header.
     const languagesDir = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
       '../../../src/core/ingestion/languages',

@@ -537,3 +537,87 @@ reference AND the hedge, and why that is still the right trade.
   `callable-value-flow` failed once on its TIMING budget (widening overhead
   2.006 > 1.9) with a byte-identical fingerprint, then passed twice at 1.788 /
   1.813 — machine load, not a regression.
+
+---
+
+## Review round 4 — local preflight, before pushing
+
+`gitnexus-check[bot]` is a hosted GitHub App and cannot be run locally, so the
+`.local-preflight/` harness (out of git) reproduces the two halves its output is
+built from: the deterministic gates and blast radius off this checkout's own
+graph, and an LLM reviewer pointed at the failure classes this bot has actually
+reported here. Run on `3bd1337a` it returned five findings; one was a real hole
+in R2-2, which is the point of running it before pushing rather than after.
+
+**R4-1 (valid, REPRODUCED, fixed) — the container channel preempted the file's
+own `@import`.** R2-2 added the module channel as a FALLBACK after
+`findClassBindingInScope`. That is the wrong order, because
+`findClassBindingInScope` does not stop at the scope chain: when its `isClassLike`
+walk misses — and a namespace handle binds a Module, so it always misses — it
+falls back to `scopes.qualifiedNames`, a workspace-wide index, and answers with
+the unique def of that name anywhere in the repo. So:
+
+    // decoy.zig — never imported by Element.zig
+    pub const dom_utils = struct { pub fn compare(a: u8, b: u8) u8 {…} };
+
+    // Element.zig
+    const dom_utils = @import("dom_utils.zig");
+    pub const comparator = bridge.accessor(dom_utils.compare, null, .{});
+
+bound `Method:src/webapi/decoy.zig:dom_utils.compare#2` — a wrong edge, and the
+module channel that would have answered correctly was never reached. R3-1's
+shadow guard cannot catch it either: the import binds at MODULE scope, which the
+guard treats as the floor.
+
+Fixed by trying the module channel FIRST. An import written in this file is the
+strongest available statement about what the name means here, and it outranks a
+global uniqueness guess; when the handle is not an import of this file the
+channel answers nothing and the container path runs exactly as before. Pinned by
+`decoy.zig` plus a strengthened assertion on the existing module-owner test,
+which fails on the old order.
+
+**R4-2 (valid, fixed) — the cause documentation named shapes nothing captures.**
+`tools.ts` illustrated `callableValueReferences` with "a callback argument", "a
+stored function pointer" and `qsort(xs, n, sz, compareItems)`. Only Zig captures
+a call argument or a const initialiser; JS/TS capture only object-literal
+property values, and C has no value-ref rule at all, so the `qsort` example is
+counted in no language. Both cause blocks now name the shapes that are actually
+captured and say plainly that a bare JS/TS callback argument is not among them,
+so a 0 does not rule it out.
+
+**R4-3 (valid, fixed) — the same block exempted itself from the re-index caveat
+this PR proves it needs.** "Read from the graph, so it needs no index-time
+metadata" is true of the probe and false of the edges: an index built before a
+language emitted these captures has none and reports 0 — which is exactly the
+warm-cache failure R2-1 bumped `SCHEMA_BUMP` for. The doc now says to re-analyze
+before reading a 0 as measured.
+
+**R4-4 (valid, fixed) — the dispatchability canary was narrower than its own
+promise.** Its header said it fails on "a fourth language emitting `value-ref` at
+all"; it reads `languages/<dir>/query.ts`, so Vue — which owns no query and
+borrows `emitTsScopeCaptures` / `emitJsScopeCaptures` — emits value-refs while
+the assertion lists three languages, and a capture synthesized in code (the
+mechanism `@reference.static-gated` uses) is invisible to it entirely. The case
+now asserts on query OWNERS, which is what it actually checks and is sound
+because a delegating language inherits the classification of the rules it
+borrows, and the header states the synthesized-capture gap rather than leaving a
+green tick to imply it away.
+
+**R4-5 (valid, fixed as documentation) — the BARE docstring described a lexical
+walk that is not one.** "resolved up the lexical chain, which is what an
+unqualified name means" — `findCallableBindingInScope` applies the callable
+predicate WHILE walking, so a nearer parameter or local is stepped over. Same
+defect R3-1 fixed on the container channel, unguarded here, pre-existing since
+#2437 and reachable in JS/TS. Out of scope for #3399, so the behaviour is
+unchanged and the sentence now says what the walk does instead of implying a
+guarantee it does not give.
+
+### Gates after review round 4
+
+- `tsc --noEmit` clean, `npm run build` clean, `prettier --check` clean.
+- `test/integration/resolvers` — 3,632 passed / 3 skipped (70 files).
+- `test/unit/scope-resolution` — 2,015 passed (120 files).
+- `impact-callable-value-references` under `lbug-db` — 7 passed.
+- Bench `--check`: `receiver-resolution`, `zig-cross-file-resolution`,
+  `scope-capture` (15 languages), `scope-emission`, `callable-value-flow` all
+  PASS, no baseline edited.

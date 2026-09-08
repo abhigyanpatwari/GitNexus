@@ -348,6 +348,13 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       // The member-CALL path already resolves `dom_utils.compare()` through the
       // file's namespace import; the registration reads the same channel.
       expect(valueRefs).toContain('JsApi → compare');
+      // And it must be dom_utils.zig's `compare`, not `decoy.zig`'s. That file
+      // declares a CONTAINER also called `dom_utils`, with its own `compare`,
+      // and `Element.zig` never imports it. `findClassBindingInScope` does not
+      // stop at the scope chain: a namespace handle binds a Module, so the
+      // `isClassLike` walk misses and its workspace-wide `qualifiedNames`
+      // fallback answers with that unique container — preempting the `@import`
+      // this very file wrote. The written import has to outrank a global guess.
       expect(valueRefTargetIds.filter((id) => id.includes('compare'))).toEqual([
         'Function:src/webapi/dom_utils.zig:compare',
       ]);
