@@ -129,6 +129,7 @@ import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resol
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
+import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
@@ -709,6 +710,31 @@ export interface EpistemicCauses {
    * "nothing was undecided", and a re-index is what tells the two apart.
    */
   readonly undecidedSatisfaction: number;
+  /**
+   * Symbols that name this callable in VALUE position rather than calling it
+   * (#3399) — a registration table (`bridge.accessor(Element.getNamespaceUri,
+   * …)`), a callback argument, a function pointer stored in a field.
+   *
+   * Unit: SYMBOLS — distinct referrers, the same unit and the same reason as
+   * `dispatchBoundary`: the reference edge is per-site but the walk's question
+   * is "who else might reach this", and a referrer that names the callable
+   * twice is still one place the value escapes from.
+   *
+   * Kept separate from `dispatchBoundary` even though both describe dispatch
+   * the walk cannot follow. That slot counts implementations and
+   * interface-level consumers found by the heritage probe; these are neither,
+   * and folding them in would tell a consumer branching on the numbers that an
+   * interface boundary exists where there is none. The distinction is also the
+   * actionable one: a dispatch boundary is irreducible, whereas a callable
+   * value CAN often be followed once the language models the store/load that
+   * carries it.
+   *
+   * The reference itself IS modelled — that is what makes it countable. What is
+   * missing is the invocation through the value: it happens later, through a
+   * struct field, a registry lookup, or comptime reflection, and no CALLS edge
+   * connects the eventual call site back to this symbol.
+   */
+  readonly callableValueReferences: number;
 }
 
 function epistemicFrom(dropped: {
@@ -718,6 +744,7 @@ function epistemicFrom(dropped: {
   undecided: number;
   dispatch: number;
   scopeExtraction: number;
+  callableValueReferences: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -736,6 +763,7 @@ function epistemicFrom(dropped: {
             dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
+            callableValueReferences: dropped.callableValueReferences,
           },
         }
       : { epistemic: 'exact' }
@@ -752,6 +780,7 @@ function epistemicFrom(dropped: {
           dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
+          callableValueReferences: dropped.callableValueReferences,
         },
       };
 }
@@ -849,6 +878,61 @@ function undecidedSatisfactionBoundaries(
     }
   }
   return { notes, undecided };
+}
+
+/**
+ * Boundary evidence for callables named in VALUE position (#3399).
+ *
+ * `bridge.accessor(Element.getNamespaceUri, null, .{})`, `{ onClick: handler }`,
+ * `qsort(xs, n, sz, compareItems)` — each REGISTERS a function somewhere
+ * instead of calling it. The registration is modelled (`value-ref` → a USES
+ * edge, Kythe `ref` / Joern `METHOD_REF`); the invocation through the stored
+ * value is not, because it happens later through a struct field, a registry
+ * lookup or comptime reflection.
+ *
+ * That gap is precisely `tools.ts`'s definition of `lower-bound` — "the walk
+ * provably missed callers" — and it was previously reported as `exact`. A
+ * public DOM accessor bound into a JS bridge table came back LOW/exact with two
+ * internal callers, which is worse than no answer: `lower-bound` invites the
+ * reader to look further, `exact` tells them not to bother.
+ *
+ * Counted as DISTINCT REFERRERS rather than sites: the question the count
+ * serves is "how many places does this value escape from", and a table that
+ * registers the same callable twice is still one table.
+ *
+ * The probe reads the edge's `reason`, which is why writer and reader share
+ * {@link VALUE_REF_EDGE_REASON}. Language-neutral by construction — every
+ * provider that emits a `value-ref` capture participates, and one that emits
+ * none simply gets no rows.
+ */
+async function callableValueReferenceBoundaries(
+  lbugPath: string,
+  symId: string,
+): Promise<{ notes: string[]; referrers: number }> {
+  // Rows, not `COUNT(...)`: the LIMIT bounds the work on a promiscuous
+  // registration target, and the note only needs to say "at least N".
+  const rows = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'USES' AND r.reason = $reason
+     RETURN DISTINCT other.id AS id
+     ORDER BY id
+     LIMIT 50`,
+    { symId, reason: VALUE_REF_EDGE_REASON },
+  ).catch(() => []);
+  const referrers = rows.length;
+  if (referrers === 0) return { notes: [], referrers: 0 };
+  const one = referrers === 1;
+  return {
+    referrers,
+    notes: [
+      `${referrers} ${one ? 'symbol references' : 'symbols reference'} this callable as a VALUE ` +
+        `rather than calling it (a registration table, a callback argument, a stored function ` +
+        `pointer). The reference is recorded, but the call made THROUGH that value is not: it is ` +
+        `dispatched later from wherever the value is stored. Callers reached that way are absent ` +
+        `from this result — actual impact may be higher.`,
+    ],
+  };
 }
 
 interface RepoHandle {
@@ -6994,6 +7078,19 @@ export class LocalBackend {
       direction === 'downstream'
         ? Promise.resolve(undefined)
         : queryConvexDispatchMetadata(repo.lbugPath, symId, symName, symType);
+    // #3399 — callables named in value position. Upstream only: the question
+    // "who can reach this symbol" is the one a registration makes unanswerable.
+    // A downstream walk asks what THIS symbol reaches, which a reference INTO
+    // it does not affect.
+    //
+    // Issued alongside the heritage probe rather than after it, and read into
+    // `droppedBoundaries` below, so it hedges even when that probe finds
+    // nothing AND when it throws — a value reference is an independent reason
+    // a count is short, exactly as the receiver drops above are.
+    const valueRefPromise =
+      direction === 'downstream'
+        ? Promise.resolve({ notes: [] as string[], referrers: 0 })
+        : callableValueReferenceBoundaries(repo.lbugPath, symId);
     const interfaceRowsPromise = executeParameterized(
       repo.lbugPath,
       `MATCH (x)-[r:CodeRelation]->(iface)
@@ -7014,12 +7111,14 @@ export class LocalBackend {
               : []),
           ]);
     const convexDispatch = await convexDispatchPromise;
+    const valueRefDrops = await valueRefPromise;
     const droppedBoundaries = {
       ...receiverDrops,
       notes: [
         ...receiverDrops.notes,
         ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
+        ...valueRefDrops.notes,
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
       undecided: undecidedDrops.undecided,
@@ -7028,6 +7127,7 @@ export class LocalBackend {
       // inventing one from the presence of a note.
       dispatch: 0,
       scopeExtraction: scopeExtractionDrops.files,
+      callableValueReferences: valueRefDrops.referrers,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -7119,6 +7219,7 @@ export class LocalBackend {
           dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
           undecidedSatisfaction: droppedBoundaries.undecided,
+          callableValueReferences: droppedBoundaries.callableValueReferences,
         },
       };
     } catch {

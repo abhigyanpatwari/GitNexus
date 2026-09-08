@@ -43,6 +43,7 @@ import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import { findCallableBindingInScope } from '../scope/walkers.js';
+import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 
 /**
  * Keys registered by more than this many distinct functions are skipped —
@@ -89,15 +90,7 @@ export function emitPropertyDispatchCalls(
       const def = findCallableBindingInScope(site.inScope, site.name, scopes);
       if (def === undefined) continue;
 
-      const ok = tryEmitEdge(
-        graph,
-        scopes,
-        nodeLookup,
-        site,
-        def,
-        'scope-resolution: value-ref',
-        seen,
-      );
+      const ok = tryEmitEdge(graph, scopes, nodeLookup, site, def, VALUE_REF_EDGE_REASON, seen);
       if (ok) usesEmitted++;
 
       if (site.propertyKey === undefined) continue;
