@@ -1210,6 +1210,7 @@ export function runScopeResolution(
         indexes,
         emitParsedFiles,
         postHeritageNodeLookup,
+        readonlyModel,
         calleeIdAccumulator,
       );
   if (propertyDispatch.skippedKeys > 0) {

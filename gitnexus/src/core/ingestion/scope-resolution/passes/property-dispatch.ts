@@ -17,9 +17,11 @@
  * registries only consult pre-finalize local bindings — imported names live
  * in finalized bindings (the same reason free calls need
  * `emitFreeCallFallback`) — so `resolveReferenceSites` skips `value-ref`
- * sites and this pass resolves them post-finalize via
- * `findCallableBindingInScope` (Function/Method/Constructor only — the
- * callable gate that keeps `{ port: DEFAULT_PORT }` from emitting anything).
+ * sites and this pass resolves them post-finalize (see
+ * `resolveValueRefTarget` — Function/Method/Constructor only, the callable
+ * gate that keeps `{ port: DEFAULT_PORT }` from emitting anything, and
+ * receiver-aware so a qualified reference binds the owner it was written
+ * with).
  *
  * Precision posture (mirrors `emitInterfaceDispatchFor`):
  *   - reason `'property-dispatch'` keeps synthesized CALLS auditable;
@@ -36,14 +38,20 @@
  * emits the capture participates) and generic member-call sites.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
-import { findCallableBindingInScope } from '../scope/walkers.js';
+import {
+  findCallableBindingInScope,
+  findClassBindingInScope,
+  findOwnedMember,
+} from '../scope/walkers.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
+import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
 
 /**
  * Keys registered by more than this many distinct functions are skipped —
@@ -66,11 +74,56 @@ export const MAX_PROPERTY_DISPATCH_FANOUT = (() => {
 /** Below the 0.85 resolved baseline; same discount idea as interface-dispatch. */
 export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
 
+/**
+ * Resolve a `value-ref` site to the callable it names.
+ *
+ * Two shapes, and the difference matters:
+ *
+ *   - BARE (`{ handler: onClick }`, `register(onTick)`) — the name is resolved
+ *     up the lexical chain, which is what an unqualified name means.
+ *
+ *   - QUALIFIED (`bridge.accessor(Element.getNamespaceUri, …)`) — the source
+ *     WROTE the owner, so the lexical chain is the wrong instrument. It gives
+ *     local bindings precedence (`walkScopeChain`), so a nested container
+ *     holding its own `getNamespaceUri` answers first and the registration is
+ *     attached to a DIFFERENT function than the one written. That is a wrong
+ *     edge, not a missing one — strictly worse for a tool whose value is that
+ *     its edges can be trusted — and it is reachable in any language that
+ *     allows a same-named callable in a nested container, Zig included.
+ *
+ * So a qualified site resolves through its receiver: name the owner, then take
+ * the member off that owner. If the owner cannot be resolved, or resolves but
+ * owns no such callable, this DECLINES rather than falling back to the lexical
+ * walk. Declining costs a reference; falling back would mint a confident edge
+ * to the wrong target, and `impact` now reports the missing reference as
+ * `lower-bound` rather than as certainty.
+ *
+ * `CALL_TARGET_TYPES`, not a hand-rolled label set: `findOwnedMember` also
+ * answers with FIELDS, and a field named like the member would otherwise
+ * register as if it were the callable.
+ */
+function resolveValueRefTarget(
+  site: ReferenceSite,
+  scopes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): SymbolDefinition | undefined {
+  const receiverName = site.explicitReceiver?.name;
+  if (receiverName === undefined) {
+    return findCallableBindingInScope(site.inScope, site.name, scopes);
+  }
+  const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
+  if (owner === undefined) return undefined;
+  const member = findOwnedMember(owner.nodeId, site.name, model);
+  if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
+  return member;
+}
+
 export function emitPropertyDispatchCalls(
   graph: KnowledgeGraph,
   scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
+  model: SemanticModel,
   calleeIdSink?: CalleeIdSink,
 ): {
   usesEmitted: number;
@@ -87,7 +140,7 @@ export function emitPropertyDispatchCalls(
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'value-ref') continue;
-      const def = findCallableBindingInScope(site.inScope, site.name, scopes);
+      const def = resolveValueRefTarget(site, scopes, model);
       if (def === undefined) continue;
 
       const ok = tryEmitEdge(graph, scopes, nodeLookup, site, def, VALUE_REF_EDGE_REASON, seen);

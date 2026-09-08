@@ -733,6 +733,14 @@ export interface EpistemicCauses {
    * missing is the invocation through the value: it happens later, through a
    * struct field, a registry lookup, or comptime reflection, and no CALLS edge
    * connects the eventual call site back to this symbol.
+   *
+   * Zero when the property-dispatch pass DID synthesize that invocation
+   * (`x.<key>()` through a registered object-literal key): the walk followed
+   * the registration, so nothing was missed and the result stays `exact`.
+   *
+   * Also zero — WITH a boundary note — when the probe itself could not run.
+   * The note is the signal there; the count is not, which is why a reader must
+   * branch on `epistemic` first and read the causes as explanation.
    */
   readonly callableValueReferences: number;
 }
@@ -900,6 +908,16 @@ function undecidedSatisfactionBoundaries(
  * serves is "how many places does this value escape from", and a table that
  * registers the same callable twice is still one table.
  *
+ * NOT every value reference is a gap. Where the property-dispatch pass
+ * synthesized the invocation side, the walk followed it and the answer stays
+ * `exact` — see the second probe below.
+ *
+ * Three failure modes, three different answers, none of them silence:
+ *   - the query cannot run       → hedge, count 0 (a probe that did not answer
+ *                                  is not evidence of completeness);
+ *   - the query returns nothing  → no hedge (a real, measured zero);
+ *   - the reference was followed → no hedge (nothing was missed).
+ *
  * The probe reads the edge's `reason`, which is why writer and reader share
  * {@link VALUE_REF_EDGE_REASON}. Language-neutral by construction — every
  * provider that emits a `value-ref` capture participates, and one that emits
@@ -909,19 +927,76 @@ async function callableValueReferenceBoundaries(
   lbugPath: string,
   symId: string,
 ): Promise<{ notes: string[]; referrers: number }> {
-  // Rows, not `COUNT(...)`: the LIMIT bounds the work on a promiscuous
-  // registration target, and the note only needs to say "at least N".
+  // `COUNT(DISTINCT …)`, not a capped row list. A `LIMIT n` here would make the
+  // published cause silently understate a target with more than n
+  // registrations — and this number is documented as "how many symbols", so a
+  // reader comparing its magnitude against `receiverTyping` would be comparing
+  // a truth to a ceiling. Aggregating in the database keeps the work bounded
+  // without capping the answer; scalar `sym.id` equality plus an implicit
+  // group-by is the shape `countByType` below already relies on.
+  //
+  // `null`, not `[]`, on failure: see below — an empty result set and an
+  // unanswerable query must not be the same value.
   const rows = await executeParameterized(
     lbugPath,
     `MATCH (other)-[r:CodeRelation]->(sym)
      WHERE sym.id = $symId AND r.type = 'USES' AND r.reason = $reason
-     RETURN DISTINCT other.id AS id
-     ORDER BY id
-     LIMIT 50`,
+     RETURN COUNT(DISTINCT other.id) AS cnt`,
     { symId, reason: VALUE_REF_EDGE_REASON },
-  ).catch(() => []);
-  const referrers = rows.length;
-  if (referrers === 0) return { notes: [], referrers: 0 };
+  ).catch(() => null);
+
+  // A probe that could not run must never read as certainty — the same rule the
+  // `loadMeta` read above states, and the whole reason this function exists.
+  // Returning zero here would publish `exact` on the strength of a query that
+  // never answered.
+  if (rows === null) {
+    return {
+      referrers: 0,
+      notes: [
+        'The callable-value-reference probe could not be run against this index, so whether ' +
+          'this symbol is registered somewhere as a value is unknown. Treat the caller list as ' +
+          'incomplete until it can be re-checked.',
+      ],
+    };
+  }
+  const referrers = rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
+  if (!Number.isFinite(referrers) || referrers <= 0) return { notes: [], referrers: 0 };
+
+  // Registrations whose invocation side the analyzer ALREADY synthesized are
+  // not a gap. `emitPropertyDispatchCalls` sweep 2 connects `x.<key>()` member
+  // calls to every function registered under `<key>` and stamps those edges
+  // `property-dispatch`; where that happened, the walk did not "provably miss"
+  // the caller and `lower-bound` would be noise sprayed over an answer the
+  // analyzer actually computed. Zig — the case this was built for — never sets
+  // a property key (no object-literal key to dispatch through), so it is never
+  // excluded here; the exclusion exists to keep TypeScript/JavaScript hook
+  // tables that ARE followed from being downgraded.
+  //
+  // Symbol-level, not per-edge: the graph does not record which registration
+  // produced which synthesized call. A target with a mix of followed and
+  // unfollowed registrations is therefore NOT hedged, which is the one place
+  // this errs toward confidence. Preferred over the alternative — hedging every
+  // property-value registration in every JS/TS codebase — because a signal that
+  // fires on everything stops carrying information, and the unfollowed half
+  // still has the `property-dispatch` fan-out cap warning behind it.
+  const dispatched = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'CALLS' AND r.reason = 'property-dispatch'
+     RETURN COUNT(r) AS cnt`,
+    { symId },
+  ).catch(() => null);
+  // Failure here is NOT a reason to skip the hedge: we already know a value
+  // reference exists, and being unable to prove it was followed leaves the
+  // conservative answer standing.
+  const dispatchedCount =
+    dispatched === null || dispatched.length === 0
+      ? 0
+      : Number((dispatched[0] as any).cnt ?? (dispatched[0] as any)[0] ?? 0);
+  if (Number.isFinite(dispatchedCount) && dispatchedCount > 0) {
+    return { notes: [], referrers: 0 };
+  }
+
   const one = referrers === 1;
   return {
     referrers,

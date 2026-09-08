@@ -228,3 +228,114 @@ record.
 
 Every fork above was decided and recorded. No gate failed three times; no gate
 needed a baseline edit.
+
+---
+
+## Review round 1 — `gitnexus-check` bot on PR #3219
+
+Five findings. I reproduced each against the code before deciding; four were
+valid and are fixed, one was valid and is fixed differently than proposed.
+
+**R1-1 (valid, fixed) — a failed probe read as "no boundary".**
+`callableValueReferenceBoundaries` did `.catch(() => [])`, so a query that could
+not run produced count 0 and no note, and `epistemicFrom` could then publish
+`exact`. That is the exact failure this feature exists to remove, and this
+file's own `loadMeta` comment states the rule: "a probe failing must never read
+as certainty". Now: `.catch(() => null)`, and `null` emits a boundary note
+("could not be run") with count 0. Three outcomes, three answers — cannot run →
+hedge; measured zero → no hedge; followed → no hedge.
+Test: `hedges — never reports exact — when the probe itself cannot run`, which
+injects a rejection into that one query (keyed on the bound `$reason` param) and
+leaves every other query on the real database.
+
+**R1-2 (valid, REPRODUCED, fixed) — qualified references resolved by tail name.**
+The bot claimed `Element.getNamespaceUri` could bind a lexically nearer
+same-named callable. I built the fixture and it reproduced exactly:
+
+    const Element = @This();
+    pub fn getThing(...)             // Method:src/main.zig:main.getThing#0
+    pub const JsApi = struct {
+        fn getThing(...)             // Method:src/main.zig:JsApi.getThing#0
+        pub const thing = bridge.accessor(Element.getThing, null, .{});
+    };
+
+→ `USES JsApi → Method:src/main.zig:JsApi.getThing#0`. A **wrong** edge, which
+is worse than the missing edge this PR set out to fix.
+
+Fixed in the language-neutral pass: `resolveValueRefTarget` in
+`property-dispatch.ts` resolves a site with an explicit receiver through
+`findClassBindingInScope` → `findOwnedMember` (the machinery
+`receiver-bound-calls` already uses), gated on `CALL_TARGET_TYPES` because
+`findOwnedMember` also answers with fields. A bare site keeps the lexical walk,
+which is what an unqualified name means.
+
+*Rejected: falling back to the lexical walk when the receiver does not resolve.*
+It would have kept ~370 more edges, but it reinstates the wrong-edge case
+exactly where the evidence is weakest. Declining costs a reference; falling back
+mints a confident edge to the wrong function, and a reference that is now
+missing is reported as `lower-bound` rather than as certainty.
+
+Measured cost of that choice on the real corpus: value-ref edges
+**3,169 → 2,799** (−370, −12%). Verified those 370 were tail-name coincidences,
+not real registrations:
+- all 94 `Element.zig` `JsApi` registrations survive;
+- the cross-container case resolves and is correctly attributed —
+  `IntersectionObserverEntry.JsApi → IntersectionObserverEntry.getTarget#0`, not
+  the enclosing `IntersectionObserver`;
+- source-level census of the corpus: 2,010 qualified `bridge.*` registrations,
+  1,812 self-owner + 198 cross-container, and the sampled cross-container ones
+  all resolve.
+- both acceptance probes are unchanged by the fix: `getNamespaceUri` 7 / 3 /
+  LOW / `lower-bound`, `getTagNameLower` 31 / 10 / HIGH / `exact`.
+
+*Known limitation, deliberately not fixed:* when a `@This()` alias's NAME
+differs from its container's (`const Element = @This();` inside `main.zig`), the
+receiver does not resolve and the reference is declined. The provider has
+`rewriteZigThisAlias` for exactly this, but it is applied to TYPE nodes and
+extending it to reference receivers would change existing CALL-site behaviour —
+out of scope here. Lightpanda's convention (`const Foo = @This();` in `Foo.zig`)
+makes the names coincide, which is why the corpus is unaffected. The safe
+behaviour is pinned by
+`declines a qualified reference whose receiver cannot be resolved`.
+
+**R1-3 (valid, fixed as proposed) — the test did not assert the caller count.**
+Its own comment promised the count would not move; only the epistemic envelope
+was asserted. Added `expect(result.impactedCount).toBe(2)` — the bot's proposed
+value, confirmed by running it.
+
+**R1-4 (valid, fixed) — not every value reference is an unmodelled invocation.**
+`emitPropertyDispatchCalls` sweep 2 synthesizes CALLS (reason
+`property-dispatch`) for member calls through a registered property key. Where
+that happened the walk did NOT provably miss the caller, so hedging is noise
+over an answer that was computed — and a signal that fires on every JS/TS hook
+table stops carrying information. A second probe now excludes targets with an
+inbound `property-dispatch` CALLS edge. Zig never sets a property key, so the
+motivating case is untouched.
+*Accepted residual, documented in the code:* the exclusion is symbol-level, not
+per-edge — the graph does not record which registration produced which
+synthesized call — so a target with a mix of followed and unfollowed
+registrations is not hedged. That is the one place this errs toward confidence;
+the alternative errs on every hook table in every JS codebase.
+
+**R1-5 (valid, fixed) — `LIMIT 50` silently understated the count.**
+`rows.length` over a capped row set published a ceiling as if it were the
+documented symbol count. Replaced with `COUNT(DISTINCT other.id)` — bounded work
+without a bounded answer, the shape `countByType` in the same file already uses.
+The cap is gone rather than merely disclosed.
+
+`tools.ts` cause documentation updated for all three new behaviours (exact
+count, dispatch-modelled zero, probe-failure zero-with-note).
+
+### Gates after review round 1
+
+- Full `vitest run`: **20,634 passed / 10 failed / 20,644 total** — the SAME 10
+  pre-existing failures verified against `origin/main` earlier, no new ones.
+- One earlier run showed an 11th failure (`fts-extension-e2e` #2841). That was
+  self-inflicted: I ran the browser `analyze` and cypher queries CONCURRENTLY
+  with the suite. Run alone that test passes and two *network-dependent*
+  self-heal tests fail instead; a clean full run with nothing else touching the
+  machine reproduces exactly the 10. Recorded because it is the trap the
+  machine notes already describe for `cli-e2e` / `analyze-index-lock-concurrency`.
+- Bench `--check` re-run after the receiver fix: `scope-capture` (15 languages),
+  `receiver-resolution`, `zig-cross-file-resolution`, `callable-value-flow`,
+  `scope-emission`, `python-scope` — all PASS, no baseline edited.

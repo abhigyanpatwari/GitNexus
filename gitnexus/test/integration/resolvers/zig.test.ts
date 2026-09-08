@@ -248,9 +248,14 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
   describe('callable values (#3399)', () => {
     let uses: string[];
     let valueRefs: string[];
+    let valueRefTargetIds: string[];
     beforeAll(() => {
       const edges = getRelationships(result, 'USES');
       uses = edgeSet(edges);
+      valueRefTargetIds = edges
+        .filter((e) => e.rel.reason === 'scope-resolution: value-ref')
+        .map((e) => e.rel.targetId)
+        .sort();
       // The reason text is spelled out rather than imported from
       // `VALUE_REF_EDGE_REASON`, deliberately and as `typescript-value-refs.test.ts`
       // already does: `impact`'s epistemic probe matches this exact string in
@@ -305,6 +310,28 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       expect(calls).toContain('describe → getTagNameLower');
       expect(calls).toContain('_tagName → getTagNameLower');
       expect(valueRefs.filter((v) => v.endsWith(' → getTagNameLower'))).toEqual([]);
+    });
+
+    it('binds a QUALIFIED reference to the owner that was written, not the nearest lexical match', () => {
+      // `JsApi` declares its own `getLocalName` next to
+      // `bridge.accessor(Element.getLocalName, …)`. `walkScopeChain` gives that
+      // local binding precedence, so resolving the registration by tail name
+      // alone attaches it to the SIBLING — a confidently wrong edge, which is a
+      // worse failure than the missing edge this whole change is about. The
+      // written receiver is the only thing that tells them apart.
+      const local = valueRefTargetIds.filter((id) => id.endsWith('.getLocalName#0'));
+      expect(local).toEqual(['Method:src/webapi/Element.zig:Element.getLocalName#0']);
+      expect(local).not.toContain('Method:src/webapi/Element.zig:JsApi.getLocalName#0');
+    });
+
+    it('declines a qualified reference whose receiver cannot be resolved', () => {
+      // `bridge.accessor(unresolvable_ns.tick, …)` names an owner this index
+      // does not have, while a file-level `tick` sits in the lexical chain
+      // waiting to be mis-bound. Emitting nothing is the safe direction: the
+      // shortfall then shows up as `epistemic: "lower-bound"` rather than as a
+      // confident edge pointing at the wrong function.
+      expect(valueRefTargetIds.filter((id) => id.includes('.tick#'))).toEqual([]);
+      expect(valueRefs).not.toContain('JsApi → tick');
     });
 
     it('does not mint a value reference for the CALLEE of an ordinary call', () => {

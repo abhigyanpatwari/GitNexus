@@ -39,6 +39,18 @@ pub fn describe(self: *Element) u8 {
     return self.getTagNameLower();
 }
 
+// ── Owner discrimination ────────────────────────────────────────────────────
+
+// Shadowed below by a same-named sibling inside `JsApi`. The registration
+// writes `Element.getLocalName`, so THIS is the one it must bind.
+pub fn getLocalName(self: *Element) u8 {
+    return self._namespace;
+}
+
+fn tick(self: *Element) u8 {
+    return self._namespace;
+}
+
 // ── The binding table ───────────────────────────────────────────────────────
 
 pub const JsApi = struct {
@@ -54,6 +66,24 @@ pub const JsApi = struct {
     fn _tagName(self: *Element) u8 {
         return self.getTagNameLower();
     }
+
+    // A sibling with the SAME simple name as the file-struct method above.
+    // `walkScopeChain` gives a local binding precedence over the enclosing
+    // scope, so a registration resolved by TAIL NAME alone binds here — the
+    // wrong function, silently. Resolving `Element.getLocalName` through its
+    // written owner is what keeps them apart.
+    fn getLocalName(self: *Element) u8 {
+        return 0;
+    }
+
+    pub const localName = bridge.accessor(Element.getLocalName, null, .{});
+
+    // A receiver this index cannot resolve. There is a file-level `tick`, and
+    // tail-name resolution would happily bind it even though the source says
+    // the function belongs to something else entirely. Declining is the only
+    // safe answer: a missing reference is recoverable, a confident wrong edge
+    // is not.
+    pub const ticker = bridge.accessor(unresolvable_ns.tick, null, .{});
 };
 
 // ── Const binding initialiser ───────────────────────────────────────────────

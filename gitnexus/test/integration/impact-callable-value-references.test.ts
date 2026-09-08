@@ -33,6 +33,27 @@ import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { VALUE_REF_EDGE_REASON } from '../../src/core/ingestion/scope-resolution/value-ref-edges.js';
 
+/**
+ * Fail ONLY the value-reference probe, leaving every other query on the real
+ * database. Keyed on the bound `$reason` param rather than the query text, so
+ * it cannot accidentally match a different query that happens to mention USES.
+ */
+let failValueRefProbe = false;
+
+vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
+  return {
+    ...actual,
+    executeParameterized: (...args: any[]) => {
+      const params = args[2] as { reason?: string } | undefined;
+      if (failValueRefProbe && params?.reason === 'scope-resolution: value-ref') {
+        return Promise.reject(new Error('simulated: index unreadable'));
+      }
+      return (actual as any).executeParameterized(...args);
+    },
+  };
+});
+
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
   return {
@@ -68,6 +89,19 @@ const SEED = [
   // otherwise every type mention in the repo would downgrade its target.
   `CREATE (:Method {id: 'Method:webapi/Element.zig:Element.getInnerText', name: 'getInnerText', filePath: 'webapi/Element.zig', startLine: 600, endLine: 610, isExported: true, content: '', description: ''})`,
   `MATCH (a:Struct {id:'Struct:webapi/Element.zig:Element.JsApi'}), (b:Method {id:'Method:webapi/Element.zig:Element.getInnerText'}) CREATE (a)-[:CodeRelation {type:'USES', confidence:0.85, reason:'scope-resolution: type-reference', step:0}]->(b)`,
+
+  // Third control: a registration whose invocation the analyzer DID synthesize.
+  // `emitPropertyDispatchCalls` sweep 2 connects `x.<key>()` member calls to
+  // every function registered under `<key>` and stamps those edges
+  // `property-dispatch`. Where that happened the walk followed the
+  // registration, so hedging would be noise over an answer that was actually
+  // computed. This is the JS/TS hook-table shape, not the Zig one — Zig has no
+  // object-literal key to dispatch through and so is never excluded.
+  `CREATE (:Function {id: 'Function:hooks/registry.js:onClick', name: 'onClick', filePath: 'hooks/registry.js', startLine: 5, endLine: 8, isExported: true, content: '', description: ''})`,
+  `CREATE (:Function {id: 'Function:hooks/registry.js:registerAll', name: 'registerAll', filePath: 'hooks/registry.js', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  `CREATE (:Function {id: 'Function:hooks/consumer.js:runHandlers', name: 'runHandlers', filePath: 'hooks/consumer.js', startLine: 1, endLine: 6, isExported: true, content: '', description: ''})`,
+  `MATCH (a:Function {id:'Function:hooks/registry.js:registerAll'}), (b:Function {id:'Function:hooks/registry.js:onClick'}) CREATE (a)-[:CodeRelation {type:'USES', confidence:0.85, reason:'${VALUE_REF_EDGE_REASON}', step:0}]->(b)`,
+  `MATCH (a:Function {id:'Function:hooks/consumer.js:runHandlers'}), (b:Function {id:'Function:hooks/registry.js:onClick'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.7, reason:'property-dispatch', step:0}]->(b)`,
 ];
 
 withTestLbugDB(
@@ -84,6 +118,11 @@ withTestLbugDB(
         direction: 'upstream',
       });
       expect(result).not.toHaveProperty('error');
+      // Pinned, not implied: hedging must not INVENT callers. The seed gives
+      // this symbol exactly two inbound edges — one CALLS, one value-ref USES —
+      // and both are traversed. If a later change made the hedge also widen the
+      // walk, every other assertion here would still pass.
+      expect(result.impactedCount).toBe(2);
       // The registration is a real inbound edge, so it IS traversed and counted
       // — but the call THROUGH the registered value is not, which is why the
       // count still cannot be the whole story.
@@ -119,6 +158,41 @@ withTestLbugDB(
       expect(result).not.toHaveProperty('error');
       expect(result.epistemic).toBe('lower-bound');
       expect(result.causes.callableValueReferences).toBe(1);
+    });
+
+    it('stays exact when the analyzer already synthesized the dispatch', async () => {
+      // `onClick` is registered as a value AND reached by a synthesized
+      // property-dispatch CALLS edge. The walk did not "provably miss" that
+      // caller, so `lower-bound` would be wrong — and a signal that fires on
+      // every hook table in every JS codebase carries no information.
+      const result: any = await backend.callTool('impact', {
+        target: 'onClick',
+        direction: 'upstream',
+      });
+      expect(result).not.toHaveProperty('error');
+      expect(result.epistemic).toBe('exact');
+    });
+
+    it('hedges — never reports exact — when the probe itself cannot run', async () => {
+      // The failure mode this whole feature exists to remove is silence reading
+      // as certainty. A probe that threw has not established that the symbol is
+      // unregistered; swallowing the error into a zero would publish `exact` on
+      // the strength of a question that was never answered.
+      failValueRefProbe = true;
+      try {
+        const result: any = await backend.callTool('impact', {
+          target: 'getTagNameLower', // the control: exact when the probe works
+          direction: 'upstream',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.epistemic).toBe('lower-bound');
+        expect(result.boundaries.join(' ')).toContain('could not be run');
+        // No count is claimed — the note is the signal, and inventing a
+        // magnitude from a failed query would be the same error inverted.
+        expect(result.causes.callableValueReferences).toBe(0);
+      } finally {
+        failValueRefProbe = false;
+      }
     });
 
     it('stays exact downstream — a reference INTO a symbol says nothing about what it reaches', async () => {
