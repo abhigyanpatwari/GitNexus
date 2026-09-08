@@ -796,6 +796,19 @@ def evidence_failed(record: Mapping[str, Any]) -> bool:
     )
 
 
+def task_prompt_digest(task: Mapping[str, Any]) -> str:
+    """The prompt digest, computed once for the row and the reuse expectation.
+
+    row_is_reusable_comparator compares the value a prior row stored against the
+    value this sweep derives, as exact strings. Two inline copies of this hash
+    had already drifted - one picked up a str() cast the other lacked - and a
+    further divergence (normalising whitespace on one side, say) would silently
+    stop rows matching, or match rows that should not.
+    """
+
+    return hashlib.sha256(str(task["prompt"]).encode()).hexdigest()
+
+
 # A sustained upstream outage shows up as a run of session/infra/cleanup
 # failures. (cleanup-failure overwrites the primary error_kind, so a
 # session-error whose worktree cleanup also failed still counts.) A task's own
@@ -1338,7 +1351,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 "task_base_sha": ctx.task_sha,
                 "sanitized_task_sha": sanitized_head,
                 "variant_head_sha": orig_sha,
-                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
+                "task_prompt_digest": task_prompt_digest(task),
                 "skill_digest": expected_skill_digest,
                 "candidate_overlay_digest": (ctx.overlay_digest if arm in CANDIDATE_ARMS else None),
                 "runtime_digest": current_runtime_digest(),
@@ -2158,7 +2171,7 @@ def _comparator_reuse_expectation(
     for task, binding, oracle in zip(tasks, task_bindings, oracle_snapshots, strict=True):
         task_locks[str(task["id"])] = TaskReuseBinding(
             task_base_sha=str(binding["resolved_sha"]),
-            task_prompt_digest=hashlib.sha256(str(task["prompt"]).encode()).hexdigest(),
+            task_prompt_digest=task_prompt_digest(task),
             oracle_digest=oracle.digest,
             oracle_command_digest=oracle.command_digest,
             oracle_manifest_digest=oracle.manifest_digest,
@@ -2213,7 +2226,7 @@ def drop_canary_reuse_key(
     """Drop one reusable cell so an incumbent arm still measures THIS sweep.
 
     An arm reused end to end measures nothing about today's environment, and
-    broken_incumbent_arms would then be reading last week's health.
+    arm_health would then be reading last week's health.
 
     Counted against the cells this sweep PLANS, not every key reuse selection
     returned: selection accepts any non-negative prior run index, so a results
@@ -2472,7 +2485,7 @@ def _run_sweep(
             )
             # Keep one paid cell per incumbent arm. A generation that reuses an
             # arm end to end measures nothing about today's environment, and
-            # broken_incumbent_arms would then be reading last week's health.
+            # arm_health would then be reading last week's health.
             # One cell per arm is the cheapest thing that keeps the canary real.
             incumbent_arms = [arm for arm in args.arms if arm not in candidate_arms]
             for arm in incumbent_arms:

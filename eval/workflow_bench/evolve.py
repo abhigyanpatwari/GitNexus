@@ -955,19 +955,6 @@ def instance_window_budget_from_uptime(
     return instance_window_budget_seconds(uptime_seconds, window_seconds=window, reserve_seconds=reserve)
 
 
-def instance_window_budget_from_proc(
-    uptime_path: Path = Path("/proc/uptime"),
-    *,
-    window_seconds: int | None = None,
-    reserve_seconds: int | None = None,
-) -> int:
-    """Read host uptime and apply the EventBridge window env overrides."""
-
-    return instance_window_budget_from_uptime(
-        read_instance_uptime_seconds(uptime_path),
-        window_seconds=window_seconds,
-        reserve_seconds=reserve_seconds,
-    )
 
 
 def remaining_runtime_seconds(*, max_runtime_seconds: int | None, started_monotonic: float) -> int | None:

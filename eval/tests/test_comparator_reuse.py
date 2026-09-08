@@ -338,7 +338,7 @@ def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Pat
 
 
 @requires_openat
-def test_a_reused_row_ages_from_its_first_measurement_not_the_copy(tmp_path: Path):
+def test_a_reused_row_ages_from_its_first_measurement_not_the_copy():
     """Reuse chains must not refresh the clock.
 
     materialize_reused_row restamps recorded_at with the copy time, so aging

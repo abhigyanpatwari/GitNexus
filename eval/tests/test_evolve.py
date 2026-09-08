@@ -22,7 +22,6 @@ from workflow_bench.evolve import (
     capped_timeout_seconds,
     executed_benchmark_arms,
     generation_timeout_seconds,
-    instance_window_budget_from_proc,
     instance_window_budget_seconds,
     load_jsonl,
     proposer_evidence_entries,
@@ -1277,16 +1276,6 @@ def test_instance_window_budget_leaves_upload_reserve() -> None:
         instance_window_budget_seconds(float("nan"))
 
 
-def test_instance_window_budget_from_proc_reads_uptime_and_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    uptime = tmp_path / "uptime"
-    uptime.write_text("3600.00 8000.00\n")
-    monkeypatch.setenv("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", "20000")
-    monkeypatch.setenv("EVENTBRIDGE_STOP_RESERVE_SECONDS", "1000")
-    assert instance_window_budget_from_proc(uptime) == 20000 - 3600 - 1000
-    with pytest.raises(ValueError, match="cannot read instance uptime"):
-        instance_window_budget_from_proc(tmp_path / "missing")
 
 
 def test_capped_timeout_clamps_to_leftover_window(monkeypatch) -> None:
