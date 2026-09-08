@@ -735,7 +735,20 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v93: Zig call captures inside a comptime-false branch carry
 // `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
 // `staticGated` and the CALLS edge a BOOLEAN column.
-const SCHEMA_BUMP = 93;
+// v98 (#3219): `ZIG_SCOPE_QUERY` gained three `@reference.value-ref` rules —
+// bare call argument, qualified call argument (with `@reference.receiver`), and
+// const-binding initialiser — so a Zig callable named in VALUE position now
+// produces a `value-ref` entry in `ParsedFile.referenceSites` where it produced
+// none before. These captures are PARSE-TIME facts, so a warm v93 cache replays
+// unchanged `.zig` files with zero value-ref sites, `--force` included (shards
+// are content-addressed): `emitPropertyDispatchCalls` then emits no USES edge,
+// `callableValueReferenceBoundaries` measures a real zero, and `impact` on a
+// registered accessor republishes `epistemic: "exact"` — the exact #3399 defect
+// this change exists to close, silently un-fixed. 98 is the next free value
+// above origin/main (93) and every open PR at the time of writing: #3190 claims
+// 94, #3179 claims 94-97. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY
+// BEFORE MERGING.
+const SCHEMA_BUMP = 98;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

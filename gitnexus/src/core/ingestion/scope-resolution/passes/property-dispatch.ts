@@ -48,6 +48,7 @@ import {
   findCallableBindingInScope,
   findClassBindingInScope,
   findOwnedMember,
+  isNamespaceNameShadowed,
 } from '../scope/walkers.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -92,11 +93,27 @@ export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
  *     allows a same-named callable in a nested container, Zig included.
  *
  * So a qualified site resolves through its receiver: name the owner, then take
- * the member off that owner. If the owner cannot be resolved, or resolves but
- * owns no such callable, this DECLINES rather than falling back to the lexical
- * walk. Declining costs a reference; falling back would mint a confident edge
- * to the wrong target, and `impact` now reports the missing reference as
- * `lower-bound` rather than as certainty.
+ * the member off that owner. An owner is either a CLASS-like container or a
+ * MODULE — `Element.getNamespaceUri` and `utils.compare` are the same shape
+ * written against the two kinds of namespace a language has, and the member-call
+ * path already resolves both (receiver-bound-calls Case 2 / Case 1). Both are
+ * tried here for the same reason: see `findNamespaceValueRefTarget` for why a
+ * module receiver cannot simply be declined.
+ *
+ * If neither channel names the owner, or the owner is named but owns no such
+ * callable, this DECLINES rather than falling back to the lexical walk.
+ *
+ * Be precise about what declining costs, because it is more than one reference:
+ * a site that emits NO edge leaves no evidence for `impact`'s value-reference
+ * probe to read, so the target keeps `epistemic: "exact"` — silence, not a
+ * hedge. That is why the module channel above exists rather than being waved
+ * through as "just a decline". What remains declined is the case where the
+ * written receiver names nothing this index knows at all (a Zig `@This()` alias
+ * whose name differs from its container's, an owner from outside the workspace):
+ * there the alternative is not a hedge either, it is a confident edge to a
+ * lexically-nearer function that the source did not name, and a wrong edge is
+ * strictly worse than a missing one for a tool whose value is that its edges can
+ * be trusted.
  *
  * `CALL_TARGET_TYPES`, not a hand-rolled label set: `findOwnedMember` also
  * answers with FIELDS, and a field named like the member would otherwise
@@ -104,6 +121,7 @@ export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
  */
 function resolveValueRefTarget(
   site: ReferenceSite,
+  filePath: string,
   scopes: ScopeResolutionIndexes,
   model: SemanticModel,
 ): SymbolDefinition | undefined {
@@ -112,10 +130,78 @@ function resolveValueRefTarget(
     return findCallableBindingInScope(site.inScope, site.name, scopes);
   }
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
-  if (owner === undefined) return undefined;
-  const member = findOwnedMember(owner.nodeId, site.name, model);
-  if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
-  return member;
+  if (owner !== undefined) {
+    const member = findOwnedMember(owner.nodeId, site.name, model);
+    if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
+    return member;
+  }
+  // A receiver that is not class-like may still be a MODULE — the other kind of
+  // owner a qualified name can have. See `findNamespaceValueRefTarget`.
+  return findNamespaceValueRefTarget(site, filePath, receiverName, scopes);
+}
+
+/**
+ * The second kind of owner: a namespace handle.
+ *
+ * `const utils = @import("utils.zig"); register(utils.compare);` — `utils` is a
+ * MODULE, not a class, so `findClassBindingInScope` answers nothing and the
+ * class path above declines. Declining here would be a silent hole rather than
+ * a conservative one: no USES edge is emitted, so
+ * `callableValueReferenceBoundaries` measures a real zero and `impact` on
+ * `compare` republishes `exact` — the very claim this feature exists to stop
+ * making. Nothing downstream can hedge on evidence that was never recorded.
+ *
+ * So resolve it, through the SAME channel the member-CALL path already trusts
+ * for `utils.compare()` (receiver-bound-calls Case 1): the file's namespace
+ * import edges name the target module, and the target module's own local
+ * module-scope bindings name its members. `utils.compare` and `utils.compare()`
+ * disagreeing about what `utils` is would be the anomaly.
+ *
+ * The same three guards Case 1 applies, for the same reasons:
+ *   - a LOCAL declaration shadowing the handle suppresses the resolution
+ *     (`isNamespaceNameShadowed`) — `fn f(utils: Decoy) { register(utils.compare) }`
+ *     names the parameter's member, and resolving through the import would be a
+ *     wrong edge rather than a missing one;
+ *   - `origin === 'local'` only, so a name the target file merely IMPORTED is
+ *     not published as its own member here (the `namespaceExportsIncludeImportedNames`
+ *     hub opt-in is a provider decision this language-neutral pass does not make);
+ *   - two distinct defs under one name resolve NOTHING. Never guess a namespace
+ *     member — the whole point of reading the written receiver is precision.
+ *
+ * `CALL_TARGET_TYPES` gates the answer for the same reason the class path needs
+ * it: `utils.DEFAULT_PORT` is a module-scope binding too, and a registration
+ * table full of constants must keep emitting nothing.
+ */
+function findNamespaceValueRefTarget(
+  site: ReferenceSite,
+  filePath: string,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const moduleScopeId = scopes.moduleScopes.get(filePath);
+  if (moduleScopeId === undefined) return undefined;
+  const targetFiles: string[] = [];
+  for (const edge of scopes.imports.get(moduleScopeId) ?? []) {
+    if (edge.kind !== 'namespace' || edge.localName !== receiverName) continue;
+    if (edge.targetFile === null) continue;
+    if (!targetFiles.includes(edge.targetFile)) targetFiles.push(edge.targetFile);
+  }
+  if (targetFiles.length === 0) return undefined;
+  if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
+
+  let picked: SymbolDefinition | undefined;
+  for (const targetFile of targetFiles) {
+    const targetScopeId = scopes.moduleScopes.get(targetFile);
+    if (targetScopeId === undefined) continue;
+    const refs = scopes.bindings.get(targetScopeId)?.get(site.name);
+    if (refs === undefined) continue;
+    for (const ref of refs) {
+      if (ref.origin !== 'local' || !CALL_TARGET_TYPES.has(ref.def.type)) continue;
+      if (picked !== undefined && picked.nodeId !== ref.def.nodeId) return undefined;
+      picked = ref.def;
+    }
+  }
+  return picked;
 }
 
 export function emitPropertyDispatchCalls(
@@ -140,7 +226,7 @@ export function emitPropertyDispatchCalls(
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'value-ref') continue;
-      const def = resolveValueRefTarget(site, scopes, model);
+      const def = resolveValueRefTarget(site, parsed.filePath, scopes, model);
       if (def === undefined) continue;
 
       const ok = tryEmitEdge(graph, scopes, nodeLookup, site, def, VALUE_REF_EDGE_REASON, seen);

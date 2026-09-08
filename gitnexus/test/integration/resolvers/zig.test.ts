@@ -334,6 +334,39 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       expect(valueRefs).not.toContain('JsApi → tick');
     });
 
+    it('records a QUALIFIED function value owned by a MODULE, not a container (`bridge.accessor(dom_utils.compare, …)`)', () => {
+      // `dom_utils` is a namespace-only file — no `@This()`, so no container
+      // symbol to look the member up on. Resolving only through class-like
+      // owners declines here, and a decline is SILENT: with no USES edge the
+      // boundary probe measures a real zero and `impact` on `compare` goes back
+      // to `epistemic: "exact"`, which is the defect, not a conservative answer.
+      // The member-CALL path already resolves `dom_utils.compare()` through the
+      // file's namespace import; the registration reads the same channel.
+      expect(valueRefs).toContain('JsApi → compare');
+      expect(valueRefTargetIds.filter((id) => id.includes('compare'))).toEqual([
+        'Function:src/webapi/dom_utils.zig:compare',
+      ]);
+    });
+
+    it('applies the callable gate to a MODULE owner too', () => {
+      // `dom_utils.DEFAULT_NS` is a module-scope constant. Widening the owner
+      // channel must not widen what counts as a registration, or every
+      // `bridge.accessor(mod.SOME_CONST, …)` in a binding table starts claiming
+      // a callable was registered.
+      expect(valueRefs).not.toContain('JsApi → DEFAULT_NS');
+      expect(valueRefTargetIds.filter((id) => id.includes('DEFAULT_NS'))).toEqual([]);
+    });
+
+    it('declines a module-qualified reference whose handle is locally shadowed', () => {
+      // `shadowsTheModuleHandle(dom_utils: u8)` names a PARAMETER, not the
+      // file-level `@import`. Reading through the import here would attach the
+      // registration to a module this site never named — the same wrong-edge
+      // failure `isNamespaceNameShadowed` prevents on the member-call path, and
+      // the reason the module channel is guarded rather than merely added.
+      expect(valueRefs).not.toContain('shadowsTheModuleHandle → normalize');
+      expect(valueRefTargetIds.filter((id) => id.includes('normalize'))).toEqual([]);
+    });
+
     it('does not mint a value reference for the CALLEE of an ordinary call', () => {
       // `register(onTick)` must produce ONE value reference (the argument), not
       // two: without binding the callee to the `function:` field the same rule

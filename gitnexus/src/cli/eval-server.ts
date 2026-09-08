@@ -609,9 +609,17 @@ export function formatImpactResult(result: any): string {
   }
   // #1858 — an interface / indirection boundary on the path makes this a lower
   // bound; surface it so the count is not read as exhaustive.
+  //
+  // The header names no specific cause. DI / dynamic dispatch was the only
+  // producer of `lower-bound` when this was written; #3399 added callables
+  // named in VALUE position (a registration table, a callback argument), and a
+  // header that keeps asserting "DI / dynamic dispatch" contradicts the
+  // `boundaries` bullet printed directly under it. The bullets carry the cause
+  // — they are generated per-cause by `computeEpistemicBoundary` — so the
+  // header only has to say that the count is a floor.
   if (result.epistemic === 'lower-bound') {
     lines.push(
-      '⚠️  Lower bound — unresolved indirection on the path (callers binding via DI / dynamic dispatch are not traced; actual impact may be higher):',
+      '⚠️  Lower bound — unresolved indirection on the path; some callers are not traced and actual impact may be higher:',
     );
     for (const b of result.boundaries || []) lines.push(`    • ${b}`);
   }

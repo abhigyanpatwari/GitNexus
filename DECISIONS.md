@@ -14,10 +14,14 @@ rejection: lightpanda-io/browser#3399.
 Local build reports **1.6.11** (expected: `package.json` on main says 1.6.11 and
 the 1.6.12-rc.* tags are CI-published without a committed bump).
 
+Measured against a clean index of `lightpanda-io/browser` (the repo #3399 was
+filed from), built from this checkout:
+
 ```
-cd ~/code/GitNexus/gitnexus && $HOME/.local/share/mise/installs/node/26.8.1/bin/npm run build   # exit 0
-rm -rf ~/code/browser/.gitnexus
-cd ~/code/browser && node ~/code/GitNexus/gitnexus/dist/cli/index.js analyze --index-only --skip-agents-md --no-stats
+cd <gitnexus>/gitnexus && npm run build            # exit 0
+rm -rf <browser>/.gitnexus                         # cold index: see D1-note below
+cd <browser> && node <gitnexus>/gitnexus/dist/cli/index.js \
+  analyze --index-only --skip-agents-md --no-stats
 ```
 
 Index: **30,222 nodes | 71,070 edges | 997 clusters | 1155 flows** (34.7 s).
@@ -69,10 +73,13 @@ sets `dispatch: 0`). That precedent exists because endpoint metadata *cannot*
 count omitted symbols. Here the count is available and real, so publishing zero
 would be inventing an absence.
 
-**D2-3. Unit = distinct referrer SYMBOLS, capped at 50.** The question the count
-serves is "how many places does this value escape from"; a table registering the
-same callable twice is still one table. The `LIMIT 50` bounds the work on a
-promiscuous target — the note only needs to justify "at least N".
+**D2-3. Unit = distinct referrer SYMBOLS.** The question the count serves is
+"how many places does this value escape from"; a table registering the same
+callable twice is still one table. *Originally decided with a `LIMIT 50` to
+bound the work; **superseded by R1-5**, which replaced it with
+`COUNT(DISTINCT other.id)` after the review pointed out that a capped row count
+published a ceiling under a name documented as a symbol count. The current code
+has no cap.*
 
 **D2-4. Upstream only.** A reference INTO a symbol says nothing about what that
 symbol reaches, so a `downstream` walk is not shortened by it. Same gate the
@@ -126,14 +133,20 @@ qualified (`bridge.accessor(Element.getNamespaceUri, …)`) and its sibling is b
 (`bridge.accessor(_tagName, …)`); the real table uses both. For the qualified
 form `@reference.name` is the MEMBER and the object is captured as
 `@reference.receiver`, because the member is the name the scope walk resolves.
-*Trade-off accepted:* the property-dispatch pass ignores the receiver, so a
-qualified reference resolves by tail name and could in principle bind a
-same-named local callable. Measured on the real corpus this does not bite: all
-3,169 emitted edges land on `Method` (3,146) or `Function` (23), and the
-94 registrations in `Element.zig`'s `JsApi` read as the DOM Element API surface
-one for one. *Rejected:* resolving through the receiver — that is the
-receiver-bound-call path, a much larger change, and the callable gate already
-carries the precision.
+*Trade-off originally accepted:* the property-dispatch pass ignored the receiver,
+so a qualified reference resolved by tail name and could in principle bind a
+same-named local callable. Measured on the real corpus at the time this did not
+appear to bite: all 3,169 emitted edges landed on `Method` (3,146) or `Function`
+(23), and the 94 registrations in `Element.zig`'s `JsApi` read as the DOM
+Element API surface one for one. *Rejected at the time:* resolving through the
+receiver.
+
+***Superseded by R1-2 and R2-2.*** The trade-off was wrong: the bot's
+counter-example reproduced, so the pass now resolves a qualified site through its
+written owner — a class-like container (R1-2) or a module handle (R2-2) — and
+declines rather than falling back to the lexical walk. The receiver is no longer
+ignored, and the corpus census that justified the original decision is recorded
+under R1-2 as the measurement of what declining costs.
 
 **D1-4. Rules are deliberately broad; the CALLABLE GATE is the filter.**
 `js.Bridge(Element)` and `register(count)` match too. `findCallableBindingInScope`
@@ -158,7 +171,7 @@ match baseline`), so no rebaseline was needed either way.
 
 ## Measured result — D1 + D2 together
 
-Re-analyzed from scratch (`rm -rf ~/code/browser/.gitnexus`) with the same
+Re-analyzed from scratch (`rm -rf <browser>/.gitnexus`) with the same
 command as the baseline.
 
 | | baseline | after | delta |
@@ -339,3 +352,98 @@ count, dispatch-modelled zero, probe-failure zero-with-note).
 - Bench `--check` re-run after the receiver fix: `scope-capture` (15 languages),
   `receiver-resolution`, `zig-cross-file-resolution`, `callable-value-flow`,
   `scope-emission`, `python-scope` — all PASS, no baseline edited.
+
+---
+
+## Review round 2 — PR #3219 tri-engine digest
+
+Four inline items (one P1, two P2, one P3), plus a documented residual. Each was
+reproduced against the worktree before deciding.
+
+**R2-1 (valid, fixed) — the new captures could stay INERT on a warm parse cache.**
+The headline finding, and the one that mattered: `ZIG_SCOPE_QUERY` now emits
+`@reference.value-ref`, which changes `ParsedFile.referenceSites` — a PARSE-TIME
+fact. `SCHEMA_BUMP` was left at 93, so a repo indexed before this change and
+re-analyzed after it replays the old, empty site list for every unchanged `.zig`
+file, `--force` included (shards are content-addressed). No USES edge, a real
+measured zero at the probe, and `impact` back to `epistemic: "exact"` — #3399
+un-fixed on exactly the incremental path most users are on, with every cold-run
+test green. D1-1's claim of "zero changes to … the schema" conflated the graph
+schema with the cache schema; only the first was true.
+
+Bumped 93 → **98**, not 94: #3190 claims 94 and #3179 claims 94 through 97 in one
+PR. `incremental-parse-cache.test.ts` re-pinned to 98 with 93–97 added to the
+taken list. **Re-check against `origin/main` and open PRs immediately before
+merging** — the ledger in that test records two PRs that each did this check once
+and still collided.
+
+**R2-2 (valid, REPRODUCED, fixed) — a qualified value-ref through a MODULE was
+declined with no hedge.** R1-2 resolves a written receiver through
+`findClassBindingInScope`, which requires `isClassLike`. A namespace-only
+`@import` handle is not class-like:
+
+    const dom_utils = @import("dom_utils.zig");   // no `@This()` in that file
+    pub const comparator = bridge.accessor(dom_utils.compare, null, .{});
+
+resolved to nothing. That is not the conservative half of R1-2's trade-off: a
+declined site emits NO edge, so the boundary probe measures a real zero and
+`impact` on `compare` reports `exact`. Silence, not a hedge — and the pass
+comment claiming otherwise was wrong on this path (fixed).
+
+`resolveValueRefTarget` now tries the second kind of owner a qualified name can
+have. `findNamespaceValueRefTarget` reads the file's `namespace` import edges for
+the handle and the target module's own `origin: 'local'` module-scope bindings
+for the member — the same channel `receiver-bound-calls` Case 1 already trusts
+for `dom_utils.compare()`. The three guards are Case 1's, for Case 1's reasons:
+`isNamespaceNameShadowed` (a local declaration shadowing the handle suppresses
+it), `origin === 'local'` only (a name the target merely imported is not
+published as its own — the `namespaceExportsIncludeImportedNames` hub opt-in is a
+provider decision this language-neutral pass does not make), and two distinct
+defs under one name resolve nothing.
+
+*Rejected:* the alternative the review offered — persisting hedgeable evidence
+for declined sites so `impact` cannot stay `exact`. It needs a new metadata
+channel and a re-index (the thing D2-1 was written to avoid) to publish a hedge
+in the one case where the answer is actually knowable. Resolving the reference is
+both cheaper and strictly more informative.
+
+Fixture: `src/webapi/dom_utils.zig` (namespace-only) plus three cases in
+`Element.zig` — the module-qualified registration, a non-callable module member
+(`dom_utils.DEFAULT_NS`, the callable gate applies to module owners too), and a
+`u8` parameter shadowing the handle. All three pinned in
+`resolvers/zig.test.ts`; the shadow case was verified to FAIL with the guard
+disabled, so it is not passing for an unrelated reason.
+
+*Still declined, deliberately:* a receiver this index knows under no name at all
+— the `@This()`-alias case R1-2 already recorded, and owners outside the
+workspace. There the alternative is not a hedge either, it is a confident edge to
+a lexically-nearer function the source did not name.
+
+**R2-3 (valid, fixed as proposed) — the new suite was in neither vitest list.**
+`impact-callable-value-references.test.ts` uses `withTestLbugDB(poolAdapter: true)`,
+so TESTING.md puts it in the `lbug-db` project's include list and the `default`
+project's exclude list. It was in neither, so `default`'s `test/**/*.test.ts`
+also collected it into the parallel pool — the mmap file-lock flake class that
+project exists to serialize. Added next to its `impact-epistemic-lower-bound`
+sibling in both arrays.
+
+**R2-4 (valid, fixed) — this file was stale against HEAD and embedded host paths.**
+D2-3 still described the `LIMIT 50` that R1-5 removed and D1-3 still described the
+receiver-blind resolution that R1-2 replaced; both now carry explicit *superseded
+by* pointers rather than reading as current decisions. The three `~/code/...` and
+mise-node paths in the baseline block are replaced with `<gitnexus>` / `<browser>`
+placeholders (CONTRIBUTING.md: no machine-specific paths).
+
+**Residual, re-affirmed not re-litigated — mixed followed/unfollowed
+registrations.** R1-4's exclusion is symbol-level: any inbound `property-dispatch`
+CALLS edge zeroes the note. A target with both a followed registration and an
+unfollowed escape is therefore not hedged. Two engines rated this P1-to-P3; the
+reasoning in R1-4 stands unchanged, and the alternative still fires on every
+JS/TS hook table in every codebase. It is a JS/TS shape, not the Zig case this PR
+exists for. Documented in the code at the exclusion site.
+
+### Gates after review round 2
+
+- `tsc --noEmit -p tsconfig.json` — clean. `npm run build` — clean.
+- `resolvers/zig.test.ts` — 98 passed / 1 skipped, including the three new
+  module-owner cases.

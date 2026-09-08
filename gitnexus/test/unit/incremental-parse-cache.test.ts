@@ -260,12 +260,24 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 92 -> 93 for #3161 (Zig static gating): call captures inside a
   // comptime-false branch gain the `@reference.static-gated` marker, a
   // parse-time fact a warm cache from an earlier head would replay without.
-  it('pins SCHEMA_BUMP to 93 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(93);
+  // Moved 93 -> 98 for #3219 (Zig callable-value references): `ZIG_SCOPE_QUERY`
+  // gained three `@reference.value-ref` rules, so a `.zig` file now yields
+  // `value-ref` entries in `ParsedFile.referenceSites` where it yielded none.
+  // A warm v93 cache replays the old, empty site list for every unchanged file
+  // — `--force` included, since shards are content-addressed — so no USES edge
+  // is emitted, the boundary probe measures a real zero, and `impact` on a
+  // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
+  // silently un-fixed on exactly the incremental path most users are on.
+  // 94-97 are SKIPPED, not free: #3190 claims 94 and #3179 claims 94 through 97
+  // in one PR. 98 is the next value above origin/main (93) and above every
+  // in-flight claim — re-checked at merge, which is the rule the paragraphs
+  // above were written by two PRs that each checked only once.
+  it('pins SCHEMA_BUMP to 98 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3219)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(98);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

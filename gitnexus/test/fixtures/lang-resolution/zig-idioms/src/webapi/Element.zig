@@ -11,6 +11,11 @@
 // A file-as-struct, like every webapi module in the real tree.
 const Element = @This();
 
+// A NAMESPACE-only module (no `@This()`), imported under a handle. The bridge
+// table below registers one of its functions the same way it registers this
+// file's own methods.
+const dom_utils = @import("dom_utils.zig");
+
 _namespace: u8 = 0,
 
 // ── Registered accessors ────────────────────────────────────────────────────
@@ -84,7 +89,29 @@ pub const JsApi = struct {
     // safe answer: a missing reference is recoverable, a confident wrong edge
     // is not.
     pub const ticker = bridge.accessor(unresolvable_ns.tick, null, .{});
+
+    // QUALIFIED value reference through a MODULE handle rather than a container.
+    // `dom_utils` is a namespace, not a class, so the class-owner lookup answers
+    // nothing here — and declining would be silent rather than safe: with no
+    // USES edge, `impact` on `compare` measures a real zero and reports `exact`,
+    // which is the claim this whole change exists to stop making.
+    pub const comparator = bridge.accessor(dom_utils.compare, null, .{});
+
+    // A namespace member that is NOT callable. Module receivers get the same
+    // callable gate as container receivers — a registration table full of
+    // constants must keep emitting nothing.
+    pub const defaultNs = bridge.accessor(dom_utils.DEFAULT_NS, null, .{});
 };
+
+// A LOCAL declaration shadowing the module handle. `dom_utils` here is a `u8`
+// parameter with no member of its own; resolving `dom_utils.normalize` through
+// the file-level import would attach the registration to a module the source
+// did not name at this site — a wrong edge, the failure the same guard prevents
+// on the member-CALL path.
+pub fn shadowsTheModuleHandle(dom_utils: u8) u8 {
+    register(dom_utils.normalize);
+    return dom_utils;
+}
 
 // ── Const binding initialiser ───────────────────────────────────────────────
 
