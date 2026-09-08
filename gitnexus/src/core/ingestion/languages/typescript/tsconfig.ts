@@ -317,8 +317,8 @@ function parseJsonc(raw: string): Record<string, unknown> {
   return JSON.parse(withoutComments) as Record<string, unknown>;
 }
 
-function repoRelative(repoRoot: string, absDir: string): string {
-  const rel = path.relative(repoRoot, absDir).split(path.sep).join('/');
+function repoRelative(repoRoot: string, absDir: string, pathApi: typeof path = path): string {
+  const rel = pathApi.relative(repoRoot, absDir).split(pathApi.sep).join('/');
   return rel === '.' || rel === '' ? '' : rel;
 }
 
@@ -328,8 +328,11 @@ function repoRelative(repoRoot: string, absDir: string): string {
  * `path.resolve` swallows the wildcard into a path segment, so it is stripped
  * before resolving and re-appended after — the `*` is a substitution marker,
  * not a directory named `*`.
+ *
+ * `pathApi` is injectable so the win32 separator branch is unit-testable from a
+ * POSIX runner; production callers always use the platform-bound `path`.
  */
-function rebaseTarget(repoRoot: string, absTarget: string): string {
+function rebaseTarget(repoRoot: string, absTarget: string, pathApi: typeof path = path): string {
   // `/repo/src/*` must come back as `src/*`, not `src*`: stripping only the
   // star leaves a trailing slash that `path.relative` then eats.
   //
@@ -339,8 +342,11 @@ function rebaseTarget(repoRoot: string, absTarget: string): string {
   // target came back as `src*` — which `substituteStar` turns into `srclib/x`,
   // so nothing an alias reached was ever resolved on Windows. Normalise the
   // separator before looking at the suffix.
-  const normalized = absTarget.split(path.sep).join('/');
+  const normalized = absTarget.split(pathApi.sep).join('/');
   const suffix = normalized.endsWith('/*') ? '/*' : normalized.endsWith('*') ? '*' : '';
   const base = suffix === '' ? normalized : normalized.slice(0, -suffix.length);
-  return `${repoRelative(repoRoot, base)}${suffix}`;
+  return `${repoRelative(repoRoot, base, pathApi)}${suffix}`;
 }
+
+/** Test seam for {@link rebaseTarget} (see `test/unit/tsconfig-rebase-target.test.ts`). */
+export const _rebaseTargetForTests = rebaseTarget;

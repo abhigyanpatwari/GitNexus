@@ -42,6 +42,12 @@ const PLATFORM_LOGIC = [
   // Windows while the Ubuntu run stayed green — so this file has to run where
   // the separator differs.
   'test/unit/tsconfig-index.test.ts',
+  // The unit half of the same rebasing rule. Fixture-free and pathApi-injectable
+  // (every separator assertion passes an explicit `path.win32` / `path.posix`),
+  // so unlike the fixture suite above it fails on EVERY runner when the
+  // normalisation is removed rather than only on windows-latest. Registered
+  // beside its fixture sibling so the two halves stay discoverable as one group.
+  'test/unit/tsconfig-rebase-target.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)
