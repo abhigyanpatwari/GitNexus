@@ -254,8 +254,8 @@ def materialize_reused_row(
 ) -> dict[str, Any]:
     """Copy digest-bound artifacts into this sweep's evidence dir and stamp reuse."""
 
-    source = _resolved_directory(source_dir, label="reuse source")
-    dest = _resolved_directory(dest_dir, label="reuse destination")
+    source, _ = _resolved_directory(source_dir, label="reuse source")
+    dest, _ = _resolved_directory(dest_dir, label="reuse destination")
     if source == dest:
         raise SandboxError("comparator reuse cannot read and write the same results directory")
 
@@ -276,8 +276,8 @@ def materialize_reused_row(
     # resolved them), and pinning them here means the components under them
     # cannot be swapped out from under a check that already passed.
     with (
-        _open_real_directory(source, label="reuse source") as source_fd,
-        _open_real_directory(dest, label="reuse destination") as dest_fd,
+        _open_pinned_root(source_dir, label="reuse source") as source_fd,
+        _open_pinned_root(dest_dir, label="reuse destination") as dest_fd,
     ):
         copied_artifacts: list[dict[str, Any]] = []
         for artifact in artifacts:
@@ -348,7 +348,7 @@ def _transcript_metadata(metadata: Any) -> tuple[str, str, int]:
     return relative, digest, size
 
 
-def _resolved_directory(path: Path, *, label: str) -> Path:
+def _resolved_directory(path: Path, *, label: str) -> tuple[Path, tuple[int, int]]:
     """An existing, non-symlink directory, resolved through its parents.
 
     Deliberately weaker than proposer_sandbox's same-shaped helper, which
@@ -371,7 +371,34 @@ def _resolved_directory(path: Path, *, label: str) -> Path:
         raise SandboxError(f"{label} is unavailable: {resolved}: {exc}") from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise SandboxError(f"{label} must be a real directory: {resolved}")
-    return resolved.resolve()
+    return resolved.resolve(), (metadata.st_dev, metadata.st_ino)
+
+
+@contextmanager
+def _open_pinned_root(path: Path, *, label: str) -> Iterator[int]:
+    """Open a checked root and prove it is still the directory that was checked.
+
+    The symlink POLICY above is deliberate and unchanged: parent hops stay
+    allowed, so a symlinked artifacts directory or macOS's /var still works.
+    What is closed here is separate from that policy - the gap between checking
+    a name and using it. lstat names one directory and resolve() re-walks the
+    same name afterwards, so a prior sweep that renames its results root and
+    drops a symlink in its place is resolved to somewhere else entirely, and
+    O_NOFOLLOW on the open cannot see a link that resolve() already followed.
+
+    Comparing the opened descriptor's identity to the checked one costs an
+    fstat and rejects nothing that holds still: a stable directory always
+    matches itself. It matters for reuse specifically because the failure is
+    silent - rows would be copied out of the wrong directory and folded into a
+    comparator baseline as though they were this sweep's own evidence.
+    """
+
+    resolved, expected = _resolved_directory(path, label=label)
+    with _open_real_directory(resolved, label=label) as fd:
+        opened = os.fstat(fd)
+        if (opened.st_dev, opened.st_ino) != expected:
+            raise SandboxError(f"{label} was replaced between the check and the open: {resolved}")
+        yield fd
 
 
 def _copy_transcript_artifact(source_fd: int, dest_fd: int, metadata: Mapping[str, Any]) -> dict[str, Any]:

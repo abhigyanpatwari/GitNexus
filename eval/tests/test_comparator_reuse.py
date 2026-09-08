@@ -399,9 +399,12 @@ def test_reuse_directories_allow_a_symlinked_parent_but_not_a_symlinked_leaf(tmp
     linked_parent.symlink_to(real, target_is_directory=True)
 
     # Reached through a symlinked parent: allowed, and resolved to the real path.
-    assert comparator_reuse._resolved_directory(
-        linked_parent / "inner", label="probe"
-    ) == (real / "inner").resolve()
+    # The identity returned alongside it is what pins the root against a swap
+    # between the check and the open; the symlink policy itself is unchanged.
+    resolved, identity = comparator_reuse._resolved_directory(linked_parent / "inner", label="probe")
+    assert resolved == (real / "inner").resolve()
+    inner_stat = (real / "inner").stat()
+    assert identity == (inner_stat.st_dev, inner_stat.st_ino)
 
     # The leaf itself being a symlink is still refused.
     with pytest.raises(SandboxError, match="must be a real directory"):
@@ -422,3 +425,43 @@ def test_a_review_row_without_its_artifact_is_not_reusable() -> None:
     assert row_is_reusable_comparator(without, _expected()) is False
     missing = {k: v for k, v in row.items() if k != "review_artifact"}
     assert row_is_reusable_comparator(missing, _expected()) is False
+
+
+@requires_openat
+def test_a_reuse_root_replaced_after_the_check_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """Check and use must name the same directory, not the same string.
+
+    _resolved_directory lstats a name and the open re-walks that same name, so
+    a prior sweep that swaps its results root in between is opened somewhere
+    else. The leaf-symlink rule does not cover it - a replacement that is
+    itself a real directory passes every check the policy makes - and the
+    failure is silent, folding another directory's rows into this sweep's
+    comparator baseline.
+    """
+
+    original = tmp_path / "results"
+    original.mkdir()
+    resolved, stale_identity = comparator_reuse._resolved_directory(original, label="probe")
+
+    # Replaced by a different REAL directory: the name still resolves and still
+    # passes the symlink policy, but it is not the inode that was checked.
+    original.rename(tmp_path / "moved")
+    original.mkdir()
+    assert comparator_reuse._resolved_directory(original, label="probe")[1] != stale_identity
+
+    monkeypatch.setattr(
+        comparator_reuse, "_resolved_directory", lambda *_a, **_k: (resolved, stale_identity)
+    )
+    with pytest.raises(SandboxError, match="replaced between the check and the open"):
+        with comparator_reuse._open_pinned_root(original, label="probe"):
+            pass
+
+
+@requires_openat
+def test_a_stable_reuse_root_opens_normally(tmp_path: Path) -> None:
+    """The guard rejects nothing that holds still - a directory matches itself."""
+
+    root = tmp_path / "results"
+    root.mkdir()
+    with comparator_reuse._open_pinned_root(root, label="probe") as fd:
+        assert os.fstat(fd).st_ino == root.stat().st_ino
