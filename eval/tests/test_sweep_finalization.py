@@ -64,6 +64,7 @@ def _sweep(
     *,
     runs: int = 1,
     cancel_event: threading.Event | None = None,
+    candidate_arms: list[str] | None = None,
     after_cell: Callable[[int], None] | None = None,
 ):
     """Drive the real _run_sweep; only cell execution and setup are scripted.
@@ -104,7 +105,7 @@ def _sweep(
         bwrap_bin=Path("/bin/true"),
         sandbox_backend="test-double",
         runtime_mounts=(),
-        candidate_arms=[],
+        candidate_arms=candidate_arms or [],
         candidate_overlay=None,
         overlay_digest=None,
         promotion_target_bases={},
@@ -207,3 +208,53 @@ def test_an_outage_keeps_exit_1_even_though_the_breaker_cancels(
     assert cancel_event.is_set(), "the breaker cancels in-flight work"
     assert "Sweep aborted" in report
     assert exc.value.code == 1, "an outage must not become the 130 of a Ctrl-C"
+
+
+def test_an_interrupted_sweep_keeps_the_evidence_it_already_paid_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation must not discard rows that already cost money.
+
+    The completed-run persistence test cannot show this: it never interrupts, so
+    it would pass even if the writer only ran on the clean path.
+    """
+
+    cancel_event = threading.Event()
+    with pytest.raises(SystemExit):
+        _sweep(
+            tmp_path, monkeypatch, lambda _run: scored_review_row(review_weighted_f1=0.42),
+            runs=3, cancel_event=cancel_event,
+            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+        )
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "results.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 1, "the cell that completed before cancellation must survive"
+    assert rows[0]["review_weighted_f1"] == 0.42, "its measurement must survive intact"
+    assert (tmp_path / "out" / "report.md").is_file()
+
+
+def test_an_interrupted_sweep_emits_nothing_that_authorizes_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The semantic condition, not the absence of a file.
+
+    promotion.json is still written for an aborted run - it is the record of why
+    nothing was promoted. What must hold is that nothing in it authorizes a
+    promotion from partial evidence.
+    """
+
+    cancel_event = threading.Event()
+    with pytest.raises(SystemExit):
+        _sweep(
+            tmp_path, monkeypatch, lambda _run: scored_review_row(),
+            runs=3, cancel_event=cancel_event, candidate_arms=["candidate_review"],
+            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+        )
+    promotion = json.loads((tmp_path / "out" / "promotion.json").read_text())
+    assert promotion["run_status"] == "aborted"
+    assert promotion["decisions"], "an aborted run still has to say what it decided"
+    for decision in promotion["decisions"]:
+        assert decision["decision"] == "insufficient_evidence"
+        assert any("partial evidence" in reason for reason in decision["reasons"])
