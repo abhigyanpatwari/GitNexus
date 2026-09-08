@@ -112,9 +112,10 @@ describe('parsedfile-store', () => {
       try {
         const second = await loadParsedFilesForPaths(dir, new Set(['c.c', 'd.c']));
         expect([...second.keys()].sort()).toEqual(['c.c', 'd.c']);
-        expect(
-          open.mock.calls.map(([file]) => path.basename(String(file))).sort(),
-        ).toEqual(['chunk-1.v8', 'chunk-2.v8']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file))).sort()).toEqual([
+          'chunk-1.v8',
+          'chunk-2.v8',
+        ]);
         expect(deserialize).toHaveBeenCalledTimes(2);
 
         open.mockClear();
