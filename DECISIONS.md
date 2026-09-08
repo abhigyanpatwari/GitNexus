@@ -96,3 +96,135 @@ Test: `test/integration/impact-callable-value-references.test.ts` (5 cases,
 including three controls: an ordinary CALLS-only target, a non-value-ref `USES`
 edge, and the downstream direction).
 
+
+### D1 — the missing edge (Zig emits `value-ref`)
+
+**D1-1. Query rules only; no new capture machinery.** Three rules added to
+`ZIG_SCOPE_QUERY`, tagging `@reference.name @reference.value-ref`. Everything
+downstream already existed: `referenceKindFromAnchor` → `'value-ref'` →
+`mapReferenceKindToEdgeType` → `USES`, resolved by the property-dispatch pass.
+Zero changes to `captures.ts`, to `callable-flow-captures.ts`, to the schema, or
+to any edge kind.
+
+*Rejected:* extending `zigCallableCaptureOptions` / `synthesizeCallableFlowCaptures`
+(the cell/site model). That machinery exists to trace a value to its INVOKE site
+and emit CALLS — which is the explicit non-goal here, needs comptime evaluation,
+and already reports its own all-or-nothing failure (`callable-value-flow:
+candidate set exceeded the cap`). The task is to stop dropping the reference,
+and a reference is exactly what `value-ref` is for.
+
+**D1-2. The callee must be consumed by `function:`.** In tree-sitter-zig,
+call arguments are DIRECT children of `call_expression` — there is no `arguments`
+node (only builtins have one; verified against the grammar). A naive
+`(call_expression (identifier) @x)` therefore also matches the callee of
+`foo(bar)`, minting a USES edge that shadows the call's own CALLS edge. Binding
+`function: (_)` consumes it. Pinned by a test
+(`does not mint a value reference for the CALLEE of an ordinary call`).
+
+**D1-3. Both the bare and the qualified argument shape.** The motivating line is
+qualified (`bridge.accessor(Element.getNamespaceUri, …)`) and its sibling is bare
+(`bridge.accessor(_tagName, …)`); the real table uses both. For the qualified
+form `@reference.name` is the MEMBER and the object is captured as
+`@reference.receiver`, because the member is the name the scope walk resolves.
+*Trade-off accepted:* the property-dispatch pass ignores the receiver, so a
+qualified reference resolves by tail name and could in principle bind a
+same-named local callable. Measured on the real corpus this does not bite: all
+3,169 emitted edges land on `Method` (3,146) or `Function` (23), and the
+94 registrations in `Element.zig`'s `JsApi` read as the DOM Element API surface
+one for one. *Rejected:* resolving through the receiver — that is the
+receiver-bound-call path, a much larger change, and the callable gate already
+carries the precision.
+
+**D1-4. Rules are deliberately broad; the CALLABLE GATE is the filter.**
+`js.Bridge(Element)` and `register(count)` match too. `findCallableBindingInScope`
+keeps only Function/Method/Constructor, so they emit nothing — the same design
+that stops TypeScript's `{ port: DEFAULT_PORT }` from registering anything
+(tie-breaker 2: consistency with how TS/JS already emit `value-ref`).
+
+**D1-5. No `@reference.property-key`.** Zig has no object-literal key to
+dispatch through, so these register a reference and never synthesize CALLS.
+`emitPropertyDispatchCalls` already skips the registration index when
+`propertyKey` is undefined, and still emits the USES edge.
+
+**D1-6. Fixture lives in the EXISTING `zig-idioms` corpus**, as
+`src/webapi/Element.zig`, alongside the `AbortController`/`AbortSignal` JsApi
+files already there. *Rejected:* a new `zig-callable-values/` fixture directory —
+`bench/receiver-resolution` uses `test/fixtures/lang-resolution` as its `--check`
+corpus, so every added fixture risks moving `countArm`. Measured after the fact:
+it did not move (`[receiver-resolution] OK — shape states and call-drop counts
+match baseline`), so no rebaseline was needed either way.
+
+---
+
+## Measured result — D1 + D2 together
+
+Re-analyzed from scratch (`rm -rf ~/code/browser/.gitnexus`) with the same
+command as the baseline.
+
+| | baseline | after | delta |
+| --- | --- | --- | --- |
+| index | 30,222 nodes / 71,070 edges | 30,222 nodes / 74,229 edges | **+3,159 edges, 0 nodes** |
+| `getNamespaceUri` impactedCount | 5 | 7 | +2 |
+| `getNamespaceUri` direct | 2 | 3 | +1 |
+| `getNamespaceUri` risk | LOW | LOW | — |
+| `getNamespaceUri` **epistemic** | **`exact`** | **`lower-bound`** | the fix |
+| `getTagNameLower` impactedCount | 30 | 31 | +1 (explained below) |
+| `getTagNameLower` direct / risk / epistemic | 10 / HIGH / `exact` | 10 / HIGH / `exact` | unchanged |
+
+**The +3,159 edges are fully accounted for.** Per-type counts in the new index:
+`USES` = 3,169 and value-ref edges = 3,169 — i.e. every USES edge in this repo is
+a value reference. The baseline had 10 (all from the single `.js` file,
+`src/browser/tests/testing.js`), which still has exactly 10. `CALLS` (25,649),
+`ACCESSES`, `IMPORTS`, `HAS_METHOD`, `DEFINES`, … did not move. The change is
+purely additive and confined to `USES`.
+
+**`getTagNameLower` +1, explained.** The single added entry is at depth 2:
+`USES Struct:src/browser/webapi/Element.zig:JsApi`. `JsApi` registers 94
+accessors, three of which (`Element.getLocalName`, `Element._prefix`,
+`Element.getTagNameDump`) are depth-1 callers of `getTagNameLower`. So the
+binding table genuinely does sit two hops upstream of it, and one node is the
+correct amount to add. `direct` (10), `risk` (HIGH) and `epistemic` (`exact`)
+are all unchanged — and `exact` is the meaningful half of the control: the hedge
+is targeted at symbols with an INBOUND value reference, not sprayed over
+everything the change touches. `getTagNameLower` is registered nowhere, so it
+keeps its certainty. I am recording the +1 rather than calling the control
+"unchanged", because it is a real new fact of exactly the kind D1 exists to
+record.
+
+## Gates
+
+- `npm run build` — clean; `tsc --noEmit -p tsconfig.json` — clean.
+  (`tsconfig.test.json` has ~1,194 pre-existing errors across the fixture tree
+  and test helpers on `origin/main`; none are in the files this branch touches,
+  and no npm script or CI job runs it.)
+- Bench `--check` gates, all PASS with **no baseline edited**: `scope-capture`
+  (15 languages), `receiver-resolution`, `zig-cross-file-resolution`,
+  `scope-emission`, `python-scope`, `callable-value-flow`, `import-target`,
+  `emit-persistence`, `finalize-reexport`, `cpp-qualified-ns`,
+  `parse-dispatch-rounds`, `spring-config-bindings`.
+- `npx vitest run` (full suite): **20,552 passed / 10 failed / 78 skipped**
+  (20,640 tests, 1,005 files, ~17 min).
+
+  All 10 failures are **pre-existing on `origin/main` and machine-specific**.
+  Verified, not assumed: I stashed the branch, checked out `0d1aed94`
+  (`origin/main`), rebuilt, and re-ran the six affected files — the **same 10
+  tests fail, identically**. They are:
+
+  | file | tests | cause |
+  | --- | --- | --- |
+  | `analyzer-identity` | 4 | macOS realpath `/var` vs `/private/var` |
+  | `analyzer-identity-in-process-guards` | 2 | EACCES cases, #3092 |
+  | `hooks-e2e` | 2 | "prefers pnpm dlx" — local `pnpm` shim is 1.40.0, below the ≥10.2 gate |
+  | `evidence-provenance-helper` | 1 | golden digest |
+  | `review-agent-workflow` | 1 | pinned-install retry helper |
+
+  None is in a file or dependency cone this branch touches.
+- Targeted re-run of every suite that exercises `value-ref`, after the final
+  build: `resolvers/zig`, `impact-callable-value-references`,
+  `resolvers/typescript-value-refs`, `resolvers/value-ref-locality`,
+  `resolvers/cpp`, `resolvers/typescript` — **734 / 734 passed**.
+
+## Nothing marked UNRESOLVED or BLOCKED
+
+Every fork above was decided and recorded. No gate failed three times; no gate
+needed a baseline edit.

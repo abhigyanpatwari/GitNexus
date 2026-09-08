@@ -359,6 +359,60 @@ const ZIG_SCOPE_QUERY = `
   "const" . (identifier) @type-binding.name
   (call_expression) @type-binding.type .) @type-binding.alias
 
+;; References — VALUE positions (#3399): a callable named where a value is
+;; expected rather than where a callee is. Zig's JS bridge is built entirely
+;; out of this shape —
+;;
+;;     pub const namespaceURI = bridge.accessor(Element.getNamespaceUri, null, .{});
+;;
+;; — 2,047 such declarations across 257 files in lightpanda-io/browser, the
+;; project's whole JS↔Zig surface, and NONE of them reached the graph: Zig
+;; emitted no \`value-ref\` capture at all, so a public DOM accessor's only
+;; recorded callers were the two internal ones and \`impact\` called that \`exact\`.
+;;
+;; These become reference-class USES edges through the existing
+;; \`mapReferenceKindToEdgeType\` mapping — a registration is not an invocation
+;; (Kythe \`ref\` vs \`ref/call\`; Joern \`METHOD_REF\`) — resolved by the
+;; property-dispatch pass, which keeps ONLY callable targets. That callable gate
+;; is what makes these deliberately broad rules safe: \`js.Bridge(Element)\` and
+;; \`register(count)\` match too, and emit nothing, exactly as TypeScript's
+;; \`{ port: DEFAULT_PORT }\` does.
+;;
+;; No \`@reference.property-key\` is attached: Zig has no object-literal key to
+;; dispatch through, so these register a reference and never synthesize CALLS.
+;; The terminal invoke — \`Accessor.init\` → a struct field → \`Factory.zig\`'s
+;; \`inline for\`/\`@typeInfo\` → \`@call(.auto, func, args)\` — needs comptime
+;; evaluation and is deliberately NOT modelled; \`impact\` reports the shortfall
+;; as \`epistemic: "lower-bound"\` instead of pretending to certainty.
+
+;; Call ARGUMENTS. In tree-sitter-zig arguments are direct children of
+;; \`call_expression\`, NOT wrapped in an \`arguments\` node (only builtins have
+;; one), so the callee has to be consumed explicitly by \`function:\` — without
+;; that binding the same rule also matches the callee of \`foo(bar)\` and mints a
+;; USES edge duplicating the call.
+(call_expression
+  function: (_)
+  (identifier) @reference.name @reference.value-ref)
+
+;; Qualified argument — \`bridge.accessor(Element.getNamespaceUri, …)\`. The
+;; RECEIVER is captured alongside the member so the site carries the owner it
+;; was written with; \`@reference.name\` stays the member, which is the name the
+;; scope walk resolves.
+(call_expression
+  function: (_)
+  (field_expression
+    object: (_) @reference.receiver
+    member: (identifier) @reference.name) @reference.value-ref)
+
+;; Const binding initialiser — \`pub const defaultHandler = onReset;\`. Both
+;; anchors are load-bearing: the leading \`.\` pins the bound name to the first
+;; named child (see the declaration rules above), and the trailing \`.\` keeps the
+;; initializer as the LAST child, so a \`const x: T = y\` annotation shape cannot
+;; put the TYPE in value position.
+(variable_declaration
+  "const" . (identifier)
+  (identifier) @reference.name @reference.value-ref .)
+
 ;; References — free calls: foo(...)
 (call_expression
   function: (identifier) @reference.name) @reference.call.free

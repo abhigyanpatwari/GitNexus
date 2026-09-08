@@ -229,6 +229,94 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('main → incr');
   });
 
+  /**
+   * #3399 — a callable named in VALUE position.
+   *
+   * `src/webapi/Element.zig` is the JS-API binding-table idiom verbatim:
+   * `pub const namespaceURI = bridge.accessor(Element.getNamespaceUri, null, .{});`
+   * registers a Zig function with the JS bridge instead of calling it. Zig
+   * emitted NO `value-ref` capture at all, so every one of those references was
+   * dropped — 2,047 of them across 257 files in lightpanda-io/browser, the whole
+   * JS<->Zig surface — and `impact` on a public DOM accessor answered with its
+   * two in-file callers and the verdict `epistemic: "exact"`.
+   *
+   * These assert USES and not CALLS on purpose. A registration is not an
+   * invocation (Kythe `ref` vs `ref/call`; Joern METHOD_REF), and the call that
+   * eventually happens goes through comptime reflection this analyzer cannot
+   * follow. The claim being pinned is the reference, not the dispatch.
+   */
+  describe('callable values (#3399)', () => {
+    let uses: string[];
+    let valueRefs: string[];
+    beforeAll(() => {
+      const edges = getRelationships(result, 'USES');
+      uses = edgeSet(edges);
+      // The reason text is spelled out rather than imported from
+      // `VALUE_REF_EDGE_REASON`, deliberately and as `typescript-value-refs.test.ts`
+      // already does: `impact`'s epistemic probe matches this exact string in
+      // the stored graph, so a change to the constant's VALUE (as opposed to
+      // its name) must fail a test rather than quietly agree with itself on
+      // both sides.
+      valueRefs = edgeSet(edges.filter((e) => e.rel.reason === 'scope-resolution: value-ref'));
+    });
+
+    it('records a QUALIFIED function value handed to a call (`bridge.accessor(Element.getNamespaceUri, …)`)', () => {
+      expect(valueRefs).toContain('JsApi → getNamespaceUri');
+    });
+
+    it('records a BARE function value handed to a call (`bridge.accessor(_tagName, …)`)', () => {
+      expect(valueRefs).toContain('JsApi → _tagName');
+    });
+
+    it('records a function value in a const initialiser (`pub const defaultHandler = onReset;`)', () => {
+      expect(valueRefs).toContain('Element → onReset');
+    });
+
+    it('records a function passed into a `comptime f: anytype` parameter and stored', () => {
+      // The shape the non-goal is about: `register(onTick)` stores the value in
+      // a module-level field and nothing in the file ever calls `onTick`. The
+      // terminal invoke needs comptime evaluation and is NOT modelled — but the
+      // reference must survive, or `onTick` reads as dead code.
+      expect(valueRefs).toContain('boot → onTick');
+      expect(calls).not.toContain('boot → onTick');
+    });
+
+    it('emits USES, never CALLS, for a registration', () => {
+      // The whole distinction: if these became CALLS, `impact` would claim the
+      // accessor is invoked from the binding table, which is not a fact the
+      // analyzer has.
+      expect(calls).not.toContain('JsApi → getNamespaceUri');
+      expect(calls).not.toContain('JsApi → _tagName');
+    });
+
+    it('does not mint a value reference for a non-callable argument', () => {
+      // `Bridge(Element)` passes a TYPE. The property-dispatch pass keeps only
+      // Function/Method/Constructor targets, which is what makes the broad
+      // capture rules safe — the same gate that stops TypeScript's
+      // `{ port: DEFAULT_PORT }` from registering anything.
+      expect(valueRefs).not.toContain('JsApi → Element');
+      expect(uses.filter((u) => u === 'JsApi → Element')).toHaveLength(0);
+    });
+
+    it('leaves a method that is only ever CALLED untouched', () => {
+      // The control. `getTagNameLower` is called twice and registered nowhere;
+      // a change that sprayed USES edges over every method would satisfy every
+      // assertion above and still be wrong.
+      expect(calls).toContain('describe → getTagNameLower');
+      expect(calls).toContain('_tagName → getTagNameLower');
+      expect(valueRefs.filter((v) => v.endsWith(' → getTagNameLower'))).toEqual([]);
+    });
+
+    it('does not mint a value reference for the CALLEE of an ordinary call', () => {
+      // `register(onTick)` must produce ONE value reference (the argument), not
+      // two: without binding the callee to the `function:` field the same rule
+      // also matches `register` itself and every call in the repo would emit a
+      // USES edge shadowing its own CALLS edge.
+      expect(valueRefs).not.toContain('boot → register');
+      expect(calls).toContain('boot → register');
+    });
+  });
+
   it('types a receiver from its ANNOTATION (`var b: Counter = undefined; b.twice()`, `const c: Counter = .init(); c.get()`)', () => {
     // The declared type is the ONLY type source for `= undefined` and for
     // 0.14+ decl literals (`.init`, `.empty`), which current std uses for
