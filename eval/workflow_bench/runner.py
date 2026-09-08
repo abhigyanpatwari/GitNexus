@@ -873,7 +873,13 @@ def sweep_task_cells(
             raise ValueError("workers must be positive")
         for wave_start in range(0, len(cells), workers):
             if cancel_event.is_set():
-                return outage_streak, True
+                # False: this flag means the OUTAGE breaker tripped, and the
+                # caller turns it into exit 1 with "Sweep aborted". Cancellation
+                # stops the sweep too, but it is the operator's Ctrl-C, not a
+                # systemic failure - reporting True relabelled every interrupted
+                # run an outage and returned 1 where the contract says 130. The
+                # caller tests cancel_event itself for the stop decision.
+                return outage_streak, False
             wave = list(cells[wave_start : wave_start + workers])
             for run_idx, arm in wave:
                 on_start(run_idx, arm)
@@ -900,7 +906,7 @@ def sweep_task_cells(
                 # an earlier row trips the breaker; only later waves are skipped.
                 on_record(run_idx, arm, record)
             if cancel_event.is_set():
-                return outage_streak, True
+                return outage_streak, False
             for record in records:
                 kind = (
                     "review-evidence-invalid"

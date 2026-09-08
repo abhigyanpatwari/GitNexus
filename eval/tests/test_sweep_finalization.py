@@ -16,12 +16,15 @@ guard can catch it.
 from __future__ import annotations
 
 import json
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from tests.bench_fixtures import scored_review_row, unusable_review_row
 from workflow_bench import runner
 
 TASK = {
@@ -54,14 +57,28 @@ def _snapshot(prefix: str) -> SimpleNamespace:
     )
 
 
-def _sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: dict[str, Any]):
-    """Drive the real _run_sweep; only cell execution and setup are scripted."""
+def _sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record: dict[str, Any] | Callable[[int], dict[str, Any]],
+    *,
+    runs: int = 1,
+    cancel_event: threading.Event | None = None,
+    after_cell: Callable[[int], None] | None = None,
+):
+    """Drive the real _run_sweep; only cell execution and setup are scripted.
+
+    ``after_cell`` runs once a cell's record exists, which is how a test sets
+    cancellation deterministically at a known point instead of racing a sleep.
+    """
 
     out = tmp_path / "out"
 
     def scripted_cell(_ctx: Any, run_idx: int, arm: str) -> dict[str, Any]:
-        row = dict(record)
+        row = dict(record(run_idx) if callable(record) else record)
         row.update({"task": TASK["id"], "arm": arm, "run": run_idx, "class": TASK["class"]})
+        if after_cell is not None:
+            after_cell(run_idx)
         return row
 
     monkeypatch.setattr(runner, "run_cell", scripted_cell)
@@ -77,7 +94,7 @@ def _sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: dict[str, An
     )
 
     return runner._run_sweep(
-        _args(out),
+        _args(out, runs=runs),
         parser=SimpleNamespace(error=lambda m: (_ for _ in ()).throw(SystemExit(2))),
         tasks=[TASK],
         skipped_expensive=[],
@@ -91,25 +108,8 @@ def _sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: dict[str, An
         candidate_overlay=None,
         overlay_digest=None,
         promotion_target_bases={},
-        cancel_event=None,
+        cancel_event=cancel_event,
     ), out
-
-
-_CLEAN = {
-    "ok": True, "error_kind": None, "error_detail": None, "resolved": True,
-    "review_evidence_valid": True, "review_score": {"weighted_f1": 0.5}, "review_weighted_f1": 0.5,
-    # The report renders the whole review metric set; a real scored row carries
-    # all of it, so an incomplete fixture fails in formatting rather than logic.
-    "review_true_positives": 1, "review_false_positives": 0, "review_false_negatives": 0,
-    "review_precision": 0.5, "review_recall": 0.5, "review_weighted_precision": 0.5,
-    "review_weighted_recall": 0.5, "review_blocker_recall": 1.0, "review_severity_accuracy": 1.0,
-    "review_category_accuracy": 1.0, "review_grounded_evidence": 1.0,
-    "review_verdict_correct": True, "review_clean_control": True, "review_clean_pass": True,
-    "transcript_missing": False, "transcript_artifacts": [], "num_turns": 3, "duration_s": 1.0,
-    "cost_usd": 0.5, "input_tokens": 1, "output_tokens": 1,
-    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-    "diff_files": 0, "diff_insertions": 0, "diff_deletions": 0,
-}
 
 
 def test_one_unusable_cell_below_the_breaker_reaches_the_finalization_guard(
@@ -120,8 +120,7 @@ def test_one_unusable_cell_below_the_breaker_reaches_the_finalization_guard(
     streak = runner.systemic_outage_streak("review-evidence-invalid", 0)
     assert streak < runner.DEFAULT_OUTAGE_STREAK, "fixture must stay under the breaker"
 
-    unusable = {**_CLEAN, "ok": False, "resolved": False, "review_evidence_valid": False,
-                "error_kind": "review-evidence-invalid", "review_score": None, "review_weighted_f1": None}
+    unusable = unusable_review_row()
     with pytest.raises(SystemExit) as exc:
         _sweep(tmp_path, monkeypatch, unusable)
     assert exc.value.code == 1
@@ -139,8 +138,10 @@ def test_a_zero_score_stays_a_valid_negative_measurement(
     quality result into an execution-health failure.
     """
 
-    zeroed = {**_CLEAN, "resolved": False, "error_kind": "oracle-failed",
-              "review_score": {"weighted_f1": 0.0}, "review_weighted_f1": 0.0}
+    zeroed = scored_review_row(
+        resolved=False, error_kind="oracle-failed",
+        review_score={"weighted_f1": 0.0}, review_weighted_f1=0.0,
+    )
     _sweep(tmp_path, monkeypatch, zeroed)
     out = capsys.readouterr().out
     assert "review: OBSERVED_OK" in out
@@ -152,8 +153,57 @@ def test_finalization_persists_results_and_report(
 ) -> None:
     """Evidence must survive the sweep, and say the same thing the exit does."""
 
-    scored = {**_CLEAN, "resolved": False, "error_kind": "oracle-failed", "review_weighted_f1": 0.2}
+    scored = scored_review_row(resolved=False, error_kind="oracle-failed", review_weighted_f1=0.2)
     _result, out = _sweep(tmp_path, monkeypatch, scored)
     rows = [json.loads(line) for line in (out / "results.jsonl").read_text().splitlines()]
     assert len(rows) == 1 and rows[0]["review_weighted_f1"] == 0.2
     assert (out / "report.md").is_file()
+
+
+def test_cancellation_without_an_outage_exits_130(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An interrupted sweep is interrupted, not aborted.
+
+    One admissible cell lands first so the measurement-health guard classifies
+    the arm DEGRADED rather than UNUSABLE - otherwise the guard would supply
+    exit 1 and this test would pass without ever exercising exit selection.
+    """
+
+    cancel_event = threading.Event()
+    with pytest.raises(SystemExit) as exc:
+        _sweep(
+            tmp_path, monkeypatch, lambda _run: scored_review_row(),
+            runs=3, cancel_event=cancel_event,
+            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+        )
+    stdout = capsys.readouterr().out
+    report = (tmp_path / "out" / "report.md").read_text()
+    assert "Sweep cancelled" in report, "an interruption must be reported as one"
+    assert "systemic-outage" not in stdout, "no breaker trip in this scenario"
+    assert exc.value.code == 130
+
+
+def test_an_outage_keeps_exit_1_even_though_the_breaker_cancels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Precedence: the breaker sets cancel_event, so order decides the exit.
+
+    Testing cancellation first would relabel every outage a Ctrl-C. The first
+    cell is admissible for the same reason as above, and the failures after it
+    are consecutive and systemic, which is what the breaker actually counts.
+    """
+
+    def cell(run_idx: int) -> dict[str, Any]:
+        return scored_review_row() if run_idx == 0 else unusable_review_row()
+
+    cancel_event = threading.Event()
+    with pytest.raises(SystemExit) as exc:
+        _sweep(tmp_path, monkeypatch, cell,
+               runs=1 + runner.DEFAULT_OUTAGE_STREAK, cancel_event=cancel_event)
+    stdout = capsys.readouterr().out
+    report = (tmp_path / "out" / "report.md").read_text()
+    assert "systemic-outage" in stdout, "the real breaker must have tripped"
+    assert cancel_event.is_set(), "the breaker cancels in-flight work"
+    assert "Sweep aborted" in report
+    assert exc.value.code == 1, "an outage must not become the 130 of a Ctrl-C"
