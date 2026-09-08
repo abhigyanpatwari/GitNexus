@@ -345,7 +345,16 @@ function rebaseTarget(repoRoot: string, absTarget: string, pathApi: typeof path 
   const normalized = absTarget.split(pathApi.sep).join('/');
   const suffix = normalized.endsWith('/*') ? '/*' : normalized.endsWith('*') ? '*' : '';
   const base = suffix === '' ? normalized : normalized.slice(0, -suffix.length);
-  return `${repoRelative(repoRoot, base, pathApi)}${suffix}`;
+  const prefix = repoRelative(repoRoot, base, pathApi);
+  // A target naming the repo ROOT (`"*": ["./*"]` under `baseUrl: "."`) leaves
+  // an empty prefix, and `${''}${'/*'}` is `/*`. `substituteStar` turns that
+  // into `/lib/date`, but `resolveFile` matches repo-relative keys and never
+  // strips a leading slash, so `lib/date.ts` misses and the alias goes
+  // external. The bare `*` is the encoding that substitutes correctly — and it
+  // is what the pre-#3203 Windows path emitted by accident, so this keeps the
+  // separator fix from narrowing what already resolved there.
+  if (prefix === '' && suffix === '/*') return '*';
+  return `${prefix}${suffix}`;
 }
 
 /** Test seam for {@link rebaseTarget} (see `test/unit/tsconfig-rebase-target.test.ts`). */

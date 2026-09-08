@@ -9,11 +9,18 @@
  * guard already use — makes both platform branches assertable from any runner,
  * so deleting the separator normalisation fails here on Ubuntu too.
  *
- * The behaviour pinned below: `path.resolve` emits `C:\repo\src\*` on Windows,
- * so the `endsWith('/*')` check never matched, the bare-`*` branch ate the
- * trailing separator, and every alias target came back as `src*` —
- * `substituteStar` then produced `srclib/date`, which matches no file, so the
- * common Vite/shadcn `"@/*": ["./src/*"]` resolved to nothing on Windows.
+ * Two behaviours are pinned:
+ *
+ *   - `path.resolve` emits `C:\repo\src\*` on Windows, so the `endsWith('/*')`
+ *     check never matched, the bare-`*` branch ate the trailing separator, and
+ *     every alias target came back as `src*` — `substituteStar` then produced
+ *     `srclib/date`, which matches no file, so the common Vite/shadcn
+ *     `"@/*": ["./src/*"]` resolved to nothing on Windows.
+ *   - a repo-ROOT target (`"*": ["./*"]` under `baseUrl: "."`) rebases to an
+ *     EMPTY prefix, and `${''}${'/*'}` is `/*`. `substituteStar('/*', 'lib/date')`
+ *     yields `/lib/date`, and `resolveFile` matches repo-relative keys without
+ *     a leading slash, so the alias went external. The bare `*` is the encoding
+ *     that substitutes correctly, on both platforms.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
@@ -47,5 +54,30 @@ describe('rebaseTarget — Windows separator normalisation', () => {
   it('defaults to the platform-bound path module', () => {
     const root = path.resolve('repo');
     expect(rebaseTarget(root, path.resolve(root, './src/*'))).toBe('src/*');
+  });
+});
+
+describe('rebaseTarget — repo-root wildcard', () => {
+  it('emits a bare `*` rather than `/*` for a root target', () => {
+    // `"baseUrl": "."` with `"*": ["./*"]` — the target resolves to the repo
+    // root itself, so the repo-relative prefix is empty and only the suffix is
+    // left. `/*` substitutes to `/lib/date`, which no indexed key matches.
+    expect(rebaseTarget('/repo', '/repo/*', path.posix)).toBe('*');
+    expect(rebaseTarget('C:\\repo', 'C:\\repo\\*', path.win32)).toBe('*');
+  });
+
+  it('still emits `/*` once the target is one directory in', () => {
+    // The bare `*` is the empty-prefix case ONLY; a real prefix keeps its
+    // separator or `src*` comes back, which is the bug above wearing a
+    // different hat.
+    expect(rebaseTarget('/repo', '/repo/src/*', path.posix)).toBe('src/*');
+    expect(rebaseTarget('C:\\repo', 'C:\\repo\\src\\*', path.win32)).toBe('src/*');
+  });
+
+  it('leaves a starless root target as the empty prefix', () => {
+    // `resolveFile('')` is `null`, which is the honest answer for a target
+    // naming the repo root and no file. Unchanged by the wildcard rule.
+    expect(rebaseTarget('/repo', '/repo', path.posix)).toBe('');
+    expect(rebaseTarget('C:\\repo', 'C:\\repo', path.win32)).toBe('');
   });
 });
