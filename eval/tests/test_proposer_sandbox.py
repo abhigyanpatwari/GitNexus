@@ -935,11 +935,14 @@ os.replace(staging, target)
             require_pid_namespace=True,
         )
 
-    assert result.ok, result.stderr_tail
-    assert source.read_text() == "trusted\n"
-    assert output.read_text() == '{"schema_version":1}'
-    # The staging file is gone: the rename landed rather than a copy.
-    assert list(output.parent.iterdir()) == [output]
+        # Inside the sandbox scope: the artifact now lives under the session's
+        # private root, which prepare_sandbox removes on exit. run_arm reads it
+        # here too, while the session is still alive.
+        assert result.ok, result.stderr_tail
+        assert source.read_text() == "trusted\n"
+        assert output.read_text() == '{"schema_version":1}'
+        # The staging file is gone: the rename landed rather than a copy.
+        assert list(output.parent.iterdir()) == [output]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
@@ -1552,10 +1555,12 @@ def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: 
             capture_output=True, text=True, timeout=60, check=False,
         )
 
-    assert result.returncode == 0, f"atomic write failed inside the sandbox: {result.stderr[-400:]}"
-    assert "workspace-readonly" in result.stdout, "the workspace must stay read-only"
-    assert (clone / "tracked.txt").read_text() == "original\n", "the clone was modified"
+        assert result.returncode == 0, f"atomic write failed inside the sandbox: {result.stderr[-400:]}"
+        assert "workspace-readonly" in result.stdout, "the workspace must stay read-only"
+        assert (clone / "tracked.txt").read_text() == "original\n", "the clone was modified"
 
-    # The production reader, on the bytes the sandbox actually left behind.
-    _verdict, findings = parse_review_output(review_output)
-    assert findings == ()
+        # Read while the session is alive: the artifact lives under the private
+        # root that prepare_sandbox removes on exit, which is also why run_arm
+        # consumes it before leaving the scope.
+        _verdict, findings = parse_review_output(review_output)
+        assert findings == ()
