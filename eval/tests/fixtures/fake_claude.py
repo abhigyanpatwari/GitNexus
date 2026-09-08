@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""A stand-in for the Claude Code CLI: real HTTP, real tool execution, real stream-json.
+
+Not a mock of the harness's own code. It does what the CLI does at the two
+boundaries the harness depends on - it calls ANTHROPIC_BASE_URL for a turn, it
+EXECUTES the tool blocks that come back, and it prints the stream-json event
+sequence the parent parses. Everything between those boundaries (the sandbox,
+the artifact capture, the scoring, the row) stays real, which is the whole
+point: those are the layers that shipped bugs no unit test could see.
+
+Reads the prompt from argv or stdin, like the real CLI under --print.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+import urllib.request
+
+
+def _turn(base_url: str, prompt: str) -> dict:
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/v1/messages",
+        data=json.dumps({"model": os.environ.get("ANTHROPIC_MODEL", "mock"), "max_tokens": 1024,
+                         "messages": [{"role": "user", "content": prompt}]}).encode(),
+        headers={"Content-Type": "application/json",
+                 "x-api-key": os.environ.get("ANTHROPIC_API_KEY", ""),
+                 "anthropic-version": "2023-06-01"},
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def _run_tool(name: str, params: dict) -> str:
+    """Execute for real. A Write here is what produces the review artifact."""
+
+    if name == "Write":
+        target = pathlib.Path(params["file_path"])
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic, exactly as the real Write tool does it: temp file beside the
+        # target, then rename. This is the operation the read-only workspace
+        # boundary has to permit for the artifact directory and refuse for the
+        # workspace, so a stand-in that wrote in place would prove nothing.
+        staging = target.with_name(target.name + ".tmp.fake")
+        staging.write_text(params.get("content", ""))
+        os.replace(staging, target)
+        return f"wrote {target}"
+    if name == "Bash":
+        return "(bash suppressed in the stand-in)"
+    return f"(unhandled tool {name})"
+
+
+def main() -> int:
+    # stdin, because that is where the real CLI takes it under
+    # "-p --input-format text": the parent pipes prompt bytes in. Scanning argv
+    # for a non-flag token picks up a flag's VALUE instead ("text"), which is
+    # exactly what the prompt-fidelity test caught.
+    prompt = sys.stdin.read()
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    if not base_url:
+        print(json.dumps({"type": "result", "subtype": "error", "is_error": True,
+                          "session_id": "fake-session", "num_turns": 0}), flush=True)
+        return 1
+
+    emit = lambda event: print(json.dumps(event), flush=True)  # noqa: E731
+    emit({"type": "system", "subtype": "init", "session_id": "fake-session"})
+
+    message = _turn(base_url, prompt)
+    blocks = message.get("content", [])
+    emit({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
+
+    tool_results = []
+    for block in blocks:
+        if block.get("type") == "tool_use":
+            output = _run_tool(block["name"], block.get("input", {}))
+            tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output})
+    if tool_results:
+        emit({"type": "user", "message": {"role": "user", "content": tool_results}})
+
+    usage = message.get("usage", {})
+    emit({
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "session_id": "fake-session",
+        "num_turns": 1,
+        "duration_ms": 1200,
+        # A measured zero is not the same as unmeasured; the parent rejects a
+        # collapsed cost, so report a real one.
+        "total_cost_usd": 0.42,
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+        },
+    })
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
