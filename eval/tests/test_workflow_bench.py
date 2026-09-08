@@ -633,3 +633,39 @@ def test_packed_sweep_window_must_keep_the_pool_fed():
             outage_limit=0,
             window=2,
         )
+
+
+def test_a_raising_packed_cell_still_persists_its_settled_siblings():
+    """A crash in one cell must not erase the evidence of cells that finished.
+
+    run_cell deliberately lets unexpected harness exceptions propagate, and the
+    wave scheduler answers that by folding every non-failing sibling before it
+    re-raises. The packed scheduler has to hold the same contract: the later
+    cells already ran and already cost money, so losing their rows would mean
+    paying for evidence the sweep then throws away.
+    """
+
+    folded: list[tuple[int, str]] = []
+    started = threading.Event()
+
+    def run(task_id: str, run_idx: int, arm: str) -> dict[str, Any]:
+        if run_idx == 0:
+            # Let the later cell finish first, so there is settled evidence to
+            # lose at the moment this one raises.
+            started.wait(timeout=5)
+            raise RuntimeError("harness bug in cell 0")
+        started.set()
+        return {"error_kind": None}
+
+    with pytest.raises(RuntimeError, match="harness bug in cell 0"):
+        runner.sweep_packed_cells(
+            _packed_cells(1, 2, ("review",)),
+            workers=2,
+            run=run,
+            on_start=lambda *_: None,
+            on_record=lambda task_id, run_idx, arm, _rec: folded.append((run_idx, arm)),
+            outage_streak=0,
+            outage_limit=0,
+        )
+
+    assert (1, "review") in folded, "the sibling that completed was never recorded"

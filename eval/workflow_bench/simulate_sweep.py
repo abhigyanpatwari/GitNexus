@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 import statistics
 import subprocess
@@ -565,10 +566,30 @@ def main() -> int:
     # divides by zero before anything runs, and a negative --graph-seconds
     # kills the graph-builder thread, after which every scheduler waits on a
     # readiness event nobody will ever set.
-    if args.scale <= 0:
-        parser.error("--scale must be positive")
-    if args.graph_seconds is not None and args.graph_seconds < 0:
-        parser.error("--graph-seconds must be non-negative")
+    # NaN defeats every comparison it appears in, so "> 0" and ">= 0" both admit
+    # it and the failure surfaces far from the flag: NaN durations reach
+    # time.sleep in a worker or the graph thread and raise there, after which the
+    # schedulers wait forever on a readiness event nobody will set. Infinity is
+    # worse than a crash - it silently scales every duration to zero and the run
+    # reports a sweep that took no time.
+    if not math.isfinite(args.scale) or args.scale <= 0:
+        parser.error("--scale must be a finite positive number")
+    if args.graph_seconds is not None and (not math.isfinite(args.graph_seconds) or args.graph_seconds < 0):
+        parser.error("--graph-seconds must be a finite non-negative number")
+    # Counts are indexed or handed to a thread pool without further checking, so
+    # a zero turns into an IndexError on plans[0], a median over an empty
+    # sequence, or ThreadPoolExecutor's own error - none of which name the flag
+    # that caused them.
+    if args.workers < 1:
+        parser.error("--workers must be at least 1")
+    if args.repeat < 1:
+        parser.error("--repeat must be at least 1")
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+    # A window of zero admits no cell at all: the producer waits for the fold
+    # pointer to advance past a cell it was never allowed to submit.
+    if args.window is not None and args.window < 1:
+        parser.error("--window must be at least 1")
     if args.graph_seconds is None:
         args.graph_seconds = SHA_OVERHEAD_SECONDS / args.scale
 

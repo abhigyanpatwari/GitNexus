@@ -989,7 +989,27 @@ def sweep_packed_cells(
                         break
                     future = submitted[index]
                 if future is not None:
-                    future.result()
+                    try:
+                        future.result()
+                    except BaseException:
+                        # Same contract as sweep_task_cells: the cells submitted
+                        # after this one have already run and spent their budget,
+                        # so persist their rows in submission order before the
+                        # harness bug takes the process down. Without this, one
+                        # crashing cell silently erases the paid evidence of
+                        # every sibling that had already finished. The failing
+                        # index itself has no row - execute() only assigns on
+                        # success - so folding forward cannot duplicate it.
+                        with gate:
+                            settled = list(submitted)
+                        for later in range(index + 1, len(settled)):
+                            pending = settled[later]
+                            if pending is not None and not pending.done():
+                                continue
+                            row = results[later]
+                            if row is not None:
+                                on_record(*cells[later], row)
+                        raise
                 record = results[index]
                 if record is not None:
                     task_id, run_idx, arm = cells[index]
