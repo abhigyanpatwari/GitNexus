@@ -102,6 +102,10 @@ The proxy strips `Origin` before forwarding, so the server's CSRF guard does not
 
 Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large repo, raise its `plan`, which sets available RAM: `standard` is 2 GB, `pro` is 4 GB. Raise `sizeGB` only if the disk fills with clones and indexes.
 
+### Deploy to RepoCloud
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/gitnexus/)
+
 ## Two Ways to Use GitNexus
 
 |             | **CLI + MCP** (recommended)                                                        | **Web UI**                                                           |
