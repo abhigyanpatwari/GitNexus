@@ -33,9 +33,11 @@ from workflow_bench.proposer_sandbox import (
     SANDBOX_GIT_EXCLUDES,
     VITE_TEMP_DIR,
     SANDBOX_PATH,
+    SANDBOX_REVIEW_OUTPUT,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
+    SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
     _runtime_mount_args,
@@ -43,12 +45,14 @@ from workflow_bench.proposer_sandbox import (
     build_sandbox_environment,
     _force_rmtree,
     host_workspace_write_boundary,
+    prepare_review_workspace,
     prepare_sandbox,
     preflight_bubblewrap,
     sandbox_workspace_write_boundary,
     stage_evidence_bundle,
     stage_task_assets,
 )
+from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
 
 
@@ -1500,3 +1504,58 @@ def test_review_artifact_binds_a_writable_directory_outside_the_workspace(tmp_pa
         assert Path(argv[artifact_at - 1]) == output.parent
         assert Path(argv[artifact_at - 1]).is_dir()
         assert f"{proposer_sandbox.SANDBOX_WORKSPACE}/review-output.json" not in argv
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: Path) -> None:
+    """The filesystem contract the EROFS defect broke, under a real sandbox.
+
+    Argv assertions cannot establish this. The artifact came back empty because
+    an atomic write - temp file beside the target, then rename - needs a
+    WRITABLE PARENT DIRECTORY, and only a real bwrap invocation shows whether
+    the mount grants one. A deterministic writer stands in for the agent: no
+    model session, no credentials.
+
+    Scope: this proves the filesystem and process contract of the production
+    mount configuration. It does not establish that a particular agent CLI's
+    own file-access policy permits the same operation - that is a second,
+    independent gate.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "tracked.txt").write_text("original\n")
+
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        review_output = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
+        # The production configuration, not a hand-built mount tuple: the same
+        # command_prefix_for call run_arm makes for a review cell.
+        prefix = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                ReadOnlyMount(source=review_output.parent, target=SANDBOX_REVIEW_OUTPUT),
+            ),
+        )
+        target = f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}"
+        script = (
+            # 1. temp file beside the destination, then atomic rename over it.
+            f'printf %s \'{{"schema_version": 1, "verdict": "approve", "findings": []}}\' > {target}.tmp && '
+            f"mv {target}.tmp {target} && "
+            # 2. the workspace must refuse the write that the mount forbids.
+            f"(printf x >> {SANDBOX_WORKSPACE}/tracked.txt 2>/dev/null && echo WORKSPACE-WRITABLE || echo workspace-readonly)"
+        )
+        result = subprocess.run(
+            [*prefix, "/bin/sh", "-c", script],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+
+    assert result.returncode == 0, f"atomic write failed inside the sandbox: {result.stderr[-400:]}"
+    assert "workspace-readonly" in result.stdout, "the workspace must stay read-only"
+    assert (clone / "tracked.txt").read_text() == "original\n", "the clone was modified"
+
+    # The production reader, on the bytes the sandbox actually left behind.
+    _verdict, findings = parse_review_output(review_output)
+    assert findings == ()
