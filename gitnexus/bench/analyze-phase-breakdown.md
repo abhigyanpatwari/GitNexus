@@ -32,6 +32,13 @@ run once to stamp the identity, then edit and run again **without touching
 `dist`**. An earlier revision of this document reported full-rebuild numbers as
 if they were incremental for exactly this reason; they are corrected below.
 
+**And a mark on an `await` is not a mark on that call.** The post-pipeline tail
+was timed by injecting timestamp marks into a disposable `dist`. An `await` that
+directly follows native work also absorbs whatever libuv still had queued, so
+the cost lands on the wrong line — that is how 845ms ended up attributed to a
+dynamic import that actually costs 0.035ms. Sanity-check any mark that lands on
+a call with no plausible work in it.
+
 That is three separate "silently fall back to full work" guards — non-git
 corpus, runner identity, and the escalation gate. Read the banner on every run
 before trusting a number.
@@ -70,8 +77,15 @@ incremental path is genuinely taken. **31.7s total.**
 | **FTS index rebuild** (`buildSearchIndexesOrDegrade`) | **7525** | **24%** |
 | graph write (`loadGraphToLbug`, subgraph)             |     3566 |     11% |
 | parse                                                 |    ~2800 |      9% |
-| `import('./platform/capabilities.js')`                |      845 |      3% |
+| post-FTS event-loop drain (see below)                 |      845 |      3% |
 | everything else                                       |    ~3000 |      9% |
+
+The 845ms was originally recorded against `import('./platform/capabilities.js')`.
+That import is not the cost: the CLI already imports the module statically, so a
+cached dynamic import measures 0.035ms and `getRuntimeCapabilities()` 0.1ms. The
+`await` there is the first yield after the native FTS build, so it absorbs
+whatever libuv work was still queued. Any mark placed on an `await` immediately
+after native work charges that work to the wrong line.
 
 The incremental machinery works: the graph write was a 3,980-node subgraph, not
 the full 51,288. **Everything the #3194/#3196 parse work optimized is ~9% of
@@ -80,72 +94,148 @@ this.**
 A FULL-rebuild run of the same repo is 36-39s, with the graph write at ~6.3s and
 FTS at ~9.7s. Do not quote those as edit-loop numbers.
 
-## FTS index rebuild — the largest non-resolution cost
+## FTS index rebuild — the largest non-resolution cost, and it is a floor
 
-Per-index, measured on one leaf-file edit:
+A true incremental leaf edit rebuilds **8** of the 20 configured indexes — the
+tables the writeback actually DMLs. Per-index cost (measured against a copy of
+the corpus index, `bench/` probe, reproduced within 2% of the in-analyze number):
 
 ```
- 3531ms  File.file_fts        <- 35% of FTS on its own
- 1558ms  Function.function_fts
-  535ms  Method     491ms  Const      466ms  Property
-  427ms  Interface  363ms  Class      280ms  TypeAlias
-  247ms  Struct     242ms  Variable   234ms  Enum     222ms  Trait   ...
+ 3541ms  File.file_fts        <- 47% of the incremental FTS cost on its own
+ 1696ms  Function.function_fts
+  521ms  Method     506ms  Const      486ms  Property
+  403ms  Interface  324ms  Class      291ms  TypeAlias
  ------
-10203ms across 20 indexes
+ 7769ms  8 indexes   (in-analyze: 7525ms)
 ```
 
-Two findings.
+A FULL rebuild does all 20 and costs ~10.2s; the extra 12 indexes are only
+~2.5s, so **the narrowing is already doing its job**. An earlier revision of
+this document called the narrowing "inconsistent" because one run rebuilt 8 and
+another 20 — the 20-index run was a forced full rebuild (the runner-identity
+trap above), not a leaf edit. There is nothing to fix there.
 
-**`File.file_fts` dominates** because File nodes carry file content, so that one
-index re-tokenizes ~30MB of source. Changing one file re-tokenizes all of it.
+`File.file_fts` dominates because File rows carry whole-file content: 2442 rows,
+32.9 MB, and Ladybug tokenizes at ~9.8 MB/s.
 
-**20 indexes were rebuilt for a two-importer leaf edit.** `touchedFts` is meant
-to narrow this, and a separate run rebuilt only 8 — so the narrowing is at least
-inconsistent. It has a withdrawal path: `missingSearchFTSIndexTables` returns
-`undefined` when the index catalog cannot be read (`fts-indexes.ts:285`), and
-`tables: undefined` means rebuild everything. Pin that before optimizing, or the
-optimization targets a set that is not actually being narrowed.
+### Four ways out, all measured, all closed
 
-The code states the underlying constraint plainly: _"createSearchFTSIndexes
-re-tokenizes every stored row on every run."_ Indexes must be dropped for DML
-(#2589, #2841), and the only way back is a whole-table rebuild.
+**Narrow further — no.** The 8 tables are exactly the ones holding rows for the
+6 files in the write set (1 changed + 5 importers). There is no fat.
 
-Ranked next steps:
+**Build the indexes concurrently — impossible.** A second connection issuing
+`CREATE_FTS_INDEX` fails immediately:
 
-1. **Take the FTS rebuild off the critical path.** Nothing in `analyze` reads
-   the index — only later searches do. Rebuild lazily on first search or in the
-   background after the swap. Removes the cost rather than shrinking it, and the
-   degraded-search state is already modelled (`ftsSkipReason`, "degrade rather
-   than throw").
-2. **Do not rebuild `File.file_fts` when no file content changed.**
-3. **Fix or delete the narrowing** — a gate that silently withdraws looks like
-   protection and is not.
+> `Cannot start a new write transaction in the system. Only one write transaction at a time is allowed in the system.`
 
-## scopeResolution is memory-traffic bound, not algorithmic
+Eight builds on one connection serialize exactly (7886ms concurrent vs 7769ms
+serial).
 
-`--cpu-prof` of a one-file-edit run, top main-thread self time:
+**Raise the connection's thread count — no effect.** min-of-3 wall time at
+4 / 8 / 16 / default(24) threads: 7298 / 7133 / 7109 / 7345 ms, inside the ~400ms
+per-config spread. CPU burned does move — 8.8s / 9.7s / 11.8s / 13.6s — so the
+default over-subscribes ~60% for nothing, but wall time is flat.
+
+**Skip `File.file_fts` when content did not change — cannot happen.** Any file
+edit changes a File row, and Ladybug's FTS is not incremental: an index built
+before an insert does not see the new row, so a changed row forces a whole-table
+rebuild. Dropping `content` from the index takes it 3541ms → **241ms**, but that
+is deleting full-file keyword search (#2317/#2323), not optimizing it. Capping
+the indexed content is a bad trade — the size distribution is flat, so a 64 KB
+cap still indexes 90% of the bytes while truncating the 72 largest files.
+
+### The one lever left: overlap
+
+The FTS build runs on a libuv thread, not the main thread, and fully overlaps
+blocking JS:
 
 ```
-4294ms  (garbage collector)
-1552ms  v8.deserialize
- 756ms  crypto update
- 728ms  runScopeResolution
- 620ms  scope-resolution/pipeline/reconcile-ownership
- 380ms  v8-sidecar walk
- 323ms  internString
+index alone                    3859ms
+index + 3000ms of JS burn      3337ms      (serial would be ~6859ms)
 ```
 
-then a tail of passes at 200–750ms (`emitReceiverBoundCalls`,
-`emitCallableValueFlow`, `buildGraphNodeLookup`, `resolveReferenceSites`).
+So the 3.5s File index could hide entirely behind the pipeline's ~17s of
+main-thread JS. File rows are the only ones that make this possible: they are
+`{ name, filePath }` from `processStructure`, with content lazy-read from disk at
+CSV time, so they are fully determined by the file scan — before parsing, before
+resolution.
 
-No dominant hot function, nothing quadratic. The cost is rehydrating every
-file's `ParsedFile` from the durable `.v8` shards into main-thread memory and
-re-running every pass over them.
+Two things block it today, and neither is small:
 
-**So the win is not caching resolution output** — that stores more of exactly
-what is already the memory problem, and #2649 (large-repo OOM) is the standing
-constraint. The win is skipping rehydration and re-resolution for files whose
-inputs provably did not change, as a streaming/bounded design.
+1. The DB is **closed** for the whole pipeline (`closeLbug` before
+   `runPipelineFromRepo`, `initLbug` after). An early File write means holding a
+   write handle across the pipeline.
+2. It moves `liveIndexMutationStarted` before the pipeline. A pipeline failure
+   would then leave the live index with fresh File content and stale symbols,
+   instead of untouched.
+
+## scopeResolution — 14.7s, and it is two different problems
+
+`PROF_SCOPE_RESOLUTION=1` already exists and reports the internal split. Marks
+injected around the phase supply the rest. On a one-file edit:
+
+| step                         |       ms |   share |
+| ---------------------------- | -------: | ------: |
+| ParsedFile store rehydration |     4426 |     30% |
+| **`emit`**                   | **7161** | **49%** |
+| `resolve`                    |      966 |      7% |
+| `finalize`                   |      552 |      4% |
+| `extract`                    |      369 |      3% |
+| per-language teardown, misc  |     ~750 |      5% |
+
+`extract` is small because the parse cache works: 2121/2121 pre-extracted hits
+on the TypeScript pass. Nothing here re-parses.
+
+### Rehydration: three full store scans, one per language
+
+The corpus resolves three languages — python (54 files), typescript (2121),
+javascript (59) — and `loadParsedFilesForPaths` walks **every** shard on each
+pass. The store is 413 shards / 301 MB. A pass that wants a single file costs
+335 ms, because the skip decision needs the envelope's path listing and that
+listing is only trustworthy after the payload digest is checked.
+
+So the fixed cost is paid per language, and **it scales with language count**,
+not with how many files that language has. Measured, min-of-5, three passes:
+
+```
+before   python 411ms   typescript 2872ms   javascript 507ms   = 3834ms
+after    python 415ms   typescript 2805ms   javascript 248ms   = 3484ms
+```
+
+Memoizing each shard's authenticated listing for the run removes the repeat
+scans (−350 ms here; roughly −250 ms per additional language elsewhere). The
+first pass is unchanged by construction — it is what populates the memo.
+
+What is left is a floor. The digest is **not** the cost: SHA-256 over all
+301 MB takes 134 ms (2.25 GB/s, hardware-accelerated), so swapping it for
+CRC-32 would buy ~90 ms and cost an envelope-format bump. The remainder is
+`v8.deserialize` (~1240 ms) plus the cross-shard string intern walk
+(~1085 ms), and the intern walk is not optional — dropping it regresses
+retained heap ~59%, which is #2649's constraint.
+
+### `emit` is the real target
+
+7.2s, 49% of the phase and ~21% of the whole edit loop. It is a fan of passes,
+each walking every reference site in the repo:
+
+```
+1828ms  emitCallableValueFlow      480ms  emitFreeCallFallback
+1590ms  emitReceiverBoundCalls     426ms  emitReferencesViaLookup
+ 681ms  resolveDefGraphId          313ms  emitUniqueNamePropertyAccesses
+ 529ms  lookupCore                 280ms  emitReturnShapeMemberAccesses
+ 472ms  tryEmitEdge                222ms  emitPropertyDispatchCalls
+ 449ms  getScope
+```
+
+No hot inner loop, nothing quadratic, no single pass worth more than 12% of the
+phase. Micro-optimizing any of them is not the win.
+
+The win is not running them. A one-file edit re-emits all 163,094 edges to
+write a 3,980-node subgraph. Every pass above runs over all 2121 TypeScript
+files because the pipeline rebuilds the full in-memory graph every run and only
+the DB _write_ is incremental. Making `emit` incremental means knowing which
+files' edges can change when one file's registry contribution changes — which
+is a design, not a patch, and #2649 rules out "just cache the emitted edges".
 
 ---
 
@@ -179,10 +269,17 @@ run (73.0s vs 69.6s on overlay). Measure on a local filesystem.
 
 ## Open
 
-The post-pipeline tail is now fully accounted (99.7%): FTS rebuild, the graph
-write, and a 0.8s dynamic `capabilities.js` import between them. What remains
-open is the FTS work above, and `scopeResolution` — still the single largest
-step, memory-traffic bound, and untouched.
+The post-pipeline tail is fully accounted (99.7%): FTS rebuild, the graph write,
+and 0.8s of post-FTS event-loop drain between them.
+
+FTS is closed as an optimization target except for the overlap above, which is a
+scheduling change to `run-analyze.ts`'s open/close discipline rather than
+anything about FTS.
+
+`scopeResolution` is now broken down. Its rehydration half has a floor and one
+repeat-scan win that is taken. Its other half — `emit`, 7.2s — is the largest
+remaining target in the whole edit loop, and the only way at it is incremental
+resolution.
 
 Every optimization in this document that looked compelling from the armchair
 died under measurement. Measure first, and check the banner.
