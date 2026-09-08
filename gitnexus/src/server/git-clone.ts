@@ -377,9 +377,14 @@ export async function assertRemoteMatchesRequestedUrl(
  *
  * If targetDir exists with .git, its remote.origin is verified against the
  * requested URL first, and then the branch decides the update:
- *   - no `options.branch`, or one that is ALREADY checked out: git pull
- *     --ff-only, which updates the current branch in place. Nothing moves, so
- *     no dirty-tree check applies.
+ *   - no `options.branch`: git pull --ff-only, which updates the current
+ *     branch in place via its configured upstream. Nothing moves, so no
+ *     dirty-tree check applies.
+ *   - a `options.branch` that is ALREADY checked out: git pull --ff-only
+ *     origin <branch>. Same no-switch rule (and no dirty-tree check), but the
+ *     ref is the requested one on the origin we just verified — not whatever
+ *     `branch.<name>.merge` happens to point at. Bare `git pull` would follow
+ *     that un-checked upstream.
  *   - a `options.branch` that DIFFERS from the current one: fetch that ref,
  *     then `checkout -B <branch> origin/<branch>` — so the requested branch,
  *     not the one already checked out, is what ends up in the working tree.
@@ -468,9 +473,8 @@ export async function cloneOrPull(
     await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
-    // Already on the requested branch? Then there is no switch to make, and this
-    // is precisely the operation an unpinned request performs — so take that
-    // path. Going through the checkout path below would run the porcelain check
+    // Already on the requested branch? Then there is no switch to make, so do
+    // not take the checkout path below — that would run the porcelain check
     // against a tree ANALYZE ITSELF dirtied (it writes AGENTS.md / CLAUDE.md /
     // .claude/ into the clone), which made a pinned RE-index impossible: the
     // first pin succeeded and every later one failed asking for
@@ -481,6 +485,11 @@ export async function cloneOrPull(
     // from silently discarding local work, and there is no switch here.
     // A detached HEAD reports `HEAD`, matches no branch name, and so still takes
     // the checkout path below.
+    //
+    // Still pin `origin/<branch>` rather than a bare `git pull --ff-only`.
+    // Only `remote.origin.url` is verified above; `branch.<name>.remote` /
+    // `.merge` are not, so an implicit-upstream pull can update a different
+    // ref while the job still carries this branch (#3199 review).
     const alreadyOnRequestedBranch =
       !!options?.branch &&
       (
@@ -547,6 +556,12 @@ export async function cloneOrPull(
           timeoutMs: options?.timeoutMs,
         });
       }
+    } else if (options?.branch) {
+      await runGitImpl(['pull', '--ff-only', 'origin', options.branch], safeTarget, {
+        token: options?.token,
+        url,
+        timeoutMs: options?.timeoutMs,
+      });
     } else {
       await runGitImpl(['pull', '--ff-only'], safeTarget, {
         token: options?.token,

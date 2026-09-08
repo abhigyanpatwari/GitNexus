@@ -711,9 +711,12 @@ describe('git-clone', () => {
       }
 
       const verbs = calls.map((c) => c[0]);
-      expect(verbs).toContain('pull'); // took the unpinned path
+      expect(calls).toContainEqual(['pull', '--ff-only', 'origin', 'develop']);
       expect(verbs).not.toContain('checkout'); // nothing to switch
       expect(verbs).not.toContain('status'); // so the dirty check never ran
+      // Must not fall back to a bare `git pull --ff-only` — that follows
+      // `branch.<name>.merge`, which is not verified (only origin.url is).
+      expect(calls.some((c) => c[0] === 'pull' && c.length === 2)).toBe(false);
     });
 
     it('still switches — and still refuses a dirty tree — for a DIFFERENT branch', async () => {
