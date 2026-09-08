@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import os from 'node:os';
 import { logger } from '../core/logger.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import { branchSlug } from '../storage/branch-index.js';
 import { sanitizeRepoName, stripUrlCredentials } from '../storage/git.js';
 import { validateGitUrl } from '../core/net/url-guard.js';
 import {
@@ -84,19 +85,93 @@ export function extractWebRepoName(url: string): string {
   return safeName;
 }
 
-/** Get the clone target directory for a repo name. */
-export function getCloneDir(repoName: string): string {
+/**
+ * Longest single path component the supported filesystems accept (ext4, APFS,
+ * NTFS all cap at 255). Compared against `.length`, which equals the byte
+ * count here because every name this guards is ASCII by construction
+ * (REPO_NAME_PATTERN and sanitizeRepoName both restrict to `[a-zA-Z0-9._-]`).
+ */
+const MAX_PATH_COMPONENT_BYTES = 255;
+
+/**
+ * `branchSlug` for a clone-directory name, trimmed to fit one path component.
+ *
+ * `validateBranchName` allows a ref up to 255 characters and `branchSlug`
+ * appends `-` plus 8 hash characters, so `<repo>__<slug>` can reach 267 — past
+ * the filesystem limit, and the clone would then fail to create its target
+ * directory (#3199 review).
+ *
+ * Only the READABLE half is trimmed; the 8-character hash is always kept, and
+ * it is a digest of the full ref, so two long branches that share a prefix
+ * still get different directories. The slug is not trimmed inside
+ * `branchSlug` itself because the per-branch *index* slots already use those
+ * names on disk — shortening them there would orphan existing indexes.
+ */
+const boundedBranchSegment = (repoName: string, branch: string): string => {
+  const slug = branchSlug(branch);
+  if (`${repoName}__${slug}`.length <= MAX_PATH_COMPONENT_BYTES) return slug;
+
+  const hash = slug.slice(slug.lastIndexOf('-')); // "-" + 8 hex
+  const budget = MAX_PATH_COMPONENT_BYTES - repoName.length - '__'.length - hash.length;
+  // A repo name long enough to leave no budget falls through to the caller's
+  // length check, which rejects it rather than building an unusable path.
+  return `${slug.slice(0, Math.max(0, budget))}${hash}`;
+};
+
+/** Get the clone target directory for a repo name, optionally pinned to a branch. */
+export function getCloneDir(repoName: string, branch?: string): string {
   // Re-validate at the boundary even though extractRepoName already checked —
   // callers may pass a repoName from another source (test fixtures, scripts).
   if (!repoName || repoName === '.' || repoName === '..' || !REPO_NAME_PATTERN.test(repoName)) {
     throw new Error('Invalid repository name');
   }
-  return path.join(CLONE_ROOT, repoName);
+  // A branch-pinned analyze gets its OWN working tree.
+  //
+  // Sharing one checkout per repo made `branch` unusable in practice: the tree
+  // is dirty after any analyze (generated AGENTS.md / CLAUDE.md / .claude/), so
+  // a pinned request hit `cloneOrPull`'s porcelain refusal; and a later request
+  // that OMITTED `branch` would pull whatever branch the last pin left checked
+  // out and index it as the default (#3199 review). Separate directories remove
+  // both, because the two requests no longer share a tree.
+  //
+  // `branchSlug` is the same helper the per-branch index slots use, so the two
+  // layouts agree on how a ref becomes a path segment. It emits only
+  // `[a-zA-Z0-9._-]`, so the composed name still satisfies REPO_NAME_PATTERN and
+  // round-trips through this function — which is how DELETE /api/repo re-derives
+  // the directory from the registry name.
+  const dirName = branch ? `${repoName}__${boundedBranchSegment(repoName, branch)}` : repoName;
+  if (!REPO_NAME_PATTERN.test(dirName) || dirName.length > MAX_PATH_COMPONENT_BYTES) {
+    throw new Error('Invalid repository name');
+  }
+  return path.join(CLONE_ROOT, dirName);
 }
 
 export interface CloneProgress {
   phase: 'cloning' | 'pulling';
   message: string;
+}
+
+/**
+ * Build the `cloneOrPull` options for an `/api/analyze` request.
+ *
+ * Extracted from the route so the token/branch combination is unit-testable.
+ * Inline, the branch-only case was the one nothing asserted: every existing
+ * test still passed if `branch` were dropped whenever no token was supplied —
+ * i.e. silently cloning the default branch for every public URL, which is the
+ * exact behavior #3198 is about (#3199 review).
+ *
+ * Returns `undefined` rather than `{}` when neither is set, because that is
+ * what `cloneOrPull` treats as "no options" at its own call sites.
+ */
+export function analyzeCloneOptions(
+  token?: string,
+  branch?: string,
+): Pick<CloneOrPullOptions, 'token' | 'branch'> | undefined {
+  if (!token && !branch) return undefined;
+  return {
+    ...(token ? { token } : {}),
+    ...(branch ? { branch } : {}),
+  };
 }
 
 export interface CloneOrPullOptions {
@@ -295,10 +370,126 @@ export async function assertRemoteMatchesRequestedUrl(
 }
 
 /**
+ * Fetch refspec that updates `origin/<branch>` from `refs/heads/<branch>`.
+ *
+ * The leading `+` is git's dest-update prefix (`+refs/heads/*:refs/remotes/origin/*`
+ * is what `git clone` writes into `.git/config`). Without it, `fetch --depth 1`
+ * refuses to move `origin/<branch>` when the shallow history cannot prove a
+ * fast-forward — so a same-branch re-index stays stuck on the old tip.
+ *
+ * The user string is interpolated inside `refs/heads/…`, never as a raw pull
+ * dest. A branch named `+develop` becomes `+refs/heads/+develop:…`, not a
+ * force-update of `develop`.
+ */
+function branchFetchRefspec(branch: string): string {
+  return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
+}
+
+/** Overlays `analyze` writes into a clone; they must not block a same-ref update. */
+const GITNEXUS_GENERATED_OVERLAYS = ['./AGENTS.md', './CLAUDE.md', './.claude'] as const;
+
+/**
+ * Restore only GitNexus-generated overlays so a same-ref update is not
+ * blocked by analyze dirt. Path-limited and root-anchored (`./`): tracked
+ * files are checked out from HEAD; untracked overlays (including gitignored
+ * ones — `AGENTS.md` / `.claude/` are commonly ignored) are `git clean -fdx`'d.
+ * A slash-free `AGENTS.md` would also hit `docs/AGENTS.md`. Never a
+ * whole-clone `git clean --force -d`.
+ */
+async function restoreGitNexusGeneratedOverlays(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  gitOpts: RunGitOptions,
+): Promise<void> {
+  for (const overlay of GITNEXUS_GENERATED_OVERLAYS) {
+    const listed = (await runGitImpl(['ls-files', '--', overlay], cwd, gitOpts)).trim();
+    if (!listed) continue;
+    await runGitImpl(['checkout', 'HEAD', '--', overlay], cwd, gitOpts);
+  }
+  // Path-limited: untracked analyze output still blocks checkout when the
+  // incoming tree has the same path, and otherwise leaves a dirty tree to
+  // index. `-x` is required because these overlays are often gitignored.
+  // Never a whole-clone `git clean --force -d`.
+  await runGitImpl(['clean', '-fdx', '--', ...GITNEXUS_GENERATED_OVERLAYS], cwd, gitOpts);
+}
+
+/**
+ * True when the working tree is already at the requested pin: either HEAD is
+ * that named branch, or HEAD is detached at the same SHA as `branch` /
+ * `origin/<branch>`. A missing ref falls through to the switch path.
+ */
+async function matchRequestedRef(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  branch: string,
+  gitOpts: RunGitOptions,
+): Promise<'branch' | 'sha' | undefined> {
+  const abbrev = (await runGitImpl(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, gitOpts)).trim();
+  if (abbrev === branch) return 'branch';
+  // Detached HEAD reports `HEAD`; compare SHAs so a tag/SHA pin is not a switch.
+  if (abbrev !== 'HEAD') return undefined;
+
+  let headSha: string;
+  try {
+    headSha = (await runGitImpl(['rev-parse', 'HEAD'], cwd, gitOpts)).trim();
+  } catch {
+    return undefined;
+  }
+
+  for (const candidate of [branch, `origin/${branch}`] as const) {
+    try {
+      // Peel annotated tags (`v1.0` is a tag object; HEAD is the commit).
+      const requestedSha = (
+        await runGitImpl(['rev-parse', `${candidate}^{commit}`], cwd, gitOpts)
+      ).trim();
+      if (requestedSha && requestedSha === headSha) return 'sha';
+    } catch {
+      // Ref missing — try origin/<branch>, then the switch path.
+    }
+  }
+  return undefined;
+}
+
+async function fetchAndCheckoutRequestedBranch(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  branch: string,
+  gitOpts: RunGitOptions,
+): Promise<void> {
+  // Analyze clones are `--depth 1`. `merge --ff-only` cannot walk O→N when
+  // the remote moved 2+ commits (the merge-base is not in the shallow
+  // history). `checkout -B` points the local branch at the fetched tip —
+  // same as the switch path, no ancestry walk. No `--force`: leftover
+  // non-overlay dirt still refuses.
+  await runGitImpl(['fetch', '--depth', '1', 'origin', branchFetchRefspec(branch)], cwd, gitOpts);
+  await runGitImpl(['checkout', '-B', branch, `origin/${branch}`], cwd, gitOpts);
+}
+
+/**
  * Clone or pull a git repository.
- * If targetDir doesn't exist: git clone --depth 1
- * If targetDir exists with .git: git pull --ff-only (after verifying the
- * existing clone's remote.origin matches the requested URL).
+ *
+ * If targetDir doesn't exist: git clone --depth 1, adding `--branch <branch>`
+ * when one is requested.
+ *
+ * If targetDir exists with .git, its remote.origin is verified against the
+ * requested URL first, and then the branch decides the update:
+ *   - no `options.branch`: git pull --ff-only, which updates the current
+ *     branch in place via its configured upstream. Nothing moves, so no
+ *     dirty-tree check applies.
+ *   - a `options.branch` that is ALREADY the current named branch: restore
+ *     GitNexus overlays, then fetch via
+ *     `+refs/heads/<branch>:refs/remotes/origin/<branch>` and
+ *     `checkout -B <branch> origin/<branch>` (shallow clones cannot
+ *     `merge --ff-only` across a 2+ commit move). Never a raw
+ *     `origin <branch>` pull refspec. No porcelain refuse.
+ *   - a detached HEAD whose SHA already matches the requested ref (tag /
+ *     SHA pin): restore overlays only. Do not fetch/merge — a same-named
+ *     branch could otherwise fast-forward the pin past the tag.
+ *   - a `options.branch` that DIFFERS from the current pin: fetch that ref,
+ *     then `checkout -B <branch> origin/<branch>` — so the requested branch,
+ *     not the one already checked out, is what ends up in the working tree.
+ *     This is the switching case, and it refuses a dirty tree unless
+ *     `overwriteLocalChanges` is set.
  *
  * Security:
  *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
@@ -382,13 +573,36 @@ export async function cloneOrPull(
     await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
-    if (options?.branch) {
+    const gitOpts = {
+      token: options?.token,
+      url,
+      timeoutMs: options?.timeoutMs,
+    };
+    // Already at the requested pin? Then there is no switch to make, so do
+    // not take the checkout path below — that would run the porcelain check
+    // against a tree ANALYZE ITSELF dirtied (it writes AGENTS.md / CLAUDE.md /
+    // .claude/ into the clone), which made a pinned RE-index impossible: the
+    // first pin succeeded and every later one failed asking for
+    // `overwrite_local_changes`, a flag this route deliberately does not pass
+    // because it would `git clean --force -d` the directory (#3199 review).
+    //
+    // "Already there" is a named-branch match OR a detached HEAD whose SHA
+    // equals `branch` / `origin/<branch>` (tag / SHA pin). A missing ref
+    // falls through to the switch path, which still refuses a dirty tree.
+    //
+    // Same-named-branch update uses the heads/ → remotes/ fetch refspec plus
+    // `checkout -B <branch> origin/<branch>`, never `pull origin <user-string>`
+    // (a leading `+` would otherwise be a force-fetch). Only
+    // `remote.origin.url` is verified above; `branch.<name>.remote` /
+    // `.merge` are not, so an implicit-upstream pull can update a different
+    // ref while the job still carries this branch (#3199 review).
+    const requestedRefMatch = options?.branch
+      ? await matchRequestedRef(runGitImpl, safeTarget, options.branch, gitOpts)
+      : undefined;
+
+    if (options?.branch && !requestedRefMatch) {
       if (!options.overwriteLocalChanges) {
-        const status = await runGitImpl(['status', '--porcelain'], safeTarget, {
-          token: options?.token,
-          url,
-          timeoutMs: options?.timeoutMs,
-        });
+        const status = await runGitImpl(['status', '--porcelain'], safeTarget, gitOpts);
         if (status.trim()) {
           throw new Error(
             `Refusing to update ${safeTarget}: local changes detected. Set overwrite_local_changes: true to overwrite them.`,
@@ -396,19 +610,9 @@ export async function cloneOrPull(
         }
       }
       await runGitImpl(
-        [
-          'fetch',
-          '--depth',
-          '1',
-          'origin',
-          `refs/heads/${options.branch}:refs/remotes/origin/${options.branch}`,
-        ],
+        ['fetch', '--depth', '1', 'origin', branchFetchRefspec(options.branch)],
         safeTarget,
-        {
-          token: options?.token,
-          url,
-          timeoutMs: options?.timeoutMs,
-        },
+        gitOpts,
       );
       await runGitImpl(
         [
@@ -419,11 +623,7 @@ export async function cloneOrPull(
           `origin/${options.branch}`,
         ],
         safeTarget,
-        {
-          token: options?.token,
-          url,
-          timeoutMs: options?.timeoutMs,
-        },
+        gitOpts,
       );
       if (options.overwriteLocalChanges) {
         // `checkout --force` rewrites tracked files only, so untracked sources
@@ -432,18 +632,17 @@ export async function cloneOrPull(
         // ignored paths must survive, and `-e /.gitnexus` is belt-and-braces
         // because `.git/info/exclude` is skipped on a read-only storage mount
         // and a freshly cloned repo may not have been analyzed yet at all.
-        await runGitImpl(['clean', '--force', '-d', '-e', '/.gitnexus'], safeTarget, {
-          token: options?.token,
-          url,
-          timeoutMs: options?.timeoutMs,
-        });
+        await runGitImpl(['clean', '--force', '-d', '-e', '/.gitnexus'], safeTarget, gitOpts);
       }
+    } else if (options?.branch && requestedRefMatch === 'branch') {
+      await restoreGitNexusGeneratedOverlays(runGitImpl, safeTarget, gitOpts);
+      await fetchAndCheckoutRequestedBranch(runGitImpl, safeTarget, options.branch, gitOpts);
+    } else if (options?.branch && requestedRefMatch === 'sha') {
+      // Tag / SHA pin: already at the requested commit. Fetching
+      // `refs/heads/<name>` would follow a same-named branch past the pin.
+      await restoreGitNexusGeneratedOverlays(runGitImpl, safeTarget, gitOpts);
     } else {
-      await runGitImpl(['pull', '--ff-only'], safeTarget, {
-        token: options?.token,
-        url,
-        timeoutMs: options?.timeoutMs,
-      });
+      await runGitImpl(['pull', '--ff-only'], safeTarget, gitOpts);
     }
   } else {
     if (targetExists && (await fs.readdir(safeTarget)).length > 0) {
