@@ -173,6 +173,9 @@ def resolve_model_access(
     return ModelAccess(start_proxy=False)
 
 
+USAGE_CALLBACK_MODULE = "provider_usage_callback"
+
+
 def openai_litellm_config(model_names: Sequence[str]) -> dict[str, Any]:
     seen: list[str] = []
     for name in model_names:
@@ -196,7 +199,15 @@ def openai_litellm_config(model_names: Sequence[str]) -> dict[str, Any]:
             }
             for name in seen
         ],
-        "litellm_settings": {"request_timeout": GATEWAY_REQUEST_TIMEOUT_S},
+        "litellm_settings": {
+            "request_timeout": GATEWAY_REQUEST_TIMEOUT_S,
+            # Captures each upstream request's usage as the provider reported
+            # it, before translation renames OpenAI's fields into Anthropic's
+            # shape and loses which arithmetic applies. Resolved by LiteLLM
+            # relative to the config directory, which is why the module is
+            # copied next to the config rather than imported from the package.
+            "callbacks": [f"{USAGE_CALLBACK_MODULE}.handler"],
+        },
         "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"},
     }
 
@@ -204,7 +215,24 @@ def openai_litellm_config(model_names: Sequence[str]) -> dict[str, Any]:
 def write_openai_litellm_config(path: Path, model_names: Sequence[str]) -> Path:
     path.write_text(yaml.safe_dump(openai_litellm_config(model_names), sort_keys=False))
     path.chmod(0o600)
+    _install_usage_callback(path.parent)
     return path
+
+
+def _install_usage_callback(config_dir: Path) -> Path:
+    """Place the usage logger where LiteLLM resolves callbacks from.
+
+    LiteLLM loads a dotted callback path as a file relative to the config
+    directory before falling back to a package import, and the proxy runs as
+    its own process that need not have this package on sys.path. Copying the
+    one module is what makes the callback resolvable in both cases.
+    """
+
+    source = Path(__file__).with_name("litellm_usage_callback.py")
+    destination = config_dir / f"{USAGE_CALLBACK_MODULE}.py"
+    destination.write_text(source.read_text())
+    destination.chmod(0o600)
+    return destination
 
 
 def _free_loopback_port() -> int:
