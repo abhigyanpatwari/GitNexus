@@ -21,7 +21,7 @@
  *   node update-vendored-grammars.mjs            # detect only → JSON report on stdout
  *   node update-vendored-grammars.mjs --apply X  # re-vendor grammar X in place
  *
- * tree-sitter-c is MONITORED but report-only (`hold`): it is ABI-pinned at 0.21.4
+ * tree-sitter-c and tree-sitter-objc are MONITORED but report-only (`hold`): c is ABI-pinned at 0.21.4
  * (#1242/#858) and must not auto-bump without a tree-sitter runtime upgrade, so an
  * available c update is detected + reported but never auto-applied — even if it is
  * ABI-13/14. A maintainer re-vendors it deliberately.

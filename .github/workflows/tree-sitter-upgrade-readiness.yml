@@ -4,7 +4,7 @@ name: Tree-sitter Upgrade Readiness
 #   1. Peer-dep compatibility — can each NPM-installed grammar install cleanly
 #      with tree-sitter@0.25.0 without --legacy-peer-deps?
 #   2. Vendored grammars — each grammar in .github/vendored-grammars.json
-#      (c/swift/kotlin/dart/proto) is classified by its vendored ABI, read
+#      (c/swift/kotlin/dart/proto/objc) is classified by its vendored ABI, read
 #      straight from gitnexus/vendor/<name>/src/parser.c (NOT node_modules,
 #      which is never populated for vendored grammars — that mismatch is why
 #      the report used to render bare "?" placeholders, #858).
