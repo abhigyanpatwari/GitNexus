@@ -29,7 +29,8 @@ rules:
       # validates the .node prebuilds and uploads them as artifacts. This
       # consumer downloads ONLY those artifacts + metadata.json,
       # allowlist-validates every metadata field, cross-checks identity against
-      # the workflow_run authority (head_sha / head_repo / pr_number), and
+      # workflow_run.head_sha / head_repository / head_branch via
+      # pulls?head=owner:branch (commits/{sha}/pulls is empty for fork SHAs), and
       # checks out the fork head pinned to that HEAD SHA solely to ADD prebuild
       # files (never executes fork code) before pushing. Header comment in the
       # file documents the split.

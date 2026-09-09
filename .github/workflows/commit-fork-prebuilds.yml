@@ -135,51 +135,35 @@ jobs:
       # workflow_run event. The allowlist above only proves the fields are
       # well-formed — not that they refer to the PR/SHA that actually triggered
       # us. A fork-controlled build could mutate metadata.json to reference
-      # another PR/SHA and redirect our write-scoped push. Authority sources are
-      # all server-controlled: workflow_run.head_sha, head_repository.full_name,
-      # and pull_requests[].number (empty on forks -> commits/{sha}/pulls).
+      # another PR/SHA and redirect our write-scoped push.
+      #
+      # This job's `if:` already restricts to forks, so pull_requests[] is empty
+      # by design and GET /repos/{base}/commits/{sha}/pulls is also empty (the
+      # fork commit is not in the base graph). Authority is workflow_run.head_sha
+      # + head_repository.full_name + head_branch, resolved via
+      # pulls?head={owner}:{branch}. The script comes from THIS default-branch
+      # checkout (the same trust anchor as this workflow file).
+      - name: Checkout identity verifier
+        if: steps.meta.outputs.deliver == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts/verify-workflow-run-pr-identity.cjs
+          sparse-checkout-cone-mode: false
+          path: trusted
+
       - name: Verify metadata against workflow_run authority
+        id: verify
         if: steps.meta.outputs.deliver == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          META_PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
-          META_HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
-          META_HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          META_PATH: meta-in/metadata.json
           WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           WF_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-          WF_PR_NUMBERS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
+          WF_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
         shell: bash
-        run: |
-          set -euo pipefail
-
-          # 1) head_sha must match exactly — the commit GitHub ran the producer against.
-          if [ "${META_HEAD_SHA}" != "${WF_HEAD_SHA}" ]; then
-            echo "::error::Artifact head_sha (${META_HEAD_SHA}) != workflow_run.head_sha (${WF_HEAD_SHA}) — refusing."
-            exit 1
-          fi
-          # 2) head_repo must match exactly.
-          if [ "${META_HEAD_REPO}" != "${WF_HEAD_REPO}" ]; then
-            echo "::error::Artifact head_repo (${META_HEAD_REPO}) != workflow_run.head_repository (${WF_HEAD_REPO}) — refusing."
-            exit 1
-          fi
-          # 3) pr_number must reference an open PR with this head SHA. Forks have
-          # an empty pull_requests[] by design — fall back to commits/{sha}/pulls.
-          allowed_numbers=$(jq -c '.' <<< "${WF_PR_NUMBERS}")
-          if [ "${allowed_numbers}" = "[]" ]; then
-            echo "workflow_run.pull_requests empty (fork) — using commits/{sha}/pulls."
-            allowed_numbers=$(gh api "repos/${GH_REPO}/commits/${WF_HEAD_SHA}/pulls" \
-              --jq '[.[] | select(.state == "open") | .number]' 2>/dev/null || echo "[]")
-            if [ "${allowed_numbers}" = "[]" ]; then
-              echo "::error::No open PR for head ${WF_HEAD_SHA} — refusing."
-              exit 1
-            fi
-          fi
-          if ! jq -e --argjson n "${META_PR_NUMBER}" 'index($n) != null' <<< "${allowed_numbers}" >/dev/null; then
-            echo "::error::Artifact pr_number (${META_PR_NUMBER}) not in authoritative list (${allowed_numbers}) — refusing."
-            exit 1
-          fi
-          echo "Verified identity: PR=${META_PR_NUMBER} head_sha=${META_HEAD_SHA} head_repo=${META_HEAD_REPO}."
+        run: node trusted/.github/scripts/verify-workflow-run-pr-identity.cjs
 
       # Pinned to v6.0.3 (same SHA used by build-tree-sitter-prebuilds.yml).
       # persist-credentials: false — push auth is provided inline at push time,
@@ -188,8 +172,8 @@ jobs:
         if: steps.meta.outputs.deliver == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: ${{ steps.meta.outputs.head_repo }}
-          ref: ${{ steps.meta.outputs.head_sha }}
+          repository: ${{ steps.verify.outputs.head_repo }}
+          ref: ${{ steps.verify.outputs.head_sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
           fetch-depth: 0
@@ -241,9 +225,9 @@ jobs:
         if: steps.meta.outputs.deliver == 'true'
         working-directory: pr-checkout
         env:
-          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
-          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
-          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          HEAD_REF: ${{ steps.verify.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.verify.outputs.head_repo }}
+          HEAD_SHA: ${{ steps.verify.outputs.head_sha }}
           # Push auth only — supplied via env, never interpolated into the command.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -303,11 +287,11 @@ jobs:
           fi
 
       - name: Comment delivery outcome
-        if: always() && steps.meta.outputs.deliver == 'true' && steps.push.outcome != 'skipped'
+        if: always() && steps.meta.outputs.deliver == 'true' && steps.verify.outcome == 'success' && steps.push.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          PR: ${{ steps.meta.outputs.pr_number }}
+          PR: ${{ steps.verify.outputs.pr_number }}
           RESULT: ${{ steps.push.outputs.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         shell: bash
