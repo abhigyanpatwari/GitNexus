@@ -1543,6 +1543,10 @@ function reportWarning(message: string): void {
   }
 }
 
+// Keep compiled queries across jobs in this worker. A language can select
+// multiple native grammars, so both grammar identity and query text matter.
+const compiledQueries = new WeakMap<object, Map<string, Parser.Query>>();
+
 const processFileGroup = (
   files: ParseWorkerInput[],
   language: SupportedLanguages,
@@ -1553,7 +1557,14 @@ const processFileGroup = (
   let query: Parser.Query;
   try {
     const lang = parser.getLanguage();
-    query = new Parser.Query(lang, queryString);
+    let queries = compiledQueries.get(lang);
+    if (!queries) {
+      queries = new Map();
+      compiledQueries.set(lang, queries);
+    }
+    const cached = queries.get(queryString);
+    query = cached ?? new Parser.Query(lang, queryString);
+    if (!cached) queries.set(queryString, query);
   } catch (err) {
     reportWarning(
       `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`,
