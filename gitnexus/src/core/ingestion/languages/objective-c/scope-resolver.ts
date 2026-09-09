@@ -15,6 +15,7 @@ import { resolveObjectiveCImportTarget } from './import-target.js';
 import { loadObjectiveCResolutionConfig } from './resolution-config.js';
 import {
   applyObjectiveCCaptureSideChannel,
+  isInternalObjectiveCFunctionDef,
   objcClassQualifiedName,
   objcProtocolQualifiedName,
   objcUnresolvedMessageQualifiedName,
@@ -75,6 +76,7 @@ export const objectiveCScopeResolver: ScopeResolver = {
   applyCaptureSideChannel: applyObjectiveCCaptureSideChannel,
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
   populateNamespaceSiblings: populateObjectiveCCompilationUnitSiblings,
+  isFileLocalDef: (def: SymbolDefinition) => isInternalObjectiveCFunctionDef(def),
   isSuperReceiver: (receiverText) => receiverText.trim() === 'super',
 
   fieldFallbackOnMethodLookup: false,
@@ -585,11 +587,19 @@ function resolveMemberReceiverType(
 ): ObjCTypeInfo | undefined {
   if (message.receiverMemberName === undefined) return undefined;
   const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
-  const ownerQualifiedName =
-    owner?.hostClass !== undefined
-      ? objcClassQualifiedName(owner.hostClass)
-      : message.sourceOwnerQualifiedName;
-  return workspace.memberTypesByOwner.get(ownerQualifiedName)?.get(message.receiverMemberName);
+  let className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
+  const seen = new Set<string>();
+  while (className !== undefined && !seen.has(className)) {
+    seen.add(className);
+    const type = workspace.memberTypesByOwner
+      .get(objcClassQualifiedName(className))
+      ?.get(message.receiverMemberName);
+    if (type !== undefined) return type;
+    className = workspace.superclassByClass.get(className);
+  }
+  return workspace.memberTypesByOwner
+    .get(message.sourceOwnerQualifiedName)
+    ?.get(message.receiverMemberName);
 }
 
 function findDispatchMethods(

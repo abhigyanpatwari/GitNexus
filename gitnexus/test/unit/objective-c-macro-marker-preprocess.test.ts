@@ -139,6 +139,29 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(normalized.split('\n')[3]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
   });
 
+  it('tracks declarations that follow a leading block comment', () => {
+    const source = [
+      '/* documentation */ @interface Widget',
+      'DECLARE_WIDGET_MEMBERS',
+      '@end',
+      'RCT_EXTERN_C_BEGIN',
+      '',
+    ].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'DocumentedWidget.h');
+    const lines = normalized.split('\n');
+
+    expect(lines[1]).toBe('DECLARE_WIDGET_MEMBERS');
+    expect(lines[3]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
+  });
+
+  it('elides a marker after a directive that ends in a continued line comment', () => {
+    const source = ['#define X // \\', 'text', 'RCT_EXTERN_C_BEGIN', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'DirectiveLineComment.h');
+
+    expect(normalized.split('\n')[1]).toBe('text');
+    expect(normalized.split('\n')[2]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
+  });
+
   it('does not rewrite bare macros inside @interface / @protocol / @implementation', () => {
     const source = [
       '@interface Widget',

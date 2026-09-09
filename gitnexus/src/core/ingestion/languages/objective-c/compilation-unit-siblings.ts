@@ -11,7 +11,11 @@
 
 import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { objectiveCFactsFromParsedFiles, type ObjCContainerFact } from './facts.js';
+import {
+  isInternalObjectiveCFunctionDef,
+  objectiveCFactsFromParsedFiles,
+  type ObjCContainerFact,
+} from './facts.js';
 
 export function populateObjectiveCCompilationUnitSiblings(
   parsedFiles: readonly ParsedFile[],
@@ -25,11 +29,16 @@ export function populateObjectiveCCompilationUnitSiblings(
     if (stemKey !== undefined) appendGroup(groups, stemKey, parsed);
   }
 
+  const internalFunctionIds = new Set<string>();
   for (const fact of objectiveCFactsFromParsedFiles(parsedFiles)) {
     const parsed = byPath.get(fact.filePath);
-    if (parsed === undefined) continue;
-    for (const container of fact.containers) {
-      appendGroup(groups, `type:${typeVisibilityName(container)}`, parsed);
+    if (parsed !== undefined) {
+      for (const container of fact.containers) {
+        appendGroup(groups, `type:${typeVisibilityName(container)}`, parsed);
+      }
+    }
+    for (const fn of fact.functions) {
+      if (fn.linkage === 'internal') internalFunctionIds.add(fn.nodeId);
     }
   }
 
@@ -44,6 +53,9 @@ export function populateObjectiveCCompilationUnitSiblings(
       for (const source of unique) {
         if (source.filePath === receiver.filePath) continue;
         for (const def of source.localDefs as SymbolDefinition[]) {
+          if (internalFunctionIds.has(def.nodeId) || isInternalObjectiveCFunctionDef(def)) {
+            continue;
+          }
           const name = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
           if (name === '') continue;
           const bucket = getAugmentationBucket(augmentations, receiverModule, name);

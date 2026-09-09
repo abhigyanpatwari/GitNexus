@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.5';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.6';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -221,6 +221,18 @@ export const objcFunctionQualifiedName = (
   linkage === 'internal' && filePath !== undefined
     ? `objc:function:static:${filePath}:${name}`
     : `objc:function:${name}`;
+
+/** True for C functions this provider models as translation-unit local. */
+export function isInternalObjectiveCFunctionDef(def: {
+  readonly nodeId?: string;
+  readonly qualifiedName?: string;
+}): boolean {
+  const qualifiedName = def.qualifiedName ?? '';
+  const nodeId = def.nodeId ?? '';
+  return (
+    qualifiedName.startsWith('objc:function:static:') || nodeId.includes('objc:function:static:')
+  );
+}
 export const objcUnresolvedMessageQualifiedName = (
   filePath: string,
   startLine: number,

@@ -73,8 +73,17 @@ function isIdentifierContinue(line: string, index: number): boolean {
 
 function leadingObjCDeclKeyword(line: string): 'begin' | 'end' | null {
   let index = 0;
-  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
-  if (line.startsWith('//', index) || line.startsWith('/*', index)) return null;
+  while (index < line.length) {
+    while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
+    if (line.startsWith('//', index)) return null;
+    if (line.startsWith('/*', index)) {
+      const blockCommentEnd = line.indexOf('*/', index + 2);
+      if (blockCommentEnd < 0) return null;
+      index = blockCommentEnd + 2;
+      continue;
+    }
+    break;
+  }
   if (line.startsWith('@end', index) && !isIdentifierContinue(line, index + 4)) return 'end';
   for (const keyword of ['@interface', '@protocol', '@implementation'] as const) {
     if (line.startsWith(keyword, index) && !isIdentifierContinue(line, index + keyword.length)) {
@@ -185,6 +194,11 @@ function scanDirectiveLine(line: string, state: ScanState): void {
 function scanLine(line: string, state: ScanState): void {
   if (state.inLineCommentContinuation) {
     state.inLineCommentContinuation = hasEscapedLineEnding(line);
+    // A `// ... \` splice keeps the next physical line in the comment, but the
+    // directive ends unless that line is itself backslash-continued.
+    if (state.inPreprocessorDirective) {
+      state.inPreprocessorDirective = state.inLineCommentContinuation;
+    }
     return;
   }
   if (state.inPreprocessorDirective) {

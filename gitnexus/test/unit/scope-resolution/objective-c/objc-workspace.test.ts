@@ -4,6 +4,7 @@ import { join } from 'path';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import {
   getObjectiveCFileFacts,
+  objcFunctionQualifiedName,
   setObjectiveCFileFacts,
   type ObjCFileFacts,
 } from '../../../../src/core/ingestion/languages/objective-c/facts.js';
@@ -279,6 +280,59 @@ describe('Objective-C compilation-unit siblings', () => {
     expect(indexes.bindingAugmentations.get('module:m')?.get('WidgetIface')?.[0]?.def.nodeId).toBe(
       'widget-iface',
     );
+  });
+
+  it('does not expose file-static C functions to compilation-unit siblings', () => {
+    const headerPath = 'Classes/Foo.h';
+    const implPath = 'Classes/Foo.m';
+    const staticQn = objcFunctionQualifiedName('hiddenHelper', 'internal', implPath);
+    const staticDef: SymbolDefinition = {
+      nodeId: `Function:${staticQn}`,
+      filePath: implPath,
+      type: 'Function',
+      qualifiedName: staticQn,
+    };
+    const exportedDef = def('exported-run', implPath, 'FooRun');
+    setObjectiveCFileFacts({
+      ...staleFacts(implPath),
+      functions: [
+        {
+          name: 'hiddenHelper',
+          linkage: 'internal',
+          qualifiedName: staticQn,
+          nodeId: staticDef.nodeId,
+          filePath: implPath,
+          startLine: 1,
+          endLine: 1,
+          parameterTypes: [],
+        },
+      ],
+    });
+    const parsedFiles = [
+      parsed(headerPath, 'module:foo-h', def('header-run', headerPath, 'FooIface'), {
+        kind: 'objective-c',
+        facts: staleFacts(headerPath),
+      }),
+      {
+        filePath: implPath,
+        moduleScope: 'module:foo-m',
+        scopes: [],
+        parsedImports: [],
+        localDefs: [staticDef, exportedDef],
+        referenceSites: [],
+        captureSideChannel: { kind: 'objective-c', facts: getObjectiveCFileFacts(implPath) },
+      },
+    ];
+    const indexes = siblingIndexes(parsedFiles);
+    populateObjectiveCCompilationUnitSiblings(parsedFiles, indexes);
+
+    expect(indexes.bindingAugmentations.get('module:foo-h')?.get('hiddenHelper')).toBeUndefined();
+    expect(indexes.bindingAugmentations.get('module:foo-h')?.get(staticQn)).toBeUndefined();
+    expect(indexes.bindingAugmentations.get('module:foo-h')?.get('FooRun')?.[0]?.def.nodeId).toBe(
+      'exported-run',
+    );
+    expect(objectiveCScopeResolver.isFileLocalDef?.(staticDef)).toBe(true);
+    expect(objectiveCScopeResolver.isFileLocalDef?.(exportedDef)).toBe(false);
   });
 });
 

@@ -94,7 +94,82 @@ function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
  * by a selector identifier.
  */
 function hasObjectiveCMethodDeclarator(sourceText: string): boolean {
-  return /(?:^|[\r\n])[ \t]*[+-][ \t]*\([^;\n]+\)[ \t]*[A-Za-z_]/.test(sourceText);
+  return /(?:^|[\r\n])[ \t]*[+-][ \t]*\([^;\n]+\)[ \t]*[A-Za-z_]/.test(
+    sourceTextWithoutComments(sourceText),
+  );
+}
+
+/** Replace comments with spaces so line-leading method probes see only code. */
+function sourceTextWithoutComments(sourceText: string): string {
+  const chars = sourceText.split('');
+  let index = 0;
+  let state: 'code' | 'line-comment' | 'block-comment' | 'single-quote' | 'double-quote' = 'code';
+
+  while (index < chars.length) {
+    const current = chars[index];
+    const next = chars[index + 1];
+
+    if (state === 'line-comment') {
+      if (current === '\n' || current === '\r') state = 'code';
+      else chars[index] = ' ';
+      index++;
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (current === '*' && next === '/') {
+        chars[index] = ' ';
+        chars[index + 1] = ' ';
+        state = 'code';
+        index += 2;
+      } else {
+        if (current !== '\n' && current !== '\r') chars[index] = ' ';
+        index++;
+      }
+      continue;
+    }
+    if (state === 'single-quote' || state === 'double-quote') {
+      if (current === '\\') {
+        index += 2;
+      } else if (
+        (state === 'single-quote' && current === "'") ||
+        (state === 'double-quote' && current === '"')
+      ) {
+        state = 'code';
+        index++;
+      } else {
+        index++;
+      }
+      continue;
+    }
+
+    if (current === '/' && next === '/') {
+      chars[index] = ' ';
+      chars[index + 1] = ' ';
+      state = 'line-comment';
+      index += 2;
+      continue;
+    }
+    if (current === '/' && next === '*') {
+      chars[index] = ' ';
+      chars[index + 1] = ' ';
+      state = 'block-comment';
+      index += 2;
+      continue;
+    }
+    if (current === "'") {
+      state = 'single-quote';
+      index++;
+      continue;
+    }
+    if (current === '"') {
+      state = 'double-quote';
+      index++;
+      continue;
+    }
+    index++;
+  }
+
+  return chars.join('');
 }
 
 function hasObjectiveCHeaderDirective(sourceText: string): boolean {

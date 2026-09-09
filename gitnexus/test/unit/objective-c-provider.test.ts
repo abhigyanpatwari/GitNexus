@@ -159,6 +159,15 @@ describe('Objective-C provider', () => {
     expect(classifyObjectiveCFileContent('MethodSnippet.h', '- (void)run;\n')).toBe(true);
     expect(classifyObjectiveCFileContent('ClassSnippet.h', '+ (instancetype)shared;\n')).toBe(true);
     expect(classifyObjectiveCFileContent('unary.h', '-(x);\n')).toBe(false);
+    expect(
+      classifyObjectiveCFileContent('commented.h', '// - (void)run;\nint add(int a, int b);\n'),
+    ).toBe(false);
+    expect(
+      classifyObjectiveCFileContent(
+        'block-comment.h',
+        '/* - (void)run; */\nint add(int a, int b);\n',
+      ),
+    ).toBe(false);
   });
 
   it('preserves local Objective-C import resolution while indexing suffixes', () => {
@@ -402,6 +411,110 @@ static int helper(void) { return 1; }
         }),
       ]),
     );
+  });
+
+  it('retains protocol qualifications on property and ivar types', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@protocol WorkerProtocol
+- (void)run;
+@end
+@interface Host {
+  id<WorkerProtocol> ivar;
+}
+@property id<WorkerProtocol> member;
+- (void)go;
+@end
+@implementation Host
+- (void)go { [self.member run]; }
+@end
+`),
+      'Host.m',
+    );
+
+    expect(facts.members).toContainEqual(
+      expect.objectContaining({ name: 'member', declaredType: 'id<WorkerProtocol>' }),
+    );
+    expect(facts.members).toContainEqual(
+      expect.objectContaining({ name: 'ivar', declaredType: 'id<WorkerProtocol>' }),
+    );
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'self.member',
+        receiverType: { kind: 'protocol', name: 'WorkerProtocol', raw: 'id<WorkerProtocol>' },
+      }),
+    );
+  });
+
+  it('resolves a property inherited from the superclass', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@interface Helper
+- (void)run;
+@end
+@interface Base
+@property (nonatomic, strong) Helper *baseHelper;
+@end
+@interface Child : Base
+- (void)go;
+@end
+@implementation Child
+- (void)go { [self.baseHelper run]; }
+@end
+`),
+      'Child.m',
+    );
+
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'self.baseHelper',
+        selector: 'run',
+        receiverKind: 'property',
+        receiverMemberName: 'baseHelper',
+      }),
+    );
+
+    const graph = createKnowledgeGraph();
+    for (const container of facts.containers) {
+      graph.addNode({
+        id: container.nodeId,
+        label: container.label,
+        properties: { filePath: facts.filePath, qualifiedName: container.qualifiedName },
+      });
+    }
+    for (const method of facts.methods) {
+      graph.addNode({
+        id: method.nodeId,
+        label: 'Method',
+        properties: { filePath: facts.filePath, qualifiedName: method.qualifiedName },
+      });
+    }
+    objectiveCScopeResolver.emitPostResolutionEdges?.(graph, [
+      {
+        filePath: facts.filePath,
+        moduleScope: 0,
+        scopes: [],
+        parsedImports: [],
+        localDefs: [],
+        referenceSites: [],
+        captureSideChannel: { kind: 'objective-c', facts },
+      },
+    ]);
+
+    const go = facts.methods.find(
+      (method) => method.selector === 'go' && method.declarationRole === 'implementation',
+    );
+    const run = facts.methods.find(
+      (method) => method.selector === 'run' && method.ownerName === 'Helper',
+    );
+    expect(go).toBeDefined();
+    expect(run).toBeDefined();
+    expect(
+      [...graph.iterRelationships()].some(
+        (rel) =>
+          rel.type === 'CALLS' && rel.sourceId === go?.nodeId && rel.targetId === run?.nodeId,
+      ),
+    ).toBe(true);
   });
 
   it('resolves a property declared after its caller in a class extension', () => {
