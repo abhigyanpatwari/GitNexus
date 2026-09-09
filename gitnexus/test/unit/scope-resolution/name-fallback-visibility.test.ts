@@ -107,6 +107,23 @@ describe('Go: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
+  it('still REFUSES a qualified call to an unexported or test-only declaration', () => {
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('b/caller.go'),
+        candidate: mkCandidate('a/helper.go', 'private'),
+        site: { rawQualifiedName: 'a.private' },
+      }),
+    ).toBe(false);
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('b/caller.go'),
+        candidate: mkCandidate('a/helper_test.go', 'ExportedTestHelper'),
+        site: { rawQualifiedName: 'a.ExportedTestHelper' },
+      }),
+    ).toBe(false);
+  });
+
   it('allows an external test package to dot-import exported production functions', () => {
     const callerParsed = mkCaller('foo/caller_test.go', [
       { kind: 'wildcard', targetRaw: 'example.com/mod/foo' },
@@ -525,6 +542,26 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
+  it('keeps a nested src/ directory as a module segment', () => {
+    // `src/src/helper.rs` is crate::src::helper. A glob of an unrelated
+    // `foo::helper` used to match after the crate-root while-strip reduced the
+    // file to just `helper`.
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [{ kind: 'wildcard', targetRaw: 'crate::foo::helper' }]),
+        candidate: mkCandidate('src/src/helper.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(false);
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [{ kind: 'wildcard', targetRaw: 'crate::src::helper' }]),
+        candidate: mkCandidate('src/src/helper.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(true);
+  });
+
   it('does not judge a PATH-QUALIFIED call site', () => {
     // `User::new(...)` names its path in source. Refusing it for lacking a
     // `use` of the module would delete an edge the code spells out — the
@@ -741,6 +778,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
           'def:InvoiceService',
         ),
         parsedFileOf: ownerFile('def:InvoiceService', 'Class'),
+        sourceTextOf: () => "require 'billing/invoice_service'; unique_helper_xyz()",
       }),
     ).toBe(true);
   });

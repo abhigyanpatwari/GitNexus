@@ -51,7 +51,9 @@ function rustModulePathOf(filePath: string): string {
   const segments = withoutExtension.split('/').filter((s) => s !== '');
   const stem = segments[segments.length - 1];
   if (stem !== undefined && RUST_DIRECTORY_MODULE_STEMS.has(stem)) segments.pop();
-  while (segments.length > 0 && RUST_CRATE_ROOT_DIRS.has(segments[0]!)) segments.shift();
+  // Only the crate-root folder is non-semantic. A nested `src/` is module
+  // `src` (`src/src/helper.rs` → `crate::src::helper`), not another root.
+  if (segments.length > 0 && RUST_CRATE_ROOT_DIRS.has(segments[0]!)) segments.shift();
   return segments.join('/');
 }
 

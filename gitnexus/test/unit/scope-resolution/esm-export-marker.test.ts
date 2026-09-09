@@ -160,6 +160,31 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     }
   });
 
+  it('treats a top-level conditional this assignment as CommonJS', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      for (const src of [
+        'function api() {}\nif (enabled) this.api = api;\nfunction hidden() {}',
+        'function api() {}\nif (enabled) { this.api = api; }\nfunction hidden() {}',
+      ]) {
+        const v = verdicts(emit, src, file);
+        expect(v.api).toBeUndefined();
+        expect(v.hidden).toBeUndefined();
+      }
+    }
+  });
+
+  it('does not treat this assignments inside a function as module exports', () => {
+    const v = verdicts(
+      emitJsScopeCaptures,
+      'function wrapper() { if (enabled) this.api = api; }\nfunction hidden() {}',
+      'x.js',
+    );
+    expect(v.hidden).toBe('false');
+  });
+
   it('recognizes exported module-scoped var inside a block, but not block let or function-local var', () => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'x.js'],

@@ -20,6 +20,7 @@ describe('collectResolvedCalleeNames', () => {
     fn('a', 'a', 'src/a.go');
     fn('b', 'b', 'src/b.go');
     fn('c', 'c', 'src/c.ts');
+    fn('d', 'd', 'src/d.go');
     g.addNode({ id: 'file', label: 'File' as NodeLabel, properties: { filePath: 'src/a.go' } });
     g.addRelationship({
       id: 'r1',
@@ -64,7 +65,7 @@ describe('collectResolvedCalleeNames', () => {
     g.addRelationship({
       id: 'r6',
       sourceId: 'a',
-      targetId: 'b',
+      targetId: 'd',
       type: 'CALLS',
       confidence: 0.5,
       reason: GLOBAL_NAME_FALLBACK_REASON,

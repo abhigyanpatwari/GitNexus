@@ -71,10 +71,10 @@ export function goIsGlobalNameFallbackPlausible(ctx: {
   readonly site?: { readonly rawQualifiedName?: string };
 }): boolean {
   // A PATH-QUALIFIED call (`pkg.Export()`) reached this tier because the
-  // qualifier could not be followed. The source named the package, so the
-  // bare-name "only a dot import introduces this identifier" rule does not
-  // apply — refusing here deletes a call Go writes as `pkg.Export()`.
-  if (ctx.site?.rawQualifiedName !== undefined) return true;
+  // qualifier could not be followed. Qualification removes the bare-name
+  // "only a dot import introduces this identifier" rule — not export or
+  // test-package visibility. `other.private()` is still impossible.
+  const isPackageQualified = ctx.site?.rawQualifiedName !== undefined;
   // Methods require a receiver, even within their own package or a dot import.
   if (ctx.candidate.type === 'Method' || ctx.candidate.qualifiedName?.includes('.')) return false;
   const callerDir = directoryOf(ctx.callerParsed.filePath);
@@ -111,6 +111,7 @@ export function goIsGlobalNameFallbackPlausible(ctx: {
   if (simpleName === '') return true;
   // Unexported across a package boundary (rule 2): no import can reach it.
   if (!isExportedGoName(simpleName)) return false;
+  if (isPackageQualified) return true;
 
   // Only a dot import introduces a bare name. A candidate in the module ROOT package has an empty
   // directory, which `modulePathReaches` cannot align against any import path

@@ -177,6 +177,52 @@ function hasCommonJsExportSurface(root: SyntaxNode): boolean {
   return false;
 }
 
+/**
+ * Top-level control-flow wrappers around `this.x =` / `this['x'] =`.
+ * Recurse through these only — a function or class body is a different `this`.
+ */
+const TOP_LEVEL_THIS_WALK: ReadonlySet<string> = new Set([
+  'if_statement',
+  'else_clause',
+  'for_statement',
+  'for_in_statement',
+  'for_of_statement',
+  'while_statement',
+  'do_statement',
+  'switch_statement',
+  'switch_body',
+  'switch_case',
+  'switch_default',
+  'try_statement',
+  'catch_clause',
+  'finally_clause',
+  'labeled_statement',
+  'statement_block',
+]);
+
+/** Module-wrapper `this.x =` / `this['x'] =` as a statement. */
+function isThisExportAssignment(stmt: SyntaxNode): boolean {
+  if (stmt.type !== 'expression_statement') return false;
+  const assignment = stmt.namedChildren[0];
+  const left =
+    assignment?.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
+  return (
+    left !== null &&
+    (left.type === 'member_expression' || left.type === 'subscript_expression') &&
+    left.childForFieldName('object')?.type === 'this'
+  );
+}
+
+/**
+ * A top-level `this` export, including `if (enabled) this.api = api` and the
+ * braced form. Does not walk into function or class bodies.
+ */
+function hasTopLevelThisExportAssignment(stmt: SyntaxNode): boolean {
+  if (isThisExportAssignment(stmt)) return true;
+  if (!TOP_LEVEL_THIS_WALK.has(stmt.type)) return false;
+  return stmt.namedChildren.some(hasTopLevelThisExportAssignment);
+}
+
 /** Node types below which a declaration is nested, not module-level. */
 const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
   'class_body',
@@ -230,16 +276,8 @@ export function collectEsmExportEvidence(
           namedLocals.add(child.text);
         }
       }
-    } else if (stmt.type === 'expression_statement') {
-      const assignment = stmt.namedChildren[0];
-      const left =
-        assignment?.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
-      if (
-        left !== null &&
-        (left.type === 'member_expression' || left.type === 'subscript_expression') &&
-        left.childForFieldName('object')?.type === 'this'
-      )
-        commonJs = true;
+    } else if (hasTopLevelThisExportAssignment(stmt)) {
+      commonJs = true;
     }
   }
   return { namedLocals, commonJs };
