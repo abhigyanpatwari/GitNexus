@@ -179,7 +179,25 @@ export function resolveValueRefTarget(
     scopes,
     publishesImportedNames,
   );
-  if (viaNamespace !== undefined) return viaNamespace;
+  if (viaNamespace !== undefined) {
+    // `'owned'` is NOT "no answer" — it is "this receiver is a namespace handle
+    // this file wrote, and it names no callable member". The two must not be
+    // conflated, because falling through from the second one reaches
+    // `findClassBindingInScope`, whose miss path answers from the WORKSPACE-wide
+    // qualified-name index: a same-named container in a file this one never
+    // imported then supplies the member the written module does not have. That
+    // is a confident edge into an unrelated file, and the owner-shadow guard
+    // below does not stop it — a plain `const utils = @import("utils.zig");`
+    // records a namespace IMPORT EDGE, not a module-scope binding, so the guard
+    // sees nothing bound under the name and reads the container as unshadowed.
+    // Verified with a fixture rather than argued: `dom_utils.onlyOnDecoy`, where
+    // `dom_utils.zig` has no such member and `decoy.zig` declares a same-named
+    // struct that does, minted `JsApi → onlyOnDecoy` before this line existed.
+    //
+    // The file said which module it meant. If that module does not expose the
+    // name as a callable, the honest answer is no edge.
+    return viaNamespace === 'owned' ? undefined : viaNamespace;
+  }
 
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
   if (owner !== undefined) {
@@ -253,7 +271,7 @@ function findNamespaceValueRefTarget(
   receiverName: string,
   scopes: ScopeResolutionIndexes,
   publishesImportedNames: boolean,
-): SymbolDefinition | undefined {
+): SymbolDefinition | 'owned' | undefined {
   const moduleScopeId = scopes.moduleScopes.get(filePath);
   if (moduleScopeId === undefined) return undefined;
   const targetFiles: string[] = [];
@@ -288,9 +306,9 @@ function findNamespaceValueRefTarget(
   const localRefs = (scope: ScopeId): readonly BindingRef[] =>
     (scopes.bindings.get(scope)?.get(site.name) ?? []).filter((ref) => ref.origin === 'local');
   const local = uniqueMember(localRefs);
-  if (local === 'ambiguous') return undefined;
+  if (local === 'ambiguous') return 'owned';
   if (local !== undefined) return local;
-  if (!publishesImportedNames) return undefined;
+  if (!publishesImportedNames) return 'owned';
 
   // PRECEDENCE IS DECIDED BEFORE THE TYPE GATE, not by it. `uniqueMember`
   // applies `CALL_TARGET_TYPES` while it selects, so a target file declaring a
@@ -312,7 +330,7 @@ function findNamespaceValueRefTarget(
     const targetScopeId = scopes.moduleScopes.get(targetFile);
     return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
   });
-  if (declaredLocally) return undefined;
+  if (declaredLocally) return 'owned';
 
   // Then a name the target file publishes but did not declare — the hub case.
   // `lookupBindingsAt`, not `scopes.bindings`, because a hub's module scope owns
@@ -324,7 +342,7 @@ function findNamespaceValueRefTarget(
       (ref) => ref.origin === 'import' || ref.origin === 'namespace' || ref.origin === 'reexport',
     ),
   );
-  return published === 'ambiguous' ? undefined : published;
+  return published === 'ambiguous' || published === undefined ? 'owned' : published;
 }
 
 export function emitPropertyDispatchCalls(

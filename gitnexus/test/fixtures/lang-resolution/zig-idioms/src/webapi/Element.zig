@@ -120,6 +120,13 @@ pub const JsApi = struct {
     // constants must keep emitting nothing.
     pub const defaultNs = bridge.accessor(dom_utils.DEFAULT_NS, null, .{});
 
+    // The receiver IS a known namespace import, but `dom_utils.zig` declares no
+    // `onlyOnDecoy` — so the namespace channel declines and the container
+    // channel runs, reaching `decoy.zig`'s same-named struct through the
+    // workspace-wide qualified-name index. A registration must NOT be minted
+    // there: the file wrote which module it meant.
+    pub const decoyed = bridge.accessor(dom_utils.onlyOnDecoy, null, .{});
+
     // Through a HUB, whose published names are all imported ones. The CALL form
     // resolves — `namespaceExportsIncludeImportedNames` is what makes a Zig hub
     // work at all — so the REGISTRATION form has to resolve to the same def, or

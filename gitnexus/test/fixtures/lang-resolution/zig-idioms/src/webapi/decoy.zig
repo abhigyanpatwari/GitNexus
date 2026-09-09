@@ -11,4 +11,14 @@ pub const dom_utils = struct {
     pub fn compare(a: u8, b: u8) u8 {
         return if (a < b) a else b;
     }
+
+    // A callable that exists ONLY here. `dom_utils.zig` has no member of this
+    // name, so a registration written `dom_utils.onlyOnDecoy` declines in the
+    // namespace channel and falls through to the container channel — where the
+    // workspace-wide qualified-name fallback answers with this struct. The
+    // owner-shadow guard is the only thing standing between that and a
+    // confident edge into a file `Element.zig` never imported.
+    pub fn onlyOnDecoy(v: u8) u8 {
+        return v;
+    }
 };

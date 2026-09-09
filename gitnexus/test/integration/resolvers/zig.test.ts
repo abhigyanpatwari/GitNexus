@@ -435,6 +435,21 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       expect(valueRefTargetIds.filter((id) => id.includes('Gauge'))).toEqual([]);
     });
 
+    it('declines a namespace member the written module does not have, rather than reaching a same-named container', () => {
+      // The fall-through the channel order creates, and the guard that closes
+      // it. `dom_utils` IS a namespace import here, but `dom_utils.zig` has no
+      // `onlyOnDecoy`, so the namespace channel declines — and declining is not
+      // the end: `findClassBindingInScope` runs next, its `isClassLike` walk
+      // misses (an import binds a Module), and its WORKSPACE-WIDE
+      // `qualifiedNames` fallback answers with `decoy.zig`'s same-named struct,
+      // which does declare `onlyOnDecoy`. Only `isOwnerNameShadowedBySomethingElse`
+      // stands between that and a confident edge into a file this one never
+      // imported — the wrong-edge failure, arriving through the container
+      // channel after the namespace channel said no.
+      expect(valueRefs).not.toContain('JsApi → onlyOnDecoy');
+      expect(valueRefTargetIds.filter((id) => id.includes('onlyOnDecoy'))).toEqual([]);
+    });
+
     it('does not mint a value reference for the CALLEE of an ordinary call', () => {
       // `register(onTick)` must produce ONE value reference (the argument), not
       // two: without binding the callee to the `function:` field the same rule
