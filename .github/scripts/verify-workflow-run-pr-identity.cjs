@@ -179,9 +179,7 @@ function flattenGhListPages(parsed) {
 }
 
 function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
-  const run =
-    runGh ||
-    ((args) => spawnSync('gh', args, { encoding: 'utf8' }));
+  const run = runGh || ((args) => spawnSync('gh', args, { encoding: 'utf8' }));
   const result = run([
     'api',
     '--paginate',
