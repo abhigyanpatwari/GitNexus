@@ -749,7 +749,24 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v97: Objective-C macro-marker preprocessing recognizes comment-prefixed
 // directives and rejects invalid numeric marker prefixes. A warm v96 cache can
 // replay error-recovered facts from the previous normalization behavior.
-const SCHEMA_BUMP = 97;
+// v98 (#3219): `ZIG_SCOPE_QUERY` gained three `@reference.value-ref` rules —
+// bare call argument, qualified call argument (with `@reference.receiver`), and
+// const-binding initialiser — so a Zig callable named in VALUE position now
+// produces a `value-ref` entry in `ParsedFile.referenceSites` where it produced
+// none before. These captures are PARSE-TIME facts, so a warm pre-v98 cache
+// replays unchanged `.zig` files with zero value-ref sites, `--force` included
+// (shards are content-addressed): `emitPropertyDispatchCalls` then emits no
+// USES edge, `callableValueReferenceBoundaries` measures a real zero, and
+// `impact` on a registered accessor republishes `epistemic: "exact"` — the exact
+// #3399 defect this change exists to close, silently un-fixed.
+//
+// 94-97 went to #3179 (Objective-C), which has since merged; 98 is the next
+// value above it. Re-checked against origin/main and every open PR touching
+// this file at merge time, which is the rule the paragraphs above were written
+// by PRs that each checked only once: main is at 97, and the remaining open
+// claims (#3190 at 94, #2840 at 71, #1616 at 2) all sit below it and must
+// re-bump themselves.
+const SCHEMA_BUMP = 98;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
