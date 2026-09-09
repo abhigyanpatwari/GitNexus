@@ -4,9 +4,13 @@
 Not a mock of the harness's own code. It does what the CLI does at the two
 boundaries the harness depends on - it calls ANTHROPIC_BASE_URL for a turn, it
 EXECUTES the tool blocks that come back, and it prints the stream-json event
-sequence the parent parses. Write and Skill really run; Bash is deliberately
-stubbed, because arbitrary shell from a scripted reply buys no fidelity for the
-paths this exercises and plenty of ways to damage the host. Everything between
+sequence the parent parses. Only Write really executes - it is what produces the
+review artifact, so the artifact path has to be genuine end to end. Skill is
+MODELLED: it validates the request and returns a synthetic result, because the
+parent's evidence gate keys on the request/result pair rather than on a skill
+having loaded, and a fixture cannot load a real one. Bash is stubbed outright:
+arbitrary shell from a scripted reply buys no fidelity for the paths this
+exercises and plenty of ways to damage the host. Everything between
 those boundaries (the sandbox,
 the artifact capture, the scoring, the row) stays real, which is the whole
 point: those are the layers that shipped bugs no unit test could see.
@@ -37,7 +41,11 @@ def _turn(base_url: str, prompt: str) -> dict:
 
 
 def _run_tool(name: str, params: dict) -> str:
-    """Execute for real. A Write here is what produces the review artifact."""
+    """Write executes for real - it is what produces the review artifact.
+
+    Skill and Bash do not: see the module docstring for which is modelled and
+    which is stubbed, and why neither can be genuine here.
+    """
 
     if name == "Write":
         target = pathlib.Path(params["file_path"])
