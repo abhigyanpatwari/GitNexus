@@ -118,6 +118,10 @@ function providerMemberStartLine(member: Parser.SyntaxNode): number {
 function decodeEscapeSequence(text: string): string | null {
   if (!text.startsWith('\\') || text.length < 2) return null;
   const escaped = text.slice(1);
+  // Tagged-template cooked value: LineContinuation is empty; `\8`/`\9` and
+  // LegacyOctalEscapeSequence (`\1`–`\7`, `\00`…) make cooked undefined.
+  if (/^[\n\r\u2028\u2029]$/.test(escaped) || escaped === '\r\n') return '';
+  if (/^[1-9]$/.test(escaped) || /^[0-7]{2,3}$/.test(escaped)) return null;
   if (escaped.length === 1) return SIMPLE_TEMPLATE_ESCAPES[escaped] ?? escaped;
   if (escaped[0] === 'x' && /^[0-9A-Fa-f]{2}$/.test(escaped.slice(1))) {
     return String.fromCharCode(Number.parseInt(escaped.slice(1), 16));

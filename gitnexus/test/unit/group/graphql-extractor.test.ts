@@ -742,6 +742,57 @@ export const GetWidgetDocument = /*#__PURE__*/ \`
     expect(contracts).toEqual([]);
   });
 
+  it('treats template line continuations as empty while inlining ${FragmentDoc} (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\
+\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
+  });
+
+  it('fails closed for NonOctalDecimalEscapeSequence in interpolated gql templates (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\8\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
   it('decodes escape_sequence nodes while inlining ${FragmentDoc} (#3201)', async () => {
     const { root, repo } = await makeRepo({
       'src/q.graphql': `query Q { q }`,
