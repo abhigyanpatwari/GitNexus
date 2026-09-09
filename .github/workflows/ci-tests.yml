@@ -910,7 +910,8 @@ jobs:
           tests/test_proposer_sandbox.py
           tests/test_workflow_bench_sessions.py
           tests/test_ce_plugin_runtime.py
-          tests/test_offline_sweep_integration.py -q
+          tests/test_offline_sweep_integration.py
+          tests/test_mock_provider.py -q
         working-directory: eval
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while

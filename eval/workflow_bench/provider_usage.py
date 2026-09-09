@@ -191,12 +191,15 @@ def _normalize_anthropic(usage: Mapping[str, Any]) -> NormalizedUsage:
 def canonical_provider(label: str | None, call_type: str | None) -> str | None:
     """Map LiteLLM's provider label onto an adapter key, or None if unsure.
 
-    LiteLLM reports ``custom_llm_provider`` as "openai" for both Chat
-    Completions and Responses, and those two report usage differently, so the
-    label alone cannot pick an adapter. The call type is what distinguishes
-    them. Returning None when it does not is deliberate: normalize_usage
-    refuses an unknown provider rather than guessing token semantics, which is
-    the whole point of keeping the native object authoritative.
+    Every "openai" label maps to LITELLM_NORMALIZED regardless of call type,
+    because anything reaching a proxy callback has already been normalised by
+    LiteLLM into its own object - measured against a real gateway, where the
+    observed call type is "anthropic_messages" and the upstream Responses shape
+    never arrives. OPENAI_RESPONSES stays in the adapter table for a RAW
+    upstream body, which only direct callers and the wire-shape tests pass.
+
+    An unrecognised label still returns None, so normalize_usage refuses rather
+    than guessing token semantics.
     """
 
     if label == "openai":

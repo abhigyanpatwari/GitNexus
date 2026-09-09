@@ -247,6 +247,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # The offline sweep, run here with nothing stubbed: this job is the only
         # one carrying bubblewrap, the pinned runtime and a built GitNexus.
         "tests/test_offline_sweep_integration.py",
+        # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
+        # set only on this job. Omitted from this list it skipped everywhere.
+        "tests/test_mock_provider.py",
         "-q",
     ]
     bwrap_canary_marker = re.compile(
@@ -1062,13 +1065,20 @@ def test_a_raising_packed_cell_still_persists_its_settled_siblings():
     assert (1, "review") in folded, "the sibling that completed was never recorded"
 
 
-def test_an_uninvoked_skill_does_not_move_the_quality_median_but_still_costs():
-    """An arm measures a SKILL; a cell where the skill never ran did not measure it.
+def test_an_uninvoked_skill_still_counts_toward_the_arm_median():
+    """Pins a KNOWN GAP, not a desired behaviour.
 
-    The row's evidence is well formed, so the old filter kept it and its score
-    moved the arm's quality median - an arm could be credited for a review it
-    never performed with the skill under test. Cost and duration still count:
-    that session really ran and really was billed.
+    A cell whose skill never ran still moves the arm's quality median, even
+    though an arm exists to measure a SKILL. The narrow fix - filtering those
+    rows out of the quality metrics - is worse than the gap: valid_runs and
+    excluded_runs keep counting them, so the promotion gate sees N clean runs
+    while the median came from fewer. Since the dropped rows are systematically
+    an arm's worst, that biases toward promoting, and it was measured flipping
+    keep_incumbent to promote.
+
+    Closing it honestly needs a scored-run count and a paired-equality check in
+    the promotion gate. Pinned here so the half-fix cannot be reapplied without
+    someone reading why it was reverted.
     """
 
     good = record(review_weighted_f1=1.0, cost_usd=2.0)
@@ -1077,9 +1087,9 @@ def test_an_uninvoked_skill_does_not_move_the_quality_median_but_still_costs():
     )
     agg = aggregate([good, uninvoked])
 
-    assert agg["review_weighted_f1"] == 1.0, "the uninvoked cell must not drag quality"
-    assert agg["cost_usd"] == 3.0, "but it was still billed, so it counts for cost"
+    assert agg["review_weighted_f1"] == 0.5, "the uninvoked row is counted - the known gap"
+    assert agg["cost_usd"] == 3.0
+    # The invariant that makes the half-fix unsafe: the median and the run count
+    # the gate reads must cover the same rows.
+    assert agg["valid_runs"] == 2
 
-    # A wrong-but-valid review is a quality result and must still count.
-    wrong = record(review_weighted_f1=0.0, cost_usd=2.0, resolved=False, error_kind="oracle-failed")
-    assert aggregate([good, wrong])["review_weighted_f1"] == 0.5

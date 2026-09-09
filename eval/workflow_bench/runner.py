@@ -1591,17 +1591,26 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "review_category_accuracy",
         "review_grounded_evidence",
     )
-    # QUALITY metrics only: a cell whose skill never ran did not measure the
-    # skill, so its score must not move the arm's quality median. It stays in
-    # `valid` for cost and duration, because that session really did run and
-    # really was billed - and it stays visible to the promotion gate, which has
-    # its own vocabulary for a candidate that never loaded its skill.
-    scored = [record for record in valid if record.get("error_kind") != "skill-not-invoked"]
-    if any("review_weighted_f1" in record for record in scored):
+    # NOTE: a skill-not-invoked row still contributes to these medians. That is
+    # a real measurement gap - an arm exists to measure a SKILL, and a cell
+    # where the skill never ran did not measure it - but the narrow fix is
+    # WORSE than the gap, so it is deliberately not applied here.
+    #
+    # Filtering those rows out of the quality metrics alone leaves valid_runs
+    # and excluded_runs counting them, so the promotion gate sees N clean runs
+    # while the median was taken over fewer. Because the dropped rows are
+    # systematically an arm's worst, that biases toward PROMOTING: measured on
+    # one real run at 0.9 plus two uninvoked rows at 0.0, the gate flipped from
+    # keep_incumbent to promote. The three verdict fields below compound it -
+    # they are all() reducers, so one uninvoked cell flips a whole arm.
+    # Closing this honestly needs a scored-run count and a paired-equality
+    # check in the gate itself: a promotion-semantics change, not an
+    # aggregation fix.
+    if any("review_weighted_f1" in record for record in valid):
         for metric in review_metrics:
-            values = [record[metric] for record in scored if record.get(metric) is not None]
+            values = [record[metric] for record in valid if record.get(metric) is not None]
             reducer = min if metric == "review_blocker_recall" else statistics.median
-            out[metric] = reducer(values) if values and len(values) == len(scored) else None
+            out[metric] = reducer(values) if values and len(values) == len(valid) else None
         verdicts = [record.get("review_verdict_correct") for record in valid]
         out["review_verdict_correct"] = (
             all(value is True for value in verdicts)

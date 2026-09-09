@@ -104,11 +104,10 @@ class ProviderUsageLogger(CustomLogger):
                 "requested_model": kwargs.get("model"),
                 "actual_model": getattr(response_obj, "model", None),
                 # Two fields, because they answer different questions. The raw
-                # label is what LiteLLM said; "provider" is the adapter key,
-                # which needs the call type too - LiteLLM reports "openai" for
-                # both Chat Completions and Responses and those report usage
-                # differently. Unresolvable stays None so normalize_usage
-                # refuses rather than guessing token semantics.
+                # label is what LiteLLM said; "provider" is the adapter key for
+                # the object actually in hand, which is always LiteLLM's own
+                # normalised shape here. An unrecognised label stays None so
+                # normalize_usage refuses rather than guessing token semantics.
                 "provider_label": provider_label,
                 "provider": canonical_provider(provider_label, call_type),
                 "response_id": getattr(response_obj, "id", None),

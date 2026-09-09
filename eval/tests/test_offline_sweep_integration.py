@@ -45,6 +45,18 @@ ARMS = ("ce_review", "review", "candidate_review")
 FULL_SWEEP_ENV = "GITNEXUS_REQUIRE_FULL_SWEEP"
 FULL_SWEEP = os.environ.get(FULL_SWEEP_ENV) == "1"
 
+# The runner refuses --unsafe-no-bwrap whenever CI is set, because that mode runs
+# sessions with bypassPermissions behind a boundary its own docstring calls "not
+# a security boundary". Deleting CI to get past that refusal would run an
+# uncontained agent sweep on the runner holding the checkout and credentials, so
+# the stubbed path is skipped under CI instead. The containment job sets
+# GITNEXUS_REQUIRE_FULL_SWEEP=1 and takes the real bubblewrap path, so CI keeps
+# its coverage; only the uncontained convenience run is given up.
+pytestmark = pytest.mark.skipif(
+    not FULL_SWEEP and bool(os.environ.get("CI")),
+    reason="an uncontained sweep must not run in CI; the containment job runs it with GITNEXUS_REQUIRE_FULL_SWEEP=1",
+)
+
 # The review output and the hidden labels are DELIBERATELY different shapes -
 # the labels carry line_start/line_end and no recommendation. Only a real run
 # surfaces that; it is why these are written out rather than shared.
@@ -203,7 +215,7 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
                     *([{"name": "Skill", "input": {"skill": skill.group(1) if skill else "gitnexus-review"}}]
                       if invoke_skill else []),
                     {"name": "Write", "input": {
-                        "file_path": target.group(1) if target else "/tmp/unused.json",
+                        "file_path": target.group(1) if target else str(bench.out / "unmatched-review-output.json"),
                         "content": review_for(body)}},
                 ],
                 input_tokens=2_000, output_tokens=300,
@@ -221,8 +233,7 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
             "--ce-plugin-dir", str(bench.plugin), "--ce-plugin-version", "0.0.0-fixture",
             "--candidate-overlay", str(bench.overlay),
         ])
-        if not FULL_SWEEP:
-            monkeypatch.delenv("CI", raising=False)  # --unsafe-no-bwrap is forbidden under CI
+    
         try:
             code = runner.main()
         except SystemExit as exc:
