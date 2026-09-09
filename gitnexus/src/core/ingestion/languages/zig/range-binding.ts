@@ -17,6 +17,13 @@
  *
  * Runs after `propagateImportedReturnTypes`, so return bindings hoisted from
  * other files are visible when a subject is a call.
+ *
+ * This hook also carries `bindZigThisAliases` (`this-alias-bindings.ts`), which
+ * is a different job — binding `const Self = @This();` to its container — but
+ * needs the same thing this pass is already paying for: the file's parsed tree,
+ * post-finalize. Giving it a pass of its own would re-parse every Zig file in
+ * the repo whenever the tree cache is cold. It runs first, per file, so a
+ * payload subject spelled through the alias resolves here too.
  */
 
 import type { ParsedFile, Scope, ScopeId, TypeRef } from 'gitnexus-shared';
@@ -32,6 +39,7 @@ import {
   isClassLike,
 } from '../../scope-resolution/scope/walkers.js';
 import { isZigKeywordDeclaration, zigUnwrapValue } from './captures.js';
+import { bindZigThisAliases } from './this-alias-bindings.js';
 import { normalizeZigTypeName } from './interpret.js';
 
 type ZigTree = ReturnType<ReturnType<typeof getZigParser>['parse']>;
@@ -89,6 +97,14 @@ export function populateZigRangeBindings(
     }
     const scopes = parsed.scopes;
     if (scopes.length === 0) continue;
+
+    // `const Self = @This();` — bind the alias to its container BEFORE the
+    // payload walk, so a subject spelled through the alias (`var s: Self = …;`,
+    // `for (Self.items) |it|`) resolves here too. Shares this loop's tree
+    // rather than taking a pass of its own: with a cold tree cache a second
+    // pass re-parses every Zig file in the repo.
+    bindZigThisAliases(parsed, tree.rootNode, indexes);
+
     const resolver = new ZigSubjectTypeResolver(scopes, indexes, classScopeByDefId);
 
     // Pre-order: an outer payload is bound before an inner construct reads it

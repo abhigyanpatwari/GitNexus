@@ -438,6 +438,97 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     });
   });
 
+  /**
+   * `@This()` aliases (#3219 review round 8).
+   *
+   * `@This()` IS the enclosing container, and `const Self = @This();` is how
+   * most Zig files say so. The container itself is minted under the FILE STEM,
+   * and the alias bound nothing class-like — a file-level alias mints no Const
+   * at all, a container-level one mints a Variable that every `isClassLike`
+   * walk steps over — so `Self.member` resolved to nothing at all: not a wrong
+   * edge, no edge. On the corpora at hand that is 302 `Alias.member`
+   * references (ghostty 73 files, tigerbeetle 93, mach 8), 96 of them calls.
+   *
+   * `bindZigThisAliases` binds the alias name to its container in the
+   * post-finalize augmentation channel, so a compiler's answer and this
+   * index's answer agree. Both spellings of the alias are exercised:
+   * `Widget.zig`'s file-level `Self` and `Metrics`' container-level `Me`.
+   */
+  describe('@This() aliases (#3219)', () => {
+    let valueRefs: string[];
+    let valueRefTargetIds: string[];
+    beforeAll(() => {
+      // Recomputed here rather than shared with the block above: these are
+      // sibling describes, and a shared `beforeAll` would make the order of
+      // the two blocks load-bearing.
+      const edges = getRelationships(result, 'USES').filter(
+        (e) => e.rel.reason === 'scope-resolution: value-ref',
+      );
+      valueRefs = edgeSet(edges);
+      valueRefTargetIds = edges.map((e) => e.rel.targetId).sort();
+    });
+
+    it('resolves a qualified CALL written through a file-level alias', () => {
+      // `Widget.zig` writes `const Self = @This();` and calls `Self.width(self)`.
+      expect(calls).toContain('describeWidth → width');
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((e) => e.source === 'describeWidth')
+          .map((e) => e.rel.targetId),
+      ).toEqual(['Method:src/webapi/Widget.zig:Widget.width#0']);
+    });
+
+    it('resolves a qualified REGISTRATION written through a file-level alias', () => {
+      // The #3399 shape spelled the ordinary way: `binder.accessor(Self.width, …)`.
+      // Declining it cost the reference AND the hedge — no edge means no
+      // evidence, so `impact` on `width` went back to claiming `exact`.
+      expect(valueRefs).toContain('WidgetApi → width');
+      expect(valueRefTargetIds.filter((id) => id.includes('Widget.width'))).toEqual([
+        'Method:src/webapi/Widget.zig:Widget.width#0',
+      ]);
+    });
+
+    it('resolves a qualified call through a CONTAINER-level alias', () => {
+      // `Metrics` declares `const Me = @This();`, which mints a Variable beside
+      // the Struct — the binding is there, it is just not class-like, so the
+      // walk stepped over it and kept climbing.
+      expect(calls).toContain('readTwice → read');
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((e) => e.source === 'readTwice')
+          .map((e) => e.rel.targetId),
+      ).toEqual([
+        'Method:src/webapi/Widget.zig:Metrics.read#0',
+        'Method:src/webapi/Widget.zig:Metrics.read#0',
+      ]);
+    });
+
+    it('leaves a stem-spelled alias resolving exactly as it did', () => {
+      // The control. `Element.zig` writes `const Element = @This();`, so its
+      // qualified references already resolved through the stem binding. The
+      // alias binding is an ADDITION to the augmentation channel, consulted
+      // only after a scope's own bindings, so it must move nothing here.
+      expect(valueRefTargetIds.filter((id) => id.endsWith('.getNamespaceUri#0'))).toEqual([
+        'Method:src/webapi/Element.zig:Element.getNamespaceUri#0',
+      ]);
+      expect(valueRefs).toContain('JsApi → getNamespaceUri');
+    });
+
+    it('does not make the alias name resolvable from another file', () => {
+      // `Self` and `Me` are container-private: Zig has no way to import them,
+      // and the binding is appended at the declaring scope only. If it leaked
+      // to the workspace channels, every file in a repo would see one
+      // arbitrary `Self` — 66 files in ghostty declare that exact name.
+      const targets = valueRefTargetIds.concat(
+        getRelationships(result, 'CALLS').map((e) => e.rel.targetId),
+      );
+      // The alias's OWN def (`Metrics.Me`, a Variable) must never be an edge
+      // target — matched on the last segment so `Metrics.read` is not read as
+      // a hit on `Me`.
+      expect(targets.filter((id) => /[:.](Self|Me)(#\d+)?$/.test(id))).toEqual([]);
+    });
+  });
+
   it('types a receiver from its ANNOTATION (`var b: Counter = undefined; b.twice()`, `const c: Counter = .init(); c.get()`)', () => {
     // The declared type is the ONLY type source for `= undefined` and for
     // 0.14+ decl literals (`.init`, `.empty`), which current std uses for
