@@ -154,34 +154,45 @@ function pascalCaseGraphqlName(name: string): string {
     .join('');
 }
 
+type InterpolationCache = Map<string, string | null>;
+
 function uniqueStaticSource(
   name: string,
   declarators: GeneratedSymbolIndex,
   resolving: Set<string>,
+  cache: InterpolationCache,
 ): string | null {
+  if (cache.has(name)) return cache.get(name) ?? null;
   if (resolving.has(name) || resolving.size >= MAX_GRAPHQL_TRAVERSAL_DEPTH) return null;
   const values = declarators.get(name) ?? [];
-  if (values.length === 0) return null;
+  if (values.length === 0) {
+    cache.set(name, null);
+    return null;
+  }
   resolving.add(name);
   const sources = new Set<string>();
   for (const value of values) {
-    const source = staticGraphqlSource(value, declarators, resolving);
+    const source = staticGraphqlSource(value, declarators, resolving, cache);
     // A dynamic or unprovable sibling makes the name ambiguous — do not pick
     // the one static spelling and ignore the rest.
     if (source === null) {
       resolving.delete(name);
+      cache.set(name, null);
       return null;
     }
     sources.add(source);
   }
   resolving.delete(name);
-  return sources.size === 1 ? [...sources][0]! : null;
+  const unique = sources.size === 1 ? [...sources][0]! : null;
+  cache.set(name, unique);
+  return unique;
 }
 
 function interpolatedTemplateSource(
   template: Parser.SyntaxNode,
   declarators: GeneratedSymbolIndex,
   resolving: Set<string>,
+  cache: InterpolationCache,
 ): string | null {
   let out = '';
   for (const child of template.namedChildren) {
@@ -194,7 +205,7 @@ function interpolatedTemplateSource(
     } else if (child.type === 'template_substitution') {
       const name = substitutionIdentifier(child);
       if (!name) return null;
-      const inlined = uniqueStaticSource(name, declarators, resolving);
+      const inlined = uniqueStaticSource(name, declarators, resolving, cache);
       if (inlined === null) return null;
       out += inlined;
     } else {
@@ -331,6 +342,7 @@ function staticGraphqlSource(
   initializer: Parser.SyntaxNode,
   declarators?: GeneratedSymbolIndex,
   resolving: Set<string> = new Set(),
+  cache: InterpolationCache = new Map(),
 ): string | null {
   const value = unwrapExpression(initializer);
   if (value.type === 'string') {
@@ -348,7 +360,7 @@ function staticGraphqlSource(
       (child) => child.type === 'template_substitution',
     );
     if (!hasSubstitution) return unquote(value.text);
-    return declarators ? interpolatedTemplateSource(value, declarators, resolving) : null;
+    return declarators ? interpolatedTemplateSource(value, declarators, resolving, cache) : null;
   }
 
   if (value.type === 'call_expression') {
@@ -360,7 +372,7 @@ function staticGraphqlSource(
     // Interpolated reconstruction is the cooked template. Only `gql` is
     // treated as preserving that source; String.raw / unknown tags stay fail-closed.
     if (hasSubstitution && !isGraphqlTagCall(value)) return null;
-    return staticGraphqlSource(template, declarators, resolving);
+    return staticGraphqlSource(template, declarators, resolving, cache);
   }
 
   if (value.type !== 'new_expression') return null;
@@ -368,7 +380,7 @@ function staticGraphqlSource(
   if (!constructor || !constructor.text.endsWith('TypedDocumentString')) return null;
   const args = value.childForFieldName('arguments');
   const first = args?.namedChildren[0];
-  return first ? staticGraphqlSource(first, declarators, resolving) : null;
+  return first ? staticGraphqlSource(first, declarators, resolving, cache) : null;
 }
 
 export function hasGeneratedDocumentProof(

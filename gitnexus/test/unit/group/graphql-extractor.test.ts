@@ -792,6 +792,45 @@ export const QDocument = String.raw\`query Q { q }\\n\${QFragmentDoc}\`;
     expect(contracts).toEqual([]);
   });
 
+  it('memoizes interpolation sources so duplicated fragment layers stay linear (#3201)', async () => {
+    const layers = 16;
+    let generated = `
+export const F0 = \`fragment f0 on Query { q }\`;
+{ const F0 = \`fragment f0 on Query { q }\`; }
+`;
+    for (let i = 1; i <= layers; i++) {
+      const prev = `F${i - 1}`;
+      const cur = `F${i}`;
+      generated += `
+export const ${cur} = \`\${${prev}}\`;
+{ const ${cur} = \`\${${prev}}\`; }
+`;
+    }
+    generated += `
+export const QDocument = gql\`query Q { q }\${F${layers}}\`;
+`;
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': generated,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
+  });
+
   it('fails closed for interpolated templates under a member .gql tag (#3201)', async () => {
     const { root, repo } = await makeRepo({
       'src/q.graphql': `query Q { q }`,
