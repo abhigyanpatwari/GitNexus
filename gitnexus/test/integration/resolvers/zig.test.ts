@@ -1416,3 +1416,60 @@ describe.skipIf(!zigAvailable)(
     });
   },
 );
+
+// ── Monorepo: several build packages, no build.zig at the repo root ──────────
+//
+// The layout the root-only config loader could not see. `loadZigBuildConfig`
+// reads `<repoRoot>/build.zig{,.zon}` and nothing else, so a repo whose packages
+// live under `packages/<name>/` had no config at all and every bare
+// `@import("<module>")` in it went unresolved — cross-file resolution silently
+// degraded to relative imports. These assert the EDGES, not the config: the unit
+// tests in `test/unit/zig-import-resolver.test.ts` pin the index, and this pins
+// that the index actually reaches symbol resolution.
+describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-monorepo'), () => {});
+  }, 60000);
+
+  it('resolves a cross-package @import declared by the package’s own build files', () => {
+    // `packages/app` depends on `packages/core` through `.path = "../core"` —
+    // package-relative, and rejected outright when read from the repo root.
+    const imports = getRelationships(result, 'IMPORTS').filter((e) =>
+      e.sourceFilePath.includes('packages/app/src/main.zig'),
+    );
+    expect(imports.map((e) => e.targetFilePath).join('\n')).toContain('packages/core/src/root.zig');
+  });
+
+  it('emits CALLS across the package boundary, from the module root and from a non-root file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossPackage = calls.filter(
+      (e) =>
+        e.sourceFilePath.includes('packages/app/') &&
+        e.targetFilePath.includes('packages/core/src/root.zig'),
+    );
+    // `run` is in the module ROOT, `clamp` in a sibling file of the same
+    // package: membership is the root plus what it reaches, so both must
+    // resolve the alias — a fix that only worked for module roots would pass an
+    // assertion on `run` alone.
+    expect(edgeSet(crossPackage)).toContain('run → retryBudget');
+    expect(edgeSet(crossPackage)).toContain('clamp → retryBudget');
+  });
+
+  it('binds one alias to two different roots in two packages without crossing them', () => {
+    // The discriminating case, and the reason the index is scoped per package
+    // rather than flattened repo-wide: `tool` binds `core` to its OWN
+    // src/core.zig. Flattened, `measure` would call into `packages/core` — a
+    // confident edge into a package `tool` does not depend on, which is worse
+    // than the unresolved import this change set out to fix.
+    const fromTool = getRelationships(result, 'CALLS').filter((e) =>
+      e.sourceFilePath.includes('packages/tool/src/main.zig'),
+    );
+    expect(edgeSet(fromTool)).toContain('measure → retryBudget');
+    expect(fromTool.map((e) => e.targetFilePath).join('\n')).toContain(
+      'packages/tool/src/core.zig',
+    );
+    expect(fromTool.map((e) => e.targetFilePath).join('\n')).not.toContain('packages/core/');
+  });
+});

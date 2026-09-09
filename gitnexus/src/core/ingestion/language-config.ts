@@ -5,6 +5,7 @@ import path from 'path';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
+import { isHardcodedIgnoredDirectoryAtPath } from '../../config/ignore-service.js';
 
 import { mapConcurrent } from '../../lib/utils.js';
 import { logger } from '../logger.js';
@@ -226,6 +227,29 @@ export interface ZigBuildZonConfig {
    * `resolveZigImportInternal` / `parseZigBuildModules`.
    */
   buildModules?: readonly ZigBuildModule[];
+}
+
+/**
+ * One Zig build package: the directory whose `build.zig` / `build.zig.zon`
+ * declare the config, and that config with every path REPO-relative.
+ *
+ * A Zig module's import table is declared by the `build.zig` of the package it
+ * belongs to, so a repo holding several packages holds several import tables —
+ * the same shape a TypeScript monorepo has with a `tsconfig.json` per package.
+ */
+export interface ZigPackageScope {
+  /** Repo-relative directory the package governs (`''` for the repo root). */
+  readonly dir: string;
+  readonly config: ZigBuildZonConfig;
+}
+
+/**
+ * Every Zig build package in the repo, indexed so the nearest one to a file
+ * wins — the `TsconfigIndex` analogue, and for the same reason.
+ */
+export interface ZigWorkspaceIndex {
+  /** Deepest-first, so the first `dir` that prefixes a file path governs it. */
+  readonly packages: readonly ZigPackageScope[];
 }
 
 /** One build module of the root `build.zig` — see `ZigBuildZonConfig.buildModules`. */
@@ -646,10 +670,21 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *     string literals — a commented-out `.path` or a `}` inside a comment
  *     or string cannot declare a dep or truncate the block.
  */
-export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonConfig | null> {
+export async function loadZigBuildConfig(
+  repoRoot: string,
+  packageDir = '',
+): Promise<ZigBuildZonConfig | null> {
+  // Every path this function returns is REPO-relative, because that is the
+  // keyspace `allFilePaths` uses. The parsers below answer package-relative, so
+  // a nested package rebases them through `inPackage`. For the root package
+  // (`packageDir === ''`) the prefix is empty and every value is byte-identical
+  // to what this function returned before nested packages existed.
+  const pkg = packageDir === '' ? '' : `${packageDir}/`;
+  const inPackage = (relToPackage: string): string => `${pkg}${relToPackage}`;
+  const packageFile = (name: string): string => path.join(repoRoot, packageDir, name);
   let config: ZigBuildZonConfig | null = null;
   try {
-    const raw = await fs.readFile(path.join(repoRoot, 'build.zig.zon'), 'utf-8');
+    const raw = await fs.readFile(packageFile('build.zig.zon'), 'utf-8');
     config = parseZigBuildZon(raw);
   } catch {
     // No zon (or unreadable): the root build.zig may still declare modules.
@@ -661,9 +696,11 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   let rootModules: Map<string, string> | undefined;
   let rootBuildZig: string | null = null;
   try {
-    rootBuildZig = await fs.readFile(path.join(repoRoot, 'build.zig'), 'utf-8');
+    rootBuildZig = await fs.readFile(packageFile('build.zig'), 'utf-8');
     const parsed = parseZigRootModules(rootBuildZig);
-    if (parsed.size > 0) rootModules = parsed;
+    if (parsed.size > 0) {
+      rootModules = new Map(Array.from(parsed, ([name, root]) => [name, inPackage(root)]));
+    }
   } catch {
     // No root build.zig — nothing to declare.
   }
@@ -671,7 +708,7 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   if (config === null) {
     if (rootBuildZig === null) return null;
     // No zon: no path deps, so `dep.module(…)` operands resolve to nothing.
-    const buildModules = parseZigBuildModules(rootBuildZig);
+    const buildModules = rebaseZigBuildModules(parseZigBuildModules(rootBuildZig), inPackage);
     if (!rootModules && buildModules.length === 0) return null;
     return {
       pathDeps: new Map(),
@@ -688,9 +725,17 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   // Per path dep: the modules its build.zig NAMES (`addModule("core", …)`),
   // repo-relative — what a root-build.zig `dep.module("core")` operand means.
   const depModules = new Map<string, ReadonlyMap<string, string>>();
+  // A nested package's `.path` values are written relative to ITS directory, so
+  // they are rebased here and stored repo-relative; `resolveZigImportInternal`
+  // then reads them through the same `normalizeZigDepPath`, which is idempotent
+  // on an already-normalized value. A dep that escapes the REPO root (not merely
+  // the package) resolves to nothing and is dropped. The root package keeps its
+  // raw spelling, which is what `parseZigBuildZon` promises and its tests pin.
+  const pathDeps = pkg === '' ? config.pathDeps : new Map<string, string>();
   for (const [depName, depPath] of config.pathDeps) {
-    const rel = normalizeZigDepPath(depPath);
+    const rel = normalizeZigDepPath(`${pkg}${depPath}`);
     if (rel === null) continue;
+    if (pkg !== '') pathDeps.set(depName, rel);
     let buildZig: string;
     try {
       buildZig = await fs.readFile(path.join(repoRoot, rel, 'build.zig'), 'utf-8');
@@ -706,13 +751,161 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
     }
     if (named.size > 0) depModules.set(depName, named);
   }
-  const buildModules = rootBuildZig === null ? [] : parseZigBuildModules(rootBuildZig, depModules);
+  const buildModules =
+    rootBuildZig === null
+      ? []
+      : rebaseZigBuildModules(
+          parseZigBuildModules(rootBuildZig, depModules),
+          inPackage,
+          depModules,
+        );
   return {
     ...config,
+    pathDeps,
     ...(moduleRoots.size > 0 ? { moduleRoots } : {}),
     ...(rootModules ? { rootModules } : {}),
     ...(buildModules.length > 0 ? { buildModules } : {}),
   };
+}
+
+/**
+ * Rebase a package's own build modules to repo-relative paths.
+ *
+ * `parseZigBuildModules` answers package-relative for everything it read out of
+ * the `build.zig` it was handed, with one exception: an alias resolved through
+ * `depModules` (`addImport("api", dep.module("core"))`) is already repo-relative,
+ * because `depModules` was built that way. Prefixing that a second time would
+ * point the alias at a path no file has. The already-repo-relative values are
+ * therefore identified by membership in `depModules`, not guessed at from their
+ * shape.
+ */
+function rebaseZigBuildModules(
+  modules: readonly ZigBuildModule[],
+  inPackage: (relToPackage: string) => string,
+  depModules?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): ZigBuildModule[] {
+  if (inPackage('') === '') return [...modules];
+  const fromDep = new Set<string>();
+  for (const named of depModules?.values() ?? [])
+    for (const root of named.values()) fromDep.add(root);
+  return modules.map((mod) => ({
+    ...(mod.name !== undefined ? { name: mod.name } : {}),
+    root: inPackage(mod.root),
+    imports: new Map(
+      Array.from(mod.imports, ([alias, root]) => [
+        alias,
+        fromDep.has(root) ? root : inPackage(root),
+      ]),
+    ),
+  }));
+}
+
+/** Bounds for the package walk, mirroring the tsconfig scan. */
+const ZIG_SCAN_MAX_DIRS = 20_000;
+const ZIG_SCAN_MAX_DEPTH = 24;
+
+/**
+ * The Zig build package governing `filePath` — the nearest one at or above it.
+ *
+ * A Zig module's import table is declared by the `build.zig` of the package the
+ * file belongs to, so the nearest enclosing package is the faithful reading of
+ * `@import("name")` at that site, exactly as `tsconfigFor` reads a non-relative
+ * specifier against the nearest enclosing project.
+ *
+ * There is deliberately NO fall-through to an enclosing package when the nearest
+ * one does not bind the name. Falling through is how a vendored dependency's
+ * `@import("config")` silently resolved to the outer repo's `config` module —
+ * the same failure `loadTsconfigIndex` documents for a package whose own
+ * tsconfig declares no `baseUrl`, and the same failure the per-module import
+ * tables in `resolveZigImportInternal` already exist to prevent one level down.
+ */
+export function zigPackageFor(
+  index: ZigWorkspaceIndex | null | undefined,
+  filePath: string,
+): ZigBuildZonConfig | null {
+  if (index === null || index === undefined) return null;
+  for (const scope of index.packages) {
+    if (scope.dir === '') return scope.config;
+    if (filePath.startsWith(`${scope.dir}/`)) return scope.config;
+  }
+  return null;
+}
+
+/**
+ * Load every Zig build package in the repo, nearest-first.
+ *
+ * `loadZigBuildConfig` reads the ROOT `build.zig` / `build.zig.zon` and nothing
+ * else, which is the whole configuration of a single-package repo and none of
+ * the configuration of a monorepo: a repo laying its packages out as
+ * `packages/<name>/build.zig` has no root build files at all, so that loader
+ * answers `null` and EVERY bare `@import("<module>")` in it goes unresolved —
+ * cross-file resolution silently degrades to relative imports only. Measured on
+ * a two-package fixture: `config = null`, `@import("core")` → `null`.
+ *
+ * So the packages are discovered the way tsconfigs are (`findTsconfigFiles`):
+ * one bounded breadth-first walk that skips the hardcoded ignore set, then
+ * deepest-first ordering so `zigPackageFor` can take the first match.
+ *
+ * Called from `ScopeResolver.loadResolutionConfig`, which the orchestrator runs
+ * once per LANGUAGE workspace pass — so the walk happens only for repos that
+ * actually contain Zig. `loadImportConfigs`, which runs unconditionally for
+ * every repo, keeps calling the root-only `loadZigBuildConfig`; that is the same
+ * split TypeScript already has between the cheap `loadTsconfigPaths` and the
+ * repo-walking `loadTsconfigIndex`.
+ */
+export async function loadZigWorkspaceIndex(repoRoot: string): Promise<ZigWorkspaceIndex | null> {
+  const dirs = await findZigPackageDirs(repoRoot);
+  if (dirs.length === 0) return null;
+  const packages: ZigPackageScope[] = [];
+  for (const dir of dirs) {
+    const config = await loadZigBuildConfig(repoRoot, dir);
+    // A `build.zig` that declares no module and no path dep contributes nothing
+    // a lookup could answer with. Keeping it as an empty scope would be worse
+    // than dropping it: it would shadow an enclosing package that DOES declare
+    // the name, and answer nothing in its place.
+    if (config !== null) packages.push({ dir, config });
+  }
+  if (packages.length === 0) return null;
+  // Deepest first, so `zigPackageFor` takes the most specific package rather
+  // than whichever the walk reached first.
+  packages.sort((a, b) => b.dir.length - a.dir.length || a.dir.localeCompare(b.dir));
+  return { packages };
+}
+
+/** Repo-relative directories holding a `build.zig` and/or a `build.zig.zon`. */
+async function findZigPackageDirs(repoRoot: string): Promise<string[]> {
+  const found: string[] = [];
+  const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  let dirsScanned = 0;
+
+  while (queue.length > 0 && dirsScanned < ZIG_SCAN_MAX_DIRS) {
+    const { dir, depth } = queue.shift()!;
+    dirsScanned++;
+    let entries: import('fs').Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    let isPackage = false;
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const childDir = path.join(dir, entry.name);
+        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
+        if (depth < ZIG_SCAN_MAX_DEPTH) queue.push({ dir: childDir, depth: depth + 1 });
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      // Either marker declares a package: a `build.zig` with no zon still names
+      // modules, and a zon with no build.zig still names path deps.
+      if (entry.name === 'build.zig' || entry.name === 'build.zig.zon') isPackage = true;
+    }
+    if (isPackage) {
+      const rel = path.relative(repoRoot, dir).split(path.sep).join('/');
+      found.push(rel === '.' || rel === '' ? '' : rel);
+    }
+  }
+  return found;
 }
 
 /**

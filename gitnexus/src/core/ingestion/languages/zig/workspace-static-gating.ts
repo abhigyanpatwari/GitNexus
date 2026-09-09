@@ -1,6 +1,6 @@
 import type { ParsedFile, ReferenceSite } from 'gitnexus-shared';
 import { getTreeSitterBufferSize } from '../../constants.js';
-import type { ZigBuildZonConfig } from '../../language-config.js';
+import { zigPackageFor, type ZigWorkspaceIndex } from '../../language-config.js';
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import {
   buildZigBoolConstMap,
@@ -51,7 +51,11 @@ export function populateZigWorkspaceStaticGating(
       tree,
       parsed.filePath,
       knownPaths,
-      ctx.resolutionConfig as ZigBuildZonConfig | null | undefined,
+      // `resolutionConfig` is the whole Zig workspace; the package governing
+      // THIS file is what `resolveZigImportInternal` takes. Selected here rather
+      // than hoisted out of the loop because the answer is per-file: two files
+      // of this pass can belong to different packages.
+      zigPackageFor(ctx.resolutionConfig as ZigWorkspaceIndex | null | undefined, parsed.filePath),
     );
     if (aliases.size === 0) continue;
     const ranges = collectZigStaticGatedRanges(
@@ -76,7 +80,7 @@ function collectImportAliases(
   tree: ZigTree,
   fromFile: string,
   knownPaths: ReadonlySet<string>,
-  resolutionConfig?: ZigBuildZonConfig | null,
+  packageConfig: ReturnType<typeof zigPackageFor>,
 ): ZigImportAliasMap {
   const candidates = new Map<string, string>();
   const declarationCounts = new Map<string, number>();
@@ -91,7 +95,7 @@ function collectImportAliases(
     const raw = builtin?.descendantsOfType('string').at(0)?.text;
     if (raw === undefined) continue;
     const specifier = raw.replace(/^['"]|['"]$/g, '');
-    const target = resolveZigImportInternal(fromFile, specifier, knownPaths, resolutionConfig);
+    const target = resolveZigImportInternal(fromFile, specifier, knownPaths, packageConfig);
     if (target !== null) candidates.set(binding, target);
   }
 
