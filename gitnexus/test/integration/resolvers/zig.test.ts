@@ -418,12 +418,19 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     });
 
     it('declines a container-qualified reference shadowed at MODULE scope', () => {
-      // `Element.zig` declares `const Gauge: u8 = 3;` at module scope and never
-      // imports `Gauge.zig`, which declares the container. The class walk filters
-      // by `isClassLike`, steps over the `const`, and its workspace-wide
-      // qualified-name fallback answers with the other file's struct. The shadow
-      // guard has to inspect the MODULE scope to catch it — stopping one rung
-      // short, as it did, permitted precisely this case.
+      // `Element.zig` binds `Gauge` at module scope to something that is NOT a
+      // container, and never imports `Gauge.zig`, which declares one. The class
+      // walk filters by `isClassLike`, steps over that binding, and its
+      // workspace-wide qualified-name fallback answers with the other file's
+      // struct. The shadow guard has to inspect the MODULE scope to catch it —
+      // stopping one rung short, as it did, permitted precisely this case.
+      //
+      // The binding is an IMPORT (`const Gauge = @import("dom_utils.zig").DEFAULT_NS;`),
+      // not a local `const Gauge: u8 = 3;`, and that is the difference between a
+      // live case and a self-defeating one: a local declaration would ALSO claim
+      // the workspace qualified name `Gauge`, leaving two candidates, and the
+      // fallback refuses to guess between two — so the case this test exists for
+      // would never be reached. See the fixture's own note at `Element.zig:30-35`.
       expect(valueRefs).not.toContain('JsApi → read');
       expect(valueRefTargetIds.filter((id) => id.includes('Gauge'))).toEqual([]);
     });

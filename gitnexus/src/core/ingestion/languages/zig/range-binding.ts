@@ -22,8 +22,9 @@
  * is a different job — binding `const Self = @This();` to its container — but
  * needs the same thing this pass is already paying for: the file's parsed tree,
  * post-finalize. Giving it a pass of its own would re-parse every Zig file in
- * the repo whenever the tree cache is cold. It runs first, per file, so a
- * payload subject spelled through the alias resolves here too.
+ * the repo whenever the tree cache is cold. That is the whole reason it is
+ * here; the two do not otherwise interact, for the reason recorded at the call
+ * site.
  */
 
 import type { ParsedFile, Scope, ScopeId, TypeRef } from 'gitnexus-shared';
@@ -98,11 +99,20 @@ export function populateZigRangeBindings(
     const scopes = parsed.scopes;
     if (scopes.length === 0) continue;
 
-    // `const Self = @This();` — bind the alias to its container BEFORE the
-    // payload walk, so a subject spelled through the alias (`var s: Self = …;`,
-    // `for (Self.items) |it|`) resolves here too. Shares this loop's tree
-    // rather than taking a pass of its own: with a cold tree cache a second
-    // pass re-parses every Zig file in the repo.
+    // `const Self = @This();` — bind the alias to its container. It sits in this
+    // loop for ONE reason: the tree. A pass of its own would re-parse every Zig
+    // file in the repo whenever the tree cache is cold.
+    //
+    // Its position relative to the payload walk below is NOT load-bearing, and
+    // saying otherwise would be wrong in a checkable way: the payload walk types
+    // a subject through `findReceiverTypeBinding`, which reads `typeBindings`
+    // and the namespace/workspace type channels — never `bindingAugmentations`,
+    // where this writes. Measured on `for (Self.items) |it|`: `it` is bound
+    // neither before nor after. Nor is that a gap this should close by also
+    // writing a typeBinding — NO container name has one, the file stem included,
+    // so a payload subject written `Type.member` resolves for no spelling at
+    // all, and giving the alias an entry would make it behave unlike the very
+    // container it names.
     bindZigThisAliases(parsed, tree.rootNode, indexes);
 
     const resolver = new ZigSubjectTypeResolver(scopes, indexes, classScopeByDefId);

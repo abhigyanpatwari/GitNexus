@@ -150,9 +150,12 @@ function appendBinding(
  *
  * Called per file from `populateZigRangeBindings`, which already holds the
  * parsed tree — a second pass over `parsedFiles` would re-parse every file when
- * the tree cache is cold. Ordering against the payload bindings that follow it
- * does not matter: a `@This()` alias is a container-private name that no other
- * file can import, so nothing outside this file reads what is written here.
+ * the tree cache is cold. That is the only thing the two share. Ordering
+ * against the payload bindings that follow does not matter, twice over: the
+ * payload walk types its subjects through `findReceiverTypeBinding`, which
+ * never reads the channel written here, and a `@This()` alias is a
+ * container-private name no other file can import, so nothing outside this file
+ * reads it either.
  */
 export function bindZigThisAliases(
   parsed: ParsedFile,
