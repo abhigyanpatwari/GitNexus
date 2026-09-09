@@ -449,6 +449,28 @@ static int helper(void) { return 1; }
     );
   });
 
+  it('emits every declarator in a comma-separated property or ivar declaration', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@interface Host {
+  Widget *primary, *secondary;
+}
+@property Widget *left, *right;
+@end
+`),
+      'Host.h',
+    );
+
+    expect(facts.members).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'ivar', name: 'primary', declaredType: 'Widget' }),
+        expect.objectContaining({ kind: 'ivar', name: 'secondary', declaredType: 'Widget' }),
+        expect.objectContaining({ kind: 'property', name: 'left', declaredType: 'Widget' }),
+        expect.objectContaining({ kind: 'property', name: 'right', declaredType: 'Widget' }),
+      ]),
+    );
+  });
+
   it('resolves a property inherited from the superclass', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`

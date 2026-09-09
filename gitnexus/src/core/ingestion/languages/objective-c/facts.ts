@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.7';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.8';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -427,16 +427,58 @@ function methodParameterInfo(node: SyntaxNode): {
   return { parameterTypes, parameterNames, typeBindings };
 }
 
-function propertyInfo(node: SyntaxNode): { name: string; type?: string } | null {
+function propertyInfos(node: SyntaxNode): Array<{ name: string; type?: string }> {
   const structDecl = directNamedChildren(node).find((child) => child.type === 'struct_declaration');
-  if (structDecl === undefined) return null;
-  return declarationNameAndType(structDecl);
+  if (structDecl === undefined) return [];
+  return declarationNamesAndType(structDecl);
 }
 
 function declarationNameAndType(node: SyntaxNode): { name: string; type?: string } | null {
-  const name = declaratorName(node);
-  if (name === undefined) return null;
-  return { name, type: cleanType(firstTypeNode(node)?.text) };
+  return declarationNamesAndType(node)[0] ?? null;
+}
+
+function declarationNamesAndType(node: SyntaxNode): Array<{ name: string; type?: string }> {
+  const type = cleanType(firstTypeNode(node)?.text);
+  return declaratorNames(node).map((name) => (type !== undefined ? { name, type } : { name }));
+}
+
+function declaratorNames(node: SyntaxNode): string[] {
+  const names: string[] = [];
+  collectDeclaratorNames(node, names);
+  return names;
+}
+
+function collectDeclaratorNames(node: SyntaxNode, out: string[]): void {
+  if (node.type === 'identifier') {
+    out.push(node.text);
+    return;
+  }
+  if (
+    node.type === 'init_declarator' ||
+    node.type === 'pointer_declarator' ||
+    node.type === 'array_declarator' ||
+    node.type === 'function_declarator' ||
+    node.type === 'parenthesized_declarator' ||
+    node.type === 'struct_declarator'
+  ) {
+    for (const child of directNamedChildren(node)) collectDeclaratorNames(child, out);
+    return;
+  }
+
+  for (const child of directNamedChildren(node)) {
+    if (
+      child.type === 'identifier' ||
+      child.type === 'init_declarator' ||
+      child.type === 'pointer_declarator' ||
+      child.type === 'array_declarator' ||
+      child.type === 'function_declarator' ||
+      child.type === 'parenthesized_declarator' ||
+      child.type === 'struct_declarator' ||
+      child.type === 'struct_declaration'
+    ) {
+      collectDeclaratorNames(child, out);
+    }
+  }
 }
 
 function declaratorName(node: SyntaxNode): string | undefined {
@@ -933,20 +975,20 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
   ): void => {
     for (const inner of containerMemberNodes(containerNode)) {
       if (inner.type === 'property_declaration') {
-        const prop = propertyInfo(inner);
-        if (prop === null) continue;
-        addMemberType(container.qualifiedName, prop.name, prop.type);
-        if (container.hostClass !== undefined) {
-          addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
+        for (const prop of propertyInfos(inner)) {
+          addMemberType(container.qualifiedName, prop.name, prop.type);
+          if (container.hostClass !== undefined) {
+            addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
+          }
         }
       } else if (inner.type === 'instance_variables') {
         walkNamedTree(inner, (ivarNode) => {
           if (ivarNode.type !== 'instance_variable') return;
-          const ivar = declarationNameAndType(ivarNode);
-          if (ivar === null) return;
-          addMemberType(container.qualifiedName, ivar.name, ivar.type);
-          if (container.hostClass !== undefined) {
-            addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
+          for (const ivar of declarationNamesAndType(ivarNode)) {
+            addMemberType(container.qualifiedName, ivar.name, ivar.type);
+            if (container.hostClass !== undefined) {
+              addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
+            }
           }
         });
       }
@@ -1036,47 +1078,47 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             unresolvedMessages,
           );
         } else if (inner.type === 'property_declaration') {
-          const prop = propertyInfo(inner);
-          if (prop === null) continue;
-          const qualifiedName = objcPropertyQualifiedName(container.qualifiedName, prop.name);
           const { startLine, endLine } = range(inner);
-          members.push({
-            kind: 'property',
-            name: prop.name,
-            qualifiedName,
-            nodeId: graphNodeId('Property', qualifiedName),
-            ownerQualifiedName: container.qualifiedName,
-            ownerName: container.name,
-            ownerKind: container.kind,
-            ownerLabel: ownerLabel(container.kind),
-            ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
-            ...(prop.type !== undefined ? { declaredType: prop.type } : {}),
-            filePath,
-            startLine,
-            endLine,
-          });
-        } else if (inner.type === 'instance_variables') {
-          walkNamedTree(inner, (ivarNode) => {
-            if (ivarNode.type !== 'instance_variable') return;
-            const ivar = declarationNameAndType(ivarNode);
-            if (ivar === null) return;
-            const qualifiedName = objcIvarQualifiedName(container.qualifiedName, ivar.name);
-            const { startLine, endLine } = range(ivarNode);
+          for (const prop of propertyInfos(inner)) {
+            const qualifiedName = objcPropertyQualifiedName(container.qualifiedName, prop.name);
             members.push({
-              kind: 'ivar',
-              name: ivar.name,
+              kind: 'property',
+              name: prop.name,
               qualifiedName,
-              nodeId: graphNodeId('Variable', qualifiedName),
+              nodeId: graphNodeId('Property', qualifiedName),
               ownerQualifiedName: container.qualifiedName,
               ownerName: container.name,
               ownerKind: container.kind,
               ownerLabel: ownerLabel(container.kind),
               ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
-              ...(ivar.type !== undefined ? { declaredType: ivar.type } : {}),
+              ...(prop.type !== undefined ? { declaredType: prop.type } : {}),
               filePath,
               startLine,
               endLine,
             });
+          }
+        } else if (inner.type === 'instance_variables') {
+          walkNamedTree(inner, (ivarNode) => {
+            if (ivarNode.type !== 'instance_variable') return;
+            const { startLine, endLine } = range(ivarNode);
+            for (const ivar of declarationNamesAndType(ivarNode)) {
+              const qualifiedName = objcIvarQualifiedName(container.qualifiedName, ivar.name);
+              members.push({
+                kind: 'ivar',
+                name: ivar.name,
+                qualifiedName,
+                nodeId: graphNodeId('Variable', qualifiedName),
+                ownerQualifiedName: container.qualifiedName,
+                ownerName: container.name,
+                ownerKind: container.kind,
+                ownerLabel: ownerLabel(container.kind),
+                ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
+                ...(ivar.type !== undefined ? { declaredType: ivar.type } : {}),
+                filePath,
+                startLine,
+                endLine,
+              });
+            }
           });
         } else if (inner.type === 'implementation_definition') {
           const functionNode = directNamedChildren(inner).find(

@@ -154,6 +154,14 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(lines[3]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
   });
 
+  it('tracks a declaration that follows a multiline block comment close', () => {
+    const source = ['/*', '*/ @interface Widget', 'DECLARE_WIDGET_MEMBERS', '@end', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'MultilineCommentWidget.h');
+    const lines = normalized.split('\n');
+
+    expect(lines[2]).toBe('DECLARE_WIDGET_MEMBERS');
+  });
+
   it('elides a marker after a directive that ends in a continued line comment', () => {
     const source = ['#define X // \\', 'text', 'RCT_EXTERN_C_BEGIN', ''].join('\n');
     const normalized = preprocessObjectiveCMacroMarkers(source, 'DirectiveLineComment.h');

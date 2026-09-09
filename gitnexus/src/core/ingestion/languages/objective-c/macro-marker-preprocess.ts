@@ -71,8 +71,13 @@ function isIdentifierContinue(line: string, index: number): boolean {
   );
 }
 
-function leadingObjCDeclKeyword(line: string): 'begin' | 'end' | null {
+function leadingObjCDeclKeyword(line: string, inBlockComment = false): 'begin' | 'end' | null {
   let index = 0;
+  if (inBlockComment) {
+    const blockCommentEnd = line.indexOf('*/');
+    if (blockCommentEnd < 0) return null;
+    index = blockCommentEnd + 2;
+  }
   while (index < line.length) {
     while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
     if (line.startsWith('//', index)) return null;
@@ -220,7 +225,7 @@ function scanLine(line: string, state: ScanState): void {
     return;
   }
 
-  const keyword = leadingObjCDeclKeyword(line);
+  const keyword = leadingObjCDeclKeyword(line, state.inBlockComment);
   if (keyword === 'begin') state.objcDeclDepth++;
   else if (keyword === 'end') state.objcDeclDepth = Math.max(0, state.objcDeclDepth - 1);
 
