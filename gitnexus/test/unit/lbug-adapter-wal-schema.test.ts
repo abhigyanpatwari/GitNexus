@@ -147,6 +147,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -199,6 +201,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -260,6 +264,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -312,6 +318,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -389,6 +397,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -470,6 +480,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -524,6 +536,8 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -646,6 +660,8 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
       WAL_RECOVERY_SUGGESTION:
         'WAL corruption detected. Run `gitnexus analyze --force` to rebuild the index.',
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
