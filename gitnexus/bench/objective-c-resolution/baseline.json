@@ -1,0 +1,41 @@
+{
+  "_comment": "Correctness counts are exact. Both arms are linear file-count gates. protocol implementer USES live on one shared node per (protocol, selector): N objc-protocol-candidate edges, not N². Measured after the shared-set hoist: spread 0.62→2.37 ms (linear_factor 0.956); protocol 0.69→2.14 ms (linear_factor 0.775) with candidate uses 40→160.",
+  "spread": {
+    "small": {
+      "classes": 40,
+      "calls": 119,
+      "extends": 39,
+      "implements": 0,
+      "protocol_candidate_uses": 0,
+      "ms_budget": 80
+    },
+    "large": {
+      "classes": 160,
+      "calls": 479,
+      "extends": 159,
+      "implements": 0,
+      "protocol_candidate_uses": 0,
+      "ms_budget": 320
+    },
+    "linear_scaling_slack": 1.375
+  },
+  "protocol": {
+    "small": {
+      "classes": 40,
+      "calls": 40,
+      "extends": 0,
+      "implements": 40,
+      "protocol_candidate_uses": 40,
+      "ms_budget": 80
+    },
+    "large": {
+      "classes": 160,
+      "calls": 160,
+      "extends": 0,
+      "implements": 160,
+      "protocol_candidate_uses": 160,
+      "ms_budget": 80
+    },
+    "linear_scaling_slack": 1.375
+  }
+}

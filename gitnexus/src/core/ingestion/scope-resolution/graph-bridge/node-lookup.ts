@@ -280,6 +280,8 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   // targets and need the same def→graph bridge.
   'Module',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Struct',
   'Enum',

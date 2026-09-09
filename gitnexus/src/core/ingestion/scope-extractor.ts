@@ -847,6 +847,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
   switch (kindStr.toLowerCase()) {
     case 'class':
       return 'Class';
+    case 'protocol':
+      return 'Protocol';
+    case 'category':
+      return 'Category';
     case 'interface':
       return 'Interface';
     case 'enum':

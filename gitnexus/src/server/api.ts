@@ -57,6 +57,7 @@ import { assertString, BadRequestError, createRouteLimiter } from './validation.
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
 import { runGrepScanInWorker } from './grep-scan.js';
 import {
+  analyzeCloneOptions,
   extractWebRepoName,
   getCloneDir,
   cloneOrPull,
@@ -64,6 +65,12 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
+import { checkStalenessAsync } from '../core/git-staleness.js';
+import { projectRepoDetail, projectRepoListEntry, resolveLastCommit } from './repo-projection.js';
+// Shared with the CLI's `--branch` (via the analyze-config wrapper) so both
+// entry points accept the same refs. Imported from core — not cli/ — so
+// createServer does not close a cycle with cli/serve.ts.
+import { InvalidBranchError, validateBranchName } from '../core/git-ref.js';
 import {
   assertServeAuthForPublicOrigin,
   createPublicOriginMatcher,
@@ -995,18 +1002,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // List all registered repos
-  app.get('/api/repos', async (_req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting) because this route now spawns
+  // one `git rev-list` per registered repo to answer freshness: an unauthenticated
+  // GET that costs N subprocesses is worth the same 60 rpm/IP ceiling `/api/repo`
+  // already carries. Web callers hit this on connect/switch, never in a loop.
+  app.get('/api/repos', createRouteLimiter(), async (_req, res) => {
     try {
       const repos = await listRegisteredRepos();
+      // Checked in parallel, for the reason `list_repos` already does it that
+      // way: each check spawns an async `git rev-list`, and the sequential
+      // variant took ~50s across 200 repos (#1363). Projecting inside the map
+      // keeps the entry and its own check together — an index-matched second
+      // array is the shape that silently mispairs them if either is reordered.
       res.json(
-        repos.map((r) => ({
-          name: r.name,
-          path: r.path,
-          repoPath: r.path,
-          indexedAt: r.indexedAt,
-          lastCommit: r.lastCommit,
-          stats: r.stats,
-        })),
+        await Promise.all(
+          repos.map(async (r) =>
+            projectRepoListEntry(r, await checkStalenessAsync(r.path, r.lastCommit)),
+          ),
+        ),
       );
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to list repos' });
@@ -1033,12 +1046,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const meta = await loadMeta(entry.storagePath);
-      res.json({
-        name: entry.name,
-        repoPath: entry.path,
-        indexedAt: meta?.indexedAt ?? entry.indexedAt,
-        stats: meta?.stats ?? entry.stats ?? {},
-      });
+      const staleness = await checkStalenessAsync(entry.path, resolveLastCommit(entry, meta));
+      res.json(projectRepoDetail(entry, meta, staleness));
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }
@@ -1519,6 +1528,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           springActuatorPath,
           asyncApiSpecPath,
           token: repoToken,
+          branch: repoBranch,
         } = req.body;
 
         // Input type validation
@@ -1550,6 +1560,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
+        // Branch: optional index-branch selector, validated with the same rules
+        // as the CLI's `--branch` so both entry points accept the same refs.
+        // Rejecting here (rather than letting the clone fail) keeps a malformed
+        // ref from ever reaching `git`.
+        if (repoBranch !== undefined && typeof repoBranch !== 'string') {
+          res.status(400).json({ error: '"branch" must be a string' });
+          return;
+        }
+        let analyzeBranch: string | undefined;
+        if (repoBranch !== undefined) {
+          try {
+            analyzeBranch = validateBranchName(repoBranch, '"branch"');
+          } catch (err) {
+            if (err instanceof InvalidBranchError) {
+              res.status(400).json({ error: err.message });
+              return;
+            }
+            throw err;
+          }
+        }
+
         // Token: optional, restricted charset to prevent header smuggling
         // (CRLF), bound length, and bound to github.com (see validateAnalyzeToken).
         const tokenError = validateAnalyzeToken(repoToken, repoUrl);
@@ -1575,7 +1606,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
-        const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+        const job = jobManager.createJob({
+          repoUrl,
+          repoPath: repoLocalPath,
+          branch: analyzeBranch,
+        });
 
         // If job was already running (dedup), just return its id. The token is
         // not part of the dedup identity and is never stored on the job, so a
@@ -1603,11 +1638,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             // Clone if URL provided
             if (repoUrl && !repoLocalPath) {
               const repoName = extractWebRepoName(repoUrl);
-              targetPath = getCloneDir(repoName);
+              // Branch-pinned runs get their own clone dir, so they never share
+              // a working tree with the unpinned one (see getCloneDir).
+              targetPath = getCloneDir(repoName, analyzeBranch);
 
               jobManager.updateJob(job.id, {
                 status: 'cloning',
-                repoName,
+                // url+branch: same value as registryName (dir basename), not
+                // the extractWebRepoName stem used only as getCloneDir's first arg.
+                repoName: analyzeBranch ? path.basename(targetPath) : repoName,
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 
@@ -1619,7 +1658,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     progress: { phase: progress.phase, percent: 5, message: progress.message },
                   });
                 },
-                repoToken ? { token: repoToken } : undefined,
+                analyzeCloneOptions(repoToken, analyzeBranch),
               );
             }
 
@@ -1633,6 +1672,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               dropEmbeddings,
               springActuatorPath,
               asyncApiSpecPath,
+              branch: analyzeBranch,
+              // Both clone dirs share an `origin`, so the name `registerRepo`
+              // infers from the remote would be identical and the second one
+              // would fail with RegistryNameCollisionError. Register the pinned
+              // clone under its directory name instead: unique per branch, and
+              // it re-derives through getCloneDir for DELETE /api/repo.
+              //
+              // Gated on the SAME condition as the clone above: when a caller
+              // supplies both `url` and `path` nothing is cloned, and renaming
+              // the operator's own local repo after its directory would be a
+              // surprise unrelated to branch pinning.
+              ...(analyzeBranch && repoUrl && !repoLocalPath
+                ? { registryName: path.basename(targetPath) }
+                : {}),
             });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));

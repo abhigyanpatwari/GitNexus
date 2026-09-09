@@ -86,6 +86,64 @@ describe('parsedfile-store', () => {
     }
   });
 
+  it('repeated loads with different wantPaths each see their own files (shard-listing memo)', async () => {
+    // Scope resolution calls loadParsedFilesForPaths once per LANGUAGE over the
+    // same store, so the second and later passes reuse the shard path listings
+    // the first pass authenticated instead of re-reading every shard. The
+    // failure mode that memo introduces is a FALSE SKIP: pass 2 concludes a
+    // shard holds nothing it wants, and those files silently never reach the
+    // graph — an exit-0 wrong answer, not a crash. Each pass below wants files
+    // the previous pass did not, so a listing carried over from the wrong shard
+    // shows up as a missing file here.
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c'), makeParsedFile('b.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('c.c')]);
+      await persistParsedFileChunk(dir, 'chunk-2', [makeParsedFile('d.c')]);
+
+      const first = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect([...first.keys()]).toEqual(['a.c']);
+
+      // Key-set asserts alone still pass if the memo never skipped: the
+      // envelope listing would open the shard and skip deserialize. Spy
+      // open+deserialize on a later miss so a no-memo path fails.
+      const deserialize = vi.spyOn(v8, 'deserialize');
+      const open = vi.spyOn(nodeFsPromises, 'open');
+      try {
+        const second = await loadParsedFilesForPaths(dir, new Set(['c.c', 'd.c']));
+        expect([...second.keys()].sort()).toEqual(['c.c', 'd.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file))).sort()).toEqual([
+          'chunk-1.v8',
+          'chunk-2.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(2);
+
+        open.mockClear();
+        deserialize.mockClear();
+        const third = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+        expect([...third.keys()]).toEqual(['b.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+          'chunk-0.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(1);
+
+        const fourth = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c', 'c.c', 'd.c']));
+        expect([...fourth.keys()].sort()).toEqual(['a.c', 'b.c', 'c.c', 'd.c']);
+      } finally {
+        deserialize.mockRestore();
+        open.mockRestore();
+      }
+
+      // A shard written AFTER the memo was populated is still found: the memo
+      // holds listings, not the shard roster, and the roster is re-read per call.
+      await persistParsedFileChunk(dir, 'chunk-3', [makeParsedFile('e.c')]);
+      const fifth = await loadParsedFilesForPaths(dir, new Set(['e.c', 'a.c']));
+      expect([...fifth.keys()].sort()).toEqual(['a.c', 'e.c']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes no shard for an empty chunk', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
