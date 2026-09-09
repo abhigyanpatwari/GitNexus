@@ -1,0 +1,24 @@
+gitnexus/scripts/cross-platform-shard.ts
+  s_2fc6857ad45390::t_ce48e2d9543453 52-60
+  s_2fc6857ad45390::t_86f381f8a9234a 39-41
+gitnexus/test/unit/cross-platform-shard.test.ts
+  s_2fc6857ad45390::t_86f381f8a9234a 49-56
+  s_2fc6857ad45390::t_ce48e2d9543453 78
+  s_2fc6857ad45390::t_466fd1b8331517 32-48,57-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d3eef2e66d8155ce1567eacb4d1bdf8c03d3daf9",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
