@@ -121,9 +121,18 @@ def main() -> int:
     # as a real measurement - the exact confusion the accounting this fixture
     # feeds exists to prevent.
     usage = message.get("usage")
+    # Every field that gets forwarded is validated, not just the required two.
+    # The parent's well_formed check tests only that the four keys are PRESENT,
+    # so an unvalidated cache value rides into a success result and is recorded
+    # as a real measurement. A field good enough to report is good enough to
+    # check.
+    countable = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0  # noqa: E731
     if not isinstance(usage, dict) or not all(
-        isinstance(usage.get(f), int) and not isinstance(usage.get(f), bool) and usage.get(f) >= 0
-        for f in ("input_tokens", "output_tokens")
+        countable(usage.get(f)) for f in ("input_tokens", "output_tokens")
+    ) or not all(
+        countable(usage[f])
+        for f in ("cache_read_input_tokens", "cache_creation_input_tokens")
+        if f in usage
     ):
         emit({"type": "result", "subtype": "error", "is_error": True,
               "session_id": "fake-session", "num_turns": 1,

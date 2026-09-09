@@ -176,3 +176,20 @@ def test_a_reply_missing_cache_usage_is_refused_not_zero_filled(clone: Path) -> 
 
     assert record["ok"] is False, "an incomplete usage report is not a usable measurement"
     assert record["error_kind"] == "session-error"
+
+
+@pytest.mark.parametrize("bad", [-5, True, "1200"], ids=["negative", "boolean", "string"])
+def test_a_nonsense_cache_value_is_refused_rather_than_forwarded(clone: Path, bad: object) -> None:
+    """A field good enough to report is good enough to validate.
+
+    The parent's well_formed check tests only that the four keys are PRESENT,
+    so an unvalidated cache value would ride into a success result and be
+    recorded as a real measurement.
+    """
+
+    reply = Reply(input_tokens=2_000, output_tokens=300)
+    object.__setattr__(reply, "cache_read_input_tokens", bad)
+    with MockProvider(default=reply) as provider:
+        record = _session(clone, provider)
+
+    assert record["ok"] is False, f"{bad!r} must not be recorded as a measured cache value"
