@@ -570,6 +570,42 @@ class HealthResolver {
     ]);
   });
 
+  it('tries the full PascalCased Document name for underscored operations (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/widget.graphql': `query get_widget { getWidget }`,
+      'src/generated.ts': `export const GetWidgetDocument = ${generatedDocument(
+        'query',
+        'get_widget',
+        ['getWidget'],
+      )};`,
+    });
+    const lookedUp: string[] = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      const name = String(params.name ?? '');
+      lookedUp.push(name);
+      return name === 'GetWidgetDocument'
+        ? [
+            {
+              uid: 'const:widget',
+              name: 'GetWidgetDocument',
+              filePath: 'src/generated.ts',
+            },
+          ]
+        : [];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(lookedUp).toEqual(['get_widgetDocument', 'GetWidgetDocument']);
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::getWidget',
+        role: 'consumer',
+        symbolUid: 'const:widget',
+      }),
+    ]);
+  });
+
   it('inlines sibling ${FragmentDoc} interpolations to prove generated documents (#3201)', async () => {
     const { root, repo } = await makeRepo({
       'src/get-widget.graphql': `
@@ -742,6 +778,28 @@ export const QFragmentDoc = /*#__PURE__*/ \`
     fragment extra on Query { q }
     \`;
 export const QDocument = String.raw\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('fails closed for interpolated templates under a member .gql tag (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = formatter.gql\`query Q { q }\\n\${QFragmentDoc}\`;
 `,
     });
 

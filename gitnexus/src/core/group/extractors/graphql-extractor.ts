@@ -143,10 +143,15 @@ function substitutionIdentifier(substitution: Parser.SyntaxNode): string | null 
 
 function isGraphqlTagCall(call: Parser.SyntaxNode): boolean {
   const callee = call.childForFieldName('function');
-  if (!callee) return false;
-  if (callee.type === 'identifier') return callee.text === 'gql';
-  if (callee.type !== 'member_expression') return false;
-  return callee.childForFieldName('property')?.text === 'gql';
+  return callee?.type === 'identifier' && callee.text === 'gql';
+}
+
+function pascalCaseGraphqlName(name: string): string {
+  return name
+    .split(/[^A-Za-z0-9]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => `${part[0]!.toUpperCase()}${part.slice(1)}`)
+    .join('');
 }
 
 function uniqueStaticSource(
@@ -558,7 +563,7 @@ function generatedCandidates(operation: OperationDefinitionNode): string[] {
   const name = operation.name?.value;
   if (!name) return [];
   const exact = `${name}Document`;
-  const pascal = `${name[0]!.toUpperCase()}${name.slice(1)}Document`;
+  const pascal = `${pascalCaseGraphqlName(name)}Document`;
   return exact === pascal ? [exact] : [exact, pascal];
 }
 
