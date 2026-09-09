@@ -26,7 +26,7 @@
     </a>
   </p>
 
-  <p><strong>The nervous system for agent context.</strong></p>
+  <p><strong>The context engine for Enterprise Codebases</strong></p>
 
   <p>
     Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow —
@@ -101,6 +101,10 @@ Every `/api/*` request carries that token as a header, and the proxy answers `40
 The proxy strips `Origin` before forwarding, so the server's CSRF guard does nothing for proxied traffic; it passes `Origin`-less requests through by design. The token is the only control on this deploy, not a second layer behind the guard. Anyone holding it can read every indexed repo. See [SECURITY.md](SECURITY.md#hosted-deploys-on-render).
 
 Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large repo, raise its `plan`, which sets available RAM: `standard` is 2 GB, `pro` is 4 GB. Raise `sizeGB` only if the disk fills with clones and indexes.
+
+### Deploy to RepoCloud
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/gitnexus/)
 
 ## Two Ways to Use GitNexus
 
@@ -661,6 +665,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Objective-C | ✓      | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 

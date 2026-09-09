@@ -48,6 +48,20 @@ const FIXTURES: Partial<Record<SupportedLanguages, { filePath: string; source: s
     filePath: 'meters.dart',
     source: ['extension type Meters(int value) {', '  int get raw => value;', '}', ''].join('\n'),
   },
+  [SupportedLanguages.ObjectiveC]: {
+    filePath: 'Marker.m',
+    source: [
+      'RCT_EXTERN_C_BEGIN',
+      'typedef struct {',
+      '  int value;',
+      '} GNMarker;',
+      'RCT_EXTERN_C_END',
+      '@protocol GNMarkerProtocol',
+      '- (void)run;',
+      '@end',
+      '',
+    ].join('\n'),
+  },
 };
 
 const languagesWithHook = Object.entries(providers)

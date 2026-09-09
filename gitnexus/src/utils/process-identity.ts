@@ -38,3 +38,22 @@ export function readProcessStartTime(pid: number): string | undefined {
     return undefined;
   }
 }
+
+let ownStartTime: string | undefined;
+
+/**
+ * `readProcessStartTime`, except this process's own start time is probed once.
+ * It cannot change while we are running, and every `acquireFileLock` — plus
+ * each retry attempt and each stale-lock reclaim guard — stamps the owner file
+ * with it. On Windows that probe is a `powershell.exe` spawn and a WMI query,
+ * so a process taking several locks pays it several times for one constant.
+ *
+ * A foreign pid is never cached: that process can exit and its pid can be
+ * reused, which is the very thing the stamp exists to detect. A failed probe
+ * is not cached either — one transient failure would otherwise leave the
+ * process unable to take a lock for its whole lifetime.
+ */
+export function readProcessStartTimeCached(pid: number): string | undefined {
+  if (pid !== process.pid) return readProcessStartTime(pid);
+  return (ownStartTime ??= readProcessStartTime(pid));
+}

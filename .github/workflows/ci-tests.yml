@@ -764,6 +764,16 @@ jobs:
         run: node --import tsx bench/zig-cross-file-resolution/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Objective-C workspace resolution guards (#3179)
+        if: ${{ !cancelled() }}
+        # Build-free: fingerprints spread (typed self/super/sibling) and
+        # protocol-candidate evidence, and gates linear file-count scaling
+        # of emitPostResolutionEdges. Import lookup is the shared
+        # import-target `objc` arm; this is the C#/Zig analog for the
+        # workspace message-send pass.
+        run: node --import tsx bench/objective-c-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
@@ -803,11 +813,13 @@ jobs:
         # guards they hold never run in the main coverage job.
         env:
           GITNEXUS_BENCH: '1'
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
           test/integration/csharp-razor-view-components-benchmark.test.ts
+          test/integration/objective-c-pipeline-benchmark.test.ts
           test/integration/cpp-adl-benchmark.test.ts
           test/integration/data-route-table-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
@@ -846,6 +858,11 @@ jobs:
     timeout-minutes: 20
     env:
       GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+      # This job installs bubblewrap, the pinned runtime and a built GitNexus,
+      # so the offline sweep runs here with nothing provisioning-stubbed: real
+      # containment, real mounts, real graph. A missing piece fails the job
+      # rather than silently falling back to the stubbed path.
+      GITNEXUS_REQUIRE_FULL_SWEEP: '1'
       GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -904,7 +921,9 @@ jobs:
           tests/test_process_control.py
           tests/test_proposer_sandbox.py
           tests/test_workflow_bench_sessions.py
-          tests/test_ce_plugin_runtime.py -q
+          tests/test_ce_plugin_runtime.py
+          tests/test_offline_sweep_integration.py
+          tests/test_mock_provider.py -q
         working-directory: eval
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while

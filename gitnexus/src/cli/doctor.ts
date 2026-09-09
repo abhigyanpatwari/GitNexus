@@ -291,13 +291,15 @@ export const doctorCommand = async () => {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
   }
-  // Semantic mode follows the probe, not the platform: without a loadable
-  // VECTOR extension the index can be neither built nor queried, so search is
-  // really on exact scan no matter what the platform would allow.
+  // Doctor has no repository target, so this probe can report only whether the
+  // runtime can load VECTOR. It cannot claim that a repository has built the
+  // named HNSW index. Keep the capability and repository state distinct.
   console.log(
-    `  ${label('doctor.labels.semanticMode', 18)}${
-      vectorProbe.loaded ? capabilities.semanticMode : 'exact-scan'
-    }`,
+    `  ${label('doctor.labels.semanticMode', 18)}${t(
+      vectorProbe.loaded
+        ? 'doctor.vectorCapability.indexUnverified'
+        : 'doctor.vectorCapability.exactScanOnly',
+    )}`,
   );
   // Surface the optional-extension install policy so offline users can see
   // whether analyze/query will reach the network (extension.ladybugdb.com).

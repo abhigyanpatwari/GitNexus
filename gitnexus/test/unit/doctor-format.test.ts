@@ -8,7 +8,19 @@ import {
   pageSizeDoctorLines,
   poolSizeDoctorLine,
 } from '../../src/cli/doctor.js';
+import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
+
+const nativeProbeState = vi.hoisted(() => ({ vectorLoaded: true }));
+
+vi.mock('../../src/core/lbug/native-check.js', () => ({
+  checkLbugNative: () => ({ ok: true, binaryPath: '/synthetic/lbugjs.node' }),
+  probeFtsExtensionLoad: async () => ({ loaded: true }),
+  probeVectorExtensionLoad: async () =>
+    nativeProbeState.vectorLoaded
+      ? { loaded: true }
+      : { loaded: false, reason: 'synthetic VECTOR load failure' },
+}));
 
 describe('doctor output formatting', () => {
   it('keeps ASCII padding equivalent to String.padEnd', () => {
@@ -26,6 +38,67 @@ describe('doctor output formatting', () => {
 
   it('does not truncate labels that are already wider than the target width', () => {
     expect(padDisplayEnd('图存储：', 4)).toBe('图存储：');
+  });
+});
+
+describe('doctor VECTOR capability claims', () => {
+  const ENV_KEYS = [
+    'GITNEXUS_EMBEDDING_URL',
+    'GITNEXUS_EMBEDDING_MODEL',
+    'GITNEXUS_EMBEDDING_DIMS',
+  ] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
+
+  const renderDoctor = async (
+    vectorLoaded: boolean,
+    language: SupportedCliLanguage = 'en',
+  ): Promise<string> => {
+    nativeProbeState.vectorLoaded = vectorLoaded;
+    setCliLanguage(language);
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://127.0.0.1:9/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'synthetic-doctor';
+    process.env.GITNEXUS_EMBEDDING_DIMS = '384';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await doctorCommand();
+
+    return log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+  };
+
+  afterEach(() => {
+    nativeProbeState.vectorLoaded = true;
+    setCliLanguage(null);
+    vi.restoreAllMocks();
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it('reports a loaded extension without claiming a repository index exists', async () => {
+    const output = await renderDoctor(true);
+
+    expect(output).toContain('VECTOR extension: available');
+    expect(output).toContain(
+      'Semantic support: vector-index capable (repository index not checked)',
+    );
+    expect(output).not.toContain('VECTOR index:');
+    expect(output).not.toContain('Semantic mode:');
+  });
+
+  it('reports exact-scan capability when the extension cannot load', async () => {
+    const output = await renderDoctor(false);
+
+    expect(output).toContain('VECTOR extension: unavailable');
+    expect(output).toContain('Semantic support: exact-scan only (VECTOR extension unavailable)');
+  });
+
+  it('keeps the corrected capability claims localized', async () => {
+    const output = await renderDoctor(true, 'zh-CN');
+
+    expect(output).toContain('VECTOR 扩展：');
+    expect(output).toContain('语义支持：');
+    expect(output).toContain('支持向量索引（未检查仓库索引）');
   });
 });
 

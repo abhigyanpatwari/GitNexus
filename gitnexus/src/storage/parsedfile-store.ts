@@ -169,6 +169,7 @@ export const getParsedFileStoreDir = (storagePath: string): string =>
 /** Remove any prior run's shards so a fresh parse starts clean. Idempotent. */
 export const clearParsedFileStore = async (storagePath: string): Promise<void> => {
   await fs.rm(getParsedFileStoreDir(storagePath), { recursive: true, force: true });
+  forgetShardListings();
 };
 
 const isV8ShardName = (name: string): boolean => name.endsWith('.v8') && !name.includes('.v8.');
@@ -245,13 +246,52 @@ const listV8Shards = async (dir: string): Promise<string[]> => {
   }
 };
 
+/**
+ * Per-run memo of each shard's authenticated path listing, so the SECOND and
+ * later passes over the store can decide "this shard holds nothing I want"
+ * without reopening it.
+ *
+ * Scope resolution calls `loadParsedFilesForPaths` once per language, and each
+ * call walks every shard in the store. The skip decision needs the envelope's
+ * path listing, and that listing is only trustworthy once the payload digest
+ * has been checked — so today a pass that wants 50 Python files still reads and
+ * SHA-256s all ~300MB of a TypeScript-dominated store to prove it can skip it.
+ * Measured on a 2234-file repo: a pass wanting a single file costs 335ms, and
+ * the three language passes together spend 4426ms in here. The cost scales with
+ * LANGUAGE COUNT, so a polyglot repo pays it worst.
+ *
+ * Keyed by size+mtime as well as name. Shard names are content-addressed
+ * (parse-chunk hash + worker id), so a name collision across different content
+ * should be impossible — but that invariant lives in the parse-cache keying,
+ * not here, and one `stat` per shard is a few ms against the hundreds this
+ * saves. The memo holds one store directory at a time: a different `dir` (a new
+ * repo in a long-lived MCP process, or a wiped store) drops the previous set
+ * rather than accumulating.
+ */
+let shardListingMemo: { dir: string; byIdentity: Map<string, readonly string[]> } | undefined;
+
+const shardIdentity = (file: string, size: number, mtimeMs: number): string =>
+  `${file}\0${size}\0${mtimeMs}`;
+
+const memoFor = (dir: string): Map<string, readonly string[]> => {
+  if (shardListingMemo?.dir !== dir) shardListingMemo = { dir, byIdentity: new Map() };
+  return shardListingMemo.byIdentity;
+};
+
+/** Drop the memo when the store it describes is removed. */
+const forgetShardListings = (): void => {
+  shardListingMemo = undefined;
+};
+
 export const loadParsedFilesForPaths = async (
   storagePath: string,
   wantPaths: ReadonlySet<string>,
 ): Promise<Map<string, ParsedFile>> => {
   const out = new Map<string, ParsedFile>();
   if (wantPaths.size === 0) return out;
-  const shardPaths = await listV8Shards(getParsedFileStoreDir(storagePath));
+  const storeDir = getParsedFileStoreDir(storagePath);
+  const shardPaths = await listV8Shards(storeDir);
+  const listings = memoFor(storeDir);
   const pool = new Map<string, string>();
   let droppedSites = 0;
   let filesWithDroppedSites = 0;
@@ -274,10 +314,27 @@ export const loadParsedFilesForPaths = async (
     }
   };
   for (const shardFull of shardPaths) {
+    // Re-stat rather than trusting the name alone, then reuse this run's
+    // authenticated listing to skip without opening the file. A shard with no
+    // memoized listing — first pass, or an envelope whose listing did not
+    // validate — falls through to the full read, so this only ever removes
+    // work that a later pass had already proved unnecessary.
+    const st = await fs.stat(shardFull).catch(() => undefined);
+    const identity = st ? shardIdentity(shardFull, st.size, st.mtimeMs) : undefined;
+    const memoized = identity === undefined ? undefined : listings.get(identity);
+    if (memoized !== undefined && !memoized.some((p) => wantPaths.has(p))) {
+      bytesSinceGc += st?.size ?? 0;
+      await maybeYieldAndGc(bytesSinceGc >= parsedFileLoadGc.byteBudget);
+      continue;
+    }
+
     const loaded = await tryLoadV8Cache(shardFull, pool, wantPaths);
     if (loaded === undefined) {
       await maybeYieldAndGc(false);
       continue;
+    }
+    if (identity !== undefined && loaded.paths !== undefined) {
+      listings.set(identity, loaded.paths);
     }
     if (loaded.kind === 'skip') {
       bytesSinceGc += loaded.bytes;

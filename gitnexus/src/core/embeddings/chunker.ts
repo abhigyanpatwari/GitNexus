@@ -145,7 +145,33 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
   'class_body',
   'object_type',
   'declaration_list',
+  'implementation_definition',
   'interface_body',
+]);
+
+const DIRECT_MEMBER_DECLARATION_TYPES = new Set([
+  'protocol_declaration',
+  'class_interface',
+  // tree-sitter-objc exposes each implementation_definition directly under
+  // class_implementation, rather than grouping them in a shared body node.
+  'class_implementation',
+]);
+
+const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set([
+  'identifier',
+  'parameterized_arguments',
+  'protocol_reference_list',
+  // tree-sitter-objc `_type_params` hides itself and exposes this named child
+  // for `(T)` generics and category-shaped argument lists.
+  'generic_arguments',
+  // `_class_interface_header` / `_class_implementation_header` expose these
+  // named children before members (`NS_ROOT_CLASS @interface …`).
+  'attribute_declaration',
+  'attribute_specifier',
+  'availability_attribute_specifier',
+  'ms_declspec_modifier',
+  'storage_class_specifier',
+  'type_qualifier',
 ]);
 
 const FIELD_LIKE_MEMBER_TYPES = new Set([
@@ -157,7 +183,17 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'lexical_declaration',
   'pair',
   'enum_assignment',
+  // tree-sitter-objc wraps each ivar as `instance_variable`, not field_definition.
+  'instance_variable',
 ]);
+
+const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
+  'qualified_protocol_interface_declaration',
+  'instance_variables',
+]);
+
+/** Named prefixes the ObjC grammar allows immediately before each ivar. */
+const IVAR_ATTRIBUTE_PREFIX_TYPES = new Set(['attribute_specifier', 'attribute_declaration']);
 
 const declarationChunk = async (
   content: string,
@@ -337,6 +373,8 @@ const getDeclarationBodyNode = (node: any): any | null => {
   const bodyNode = node.childForFieldName?.('body');
   if (bodyNode) return bodyNode;
 
+  if (DIRECT_MEMBER_DECLARATION_TYPES.has(node.type)) return node;
+
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child) continue;
@@ -352,15 +390,43 @@ const collectDeclarationUnits = (
 ): Array<{ startIndex: number; endIndex: number }> => {
   const members: Array<{ startIndex: number; endIndex: number; groupable: boolean }> = [];
 
-  for (let i = 0; i < bodyNode.namedChildCount; i++) {
-    const child = bodyNode.namedChild(i);
-    if (!child) continue;
-    members.push({
-      startIndex: child.startIndex,
-      endIndex: child.endIndex,
-      groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
-    });
-  }
+  const collectMembers = (
+    node: any,
+    skipHeaderChildren: boolean,
+    includeNodePrefixOnFirstMember = false,
+  ): void => {
+    const firstMemberIndex = members.length;
+    let ivarAttributePrefixStart: number | undefined;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (!child) continue;
+      if (DECLARATION_MEMBER_WRAPPER_TYPES.has(child.type)) {
+        collectMembers(child, false, true);
+        continue;
+      }
+      if (skipHeaderChildren && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
+      if (node.type === 'instance_variables' && IVAR_ATTRIBUTE_PREFIX_TYPES.has(child.type)) {
+        ivarAttributePrefixStart ??= child.startIndex;
+        continue;
+      }
+      members.push({
+        startIndex: ivarAttributePrefixStart ?? child.startIndex,
+        endIndex: child.endIndex,
+        groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
+      });
+      ivarAttributePrefixStart = undefined;
+    }
+
+    const firstMember = members[firstMemberIndex];
+    if (includeNodePrefixOnFirstMember && firstMember) {
+      firstMember.startIndex = node.startIndex;
+      if (node.type === 'instance_variables') {
+        members[members.length - 1].endIndex = node.endIndex;
+      }
+    }
+  };
+
+  collectMembers(bodyNode, DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type));
 
   if (members.length === 0) return [];
 
