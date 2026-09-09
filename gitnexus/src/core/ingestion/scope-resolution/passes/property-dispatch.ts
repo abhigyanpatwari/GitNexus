@@ -136,8 +136,16 @@ export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
  * `CALL_TARGET_TYPES`, not a hand-rolled label set: `findOwnedMember` also
  * answers with FIELDS, and a field named like the member would otherwise
  * register as if it were the callable.
+ *
+ * Exported for `bench/value-ref-resolution/measure.mjs`, which gates both the
+ * resolved-target SET and the per-site cost of the four channels above across a
+ * 4x file-count step. It is the per-site half of the pass, so timing it in
+ * isolation is what makes a workspace-size dependency visible; timing
+ * `emitPropertyDispatchCalls` would fold that signal into edge emission, and
+ * re-implementing the channel order in the bench would pin the bench's idea of
+ * this function rather than this function.
  */
-function resolveValueRefTarget(
+export function resolveValueRefTarget(
   site: ReferenceSite,
   filePath: string,
   scopes: ScopeResolutionIndexes,

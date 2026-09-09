@@ -764,6 +764,18 @@ jobs:
         run: node --import tsx bench/zig-cross-file-resolution/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Callable-value reference resolution guards (#3399)
+        if: ${{ !cancelled() }}
+        # Build-free: pins the resolved-target SET of `resolveValueRefTarget`
+        # (exact site/resolved/declined counts plus an order-independent
+        # fingerprint) and asserts its per-site cost stays independent of
+        # workspace size across a 4x file-count step. The pass resolves a
+        # qualified receiver through `scopes.qualifiedNames`, a workspace-wide
+        # index: keyed it is O(1) per site, scanned it is O(files) — a
+        # regression a fixture cannot see and a 257-file binding table can.
+        run: node --import tsx bench/value-ref-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
