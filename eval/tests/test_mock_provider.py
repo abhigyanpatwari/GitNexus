@@ -262,3 +262,19 @@ def test_scripted_tools_survive_the_responses_protocol_too() -> None:
     assert len(calls) == 1, "the scripted tool must cross the Responses path"
     assert calls[0]["name"] == "Write"
     assert json.loads(calls[0]["arguments"])["file_path"] == "/review-output/review-output.json"
+
+
+def test_an_omitted_cache_field_stays_omitted_on_the_responses_wire_too() -> None:
+    """Absence must survive both protocols, not just the Anthropic one.
+
+    `_int_or_none` reads an absent detail key as unknown and a present 0 as a
+    measured zero, so serializing 0 for a scripted None would claim a
+    measurement the reply never made.
+    """
+
+    with MockProvider([Reply(input_tokens=2_000, cache_read_input_tokens=None)]) as provider:
+        _status, raw = _post(provider.base_url + "/v1/responses", {"model": "m", "input": []})
+
+    details = json.loads(raw)["usage"]["input_tokens_details"]
+    assert "cached_tokens" not in details, "an omitted field must not serialize as a measured zero"
+    assert details["cache_write_tokens"] == 0, "a scripted 0 is still a real measurement"

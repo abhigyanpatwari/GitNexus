@@ -221,9 +221,15 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
             "input_tokens": total_input,
             "output_tokens": reply.output_tokens,
             "total_tokens": total_input + reply.output_tokens,
+            # Omitted stays omitted here too. Collapsing None to 0 is right for
+            # the total above (an unreported field adds nothing) but wrong on
+            # the wire: _int_or_none reads an absent key as unknown and a
+            # present 0 as a measured zero, so serializing 0 would claim a
+            # measurement the reply never made - the same confusion the
+            # Anthropic path already refuses.
             "input_tokens_details": {
-                "cached_tokens": cache_read,
-                "cache_write_tokens": cache_write,
+                **({"cached_tokens": cache_read} if reply.cache_read_input_tokens is not None else {}),
+                **({"cache_write_tokens": cache_write} if reply.cache_creation_input_tokens is not None else {}),
             },
             "output_tokens_details": {"reasoning_tokens": 0},
         },

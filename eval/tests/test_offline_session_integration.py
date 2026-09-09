@@ -67,7 +67,7 @@ def test_a_session_records_the_usage_the_provider_reported(clone: Path) -> None:
     assert record["num_turns"] == 1
 
 
-def test_a_scripted_write_produces_a_review_artifact_the_scorer_accepts(clone: Path, tmp_path: Path) -> None:
+def test_a_scripted_write_produces_a_review_artifact_the_scorer_accepts(clone: Path) -> None:
     """The full artifact path: model asks, CLI writes atomically, scorer reads.
 
     This is the operation that shipped empty for a whole run. Nothing here

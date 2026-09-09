@@ -4,7 +4,10 @@
 Not a mock of the harness's own code. It does what the CLI does at the two
 boundaries the harness depends on - it calls ANTHROPIC_BASE_URL for a turn, it
 EXECUTES the tool blocks that come back, and it prints the stream-json event
-sequence the parent parses. Everything between those boundaries (the sandbox,
+sequence the parent parses. Write and Skill really run; Bash is deliberately
+stubbed, because arbitrary shell from a scripted reply buys no fidelity for the
+paths this exercises and plenty of ways to damage the host. Everything between
+those boundaries (the sandbox,
 the artifact capture, the scoring, the row) stays real, which is the whole
 point: those are the layers that shipped bugs no unit test could see.
 
