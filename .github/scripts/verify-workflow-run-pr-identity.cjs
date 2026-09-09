@@ -35,7 +35,7 @@ function allowlistField(key, value, pattern) {
   return text;
 }
 
-function forkHeadOwner(headRepo) {
+function headRepoOwner(headRepo) {
   const slash = headRepo.indexOf('/');
   if (slash <= 0 || slash === headRepo.length - 1) {
     throw new Error(`head_repo must be owner/name (got: ${JSON.stringify(headRepo)})`);
@@ -100,7 +100,7 @@ function verifyArtifactAgainstWorkflowRun(meta, authority) {
   }
 }
 
-function matchOpenPullsFromForkHead(pulls, { headRepo, headBranch, baseRepo }) {
+function matchOpenPullsByHead(pulls, { headRepo, headBranch, baseRepo }) {
   if (!Array.isArray(pulls)) {
     throw new Error('GitHub pulls?head= lookup returned a non-array');
   }
@@ -120,12 +120,8 @@ function matchOpenPullsFromForkHead(pulls, { headRepo, headBranch, baseRepo }) {
   });
 }
 
-function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
-  const cleanMeta = allowlistMetadata(meta, schemaPattern);
-  const cleanAuthority = allowlistAuthority(authority);
-  verifyArtifactAgainstWorkflowRun(cleanMeta, cleanAuthority);
-
-  const matched = matchOpenPullsFromForkHead(pulls, {
+function chooseVerifiedPullRequest(cleanMeta, cleanAuthority, pulls) {
+  const matched = matchOpenPullsByHead(pulls, {
     headRepo: cleanAuthority.head_repo,
     headBranch: cleanAuthority.head_branch,
     baseRepo: cleanAuthority.base_repo,
@@ -138,7 +134,7 @@ function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
   }
 
   // Artifact pr_number is untrusted. Do not use it to pick among several open
-  // PRs that share this fork head (same owner:branch into this repo, different
+  // PRs that share this head (same owner:branch into this repo, different
   // base branches). Fail closed unless GitHub-controlled fields leave exactly one.
   if (matched.length !== 1) {
     throw new Error(
@@ -165,6 +161,13 @@ function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
     current_head_sha: currentHeadSha,
     branch_moved: Boolean(currentHeadSha && currentHeadSha !== cleanAuthority.head_sha),
   };
+}
+
+function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
+  const cleanMeta = allowlistMetadata(meta, schemaPattern);
+  const cleanAuthority = allowlistAuthority(authority);
+  verifyArtifactAgainstWorkflowRun(cleanMeta, cleanAuthority);
+  return chooseVerifiedPullRequest(cleanMeta, cleanAuthority, pulls);
 }
 
 function flattenGhListPages(parsed) {
@@ -210,8 +213,16 @@ function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
 }
 
 function main() {
+  const out = process.env.GITHUB_OUTPUT;
+  if (!out) {
+    throw new Error('GITHUB_OUTPUT is unset');
+  }
+  const metaPath = process.env.META_PATH;
+  if (!metaPath) {
+    throw new Error('META_PATH is unset');
+  }
   const schemaPattern = compileSchemaPattern(process.env.SCHEMA_PATTERN);
-  const raw = fs.readFileSync(process.env.META_PATH, 'utf8');
+  const raw = fs.readFileSync(metaPath, 'utf8');
   const meta = allowlistMetadata(raw, schemaPattern);
   const authority = allowlistAuthority({
     head_sha: process.env.WF_HEAD_SHA,
@@ -219,24 +230,21 @@ function main() {
     head_branch: process.env.WF_HEAD_BRANCH,
     base_repo: process.env.GH_REPO,
   });
+  verifyArtifactAgainstWorkflowRun(meta, authority);
   const pulls = listOpenPullsByHead({
     ghRepo: authority.base_repo,
-    headOwner: forkHeadOwner(authority.head_repo),
+    headOwner: headRepoOwner(authority.head_repo),
     headBranch: authority.head_branch,
   });
-  const verified = resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern });
+  const verified = chooseVerifiedPullRequest(meta, authority, pulls);
   if (verified.branch_moved) {
     console.log(
-      `PR head moved to ${verified.current_head_sha}; delivering against built SHA ${verified.head_sha} (lease will refuse if the branch moved).`,
+      `PR head moved to ${verified.current_head_sha}; delivering against built SHA ${verified.head_sha}.`,
     );
   }
   console.log(
     `Verified identity: PR=${verified.pr_number} head_sha=${verified.head_sha} head_repo=${verified.head_repo} head_ref=${verified.head_ref}.`,
   );
-  const out = process.env.GITHUB_OUTPUT;
-  if (!out) {
-    throw new Error('GITHUB_OUTPUT is unset');
-  }
   fs.appendFileSync(
     out,
     [
@@ -258,17 +266,9 @@ if (require.main === module) {
 }
 
 module.exports = {
-  SCHEMA_PATTERN,
   IDENTITY_PATTERNS,
   allowlistField,
-  compileSchemaPattern,
-  allowlistMetadata,
-  allowlistAuthority,
-  forkHeadOwner,
-  verifyArtifactAgainstWorkflowRun,
-  matchOpenPullsFromForkHead,
-  flattenGhListPages,
+  headRepoOwner,
   resolveVerifiedPullRequest,
   listOpenPullsByHead,
-  main,
 };

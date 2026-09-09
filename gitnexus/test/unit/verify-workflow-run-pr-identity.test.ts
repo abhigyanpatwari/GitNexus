@@ -28,8 +28,7 @@ const AUTOFIX_SCHEMA = /^gitnexus\.pr-autofix\/v[0-9]+$/;
 
 const mod = requireCjs(SCRIPT) as {
   allowlistField: (key: string, value: unknown, pattern: RegExp) => string;
-  allowlistMetadata: (raw: unknown, schemaPattern?: RegExp) => Record<string, string>;
-  forkHeadOwner: (headRepo: string) => string;
+  headRepoOwner: (headRepo: string) => string;
   resolveVerifiedPullRequest: (input: {
     meta: unknown;
     authority: {
@@ -54,7 +53,6 @@ const mod = requireCjs(SCRIPT) as {
     headBranch: string;
     runGh: (args: string[]) => { status: number; stdout?: string; stderr?: string };
   }) => unknown[];
-  flattenGhListPages: (parsed: unknown) => unknown[];
   IDENTITY_PATTERNS: { pr_number: RegExp; head_sha: RegExp; head_ref: RegExp; repo: RegExp };
 };
 
@@ -105,13 +103,13 @@ describe('allowlistField', () => {
   });
 });
 
-describe('forkHeadOwner', () => {
+describe('headRepoOwner', () => {
   it('takes the owner from owner/name', () => {
-    expect(mod.forkHeadOwner('mengkaka/GitNexus')).toBe('mengkaka');
+    expect(mod.headRepoOwner('mengkaka/GitNexus')).toBe('mengkaka');
   });
 
   it('rejects a bare owner', () => {
-    expect(() => mod.forkHeadOwner('mengkaka')).toThrow(/owner\/name/);
+    expect(() => mod.headRepoOwner('mengkaka')).toThrow(/owner\/name/);
   });
 });
 
@@ -242,7 +240,7 @@ describe('resolveVerifiedPullRequest', () => {
     ).toThrow(/metadata.schema failed allowlist/);
   });
 
-  it('ignores a PR from the same owner that targets a different repo or branch', () => {
+  it('ignores a PR from the same owner that targets a different branch', () => {
     expect(() =>
       mod.resolveVerifiedPullRequest({
         meta: META,
@@ -352,17 +350,18 @@ describe('listOpenPullsByHead', () => {
   });
 });
 
+function assertIdentityVerifierContract(workflow: string) {
+  expect(workflow).toContain('.github/scripts/verify-workflow-run-pr-identity.cjs');
+  expect(workflow).toContain('github.event.workflow_run.head_branch');
+  expect(workflow).toContain('WF_HEAD_BRANCH');
+  expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
+}
+
 describe('commit-fork-prebuilds.yml contract', () => {
   const workflow = readFileSync(WORKFLOW, 'utf8');
 
   it('runs the tested verifier and keys the fork lookup on workflow_run.head_branch', () => {
-    expect(workflow).toContain('.github/scripts/verify-workflow-run-pr-identity.cjs');
-    expect(workflow).toContain('github.event.workflow_run.head_branch');
-    expect(workflow).toContain('WF_HEAD_BRANCH');
-  });
-
-  it('does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)', () => {
-    expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
+    assertIdentityVerifierContract(workflow);
   });
 
   it('does not checkout, place, or push unless identity verify succeeded', () => {
@@ -384,14 +383,8 @@ describe('pr-autofix-publish.yml contract', () => {
   const workflow = readFileSync(AUTOFIX_WORKFLOW, 'utf8');
 
   it('runs the tested verifier and keys the lookup on workflow_run.head_branch', () => {
-    expect(workflow).toContain('.github/scripts/verify-workflow-run-pr-identity.cjs');
-    expect(workflow).toContain('github.event.workflow_run.head_branch');
-    expect(workflow).toContain('WF_HEAD_BRANCH');
+    assertIdentityVerifierContract(workflow);
     expect(workflow).toContain('gitnexus\\.pr-autofix');
-  });
-
-  it('does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)', () => {
-    expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
   });
 
   it('does not post sticky comments or check runs unless identity verify succeeded', () => {

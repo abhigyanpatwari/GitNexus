@@ -88,11 +88,11 @@ jobs:
             printf '%s' "$value"
           }
 
-          SCHEMA=$(assert_field    schema         '^gitnexus\.pr-autofix/v[0-9]+$')
-          PR_NUMBER=$(assert_field pr_number      '^[0-9]+$')
-          HEAD_SHA=$(assert_field  head_sha       '^[0-9a-f]{40}$')
-          HEAD_REF=$(assert_field  head_ref       '^[A-Za-z0-9._/-]+$')
-          HEAD_REPO=$(assert_field head_repo      '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+          assert_field schema         '^gitnexus\.pr-autofix/v[0-9]+$' >/dev/null
+          assert_field pr_number      '^[0-9]+$' >/dev/null
+          assert_field head_sha       '^[0-9a-f]{40}$' >/dev/null
+          assert_field head_ref       '^[A-Za-z0-9._/-]+$' >/dev/null
+          assert_field head_repo      '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' >/dev/null
           BASE_REPO=$(assert_field base_repo      '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
           CHANGED=$(assert_field   changed_lines  '^[0-9]+$')
 
@@ -103,15 +103,7 @@ jobs:
             exit 1
           fi
 
-          {
-            echo "schema=${SCHEMA}"
-            echo "pr_number=${PR_NUMBER}"
-            echo "head_sha=${HEAD_SHA}"
-            echo "head_ref=${HEAD_REF}"
-            echo "head_repo=${HEAD_REPO}"
-            echo "base_repo=${BASE_REPO}"
-            echo "changed_lines=${CHANGED}"
-          } >> "$GITHUB_OUTPUT"
+          echo "changed_lines=${CHANGED}" >> "$GITHUB_OUTPUT"
 
       # Cross-verify the artifact's claimed identity against the
       # GitHub-controlled workflow_run event. The previous step's
