@@ -13,17 +13,14 @@
  * Conservative by design: we only tag an edge when we can prove the
  * gating expression evaluates to `false`.  Anything ambiguous → live.
  *
- * Scope of v1:
+ * Supported scope:
  *
  *   (a) **File-local** consts (`pub const FOO = false;`, plus const-to-const
  *       aliases up to 5 hops), built once per file by `buildZigBoolConstMap`.
- *   (b) **Cross-file** (`const cfg = @import("./cfg.zig"); if (cfg.FOO)`) is
- *       NOT resolved yet. The evaluator keeps the seam for it (`importAliases`
- *       + `lookupBoolsForPath`, consumed by the `field_expression` case), but
- *       the only caller passes an empty alias map and a lookup that always
- *       returns `undefined`, because the capture emitter runs in the parse
- *       worker and sees only the current file. Tracked in #3162. Until then
- *       every `cfg.FOO` condition folds to unknown, i.e. live.
+ *   (b) **Cross-file** direct imports (`const cfg = @import("./cfg.zig");
+ *       if (cfg.FOO)`) are enriched after per-file extraction. The workspace
+ *       caller supplies `importAliases` and `lookupBoolsForPath`; the parse
+ *       worker still uses empty/undefined inputs and remains file-local.
  *
  * Also out of scope: multi-hop member access (`cfg.sub.FOO`), re-exported
  * consts, runtime-evaluated bools (`const FOO = computeIt();`), and

@@ -31,15 +31,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readRepoControlFile } from '../config/repo-control-file.js';
+import {
+  InvalidBranchError,
+  validateBranchName as validateBranchNameCore,
+} from '../core/git-ref.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
 
 /** Final fallback when no branch is configured or detectable. */
 export const DEFAULT_BRANCH_FALLBACK = 'main';
-
-/** Git refs longer than this are almost certainly a mistake / injection attempt. */
-const BRANCH_MAX_LENGTH = 255;
 
 /**
  * Thrown for any `.gitnexusrc` problem (missing-file is NOT an error — it
@@ -157,45 +158,18 @@ const assertNoHiddenChars = (value: string, source: string): void => {
 
 /**
  * Validate a user-supplied branch name (from CLI or `.gitnexusrc`). Returns the
- * trimmed name or throws {@link GitNexusRcError}. Conservative but accepts the
- * shapes real branches use (`feature/foo-bar`, `release/1.2`, `develop`).
+ * trimmed name or throws {@link GitNexusRcError}. Rules live in
+ * `core/git-ref.ts`; this wrapper keeps the CLI / `.gitnexusrc` error type.
  */
 export function validateBranchName(value: string, source: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new GitNexusRcError(`${source}: branch name must not be empty.`);
+  try {
+    return validateBranchNameCore(value, source);
+  } catch (err) {
+    if (err instanceof InvalidBranchError) {
+      throw new GitNexusRcError(err.message);
+    }
+    throw err;
   }
-  if (trimmed.length > BRANCH_MAX_LENGTH) {
-    throw new GitNexusRcError(`${source}: branch name is too long (max ${BRANCH_MAX_LENGTH}).`);
-  }
-  assertNoHiddenChars(trimmed, source);
-  if (/\s/.test(trimmed)) {
-    throw new GitNexusRcError(`${source}: branch name must not contain whitespace.`);
-  }
-  // git ref-name rules (subset): reject characters git itself forbids in refs.
-  if (/[~^:?*[\\]/.test(trimmed)) {
-    throw new GitNexusRcError(
-      `${source}: branch name contains characters not allowed in a git ref (~ ^ : ? * [ \\).`,
-    );
-  }
-  if (trimmed.startsWith('-')) {
-    throw new GitNexusRcError(`${source}: branch name must not start with "-".`);
-  }
-  if (trimmed.includes('..')) {
-    throw new GitNexusRcError(`${source}: branch name must not contain "..".`);
-  }
-  // Git permits a backtick in a ref, but the branch is embedded inside a
-  // Markdown inline-code span in the generated AGENTS.md/CLAUDE.md regression
-  // example, where a backtick would close the span early and let the rest of
-  // the template render as instruction text. Reject it at this single
-  // chokepoint so all three tiers (CLI flag, .gitnexusrc, auto-detect via
-  // sanitizeDetectedBranch) are covered (#1996 tri-review P1).
-  if (trimmed.includes('`')) {
-    throw new GitNexusRcError(
-      `${source}: branch name must not contain a backtick (it would break the generated Markdown).`,
-    );
-  }
-  return trimmed;
 }
 
 /**

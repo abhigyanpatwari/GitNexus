@@ -170,6 +170,50 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     );
   });
 
+  it('forwards the index-branch selector to the worker', () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    launch(job, REPO_PATH, { branch: 'development' });
+
+    // `StartMessage.options` is typed as `AnalyzeOptions`, so this key IS
+    // `AnalyzeOptions.branch` — the field `resolveWriteTarget` reads to choose
+    // the run's storage slot. (It does not always mean a `branches/<slug>/`
+    // sub-slot: `resolveBranchPlacement` keeps the flat slot when that slot has
+    // no owner, or when its owner is already this label.) A rename breaks this
+    // test.
+    expect(child.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({ branch: 'development' }),
+      }),
+    );
+  });
+
+  it('omits branch entirely when the caller did not select one', () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    launch(job, REPO_PATH, {});
+
+    // Not merely undefined: absent. `AnalyzeOptions.branch === undefined` is the
+    // documented signal for "target the flat workspace slot", so sending the key
+    // with an undefined value must not become the way that default is expressed.
+    const sent = child.send.mock.calls.at(0)?.[0] as { options: Record<string, unknown> };
+    expect(Object.hasOwn(sent.options, 'branch')).toBe(false);
+  });
+
   afterEach(() => {
     jobManager.dispose();
     vi.restoreAllMocks();
