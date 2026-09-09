@@ -23,6 +23,21 @@ export interface BackendRepo {
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
   indexedAt: string;
   lastCommit?: string;
+  /**
+   * Branch this index was built from. Absent on legacy entries and non-git
+   * repos. Since #3199 a branch-pinned analyze registers its own entry, so this
+   * is what tells two entries for the same repository apart — the name is
+   * derived from the clone directory and is not a contract.
+   */
+  branch?: string;
+  /** Non-primary branch indexes recorded for the same path. */
+  branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
+  /**
+   * Present only when the index is behind the repo's checked-out HEAD; absent
+   * means either up to date or not answerable (see the server's
+   * `repo-projection.ts`). Same shape MCP `list_repos` returns.
+   */
+  staleness?: { commitsBehind: number; hint?: string };
   stats?: {
     files?: number;
     nodes?: number;
