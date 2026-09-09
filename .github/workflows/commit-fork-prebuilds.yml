@@ -170,7 +170,7 @@ jobs:
       # persist-credentials: false — push auth is provided inline at push time,
       # never written to .git/config on disk.
       - name: Checkout fork PR head
-        if: steps.meta.outputs.deliver == 'true'
+        if: steps.meta.outputs.deliver == 'true' && steps.verify.outcome == 'success'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ steps.verify.outputs.head_repo }}
@@ -181,7 +181,7 @@ jobs:
           path: pr-checkout
 
       - name: Place prebuilds into the fork checkout
-        if: steps.meta.outputs.deliver == 'true'
+        if: steps.meta.outputs.deliver == 'true' && steps.verify.outcome == 'success'
         env:
           DL: prebuilds-in
           CHECKOUT: pr-checkout
@@ -223,7 +223,7 @@ jobs:
 
       - name: Commit and push to the fork branch
         id: push
-        if: steps.meta.outputs.deliver == 'true'
+        if: steps.meta.outputs.deliver == 'true' && steps.verify.outcome == 'success'
         working-directory: pr-checkout
         env:
           HEAD_REF: ${{ steps.verify.outputs.head_ref }}

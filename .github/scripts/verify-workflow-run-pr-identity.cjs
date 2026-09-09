@@ -10,8 +10,10 @@
 //
 // The current PR tip may have moved past the SHA the producer built; that is
 // not an identity failure — the caller decides whether to lease-push or just
-// comment. Set SCHEMA_PATTERN to the artifact schema allowlist (defaults to
-// the tree-sitter prebuild schema).
+// comment. Two open PRs from the same fork head (same owner:branch into this
+// repo) are an identity failure: artifact pr_number is untrusted and must not
+// pick among them. Set SCHEMA_PATTERN to the artifact schema allowlist
+// (defaults to the tree-sitter prebuild schema).
 'use strict';
 
 const fs = require('node:fs');
@@ -135,13 +137,22 @@ function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
     );
   }
 
-  const expected = Number(cleanMeta.pr_number);
-  const chosen = matched.find((pr) => pr.number === expected);
-  if (!chosen) {
+  // Artifact pr_number is untrusted. Do not use it to pick among several open
+  // PRs that share this fork head (same owner:branch into this repo, different
+  // base branches). Fail closed unless GitHub-controlled fields leave exactly one.
+  if (matched.length !== 1) {
     throw new Error(
-      `Artifact pr_number (${cleanMeta.pr_number}) is not the open PR(s) from this fork head (${matched
+      `Ambiguous open PRs from ${cleanAuthority.head_repo}:${cleanAuthority.head_branch} targeting ${cleanAuthority.base_repo} (${matched
         .map((pr) => pr.number)
         .join(',')}) — refusing.`,
+    );
+  }
+
+  const chosen = matched[0];
+  const expected = Number(cleanMeta.pr_number);
+  if (chosen.number !== expected) {
+    throw new Error(
+      `Artifact pr_number (${cleanMeta.pr_number}) is not the open PR(s) from this fork head (${chosen.number}) — refusing.`,
     );
   }
 
@@ -156,6 +167,17 @@ function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
   };
 }
 
+function flattenGhListPages(parsed) {
+  if (!Array.isArray(parsed)) {
+    throw new Error('GitHub pulls?head= lookup returned a non-array');
+  }
+  if (parsed.length === 0) return parsed;
+  if (parsed.every((page) => Array.isArray(page))) {
+    return parsed.flat();
+  }
+  return parsed;
+}
+
 function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
   const run =
     runGh ||
@@ -163,6 +185,7 @@ function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
   const result = run([
     'api',
     '--paginate',
+    '--slurp',
     '-X',
     'GET',
     `repos/${ghRepo}/pulls`,
@@ -185,10 +208,7 @@ function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
   } catch {
     throw new Error('GitHub pulls?head= lookup returned non-JSON');
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error('GitHub pulls?head= lookup returned a non-array');
-  }
-  return parsed;
+  return flattenGhListPages(parsed);
 }
 
 function main() {
@@ -249,6 +269,7 @@ module.exports = {
   forkHeadOwner,
   verifyArtifactAgainstWorkflowRun,
   matchOpenPullsFromForkHead,
+  flattenGhListPages,
   resolveVerifiedPullRequest,
   listOpenPullsByHead,
   main,

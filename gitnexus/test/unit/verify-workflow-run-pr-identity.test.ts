@@ -54,6 +54,7 @@ const mod = requireCjs(SCRIPT) as {
     headBranch: string;
     runGh: (args: string[]) => { status: number; stdout?: string; stderr?: string };
   }) => unknown[];
+  flattenGhListPages: (parsed: unknown) => unknown[];
   IDENTITY_PATTERNS: { pr_number: RegExp; head_sha: RegExp; head_ref: RegExp; repo: RegExp };
 };
 
@@ -185,6 +186,42 @@ describe('resolveVerifiedPullRequest', () => {
     ).toThrow(/head_ref/);
   });
 
+  it('refuses a base_repo that does not match $GITHUB_REPOSITORY', () => {
+    expect(() =>
+      mod.resolveVerifiedPullRequest({
+        meta: { ...META, base_repo: 'evil/upstream' },
+        authority: AUTHORITY,
+        pulls: [pull()],
+      }),
+    ).toThrow(/base_repo does not match/);
+  });
+
+  it('refuses two open PRs that share the same fork head', () => {
+    expect(() =>
+      mod.resolveVerifiedPullRequest({
+        meta: META,
+        authority: AUTHORITY,
+        pulls: [
+          pull(),
+          pull({
+            number: 4000,
+            base: { repo: { full_name: 'abhigyanpatwari/GitNexus' }, ref: 'release' },
+          }),
+        ],
+      }),
+    ).toThrow(/Ambiguous open PRs/);
+  });
+
+  it('refuses a closed PR for the same fork head', () => {
+    expect(() =>
+      mod.resolveVerifiedPullRequest({
+        meta: META,
+        authority: AUTHORITY,
+        pulls: [pull({ state: 'closed' })],
+      }),
+    ).toThrow(/No open PR/);
+  });
+
   it('accepts gitnexus.pr-autofix metadata when SCHEMA_PATTERN is the autofix schema', () => {
     const verified = mod.resolveVerifiedPullRequest({
       meta: { ...META, schema: 'gitnexus.pr-autofix/v1', changed_lines: 12 },
@@ -237,6 +274,7 @@ describe('listOpenPullsByHead', () => {
     expect(seen).toEqual([
       'api',
       '--paginate',
+      '--slurp',
       '-X',
       'GET',
       'repos/abhigyanpatwari/GitNexus/pulls',
@@ -246,6 +284,49 @@ describe('listOpenPullsByHead', () => {
       'head=mengkaka:objective-c_support',
     ]);
     expect(listed).toEqual(pulls);
+  });
+
+  it('flattens gh --paginate --slurp page arrays', () => {
+    const page1 = [pull()];
+    const page2 = [
+      pull({
+        number: 4000,
+        head: {
+          sha: SHA,
+          ref: 'other',
+          repo: { full_name: 'mengkaka/GitNexus' },
+        },
+      }),
+    ];
+    const listed = mod.listOpenPullsByHead({
+      ghRepo: 'abhigyanpatwari/GitNexus',
+      headOwner: 'mengkaka',
+      headBranch: 'objective-c_support',
+      runGh: () => ({ status: 0, stdout: JSON.stringify([page1, page2]) }),
+    });
+    expect(listed).toEqual([...page1, ...page2]);
+  });
+
+  it('throws on an empty body', () => {
+    expect(() =>
+      mod.listOpenPullsByHead({
+        ghRepo: 'abhigyanpatwari/GitNexus',
+        headOwner: 'mengkaka',
+        headBranch: 'objective-c_support',
+        runGh: () => ({ status: 0, stdout: '' }),
+      }),
+    ).toThrow(/empty body/);
+  });
+
+  it('throws on a non-JSON success body', () => {
+    expect(() =>
+      mod.listOpenPullsByHead({
+        ghRepo: 'abhigyanpatwari/GitNexus',
+        headOwner: 'mengkaka',
+        headBranch: 'objective-c_support',
+        runGh: () => ({ status: 0, stdout: 'not-json' }),
+      }),
+    ).toThrow(/non-JSON/);
   });
 
   it('throws on a gh failure instead of pretending there is no PR', () => {
@@ -282,6 +363,20 @@ describe('commit-fork-prebuilds.yml contract', () => {
 
   it('does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)', () => {
     expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
+  });
+
+  it('does not checkout, place, or push unless identity verify succeeded', () => {
+    expect(workflow).toContain('steps.verify.outputs.head_repo');
+    expect(workflow).toContain('steps.verify.outputs.head_sha');
+    expect(workflow).toContain('steps.verify.outputs.pr_number');
+    for (const step of [
+      'Checkout fork PR head',
+      'Place prebuilds into the fork checkout',
+      'Commit and push to the fork branch',
+    ]) {
+      const chunk = workflow.split(`- name: ${step}`)[1]?.split('- name:')[0] ?? '';
+      expect(chunk, step).toMatch(/steps\.verify\.outcome == 'success'/);
+    }
   });
 });
 
