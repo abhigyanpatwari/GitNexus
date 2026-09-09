@@ -735,19 +735,37 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v93: Zig call captures inside a comptime-false branch carry
 // `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
 // `staticGated` and the CALLS edge a BOOLEAN column.
+// v94: Objective-C now elides bare, file-scope macro markers before parsing.
+// A warm v93 cache can retain error-recovered trees and provider facts that
+// omit Objective-C declarations following markers such as RCT_EXTERN_C_END.
+// v95: Objective-C header classification no longer treats framework `#import`
+// alone as Objective-C syntax. A warm v94 cache can replay Objective-C worker
+// output for a C++ header during `--force`, even though the current classifier
+// routes that same header through the C++ provider.
+// v96: Objective-C macro-marker preprocessing recognizes all C preprocessing
+// whitespace before a directive or bare marker. A warm v95 cache can retain
+// error-recovered facts for sources that begin those lines with form feed or
+// vertical tab.
+// v97: Objective-C macro-marker preprocessing recognizes comment-prefixed
+// directives and rejects invalid numeric marker prefixes. A warm v96 cache can
+// replay error-recovered facts from the previous normalization behavior.
 // v98 (#3219): `ZIG_SCOPE_QUERY` gained three `@reference.value-ref` rules —
 // bare call argument, qualified call argument (with `@reference.receiver`), and
 // const-binding initialiser — so a Zig callable named in VALUE position now
 // produces a `value-ref` entry in `ParsedFile.referenceSites` where it produced
-// none before. These captures are PARSE-TIME facts, so a warm v93 cache replays
-// unchanged `.zig` files with zero value-ref sites, `--force` included (shards
-// are content-addressed): `emitPropertyDispatchCalls` then emits no USES edge,
-// `callableValueReferenceBoundaries` measures a real zero, and `impact` on a
-// registered accessor republishes `epistemic: "exact"` — the exact #3399 defect
-// this change exists to close, silently un-fixed. 98 is the next free value
-// above origin/main (93) and every open PR at the time of writing: #3190 claims
-// 94, #3179 claims 94-97. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY
-// BEFORE MERGING.
+// none before. These captures are PARSE-TIME facts, so a warm pre-v98 cache
+// replays unchanged `.zig` files with zero value-ref sites, `--force` included
+// (shards are content-addressed): `emitPropertyDispatchCalls` then emits no
+// USES edge, `callableValueReferenceBoundaries` measures a real zero, and
+// `impact` on a registered accessor republishes `epistemic: "exact"` — the exact
+// #3399 defect this change exists to close, silently un-fixed.
+//
+// 94-97 went to #3179 (Objective-C), which has since merged; 98 is the next
+// value above it. Re-checked against origin/main and every open PR touching
+// this file at merge time, which is the rule the paragraphs above were written
+// by PRs that each checked only once: main is at 97, and the remaining open
+// claims (#3190 at 94, #2840 at 71, #1616 at 2) all sit below it and must
+// re-bump themselves.
 const SCHEMA_BUMP = 98;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

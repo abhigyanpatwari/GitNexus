@@ -260,19 +260,26 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 92 -> 93 for #3161 (Zig static gating): call captures inside a
   // comptime-false branch gain the `@reference.static-gated` marker, a
   // parse-time fact a warm cache from an earlier head would replay without.
-  // Moved 93 -> 98 for #3219 (Zig callable-value references): `ZIG_SCOPE_QUERY`
+  // Moved 94 -> 95 for #3179: Objective-C framework-import-only header
+  // classification changed parse-worker output for the same file content.
+  // Moved 95 -> 96 for #3179: Objective-C macro-marker preprocessing now
+  // recognizes form feed and vertical tab as C preprocessing whitespace.
+  // Moved 96 -> 97 for #3179: comment-prefixed directives and invalid numeric
+  // marker prefixes change the parse-time normalization result.
+  // Moved 97 -> 98 for #3219 (Zig callable-value references): `ZIG_SCOPE_QUERY`
   // gained three `@reference.value-ref` rules, so a `.zig` file now yields
   // `value-ref` entries in `ParsedFile.referenceSites` where it yielded none.
-  // A warm v93 cache replays the old, empty site list for every unchanged file
-  // — `--force` included, since shards are content-addressed — so no USES edge
-  // is emitted, the boundary probe measures a real zero, and `impact` on a
+  // A warm pre-v98 cache replays the old, empty site list for every unchanged
+  // file — `--force` included, since shards are content-addressed — so no USES
+  // edge is emitted, the boundary probe measures a real zero, and `impact` on a
   // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
   // silently un-fixed on exactly the incremental path most users are on.
-  // 94-97 are SKIPPED, not free: #3190 claims 94 and #3179 claims 94 through 97
-  // in one PR. 98 is the next value above origin/main (93) and above every
-  // in-flight claim — re-checked at merge, which is the rule the paragraphs
-  // above were written by two PRs that each checked only once.
-  it('pins SCHEMA_BUMP to 98 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3219)', () => {
+  // 94-97 belong to #3179, which merged first; 98 is the next value above it.
+  // Re-checked against origin/main and every open PR touching parse-cache.ts at
+  // merge time — the rule the paragraphs above were written by PRs that each
+  // checked only once — and the remaining open claims (#3190 at 94, #2840 at
+  // 71, #1616 at 2) all sit below main and must re-bump themselves.
+  it('pins SCHEMA_BUMP to 98 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(98);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [

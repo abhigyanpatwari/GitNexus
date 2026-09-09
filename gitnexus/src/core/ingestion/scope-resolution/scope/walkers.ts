@@ -181,6 +181,8 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
 export function isClassLike(t: string): boolean {
   return (
     t === 'Class' ||
+    t === 'Protocol' ||
+    t === 'Category' ||
     t === 'Interface' ||
     t === 'Struct' ||
     t === 'Record' ||
@@ -507,9 +509,10 @@ export function moduleScopeIdOf(
 /**
  * Look up a class-like binding by name in the given scope's chain.
  *
- * "Class-like" covers `Class | Interface | Struct | Record | Enum |
- * Trait` via the shared `isClassLike` predicate — every kind that
- * collapses to `@scope.class` in the scope-extractor query contract.
+ * "Class-like" covers `Class | Interface | Struct | Record | Enum | Trait |
+ * Protocol | Category` via the shared `isClassLike` predicate. Objective-C
+ * protocol and category definitions are graph-side containers rather than
+ * `@scope.class` captures.
  *
  * Walks the scope chain upward and consults TWO sources at each step:
  *   1. `scope.bindings` — populated during scope-extraction Pass 2 with
