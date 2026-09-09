@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createWatchIgnorePredicate } from '../../src/config/ignore-service.js';
-import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/watch.js';
+import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/analyze-watch.js';
 import * as git from '../../src/storage/git.js';
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -112,6 +112,7 @@ describe('watch path selection', () => {
         skipAgentsMd: false,
         skipSkills: false,
         stats: true,
+        springActuator: './actuator',
       }),
     );
     const ignored: string[][] = [];
@@ -128,7 +129,7 @@ describe('watch path selection', () => {
       ),
     ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
     expect(ignored).toEqual([
-      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats'],
+      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats', 'springActuator'],
     ]);
 
     const unsupportedCliOptions: Array<[Parameters<typeof resolveWatchOptions>[1], string]> = [
@@ -137,6 +138,12 @@ describe('watch path selection', () => {
       [{ skipAgentsMd: true }, '--skip-agents-md'],
       [{ skipSkills: true }, '--skip-skills'],
       [{ stats: false }, '--no-stats'],
+      [{ springActuator: './actuator' }, '--spring-actuator'],
+      // Rejected for the same reason as the Actuator path: the watcher reacts
+      // to source changes and nothing watches a document directory, so
+      // accepting the flag would read the documents once and then serve a
+      // stale answer for the rest of the session.
+      [{ asyncapiSpec: './docs/asyncapi' }, '--asyncapi-spec'],
     ];
     for (const [options, flag] of unsupportedCliOptions) {
       await expect(

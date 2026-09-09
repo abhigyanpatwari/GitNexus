@@ -29,9 +29,6 @@ from .proposer_sandbox import (
 )
 
 HARNESS_ROOT = Path(__file__).resolve().parents[2]
-# The mounted runtime is built from this checkout, so the pin tracks the harness'
-# own package version. A hardcoded copy only drifts on release day (#3064).
-PINNED_GITNEXUS_VERSION = json.loads((HARNESS_ROOT / "gitnexus" / "package.json").read_text())["version"]
 
 CE_ARMS = frozenset({"ce_workflow", "ce_workflow_direct", "ce_review"})
 SANDBOX_CE_PLUGIN = "/opt/compound-engineering-plugin"
@@ -149,24 +146,91 @@ def _validated_runtime_root(path: Path, *, label: str) -> Path:
     return root
 
 
+def _primary_checkout_root(harness_root: Path) -> Path | None:
+    """Return the main worktree when *harness_root* is a linked git worktree.
+
+    Linked worktrees store a regular ``.git`` file pointing at
+    ``<primary>/.git/worktrees/<name>``. A symlink or oversized file is
+    ignored so this helper cannot be used to follow an unexpected path.
+    """
+
+    git_file = harness_root / ".git"
+    try:
+        metadata = git_file.lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    if metadata.st_size > 4096:
+        return None
+    try:
+        text = git_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return None
+    if not text.startswith("gitdir:"):
+        return None
+    raw = text.split(":", 1)[1].strip()
+    if not raw:
+        return None
+    gitdir = Path(raw)
+    if not gitdir.is_absolute():
+        gitdir = harness_root / gitdir
+    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+        return None
+    primary = gitdir.parent.parent.parent
+    try:
+        primary_git = (primary / ".git").lstat()
+    except OSError:
+        return None
+    if stat.S_ISLNK(primary_git.st_mode) or not stat.S_ISDIR(primary_git.st_mode):
+        return None
+    resolved_primary = primary.resolve()
+    if resolved_primary == harness_root.resolve():
+        return None
+    return resolved_primary
+
+
 def _validated_runtime_component(
     root: Path,
     relative: str,
     target: str,
     *,
     directory: bool,
+    allow_primary_worktree_symlink: bool = False,
 ) -> ReadOnlyMount:
     """Validate one direct runtime component before exposing only that path."""
 
     source = root / relative
+    kind = "directory" if directory else "file"
     try:
         mode = source.lstat().st_mode
         resolved = source.resolve(strict=True)
     except OSError as exc:
         raise SandboxError(f"pinned GitNexus runtime component is unavailable: {source}: {exc}") from exc
+    if stat.S_ISLNK(mode) and allow_primary_worktree_symlink and directory:
+        primary = _primary_checkout_root(HARNESS_ROOT)
+        if primary is None:
+            raise SandboxError(f"pinned GitNexus runtime component must be a real {kind}: {source}")
+        expected = primary / "gitnexus" / relative
+        try:
+            expected_mode = expected.lstat().st_mode
+            expected_resolved = expected.resolve(strict=True)
+        except OSError as exc:
+            raise SandboxError(
+                f"pinned GitNexus runtime component symlink must point at the primary checkout: {source}"
+            ) from exc
+        if (
+            stat.S_ISLNK(expected_mode)
+            or not stat.S_ISDIR(expected_mode)
+            or expected_resolved != expected
+            or resolved != expected_resolved
+        ):
+            raise SandboxError(
+                f"pinned GitNexus runtime component symlink must point at the primary checkout: {source}"
+            )
+        return ReadOnlyMount(source=expected_resolved, target=target)
     expected_type = stat.S_ISDIR(mode) if directory else stat.S_ISREG(mode)
     if stat.S_ISLNK(mode) or not expected_type or resolved != source:
-        kind = "directory" if directory else "file"
         raise SandboxError(f"pinned GitNexus runtime component must be a real {kind}: {source}")
     return ReadOnlyMount(source=source, target=target)
 
@@ -182,6 +246,39 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         HARNESS_ROOT / "gitnexus-shared",
         label="pinned GitNexus shared runtime",
     )
+    node_modules = _validated_runtime_component(
+        runtime,
+        "node_modules",
+        f"{SANDBOX_GITNEXUS}/node_modules",
+        directory=True,
+        allow_primary_worktree_symlink=True,
+    )
+    primary = _primary_checkout_root(HARNESS_ROOT)
+    if primary is not None:
+        try:
+            primary_shared = _validated_runtime_root(
+                primary / "gitnexus-shared",
+                label="primary GitNexus shared runtime",
+            )
+        except SandboxError:
+            # Keep the already validated local shared runtime when primary is unavailable.
+            pass
+        else:
+            reuse_primary_shared = node_modules.source == (primary / "gitnexus" / "node_modules")
+            if not reuse_primary_shared:
+                linked_shared = node_modules.source / "gitnexus-shared"
+                try:
+                    reuse_primary_shared = (
+                        linked_shared.is_symlink()
+                        and linked_shared.resolve(strict=True) == primary_shared
+                    )
+                except OSError:
+                    reuse_primary_shared = False
+            if reuse_primary_shared:
+                # Reused primary node_modules (or its inner gitnexus-shared
+                # link) still points at that checkout. Mount the same tree or
+                # the sandbox inner link is a host path.
+                shared = primary_shared
     mounts = (
         _validated_runtime_component(
             runtime,
@@ -195,12 +292,7 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
             f"{SANDBOX_GITNEXUS}/package.json",
             directory=False,
         ),
-        _validated_runtime_component(
-            runtime,
-            "node_modules",
-            f"{SANDBOX_GITNEXUS}/node_modules",
-            directory=True,
-        ),
+        node_modules,
         _validated_runtime_component(
             runtime,
             "vendor",
@@ -235,14 +327,23 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         raise SandboxError(f"pinned GitNexus runtime metadata is invalid: {exc}") from exc
     if stat.S_ISLNK(entrypoint_mode) or not stat.S_ISREG(entrypoint_mode):
         raise SandboxError(f"pinned GitNexus runtime entrypoint must be regular and non-symlink: {entrypoint}")
-    if package.get("version") != PINNED_GITNEXUS_VERSION:
-        raise SandboxError(
-            "pinned GitNexus runtime version drifted: "
-            f"expected {PINNED_GITNEXUS_VERSION}, got {package.get('version')!r}"
-        )
+    if not isinstance(package.get("version"), str) or not package["version"]:
+        raise SandboxError("pinned GitNexus runtime package.json has no version")
 
     linked_shared = mounts[2].source / "gitnexus-shared"
-    if not linked_shared.is_symlink() or linked_shared.resolve(strict=True) != shared:
+    allowed_shared = {shared}
+    if primary is not None:
+        try:
+            allowed_shared.add(
+                _validated_runtime_root(
+                    primary / "gitnexus-shared",
+                    label="primary GitNexus shared runtime",
+                )
+            )
+        except SandboxError:
+            # Primary checkout may be absent or unreadable on a standalone eval tree.
+            pass
+    if not linked_shared.is_symlink() or linked_shared.resolve(strict=True) not in allowed_shared:
         raise SandboxError("pinned GitNexus runtime has an unexpected gitnexus-shared dependency")
     try:
         shared_package = json.loads(mounts[5].source.read_text())

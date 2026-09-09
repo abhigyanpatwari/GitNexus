@@ -48,6 +48,7 @@ import {
   deleteAllCallSummaries,
   deleteAllInjects,
   deleteAllAdvisedBy,
+  deleteAllDestinations,
   deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
   deleteSpringAutoConfigurationSyntheticClasses,
@@ -138,6 +139,10 @@ import {
   extractChangedSubgraph,
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
+import {
+  collectSpringConfigConsumerDriftFiles,
+  type PersistedSpringConfigConsumerRow,
+} from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
@@ -152,11 +157,11 @@ import {
   saveParseCache,
   pruneCache,
   PARSE_CACHE_VERSION,
+  createColdParseRebuildDir,
+  emptyParseCache,
+  forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
-import {
-  getDurableParsedFileDir,
-  pruneAndSaveDurableParsedFileStore,
-} from '../storage/parsedfile-store.js';
+import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
   getCurrentBranch,
@@ -183,22 +188,15 @@ import {
 } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
+import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
+import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
+import { SPRING_ROUTE_BINDINGS_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import { springVendorPrefixesKey } from './ingestion/frameworks/spring/vendor-prefixes.js';
 import {
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-} from './ingestion/frameworks/spring/analysis-features.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from './ingestion/languages/java/analysis-features.js';
-import {
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
   resolveAnalysisFeatureVersions,
 } from './analysis-features.js';
+import { ANALYSIS_FEATURES } from './analysis-feature-registry.js';
 import {
   analyzerRunnerIdentitiesEqual,
   finalizeAnalyzerRunnerIdentity,
@@ -239,17 +237,6 @@ import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
  */
 const stripControlCharacters = (msg: string): string =>
   msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
-
-const ANALYSIS_FEATURES = [
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-] as const;
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -345,12 +332,19 @@ export interface AnalyzeCallbacks {
 
 export interface AnalyzeOptions {
   /**
-   * Force a full re-index of the pipeline. Callers may OR this with
-   * other flags that imply re-analysis (e.g. `--skills`), so the value
-   * here is the PIPELINE-force signal, NOT the registry-collision
-   * bypass. See `allowDuplicateName` below.
+   * Rebuild the graph and FTS. Parser output is still reused from the
+   * content-addressed parse cache unless `useParseCache` is false.
+   * Callers may OR this with other flags that imply re-analysis
+   * (e.g. `--skills`), so the value here is the PIPELINE-force signal,
+   * NOT the registry-collision bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
+  /**
+   * Reuse content-addressed parser output. Defaults to true. When false,
+   * analysis reparses every file and publishes a new parse-cache generation
+   * only after a successful run (live shards stay untouched if the run fails).
+   */
+  useParseCache?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
   repairFts?: boolean;
   /** Emit per-index FTS create logs. */
@@ -477,6 +471,16 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
+   * the Spring enrichment phase. Undefined keeps static-only analysis.
+   */
+  springActuatorPath?: string;
+  /**
+   * Explicit local AsyncAPI 3.x document input, forwarded to the destination
+   * phase. Undefined keeps source-only address resolution.
+   */
+  asyncApiSpecPath?: string;
   /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
@@ -1032,6 +1036,18 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   };
 }
 
+async function removeColdParseRebuildDir(
+  dir: string | undefined,
+  ignoreErrors: boolean,
+): Promise<void> {
+  if (!dir) return;
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    if (!ignoreErrors) throw err;
+  }
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1135,6 +1151,7 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1585,6 +1602,20 @@ async function runFullAnalysisInner(
     analysisFeatureMismatchLogged = true;
   }
 
+  const currentSpringVendorPrefixes = springVendorPrefixesKey();
+  const persistedRouteBindings = existingMeta?.analysisFeatures?.[SPRING_ROUTE_BINDINGS_FEATURE.id];
+  if (
+    existingMeta &&
+    persistedRouteBindings === SPRING_ROUTE_BINDINGS_FEATURE.version &&
+    existingMeta.springVendorPrefixes !== currentSpringVendorPrefixes
+  ) {
+    log(
+      'Spring vendor mapping prefixes changed; forcing a full rebuild so persisted Route ' +
+        'evidence matches the configured aliases.',
+    );
+    options = { ...options, force: true };
+  }
+
   // Analyzer provenance is part of freshness, not merely diagnostics. A
   // same-commit fast path must not preserve metadata produced by an older,
   // malformed, or dependency/native-different runner. Force a real rebuild so
@@ -1650,6 +1681,91 @@ async function runFullAnalysisInner(
         `${EMBEDDING_DIMS}); forcing a full rebuild so the vector column is recreated at the ` +
         `new width. Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
     );
+    options = { ...options, force: true };
+  }
+
+  // Actuator snapshots are external runtime inputs and are intentionally not
+  // hashed or persisted. Rebuild on every enabled run so updated snapshots
+  // cannot hit the git freshness fast path; rebuild once when the option is
+  // removed so stale runtime-only evidence is cleared from the index.
+  const springActuatorRequested = options.springActuatorPath !== undefined;
+  const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  const previousActuatorInputs: unknown = existingMeta?.springActuator?.repoRelativeInputs;
+  const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
+    ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
+    : [];
+  if (springActuatorRequested) {
+    const resolvedRepo = path.resolve(repoPath);
+    const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
+    const relativeInput = path.relative(resolvedRepo, resolvedInput);
+    const springActuatorRepoRelativeInput =
+      relativeInput === ''
+        ? '.'
+        : relativeInput === '..' ||
+            relativeInput.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeInput)
+          ? null
+          : relativeInput.split(path.sep).join('/');
+    if (
+      springActuatorRepoRelativeInput !== null &&
+      !retainedActuatorInputs.includes(springActuatorRepoRelativeInput)
+    ) {
+      retainedActuatorInputs.push(springActuatorRepoRelativeInput);
+    }
+    if (!options.force) {
+      log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (springActuatorPreviouslyEnabled) {
+    if (
+      !Array.isArray(previousActuatorInputs) ||
+      previousActuatorInputs.some((input) => typeof input !== 'string')
+    ) {
+      throw new Error(
+        'Cannot safely disable Spring Actuator runtime enrichment because the previous ' +
+          'index did not record whether its snapshot was inside the repository. Re-run once ' +
+          'with the previous --spring-actuator path, then run again without it.',
+      );
+    }
+    log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
+    options = { ...options, force: true };
+  }
+  const springActuatorScanExclusions =
+    retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
+
+  // AsyncAPI documents are the same class of input as Actuator snapshots and
+  // need the same treatment, for a reason git cannot see: the documents live
+  // outside the tree as often as in it, and NOTHING about replacing one moves
+  // the commit or dirties the working tree. Without this, the second run of an
+  // out-of-band cache — the workflow the option exists for — takes the
+  // already-up-to-date fast path below, never opens a document, and serves the
+  // previous run's addresses while reporting success. Measured, not reasoned:
+  // editing a document and re-running printed "Already up to date" and left the
+  // old address in the graph.
+  //
+  // Forcing the rebuild also settles a second defect for free. A synthetic
+  // `File` node for an out-of-tree document (`asyncapi:<label>`) carries a path
+  // that is in no write set and is not covered by `isGraphWideNode`, so on an
+  // incremental writeback the node is dropped while its edges — anchored to a
+  // graph-wide `Destination` — are kept, and the edges then COPY against a row
+  // that was never written. A full rebuild has no incremental subgraph to get
+  // that wrong, so the pair cannot come apart.
+  const asyncApiSpecRequested = options.asyncApiSpecPath !== undefined;
+  const asyncApiSpecPreviouslyEnabled = existingMeta?.asyncApiSpec?.enabled === true;
+  if (asyncApiSpecRequested) {
+    if (!options.force) {
+      log('AsyncAPI document reading requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (asyncApiSpecPreviouslyEnabled) {
+    log('AsyncAPI document reading disabled; rebuilding to remove document-derived evidence.');
+    options = { ...options, force: true };
+  }
+
+  // Programmatic `useParseCache: false` must set force or the up-to-date
+  // guard returns before the empty-cache construction below.
+  if (options.useParseCache === false && !options.force) {
+    log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
     options = { ...options, force: true };
   }
 
@@ -1727,6 +1843,7 @@ async function runFullAnalysisInner(
                   // Fast path does not re-run PDG. Using `options.pdg` would
                   // strip PDG bullets from AGENTS.md on a rename-only analyze.
                   hasPdg: existingMeta.pdg != null,
+                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
             } catch {
@@ -1874,11 +1991,18 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: safe to reuse across `--force` runs (chunks whose
-  // file contents haven't changed produce identical worker output).
-  // Loaded into a single ParseCache object that the pipeline mutates
-  // in-place (cache hits leave entries unchanged; misses add new ones).
-  const parseCache = await loadParseCache(storagePath);
+  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
+  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
+  // after success. Unique because index locks are per branch slot while this
+  // cache root is shared across branches.
+  if (options.useParseCache === false) {
+    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
+    forgetCreatedParseCacheDir(coldParseRebuildDir);
+  }
+  const parseCache =
+    options.useParseCache === false
+      ? emptyParseCache(coldParseRebuildDir)
+      : await loadParseCache(storagePath);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -1916,50 +2040,69 @@ async function runFullAnalysisInner(
     !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(
-    repoPath,
-    (p) => {
-      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-      const scaled = Math.round(p.percent * 0.6);
-      const message = p.detail
-        ? `${p.message || phaseLabel} (${p.detail})`
-        : p.message || phaseLabel;
-      progress(p.phase, scaled, message);
-    },
-    {
-      parseCache,
-      workerPoolSize: options.workerPoolSize,
-      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
-      // build gate (workerData.pdg) and the scope-resolution emit gate.
-      pdg: options.pdg === true,
-      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
-      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
-      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
-      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
-      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
-      pdgMaxTaintHops: options.pdgMaxTaintHops,
-      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
-      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
-      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
-      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
-      // (force === true) so the incremental writeback never reads back an
-      // offloaded BasicBlock layer. Memory-only; byte-identical output.
-      streamPdgEmit: resolveStreamPdgEmit(options),
-      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
-      // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
-      // toggle above, for the same incremental-writeback reason.
-      streamGraphEmit: streamGraphEmitActive,
-      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
-      // path this helper mkdtempSyncs a real directory, so evaluating it
-      // unconditionally would leak one temp dir per analyze even with the flag
-      // off. The PDG sibling resolves inside its guard for the same reason.
-      graphEmitCsvDir: streamGraphEmitActive
-        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
-        : undefined,
-      fetchWrappers: options.fetchWrappers,
-      skipDerivedGraphPhases,
-    },
-  );
+  let pipelineResult;
+  try {
+    pipelineResult = await runPipelineFromRepo(
+      repoPath,
+      (p) => {
+        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+        const scaled = Math.round(p.percent * 0.6);
+        const message = p.detail
+          ? `${p.message || phaseLabel} (${p.detail})`
+          : p.message || phaseLabel;
+        progress(p.phase, scaled, message);
+      },
+      {
+        parseCache,
+        workerPoolSize: options.workerPoolSize,
+        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+        // build gate (workerData.pdg) and the scope-resolution emit gate.
+        pdg: options.pdg === true,
+        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+        pdgMaxTaintHops: options.pdgMaxTaintHops,
+        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+        // (force === true) so the incremental writeback never reads back an
+        // offloaded BasicBlock layer. Memory-only; byte-identical output.
+        streamPdgEmit: resolveStreamPdgEmit(options),
+        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+        // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
+        // toggle above, for the same incremental-writeback reason.
+        streamGraphEmit: streamGraphEmitActive,
+        // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+        // path this helper mkdtempSyncs a real directory, so evaluating it
+        // unconditionally would leak one temp dir per analyze even with the flag
+        // off. The PDG sibling resolves inside its guard for the same reason.
+        graphEmitCsvDir: streamGraphEmitActive
+          ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+          : undefined,
+        fetchWrappers: options.fetchWrappers,
+        skipDerivedGraphPhases,
+        springActuatorPath: options.springActuatorPath,
+        asyncApiSpecPath: options.asyncApiSpecPath,
+        springActuatorScanExclusions,
+      },
+    );
+  } catch (err) {
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    throw err;
+  }
+
+  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+    log(
+      `Rebuilt the graph and FTS while reusing cached parser output for ` +
+        `${pipelineResult.parseCacheHitFileCount} file(s) ` +
+        `(parse cache ${PARSE_CACHE_VERSION}). ` +
+        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
+        `src/storage/parse-cache.ts to invalidate parser output.`,
+    );
+  }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -2395,6 +2538,37 @@ async function runFullAnalysisInner(
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+
+      const springConfigChanged =
+        hashDiff.toWrite.some((filePath) => classifySpringConfigFile(filePath) !== null) ||
+        hashDiff.deleted.some((filePath) => classifySpringConfigFile(filePath) !== null);
+      if (springConfigChanged) {
+        const unresolvedPrefix = escapeCypherString(SPRING_CONFIG_UNRESOLVED_PREFIX);
+        const persistedSpringConfigConsumers = (await executeQuery(
+          'MATCH (n:Property) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Class) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Record) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description',
+        )) as PersistedSpringConfigConsumerRow[];
+        const springConfigConsumerDriftFiles = collectSpringConfigConsumerDriftFiles(
+          pipelineResult.graph,
+          persistedSpringConfigConsumers,
+        );
+        for (const filePath of springConfigConsumerDriftFiles) effectiveWriteSet.add(filePath);
+        if (springConfigConsumerDriftFiles.size > 0) {
+          log(
+            `Incremental: +${springConfigConsumerDriftFiles.size} file(s) added for ` +
+              'Spring config consumer property drift',
+          );
+        }
+      }
 
       // `frameworkAnnotations` is derived from cross-file JVM visibility, so
       // an unchanged Class row can change when a same-package declaration is
@@ -2858,6 +3032,18 @@ async function runFullAnalysisInner(
         // Rebuild the complete ADVISED_BY set on every incremental writeback.
         await deleteAllAdvisedBy();
         await deleteSpringAopEvidenceNodes();
+        // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
+        //     Destination deliberately stores no filePath (so the per-file
+        //     DETACH DELETE cannot cut a node shared across files), which also
+        //     means the per-file delete can never REMOVE one that is now
+        //     orphaned, and the endpoint-writability extract can never ADD one
+        //     introduced by a new file. Delete-all here plus the graph-wide
+        //     re-include in extractChangedSubgraph rebuilds the layer whole;
+        //     the springDestinations phase recomputes it from the full file
+        //     list on every persisting analyze, so nothing is lost. Both halves
+        //     must move together — deleting without the re-include drops the
+        //     layer, re-including without the delete duplicates its edges.
+        await deleteAllDestinations();
         // 2c. Drop Spring-owned DECLARES edges (#2415). The
         //     auto-configuration phase scans every metadata file and recomputes
         //     the full set each run; exact reason filtering leaves declarations
@@ -3685,6 +3871,22 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
+      // Persist only normalized repo-relative exclusions, never absolute paths
+      // or payloads. Keep them after runtime enrichment is disabled so a later
+      // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
+      ...(springActuatorRequested || retainedActuatorInputs.length > 0
+        ? {
+            springActuator: {
+              enabled: springActuatorRequested,
+              repoRelativeInputs: retainedActuatorInputs,
+            },
+          }
+        : {}),
+      // Written only while enabled. Once the option is dropped, the disable
+      // transition above has already forced the cleanup rebuild, so carrying a
+      // `{ enabled: false }` stamp forward would only make every subsequent run
+      // re-decide a question that is already settled.
+      ...(asyncApiSpecRequested ? { asyncApiSpec: { enabled: true } } : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -3793,6 +3995,7 @@ async function runFullAnalysisInner(
           ? existingMeta?.undecidedInterfaceSatisfaction
           : summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction),
       analysisFeatures: currentAnalysisFeatures,
+      springVendorPrefixes: currentSpringVendorPrefixes,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
@@ -3841,51 +4044,8 @@ async function runFullAnalysisInner(
     // meta.indexedAt = T_new while lbugPath still resolves to the pre-swap
     // inode (which latched the reader on the stale index permanently). The meta
     // object is fully computed at this point; only its write is deferred.
-
-    // Persist the incremental parse cache for the next run. Wraps in
-    // try/catch so a cache-write failure never breaks an otherwise
-    // successful indexing run. Prune stale chunk-hash entries first so
-    // the cache file size stays bounded across runs (chunks whose
-    // composition no longer matches anything in the current scan are
-    // dead weight; the parse phase populates `usedKeys` as it processes
-    // chunks).
-    try {
-      // #2106 R6: the parse cache + durable store are shared across branches.
-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
-      // chunk keys so a branch switch doesn't evict their still-live shards.
-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
-      // index (saveParseCache builds the index from usedKeys). Excludes this
-      // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today.
-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
-      if (complete) {
-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
-      } else {
-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
-        // everything currently loaded rather than evict on incomplete info.
-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
-      }
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
-      }
-      const savedKeys = await saveParseCache(storagePath, parseCache);
-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A quarantined chunk (in usedKeys but with
-      // no parse-cache shard) drops its durable subdir here and re-dispatches
-      // next run. Same try/catch — a durable-store write failure must never
-      // break an otherwise successful run (next run treats it as a miss).
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storagePath),
-        PARSE_CACHE_VERSION,
-        new Set(savedKeys),
-      );
-    } catch (e) {
-      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
-    }
+    // Parse-cache publish waits until after that swap + saveMeta so a failed
+    // registerRepo / close / swap cannot replace live shards (#3153).
 
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
@@ -3908,8 +4068,8 @@ async function runFullAnalysisInner(
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
     // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort like the parse-cache save above
-    // (#2364 review F5): the index is complete and registered, and a failure
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
     // here leaves only a stale registry label / undeleted shadowed dir —
     // never wrong routing, because the flat meta this run already stamped is
     // what applyBranchScope trusts. Retried by the next content-changing run
@@ -3966,6 +4126,7 @@ async function runFullAnalysisInner(
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
             hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
           },
         );
       } catch {
@@ -4036,7 +4197,54 @@ async function runFullAnalysisInner(
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
 
+    // Persist the incremental parse cache only after a successful graph
+    // publish (#3153). try/catch so a cache-write failure never breaks an
+    // otherwise successful indexing run. Prune stale chunk-hash entries first
+    // so the cache file size stays bounded across runs (chunks whose
+    // composition no longer matches anything in the current scan are dead
+    // weight; the parse phase populates `usedKeys` as it processes chunks).
+    try {
+      // #2106 R6: the parse cache + durable store are shared across branches.
+      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+      // chunk keys so a branch switch doesn't evict their still-live shards.
+      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+      // index (saveParseCache builds the index from usedKeys). Excludes this
+      // run's own meta dir, so a single-branch repo folds in nothing → prune
+      // set byte-identical to today.
+      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      if (complete) {
+        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+      } else {
+        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+        // everything currently loaded rather than evict on incomplete info.
+        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+      }
+      const pruned = pruneCache(parseCache, parseCache.usedKeys);
+      if (pruned > 0) {
+        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+      }
+      const savedKeys = await saveParseCache(storagePath, parseCache);
+      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+      // no parse-cache shard) drops its durable subdir here and re-dispatches
+      // next run. Same try/catch — a durable-store write failure must never
+      // break an otherwise successful run (next run treats it as a miss).
+      await mergeStagedDurableParsedFileStore(
+        storagePath,
+        parseCache.storagePath ?? storagePath,
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+    } catch (e) {
+      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
+    }
+
     progress('done', 100, 'Done');
+
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
 
     return {
       repoName: projectName,
@@ -4091,6 +4299,7 @@ async function runFullAnalysisInner(
         /* swallow — orphan reclamation must never mask the real failure */
       }
     }
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
     if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.

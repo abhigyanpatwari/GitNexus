@@ -4,7 +4,9 @@
  * `--check` inventory arm at the foot of this file fails when the two disagree
  * — over ONE shared corpus so the arms are directly comparable. One arm per
  * registered language, plus a second `csharp` arm carrying csproj configs
- * (#2902), so there is one more arm than there are languages.
+ * (#2902), so there is one more arm than there are languages. The newest row
+ * is `zig` (PR #1432), added the day its resolver registered — the inventory
+ * arm below is what noticed it missing, which is the arm doing its job.
  *
  * NO LANGUAGE IS OMITTED, and that is the point of the list rather than an
  * accident of it. Nine of these arms (go, csharp, csharp_csproj, dart, ruby,
@@ -109,6 +111,19 @@
  *     depth-then-lexicographic tie-break, so the collide arm (a `mod{n}` header
  *     in every service's `include/`) is where it grows: 2.54 / 2.64 against
  *     1.06 on file count.
+ *   - zig: `resolveZigImportInternal` is rust's shape — an `@import("…zig")`
+ *     path is walked component by component from the importer's directory and
+ *     probed with two `allFiles.has(...)` calls (as written, then `+ '.zig'`),
+ *     and a bare name is a Map lookup in the build config or a miss. No index
+ *     is built, so the cost is O(path SEGMENTS) and flat in the file count,
+ *     and — as for rust — its collide arm is a deep tree whose spellings carry
+ *     ~4x the components rather than a shared-leaf layout that cannot fail.
+ *     The arm passes NO build config (`buildZon` null): the bare-name legs
+ *     (`b.addModule` roots, zon `.path` deps) read `build.zig` / `build.zig.zon`
+ *     through `loadZigBuildConfig` and are gated by
+ *     `test/unit/zig-import-resolver.test.ts`, so this fingerprint pins the
+ *     path-walking resolver alone and does not move when that config parsing
+ *     changes.
  *
  * Two properties of the corpus are load-bearing and must not be "simplified":
  *
@@ -221,7 +236,9 @@
  *     corpus is a deep module tree whose targets carry ~2x the `::` segments,
  *     which is the axis that CAN grow; the ratio across file counts staying at
  *     1.06 on it is the assertion, and `collide_ms_ceiling` bounds the absolute
- *     cost of the long-path probe.
+ *     cost of the long-path probe. zig's collide arm is built the same way and
+ *     for the same reason: a deep tree whose `../../…/l4/mod{n}/file.zig`
+ *     spellings walk ~4x the components of the unique arm's `../mod{n}/…`.
  *
  * This is a scope-of-claim limit, not a regression: on the MISS path with a
  * shared leaf name the bucket grows with the file count BY CONSTRUCTION, and
@@ -308,7 +325,9 @@
  *
  * Only rust's exclusion survived unchanged: 16 B at 8000 files and 16 B at
  * 32 000, identical in all five runs, because it probes candidate paths with
- * `allFilePaths.has(...)` and builds nothing.
+ * `allFilePaths.has(...)` and builds nothing. zig joined that tier on the same
+ * reading for the same reason (`resolveZigImportInternal` holds no per-pass
+ * structure at all), and takes rust's absolute 1 MiB bound.
  *
  * So the nine are still not BUDGETED — their ceilings, floors and ratio arms
  * are not this change to write — but they are all measured and all bounded. See
@@ -463,6 +482,7 @@ import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
+import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
@@ -736,6 +756,7 @@ const EXTENSION = {
   vue: '.vue',
   c: '.c',
   cpp: '.cpp',
+  zig: '.zig',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
  *  through `resolutionConfig` rather than through `allFilePaths` — see
@@ -859,6 +880,13 @@ function uniqueDir(lang, d, i) {
   // `resolutionConfig` load-bearing. Odd `i` is the header.
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `include/comp${d}` : `src/comp${d}`;
   if (lang === 'ruby') return `lib/mod${d}`;
+  // One flat `src/mod{d}/` per index and NO nested slice, on purpose: a Zig
+  // import is spelled RELATIVE TO THE IMPORTER, and `uniqueTarget` does not
+  // know which file issues it, so every importer has to sit at one depth for
+  // `../mod{n}/file{j}.zig` to mean the same file from all of them. The miss
+  // share the other unique arms take from a nested directory comes from the
+  // target instead (see `uniqueTarget`).
+  if (lang === 'zig') return `src/mod${d}`;
   throw unwiredLanguage('uniqueDir', lang);
 }
 
@@ -947,6 +975,12 @@ function collideDir(lang, d, i) {
   if (lang === 'vue') return `src/pkg${d}/components`;
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `svc${d}/include` : `svc${d}/src`;
   if (lang === 'ruby') return `svc${d}/lib/models`;
+  // Rust's reasoning, verbatim: the resolver walks path components and probes
+  // `.has()`, never searches, so file count is not an axis its cost has and a
+  // shared-leaf layout would be an arm that cannot fail. A deep tree is the
+  // axis that CAN grow — `collideTarget` spells its imports up through the
+  // tree and back down, ~4x the components of the unique arm.
+  if (lang === 'zig') return `src/l0/l1/l2/l3/l4/mod${d}`;
   throw unwiredLanguage('collideDir', lang);
 }
 
@@ -1373,6 +1407,29 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
         : `gem${(r >>> 4) % 97}/missing/thing`;
   }
+  if (lang === 'zig') {
+    // `@import("../mod{n}/file{j}.zig")`, importer-relative — every file sits
+    // in `src/mod{d}/`, so one `..` reaches `src/` from all of them (see
+    // `uniqueDir`). The target is file `j`'s OWN directory, `j % dirs`, so a
+    // hit is a real file; the `d % 7` slice names an `inner/` that exists
+    // nowhere and misses, which is where the resolved count comes from, as in
+    // the rust arm. One local spelling in three drops the extension, which is
+    // the second `.has()` probe (`candidate + '.zig'`) — the leg an
+    // extension-only corpus would never reach. The misses are the three
+    // kinds a Zig file has: the compiler's own modules (`std`, `builtin`,
+    // `root`), which the resolver rejects by name before any walk; a bare
+    // package name with no build config to map it, which falls through every
+    // leg to null; and a relative path to a vendored file that is not in the
+    // corpus, which walks to the end and misses on both probes.
+    if (local) {
+      if (d % 7 === 0) return `../mod${d}/inner/file${j}.zig`;
+      return (r >>> 3) % 3 === 0 ? `../mod${j % dirs}/file${j}` : `../mod${j % dirs}/file${j}.zig`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['std', 'builtin', 'root'][(r >>> 4) % 3];
+    if (miss === 1) return `ghost${(r >>> 4) % 97}`;
+    return `../vendor${(r >>> 4) % 97}/missing.zig`;
+  }
   throw unwiredLanguage('uniqueTarget', lang);
 }
 
@@ -1583,6 +1640,27 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         ? ['json', 'set', 'net/http', 'digest'][(r >>> 4) % 4]
         : `gem${(r >>> 4) % 97}/missing/thing`;
   }
+  if (lang === 'zig') {
+    // The same three families in the same proportions as the unique arm, so
+    // the resolved count is identical by construction (asserted), spelled up
+    // six levels to `src/` and back down through `l0/…/l4` — thirteen
+    // components against the unique arm's three, in the hits and in the path
+    // misses alike, because component count is the only axis this resolver's
+    // cost has. The `d % 7` slice and the extension-less third mirror the
+    // unique arm's; the by-name misses are unchanged, since no walk is what
+    // they measure.
+    const up = '../../../../../../l0/l1/l2/l3/l4';
+    if (local) {
+      if (d % 7 === 0) return `${up}/mod${d}/inner/file${j}.zig`;
+      return (r >>> 3) % 3 === 0
+        ? `${up}/mod${j % dirs}/file${j}`
+        : `${up}/mod${j % dirs}/file${j}.zig`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['std', 'builtin', 'root'][(r >>> 4) % 3];
+    if (miss === 1) return `ghost${(r >>> 4) % 97}`;
+    return `${up}/vendor${(r >>> 4) % 97}/missing.zig`;
+  }
   throw unwiredLanguage('collideTarget', lang);
 }
 
@@ -1784,6 +1862,10 @@ function resolveOne(lang, from, target, pass) {
     );
   }
   if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
+  // Quotes already stripped — `configs/zig.ts` strips them before this call in
+  // production too. `null` build config: this arm pins the path walk alone
+  // (see the header); the config legs are gated by their own unit tests.
+  if (lang === 'zig') return resolveZigImportInternal(from, target, allFilePaths, null);
   if (lang === 'python') {
     // `from <target> import X` — the spelling the orchestrator actually hands
     // the provider, and the ONLY one that reads `context.parsedFiles`: a
@@ -2062,7 +2144,7 @@ const HEAP_PROBE_TARGET = {
   //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
-  //     the exclusion rests on;
+  //     the exclusion rests on, and `zig` shares it exactly;
   //   - `typescript`, `vue` and `cpp` carry the same spelling shape as the
   //     `javascript` and `c` arms they are excluded as duplicates OF, so the
   //     bound compares like with like. `vue`'s is bare rather than `@/…`
@@ -2073,6 +2155,10 @@ const HEAP_PROBE_TARGET = {
   cobol: 'VENDOR0',
   swift: 'ExternalPkg0',
   rust: 'ghost0::Missing',
+  // A relative path to a file the corpus does not hold: both `.has()` probes
+  // miss after the full component walk, which is the longest leg the resolver
+  // has (a by-name miss returns before any walk).
+  zig: '../vendor0/missing.zig',
   typescript: 'vendor0/lib/missing',
   vue: 'vendor0/lib/Missing.vue',
   cpp: 'vendor0/missing.hpp',
@@ -2308,6 +2394,7 @@ const LANG_REGISTRY = {
   vue: SupportedLanguages.Vue,
   c: SupportedLanguages.C,
   cpp: SupportedLanguages.CPlusPlus,
+  zig: SupportedLanguages.Zig,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
 /**
@@ -2853,17 +2940,19 @@ for (const lang of HEAP_BUDGETED) {
  * `heap_bound_bytes` is the "exclusion still holds" bound. It does not claim
  * these indexes are small enough, which is what a ceiling claims about a
  * budgeted one; it claims each is still the SIZE the decision to leave it out
- * was taken on. `HEAP_BOUNDED` derives to THREE today — cobol, swift, rust.
+ * was taken on. `HEAP_BOUNDED` derives to SEVEN today — cobol, swift, rust,
+ * the ts family (#2953), and zig, which reads what rust reads (16 B) because
+ * `resolveZigImportInternal` builds nothing and takes rust's absolute bound.
  * The prose below still counts nine because six were promoted to tier one
  * after it was written; read the counts as history, and `HEAP_BOUNDED` itself
  * as the answer. The re-entry condition the MEMORY section states — "if any of
  * the four ever diverges in what it ASKS, it earns an arm the same way" — is a
  * claim about growth, and this is the only thing in the file that can see it.
  *
- * NO FLOOR, and the reason is per language rather than uniform. rust reads 16 B
- * because it builds nothing, so any floor at all would be a floor on noise and
- * `1.5 x 0 B` is 0 — its bound is ABSOLUTE (1 MiB) for the same reason: a
- * multiplier on 16 B fails on the first byte of anything. The other eight are
+ * NO FLOOR, and the reason is per language rather than uniform. rust (and zig)
+ * reads 16 B because it builds nothing, so any floor at all would be a floor
+ * on noise and `1.5 x 0 B` is 0 — its bound is ABSOLUTE (1 MiB) for the same
+ * reason: a multiplier on 16 B fails on the first byte of anything. The other eight are
  * stable enough today to floor (0.24% peak-to-peak at worst over five runs).
  * The two this paragraph named as floor candidates, kotlin and dart, TOOK that
  * promotion: both now carry a ceiling and a recorded reading in tier one, which

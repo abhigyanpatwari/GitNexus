@@ -400,6 +400,34 @@ describe('LocalBackend.callTool', () => {
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
   });
 
+  it('treats adapter-materialized blank optional aliases as absent', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+    const contextSpy = vi
+      .spyOn(backend as any, 'context')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      name: '',
+      symbol: ' ',
+      direction: 'upstream',
+    });
+    await backend.callTool('context', {
+      name: 'validate',
+      file_path: '',
+      file: ' ',
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('name');
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('symbol');
+    expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file_path');
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file');
+  });
+
   it('allows agreeing canonical and alias values after trimming', async () => {
     const impactSpy = vi
       .spyOn(backend as any, 'impact')
@@ -429,9 +457,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it.each([
-    ['impact', { target: '', direction: 'upstream' }],
     ['impact', { name: 42, direction: 'upstream' }],
-    ['context', { name: 'validate', file: '   ' }],
     ['context', { name: 'validate', file: null }],
   ])('rejects invalid %s aliases before repository resolution', async (method, params) => {
     const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
@@ -439,6 +465,19 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool(method, params);
 
     expect(result.error).toMatch(/non-empty string/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a blank required impact target before repository resolution', async () => {
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+
+    const result = await backend.callTool('impact', {
+      target: '',
+      name: ' ',
+      direction: 'upstream',
+    });
+
+    expect(result.error).toMatch(/requires target, name, symbol, or target_uid/i);
     expect(resolveSpy).not.toHaveBeenCalled();
   });
 
@@ -2275,6 +2314,9 @@ describe('LocalBackend.callTool', () => {
         responseKeys: ['data', 'pagination'],
         errorKeys: ['error', 'message'],
         middleware: ['withAuth'],
+        runtimeConfirmed: true,
+        runtimeSource: 'spring-actuator',
+        runtimeStatus: 'runtime-confirmed',
         consumerName: 'GrantsList',
         consumerFile: 'src/GrantsList.tsx',
         fetchReason: 'fetch-url-match|keys:data,pagination',
@@ -2287,6 +2329,11 @@ describe('LocalBackend.callTool', () => {
     expect(result.responseShape.success).toEqual(['data', 'pagination']);
     expect(result.responseShape.error).toEqual(['error', 'message']);
     expect(result).toHaveProperty('middleware', ['withAuth']);
+    expect(result).toHaveProperty('runtimeEvidence', {
+      confirmed: true,
+      source: 'spring-actuator',
+      status: 'runtime-confirmed',
+    });
     expect(result).toHaveProperty('consumers');
     expect(result.consumers).toHaveLength(1);
     expect(result).toHaveProperty('impactSummary');
@@ -2395,6 +2442,9 @@ describe('LocalBackend.callTool', () => {
     responseKeys: null,
     errorKeys: null,
     middleware,
+    runtimeConfirmed: false,
+    runtimeSource: null,
+    runtimeStatus: null,
     consumerName: null,
     consumerFile: null,
     fetchReason: null,
@@ -2413,6 +2463,7 @@ describe('LocalBackend.callTool', () => {
       'GET',
       'POST',
     ]);
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
     expect(result.routes).toMatchObject([{ route: '/api/orders' }, { route: '/api/orders' }]);
   });
 
@@ -2472,6 +2523,20 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
+  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
+    vi.mocked(executeParameterized)
+      .mockRejectedValueOnce(
+        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
+      )
+      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+
+    const result = await backend.callTool('route_map', { route: '/legacy' });
+
+    // Modern Route query, legacy retry, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
+  });
+
   it('shape_check surfaces each route method', async () => {
     vi.mocked(executeParameterized).mockResolvedValue([
       {
@@ -2484,6 +2549,7 @@ describe('LocalBackend.callTool', () => {
     ]);
     const result = await backend.callTool('shape_check', { route: '/api/orders' });
     expect(result.routes[0].method).toBe('GET');
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 
   // The partial-middleware warning is driven by a per-handler verb count taken

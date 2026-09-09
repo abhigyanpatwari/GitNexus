@@ -11,8 +11,8 @@
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
-import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { packageVersion } from '../core/package-version.js';
 import { CompatibleStdioServerTransport } from './compatible-stdio-transport.js';
 import {
   CallToolRequestSchema,
@@ -106,12 +106,10 @@ export function createMCPServer(
   }
   const repositoryPolicy = options.repositoryPolicy ?? McpRepositoryPolicy.unrestricted();
   const scopedBackend = repositoryPolicy.scopeBackend(backend);
-  const require = createRequire(import.meta.url);
-  const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
     {
       name: 'gitnexus',
-      version: pkgVersion,
+      version: packageVersion(),
     },
     {
       capabilities: {

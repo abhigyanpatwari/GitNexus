@@ -3,10 +3,9 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parse as parseJsonc } from 'jsonc-parser';
-import { createRequire } from 'module';
+import { packageVersion } from '../../src/core/package-version.js';
 
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
+const PKG_VERSION = packageVersion();
 const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 const execFileMock = vi.fn((...args: any[]) => {

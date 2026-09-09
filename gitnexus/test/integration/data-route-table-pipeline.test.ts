@@ -75,6 +75,11 @@ describe('data-driven route table ingestion', () => {
       const source = result.graph.getNode(rel.sourceId);
       const target = result.graph.getNode(rel.targetId);
       if (source === undefined || target === undefined) return;
+      // A resolved route also carries a definition-level edge from the handler
+      // symbol itself; this assertion is about the file-level edge, which is the
+      // one `http-route-extractor.ts` queries. The definition edges are pinned
+      // by the next test.
+      if (source.label !== 'File') return;
       handled.push({
         filePath: String(source.properties.filePath),
         method: target.properties.method as string | undefined,
@@ -104,6 +109,29 @@ describe('data-driven route table ingestion', () => {
         reason: DATA_ROUTE_TABLE_SOURCE,
       },
     ]);
+  });
+
+  it('also links every resolved route from the handler definition it stamped', () => {
+    // The definition-level edge must agree with `Route.handlerSymbolId` — both
+    // come from the same graph-resolved symbol — and its source must be a real
+    // definition node, not a File.
+    const definitionEdges = new Map<string, string>();
+    result.graph.forEachRelationship((rel) => {
+      if (rel.type !== 'HANDLES_ROUTE' || rel.reason !== DATA_ROUTE_TABLE_SOURCE) return;
+      const source = result.graph.getNode(rel.sourceId);
+      if (source === undefined || source.label === 'File') return;
+      definitionEdges.set(rel.targetId, rel.sourceId);
+    });
+
+    const resolved = routes().filter((route) => route.handler !== undefined);
+    expect(resolved).toHaveLength(3);
+    result.graph.forEachNode((node) => {
+      if (node.label !== 'Route') return;
+      const handlerSymbolId = node.properties.handlerSymbolId as string | undefined;
+      if (handlerSymbolId === undefined) return;
+      expect(definitionEdges.get(node.id), String(node.properties.name)).toBe(handlerSymbolId);
+      expect(result.graph.getNode(handlerSymbolId)?.label).toMatch(/^(Function|Method)$/);
+    });
   });
 
   it('extracts response shapes from each resolved handler only', () => {

@@ -1,0 +1,8 @@
+{
+  "_comment": "Baselines for bench/spring-config-bindings/measure.mjs --check (#2412). fingerprint is sha256 over position-free Kotlin config-consumer fact ids on the wildcard_large corpus (800 files × 2 @Value properties + 1 @ConfigurationProperties class = 2400 facts). Both arms must fingerprint identically: the wildcard arm adds a sibling nested type named `Value`, which must not suppress the imported Spring annotation. Budgets are timing gates with CI headroom.",
+  "fingerprint": "34776f883427479befbeb3c09eaae2260ba778e769bff195044d3cb8f5ad9889",
+  "scaling_budget": 1.6,
+  "_scaling_note": "(t_large/t_small)/(800/250) on the wildcard arm. Measured ~0.99.",
+  "widening_overhead_budget": 1.8,
+  "_widening_overhead_note": "wildcard_large_ms / exact_large_ms. The exact-import control resolves each annotation from imports.exact before any shadow check, so this isolates the wildcard path's per-annotation lexical shadow walk. Measured ~1.09; budget guards against a per-annotation rescan of the file's declarations."
+}

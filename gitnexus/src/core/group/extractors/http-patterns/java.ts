@@ -11,6 +11,7 @@ import {
   intersectSpringHttpMethods,
   isRouteMemberKey,
   findEnclosingClass,
+  isClassLevelMappingAnnotation,
   joinPath,
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
@@ -29,10 +30,13 @@ import {
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
 import {
+  expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
   isJavaConstantFile,
   parseJavaConstOperands,
+  prepareJavaRouteConstants,
+  type JavaConstantIndex,
   type RepoConstants,
 } from '../../../ingestion/route-extractors/java-const-resolver.js';
 import {
@@ -464,13 +468,15 @@ function annotationHasRouteMember(annotation: Parser.SyntaxNode): boolean {
 }
 
 function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
-  const mappings = declarationAnnotations(typeNode).filter(
-    (annotation) =>
-      simpleName(annotation.childForFieldName('name')?.text ?? '') === 'RequestMapping',
+  const mappings = declarationAnnotations(typeNode).filter((annotation) =>
+    isClassLevelMappingAnnotation(simpleName(annotation.childForFieldName('name')?.text ?? '')),
   );
   if (mappings.length === 0) return ['*'];
   if (mappings.length !== 1) return [];
-  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+  return springAnnotationHttpMethods(
+    simpleName(mappings[0].childForFieldName('name')?.text ?? 'RequestMapping'),
+    mappings[0].text,
+  );
 }
 
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
@@ -672,7 +678,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
 
     // Type-level (class or interface): a Spring `@RequestMapping` URL prefix, or
     // — on an interface — an OpenFeign `@FeignClient(path = "...")` prefix.
-    if (ann === 'RequestMapping') {
+    if (isClassLevelMappingAnnotation(ann)) {
       if (!isRouteMemberKey(keyNode)) continue;
       if (!valueNode) {
         // Constant-valued class prefix — see `typesWithUnfoldablePrefix`.
@@ -917,7 +923,12 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         const tree = args.parseSource(args.parser, src);
         if (!tree) continue;
         const mc = extractJavaModuleConstants(tree);
-        if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+        if (
+          mc.literals.size > 0 ||
+          mc.exprs.size > 0 ||
+          mc.imports.size > 0 ||
+          (mc.wildcardImports?.length ?? 0) > 0
+        ) {
           constants.set(rel, mc);
         }
       } catch {
@@ -927,11 +938,20 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         continue;
       }
     }
-    return { constants };
+    // On-demand static imports (`import static a.b.C.*`) were recorded as
+    // pending class FQNs during extraction; materialize their bare-name
+    // bindings now that the whole map exists. A wildcard's target is itself
+    // a constants file, so it is necessarily a map entry — anything else
+    // degrades to the fold's skip floor. In-place: each entry is owned by
+    // this map, and every file is expanded exactly once.
+    const constantIndex = prepareJavaRouteConstants(constants);
+    return { constants, constantIndex };
   },
   scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];
-    const javaCtx = repoContext as { constants: RepoConstants } | undefined;
+    const javaCtx = repoContext as
+      | { constants: RepoConstants; constantIndex: JavaConstantIndex }
+      | undefined;
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
@@ -966,8 +986,12 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (javaCtx.constants.has(fileRel)) return foldConstants;
       try {
         const mc = extractJavaModuleConstants(tree);
-        if (mc.imports.size > 0) {
+        // A file carrying ONLY wildcard static imports has an empty import
+        // table pre-expansion — overlay it too, then materialize the promised
+        // bindings against the repo map before it becomes a fold target.
+        if (mc.imports.size > 0 || (mc.wildcardImports?.length ?? 0) > 0) {
           const merged = new Map(javaCtx.constants);
+          expandJavaWildcardStaticImports(mc, fileRel, merged, javaCtx.constantIndex);
           merged.set(fileRel, mc);
           foldConstants = merged;
         }

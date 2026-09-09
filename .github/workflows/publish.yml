@@ -396,13 +396,16 @@ jobs:
           # cache-poisoning audit). ~30s slower per release; runs rarely.
           package-manager-cache: false
 
-      - name: Build gitnexus-shared
-        run: npm ci && npm run build
-        working-directory: gitnexus-shared
-
       - name: Install gitnexus dependencies
         run: npm ci
         working-directory: gitnexus
+
+      # The published tarball ships the web UI (`files: [... "web"]`), built
+      # by prepack during `npm publish`. Install its deps in their own step
+      # so a slow install is visible here instead of dying inside build.js.
+      - name: Install gitnexus-web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
 
       # ── Stable-only: verify the tag and package.json agree ───────────────
       - name: Verify version consistency (stable)

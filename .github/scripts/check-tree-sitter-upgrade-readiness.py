@@ -69,6 +69,7 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     # Vendored parsers — kept here so the upstream coords for drift
     # detection are co-located with every other grammar's coords.
     "tree-sitter-proto":      ("coder3101/tree-sitter-proto",        "main",   "src/parser.c"),
+    "tree-sitter-zig":        ("tree-sitter-grammars/tree-sitter-zig", "master", "src/parser.c"),
 }
 
 # npm-installed grammars deliberately held below npm latest (surfaced so reviewers

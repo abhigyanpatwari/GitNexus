@@ -342,6 +342,10 @@ describe('GITNEXUS_TOOLS', () => {
     // `not-attempted` is unreachable through this tool; documenting it would
     // advertise an outcome no caller can observe.
     expect(d).not.toContain('not-attempted');
+    expect(d).toContain('READ THE RESULT:');
+    expect(d).toContain('degradedLinks');
+    expect(d).toContain('failedRepos');
+    expect(d).toContain('warnings');
     // 'preserved' rewrites contracts.json (keeping the previous contracts and
     // cross-links, refreshing the diagnostic lists). ITS clause may not say the
     // file was left alone — that sent an operator reading an unchanged mtime to

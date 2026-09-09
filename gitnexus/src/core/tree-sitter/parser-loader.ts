@@ -43,7 +43,7 @@ interface GrammarSource {
   /**
    * When true, this grammar may be disabled at runtime via
    * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
-   * (optionalDependencies / vendored — swift/dart/kotlin). Required dependencies
+   * (optionalDependencies / vendored — swift/dart/kotlin/zig). Required dependencies
    * routed through the optional machinery for ABI safety (e.g. C, which is
    * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
    * required parser is always an install/platform problem, never a user choice.
@@ -176,6 +176,15 @@ const SOURCES: Record<string, GrammarSource> = {
       '`gitnexus/vendor/tree-sitter-kotlin`) failed to load. ' +
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/2107.`,
+  },
+  [SupportedLanguages.Zig]: {
+    load: () => requireVendoredGrammar('tree-sitter-zig'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Zig parsing disabled: vendored `tree-sitter-zig` (under ' +
+      '`gitnexus/vendor/tree-sitter-zig`) failed to load. ' +
+      'Likely cause: no prebuilt `.node` for this platform/architecture.',
   },
 };
 

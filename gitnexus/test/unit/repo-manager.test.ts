@@ -841,6 +841,25 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries[0].name).not.toBe(path.basename(tmpRepoA.dbPath));
   });
 
+  it('preserves every concurrent registration', async () => {
+    const repoPaths = Array.from({ length: 12 }, (_, index) =>
+      path.join(tmpRepoA.dbPath, `concurrent-${index}`),
+    );
+    await Promise.all(repoPaths.map((repoPath) => fs.mkdir(repoPath, { recursive: true })));
+
+    await Promise.all(
+      repoPaths.map((repoPath, index) =>
+        registerRepo(repoPath, meta, { name: `concurrent-${index}` }),
+      ),
+    );
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(repoPaths.length);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(
+      repoPaths.map((_, index) => `concurrent-${index}`).sort(),
+    );
+  });
+
   it('re-registerRepo on same path without name preserves an existing alias', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'custom-alias' });
     // Second call with no opts should keep the alias, not revert to basename.

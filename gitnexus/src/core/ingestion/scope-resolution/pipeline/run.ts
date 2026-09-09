@@ -90,7 +90,7 @@ import {
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import {
   callableFlowSiteKey,
-  collectDeferredIndirectSites,
+  collectDeferredIndirectCollection,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
@@ -639,6 +639,11 @@ export function runScopeResolution(
     `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
   );
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  provider.populateWorkspaceReferences?.(parsedFiles, {
+    fileContents: getFileContents(),
+    treeCache,
+    resolutionConfig: input.resolutionConfig,
+  });
 
   // A callable-flow-only provider has no reason to build the whole-graph
   // lookup or finalize ordinary references when none of its files emitted a
@@ -988,7 +993,8 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles, indexes);
+  const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
+  const deferredIndirectSites = deferredIndirectCollection.sites;
   const callableArgumentSites = new Set<string>();
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
@@ -1080,6 +1086,7 @@ export function runScopeResolution(
         {
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
+          markConstructionSites: provider.markConstructionSites === true,
           isFileLocalDef: provider.isFileLocalDef,
           isBuiltInName: provider.languageProvider.isBuiltInName,
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
@@ -1110,6 +1117,7 @@ export function runScopeResolution(
         // both correctly emit. See the build site above for why the earlier
         // allowlist could not be made safe this way.
         functionLocalValueDefIds,
+        { markConstructionSites: provider.markConstructionSites === true },
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a
@@ -1237,6 +1245,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          deferredIndirectSites,
+          callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>
             logger.warn(
               warning,

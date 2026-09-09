@@ -2447,6 +2447,167 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
+// ── Zig ──────────────────────────────────────────────────────────────────────
+// Verified against @tree-sitter-grammars/tree-sitter-zig 1.1.2.
+// Container declarations (struct/enum/union) are anonymous in the grammar; the
+// binding name lives on the parent variable_declaration's first identifier
+// child. Heritage queries are intentionally absent — Zig has no inheritance.
+export const ZIG_QUERIES = `
+; Functions (top-level + methods inside struct/enum/union containers)
+(function_declaration
+  name: (identifier) @name) @definition.function
+
+; Struct: const Foo = struct { ... }
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @definition.struct
+
+; Enum: const Foo = enum { ... }
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @definition.enum
+
+; Union: const Foo = union { ... } (and tagged-union union(enum) { ... })
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @definition.union
+
+; File-struct: a file whose top level declares a container field IS a struct
+; named after the file (\`Page.zig\` declares \`Page\`; \`@typeName\` agrees).
+; The anchor is the whole file; the name comes from the class extractor
+; (\`zigContainerName(source_file, filePath)\` — the file stem), not from a
+; capture, since no node spells it. One match per top-level field — the
+; definition phase dedupes by (node, name). Namespace-only files (no fields)
+; never match and keep their Function ids.
+((source_file (container_field name: (identifier) @_field)) @definition.struct
+  (#not-eq? @_field ""))
+; A FIELDLESS file-struct — \`Empty.zig\`: no field, but a top-level fn whose
+; first parameter is typed as the file's own type (\`self: *@This()\`, or
+; \`self: *Self\` beside \`const Self = @This();\`). Zero-sized types are still
+; constructed (\`Empty{}\`) and dispatched on, and keyed on fields alone the
+; file lost its Struct node and every \`e.ping()\` edge (PR #1432 review,
+; 8.12). The two rules over-match on purpose — any \`@This\` in a first
+; parameter, any top-level \`@This()\` alias — and the provider's
+; \`shouldSkipDefinitionCapture\` keeps only what \`isZigFileStruct\` (the
+; single predicate the owner walk and the scope side use) admits.
+((source_file (function_declaration (parameters . (parameter type: (_) @_recv))))
+  @definition.struct
+  (#match? @_recv "@This"))
+((source_file (variable_declaration (identifier) (builtin_function (builtin_identifier) @_this)))
+  @definition.struct
+  (#eq? @_this "@This"))
+
+; Opaque: const Handle = opaque { ... } — the FFI handle type. It is a
+; container (it may declare methods, never fields), so it is labelled Struct:
+; the owner of a HAS_METHOD edge must be class-like, and there is no closer
+; label. It is NOT a TypeAlias — an opaque type is a distinct nominal type,
+; deliberately incompatible with whatever it wraps.
+(variable_declaration
+  (identifier) @name
+  (opaque_declaration)) @definition.struct
+
+; Generic type constructors: \`pub fn List(comptime T: type) type { return
+; struct { … }; }\` — Zig's only spelling of a generic type. The returned
+; container is anonymous in the grammar; the definition anchor is the
+; container node and its name is the enclosing function's (\`List\`), which
+; is what every caller writes (\`List(u8)\`). Only the direct \`return
+; <container>\` of a fn whose return type is \`type\` qualifies (see
+; \`zigTypeConstructorOf\`). The Function node \`List\` coexists: \`List\` is
+; both a callable and a type.
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (struct_declaration) @definition.struct))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (union_declaration) @definition.union))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (enum_declaration) @definition.enum))))
+  (#eq? @_ret "type"))
+
+; Function-local and anonymous containers (F8): \`fn string() { const R =
+; struct { fn get … }; }\` (Lightpanda's reflection.zig declares one \`R\` per
+; builder fn), \`std.sort.pdq(T, items, {}, struct { fn lessThan … }.lessThan)\`,
+; \`const cmp = struct { fn lt … }.lt;\`, a field typed \`?struct { min: u32 }\`.
+; No name child spells their identity, so these rules match EVERY container
+; and the class extractor names the node from \`zigContainerName\` (\`string$R\`,
+; \`build$1\`) — the same function the owner walk uses for their fns, which
+; were ownerless, colliding Methods before. The bound shapes above match too;
+; the provider's \`shouldSkipDefinitionCapture\` keeps exactly one rule per
+; container (\`zigContainerAnchor\`).
+(struct_declaration) @definition.struct
+(enum_declaration) @definition.enum
+(union_declaration) @definition.union
+(opaque_declaration) @definition.struct
+
+; Container fields (struct fields, enum variants, union variants) — all are
+; \`container_field\` in the grammar and all become Property (C labels its
+; enumerators Const; Rust captures no variants; Zig's own vocabulary is
+; "field" for all three, so one label keeps the query honest).
+; #not-eq? guard: tree-sitter-zig 1.1.2 recovers an EMPTY container body
+; (\`struct {}\`, \`opaque {}\`) as a container_field whose identifier is a
+; zero-width MISSING placeholder — a parser artefact, not a field, and
+; without the guard it minted a Property with an empty name.
+((container_field
+  name: (identifier) @name) @definition.property
+  (#not-eq? @name ""))
+
+; Named tests: test "description" { ... }. The name is the string node WITH
+; its quotes, so \`test "add"\` next to \`fn add\` (the idiomatic layout) does
+; not collide on Function:<file>:add. Anonymous \`test {}\` and decl-tests
+; \`test add {}\` have no name of their own and are not graph nodes; their
+; bodies' calls attribute to the File.
+(test_declaration
+  (string) @name) @definition.function
+
+; const / var bindings that are neither a container nor an @import (those two
+; are skipped by the provider's \`shouldSkipDefinitionCapture\` so the Struct /
+; import binding is the only node for that name). The literal keyword is
+; load-bearing: tree-sitter-zig 1.1.2 parses statement assignments (\`x = 5;\`,
+; \`x += 1;\`, \`_ = expr;\`) as \`variable_declaration\` WITHOUT a keyword
+; child, and a keyword-less rule would mint a Const per assignment and a
+; Variable named \`_\` per discard.
+(variable_declaration
+  "const" . (identifier) @name) @definition.const
+(variable_declaration
+  "var" . (identifier) @name) @definition.variable
+
+; @import("path") — capture the string argument as @import.source, in
+; EVERY position: the value of a const/var (\`const std = @import("std")\`),
+; a member chain (\`const X = @import("x.zig").X\`), \`pub usingnamespace
+; @import("path")\`, a tuple element (\`pub const Interfaces = .{
+; @import("a.zig"), @import("b.zig") }\`), a call argument, a comparison
+; operand, the receiver of a member call (\`try @import("dump.zig").root(...)\`).
+; Zig has no import statement — the builtin IS the import, wherever it sits,
+; and every occurrence is a file dependency. The #eq? predicate keeps the
+; other builtins (@sizeOf, @TypeOf, @as, …) out. One rule, one match per
+; builtin: the structure phase only skips import matches (IMPORTS edges come
+; from the scope phase — \`emitZigScopeCaptures\`, whose \`@import.inline\`
+; rule is this rule's twin, decides which occurrences bind a name).
+((builtin_function
+  (builtin_identifier) @builtin
+  (arguments
+    (string) @import.source))
+  (#eq? @builtin "@import")) @import
+
+; Free calls: foo(...)
+(call_expression
+  function: (identifier) @call.name) @call
+
+; Member calls: obj.method(...) and namespace.fn(...) (e.g. std.debug.print).
+(call_expression
+  function: (field_expression
+    member: (identifier) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -2466,4 +2627,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Zig]: ZIG_QUERIES,
 };

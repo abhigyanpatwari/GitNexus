@@ -8,6 +8,7 @@ import {
 const context = {
   nodeLabel: 'Const',
   nodeName: 'endpoint',
+  filePath: 'src/endpoints.ts',
   definitionNode: {},
   parsedImports: [],
   isExported: true,

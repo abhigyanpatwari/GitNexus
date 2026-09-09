@@ -1,6 +1,10 @@
 import { makeScopeId } from 'gitnexus-shared';
 import { parseSpringInjectionType } from '../../di-extractors/spring.js';
 import {
+  normalizeSpringFactText,
+  type SpringArgumentFact,
+} from '../../frameworks/spring/argument-facts.js';
+import {
   createSpringDiMetadataAttacher,
   hasSpringDiRelevantAnnotation,
   hasSpringStereotypeSyntax,
@@ -13,13 +17,29 @@ import {
   hasSpringBeanFactorySyntax,
   type SpringBeanFactoryMethodFact,
 } from '../../frameworks/spring/bean-factories.js';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { hasRecoveredSyntax, nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getKotlinSpringDiFacts } from './capture-side-channel.js';
 import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.js';
 
 export interface KotlinAnnotationSyntaxFact extends SpringDiAnnotationFact {
   readonly useSiteTarget?: string;
   readonly line: number;
+  /** Present only for callers that opt in via `kotlinSpringAnnotationFacts`. */
+  readonly args?: readonly SpringArgumentFact[];
+}
+
+/**
+ * Options for `kotlinSpringAnnotationFacts`.
+ *
+ * The STRUCTURED arguments are opt-in because DI captures every annotated
+ * constructor parameter, property, and function in the repository, and none of
+ * its consumers reads them. Note what this does and does not save: every fact
+ * already carries `text`, the annotation's full source, so the argument TEXT
+ * crosses the worker boundary either way. What the opt-in avoids is a second,
+ * parsed copy of that same text on facts that would never look at it.
+ */
+export interface KotlinSpringAnnotationFactOptions {
+  readonly includeArguments?: boolean;
 }
 
 export type KotlinSpringDependencyFact = SpringDiDependencyFact<KotlinAnnotationSyntaxFact>;
@@ -53,36 +73,128 @@ function firstDescendantOfType(node: SyntaxNode, type: string): SyntaxNode | und
   return undefined;
 }
 
-function annotationFact(annotation: SyntaxNode): KotlinAnnotationSyntaxFact | null {
+const KOTLIN_COMMENT_NODE_TYPES = new Set(['line_comment', 'multiline_comment']);
+
+/**
+ * Kotlin writes annotation arguments and call arguments with the same
+ * `value_arguments` node, so one reader serves `@KafkaListener(topics = [...])`
+ * and `kafkaTemplate.send(topic, payload)`.
+ *
+ * A named argument keeps its key; everything else — positional values, spreads,
+ * collection literals, and interpolated strings — is kept as raw text, because
+ * evaluating it would be resolution.
+ *
+ * Returns `null` for a list tree-sitter had to recover, and the callers decide
+ * what that means: a producer call drops the whole fact, since it has no state
+ * for "published somewhere unreadable", while an annotation reports no
+ * arguments and collapses into the marker form. Both answers say "nothing here
+ * to resolve", which is true; a fabricated value would send a consumer
+ * somewhere real and wrong.
+ *
+ * The check lives HERE, not only in the callers. This function is exported and
+ * already has a caller in another module, so a guard that every future caller
+ * has to remember is the same fragility this change set exists to remove —
+ * `null` makes the decision unavoidable at the type level. Per-argument
+ * re-checks are still pointless: `hasError` propagates from any argument up to
+ * the list, so a branch behind this one could never fire.
+ *
+ * A named argument is identified by the `=` TOKEN, and the two-child shape is
+ * only a corroborating detail. Today nothing well formed reaches two children
+ * without an `=`: an annotated positional argument such as
+ * `@Suppress("UNCHECKED_CAST") "orders"` arrives as ONE `prefix_expression`, not
+ * as two children, so the token test is currently redundant. It is kept as the
+ * leading condition anyway, because the failure it prevents is asymmetric —
+ * dropping it would let any future two-child positional shape be reported under
+ * an argument key the source never wrote, which is the failure mode this whole
+ * change set is about.
+ */
+export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgumentFact[] | null {
+  if (hasRecoveredSyntax(valueArguments)) return null;
+  const args: SpringArgumentFact[] = [];
+  for (const argument of valueArguments.namedChildren) {
+    if (argument.type !== 'value_argument') continue;
+    const parts = argument.namedChildren.filter(
+      (child) => !KOTLIN_COMMENT_NODE_TYPES.has(child.type),
+    );
+    const named = argument.children.some((child) => child.type === '=');
+    const name = parts[0];
+    const value = parts[1];
+    if (named && parts.length === 2 && name !== undefined && value !== undefined) {
+      args.push({ name: name.text.trim(), text: normalizeSpringFactText(value.text) });
+      continue;
+    }
+    args.push({ text: normalizeSpringFactText(argument.text) });
+  }
+  return args;
+}
+
+/**
+ * Arguments of one annotation, or `undefined` when it was written without an
+ * argument list (`@Scheduled`); `@Scheduled()` yields `[]` instead.
+ *
+ * Only the annotation's FIRST `user_type` / `constructor_invocation` child is
+ * read, which is the same element `annotationFact` names. That matters for the
+ * multi-annotation form `@field:[Alpha Beta("x")]`, where naively taking the
+ * first constructor invocation would hand Beta's arguments to Alpha.
+ *
+ * An argument list that did not parse also yields `undefined`, collapsing into
+ * the marker-annotation case on purpose: both say there is nothing readable to
+ * resolve, while the recovered tree would offer values nobody wrote.
+ */
+function kotlinAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFact[] | undefined {
+  const named = annotation.namedChildren.find(
+    (child) => child.type === 'user_type' || child.type === 'constructor_invocation',
+  );
+  if (named === undefined || named.type !== 'constructor_invocation') return undefined;
+  const valueArguments = named.namedChildren.find((child) => child.type === 'value_arguments');
+  if (valueArguments === undefined) return undefined;
+  // `null` here means recovered syntax; an annotation answers that by reporting
+  // no arguments at all, which is the marker-annotation form.
+  return kotlinValueArgumentFacts(valueArguments) ?? undefined;
+}
+
+function annotationFact(
+  annotation: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions,
+): KotlinAnnotationSyntaxFact | null {
   const nameNode = firstDescendantOfType(annotation, 'user_type');
   if (nameNode === undefined) return null;
   const useSiteTarget = annotation.namedChildren
     .find((child) => child.type === 'use_site_target')
     ?.text.replace(/:\s*$/, '')
     .trim();
+  const args =
+    options.includeArguments === true ? kotlinAnnotationArgumentFacts(annotation) : undefined;
   return {
     name: nameNode.text.trim(),
     text: annotation.text.trim(),
     line: annotation.startPosition.row + 1,
     ...(useSiteTarget === undefined || useSiteTarget.length === 0 ? {} : { useSiteTarget }),
+    ...(args === undefined ? {} : { args }),
   };
 }
 
-function annotationsFromModifierContainer(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
+function annotationsFromModifierContainer(
+  node: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions = {},
+): KotlinAnnotationSyntaxFact[] {
   const facts: KotlinAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'annotation') continue;
-    const fact = annotationFact(child);
+    const fact = annotationFact(child, options);
     if (fact !== null) facts.push(fact);
   }
   return facts;
 }
 
-export function kotlinSpringAnnotationFacts(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
+export function kotlinSpringAnnotationFacts(
+  node: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions = {},
+): KotlinAnnotationSyntaxFact[] {
   const facts: KotlinAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'modifiers' && child.type !== 'parameter_modifiers') continue;
-    facts.push(...annotationsFromModifierContainer(child));
+    facts.push(...annotationsFromModifierContainer(child, options));
   }
   return facts;
 }

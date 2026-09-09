@@ -288,6 +288,15 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   // are unreachable and label-agnostic fallback can alias it to a same-named
   // Constructor or Method (#2801).
   'Record',
+  // Union is linkable because Zig wires `union` / `union(enum)` as a member
+  // container: the definition phase emits HAS_METHOD / HAS_PROPERTY edges FROM
+  // the Union node (`union_declaration` in MEMBER_OWNER_NODE_TYPES) and the
+  // scope side dispatches methods on union receivers (`main → isEnergy` in
+  // test/integration/resolvers/zig.test.ts). Without this entry the schema
+  // never declares a `FROM Union` pair and `analyze` aborts on the first Zig
+  // repo that declares a union (reproduced on the zig-basic fixture itself).
+  // Also lets `Tag{ .energy = 5 }` constructor references bridge to the node.
+  'Union',
   // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
   // defs between scope-resolution DefIds and the graph's node ids.
   // IMPLEMENTS edges from classes to traits are otherwise invisible to
@@ -303,8 +312,8 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   //
   // Covers every language that spells an alias this way — TypeScript, Kotlin,
   // Dart and Rust all emit `@declaration.type_alias`. The remaining
-  // `CLASS_KINDS` entries (Typedef, Record, Union, Delegate, Annotation,
-  // Template) plausibly have the same gap, but nothing exercises them today
+  // `CLASS_KINDS` entries (Typedef, Delegate, Annotation, Template, Namespace)
+  // plausibly have the same gap, but nothing exercises them today
   // and adding labels no test covers is how this list drifts out of sync with
   // what it claims.
   'TypeAlias',

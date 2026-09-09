@@ -138,6 +138,82 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('folds declarations imported through a package star', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+const val ORDERS = "/api/v1/orders"
+object ApiPaths {
+    const val ITEMS = "/api/v1/items"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+
+    @GetMapping(ApiPaths.ITEMS)
+    fun items() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/items', 'GET /api/v1/orders']);
+  });
+
+  it('folds object members imported through a classifier star', () => {
+    expect(
+      providers({
+        [CONSTS]: CONSTS_SRC,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('prefers same-package sibling declarations over package-star imports', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+const val ORDERS = "/imported"
+object ApiPaths {
+    const val ITEMS = "/imported/items"
+}
+`,
+        'src/main/kotlin/com/example/app/web/LocalPaths.kt': `package com.example.app.web
+const val ORDERS = "/local"
+object ApiPaths {
+    const val ITEMS = "/local/items"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+import com.example.app.api.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+
+    @GetMapping(ApiPaths.ITEMS)
+    fun items() {}
+}
+`,
+      }),
+    ).toEqual(['GET /local', 'GET /local/items']);
+  });
+
   it('folds a constant imported through a nested object', () => {
     expect(
       providers({

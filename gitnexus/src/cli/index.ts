@@ -4,7 +4,7 @@
 // Removing it from here improves MCP server startup time significantly.
 
 import { Command } from 'commander';
-import { createRequire } from 'node:module';
+import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
   createLazyAction,
@@ -14,16 +14,16 @@ import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.j
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
+import { writeCommandBanner } from './command-banner.js';
+import { runProcessCliUpdateNotice } from './update-notice.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
 const program = new Command();
 
 function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), ...value.split(',')];
 }
 
-program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(packageVersion());
 
 program
   .command('setup')
@@ -45,6 +45,22 @@ program
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
 
+program
+  .command('auto-sync [action]')
+  .description(
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  )
+  .addHelpText('after', () => t('help.autoSync.details'))
+  .action(createLazyAction(() => import('./auto-sync.js'), 'autoSyncCommand'));
+
+program
+  .command('watch [action]')
+  .description(
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  )
+  .addHelpText('after', () => t('help.watch.details'))
+  .action(createLazyAction(() => import('./watch.js'), 'watchAmbiguousCommand'));
+
 // Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
 // before it overwrites the var, so the postAction hook can restore it. The
 // analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
@@ -59,7 +75,11 @@ program
   .description('Index a repository (full analysis)')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
-  .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
+  .option(
+    '--no-parse-cache',
+    'Re-parse every source file instead of replaying cached parser output',
+  )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
   .option(
     '--embeddings [limit]',
@@ -76,7 +96,10 @@ program
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
   )
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-agents-md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+  )
   .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
@@ -138,6 +161,16 @@ program
   .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  )
+  .option(
+    '--spring-actuator <path>',
+    'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
+      'configprops, env). Explicit opt-in; disabled by default.',
+  )
+  .option(
+    '--asyncapi-spec <path>',
+    'Read AsyncAPI 3.x documents from this directory or file and resolve broker ' +
+      'addresses from them. Explicit opt-in; disabled by default.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
@@ -265,6 +298,11 @@ program
   .command('doctor')
   .description('Show runtime platform capabilities and embedding configuration')
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
+
+program
+  .command('update')
+  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
+  .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
 
 program
   .command('embeddings')
@@ -469,7 +507,17 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+program.command('__update-check', { hidden: true }).action(async () => {
+  const { refresh } = await import('../core/update-check.js');
+  await refresh();
+});
+
 registerGroupCommands(program);
 localizeCliHelp(program);
 
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  writeCommandBanner(actionCommand);
+});
+
+runProcessCliUpdateNotice(packageVersion());
 program.parse(process.argv);

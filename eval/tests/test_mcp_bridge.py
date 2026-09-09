@@ -1,7 +1,7 @@
 """Tests for MCPBridge._find_gitnexus_command() and subprocess spawn."""
 import subprocess
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 
 class TestFindGitnexusCommand(unittest.TestCase):

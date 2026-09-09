@@ -54,6 +54,8 @@ export interface PipelineResult {
   usedWorkerPool: boolean;
   /** Files actually dispatched to parser workers after parse-cache lookup. */
   reparsedFileCount: number;
+  /** Files restored from parse-cache chunks without parser-worker dispatch. */
+  parseCacheHitFileCount?: number;
   /** Files omitted from scope-resolution while the rest of analysis continued. */
   scopeExtractionFailures: readonly string[];
   /** Files scope resolution could not inspect because their parser was unavailable. */

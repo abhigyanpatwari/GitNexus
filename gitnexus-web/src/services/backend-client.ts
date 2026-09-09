@@ -64,6 +64,12 @@ export interface GrepResult {
   text: string;
 }
 
+/** Full `/api/grep` payload — `timedOut` is true when the 5s budget cut the scan short. */
+export interface GrepResponse {
+  results: GrepResult[];
+  timedOut: boolean;
+}
+
 export interface JobProgress {
   phase: string;
   percent: number;
@@ -569,9 +575,11 @@ export interface ServerInfo {
   version: string;
   launchContext: 'npx' | 'global' | 'local';
   nodeVersion: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
 }
 
-/** Fetch server info (version, launch context). */
+/** Fetch server info (version, launch context, and optional update state). */
 export const fetchServerInfo = async (): Promise<ServerInfo> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
   await assertOk(response);
@@ -869,23 +877,37 @@ export const search = async (
   return (body.results ?? []) as EnrichedSearchResult[];
 };
 
-/** Grep across file contents in the indexed repo. */
+/** Options for {@link grep} beyond pattern/repo/limit. */
+export interface GrepOptions {
+  /** Only search files whose path contains this substring (case-insensitive). */
+  fileFilter?: string | null;
+  /** Case-sensitive matching (default: insensitive). */
+  caseSensitive?: boolean;
+}
+
+/** Grep across file contents in the indexed repo. Regex semantics server-side. */
 export const grep = async (
   pattern: string,
   repo?: string,
   limit?: number,
-): Promise<GrepResult[]> => {
+  opts?: GrepOptions,
+): Promise<GrepResponse> => {
   const params = [
     `pattern=${encodeURIComponent(pattern)}`,
     repoParam(repo),
     limit ? `limit=${limit}` : '',
+    opts?.fileFilter ? `fileFilter=${encodeURIComponent(opts.fileFilter)}` : '',
+    opts?.caseSensitive ? 'caseSensitive=1' : '',
   ]
     .filter(Boolean)
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = await response.json();
-  return (body.results ?? []) as GrepResult[];
+  const body = (await response.json()) as Partial<GrepResponse>;
+  return {
+    results: body.results ?? [],
+    timedOut: body.timedOut === true,
+  };
 };
 
 /** Result from reading a file, optionally with line range. */
@@ -988,6 +1010,13 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
+  /**
+   * Index-branch selector. Omitted: a `url` with no existing clone takes the
+   * remote's default branch, an existing clone updates whichever branch it
+   * already has checked out, and a `path` request is not cloned at all and
+   * indexes that working tree as it stands.
+   */
+  branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,

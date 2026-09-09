@@ -13,6 +13,7 @@
 import { detectFrameworkFromPath } from './framework-detection.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { providers } from './languages/index.js';
+import { isTestFilePath } from './utils/test-file-path.js';
 
 // ============================================================================
 // NAME PATTERNS
@@ -164,54 +165,15 @@ export function calculateEntryPointScore(
 // ============================================================================
 
 /**
- * Check if a file path is a test file (should be excluded from entry points)
- * Covers common test file patterns across all supported languages
+ * Check if a file path is a test file (should be excluded from entry points).
+ *
+ * Delegates to the shared predicate in `utils/test-file-path.ts`. This used to be
+ * a second, hand-maintained copy that had drifted from the one backing the MCP
+ * `includeTests` flag — see that module's header. Re-exported under this name so
+ * existing importers are unaffected.
  */
 export function isTestFile(filePath: string): boolean {
-  const p = filePath.toLowerCase().replace(/\\/g, '/');
-
-  return (
-    // JavaScript/TypeScript test patterns
-    p.includes('.test.') ||
-    p.includes('.spec.') ||
-    p.includes('__tests__/') ||
-    p.includes('__mocks__/') ||
-    // Generic test folders
-    p.includes('/test/') ||
-    p.includes('/tests/') ||
-    p.includes('/testing/') ||
-    // Python test patterns
-    p.endsWith('_test.py') ||
-    p.includes('/test_') ||
-    // Go test patterns
-    p.endsWith('_test.go') ||
-    // Java test patterns
-    p.includes('/src/test/') ||
-    // Rust test patterns (inline tests are different, but test files)
-    p.includes('/tests/') ||
-    // Swift/iOS test patterns
-    p.endsWith('tests.swift') ||
-    p.endsWith('test.swift') ||
-    p.includes('uitests/') ||
-    // C# test patterns
-    p.endsWith('tests.cs') ||
-    p.endsWith('test.cs') ||
-    p.includes('.tests/') ||
-    p.includes('.test/') ||
-    p.includes('.integrationtests/') ||
-    p.includes('.unittests/') ||
-    p.includes('/testproject/') ||
-    // PHP/Laravel test patterns
-    p.endsWith('test.php') ||
-    p.endsWith('spec.php') ||
-    p.includes('/tests/feature/') ||
-    p.includes('/tests/unit/') ||
-    // Ruby test patterns
-    p.endsWith('_spec.rb') ||
-    p.endsWith('_test.rb') ||
-    p.includes('/spec/') ||
-    p.includes('/test/fixtures/')
-  );
+  return isTestFilePath(filePath);
 }
 
 /**
