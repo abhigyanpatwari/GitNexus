@@ -283,7 +283,7 @@ def test_a_correct_review_scores_and_the_sweep_exits_clean(bench, monkeypatch) -
 def test_one_run_cannot_promote_a_candidate(bench, monkeypatch) -> None:
     """The gate refuses on insufficient paired runs, and says so."""
 
-    _code, _rows, _provider = _sweep(bench, monkeypatch, [FINDING], "request_changes")
+    _sweep(bench, monkeypatch, [FINDING], "request_changes")
     promotion = json.loads((bench.out / "promotion.json").read_text())
 
     assert promotion["run_status"] == "complete"

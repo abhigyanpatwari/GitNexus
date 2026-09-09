@@ -243,3 +243,22 @@ def test_probe_what_identity_the_real_cli_actually_sends(tmp_path: Path, monkeyp
     print("\nIDENTITY FIELDS THE REAL CLI SENDS:")
     print("  body keys:", sorted(request.body))
     print("  candidate correlators:", interesting or "NONE — per-cell attribution needs another mechanism")
+
+
+def test_scripted_tools_survive_the_responses_protocol_too() -> None:
+    """The gateway uses Responses BECAUSE it carries tool use.
+
+    Emitting only output_text there meant a scripted Write or Skill crossed the
+    gateway with the tool dropped, so a mock claiming to serve both protocols
+    was wrong about the one the gateway actually runs.
+    """
+
+    write = {"name": "Write", "input": {"file_path": "/review-output/review-output.json", "content": "{}"}}
+    with MockProvider([Reply(text="writing", tools=[write])]) as provider:
+        _status, raw = _post(provider.base_url + "/v1/responses", {"model": "m", "input": []})
+
+    output = json.loads(raw)["output"]
+    calls = [item for item in output if item["type"] == "function_call"]
+    assert len(calls) == 1, "the scripted tool must cross the Responses path"
+    assert calls[0]["name"] == "Write"
+    assert json.loads(calls[0]["arguments"])["file_path"] == "/review-output/review-output.json"

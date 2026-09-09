@@ -191,7 +191,23 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
                 "role": "assistant",
                 "status": "completed",
                 "content": [{"type": "output_text", "text": reply.text, "annotations": []}],
-            }
+            },
+            # Tool calls belong here too. Responses is the protocol the gateway
+            # is configured for BECAUSE it carries tool use, so emitting only
+            # output_text meant a reply scripted with a Write or Skill crossed
+            # the gateway with the tool silently dropped - the mock would have
+            # been wrong about the wire on the one path that matters most.
+            *(
+                {
+                    "id": f"fc_mock_{index}",
+                    "type": "function_call",
+                    "status": "completed",
+                    "call_id": f"call_mock_{index}",
+                    "name": tool["name"],
+                    "arguments": json.dumps(tool.get("input", {})),
+                }
+                for index, tool in enumerate(reply.tools)
+            ),
         ],
         "usage": {
             "input_tokens": total_input,

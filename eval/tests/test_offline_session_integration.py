@@ -80,7 +80,16 @@ def test_a_scripted_write_produces_a_review_artifact_the_scorer_accepts(clone: P
         artifact = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
         write = {"name": "Write", "input": {"file_path": str(artifact), "content": REVIEW_JSON}}
         with MockProvider(default=Reply(text="reviewing", tools=[write])) as provider:
-            record = _session(clone, provider)
+            # Take the command configuration from the sandbox the way run_arm
+            # does, rather than calling run_claude bare. On host-unsafe the
+            # prefix is [] by construction, so this pins the WIRING, not the
+            # isolation - a bwrap run would carry a real prefix through here.
+            record = _session(
+                clone,
+                provider,
+                command_prefix=sandbox.command_prefix_for(),
+                require_pid_namespace=sandbox.require_pid_namespace,
+            )
             assert record["ok"] is True, record.get("error_detail")
             # Read inside the scope: prepare_sandbox removes the private root on exit.
             verdict, findings = parse_review_output(artifact)
