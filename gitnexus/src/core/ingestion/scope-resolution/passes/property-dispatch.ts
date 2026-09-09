@@ -285,12 +285,34 @@ function findNamespaceValueRefTarget(
   // A locally declared member first — same precedence `findExportedDef` states
   // and `walkScopeChain` applies: what the target file DECLARED beats what it
   // merely re-published.
-  const local = uniqueMember((scope) =>
-    (scopes.bindings.get(scope)?.get(site.name) ?? []).filter((ref) => ref.origin === 'local'),
-  );
+  const localRefs = (scope: ScopeId): readonly BindingRef[] =>
+    (scopes.bindings.get(scope)?.get(site.name) ?? []).filter((ref) => ref.origin === 'local');
+  const local = uniqueMember(localRefs);
   if (local === 'ambiguous') return undefined;
   if (local !== undefined) return local;
   if (!publishesImportedNames) return undefined;
+
+  // PRECEDENCE IS DECIDED BEFORE THE TYPE GATE, not by it. `uniqueMember`
+  // applies `CALL_TARGET_TYPES` while it selects, so a target file declaring a
+  // NON-callable under this name answers `undefined` above and would otherwise
+  // fall through to the published channel — publishing a re-exported callable
+  // under a name the module's own declaration owns. `findExportedDef` does not
+  // do that: it returns any local def it finds and lets its caller's type gate
+  // reject it, so `findExportedDefIncludingImportedNames` never reaches the
+  // imported names for a name the file declares. Same rule here, so `x.f` and
+  // `x.f()` cannot disagree about which module owns the name.
+  //
+  // Not reachable through valid Zig today — a container cannot declare a name
+  // twice, so one target file cannot hold both spellings, and Zig is the only
+  // provider that sets `namespaceExportsIncludeImportedNames`. It becomes
+  // reachable the moment a second provider opts in, or a receiver binds more
+  // than one target file; the guard is one `some` and the alternative failure
+  // is a confident edge into the wrong module.
+  const declaredLocally = targetFiles.some((targetFile) => {
+    const targetScopeId = scopes.moduleScopes.get(targetFile);
+    return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
+  });
+  if (declaredLocally) return undefined;
 
   // Then a name the target file publishes but did not declare — the hub case.
   // `lookupBindingsAt`, not `scopes.bindings`, because a hub's module scope owns

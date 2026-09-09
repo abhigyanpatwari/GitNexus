@@ -900,14 +900,37 @@ describe('loadZigWorkspaceIndex / zigPackageFor (zig-monorepo fixture)', () => {
     expect(zigPackageFor(index, 'docs/notes.zig')).toBeNull();
   });
 
-  it('keeps a single-package repo byte-identical to the root-only loader', async () => {
-    // The root package is a scope like any other, and `dir: ''` matches every
-    // file — so a repo with only a root build.zig must be unchanged.
-    const single = path.join(FIXTURES, 'zig-idioms');
+  it('keeps a genuinely single-package repo byte-identical to the root-only loader', async () => {
+    // `libs/geo` is one directory with one build.zig and no nested marker
+    // anywhere below it, so the workspace walk finds exactly one package and
+    // this really does pin the no-op case. `zig-idioms` cannot: it declares
+    // `libs/geo` as a path dep and that directory has its own build.zig, so the
+    // walk finds TWO packages there — the assertion below is the one the next
+    // test makes, and naming this file "single-package" would be the claim, not
+    // the check.
+    const single = path.join(FIXTURES, 'zig-idioms', 'libs', 'geo');
     const index = await loadZigWorkspaceIndex(single);
+    expect(index!.packages.map((p) => p.dir)).toEqual(['']);
+    expect(index!.packages[0]!.config).toEqual(await loadZigBuildConfig(single));
+    expect(zigPackageFor(index, 'src/root.zig')).toEqual(await loadZigBuildConfig(single));
+  });
+
+  it('leaves the ROOT package of a multi-package repo as the root-only loader saw it', async () => {
+    // The root package is a scope like any other and `dir: ''` matches every
+    // file no deeper package claims, so a file outside `libs/geo` must still
+    // get exactly what `loadZigBuildConfig` alone used to answer.
+    const idioms = path.join(FIXTURES, 'zig-idioms');
+    const index = await loadZigWorkspaceIndex(idioms);
+    expect(index!.packages.map((p) => p.dir)).toEqual(['libs/geo', '']);
     const root = index!.packages.find((p) => p.dir === '');
     expect(root).toBeDefined();
-    expect(root!.config).toEqual(await loadZigBuildConfig(single));
-    expect(zigPackageFor(index, 'src/idioms.zig')).toEqual(await loadZigBuildConfig(single));
+    expect(root!.config).toEqual(await loadZigBuildConfig(idioms));
+    expect(zigPackageFor(index, 'src/idioms.zig')).toEqual(await loadZigBuildConfig(idioms));
+    // …and a file INSIDE the nested package is governed by that package, not
+    // by the root — the regression the misnamed version of this test could not
+    // have caught, because it never looked below `src/`.
+    expect(zigPackageFor(index, 'libs/geo/src/root.zig')).toEqual(
+      await loadZigBuildConfig(idioms, 'libs/geo'),
+    );
   });
 });

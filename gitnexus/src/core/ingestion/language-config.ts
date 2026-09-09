@@ -183,13 +183,24 @@ export interface SwiftPackageConfig {
 /** Zig package config parsed from build.zig.zon and the root build.zig */
 export interface ZigBuildZonConfig {
   /**
-   * Map of dependency name -> the raw `.path = "..."` value, exactly as
-   * written in build.zig.zon (relative to the repo root, and possibly
-   * escaping it: `../local_dep`). Consumers normalize — see
-   * `normalizeZigDepPath` below, which rejects absolute
-   * and repo-escaping values. `.url`-based deps cannot be resolved to a
-   * repo-local file (they unpack into a build cache outside the repo) and so
-   * are not included here.
+   * Map of dependency name -> the dep's directory, in one of two spellings
+   * depending on which package this config describes:
+   *
+   *   - ROOT package (`pkg === ''`): the raw `.path = "..."` value, exactly as
+   *     written in build.zig.zon (relative to the repo root, and possibly
+   *     escaping it: `../local_dep`). This is what `parseZigBuildZon` promises
+   *     and what its tests pin.
+   *   - NESTED package: repo-relative and already normalized, because a nested
+   *     package's `.path` is written relative to ITS directory and means
+   *     nothing against the repo-relative keys consumers match on
+   *     (`packages/app`'s `../core` is stored as `packages/core`). A dep
+   *     escaping the REPO root is dropped rather than stored.
+   *
+   * Either spelling is safe to hand to `normalizeZigDepPath` below — it rejects
+   * absolute and repo-escaping values and is idempotent on an already
+   * normalized one, which is what `resolveZigImportInternal` relies on.
+   * `.url`-based deps cannot be resolved to a repo-local file (they unpack into
+   * a build cache outside the repo) and so are not included here.
    */
   pathDeps: Map<string, string>;
   /**
