@@ -133,4 +133,37 @@ describe('parseDiffHunks', () => {
     expect(result[1].hunks[0]).toEqual({ startLine: 51, endLine: 51 });
     expect(result[1].hunks[1]).toEqual({ startLine: 82, endLine: 84 });
   });
+
+  it('retains binary-only files from the git header', () => {
+    const diff = [
+      'diff --git a/assets/logo.png b/assets/logo.png',
+      'index 1111111..2222222 100644',
+      'Binary files a/assets/logo.png and b/assets/logo.png differ',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'assets/logo.png', hunks: [] }]);
+  });
+
+  it('retains the destination of a rename-only diff', () => {
+    const diff = [
+      'diff --git a/src/old.ts b/src/new.ts',
+      'similarity index 100%',
+      'rename from src/old.ts',
+      'rename to src/new.ts',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'src/new.ts', hunks: [] }]);
+  });
+
+  it('keeps line ranges for whitespace-only hunks', () => {
+    const diff = [
+      'diff --git a/src/format.ts b/src/format.ts',
+      '--- a/src/format.ts',
+      '+++ b/src/format.ts',
+      '@@ -4,2 +4,2 @@ function format() {',
+      '-  return value;',
+      '+return value;',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'src/format.ts', hunks: [{ startLine: 4, endLine: 5 }] },
+    ]);
+  });
 });

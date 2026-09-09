@@ -750,9 +750,19 @@ export interface FileDiff {
   hunks: DiffHunk[];
 }
 
+function filePathFromGitHeader(line: string): string | undefined {
+  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  return match?.[2];
+}
+
 /**
  * Parse unified diff output (with -U0) into per-file hunk ranges.
  * Extracts the new-file line ranges from @@ hunk headers.
+ *
+ * The `diff --git` header is also retained as a file entry. This matters for
+ * binary, rename-only, and mode-only changes, which have no `+++ b/` header.
+ * Such entries intentionally have no hunks: callers can count the changed
+ * path without pretending that a symbol line range was touched.
  *
  * A pure deletion adds no new lines, and unified diff spells that empty range
  * as the line BEFORE it: `@@ -4,2 +3,0 @@` removed old lines 4–5 from between
@@ -772,9 +782,18 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
   for (const line of diffOutput.split('\n')) {
-    if (line.startsWith('+++ b/')) {
-      current = { filePath: line.slice(6), hunks: [] };
-      files.push(current);
+    if (line.startsWith('diff --git ')) {
+      const filePath = filePathFromGitHeader(line);
+      if (filePath) {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      }
+    } else if (line.startsWith('+++ b/')) {
+      const filePath = line.slice(6);
+      if (!current || current.filePath !== filePath) {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      }
     } else if (line.startsWith('@@') && current) {
       const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
       if (match) {
