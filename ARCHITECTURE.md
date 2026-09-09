@@ -15,7 +15,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## End-to-end flow: index → graph → tools
 
-1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). The default DAG of 19 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
+1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). The default DAG of 21 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
 
 2. **Persistence** — `repo-manager.ts` (paths, registry, LadybugDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
 
@@ -82,11 +82,11 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 
 ## Pipeline Phase DAG
 
-19 default phases are defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output. `--pdg` adds `taintSummaries` and `callSummaries` (21 total).
+21 default phases are defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output. `--pdg` adds `taintSummaries` and `callSummaries` (23 total).
 
 ```
-scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
-  → crossFile → scopeResolution → [springAutoConfiguration, springAop]
+scan → structure → [springConfig, markdown, documents, cobol] → parse → [routes, tools, orm]
+  → crossFile → scopeResolution → [springAutoConfiguration, springAop, springDestinations]
   → pruneLocalSymbols → mro → springAopInheritance → di → communities → processes
 ```
 
@@ -97,7 +97,8 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `springConfig`            | `spring-config.ts`                     | `structure`                                                        | Spring configuration-property nodes and metadata                                                                                                                                            |
 | `markdown`                | `markdown.ts`                          | `structure`                                                        | Section nodes, cross-link edges from .md/.mdx                                                                                                                                               |
 | `cobol`                   | `cobol.ts`                             | `structure`                                                        | COBOL program/paragraph/section nodes (regex, no tree-sitter)                                                                                                                               |
-| `parse`                   | `parse.ts` + `parse-impl.ts`           | `structure`, `markdown`, `cobol`                                   | Symbol nodes, IMPORTS/CALLS/EXTENDS edges, extracted routes/tools/ORM queries                                                                                                               |
+| `documents`               | `documents.ts`                         | `structure`                                                        | Section nodes and containment edges for static XAML declarations; no runtime call or inheritance edges |
+| `parse`                   | `parse.ts` + `parse-impl.ts`           | `structure`, `markdown`, `documents`, `cobol`                        | Symbol nodes, IMPORTS/CALLS/EXTENDS edges, extracted routes/tools/ORM queries                                                                                                               |
 | `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators, and JS/TS static route sources — see below)                                                                              |
 | `tools`                   | `tools.ts`                             | `parse`                                                            | Tool nodes + HANDLES_TOOL edges                                                                                                                                                             |
 | `orm`                     | `orm.ts`                               | `parse`                                                            | QUERIES edges (Prisma, Supabase)                                                                                                                                                            |
@@ -105,6 +106,7 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `scopeResolution`         | `scope-resolution/pipeline/phase.ts`   | `parse`, `crossFile`, `structure`                                  | Binding/reference + inheritance edges; disposes BindingAccumulator                                                                                                                          |
 | `springAutoConfiguration` | `spring-auto-configuration.ts`         | `structure`, `scopeResolution`                                     | DECLARES and CONDITIONAL_ON metadata for Spring configuration candidates                                                                                                                    |
 | `springAop`               | `spring-aop.ts`                        | `scopeResolution`                                                  | Direct declarative/advice ADVISED_BY edges and pointcut evidence                                                                                                                            |
+| `springDestinations`      | `spring-destinations.ts`               | `parse`, `scopeResolution`, `springConfig`                          | Destination nodes and publish/consume edges for Spring messaging |
 | `pruneLocalSymbols`       | `prune-local-symbols.ts`               | `scopeResolution`                                                  | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution                                                                                      |
 | `mro`                     | `mro.ts`                               | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure`   | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges                                                                                                                                                  |
 | `springAopInheritance`    | `spring-aop.ts`                        | `springAop`, `mro`                                                 | Propagates declarative behavior through class/interface inheritance decisions                                                                                                               |

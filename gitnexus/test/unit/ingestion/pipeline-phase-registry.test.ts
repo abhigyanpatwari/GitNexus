@@ -68,6 +68,7 @@ const FULL_ORDER = [
   'structure',
   'springConfig',
   'markdown',
+  'documents',
   'cobol',
   'parse',
   'routes',

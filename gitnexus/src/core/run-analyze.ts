@@ -1791,6 +1791,19 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
+      // Git can report clean after reverting/removing an indexed dirty file.
+      // Hidden Git flags also persist in dirtyPaths, so compare content rather
+      // than repeatedly reanalyzing unchanged candidates.
+      const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
+      let indexedContentChanged = false;
+      if (!dirty && indexedDirtyPaths.length > 0) {
+        const currentHashes = await computeFileHashes(repoPath, indexedDirtyPaths);
+        indexedContentChanged = indexedDirtyPaths.some(
+          (filePath) =>
+            !currentHashes.has(filePath) ||
+            currentHashes.get(filePath) !== existingMeta.fileHashes?.[filePath],
+        );
+      }
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -1820,7 +1833,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !healUnregistered) {
+      if (!dirty && !indexedContentChanged && !healUnregistered) {
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
@@ -2984,6 +2997,8 @@ async function runFullAnalysisInner(
           ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
           : [];
         await dropSearchFTSIndexes(indexCatalogRows, incrementalFtsRebuildTables);
+        // Release dropped search-index storage before the next bulk COPY.
+        await checkpointOnce();
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
