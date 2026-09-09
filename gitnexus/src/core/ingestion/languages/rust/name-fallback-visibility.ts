@@ -55,6 +55,20 @@ function rustModulePathOf(filePath: string): string {
   return segments.join('/');
 }
 
+/**
+ * Directory that owns the crate-root folder (`src`/`tests`/…). Empty when the
+ * file sits at the analyzed root (`src/lib.rs`) so a single-crate tree is not
+ * refused on a missing workspace prefix.
+ */
+function rustCrateRootOf(filePath: string): string {
+  const segments = stripExtension(filePath).split('/').filter((s) => s !== '');
+  const stem = segments[segments.length - 1];
+  if (stem !== undefined && RUST_DIRECTORY_MODULE_STEMS.has(stem)) segments.pop();
+  const rootIdx = segments.findIndex((s) => RUST_CRATE_ROOT_DIRS.has(s));
+  if (rootIdx <= 0) return '';
+  return segments.slice(0, rootIdx).join('/');
+}
+
 /** Resolve explicit relative prefixes against the caller's module path. */
 function rustUsePathOf(targetRaw: string, callerFilePath: string): string {
   const segments = targetRaw.split('::').filter((s) => s !== '');
@@ -119,6 +133,13 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       !visibleScopes.has(imp.declaredAtScope)
     )
       continue;
+    // `crate::` is the caller's crate. A same trailing module in another
+    // workspace crate is a different item and cannot authorize the guess.
+    if (imp.targetRaw === 'crate' || imp.targetRaw.startsWith('crate::')) {
+      const callerRoot = rustCrateRootOf(ctx.callerParsed.filePath);
+      const candidateRoot = rustCrateRootOf(ctx.candidate.filePath);
+      if (callerRoot !== '' && candidateRoot !== '' && callerRoot !== candidateRoot) continue;
+    }
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.

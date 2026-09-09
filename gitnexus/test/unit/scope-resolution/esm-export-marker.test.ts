@@ -204,6 +204,8 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     "import { receiver as exports } from './other'; exports.alpha = 1;",
     "import * as module from './other'; module.exports = {};",
     'const wrapper = function module() { module.exports = {}; };',
+    'for (const exports of values) { exports.x = 1; }',
+    'for (const module of values) { module.exports = {}; }',
   ])('ignores a shadowed CommonJS receiver: %s', (source) => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'x.js'],

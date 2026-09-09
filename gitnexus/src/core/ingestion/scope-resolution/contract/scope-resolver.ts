@@ -909,10 +909,12 @@ export interface ScopeResolver {
    * written for the name-guess tier would silently suppress resolved edges too.
    *
    * `parsedFileOf` reaches the CANDIDATE's parse result — a language whose rule
-   * depends on the declaration side (an `export` marker, a `pub` marker) needs
-   * it, because `SymbolDefinition` carries no visibility field. It returns
-   * `undefined` for a path outside this pass's file set; treat that as
-   * "cannot decide" and allow.
+   * depends on declaration-side facts not carried by `SymbolDefinition` (for
+   * example Rust's `pub` form) needs it. `isExported` is the tri-state export
+   * marker when the language supplies one; this hook still needs the parse for
+   * visibility facts that marker does not represent. It returns `undefined`
+   * for a path outside this pass's file set; treat that as "cannot decide"
+   * and allow.
    */
   readonly isGlobalNameFallbackPlausible?: (ctx: {
     readonly callerParsed: ParsedFile;

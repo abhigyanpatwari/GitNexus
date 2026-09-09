@@ -156,6 +156,17 @@ export function rubyIsGlobalNameFallbackPlausible(ctx: {
   // including class (see the header). Ruby labels `module` bodies `Trait`.
   for (const def of ctx.callerParsed.localDefs) {
     if (def.type === 'Trait') return true;
+    // A file that REOPENS `class Invoice` names the owner even without an
+    // inherits site or a reference capture — the declaration itself is the
+    // mention.
+    if (def.type === 'Class') {
+      const declared = (def.qualifiedName ?? '')
+        .split(/::|\.|#/)
+        .map((s) => s.trim())
+        .filter((s) => s !== '')
+        .at(-1);
+      if (declared !== undefined && constants.includes(declared)) return true;
+    }
   }
 
   for (const imp of ctx.callerParsed.parsedImports) {

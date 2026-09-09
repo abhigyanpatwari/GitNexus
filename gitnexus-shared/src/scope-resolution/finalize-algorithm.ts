@@ -5,13 +5,14 @@
  * Pure logic that takes per-file parse output (`ParsedImport[]` +
  * `SymbolDefinition[]`) and returns:
  *
- *   - Linked `ImportEdge[]` per module scope, with `targetModuleScope` and
- *     `targetDefId` filled where resolvable; edges that could not be
- *     resolved within the hard fixpoint cap are marked
+ *   - Linked `ImportEdge[]` keyed by binding scope (`fromScope`; module
+ *     scope unless `importsBindAtLexicalScope` is on), with
+ *     `targetModuleScope` and `targetDefId` filled where resolvable; edges
+ *     that could not be resolved within the hard fixpoint cap are marked
  *     `linkStatus: 'unresolved'`.
- *   - Materialized `bindings` per module scope — local defs merged with
- *     imported / wildcard-expanded / re-exported names via the provider's
- *     `mergeBindings` precedence.
+ *   - Materialized `bindings` keyed by the same scopes — local defs merged
+ *     with imported / wildcard-expanded / re-exported names via the
+ *     provider's `mergeBindings` precedence.
  *   - The SCC condensation of the import graph, exposed so disjoint SCCs
  *     can be processed in parallel by callers that want that.
  *
@@ -217,9 +218,11 @@ export interface AmbiguousWildcardExport {
 }
 
 export interface FinalizeOutput {
-  /** Linked `ImportEdge[]` per module scope, in original input order. */
+  /** Linked `ImportEdge[]` keyed by binding scope (`fromScope`). Module scope
+   *  for languages that bind file-wide; nested lexical scopes when
+   *  `importsBindAtLexicalScope` is on. */
   readonly imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>;
-  /** Materialized bindings per module scope. */
+  /** Materialized bindings keyed by the same scopes as `imports`. */
   readonly bindings: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
   /** SCCs in reverse-topological order (leaves first). */
   readonly sccs: readonly FinalizedScc[];

@@ -87,6 +87,19 @@ function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
       bindsReceiver(scope.childForFieldName('parameter'), name)
     )
       return true;
+    if (scope.type === 'for_in_statement' || scope.type === 'for_of_statement') {
+      if (bindsReceiver(scope.childForFieldName('left'), name)) return true;
+    }
+    if (scope.type === 'for_statement') {
+      const initializer = scope.childForFieldName('initializer');
+      if (
+        initializer !== null &&
+        (initializer.type === 'lexical_declaration' ||
+          initializer.type === 'variable_declaration') &&
+        initializer.namedChildren.some((child) => bindsReceiver(child, name))
+      )
+        return true;
+    }
     if (scope.type !== 'program' && scope.type !== 'statement_block') continue;
     for (const statement of scope.namedChildren) {
       const declaration =

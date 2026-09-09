@@ -196,8 +196,11 @@ type ParsedImportSyntax =
        * receives is keyed by the file's **Module** scope and by nothing else:
        * the walk starts at a `Module` every time and answers `false` for every
        * import in the tree. Finalize cannot recover the position either —
-       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]` with
-       * no scope attached. The extractor is the last stage that still knows
+       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]`.
+       * Lexical location rides on optional `declaredAtScope` when extraction
+       * could place the statement; binding still keys off that field only when
+       * a resolver opts into `importsBindAtLexicalScope`. The extractor is the
+       * last stage that still knows
        * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
        * fact here and it rides the edge from there — see
        * {@link ImportEdge.runsOnlyWhenCalled}.

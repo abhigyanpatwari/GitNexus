@@ -15,11 +15,12 @@
  * The target was chosen because its SIMPLE NAME is unique in the workspace —
  * not because any import, scope chain, or type binding led to it.
  *
- * Emitted only by the `pickUniqueGlobalCallable` tier of the free-call
- * fallback, and only for the languages that opt into
- * `allowGlobalFreeCallFallback`. It is a name collision away from being wrong
- * and must never be presented as an import-resolved edge: a reader who cannot
- * tell the two apart has no way to discount the guess.
+ * Emitted by the unique-simple-name tiers of the free-call fallback
+ * (`pickUniqueGlobalCallable` and constructor-form `pickUniqueGlobalClass`),
+ * and only for the languages that opt into `allowGlobalFreeCallFallback`. It
+ * is a name collision away from being wrong and must never be presented as
+ * an import-resolved edge: a reader who cannot tell the two apart has no way
+ * to discount the guess.
  */
 export const GLOBAL_NAME_FALLBACK_REASON = 'global-name-fallback';
 

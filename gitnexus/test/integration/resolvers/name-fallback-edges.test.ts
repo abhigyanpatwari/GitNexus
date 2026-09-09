@@ -105,6 +105,56 @@ func CallItRemotely() int {
   });
 });
 
+describe('Go/JS: constructor-form unique-name guesses are labeled, not import-resolved', () => {
+  it('refuses an unexported Go composite literal from another package', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ws1-go-ctor-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'go.mod': 'module example.com/mod\n\ngo 1.22\n',
+        'a/t.go': `package a
+
+type uniqueWidget struct{}
+`,
+        'b/c.go': `package b
+
+func F() { _ = uniqueWidget{} }
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const cross = getRelationships(result, 'CALLS').filter(
+        (c) => c.source === 'F' && c.target === 'uniqueWidget',
+      );
+      expect(cross).toEqual([]);
+      const refusals = getResolutionOutcomes(result).filter(
+        (o) => o.kind === 'fallback-refused' && o.name === 'uniqueWidget',
+      );
+      expect(refusals.length).toBeGreaterThan(0);
+    } finally {
+      rmRepo(repoDir);
+    }
+  }, 120000);
+
+  it('labels a JS `new UniqueWidget()` guess instead of import-resolved', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ws1-js-ctor-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'package.json': '{ "name": "ctor-fallback", "private": true }\n',
+        'b/widget.js': `export class UniqueWidget {}\n`,
+        'a/consumer.js': `export function make() { return new UniqueWidget(); }\n`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const edge = getRelationships(result, 'CALLS').find(
+        (c) => c.source === 'make' && c.target === 'UniqueWidget',
+      );
+      expect(edge).toBeDefined();
+      expect(edge!.rel.reason).toBe(GLOBAL_NAME_FALLBACK_REASON);
+      expect(edge!.rel.confidence).toBe(0.5);
+    } finally {
+      rmRepo(repoDir);
+    }
+  }, 120000);
+});
+
 describe('Ruby: a surviving name guess is labeled as a guess', () => {
   let result: PipelineResult;
   let repoDir: string | undefined;

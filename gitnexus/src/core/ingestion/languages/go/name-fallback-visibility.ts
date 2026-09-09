@@ -68,7 +68,13 @@ export function goIsGlobalNameFallbackPlausible(ctx: {
   readonly sourceTextOf?: (filePath: string) => string | undefined;
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
+  readonly site?: { readonly rawQualifiedName?: string };
 }): boolean {
+  // A PATH-QUALIFIED call (`pkg.Export()`) reached this tier because the
+  // qualifier could not be followed. The source named the package, so the
+  // bare-name "only a dot import introduces this identifier" rule does not
+  // apply — refusing here deletes a call Go writes as `pkg.Export()`.
+  if (ctx.site?.rawQualifiedName !== undefined) return true;
   // Methods require a receiver, even within their own package or a dot import.
   if (ctx.candidate.type === 'Method' || ctx.candidate.qualifiedName?.includes('.')) return false;
   const callerDir = directoryOf(ctx.callerParsed.filePath);

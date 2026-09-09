@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { collectResolvedCalleeNames } from '../../../src/core/ingestion/pipeline.js';
 import { countCallsByLanguage } from '../../../src/core/ingestion/scope-resolution/name-fallback-summary.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../../../src/core/graph/edge-reasons.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
 describe('collectResolvedCalleeNames', () => {
@@ -59,6 +60,14 @@ describe('collectResolvedCalleeNames', () => {
       type: 'CALLS',
       confidence: 1,
       reason: '',
+    });
+    g.addRelationship({
+      id: 'r6',
+      sourceId: 'a',
+      targetId: 'b',
+      type: 'CALLS',
+      confidence: 0.5,
+      reason: GLOBAL_NAME_FALLBACK_REASON,
     });
 
     const index = collectResolvedCalleeNames(g, g);

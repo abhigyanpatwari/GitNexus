@@ -227,6 +227,14 @@ export function emitFreeCallFallback(
       // to the Class node itself (implicit constructor). Legacy emits
       // the same two targets; see test expectations.
       let fnDef: SymbolDefinition | undefined;
+      // Guess flag starts here so the constructor unique-class pick can mark
+      // the same class of guess as `pickUniqueGlobalCallable` below. The
+      // veto/label path keys off this flag; declaring it after that pick left
+      // constructor-form unique-name hits labeled `import-resolved` at 0.85.
+      let fnDefFromGlobalNameFallback = false;
+      // Language visibility vetoes the constructed TYPE (Class/Struct), not a
+      // Constructor child — Go refuses any `qualifiedName` containing `.`.
+      let globalFallbackVetoTarget: SymbolDefinition | undefined;
       if (site.callForm === 'constructor') {
         const classDef = resolveInheritanceBaseInScope(
           site.inScope,
@@ -257,6 +265,10 @@ export function emitFreeCallFallback(
                 : options.constructorCallTargetsClass === true
                   ? globalClass
                   : pickConstructorOrClass(globalClass, workspaceIndex, scopes, site.arity);
+            if (fnDef !== undefined) {
+              fnDefFromGlobalNameFallback = true;
+              globalFallbackVetoTarget = globalClass;
+            }
           }
         }
       }
@@ -582,7 +594,6 @@ export function emitFreeCallFallback(
       // visibility rules forbid (below), and every edge that survives is
       // emitted with `GLOBAL_NAME_FALLBACK_REASON` at 0.5 rather than
       // masquerading as `import-resolved` at 0.85 (see the emit site).
-      let fnDefFromGlobalNameFallback = false;
       if (fnDef === undefined && options.allowGlobalFallback === true) {
         fnDef = pickUniqueGlobalCallable(
           site.name,
@@ -607,6 +618,7 @@ export function emitFreeCallFallback(
           options.conversionOnlyArgTypePrefixes,
         );
         fnDefFromGlobalNameFallback = fnDef !== undefined;
+        if (fnDef !== undefined) globalFallbackVetoTarget = fnDef;
       }
       if (fnDefFromGlobalNameFallback && fnDef !== undefined) {
         // An explicit named import cannot bind a declaration proven private
@@ -614,9 +626,10 @@ export function emitFreeCallFallback(
         // reappear as a name guess to a class member or nested function.
         // Unknown export evidence (e.g. dynamic module exports) keeps the
         // existing fallback behavior.
+        const vetoCandidate = globalFallbackVetoTarget ?? fnDef;
         const importsPrivateDeclaration =
-          fnDef.filePath !== parsed.filePath &&
-          fnDef.isExported === false &&
+          vetoCandidate.filePath !== parsed.filePath &&
+          vetoCandidate.isExported === false &&
           parsed.parsedImports.some(
             (imported) =>
               (imported.kind === 'named' || imported.kind === 'alias') &&
@@ -626,7 +639,7 @@ export function emitFreeCallFallback(
           importsPrivateDeclaration ||
           options.isGlobalNameFallbackPlausible?.({
             callerParsed: parsed,
-            candidate: fnDef,
+            candidate: vetoCandidate,
             parsedFileOf: parsedFileByPath(),
             sourceTextOf: options.sourceTextOf,
             site: {

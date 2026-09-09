@@ -97,6 +97,16 @@ describe('shared path arithmetic', () => {
 });
 
 describe('Go: isGlobalNameFallbackPlausible', () => {
+  it('allows a qualified pkg.Export() that reached the guess tier', () => {
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('b/caller.go', [namedImport('example.com/mod/a')]),
+        candidate: mkCandidate('a/helper.go', 'Export'),
+        site: { rawQualifiedName: 'a.Export' },
+      }),
+    ).toBe(true);
+  });
+
   it('allows an external test package to dot-import exported production functions', () => {
     const callerParsed = mkCaller('foo/caller_test.go', [
       { kind: 'wildcard', targetRaw: 'example.com/mod/foo' },
@@ -421,6 +431,27 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
+  it('REFUSES a crate:: import that names the same module path in another workspace crate', () => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: { name: 'helper' },
+        callerParsed: mkCaller('crates/a/src/caller.rs', [
+          namedImport('crate::tools::helper', 'helper'),
+        ]),
+        candidate: mkCandidate('crates/b/src/tools.rs', 'helper'),
+      }),
+    ).toBe(false);
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: { name: 'helper' },
+        callerParsed: mkCaller('crates/a/src/caller.rs', [
+          namedImport('crate::tools::helper', 'helper'),
+        ]),
+        candidate: mkCandidate('crates/a/src/tools.rs', 'helper'),
+      }),
+    ).toBe(true);
+  });
+
   it('allows an item whose `use` names the ITEM rather than only its module', () => {
     // A bare call exercises the import matcher, not the qualified-site bypass.
     const candidate = mkCandidate('src/user.rs', 'build_user');
@@ -720,6 +751,22 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/b.rb', [namedImport('Billing', 'Billing')]),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Class'),
+      }),
+    ).toBe(true);
+  });
+
+  it('allows a class-owned method when the caller REOPENS the class', () => {
+    const klass = {
+      type: 'Class',
+      qualifiedName: 'Invoice',
+      nodeId: 'def:Invoice',
+    } as unknown as SymbolDefinition;
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/models/invoice_reporting.rb', [], [], [klass]),
+        candidate: mkCandidate('app/models/invoice.rb', 'Invoice#total', 'def:Invoice'),
+        parsedFileOf: ownerFile('def:Invoice', 'Class'),
+        sourceTextOf: () => 'class Invoice\n  def report; total; end\nend\n',
       }),
     ).toBe(true);
   });

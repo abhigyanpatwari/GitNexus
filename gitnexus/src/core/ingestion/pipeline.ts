@@ -17,6 +17,7 @@
 
 import { createKnowledgeGraph } from '../graph/graph.js';
 import type { KnowledgeGraph } from '../graph/types.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -538,8 +539,8 @@ export function collectResolvedCalleeNames(
   nodes: Pick<KnowledgeGraph, 'getNode'>,
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const out = new Map<string, Set<string>>();
-  edges.forEachRelationshipFields((sourceId, targetId, type) => {
-    if (type !== 'CALLS') return;
+  edges.forEachRelationshipFields((sourceId, targetId, type, _confidence, reason) => {
+    if (type !== 'CALLS' || reason === GLOBAL_NAME_FALLBACK_REASON) return;
     const name = nodes.getNode(targetId)?.properties.name;
     if (typeof name !== 'string' || name === '') return;
     let names = out.get(sourceId);
