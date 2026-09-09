@@ -195,6 +195,11 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert containment["env"] == {
         "GITNEXUS_REQUIRE_BWRAP_CANARY": "1",
         "GITNEXUS_REQUIRE_CLAUDE_CANARY": "1",
+        # This job is the only place with bubblewrap, the pinned runtime and a
+        # built GitNexus together, so it is where the offline sweep runs with
+        # nothing provisioning-stubbed. Pinned here so the gate cannot be
+        # dropped and leave the sweep silently running the stubbed path.
+        "GITNEXUS_REQUIRE_FULL_SWEEP": "1",
     }
     assert containment["timeout-minutes"] == 20
     assert containment_node_setup["with"] == {
@@ -239,6 +244,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "tests/test_proposer_sandbox.py",
         "tests/test_workflow_bench_sessions.py",
         "tests/test_ce_plugin_runtime.py",
+        # The offline sweep, run here with nothing stubbed: this job is the only
+        # one carrying bubblewrap, the pinned runtime and a built GitNexus.
+        "tests/test_offline_sweep_integration.py",
         "-q",
     ]
     bwrap_canary_marker = re.compile(

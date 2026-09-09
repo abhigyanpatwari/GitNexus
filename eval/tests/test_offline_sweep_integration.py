@@ -26,6 +26,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import os
+import shutil
+
 import pytest
 
 from workflow_bench import oracle_assets, runner
@@ -33,6 +36,14 @@ from workflow_bench.mock_provider import MockProvider, Reply
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude.py"
 ARMS = ("ce_review", "review", "candidate_review")
+
+# When set, the sweep runs with NOTHING provisioning-stubbed: real bubblewrap
+# containment, the real pinned runtime mounts, and the real sanitized graph
+# build. The named CI job installs all three, so a missing one there is a
+# regression rather than an unsupported machine - it FAILS instead of quietly
+# degrading to the stubbed path, which is the whole point of the gate.
+FULL_SWEEP_ENV = "GITNEXUS_REQUIRE_FULL_SWEEP"
+FULL_SWEEP = os.environ.get(FULL_SWEEP_ENV) == "1"
 
 # The review output and the hidden labels are DELIBERATELY different shapes -
 # the labels carry line_start/line_end and no recommendation. Only a real run
@@ -104,6 +115,17 @@ def bench(tmp_path: Path):
 
 
 def _stub_provisioning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replace what this machine cannot supply - and nothing else.
+
+    Under FULL_SWEEP nothing is replaced: the runtime mounts and the graph are
+    built for real, so the sweep exercises containment and provisioning too.
+    """
+
+    if FULL_SWEEP:
+        if shutil.which("bwrap") is None:
+            pytest.fail(f"{FULL_SWEEP_ENV}=1 but bubblewrap is absent")
+        return
+
     monkeypatch.setattr(runner, "trusted_gitnexus_runtime_mounts", lambda: ())
 
     def materialize(worktree, *, sanitized_head=None, **_kwargs):
@@ -163,11 +185,14 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
             "runner", "--tasks", str(bench.tasks), "--arms", *ARMS,
             "--runs", "1", "--workers", "1", "--out", str(bench.out),
             "--base-url", provider.base_url, "--anthropic-api-key", "offline",
-            "--claude-bin", str(FAKE_CLI), "--unsafe-no-bwrap", "--model", "mock-model",
+            "--claude-bin", str(FAKE_CLI),
+            *([] if FULL_SWEEP else ["--unsafe-no-bwrap"]),
+            "--model", "mock-model",
             "--ce-plugin-dir", str(bench.plugin), "--ce-plugin-version", "0.0.0-fixture",
             "--candidate-overlay", str(bench.overlay),
         ])
-        monkeypatch.delenv("CI", raising=False)  # --unsafe-no-bwrap is forbidden under CI
+        if not FULL_SWEEP:
+            monkeypatch.delenv("CI", raising=False)  # --unsafe-no-bwrap is forbidden under CI
         try:
             code = runner.main()
         except SystemExit as exc:

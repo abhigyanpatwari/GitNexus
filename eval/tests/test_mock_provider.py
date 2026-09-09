@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 import urllib.request
+from pathlib import Path
+
+import pytest
 
 from workflow_bench.mock_provider import MockProvider, Reply
 from workflow_bench.provider_usage import (
@@ -131,7 +137,6 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
     exactly the span this exercises.
     """
 
-    import shutil
 
     import yaml
 
@@ -191,3 +196,50 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
     assert usage.cache_write_input_tokens == 1_000
     assert usage.ordinary_input_tokens == 2_000
     assert usage.complete, "a run that cannot interpret its own usage measured nothing"
+
+
+def test_probe_what_identity_the_real_cli_actually_sends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An experiment, not an assertion: which fields could correlate a request to a cell?
+
+    Per-cell usage attribution is unbuilt because one proxy serves the whole
+    sweep, so anything read from the proxy environment is identical for every
+    request. Attribution needs something that travels WITH the request, and
+    what the Claude Code CLI actually sends is not documented anywhere I can
+    check - guessing it is how the last three accounting bugs happened.
+
+    So this drives the REAL pinned CLI against the mock and prints the
+    identity-bearing fields that arrive. It asserts only that a request was
+    made; the value is the recorded evidence, which the job log preserves.
+    """
+
+    claude = os.environ.get("CLAUDE_CANARY_BIN")
+    if not claude or not Path(claude).exists():
+        pytest.skip("no pinned Claude CLI here; the containment job supplies CLAUDE_CANARY_BIN")
+
+    with MockProvider(default=Reply(text="ok")) as provider:
+        subprocess.run(
+            [claude, "-p", "--input-format", "text", "--output-format", "stream-json", "--verbose"],
+            input=b"say ok",
+            capture_output=True,
+            timeout=120,
+            env={
+                **os.environ,
+                "ANTHROPIC_BASE_URL": provider.base_url,
+                "ANTHROPIC_API_KEY": "offline-probe",
+                "HOME": str(tmp_path),
+            },
+        )
+
+    assert provider.requests, "the real CLI never reached the mock provider"
+    request = provider.requests[0]
+    interesting = {
+        "header:" + name: value
+        for name, value in request.headers.items()
+        if any(k in name.lower() for k in ("session", "user", "trace", "request-id", "conversation", "metadata"))
+    }
+    interesting.update(
+        {f"body:{key}": request.body[key] for key in ("metadata", "user", "session_id") if key in request.body}
+    )
+    print("\nIDENTITY FIELDS THE REAL CLI SENDS:")
+    print("  body keys:", sorted(request.body))
+    print("  candidate correlators:", interesting or "NONE — per-cell attribution needs another mechanism")
