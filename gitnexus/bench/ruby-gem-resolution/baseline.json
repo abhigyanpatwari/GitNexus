@@ -1,0 +1,49 @@
+{
+  "_notes": "Synthetic Ruby manifest + ScopeResolver gate for #3096. Shape/fingerprints are exact; timings use min of 9 after 2 warmups. Scaling budgets are per import/project (4x workload normalized to 1), below the 4 expected from quadratic growth. Dense adds 8 -> 128 unrelated Gemfile declarations per project while keeping queries fixed. Absolute ceilings leave OS/filesystem headroom; they are not performance promises. Parser, DB, real gems and full-pipeline memory remain covered elsewhere, not by this microbenchmark.",
+  "shapes": {
+    "small": {
+      "projects": 32,
+      "declarations_per_project": 12,
+      "scopes": 64,
+      "files": 131,
+      "imports": 8192,
+      "resolved": 3264,
+      "fingerprint": "e37f4c81bc7f4bc8416732d0e8ebb00e16743b08a44646e1a6fa45c04283cfb3"
+    },
+    "large": {
+      "projects": 128,
+      "declarations_per_project": 12,
+      "scopes": 256,
+      "files": 515,
+      "imports": 32768,
+      "resolved": 13056,
+      "fingerprint": "2524217404b1d4cf118e7d13895d757c821029bf59230b6c3cc7ce2fc2cf5dd2"
+    },
+    "dense": {
+      "projects": 32,
+      "declarations_per_project": 132,
+      "scopes": 64,
+      "files": 131,
+      "imports": 8192,
+      "resolved": 3264,
+      "fingerprint": "e37f4c81bc7f4bc8416732d0e8ebb00e16743b08a44646e1a6fa45c04283cfb3"
+    }
+  },
+  "budgets": {
+    "load_scaling_ratio": 2.2,
+    "resolve_scaling_ratio": 2.2,
+    "dependency_count_ratio": 2,
+    "small_load_ms": 80,
+    "small_resolve_ms": 120,
+    "dense_load_ms": 160
+  },
+  "_measured": {
+    "environment": "macOS arm64 / Node 25.8.0, 2026-09-10",
+    "small_load_ms": 5.385,
+    "small_resolve_ms": 16.837,
+    "large_load_ms": 21.151,
+    "large_resolve_ms": 70.497,
+    "dense_load_ms": 9.948,
+    "dense_resolve_ms": 16.888
+  }
+}
