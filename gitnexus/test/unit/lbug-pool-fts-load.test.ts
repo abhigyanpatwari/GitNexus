@@ -41,6 +41,8 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
+  isStorageVersionMismatchError: vi.fn(() => false),
+  STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 
 const { closeLbug, ensureVectorExtension, executeParameterized, initLbug, initLbugWithDb } =
