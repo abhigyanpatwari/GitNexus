@@ -870,6 +870,11 @@ jobs:
     timeout-minutes: 20
     env:
       GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+      # This job installs bubblewrap, the pinned runtime and a built GitNexus,
+      # so the offline sweep runs here with nothing provisioning-stubbed: real
+      # containment, real mounts, real graph. A missing piece fails the job
+      # rather than silently falling back to the stubbed path.
+      GITNEXUS_REQUIRE_FULL_SWEEP: '1'
       GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -928,7 +933,9 @@ jobs:
           tests/test_process_control.py
           tests/test_proposer_sandbox.py
           tests/test_workflow_bench_sessions.py
-          tests/test_ce_plugin_runtime.py -q
+          tests/test_ce_plugin_runtime.py
+          tests/test_offline_sweep_integration.py
+          tests/test_mock_provider.py -q
         working-directory: eval
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while

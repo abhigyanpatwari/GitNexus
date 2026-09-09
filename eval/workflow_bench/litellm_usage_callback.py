@@ -42,8 +42,8 @@ def canonical_provider(label, call_type):  # noqa: ANN001, ANN201
     above for why this is a copy rather than an import.
     """
 
-    if label == "openai" and call_type and "responses" in call_type:
-        return "openai-responses"
+    if label == "openai":
+        return "litellm-normalized"
     if label == "anthropic":
         return "anthropic"
     return None
@@ -104,11 +104,10 @@ class ProviderUsageLogger(CustomLogger):
                 "requested_model": kwargs.get("model"),
                 "actual_model": getattr(response_obj, "model", None),
                 # Two fields, because they answer different questions. The raw
-                # label is what LiteLLM said; "provider" is the adapter key,
-                # which needs the call type too - LiteLLM reports "openai" for
-                # both Chat Completions and Responses and those report usage
-                # differently. Unresolvable stays None so normalize_usage
-                # refuses rather than guessing token semantics.
+                # label is what LiteLLM said; "provider" is the adapter key for
+                # the object actually in hand, which is always LiteLLM's own
+                # normalised shape here. An unrecognised label stays None so
+                # normalize_usage refuses rather than guessing token semantics.
                 "provider_label": provider_label,
                 "provider": canonical_provider(provider_label, call_type),
                 "response_id": getattr(response_obj, "id", None),
