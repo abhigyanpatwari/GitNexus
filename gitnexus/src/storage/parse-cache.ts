@@ -735,7 +735,21 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v93: Zig call captures inside a comptime-false branch carry
 // `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
 // `staticGated` and the CALLS edge a BOOLEAN column.
-const SCHEMA_BUMP = 93;
+// v94: Objective-C now elides bare, file-scope macro markers before parsing.
+// A warm v93 cache can retain error-recovered trees and provider facts that
+// omit Objective-C declarations following markers such as RCT_EXTERN_C_END.
+// v95: Objective-C header classification no longer treats framework `#import`
+// alone as Objective-C syntax. A warm v94 cache can replay Objective-C worker
+// output for a C++ header during `--force`, even though the current classifier
+// routes that same header through the C++ provider.
+// v96: Objective-C macro-marker preprocessing recognizes all C preprocessing
+// whitespace before a directive or bare marker. A warm v95 cache can retain
+// error-recovered facts for sources that begin those lines with form feed or
+// vertical tab.
+// v97: Objective-C macro-marker preprocessing recognizes comment-prefixed
+// directives and rejects invalid numeric marker prefixes. A warm v96 cache can
+// replay error-recovered facts from the previous normalization behavior.
+const SCHEMA_BUMP = 97;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -4,14 +4,13 @@
  * used by both chunker.ts and structural-extractor.ts.
  */
 
-import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   createParserForLanguage,
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
-import { getProvider } from '../ingestion/languages/index.js';
+import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
 
 const parserCache = new Map<string, any>();
 
@@ -20,7 +19,10 @@ const parserCache = new Map<string, any>();
  * Returns null if language is unavailable or parsing fails.
  */
 export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
-  const language = getLanguageFromFilename(filePath);
+  // Same classifier as ingest. Filename-only maps `.h` → C++, so Objective-C
+  // headers (and method snippets from those headers) would parse with the
+  // wrong grammar and miss class_interface / protocol_declaration / methods.
+  const language = getLanguageForFileContent(filePath, content);
   if (!language) return null;
   if (!isLanguageAvailable(language)) return null;
 
@@ -100,6 +102,9 @@ export const findDeclarationNode = (root: any): any | null => {
     'struct_item',
     'interface_declaration',
     'interface_definition',
+    'protocol_declaration', // Objective-C protocol
+    'class_interface', // Objective-C class, category, or extension
+    'class_implementation', // Objective-C implementation
     'enum_declaration',
     'enum_item',
     'type_declaration', // Go: type X struct

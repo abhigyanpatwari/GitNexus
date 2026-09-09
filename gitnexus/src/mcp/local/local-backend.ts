@@ -328,6 +328,8 @@ export const VALID_NODE_LABELS = new Set([
   'Folder',
   'Function',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Method',
   'CodeElement',
@@ -4249,7 +4251,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
@@ -4404,7 +4407,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
