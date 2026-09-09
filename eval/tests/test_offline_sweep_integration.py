@@ -55,6 +55,13 @@ FINDING = {
 }
 LABEL = {"id": "f1", "severity": "high", "category": "correctness",
          "path": "src/sum.js", "line_start": 1, "line_end": 1}
+SECOND_LABEL = {"id": "f2", "severity": "high", "category": "correctness",
+                "path": "src/scale.js", "line_start": 1, "line_end": 1}
+SECOND_FINDING = {
+    "id": "f2", "severity": "high", "category": "correctness", "path": "src/scale.js",
+    "line": 1, "end_line": 1, "blocking": True, "scenario": "review-defect",
+    "evidence": "export const twice = (n) => n + 2;", "recommendation": "use n * 2",
+}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -69,6 +76,7 @@ def bench(tmp_path: Path):
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "sum.js").write_text("export const total = (a, b) => a - b;\n")
+    (repo / "src" / "scale.js").write_text("export const twice = (n) => n + 2;\n")
     _git(repo, "init", "-q", ".")
     _git(repo, "config", "user.email", "t@t")
     _git(repo, "config", "user.name", "t")
@@ -80,6 +88,9 @@ def bench(tmp_path: Path):
     oracles.mkdir()
     (oracles / "review-fixture-defect.labels.json").write_text(
         json.dumps({"schema_version": 1, "findings": [LABEL]})
+    )
+    (oracles / "review-fixture-second.labels.json").write_text(
+        json.dumps({"schema_version": 1, "findings": [SECOND_LABEL]})
     )
 
     tasks = tmp_path / "tasks.yaml"
@@ -94,6 +105,18 @@ def bench(tmp_path: Path):
         "    oracle:\n"
         '      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"\n'
         "      files: [{ source: review-fixture-defect.labels.json, target: review-labels.json }]\n"
+        # A SECOND task, because the thing a cross-task scheduler changes is
+        # invisible with one: waves are per-task, so a single task cannot show
+        # ordering, packing, or a breaker that spans a task boundary.
+        "  - id: review-fixture-second\n"
+        "    class: review-defect\n"
+        f"    repo: {repo}\n"
+        f"    ref: {sha}\n"
+        "    prompt: Review the scaling helper and report actionable defects.\n"
+        '    verify: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"\n'
+        "    oracle:\n"
+        '      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"\n'
+        "      files: [{ source: review-fixture-second.labels.json, target: review-labels.json }]\n"
     )
 
     plugin = tmp_path / "ce-plugin"
@@ -157,7 +180,14 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
         runner, "capture_task_oracles",
         lambda tasks, root=bench.oracles: oracle_assets.capture_task_oracles(tasks, root=root),
     )
-    review = json.dumps({"schema_version": 1, "verdict": verdict, "findings": findings})
+    def review_for(body: str) -> str:
+        # Per task: the second task's defect is in another file, so replying
+        # with the first task's finding would score it wrong. A cross-task
+        # scheduler makes which task a request belongs to load-bearing.
+        chosen = findings
+        if findings and "scaling helper" in body:
+            chosen = [SECOND_FINDING if f is FINDING else f for f in findings]
+        return json.dumps({"schema_version": 1, "verdict": verdict, "findings": chosen})
 
     class Scripted(MockProvider):
         def next_reply(self) -> Reply:
@@ -174,7 +204,7 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
                       if invoke_skill else []),
                     {"name": "Write", "input": {
                         "file_path": target.group(1) if target else "/tmp/unused.json",
-                        "content": review}},
+                        "content": review_for(body)}},
                 ],
                 input_tokens=2_000, output_tokens=300,
                 cache_read_input_tokens=7_000, cache_creation_input_tokens=1_000,
@@ -202,8 +232,8 @@ def _sweep(bench, monkeypatch: pytest.MonkeyPatch, findings: list[dict], verdict
     return code, rows, provider
 
 
-def _row(rows: list[dict], arm: str) -> dict:
-    return next(r for r in rows if r["arm"] == arm)
+def _row(rows: list[dict], arm: str, task: str = "review-fixture-defect") -> dict:
+    return next(r for r in rows if r["arm"] == arm and r["task"] == task)
 
 
 def test_a_correct_review_scores_and_the_sweep_exits_clean(bench, monkeypatch) -> None:
@@ -212,8 +242,10 @@ def test_a_correct_review_scores_and_the_sweep_exits_clean(bench, monkeypatch) -
     code, rows, provider = _sweep(bench, monkeypatch, [FINDING], "request_changes")
 
     assert code in (None, 0), f"sweep did not succeed: {code}"
-    assert len(rows) == len(ARMS)
-    assert len(provider.requests) == len(ARMS), "each cell must reach the provider once"
+    tasks = {"review-fixture-defect", "review-fixture-second"}
+    assert len(rows) == len(ARMS) * len(tasks)
+    assert len(provider.requests) == len(ARMS) * len(tasks), "each cell must reach the provider once"
+    assert {r["task"] for r in rows} == tasks, "both tasks must have run"
 
     row = _row(rows, "review")
     assert row["ok"] is True and row["resolved"] is True
@@ -223,6 +255,14 @@ def test_a_correct_review_scores_and_the_sweep_exits_clean(bench, monkeypatch) -
     # The provider's own numbers survived the CLI, the parser and the row.
     assert row["cache_read_input_tokens"] == 7_000
     assert row["input_tokens"] == 2_000
+
+    # Each task scored against ITS OWN oracle. This is what a cross-task
+    # scheduler puts at risk: interleaving cells from different tasks means a
+    # mis-routed context or artifact scores one task against another's labels,
+    # and both would still look "green" per row.
+    second = _row(rows, "review", task="review-fixture-second")
+    assert second["resolved"] is True and second["review_f1"] == 1.0
+    assert second["review_artifact"] == "review-fixture-second-review-run0.review.json"
 
     for name in ("results.jsonl", "report.md", "promotion.json"):
         assert (bench.out / name).is_file(), f"{name} was not written"
