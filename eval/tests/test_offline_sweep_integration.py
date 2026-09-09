@@ -338,9 +338,11 @@ def test_a_review_that_never_invoked_its_skill_is_not_a_measurement(bench, monke
     assert row["error_kind"] == "skill-not-invoked"
     assert code not in (None, 0), "the sweep must not report success on unusable evidence"
 
-    # The row still carries its own score - the artifact was well formed - but
-    # aggregate() now keeps it out of the arm's QUALITY median, since a cell
-    # whose skill never ran did not measure that skill. It still counts for
-    # cost, because the session ran and was billed.
+    # The row still carries its own score - the artifact was well formed - and
+    # aggregate() DOES count it in the arm's quality median (the KNOWN GAP noted
+    # above aggregate(); test_workflow_bench pins the resulting 0.5). Filtering
+    # it out of the median alone inverted a promotion, because valid_runs and
+    # excluded_runs kept counting it. It counts for cost either way: the session
+    # ran and was billed.
     assert row["review_weighted_f1"] == 1.0
     assert row["review_evidence_valid"] is True

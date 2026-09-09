@@ -136,11 +136,16 @@ def main() -> int:
         # A measured zero is not the same as unmeasured; the parent rejects a
         # collapsed cost, so report a real one.
         "total_cost_usd": 0.42,
+        # Forward exactly the fields the provider reported. Defaulting the
+        # absent ones to 0 fabricated a complete measurement out of an
+        # incomplete reply - and worse, it made the parent's own completeness
+        # check (runner_sessions.USAGE_FIELDS / well_formed) unfirable from any
+        # offline test, because the stand-in always satisfied it.
         "usage": {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
-            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            field: usage[field]
+            for field in ("input_tokens", "output_tokens",
+                          "cache_read_input_tokens", "cache_creation_input_tokens")
+            if field in usage
         },
     })
     return 0

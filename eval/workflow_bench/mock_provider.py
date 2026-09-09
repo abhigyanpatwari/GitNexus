@@ -57,8 +57,11 @@ class Reply:
     # forgets to script usage still cannot mistake silence for a measurement.
     input_tokens: int = 11
     output_tokens: int = 7
-    cache_read_input_tokens: int = 0
-    cache_creation_input_tokens: int = 0
+    # None means the field is OMITTED from the reply, which is not the same as
+    # reporting 0. A consumer that cannot tell those apart is the bug this
+    # harness exists to catch, so the mock has to be able to script absence.
+    cache_read_input_tokens: int | None = 0
+    cache_creation_input_tokens: int | None = 0
     status_code: int = 200
     error_body: dict[str, Any] | None = None
 
@@ -132,12 +135,13 @@ def _content_blocks(reply: Reply) -> list[dict[str, Any]]:
 
 
 def _anthropic_usage(reply: Reply) -> dict[str, int]:
-    return {
+    usage = {
         "input_tokens": reply.input_tokens,
         "output_tokens": reply.output_tokens,
         "cache_read_input_tokens": reply.cache_read_input_tokens,
         "cache_creation_input_tokens": reply.cache_creation_input_tokens,
     }
+    return {field: value for field, value in usage.items() if value is not None}
 
 
 def _anthropic_message(reply: Reply) -> dict[str, Any]:
@@ -176,7 +180,11 @@ def _anthropic_stream_events(reply: Reply) -> list[tuple[str, dict[str, Any]]]:
 def _openai_response(reply: Reply) -> dict[str, Any]:
     """OpenAI Responses shape: input_tokens is the WHOLE, cache fields subsets."""
 
-    total_input = reply.input_tokens + reply.cache_read_input_tokens + reply.cache_creation_input_tokens
+    # An omitted cache field contributes nothing to the Responses total; that
+    # is arithmetic, not a claim the value was measured as zero.
+    cache_read = reply.cache_read_input_tokens or 0
+    cache_write = reply.cache_creation_input_tokens or 0
+    total_input = reply.input_tokens + cache_read + cache_write
     return {
         "id": "resp_mock",
         "object": "response",
@@ -214,8 +222,8 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
             "output_tokens": reply.output_tokens,
             "total_tokens": total_input + reply.output_tokens,
             "input_tokens_details": {
-                "cached_tokens": reply.cache_read_input_tokens,
-                "cache_write_tokens": reply.cache_creation_input_tokens,
+                "cached_tokens": cache_read,
+                "cache_write_tokens": cache_write,
             },
             "output_tokens_details": {"reasoning_tokens": 0},
         },

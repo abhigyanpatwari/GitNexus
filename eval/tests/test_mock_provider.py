@@ -198,7 +198,7 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
     assert usage.complete, "a run that cannot interpret its own usage measured nothing"
 
 
-def test_probe_what_identity_the_real_cli_actually_sends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_probe_what_identity_the_real_cli_actually_sends(tmp_path: Path) -> None:
     """An experiment, not an assertion: which fields could correlate a request to a cell?
 
     Per-cell usage attribution is unbuilt because one proxy serves the whole

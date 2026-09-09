@@ -158,3 +158,21 @@ def test_the_write_boundary_refuses_the_workspace_and_permits_the_artifact(clone
     assert not list(artifacts.glob("*.tmp.*")), "the rename landed rather than a copy"
     # The workspace did not move.
     assert protected.read_text() == before, "the read-only workspace was modified"
+
+
+def test_a_reply_missing_cache_usage_is_refused_not_zero_filled(clone: Path) -> None:
+    """An omitted cache field must not arrive as a measured zero.
+
+    The parent already demands all four USAGE_FIELDS before it calls a session
+    measured (runner_sessions.well_formed). The stand-in used to default the
+    absent ones to 0, which both fabricated a complete measurement AND made
+    that parent guard unfirable from any offline test - it was always
+    satisfied. Scripting the absence is what proves the guard still fires.
+    """
+
+    partial = Reply(input_tokens=2_000, output_tokens=300, cache_read_input_tokens=None)
+    with MockProvider(default=partial) as provider:
+        record = _session(clone, provider)
+
+    assert record["ok"] is False, "an incomplete usage report is not a usable measurement"
+    assert record["error_kind"] == "session-error"
