@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.6';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.7';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -1541,6 +1541,31 @@ export function buildObjectiveCScopeCaptures(
     },
   ];
 
+  const seenDeclarations = new Set<string>();
+  for (const container of facts.containers) {
+    const kind = declarationCaptureKind(container.kind);
+    if (kind === undefined) continue;
+    if (!seenDeclarations.add(`${kind}:${container.qualifiedName}`)) continue;
+    captures.push(
+      declarationMatch(
+        kind,
+        container.kind === 'category' || container.kind === 'extension'
+          ? (container.categoryName ?? container.name)
+          : container.name,
+        container.qualifiedName,
+        container.startLine,
+        container.endLine,
+      ),
+    );
+  }
+
+  for (const fn of facts.functions) {
+    if (!seenDeclarations.add(`function:${fn.qualifiedName}`)) continue;
+    captures.push(
+      declarationMatch('function', fn.name, fn.qualifiedName, fn.startLine, fn.endLine),
+    );
+  }
+
   for (const imp of facts.imports) {
     const anchor = captureAt('@import.statement', imp.raw, imp.startLine, imp.endLine);
     const sourceText = isSystemHeaderSpelling(imp.raw) ? imp.raw : imp.targetRaw;
@@ -1557,4 +1582,30 @@ export function buildObjectiveCScopeCaptures(
   }
 
   return captures;
+}
+
+function declarationCaptureKind(
+  kind: ObjCContainerKind,
+): 'class' | 'protocol' | 'category' | undefined {
+  if (kind === 'extension') return undefined;
+  return kind;
+}
+
+function declarationMatch(
+  kind: 'class' | 'protocol' | 'category' | 'function',
+  name: string,
+  qualifiedName: string,
+  startLine: number,
+  endLine: number,
+): CaptureMatch {
+  const anchor = captureAt(`@declaration.${kind}`, name, startLine, endLine);
+  return {
+    [`@declaration.${kind}`]: anchor,
+    '@declaration.name': { ...anchor, name: '@declaration.name', text: name },
+    '@declaration.qualified_name': {
+      ...anchor,
+      name: '@declaration.qualified_name',
+      text: qualifiedName,
+    },
+  };
 }

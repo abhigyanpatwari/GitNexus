@@ -25,6 +25,9 @@ import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import { populateObjectiveCCompilationUnitSiblings } from '../../src/core/ingestion/languages/objective-c/compilation-unit-siblings.js';
+import type { ScopeResolutionIndexes } from '../../src/core/ingestion/model/scope-resolution-indexes.js';
 
 const FIXTURE = `#import "SYModuleCaller.h"
 #include "SYModuleSupport.h"
@@ -590,6 +593,69 @@ static int helper(void) { return 1; }
         new Set(['src/Foundation/Foundation.h']),
       ),
     ).toBeNull();
+  });
+
+  it('emits declaration captures so the shared extractor populates localDefs', () => {
+    const parsed = extractParsedFile(objectiveCProvider, FIXTURE, 'SYModuleCaller.m');
+    expect(parsed).toBeDefined();
+    const qualifiedNames = parsed!.localDefs.map((def) => def.qualifiedName);
+    expect(qualifiedNames).toEqual(
+      expect.arrayContaining([
+        'objc:protocol:SYModuleRunnable',
+        'objc:class:SYBaseCaller',
+        'objc:class:SYModuleCaller',
+        'objc:category:SYModuleCaller:Tracing',
+        objcFunctionQualifiedName('SYModuleCompute', 'internal', 'SYModuleCaller.m'),
+      ]),
+    );
+    expect(parsed!.localDefs.some((def) => def.type === 'Method')).toBe(false);
+  });
+
+  it('shares provider-extracted header/implementation defs, not file-static functions', () => {
+    const headerPath = 'Classes/Foo.h';
+    const implPath = 'Classes/Foo.m';
+    const header = extractParsedFile(
+      objectiveCProvider,
+      ['@interface Foo', '@end', 'int FooShared(void);', ''].join('\n'),
+      headerPath,
+    );
+    const impl = extractParsedFile(
+      objectiveCProvider,
+      [
+        '#import "Foo.h"',
+        '@implementation Foo',
+        '@end',
+        'int FooShared(void) { return 1; }',
+        'static int hiddenHelper(void) { return 0; }',
+        '',
+      ].join('\n'),
+      implPath,
+    );
+    expect(header).toBeDefined();
+    expect(impl).toBeDefined();
+    const parsedFiles = [header!, impl!];
+    const indexes = {
+      moduleScopes: {
+        byFilePath: new Map(parsedFiles.map((file) => [file.filePath, file.moduleScope])),
+      },
+      imports: new Map(),
+      bindings: new Map(),
+      bindingAugmentations: new Map(),
+    } as unknown as ScopeResolutionIndexes;
+    populateObjectiveCCompilationUnitSiblings(parsedFiles, indexes);
+
+    expect(
+      indexes.bindingAugmentations.get(impl!.moduleScope)?.get('FooShared')?.[0]?.def.filePath,
+    ).toBe(headerPath);
+    expect(
+      indexes.bindingAugmentations.get(header!.moduleScope)?.get('hiddenHelper'),
+    ).toBeUndefined();
+    expect(
+      impl!.localDefs.some(
+        (def) =>
+          def.qualifiedName === objcFunctionQualifiedName('hiddenHelper', 'internal', implPath),
+      ),
+    ).toBe(true);
   });
 
   it('extracts first-version Objective-C semantic facts and unresolved evidence', () => {

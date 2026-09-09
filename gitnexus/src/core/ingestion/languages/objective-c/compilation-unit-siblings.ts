@@ -34,7 +34,7 @@ export function populateObjectiveCCompilationUnitSiblings(
     const parsed = byPath.get(fact.filePath);
     if (parsed !== undefined) {
       for (const container of fact.containers) {
-        appendGroup(groups, `type:${typeVisibilityName(container)}`, parsed);
+        appendGroup(groups, `type:${typeVisibilityKey(container)}`, parsed);
       }
     }
     for (const fn of fact.functions) {
@@ -56,7 +56,7 @@ export function populateObjectiveCCompilationUnitSiblings(
           if (internalFunctionIds.has(def.nodeId) || isInternalObjectiveCFunctionDef(def)) {
             continue;
           }
-          const name = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+          const name = siblingBindingName(def);
           if (name === '') continue;
           const bucket = getAugmentationBucket(augmentations, receiverModule, name);
           if (bucket.some((binding) => binding.def.nodeId === def.nodeId)) continue;
@@ -77,11 +77,21 @@ function compilationUnitStemKey(filePath: string): string | undefined {
   return `stem:${dir}/${base.slice(0, -ext.length)}`;
 }
 
-function typeVisibilityName(container: ObjCContainerFact): string {
+/** Class/category/extension files share one group; a same-named protocol does not. */
+function typeVisibilityKey(container: ObjCContainerFact): string {
   if (container.kind === 'category' || container.kind === 'extension') {
-    return container.hostClass ?? container.name;
+    return `class:${container.hostClass ?? container.name}`;
   }
-  return container.name;
+  return `${container.kind}:${container.name}`;
+}
+
+function siblingBindingName(def: SymbolDefinition): string {
+  const qualified = def.qualifiedName ?? '';
+  if (qualified.startsWith('objc:')) {
+    const colon = qualified.lastIndexOf(':');
+    return colon === -1 ? qualified : qualified.slice(colon + 1);
+  }
+  return qualified.split('.').pop() ?? qualified;
 }
 
 function extensionOf(fileName: string): string {

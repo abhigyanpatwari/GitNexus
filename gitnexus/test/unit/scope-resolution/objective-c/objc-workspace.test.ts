@@ -334,6 +334,60 @@ describe('Objective-C compilation-unit siblings', () => {
     expect(objectiveCScopeResolver.isFileLocalDef?.(staticDef)).toBe(true);
     expect(objectiveCScopeResolver.isFileLocalDef?.(exportedDef)).toBe(false);
   });
+
+  it('does not mix a class and a same-named protocol into one visibility group', () => {
+    const classPath = 'Headers/Foo.h';
+    const protocolPath = 'Protocols/Foo.h';
+    setObjectiveCFileFacts({
+      ...staleFacts(classPath),
+      containers: [
+        {
+          kind: 'class',
+          declarationRole: 'interface',
+          name: 'Foo',
+          qualifiedName: 'objc:class:Foo',
+          nodeId: 'Class:objc:class:Foo',
+          label: 'Class',
+          filePath: classPath,
+          startLine: 1,
+          endLine: 3,
+          protocols: [],
+        },
+      ],
+    });
+    setObjectiveCFileFacts({
+      ...staleFacts(protocolPath),
+      containers: [
+        {
+          kind: 'protocol',
+          declarationRole: 'interface',
+          name: 'Foo',
+          qualifiedName: 'objc:protocol:Foo',
+          nodeId: 'Protocol:objc:protocol:Foo',
+          label: 'Protocol',
+          filePath: protocolPath,
+          startLine: 1,
+          endLine: 3,
+          protocols: [],
+        },
+      ],
+    });
+    const parsedFiles = [
+      parsed(classPath, 'module:class', def('class-only', classPath, 'classOnly'), {
+        kind: 'objective-c',
+        facts: getObjectiveCFileFacts(classPath),
+      }),
+      parsed(protocolPath, 'module:proto', def('proto-only', protocolPath, 'protoOnly'), {
+        kind: 'objective-c',
+        facts: getObjectiveCFileFacts(protocolPath),
+      }),
+    ];
+    const indexes = siblingIndexes(parsedFiles);
+    populateObjectiveCCompilationUnitSiblings(parsedFiles, indexes);
+
+    expect(indexes.bindingAugmentations.get('module:proto')?.get('classOnly')).toBeUndefined();
+    expect(indexes.bindingAugmentations.get('module:class')?.get('protoOnly')).toBeUndefined();
+  });
 });
 
 function def(nodeId: string, filePath: string, name: string): SymbolDefinition {
