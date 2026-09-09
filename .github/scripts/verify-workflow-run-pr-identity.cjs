@@ -1,13 +1,17 @@
 // Resolve the open PR for a trusted workflow_run consumer.
 //
-// This job only runs for fork PRs. GitHub leaves workflow_run.pull_requests[]
-// empty on that path, and GET /repos/{base}/commits/{sha}/pulls is also empty
-// because the fork head commit is not in the base repo's commit graph. The
-// authoritative lookup is GET /repos/{base}/pulls?head={owner}:{branch}&state=open
-// using workflow_run.head_repository + workflow_run.head_branch (server-controlled).
+// Shared by commit-fork-prebuilds.yml and pr-autofix-publish.yml.
+// workflow_run.pull_requests[] is empty on fork PRs, and
+// GET /repos/{base}/commits/{sha}/pulls is also empty because the fork head
+// commit is not in the base repo's commit graph. The authoritative lookup is
+// GET /repos/{base}/pulls?head={owner}:{branch}&state=open using
+// workflow_run.head_repository + workflow_run.head_branch (server-controlled).
+// That same query works for same-repo PRs (owner is the base repo owner).
 //
 // The current PR tip may have moved past the SHA the producer built; that is
-// not an identity failure — force-with-lease against the built SHA handles it.
+// not an identity failure — the caller decides whether to lease-push or just
+// comment. Set SCHEMA_PATTERN to the artifact schema allowlist (defaults to
+// the tree-sitter prebuild schema).
 'use strict';
 
 const fs = require('node:fs');
@@ -37,13 +41,25 @@ function forkHeadOwner(headRepo) {
   return headRepo.slice(0, slash);
 }
 
-function allowlistMetadata(raw) {
+function compileSchemaPattern(value) {
+  if (value instanceof RegExp) return value;
+  if (typeof value === 'string' && value.length > 0) {
+    try {
+      return new RegExp(value);
+    } catch {
+      throw new Error('SCHEMA_PATTERN is not a valid regular expression');
+    }
+  }
+  return SCHEMA_PATTERN;
+}
+
+function allowlistMetadata(raw, schemaPattern) {
   const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('metadata.json must be an object');
   }
   return {
-    schema: allowlistField('schema', parsed.schema, SCHEMA_PATTERN),
+    schema: allowlistField('schema', parsed.schema, compileSchemaPattern(schemaPattern)),
     pr_number: allowlistField('pr_number', parsed.pr_number, IDENTITY_PATTERNS.pr_number),
     head_sha: allowlistField('head_sha', parsed.head_sha, IDENTITY_PATTERNS.head_sha),
     head_ref: allowlistField('head_ref', parsed.head_ref, IDENTITY_PATTERNS.head_ref),
@@ -73,7 +89,7 @@ function verifyArtifactAgainstWorkflowRun(meta, authority) {
     );
   }
   if (meta.base_repo !== authority.base_repo) {
-    throw new Error('Artifact base_repo does not match $GITHUB_REPOSITORY — refusing to deliver.');
+    throw new Error('Artifact base_repo does not match $GITHUB_REPOSITORY — refusing.');
   }
   if (meta.head_ref !== authority.head_branch) {
     throw new Error(
@@ -102,8 +118,8 @@ function matchOpenPullsFromForkHead(pulls, { headRepo, headBranch, baseRepo }) {
   });
 }
 
-function resolveVerifiedPullRequest({ meta, authority, pulls }) {
-  const cleanMeta = allowlistMetadata(meta);
+function resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern }) {
+  const cleanMeta = allowlistMetadata(meta, schemaPattern);
   const cleanAuthority = allowlistAuthority(authority);
   verifyArtifactAgainstWorkflowRun(cleanMeta, cleanAuthority);
 
@@ -176,8 +192,9 @@ function listOpenPullsByHead({ ghRepo, headOwner, headBranch, runGh }) {
 }
 
 function main() {
+  const schemaPattern = compileSchemaPattern(process.env.SCHEMA_PATTERN);
   const raw = fs.readFileSync(process.env.META_PATH, 'utf8');
-  const meta = allowlistMetadata(raw);
+  const meta = allowlistMetadata(raw, schemaPattern);
   const authority = allowlistAuthority({
     head_sha: process.env.WF_HEAD_SHA,
     head_repo: process.env.WF_HEAD_REPO,
@@ -189,7 +206,7 @@ function main() {
     headOwner: forkHeadOwner(authority.head_repo),
     headBranch: authority.head_branch,
   });
-  const verified = resolveVerifiedPullRequest({ meta, authority, pulls });
+  const verified = resolveVerifiedPullRequest({ meta, authority, pulls, schemaPattern });
   if (verified.branch_moved) {
     console.log(
       `PR head moved to ${verified.current_head_sha}; delivering against built SHA ${verified.head_sha} (lease will refuse if the branch moved).`,
@@ -226,6 +243,7 @@ module.exports = {
   SCHEMA_PATTERN,
   IDENTITY_PATTERNS,
   allowlistField,
+  compileSchemaPattern,
   allowlistMetadata,
   allowlistAuthority,
   forkHeadOwner,

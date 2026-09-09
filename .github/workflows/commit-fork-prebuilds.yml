@@ -159,6 +159,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           META_PATH: meta-in/metadata.json
+          SCHEMA_PATTERN: '^gitnexus\.ts-prebuild/v[0-9]+$'
           WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           WF_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           WF_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}

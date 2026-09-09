@@ -5,11 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Identity gate for commit-fork-prebuilds.yml. The production failure on
- * fork PR #3179 was: workflow_run.pull_requests[] is empty (GitHub design)
- * and GET /repos/{base}/commits/{sha}/pulls is also empty (fork commit is
- * not in the base graph). The verifier must use pulls?head=owner:branch
- * and must not treat a gh failure as "no PR".
+ * Identity gate for commit-fork-prebuilds.yml and pr-autofix-publish.yml.
+ * The production failure on fork PR #3179 was: workflow_run.pull_requests[]
+ * is empty (GitHub design) and GET /repos/{base}/commits/{sha}/pulls is also
+ * empty (fork commit is not in the base graph). The verifier must use
+ * pulls?head=owner:branch and must not treat a gh failure as "no PR".
  */
 const requireCjs = createRequire(import.meta.url);
 const SCRIPT = path.resolve(
@@ -20,10 +20,15 @@ const WORKFLOW = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../.github/workflows/commit-fork-prebuilds.yml',
 );
+const AUTOFIX_WORKFLOW = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../../../.github/workflows/pr-autofix-publish.yml',
+);
+const AUTOFIX_SCHEMA = /^gitnexus\.pr-autofix\/v[0-9]+$/;
 
 const mod = requireCjs(SCRIPT) as {
   allowlistField: (key: string, value: unknown, pattern: RegExp) => string;
-  allowlistMetadata: (raw: unknown) => Record<string, string>;
+  allowlistMetadata: (raw: unknown, schemaPattern?: RegExp) => Record<string, string>;
   forkHeadOwner: (headRepo: string) => string;
   resolveVerifiedPullRequest: (input: {
     meta: unknown;
@@ -34,6 +39,7 @@ const mod = requireCjs(SCRIPT) as {
       base_repo: string;
     };
     pulls: unknown;
+    schemaPattern?: RegExp;
   }) => {
     pr_number: string;
     head_ref: string;
@@ -179,6 +185,26 @@ describe('resolveVerifiedPullRequest', () => {
     ).toThrow(/head_ref/);
   });
 
+  it('accepts gitnexus.pr-autofix metadata when SCHEMA_PATTERN is the autofix schema', () => {
+    const verified = mod.resolveVerifiedPullRequest({
+      meta: { ...META, schema: 'gitnexus.pr-autofix/v1', changed_lines: 12 },
+      authority: AUTHORITY,
+      pulls: [pull()],
+      schemaPattern: AUTOFIX_SCHEMA,
+    });
+    expect(verified.pr_number).toBe('3179');
+  });
+
+  it('rejects an autofix schema against the default prebuild allowlist', () => {
+    expect(() =>
+      mod.resolveVerifiedPullRequest({
+        meta: { ...META, schema: 'gitnexus.pr-autofix/v1' },
+        authority: AUTHORITY,
+        pulls: [pull()],
+      }),
+    ).toThrow(/metadata.schema failed allowlist/);
+  });
+
   it('ignores a PR from the same owner that targets a different repo or branch', () => {
     expect(() =>
       mod.resolveVerifiedPullRequest({
@@ -256,5 +282,26 @@ describe('commit-fork-prebuilds.yml contract', () => {
 
   it('does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)', () => {
     expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
+  });
+});
+
+describe('pr-autofix-publish.yml contract', () => {
+  const workflow = readFileSync(AUTOFIX_WORKFLOW, 'utf8');
+
+  it('runs the tested verifier and keys the lookup on workflow_run.head_branch', () => {
+    expect(workflow).toContain('.github/scripts/verify-workflow-run-pr-identity.cjs');
+    expect(workflow).toContain('github.event.workflow_run.head_branch');
+    expect(workflow).toContain('WF_HEAD_BRANCH');
+    expect(workflow).toContain('gitnexus\\.pr-autofix');
+  });
+
+  it('does not call commits/{sha}/pulls (empty for fork SHAs; comments may name it)', () => {
+    expect(workflow).not.toMatch(/gh api .*commits\/[^/\s]+\/pulls/);
+  });
+
+  it('does not post sticky comments or check runs unless identity verify succeeded', () => {
+    expect(workflow).toMatch(/steps\.verify\.outcome == 'success'/);
+    expect(workflow).toContain('steps.verify.outputs.pr_number');
+    expect(workflow).toContain('steps.verify.outputs.head_sha');
   });
 });
