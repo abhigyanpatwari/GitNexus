@@ -512,23 +512,21 @@ class HealthResolver {
   save = async () => true;
 }`,
     });
+    const graphStartLine: Record<string, number> = { health: 4, save: 6 };
     const startLines: Array<{ name: string; startLine: number }> = [];
     const run: CypherExecutor = async (_query, params = {}) => {
-      startLines.push({ name: String(params.name), startLine: Number(params.startLine) });
-      return [
-        {
-          uid: `sym:${String(params.name)}`,
-          name: String(params.name),
-          filePath: 'src/health.resolver.ts',
-        },
-      ];
+      const name = String(params.name);
+      const startLine = Number(params.startLine);
+      startLines.push({ name, startLine });
+      if (graphStartLine[name] !== startLine) return [];
+      return [{ uid: `sym:${name}`, name, filePath: 'src/health.resolver.ts' }];
     };
 
     const contracts = await new GraphqlExtractor().extract(run, root, repo);
 
     expect(startLines).toEqual([
       { name: 'health', startLine: 4 },
-      { name: 'save', startLine: 7 },
+      { name: 'save', startLine: 6 },
     ]);
     expect(contracts.map((contract) => contract.contractId)).toEqual([
       'graphql::query::health',
@@ -646,5 +644,93 @@ export const CycleDocument = \`query Cycle { cycle }\${CycleFragmentDoc}\`;
     );
 
     expect(contracts).toEqual([]);
+  });
+
+  it('fails closed when sibling ${FragmentDoc} names resolve to two static sources (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `query GetWidget { getWidget }`,
+      'src/generated.ts': `
+{
+  const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+}
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { name }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget { getWidget { ...widget } }
+    \${WidgetFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('fails closed when a FragmentDoc name has a static and a dynamic declarator (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `query GetWidget { getWidget }`,
+      'src/generated.ts': `
+{
+  const WidgetFragmentDoc = \`\${foo.bar}\`;
+}
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget { getWidget { ...widget } }
+    \${WidgetFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('decodes escape_sequence nodes while inlining ${FragmentDoc} (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
   });
 });

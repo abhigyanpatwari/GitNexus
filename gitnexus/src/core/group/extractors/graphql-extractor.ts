@@ -92,12 +92,47 @@ function unquote(text: string): string | null {
   return value.includes('${') ? null : value;
 }
 
-/** Graph Method/Property `startLine` is the 0-based tree-sitter row (see line-base.ts). */
+const SIMPLE_TEMPLATE_ESCAPES: Record<string, string> = {
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '0': '\0',
+  "'": "'",
+  '"': '"',
+  '\\': '\\',
+  '`': '`',
+};
+
+/** Graph Method `startLine` is the 0-based wrapper row (see line-base.ts). */
 function providerMemberStartLine(member: Parser.SyntaxNode): number {
-  if (member.type === 'public_field_definition') {
-    return (member.childForFieldName('value') ?? member).startPosition.row;
-  }
+  // Class-field arrows are `@declaration.property`; parse-worker falls back to
+  // the `public_field_definition` wrapper (decorator row when it is a child),
+  // not the initializer. Do not probe the `value` child.
   return member.startPosition.row;
+}
+
+/** tree-sitter `escape_sequence.text` is the source spelling (`\\n`), not the JS value. */
+function decodeEscapeSequence(text: string): string | null {
+  if (!text.startsWith('\\') || text.length < 2) return null;
+  const escaped = text.slice(1);
+  if (escaped.length === 1) return SIMPLE_TEMPLATE_ESCAPES[escaped] ?? escaped;
+  if (escaped[0] === 'x' && /^[0-9A-Fa-f]{2}$/.test(escaped.slice(1))) {
+    return String.fromCharCode(Number.parseInt(escaped.slice(1), 16));
+  }
+  if (escaped.startsWith('u{') && escaped.endsWith('}')) {
+    const hex = escaped.slice(2, -1);
+    if (!/^[0-9A-Fa-f]{1,6}$/.test(hex)) return null;
+    const codePoint = Number.parseInt(hex, 16);
+    if (codePoint > 0x10ffff) return null;
+    return String.fromCodePoint(codePoint);
+  }
+  if (escaped[0] === 'u' && /^[0-9A-Fa-f]{4}$/.test(escaped.slice(1))) {
+    return String.fromCharCode(Number.parseInt(escaped.slice(1), 16));
+  }
+  return null;
 }
 
 function substitutionIdentifier(substitution: Parser.SyntaxNode): string | null {
@@ -112,11 +147,19 @@ function uniqueStaticSource(
   resolving: Set<string>,
 ): string | null {
   if (resolving.has(name) || resolving.size >= MAX_GRAPHQL_TRAVERSAL_DEPTH) return null;
+  const values = declarators.get(name) ?? [];
+  if (values.length === 0) return null;
   resolving.add(name);
   const sources = new Set<string>();
-  for (const value of declarators.get(name) ?? []) {
+  for (const value of values) {
     const source = staticGraphqlSource(value, declarators, resolving);
-    if (source !== null) sources.add(source);
+    // A dynamic or unprovable sibling makes the name ambiguous — do not pick
+    // the one static spelling and ignore the rest.
+    if (source === null) {
+      resolving.delete(name);
+      return null;
+    }
+    sources.add(source);
   }
   resolving.delete(name);
   return sources.size === 1 ? [...sources][0]! : null;
@@ -129,8 +172,12 @@ function interpolatedTemplateSource(
 ): string | null {
   let out = '';
   for (const child of template.namedChildren) {
-    if (child.type === 'string_fragment' || child.type === 'escape_sequence') {
+    if (child.type === 'string_fragment') {
       out += child.text;
+    } else if (child.type === 'escape_sequence') {
+      const decoded = decodeEscapeSequence(child.text);
+      if (decoded === null) return null;
+      out += decoded;
     } else if (child.type === 'template_substitution') {
       const name = substitutionIdentifier(child);
       if (!name) return null;
