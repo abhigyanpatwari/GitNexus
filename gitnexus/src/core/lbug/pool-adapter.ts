@@ -22,7 +22,9 @@ import { closeQueryResults } from './query-result-utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import {
   createLbugDatabase,
+  isStorageVersionMismatchError,
   isWalCorruptionError,
+  STORAGE_VERSION_MISMATCH_SUGGESTION,
   toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
@@ -241,10 +243,16 @@ function ensureIdleTimer(): void {
         // the repo may no longer be idle by the time this actually runs.
         // Re-check inside the lock, right before closing, instead of trusting
         // the snapshot taken above (second review finding on PR #3187).
+        // Also re-check pinnedRepos: the outer loop's check above is the
+        // same kind of stale snapshot — pinRepo() can run while this
+        // callback is queued behind an in-progress initLbug, and closing a
+        // repo the caller just pinned would drop that lease entirely
+        // (review finding on PR #3189).
         withPoolLock(async () => {
           const current = pool.get(repoId);
           if (
             current &&
+            !pinnedRepos.has(repoId) &&
             Date.now() - current.lastUsed > IDLE_TIMEOUT_MS &&
             current.checkedOut === 0
           ) {
@@ -807,6 +815,17 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         break;
       } catch (err: any) {
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        // Not retryable: the on-disk file's storage version doesn't change
+        // on its own, so looping LOCK_RETRY_ATTEMPTS times here would just
+        // repeat the same native exception. Fail immediately with an
+        // actionable message instead of GitNexus's generic "unavailable,
+        // retry later" (review finding on PR #3189 — this became reachable
+        // once the pinned engine version can trail behind whatever version
+        // last wrote an index, e.g. after downgrading the dependency).
+        if (isStorageVersionMismatchError(lastError)) {
+          throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${lastError.message})`);
+        }
 
         if (isWalCorruptionError(lastError)) {
           try {

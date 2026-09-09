@@ -49,12 +49,14 @@ import {
   HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
   isOpenRetryExhausted,
+  isStorageVersionMismatchError,
   isWalCorruptionError,
   bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
   resolveNativeSafeStorageDir,
+  STORAGE_VERSION_MISMATCH_SUGGESTION,
   WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
@@ -795,8 +797,30 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
       allowQuarantine: false,
     });
 
-    const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
-    const usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+    let usable: Awaited<ReturnType<typeof ensureReadOnlyConnectionUsable>>;
+    try {
+      const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+      // The storage-version check isn't necessarily enforced by the native
+      // engine until the first real query runs (ensureReadOnlyConnectionUsable's
+      // own probe query) — openLbugConnection alone can succeed on a
+      // mismatched file. Wrap both.
+      usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+    } catch (err) {
+      // Not retryable: the on-disk file's storage version doesn't change on
+      // its own, so withLbugDb's retry loop (which only handles
+      // isDbBusyError) would just repeat the same native exception. Fail
+      // immediately with an actionable message instead (review finding on
+      // PR #3189 — this became reachable once the pinned engine version can
+      // trail behind whatever version last wrote an index, e.g. after
+      // downgrading the dependency). Mirrors the pool-adapter.ts check for
+      // the same error, on the separate open path /api/graph and /api/query
+      // actually use (withLbugDb, not the pool).
+      if (isStorageVersionMismatchError(err)) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${msg})`);
+      }
+      throw err;
+    }
     db = usable.db;
     conn = usable.conn;
     currentDbReadOnly = true;
