@@ -62,7 +62,7 @@ export function resolveRubyImportTarget(
     config === null || config === undefined ? undefined : findRubyResolutionScope(config, fromFile);
   if (scope !== undefined) {
     const localGemTarget = resolveLocalGemTarget(targetRaw, scope, allFilePaths);
-    if (localGemTarget !== null) return localGemTarget;
+    if (localGemTarget !== undefined) return localGemTarget;
     if (matchesRequirePrefix(targetRaw, scope.externalRequirePrefixes)) return null;
   }
 
@@ -127,12 +127,16 @@ function matchesRequirePrefix(targetRaw: string, prefixes: ReadonlySet<string>):
   return requirePrefixCandidates(targetRaw).some((candidate) => prefixes.has(candidate));
 }
 
-/** Resolve a path/gemspec-backed gem against its declared Ruby load roots. */
+/**
+ * Resolve a path/gemspec-backed gem against its declared Ruby load roots.
+ * `undefined` means no local-gem prefix matched; `null` means one matched but
+ * none of its declared load roots contained the target.
+ */
 function resolveLocalGemTarget(
   targetRaw: string,
   scope: RubyResolutionScope,
   allFilePaths: ReadonlySet<string>,
-): string | null {
+): string | null | undefined {
   for (const prefix of requirePrefixCandidates(targetRaw)) {
     const loadRoots = scope.localLoadRootsByPrefix.get(prefix);
     if (loadRoots === undefined) continue;
@@ -146,8 +150,13 @@ function resolveLocalGemTarget(
       const rbFile = `${base}.rb`;
       if (allFilePaths.has(rbFile)) return rbFile;
     }
+
+    // The prefix is owned by a known local gem. If its declared roots do not
+    // contain the target, repository-wide suffix matching would fabricate an
+    // edge to an unrelated file.
+    return null;
   }
-  return null;
+  return undefined;
 }
 
 /**

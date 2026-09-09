@@ -119,6 +119,23 @@ describe('Ruby dependency resolution config (#2966)', () => {
     expect(config?.scopesByDirectory.get('')?.externalRequirePrefixes).not.toContain('my_engine');
   });
 
+  it('does not suffix-fallback when a local gem has no in-repository load root', () => {
+    const repo = makeRepo();
+    writeFileSync(
+      join(repo, 'local_widget.gemspec'),
+      ["spec.name = 'local_widget'", "spec.require_paths = ['../outside']"].join('\n'),
+    );
+    const files = new Set(['lib/feature.rb', 'lib/main.rb']);
+    const config = loadRubyResolutionConfig(repo);
+
+    expect(config?.scopesByDirectory.get('')?.localLoadRootsByPrefix.get('local_widget')).toEqual(
+      [],
+    );
+    expect(
+      resolveRubyImportTarget('local_widget/feature', 'lib/main.rb', files, config),
+    ).toBeNull();
+  });
+
   it('recognizes the Gemfile hashrocket path syntax as local', () => {
     const repo = makeRepo();
     mkdirSync(join(repo, 'engines', 'my_engine'), { recursive: true });
