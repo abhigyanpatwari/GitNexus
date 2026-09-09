@@ -1,0 +1,203 @@
+.github/workflows/ci-tests.yml
+  s_2fc6857ad45390::t_17744ce575f59e 590-601,760-766
+.github/workflows/gitnexus-skill-evolution.yml
+  s_2fc6857ad45390::t_5cc8f1460fd751 66-68,70-76,99,101,179-185
+README.md
+  s_2fc6857ad45390::t_206e7deac7e04c 29,105-108
+eval/.gitignore
+  s_2fc6857ad45390::t_b355876f9d50e1 17
+eval/tests/bench_fixtures.py
+  s_2fc6857ad45390::t_1b0333c706d34c 1-75
+eval/tests/test_comparator_reuse.py
+  s_2fc6857ad45390::t_2beeb59dee4af8 1-467
+eval/tests/test_evolve.py
+  s_2fc6857ad45390::t_4e13bfd94a5335 12,19,22,25,29,670-790,1051-1071,1268-1422
+eval/tests/test_measure_evolution_cost.py
+  s_2fc6857ad45390::t_9a435f7463862e 1-122
+eval/tests/test_process_control.py
+  s_2fc6857ad45390::t_3100d021df077d 82,86,107-108
+eval/tests/test_proposer_sandbox.py
+  s_2fc6857ad45390::t_76ef41588abf27 36,40,48,55,59-60,66-76,82-84,87,90-106,189-197,901,909-915,918,924-926,938-945,1216,1229-1232,1409-1413,1462,1472-1566
+eval/tests/test_provider_usage.py
+  s_2fc6857ad45390::t_36ff35aa48bdfd 1-132
+eval/tests/test_provider_usage_capture.py
+  s_2fc6857ad45390::t_3020bb5054123d 1-313
+eval/tests/test_reuse_round_trip.py
+  s_2fc6857ad45390::t_839ac4d9b13383 1-268
+eval/tests/test_review_corpus.py
+  s_2fc6857ad45390::t_e00d33f960c49f 35-38
+eval/tests/test_review_scoring.py
+  s_2fc6857ad45390::t_30098ebf9c58c0 328-357
+eval/tests/test_runner_hardening.py
+  s_2fc6857ad45390::t_818c8819e2da01 6,13,612-672,1067-1103
+eval/tests/test_sanitized_graph.py
+  s_2fc6857ad45390::t_84ee8342f8a3f6 215-230
+eval/tests/test_session_progress.py
+  s_2fc6857ad45390::t_a6ac7187bbe95f 14,328-372
+eval/tests/test_sweep_finalization.py
+  s_2fc6857ad45390::t_db1a3d64f8046c 1-279
+eval/tests/test_workflow_bench.py
+  s_2fc6857ad45390::t_8b0fa8e859806e 8,14-18,21-22,24-25,28,31,36,79-87,270-272,540-1054
+eval/tests/test_workflow_bench_sessions.py
+  s_2fc6857ad45390::t_1d2ac7144e4d60 15,17,123-127,132,1257,1273-1277,1308-1398,1449-1479
+eval/workflow_bench/README.md
+  s_2fc6857ad45390::t_aad70c7e5399b1 152-155,173-202,311-316,406-409
+eval/workflow_bench/comparator_reuse.py
+  s_2fc6857ad45390::t_cc7b97f2d1bcb8 1-604
+eval/workflow_bench/evolve.py
+  s_2fc6857ad45390::t_b6ad41c3a4a2fd 51,702,704-712,745-776,781-783,870-982,1037,1088-1089,1107-1112,1368-1374,1413-1414,1448-1460,1498-1505,1508-1517,1587,1603,1675-1687,1698-1702,1741-1750,1758,1765-1766,1772-1781,1793-1799
+eval/workflow_bench/litellm_usage_callback.py
+  s_2fc6857ad45390::t_73566f8f286a8b 1-136
+eval/workflow_bench/measure_evolution_cost.py
+  s_2fc6857ad45390::t_07663aee365bdf 1-311
+eval/workflow_bench/model_gateway.py
+  s_2fc6857ad45390::t_d6a7578ad3907e 34-35,178-180,204-212,220,224-239,335-345
+eval/workflow_bench/proposer_sandbox.py
+  s_2fc6857ad45390::t_1482625d91a94a 25-33,130-135,139-156,158,160-162,164,231-234,255,258-264,577-581,587
+eval/workflow_bench/provider_usage.py
+  s_2fc6857ad45390::t_fe2e7eb60a042f 1-188
+eval/workflow_bench/review_scoring.py
+  s_2fc6857ad45390::t_6ee0ad80847608 15-17,118-130,133-140,142-144
+eval/workflow_bench/run-evolution.sh
+  s_2fc6857ad45390::t_8c31a226b6fbf3 18-19,198-209,237-240
+eval/workflow_bench/runner.py
+  s_2fc6857ad45390::t_0f65e5a991695e 60-70,102-108,114,125,143,245-247,587-590,592-593,601-602,613-615,670-681,690,692,699,705-708,764-810,893-899,926,940-944,949-1142,1176-1177,1202-1209,1314,1354,1357,1544-1563,1565-1567,1625-1740,1745-1753,1771-1776,1779-1783,2015-2023,2151-2388,2445-2453,2455-2459,2462-2484,2486-2584,2587-2651,2669-2671,2673-2674,2707-2714,2718-2719,2721-2722
+eval/workflow_bench/runner_artifacts.py
+  s_2fc6857ad45390::t_e2e4085026e055 220,222-228,231-238,342-400,420
+eval/workflow_bench/runner_sessions.py
+  s_2fc6857ad45390::t_c84334c57c75e4 60-77,198-200
+eval/workflow_bench/sanitized_graph.py
+  s_2fc6857ad45390::t_2837bf8d3d811c 27,363-364,366-372,375-381,384-385
+eval/workflow_bench/session_durations.json
+  s_2fc6857ad45390::t_4717b23325f169 1-33
+eval/workflow_bench/simulate_sweep.py
+  s_2fc6857ad45390::t_a7571360ba85c0 1-747
+eval/workflow_bench/tasks.review.scenarios.yaml
+  s_2fc6857ad45390::t_6e9d83e05aa6d1 12,14,20-22,31,42,53,65,77
+eval/workflow_bench/tasks.scenarios.yaml
+  s_2fc6857ad45390::t_0ab52de5c01ec1 47-51
+gitnexus-web/src/services/backend-client.ts
+  s_2fc6857ad45390::t_a222c8a9a248b6 1013-1019
+gitnexus/bench/analyze-phase-breakdown.md
+  s_2fc6857ad45390::t_125e955c28ff09 1-285
+gitnexus/bench/parse-dispatch-rounds/baselines.json
+  s_2fc6857ad45390::t_a4b5a766fd94ea 1-31
+gitnexus/bench/parse-dispatch-rounds/measure.mjs
+  s_2fc6857ad45390::t_ef6ce9c7478e1c 1-279
+gitnexus/bench/zig-cross-file-resolution/baseline.json
+  s_2fc6857ad45390::t_ce3ea32e48f4d9 1-16
+gitnexus/bench/zig-cross-file-resolution/measure.mjs
+  s_2fc6857ad45390::t_b9c61cda4da9fe 1-138
+gitnexus/package-lock.json
+  s_2fc6857ad45390::t_394930346d9be7 1891-1893,2997-2999
+gitnexus/scripts/cross-platform-shard.ts
+  s_2fc6857ad45390::t_6d63a2dc3384ba 39-41,52-60
+gitnexus/src/cli/analyze-config.ts
+  s_2fc6857ad45390::t_e208b62d4d94aa 34-37,161-162,165-171
+gitnexus/src/core/auto-sync/starter.ts
+  s_2fc6857ad45390::t_896056e11905e2 7,635
+gitnexus/src/core/git-ref.ts
+  s_2fc6857ad45390::t_8ea3d0365cdbab 1-128
+gitnexus/src/core/ingestion/call-extractors/zig-static-gating.ts
+  s_2fc6857ad45390::t_384e86a2b93bec 16,20-23
+gitnexus/src/core/ingestion/languages/zig/scope-resolver.ts
+  s_2fc6857ad45390::t_2eb319d0f8a2ae 22,71-72
+gitnexus/src/core/ingestion/languages/zig/workspace-static-gating.ts
+  s_2fc6857ad45390::t_990709066c4560 1-106
+gitnexus/src/core/ingestion/parsing-processor.ts
+  s_2fc6857ad45390::t_5063f35acacee8 10,210-215,231-234,241-277,342
+gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts
+  s_2fc6857ad45390::t_1385f8d98505a7 23,72-73,120-121,220-225,229-251,593-600,602-608,611,613-628,859-936,946,1023,1027,1034,1042-1046,1050,1053-1060,1070,1078-1256,1351-1352,1372,1375,1381-1391,1393-1394,1397-1399,1402-1406,1414-1420
+gitnexus/src/core/ingestion/pipeline-phases/parse-round-budget.ts
+  s_2fc6857ad45390::t_ea1b3e51419104 1-63
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_2fc6857ad45390::t_3d77f20e401ba8 696-710
+gitnexus/src/core/ingestion/scope-resolution/pipeline/phase.ts
+  s_2fc6857ad45390::t_3baf3832a90c2d 148
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_2fc6857ad45390::t_e7d1fb52cfd641 642-646
+gitnexus/src/core/ingestion/workers/parse-worker.ts
+  s_2fc6857ad45390::t_9e4d65bd2e0895 1546-1549,1560-1567
+gitnexus/src/core/ingestion/workers/worker-pool.ts
+  s_2fc6857ad45390::t_a7ca351dd66a57 99-111,114-143,478-480,658,702-714,919-923,925,930,933,1325-1341,1343-1362,1380-1381,1404-1422,1424-1427,1429,1431-1451,1453,1481,1582-1594,1670-1682,2049-2050,2052,2107,2423-2431,2434
+gitnexus/src/core/search/fts-indexes.ts
+  s_2fc6857ad45390::t_6404233e0c5707 338-350
+gitnexus/src/server/analyze-job.ts
+  s_2fc6857ad45390::t_c6d3666a3fc535 71-77,104-116,122,140
+gitnexus/src/server/analyze-launch.ts
+  s_2fc6857ad45390::t_91a391626ac959 25,53-66,98-138,159,220-226,240-241,258-267,361-367,411
+gitnexus/src/server/analyze-worker-ipc.ts
+  s_2fc6857ad45390::t_89d228f10221c9 47-51,62,83-86
+gitnexus/src/server/api.ts
+  s_2fc6857ad45390::t_0e28a01364fea2 60,68-71,1527,1559-1579,1605-1609,1637-1639,1643-1645,1657,1671-1684
+gitnexus/src/server/git-clone.ts
+  s_2fc6857ad45390::t_ccac8af22498e1 14,88-122,128-146,154-176,372-467,470-492,576-603,605,613,615,626,635,637-643,645
+gitnexus/src/storage/file-lock.ts
+  s_2fc6857ad45390::t_39e5fb0e7097bd 6,49-51,74
+gitnexus/src/storage/parsedfile-store.ts
+  s_2fc6857ad45390::t_a5590dc2818e9c 172,249-285,292-294,317-330,336-338
+gitnexus/src/storage/v8-sidecar.ts
+  s_2fc6857ad45390::t_b6043b9d133558 188-203,311-316,318-319,322-330,333
+gitnexus/src/utils/process-identity.ts
+  s_2fc6857ad45390::t_f8d8bf64fab1e9 41-59
+gitnexus/test/fixtures/lang-resolution/zig-static-gating/src/main.zig
+  s_2fc6857ad45390::t_deb6ab4353639f 12-14,36,169-180,224-230,235-254
+gitnexus/test/fixtures/lang-resolution/zig-static-gating/src/other.zig
+  s_2fc6857ad45390::t_5e9485acc9c060 1
+gitnexus/test/integration/cli/update-notice.test.ts
+  s_2fc6857ad45390::t_2c96ff6ea1341f 130-136,140-141,143-149,179-180,182,184-186,191
+gitnexus/test/integration/parse-impl-dispatch-rounds.test.ts
+  s_2fc6857ad45390::t_ec8a9afbadeac8 1-225
+gitnexus/test/integration/parse-impl-env-reads.test.ts
+  s_2fc6857ad45390::t_4da896baa35e84 53-59,68,78-79,87-90
+gitnexus/test/integration/resolvers/zig-static-gating.test.ts
+  s_2fc6857ad45390::t_200ff5e84573b5 10,13-14,180-182,190,201-253
+gitnexus/test/integration/server-analyze-branch-validation.test.ts
+  s_2fc6857ad45390::t_1cd3ca13633297 1-210
+gitnexus/test/integration/worker-pool.test.ts
+  s_2fc6857ad45390::t_6af27a48afd5f5 17,249-250,795-992,1031-1093
+gitnexus/test/unit/analyze-config.test.ts
+  s_2fc6857ad45390::t_c310d881d09f8d 302-328,424-437
+gitnexus/test/unit/analyze-job.test.ts
+  s_2fc6857ad45390::t_f8934fa330a21d 59-117
+gitnexus/test/unit/analyze-launch-branch-settle.test.ts
+  s_2fc6857ad45390::t_579efa5e029dc9 1-238
+gitnexus/test/unit/analyze-launch-collapse.test.ts
+  s_2fc6857ad45390::t_b62cf8b70ecc0c 173-216
+gitnexus/test/unit/cross-platform-shard.test.ts
+  s_2fc6857ad45390::t_a6f3f46008a087 32-58,78
+gitnexus/test/unit/git-clone.test.ts
+  s_2fc6857ad45390::t_51b5be0b75da4b 18,675-1027,1724-1835
+gitnexus/test/unit/git-ref.test.ts
+  s_2fc6857ad45390::t_c99c90fe5340b0 1-15
+gitnexus/test/unit/parse-impl-warm-cache-parsedfile-coverage.test.ts
+  s_2fc6857ad45390::t_68bda9ae2a17ff 386-403
+gitnexus/test/unit/parse-impl-worker-lazy-cache.test.ts
+  s_2fc6857ad45390::t_64d72c7403d1e2 106-149,287-336
+gitnexus/test/unit/parsedfile-store.test.ts
+  s_2fc6857ad45390::t_98bc52283a8448 89-146
+gitnexus/test/unit/parsing-worker-fallback.test.ts
+  s_2fc6857ad45390::t_fae46052082452 40-41,67-68,119
+gitnexus/test/unit/process-identity.test.ts
+  s_2fc6857ad45390::t_336c656870fafe 7-8,11-24,58-86
+gitnexus/test/unit/skill-evolution-workflow.test.ts
+  s_2fc6857ad45390::t_40e4c62c621c7b 273-275,279,576-596
+gitnexus/test/unit/worker-pool-resilience.test.ts
+  s_2fc6857ad45390::t_6f22ce717be1ec 61,70-73,269-270,279-281,503,508-509,522-523,536-562
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "5435c51d3848bc994ae69695f68f8598d34e62fb",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
