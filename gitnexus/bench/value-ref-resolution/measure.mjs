@@ -31,6 +31,15 @@
  * and finalize are setup. `linear_factor` is `(t_large/t_small) / (N_large/N_small)`:
  * ~1.0 linear, ~4.x quadratic on this 4x step.
  *
+ * A RATIO IS THE ONLY TIMING GATE — no millisecond ceiling, deliberately.
+ * `min_ms` and `us_per_site` are printed for context and nothing compares them
+ * to anything: a wall-clock budget measures the runner, and this repo has been
+ * bitten by that twice already (`bench/callable-value-flow`'s `widening_overhead`
+ * failed at 2.07 and 1.975 against a 1.9 budget on a shared runner while the
+ * code was correct, both times on a sub-11ms measurement). Dividing the large
+ * arm by the small one divides the machine out, which is what
+ * `bench/parse-dispatch-rounds` settled on for the same reason.
+ *
  * A timing gate alone would be satisfied by a fast wrong answer, so the
  * correctness half is exact and comes first: the site/resolved/declined counts
  * per arm, plus an order-independent sha256 over every (site -> resolved target)
@@ -74,7 +83,13 @@ const SMALL_MODULES = 80;
 const LARGE_MODULES = 320;
 /** Registrations per module through the CONTAINER channel. */
 const ACCESSORS_PER_MODULE = 12;
-const REPS = 7;
+/**
+ * Min-of-N, and N is 15 rather than a handful: `bench/import-target` measured
+ * N=5 tripping its own budget about one run in twenty while N=15 held every
+ * language inside a 1.13-1.26x swing, and `bench/parse-dispatch-rounds` uses 15
+ * on the same grounds. The whole run is ~5 s, so the reps are nearly free.
+ */
+const REPS = 15;
 
 /**
  * One module = three files, mirroring `test/fixtures/lang-resolution/zig-idioms/
@@ -228,6 +243,7 @@ function measure(modules) {
 }
 
 const report = { small: measure(SMALL_MODULES), large: measure(LARGE_MODULES) };
+report.reps = REPS;
 report.workload_ratio = LARGE_MODULES / SMALL_MODULES;
 report.scaling_ratio = Number(
   (report.large.min_ms / Math.max(report.small.min_ms, 0.001)).toFixed(3),
@@ -264,20 +280,17 @@ for (const arm of ['small', 'large']) {
       );
     }
   }
-  if (
-    requirePositiveNumber(`${arm}.ms_budget`, baseline[arm].ms_budget) &&
-    report[arm].min_ms > baseline[arm].ms_budget
-  ) {
-    failures.push(`${arm}.min_ms ${report[arm].min_ms} exceeds budget ${baseline[arm].ms_budget}`);
-  }
+  // `min_ms` / `us_per_site` are reported, never gated — see the header.
 }
 if (
-  requirePositiveNumber('linear_scaling_slack', baseline.linear_scaling_slack) &&
-  report.linear_factor > baseline.linear_scaling_slack
+  requirePositiveNumber('linear_scaling_budget', baseline.linear_scaling_budget) &&
+  report.linear_factor > baseline.linear_scaling_budget
 ) {
   failures.push(
-    `linear_factor ${report.linear_factor} exceeds slack ${baseline.linear_scaling_slack} ` +
-      `(runtime ${report.scaling_ratio}x for ${report.workload_ratio}x work)`,
+    `linear_factor ${report.linear_factor} exceeds budget ${baseline.linear_scaling_budget} ` +
+      `(runtime ${report.scaling_ratio}x for ${report.workload_ratio}x work; ` +
+      `~1.0 is linear). Re-run alone on an idle machine before investigating — ` +
+      `this is the only arm a busy runner can move.`,
   );
 }
 

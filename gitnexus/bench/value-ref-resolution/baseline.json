@@ -1,13 +1,15 @@
 {
-  "_comment": "Baselines for bench/value-ref-resolution/measure.mjs --check (#3399). Counts and `fingerprint` are CORRECTNESS gates over a synthetic Zig corpus whose shape is fixed in measure.mjs: `resolved` is every value-ref site resolveValueRefTarget binds, `declined` the two per-module controls it must refuse (a non-callable namespace member `dom_utils.DEFAULT_NS`, and the non-callable bare argument `Bridge(ElementN)`), and `fingerprint` an order-independent sha256 over every (site -> resolved target) pair. Drift in any of them means the resolved target set moved \u2014 a behaviour change to explain, never a number to re-baseline for green CI. Per module: 12 CONTAINER registrations (`ElementN.getJ`), 1 NAMESPACE (`dom_utils.compare`), 1 HUB (`hub.compare`), 1 BARE (`register(onTick)`), and the 2 declines \u2014 17 sites, 15 resolved.",
+  "_what": "Baselines for bench/value-ref-resolution/measure.mjs --check (#3399). Guards the resolved-target SET of `resolveValueRefTarget` and the per-site cost of its four channels across a 4x file-count step, over a synthetic Zig corpus whose shape is fixed in measure.mjs. Per module: 12 CONTAINER registrations (`ElementN.getJ`), 1 NAMESPACE (`dom_utils.compare`), 1 HUB (`hub.compare`), 1 BARE (`register(onTick)`), and 2 declines (a non-callable namespace member `dom_utils.DEFAULT_NS`, a non-callable bare argument `Bridge(ElementN)`) — 17 sites, 15 resolved.",
+
+  "_triage": "READ THIS BEFORE RE-RUNNING. modules, files, value_ref_sites, resolved, declined and fingerprint are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green — drift means the resolved target set moved, which is a behaviour change to explain. linear_scaling_budget is the only timing arm; runner contention dominates it, so re-run alone on an idle machine and read `reps` in the report before investigating. If exactly one arm fails and it is that one, suspect the machine.",
+
   "small": {
     "modules": 80,
     "files": 240,
     "value_ref_sites": 1360,
     "resolved": 1200,
     "declined": 160,
-    "fingerprint": "4ca2933e25cfa9c84518fca6608c9a6f318f81a1c5bad63cb2f09b7394bfb792",
-    "ms_budget": 100
+    "fingerprint": "4ca2933e25cfa9c84518fca6608c9a6f318f81a1c5bad63cb2f09b7394bfb792"
   },
   "large": {
     "modules": 320,
@@ -15,10 +17,21 @@
     "value_ref_sites": 5440,
     "resolved": 4800,
     "declined": 640,
-    "fingerprint": "249266f180388e9f1240a7e81f1141afbc51ef25d5c4b3286a681992dab69e61",
-    "ms_budget": 400
+    "fingerprint": "249266f180388e9f1240a7e81f1141afbc51ef25d5c4b3286a681992dab69e61"
   },
-  "linear_scaling_slack": 1.375,
-  "_linear_scaling_note": "(t_large/t_small)/(320/80). ~1.0 is linear; measured 1.00-1.09 across runs on an M-series laptop, with `us_per_site` flat at 1.4-1.5 between the arms \u2014 per-site cost independent of workspace size is the property this gates. The four resolution channels each consult a wider index than the last, and channel 4 (CONTAINER) reaches `scopes.qualifiedNames`, a workspace-wide index: keyed it is O(1), scanned it is O(files) per site and this factor goes to ~4. Verified load-bearing by making that lookup a scan, which took the factor to 3.7.",
-  "_ms_budget_note": "Timing budgets are deliberately loose (~50x the measured 2ms / 8ms) and exist only to catch an order-of-magnitude regression on a shared CI runner. `linear_scaling_slack` is the gate with teeth."
+
+  "linear_scaling_budget": 1.6,
+  "_linear_scaling_note": "(t_large/t_small)/(320/80) over the per-site resolution loop; ~1.0 is linear. A RATIO rather than a millisecond ceiling, and there is deliberately no ms gate at all: wall-clock measures the runner, and this repo has been bitten twice by a fixed budget (bench/callable-value-flow's widening_overhead failed at 2.07 and 1.975 against 1.9 on a shared runner while the code was correct, both on a sub-11ms measurement). Same reasoning, same shape as bench/parse-dispatch-rounds' pack_scaling_budget. Budget is 1.6 — 1.40x the measured maximum, matching the ~1.5x its siblings use on ratios. What it catches: the four channels each consult a wider index than the last, and channel 4 (CONTAINER) reaches `scopes.qualifiedNames`, a WORKSPACE-WIDE index — keyed it is O(1) per site, scanned it is O(names) per site. Verified load-bearing rather than assumed: replacing `QualifiedNameIndex.get` with a full scan (in gitnexus-shared/dist — the bench resolves the built package, so patching src changes nothing) takes the factor from ~1.0 to 2.07, well clear of this budget. Only 1 of the 17 sites per module reaches that fallback (the `dom_utils.DEFAULT_NS` decline, whose module receiver is not class-like), which is why the signal is 2.07 and not the ~4 a per-site scan on every site would give.",
+
+  "_measured": {
+    "linear_factor": 1.146,
+    "linear_factor_samples": [
+      0.907, 0.969, 0.988, 1.03, 1.043, 1.048, 1.05, 1.051, 1.052, 1.107, 1.123, 1.146
+    ],
+    "small_ms": 2.078,
+    "large_ms_4x": 9.197,
+    "us_per_site": "1.36-1.53 small / 1.37-1.69 large",
+    "reps": 15
+  },
+  "_measured_note": "Maxima over 12 runs on a box that was NOT idle, so the spread is an upper bound on real noise. small_ms / large_ms_4x / us_per_site are recorded for context only — NOTHING gates on them, because an absolute millisecond is exactly the gate this file avoids. `us_per_site` staying flat between the two arms is the same property linear_scaling_budget gates, read directly."
 }
