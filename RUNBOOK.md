@@ -187,6 +187,51 @@ If the error text is `"Only one write transaction at a time is allowed in the sy
 
 ---
 
+## File acquisition/reclaim guard recovery
+
+The portable file-lock backend uses `analyze.lock.guard` beside `analyze.lock`.
+Every acquisition, including an empty slot, exclusively creates the guard before
+inspecting, reclaiming, creating, and verifying the main lock. It removes the
+guard before returning a workload handle or waiting on a live workload holder.
+Linux abstract-socket and Windows named-pipe locking are unchanged.
+
+A stalled or crashed guard owner blocks file acquisition even when its PID is
+dead, its metadata is incomplete, or no main lock exists. **The guard is never
+automatically stolen.** Guard contention times out after at most 30 seconds,
+capped by the remaining acquisition timeout. This separate ceiling applies even
+when `GITNEXUS_INDEX_LOCK_TIMEOUT_MS` is zero or negative (unbounded workload wait).
+A guard-cleanup failure rejects acquisition; it must not start unprotected work.
+
+Manual recovery is an outage procedure, not an age/PID-based cleanup:
+
+1. Identify the exact lock directory named in the error. This shared primitive
+   also protects group sync and registry operations, not just repo analysis.
+2. Stop **all relevant writers** and prevent restart: editor/agent hooks, watch
+   processes, scheduled jobs, services, and any containers sharing the directory.
+   Account for paused processes and every host with access. If quiescence cannot
+   be established, do not remove the guard. PID metadata is diagnostic only.
+3. While restart remains disabled, inspect and preserve the guard/main records
+   for diagnosis, then remove only that directory's orphan `analyze.lock.guard`
+   and, if present, its orphan `analyze.lock`. Do not remove databases or sidecars
+   as part of lock recovery. Do not use a recursive or wildcard cleanup.
+4. Ensure all participating writers use the guarded version and the same locking
+   backend/domain, then restart in a controlled fashion.
+
+**Upgrade requires a coordinated stop/upgrade/restart.** Concurrent older
+versions ignore the guard and can still displace live locks; mixed-version
+mutual exclusion is not guaranteed. The file protocol assumes reliable atomic
+local-filesystem `O_EXCL` creation and cooperating processes. Network/distributed
+filesystems, external file replacement, and uncoordinated manual deletion are not
+covered. A process crash while holding the short-lived guard trades automatic
+recovery for fail-closed safety. Read-only/denied-create `lockFree` degradation
+remains an existing API limitation, not a guarantee of protected execution.
+In particular, heterogeneous permissions can deny guard creation to one process
+while another process can still write the index. A `lockFree` handle does not
+guarantee mutual exclusion in that situation; callers requiring protection must
+refuse that degraded outcome.
+
+---
+
 ## Where to dig deeper
 
 - Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)  

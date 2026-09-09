@@ -10,7 +10,8 @@
  *    guarded by an O_EXCL sentinel create — if the sentinel already exists,
  *    another process holds the lock at the same time, which is the exact
  *    single-writer violation the test hunts. Hold briefly, remove the sentinel,
- *    release, exit 0. Exit 3 if the sentinel was already present (overlap).
+ *    release, exit 0. Exit 3 only if the sentinel was already present (overlap),
+ *    exit 4 for other sentinel-create failures, with stderr diagnostics.
  *    Used by the multi-reclaimer test where ≥2 children reclaim one dead holder.
  */
 import { writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs';
@@ -29,8 +30,11 @@ if (process.env.MODE === 'EXCLUSIVE') {
     let fd;
     try {
       fd = openSync(process.env.SENTINEL, 'wx');
-    } catch {
-      process.exit(3); // overlap detected: two holders at once
+    } catch (error) {
+      console.error(`Sentinel create failed: pid=${process.pid} path=${process.env.SENTINEL} ` +
+        `code=${error.code ?? 'unknown'} message=${error.message}`);
+      lock.release();
+      process.exit(error.code === 'EEXIST' ? 3 : 4);
     }
     closeSync(fd);
     // Hold the section briefly so concurrent reclaimers would collide here.

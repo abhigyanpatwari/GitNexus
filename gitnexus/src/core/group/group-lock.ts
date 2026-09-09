@@ -123,7 +123,7 @@ export const withGroupSyncLock = async <T>(
 ): Promise<T> => {
   let handle: IndexLockHandle;
   // The wrapper times the acquisition itself. `IndexLockTimeoutError` carries
-  // `holder` and `holderKnown` and nothing else — the elapsed wait exists only
+  // holder/guard identity but no elapsed-time field — the elapsed wait exists only
   // inside its inherited message string, so the figure has to be measured here
   // to be reported without that message. `Date.now()` matches how the primitive
   // measures its own wait.
@@ -147,6 +147,16 @@ export const withGroupSyncLock = async <T>(
     // socket backend the holder is not identifiable at all. Re-word it around
     // what IS known: which group, which operation, and how long we waited.
     if (err instanceof IndexLockTimeoutError) {
+      if (err.guardPath !== undefined) {
+        throw new GroupSyncLockError(
+          'timeout',
+          groupDir,
+          `Could not acquire the sync lock for group "${path.basename(groupDir)}" ` +
+            `(${getGroupSyncLockDir(groupDir)}). ${err.message} ` +
+            `Nothing was written and this group was not synced.`,
+          err,
+        );
+      }
       throw new GroupSyncLockError(
         'timeout',
         groupDir,

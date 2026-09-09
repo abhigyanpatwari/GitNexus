@@ -33,12 +33,13 @@
  *  - **file** (`O_EXCL` pidfile) — the portable fallback for macOS/BSD (no
  *    abstract sockets; filesystem sockets don't release cleanly on death) and
  *    for any environment where the socket backend can't bind. It uses pid-
- *    liveness staleness, an atomic rename-steal reclaim, bounded malformed-file
- *    handling, read-only tolerance, and a finite wait timeout (a reused pid can
- *    masquerade as live where process start-time isn't verifiable, so waiting is
- *    bounded rather than a hang). Its stale-takeover has an irreducible narrow
- *    race — inherent to file-based advisory locks — which is precisely why the
- *    socket backend is preferred; only a kernel primitive closes it.
+ *    liveness staleness, a non-stealable acquisition/reclaim guard, bounded
+ *    malformed-file handling, read-only tolerance, and a finite wait timeout (a
+ *    reused pid can masquerade as live where process start-time isn't verifiable, so waiting is
+ *    bounded rather than a hang). Every file acquisition participates in the
+ *    guard, even for an empty slot. An orphan guard fails closed and requires
+ *    quiesced manual recovery (RUNBOOK.md); socket locks avoid that tradeoff.
+ *    Requires reliable local-filesystem O_EXCL and cooperating upgraded writers.
  *
  * Scope: cross-process, same logical index dir. The file backend never steals a
  * foreign-host lock (pid liveness is meaningless across hosts); the socket
@@ -51,7 +52,6 @@ import {
   closeSync,
   readFileSync,
   unlinkSync,
-  renameSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -77,12 +77,13 @@ const DIAGNOSTIC_INTERVAL_MS = 15_000;
  * GITNEXUS_INDEX_LOCK_TIMEOUT_MS (or set it ≤ 0 for unbounded).
  */
 const DEFAULT_TIMEOUT_MS = 600_000;
+/** Never wait indefinitely for a guard, even with an unbounded workload wait. */
+const GUARD_TIMEOUT_MS = 30_000;
 /**
  * How long a lock file must stay unreadable (empty/partial JSON) before we
- * treat it as a crash orphan and reclaim it. Tolerates the microsecond
- * create→write→close window of a *live* owner (see acquireIndexLock), so we
- * never steal a lock that is a poll-interval away from being written. Scaled
- * off the poll interval, floored at 1s.
+ * treat it as a crash orphan and reclaim it. This grace preserves legacy
+ * orphan handling; the guard, NOT elapsed time, excludes incomplete live
+ * creations. Scaled off the poll interval, floored at 1s.
  */
 const malformedGraceMs = (pollMs: number): number => Math.max(1000, pollMs * 2);
 
@@ -139,7 +140,9 @@ export interface AcquireOptions {
    * would otherwise block acquisition forever. Timing out is safe — it stops
    * *waiting*, never *steals* a possibly-live holder — and names the holder so
    * the caller can retry. Override (including to unbounded, value ≤ 0) via
-   * GITNEXUS_INDEX_LOCK_TIMEOUT_MS.
+   * GITNEXUS_INDEX_LOCK_TIMEOUT_MS. File acquisition/reclaim guard contention
+   * is separately capped at 30s, or the remaining timeout if shorter; an
+   * orphan guard is never automatically taken over.
    */
   timeoutMs?: number;
   /** Base poll interval (ms); jittered. Default 250. */
@@ -158,18 +161,25 @@ export class IndexLockTimeoutError extends Error {
    * pid when this is false.
    */
   readonly holderKnown: boolean;
-  constructor(holder: LockRecord, waitedMs: number, holderKnown = true) {
+  /** Present only for acquisition/reclaim guard contention, requiring quiesced recovery. */
+  readonly guardPath?: string;
+  constructor(holder: LockRecord, waitedMs: number, holderKnown = true, guardPath?: string) {
     super(
-      holderKnown
-        ? `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
+      guardPath !== undefined
+        ? `Timed out after ${waitedMs}ms waiting for acquisition/reclaim guard ${guardPath}. ` +
+            `Quiesce all relevant writers and prevent restart before manual recovery. ` +
+            `Never remove the guard while writers may run; see RUNBOOK.md for quiesced recovery.`
+        : holderKnown
+          ? `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
             `(pid ${holder.pid} on ${holder.hostname}, invocation ${holder.invocationId}) ` +
             `to release the index lock.`
-        : `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
+          : `Timed out after ${waitedMs}ms waiting for another gitnexus analyze ` +
             `(holder identity unknown) to release the index lock.`,
     );
     this.name = 'IndexLockTimeoutError';
     this.holder = holder;
     this.holderKnown = holderKnown;
+    this.guardPath = guardPath;
   }
 }
 
@@ -199,7 +209,8 @@ const pidAlive = (pid: number): boolean => {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM';
+    // Only ESRCH proves death. Permission or unexpected probe errors fail closed.
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
   }
 };
 
@@ -214,8 +225,14 @@ const buildRecord = (): LockRecord => ({
 });
 
 const readRecord = (lockPath: string): LockRecord | null => {
+  let raw: string;
   try {
-    const raw = readFileSync(lockPath, 'utf8');
+    raw = readFileSync(lockPath, 'utf8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err; // An IO/permission failure is not evidence of a malformed orphan.
+  }
+  try {
     const parsed = JSON.parse(raw) as Partial<LockRecord>;
     // `typeof NaN === 'number'`, so a bare number check lets NaN/0/-1/Infinity/
     // fractional pids reach process.kill (#2658 review L4): a garbled or crafted
@@ -223,10 +240,11 @@ const readRecord = (lockPath: string): LockRecord | null => {
     // for the full wait timeout. A real pid is a positive integer.
     if (!Number.isInteger(parsed.pid) || (parsed.pid as number) <= 0) return null;
     if (typeof parsed.token !== 'string') return null;
+    // Preserve the existing ownership format: unknown versions or missing
+    // ancillary metadata must not turn a live/foreign holder into an orphan.
     return parsed as LockRecord;
   } catch {
-    // Missing (won the race, file gone) or malformed/half-written → treat as
-    // "no readable holder"; the caller retries the O_EXCL create.
+    // Malformed/half-written; only reclaim under the guard after the grace.
     return null;
   }
 };
@@ -246,64 +264,6 @@ const isStale = (holder: LockRecord): boolean => {
   const now = readProcStartTime(holder.pid);
   if (holder.startTime && now && holder.startTime !== now) return true; // pid reused
   return false;
-};
-
-/**
- * Reclaim a lock file we judged reclaimable — a dead holder (`expected` = its
- * record) or a malformed/unreadable crash-orphan (`expected` = null) — moving
- * the exact inode aside in ONE `rename` syscall to a token-unique name so two
- * waiters reclaiming the same orphan can't both win (the loser's rename ENOENTs).
- *
- * CRITICAL (#2658 review): the reclaim must not act on a STALE judgment. The
- * staleness decision (`isStale` / malformed-grace) happened a few syscalls ago;
- * a live writer may have O_EXCL-created its own lock at `lockPath` since. Blindly
- * renaming that live lock aside would delete it and admit a SECOND writer — the
- * exact double-writer this lock exists to prevent (reproduced: ~18%/round under
- * 4-way reclaim contention on the file backend). So:
- *   1. re-read `lockPath` immediately BEFORE the rename and confirm it still holds
- *      exactly what we judged (same token, or still-unreadable) — shrinking the
- *      window to the single gap between this read and the rename;
- *   2. after the rename, confirm what we ACTUALLY moved matches the judgment; if a
- *      live lock slipped into that residual gap, RESTORE it (rename back) so its
- *      holder is never displaced, and lose the reclaim.
- * A concurrent creator whose fresh lock the restore overwrites is caught by the
- * acquire loop's post-write read-back verify (see acquireViaFile), so it backs
- * off rather than proceeding as a second writer.
- *
- * Returns true if we won the reclaim (caller retries the create), false if we
- * lost the race or the judgment went stale (caller re-loops and re-reads).
- */
-const matchesJudgment = (record: LockRecord | null, expected: LockRecord | null): boolean =>
-  expected === null ? record === null : record?.token === expected.token;
-
-const stealLock = (lockPath: string, me: LockRecord, expected: LockRecord | null): boolean => {
-  // (1) Re-verify the judgment still holds right before we move anything.
-  if (!matchesJudgment(readRecord(lockPath), expected)) return false;
-  if (expected === null && !existsSync(lockPath)) return false; // malformed → but now vanished
-
-  const aside = `${lockPath}.dead.${me.token}`;
-  try {
-    renameSync(lockPath, aside);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false; // another stealer won
-    throw err;
-  }
-  // (2) Confirm what we moved is what we judged; if a live lock slipped into the
-  // read→rename gap, put it back — a live holder must never be displaced.
-  if (!matchesJudgment(readRecord(aside), expected)) {
-    try {
-      renameSync(aside, lockPath); // restore; an overwritten concurrent creator's read-back backs it off
-    } catch {
-      /* slot re-taken between our move and restore — leave it; we lost the reclaim */
-    }
-    return false;
-  }
-  try {
-    unlinkSync(aside); // uniquely ours by token → safe; best-effort
-  } catch {
-    /* leftover .dead.<token> is inert (not analyze.lock, not swept) — harmless */
-  }
-  return true;
 };
 
 /**
@@ -419,10 +379,9 @@ const resolveTimeoutMs = (opt?: number): number => {
 /**
  * File-based (O_EXCL pidfile) backend. The portable fallback used on platforms
  * without the socket backend (macOS/BSD) or when the OS socket lock is
- * unavailable. Carries the pid-liveness staleness, atomic rename-steal reclaim,
- * bounded malformed-file handling, and read-only tolerance. Its stale-takeover
- * has an irreducible (narrow) race — see the module header — which is why the
- * socket backend is preferred where available.
+ * unavailable. All inspection/reclaim/create/verify operations are serialized
+ * by a sibling O_EXCL guard. No waiter ever removes a guard, regardless of age,
+ * pid liveness, or malformed metadata. See RUNBOOK.md for orphan recovery.
  */
 const acquireViaFile = async (
   lockDir: string,
@@ -437,6 +396,7 @@ const acquireViaFile = async (
     throw err;
   }
   const lockPath = path.join(lockDir, LOCK_FILENAME);
+  const guardPath = `${lockPath}.guard`;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
   const startedAt = Date.now();
@@ -445,60 +405,107 @@ const acquireViaFile = async (
   // When the lock file exists but has no readable record, the timestamp we
   // first observed it unreadable — used to reclaim a crash-orphan after a grace.
   let malformedSince: number | null = null;
+  let guardWaitSince: number | null = null;
 
   for (;;) {
+    let guardFd: number;
     try {
-      // O_WRONLY | O_CREAT | O_EXCL — the atomic arbiter of ownership.
-      const fd = openSync(lockPath, 'wx');
-      try {
-        writeSync(fd, JSON.stringify(me));
-      } finally {
-        closeSync(fd);
-      }
-      // Read-back verify (#2658 review L5): if this process stalled (a >graceMs
-      // GC pause) between the O_EXCL create of the *empty* file and the write
-      // above, a waiter could have reclaimed the empty file (renamed it aside)
-      // and O_EXCL-created its own lock at `lockPath`. Our write then landed on
-      // the renamed-aside inode, not `lockPath`. Confirm `lockPath` still carries
-      // our token before claiming ownership; if it was stolen, contend normally.
-      const confirmed = readRecord(lockPath);
-      if (!confirmed || confirmed.token !== me.token) continue;
-      return {
-        record: me,
-        release: () => {
-          const current = readRecord(lockPath);
-          if (current && current.token !== me.token) return; // no longer ours
-          try {
-            unlinkSync(lockPath);
-          } catch {
-            /* already gone */
-          }
-        },
-      };
+      guardFd = openSync(guardPath, 'wx');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'EEXIST') {
-        // fall through to holder inspection / wait / reclaim below
-      } else if (isLockUnwritableCode(code)) {
-        return noopHandle(me); // read-only / denied → proceed lock-free
-      } else {
-        throw err;
+        const now = Date.now();
+        guardWaitSince ??= now;
+        const deadline = Math.min(startedAt + timeoutMs, guardWaitSince + GUARD_TIMEOUT_MS);
+        if (now >= deadline) {
+          throw new IndexLockTimeoutError(unknownHolder(), now - startedAt, false, guardPath);
+        }
+        await sleep(jitteredDelay(pollMs, deadline - now, 0));
+        continue;
       }
+      if (isLockUnwritableCode(code)) return noopHandle(me);
+      throw err;
     }
-
-    const holder = readRecord(lockPath);
+    guardWaitSince = null;
+    // Metadata aids diagnostics only. Without a readable token-exact ownership
+    // record, cleanup must leave the guard and fail closed.
+    let holder: LockRecord | null = null;
+    try {
+      try {
+        writeSync(guardFd, JSON.stringify(me));
+      } finally {
+        closeSync(guardFd);
+      }
+      holder = readRecord(lockPath);
+      let canCreate = !existsSync(lockPath);
+      if (holder) {
+        malformedSince = null;
+        if (isStale(holder)) {
+          opts.log?.(
+            `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
+              `invocation ${holder.invocationId}).`,
+          );
+          unlinkSync(lockPath);
+          canCreate = true;
+        }
+      } else if (!canCreate) {
+        malformedSince ??= Date.now();
+        if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
+          opts.log?.('Reclaiming a malformed/partial index lock file (no readable owner record).');
+          unlinkSync(lockPath);
+          canCreate = true;
+          malformedSince = null;
+        }
+      } else {
+        malformedSince = null;
+      }
+      if (canCreate) {
+        let fd: number;
+        try {
+          fd = openSync(lockPath, 'wx');
+        } catch (err) {
+          if (isLockUnwritableCode((err as NodeJS.ErrnoException).code)) return noopHandle(me);
+          throw err;
+        }
+        try {
+          writeSync(fd, JSON.stringify(me));
+        } finally {
+          closeSync(fd);
+        }
+        if (readRecord(lockPath)?.token !== me.token) {
+          throw new Error(`Index lock verification failed: ${lockPath}`);
+        }
+        let released = false;
+        return {
+          record: me,
+          release: () => {
+            if (released) return;
+            released = true;
+            // No async boundary: a cooperating contender cannot replace a live
+            // owner's record before this one-shot unlink. Unknown is not ours.
+            try {
+              if (readRecord(lockPath)?.token !== me.token) return;
+              unlinkSync(lockPath);
+            } catch {
+              /* best-effort on exit; never retry against a successor */
+            }
+          },
+        };
+      }
+    } finally {
+      if (readRecord(guardPath)?.token !== me.token) {
+        throw new Error(
+          `Cannot verify acquisition/reclaim guard ownership: ${guardPath}. ` +
+            'Acquisition refused; see RUNBOOK.md for quiesced recovery.',
+        );
+      }
+      // Must complete before returning a workload handle or polling. Unlike
+      // workload release, cleanup failure here rejects acquisition.
+      unlinkSync(guardPath);
+    }
     const waited = Date.now() - startedAt;
 
     if (holder) {
-      malformedSince = null;
-      if (isStale(holder)) {
-        opts.log?.(
-          `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
-            `invocation ${holder.invocationId}).`,
-        );
-        stealLock(lockPath, me, holder); // reclaim ONLY this dead record; live locks are never stolen
-        continue;
-      }
       // Live holder → wait.
       if (!announcedWait) {
         announcedWait = true;
@@ -521,25 +528,6 @@ const acquireViaFile = async (
       continue;
     }
 
-    // holder === null: the lock file is either gone (vanished between the failed
-    // create and our read) or present-but-unreadable (a crash between the
-    // O_EXCL create and the record write, or a partial write). NEVER hot-loop
-    // here — both branches are bounded by sleep + timeout.
-    if (!existsSync(lockPath)) {
-      malformedSince = null; // genuinely vanished → the next create likely wins
-      if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
-      await sleep(jitteredDelay(pollMs, timeoutMs, waited));
-      continue;
-    }
-    // Malformed orphan present. Reclaim only after a grace, so a live owner's
-    // microsecond create→write window is never mistaken for a crash.
-    if (malformedSince === null) malformedSince = Date.now();
-    if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
-      opts.log?.('Reclaiming a malformed/partial index lock file (no readable owner record).');
-      stealLock(lockPath, me, null); // reclaim ONLY while still unreadable; a live lock written since is left
-      malformedSince = null;
-      continue;
-    }
     if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
     await sleep(jitteredDelay(pollMs, timeoutMs, waited));
   }
