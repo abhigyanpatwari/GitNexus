@@ -900,8 +900,11 @@ function undecidedSatisfactionBoundaries(
  * value is not, because it happens later through a struct field, a registry
  * lookup or comptime reflection.
  *
- * That gap is precisely `tools.ts`'s definition of `lower-bound` — "the walk
- * provably missed callers" — and it was previously reported as `exact`. A
+ * That gap is precisely the first half of `tools.ts`'s definition of
+ * `lower-bound` — the walk provably missed callers — and it was previously
+ * reported as `exact`. (The second half, a probe that could not run, is what
+ * the failure branch below publishes; the contract states both because this
+ * function can produce either.) A
  * public DOM accessor bound into a JS bridge table came back LOW/exact with two
  * internal callers, which is worse than no answer: `lower-bound` invites the
  * reader to look further, `exact` tells them not to bother.
