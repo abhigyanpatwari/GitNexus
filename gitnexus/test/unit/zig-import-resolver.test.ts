@@ -933,4 +933,23 @@ describe('loadZigWorkspaceIndex / zigPackageFor (zig-monorepo fixture)', () => {
       await loadZigBuildConfig(idioms, 'libs/geo'),
     );
   });
+
+  it('rejects an ABSOLUTE `.path` in a nested package instead of rebasing it in', async () => {
+    // `packages/app` declares `.escapes = .{ .path = "/src" }`. Absolute, so it
+    // names something outside this repository — but the nested branch prefixes
+    // the package directory before normalizing, and `packages/app/` + `/src` is
+    // `packages/app//src`, which is relative by inspection. The empty segment is
+    // then dropped and the dep lands on `packages/app/src`, a directory that
+    // really exists here: an out-of-repo dependency fabricated into an in-repo
+    // resolution. `isAbsoluteZigDepPath` asks the question of the value AS
+    // WRITTEN, before any prefixing.
+    //
+    // `path.posix.join` would NOT have fixed this: it strips the leading slash
+    // too, producing the same `packages/app/src` without rejecting anything.
+    const app = zigPackageFor(await loadZigWorkspaceIndex(MONOREPO), 'packages/app/src/main.zig');
+    expect(app!.pathDeps.has('escapes')).toBe(false);
+    expect(app!.moduleRoots?.has('escapes') ?? false).toBe(false);
+    // The legitimate package-relative dep beside it is untouched.
+    expect(app!.pathDeps.get('core')).toBe('packages/core');
+  });
 });

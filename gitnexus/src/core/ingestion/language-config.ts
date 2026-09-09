@@ -744,6 +744,11 @@ export async function loadZigBuildConfig(
   // raw spelling, which is what `parseZigBuildZon` promises and its tests pin.
   const pathDeps = pkg === '' ? config.pathDeps : new Map<string, string>();
   for (const [depName, depPath] of config.pathDeps) {
+    // Asked of the value AS WRITTEN, before the package prefix goes on: an
+    // absolute `.path` points outside the repository whichever package declared
+    // it, and prefixing hides that from `normalizeZigDepPath`. See
+    // `isAbsoluteZigDepPath`.
+    if (isAbsoluteZigDepPath(depPath)) continue;
     const rel = normalizeZigDepPath(`${pkg}${depPath}`);
     if (rel === null) continue;
     if (pkg !== '') pathDeps.set(depName, rel);
@@ -940,13 +945,38 @@ async function findZigPackageDirs(repoRoot: string): Promise<string[]> {
  * to the empty string (the repo root itself). Shared with the import
  * resolver so both sides agree on which deps are in-repo.
  */
-export function normalizeZigDepPath(depPath: string): string | null {
-  // Normalize separators BEFORE the absolute check so every Windows spelling
-  // is visible to it: POSIX (`/x`), drive (`C:\x`, `C:/x`), root-relative
-  // (`\x` → `/x`) and UNC (`\\server\share` → `//server/share`) paths all
-  // point outside the repository.
+/**
+ * Does this `.path` value point outside the repository BY ITS SPELLING —
+ * POSIX absolute (`/dep`), Windows drive-qualified (`C:\dep`, `C:/dep`),
+ * root-relative (`\dep`) or UNC (`\\server\share`)?
+ *
+ * Separators are normalized first so every Windows spelling is visible to the
+ * one test. Exported-in-spirit rather than inlined because it must be asked in
+ * TWO places and the two must not drift: `normalizeZigDepPath` asks it of the
+ * value it is given, and `loadZigBuildConfig` asks it of a NESTED package's
+ * value BEFORE prefixing the package directory. That second call is the whole
+ * point — prefixing turns `/dep` into `packages/app//dep`, which is relative by
+ * inspection, so the check inside `normalizeZigDepPath` no longer sees an
+ * absolute path and the empty segment is simply dropped, mapping an
+ * out-of-repo dependency onto a real in-repo directory if one happens to exist.
+ *
+ * `path.posix.join` is NOT a substitute: it strips the leading slash too
+ * (`join('packages/app/', '/dep')` is `packages/app/dep`), so it produces the
+ * same fabricated path without ever rejecting anything.
+ *
+ * A `..` prefix is deliberately NOT handled here. `../core` escapes the
+ * package but not necessarily the repo, and rebasing it is exactly what the
+ * nested-package branch exists to do; `normalizeZigDepPath` rejects the ones
+ * that still escape the ROOT after rebasing.
+ */
+function isAbsoluteZigDepPath(depPath: string): boolean {
   const normalized = depPath.replace(/\\/g, '/');
-  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null;
+  return normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized);
+}
+
+export function normalizeZigDepPath(depPath: string): string | null {
+  const normalized = depPath.replace(/\\/g, '/');
+  if (isAbsoluteZigDepPath(depPath)) return null;
   const parts: string[] = [];
   for (const part of normalized.split('/')) {
     if (part === '' || part === '.') continue;
