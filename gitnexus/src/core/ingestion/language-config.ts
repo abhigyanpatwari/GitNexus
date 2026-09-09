@@ -845,13 +845,18 @@ export function zigPackageFor(
 /**
  * Load every Zig build package in the repo, nearest-first.
  *
- * `loadZigBuildConfig` reads the ROOT `build.zig` / `build.zig.zon` and nothing
- * else, which is the whole configuration of a single-package repo and none of
- * the configuration of a monorepo: a repo laying its packages out as
- * `packages/<name>/build.zig` has no root build files at all, so that loader
- * answers `null` and EVERY bare `@import("<module>")` in it goes unresolved —
- * cross-file resolution silently degrades to relative imports only. Measured on
- * a two-package fixture: `config = null`, `@import("core")` → `null`.
+ * Called with no `packageDir` — which is how every call site read it before
+ * this function existed — `loadZigBuildConfig` reads the ROOT `build.zig` /
+ * `build.zig.zon` and nothing else. That is the whole configuration of a
+ * single-package repo and none of the configuration of a monorepo: a repo
+ * laying its packages out as `packages/<name>/build.zig` has no root build
+ * files at all, so the loader answers `null` and EVERY bare
+ * `@import("<module>")` in it goes unresolved — cross-file resolution silently
+ * degrades to relative imports only. Measured on a two-package fixture:
+ * `config = null`, `@import("core")` → `null`.
+ *
+ * The loader itself is not root-bound any more: this function is what supplies
+ * it a `packageDir`, one per package below.
  *
  * So the packages are discovered the way tsconfigs are (`findTsconfigFiles`):
  * one bounded breadth-first walk that skips the hardcoded ignore set, then
@@ -860,9 +865,9 @@ export function zigPackageFor(
  * Called from `ScopeResolver.loadResolutionConfig`, which the orchestrator runs
  * once per LANGUAGE workspace pass — so the walk happens only for repos that
  * actually contain Zig. `loadImportConfigs`, which runs unconditionally for
- * every repo, keeps calling the root-only `loadZigBuildConfig`; that is the same
- * split TypeScript already has between the cheap `loadTsconfigPaths` and the
- * repo-walking `loadTsconfigIndex`.
+ * every repo, keeps calling `loadZigBuildConfig` for the root package alone;
+ * that is the same split TypeScript already has between the cheap
+ * `loadTsconfigPaths` and the repo-walking `loadTsconfigIndex`.
  */
 export async function loadZigWorkspaceIndex(repoRoot: string): Promise<ZigWorkspaceIndex | null> {
   const dirs = await findZigPackageDirs(repoRoot);

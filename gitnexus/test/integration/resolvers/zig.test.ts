@@ -1518,12 +1518,16 @@ describe.skipIf(!zigAvailable)(
 // ── Monorepo: several build packages, no build.zig at the repo root ──────────
 //
 // The layout the root-only config loader could not see. `loadZigBuildConfig`
-// reads `<repoRoot>/build.zig{,.zon}` and nothing else, so a repo whose packages
+// read `<repoRoot>/build.zig{,.zon}` and nothing else, so a repo whose packages
 // live under `packages/<name>/` had no config at all and every bare
 // `@import("<module>")` in it went unresolved — cross-file resolution silently
-// degraded to relative imports. These assert the EDGES, not the config: the unit
-// tests in `test/unit/zig-import-resolver.test.ts` pin the index, and this pins
-// that the index actually reaches symbol resolution.
+// degraded to relative imports. It now takes a `packageDir` and
+// `loadZigWorkspaceIndex` walks the repo for the packages to hand it, which is
+// the change these assert.
+//
+// They assert the EDGES, not the config: the unit tests in
+// `test/unit/zig-import-resolver.test.ts` pin the index, and this pins that the
+// index actually reaches symbol resolution.
 describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
   let result: PipelineResult;
 
