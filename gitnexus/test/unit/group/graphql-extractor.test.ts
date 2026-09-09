@@ -733,4 +733,26 @@ export const QDocument = gql\`query Q { q }\\n\${QFragmentDoc}\`;
       }),
     ]);
   });
+
+  it('fails closed for interpolated templates under a non-gql tag (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = String.raw\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
 });

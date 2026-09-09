@@ -141,6 +141,14 @@ function substitutionIdentifier(substitution: Parser.SyntaxNode): string | null 
   return expr.type === 'identifier' ? expr.text : null;
 }
 
+function isGraphqlTagCall(call: Parser.SyntaxNode): boolean {
+  const callee = call.childForFieldName('function');
+  if (!callee) return false;
+  if (callee.type === 'identifier') return callee.text === 'gql';
+  if (callee.type !== 'member_expression') return false;
+  return callee.childForFieldName('property')?.text === 'gql';
+}
+
 function uniqueStaticSource(
   name: string,
   declarators: GeneratedSymbolIndex,
@@ -340,7 +348,14 @@ function staticGraphqlSource(
 
   if (value.type === 'call_expression') {
     const template = value.namedChildren.find((child) => child.type === 'template_string');
-    return template ? staticGraphqlSource(template, declarators, resolving) : null;
+    if (!template) return null;
+    const hasSubstitution = template.namedChildren.some(
+      (child) => child.type === 'template_substitution',
+    );
+    // Interpolated reconstruction is the cooked template. Only `gql` is
+    // treated as preserving that source; String.raw / unknown tags stay fail-closed.
+    if (hasSubstitution && !isGraphqlTagCall(value)) return null;
+    return staticGraphqlSource(template, declarators, resolving);
   }
 
   if (value.type !== 'new_expression') return null;
