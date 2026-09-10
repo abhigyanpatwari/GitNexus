@@ -706,6 +706,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/views/show.html.erb'),
         candidate: mkCandidate('app/helpers/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Trait'),
+        sourceTextOf: () => 'unique_helper_xyz()',
       }),
     ).toBe(true);
   });
@@ -726,6 +727,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
           'def:ApplicationController',
         ),
         parsedFileOf: ownerFile('def:ApplicationController', 'Class'),
+        sourceTextOf: () => 'class UsersController < AdminController\n  unique_helper_xyz()\nend\n',
       }),
     ).toBe(true);
   });
@@ -742,6 +744,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/models/report.rb', [mixin]),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => 'include Auditable; unique_helper_xyz()',
       }),
     ).toBe(true);
   });
@@ -761,6 +764,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('lib/guardian/post_guardian.rb', [], [], [moduleDef]),
         candidate: mkCandidate('lib/guardian.rb', 'Guardian#is_staff?', 'def:Guardian'),
         parsedFileOf: ownerFile('def:Guardian', 'Class'),
+        sourceTextOf: () => 'module PostGuardian; def can_see?(post); is_staff?; end; end\n',
       }),
     ).toBe(true);
   });
@@ -770,6 +774,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
       rubyIsGlobalNameFallbackPlausible({
         callerParsed: mkCaller('app/b.rb'),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        sourceTextOf: () => 'unique_helper_xyz()',
       }),
     ).toBe(true);
     expect(
@@ -777,6 +782,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/b.rb'),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: () => undefined,
+        sourceTextOf: () => 'unique_helper_xyz()',
       }),
     ).toBe(true);
   });
@@ -804,6 +810,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/b.rb', [namedImport('Billing', 'Billing')]),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => 'include Billing; unique_helper_xyz()',
       }),
     ).toBe(true);
   });
@@ -831,6 +838,7 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/b.rb', [], [site]),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => 'Billing; unique_helper_xyz()',
       }),
     ).toBe(true);
   });
