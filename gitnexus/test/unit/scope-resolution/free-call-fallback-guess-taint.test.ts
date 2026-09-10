@@ -383,4 +383,14 @@ describe('constructor-form unique-name hits are guesses, not import-resolved', (
     expect(calls[0]!.reason).toBe('import-resolved');
     expect(outcomes).toEqual([]);
   });
+
+  it('treats a unique class with a written qualifier as precise, not a bare guess', () => {
+    const { calls, outcomes } = runConstructor([
+      { ...ctorGuessedSite(3), rawQualifiedName: 'pkg.UniqueWidget' },
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.85);
+    expect(calls[0]!.reason).toBe('import-resolved');
+    expect(outcomes).toEqual([]);
+  });
 });

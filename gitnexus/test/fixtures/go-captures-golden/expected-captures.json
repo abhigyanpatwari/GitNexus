@@ -85,7 +85,7 @@
   },
   "go-constructor-type-inference/cmd/main.go": {
     "captureGroups": 19,
-    "digest": "4f2e8bb6dbca59bcb82fc2efd43899b7a92816af28811cfc1858f0ce7ba9f6fe"
+    "digest": "8dff73176d5890d7ede1d8b9cd9f8555518a1dcc11fbf02190beb474c0f9e47e"
   },
   "go-constructor-type-inference/models/repo.go": {
     "captureGroups": 8,

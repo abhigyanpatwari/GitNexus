@@ -236,18 +236,18 @@ export function emitFreeCallFallback(
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
       if (site.callForm === 'constructor') {
-        // Lexical / import / qualified bindings only. The unique
-        // QualifiedNameIndex hit inside `findClassBindingInScope` is the
-        // same guess `pickUniqueGlobalClass` makes; treating it as a
-        // precise in-scope bind skipped the guess label and the Go
-        // unexported veto (name-fallback-edges constructor-form cases).
+        // Bare unique type names are guesses (`pickUniqueGlobalClass`).
+        // A written qualifier (`new pkg.Foo()`, `models.Box[T]{}`)
+        // licenses the unique QualifiedNameIndex hit — Go/Java strip
+        // the qualifier down to the simple tail, so lexical lookup
+        // misses and the unique name is how the type is recovered.
         const classDef = resolveInheritanceBaseInScope(
           site.inScope,
           site.name,
           scopes,
           site.rawQualifiedName,
           undefined,
-          { uniqueQualifiedNameFallback: false },
+          { uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined },
         );
         if (classDef !== undefined && classDef.type !== 'Interface') {
           // Most languages link `Type(...)` to the explicit Constructor def
