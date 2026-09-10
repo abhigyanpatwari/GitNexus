@@ -126,6 +126,8 @@ export function tryEmitEdge(
     /** See {@link isPhantomCalleeRead}. Set by the extractor from the
      *  language's `@reference.callee-position` marker; absent otherwise. */
     readonly inCalleePosition?: boolean;
+    /** See `ReferenceSite.staticGated`; copied onto the emitted edge. */
+    readonly staticGated?: boolean;
   },
   targetDef: SymbolDefinition,
   reason: string,
@@ -179,6 +181,7 @@ export function tryEmitEdge(
     type: edgeType,
     confidence,
     reason,
+    ...(site.staticGated === true ? { staticGated: true } : {}),
   });
   return true;
 }
@@ -213,6 +216,8 @@ export function tryEmitEdgeWithExplicitTargetId(
     readonly inScope: ScopeId;
     readonly atRange: { startLine: number; startCol: number };
     readonly kind: string;
+    /** See `ReferenceSite.staticGated`; copied onto the emitted edge. */
+    readonly staticGated?: boolean;
   },
   targetGraphId: string,
   reason: string,
@@ -251,6 +256,7 @@ export function tryEmitEdgeWithExplicitTargetId(
     type: edgeType,
     confidence,
     reason,
+    ...(site.staticGated === true ? { staticGated: true } : {}),
   });
   return true;
 }

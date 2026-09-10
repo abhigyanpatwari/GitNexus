@@ -158,6 +158,12 @@ export const SUPPORTED_FTS_STEMMERS: ReadonlySet<string> = new Set<string>([
 export interface CreateSearchFTSIndexesOptions {
   onIndexStart?: (table: string, indexName: string) => void;
   onIndexReady?: (table: string, indexName: string) => void;
+  /**
+   * When set, only these node-table names are dropped/rebuilt (#3016).
+   * Omit to rebuild every configured FTS index (full analyze / deleted-file
+   * incremental / `--repair-fts`).
+   */
+  tables?: ReadonlySet<string>;
 }
 
 let resolvedStemmer: string | undefined;
@@ -219,7 +225,10 @@ export function getSearchFTSStemmer(): string {
  * contract, and the same one-shared-`SHOW_INDEXES`-read purpose, as the gates in
  * `lbug-adapter.ts`. Omit it to have the sweep read the catalog itself.
  */
-export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Promise<void> {
+export async function dropSearchFTSIndexes(
+  indexRows?: IndexCatalogSnapshot,
+  tables?: ReadonlySet<string>,
+): Promise<void> {
   // One catalog read for the whole sweep, decided PER CONFIGURED INDEX on
   // IDENTITY (#2841 cleanup review). `undefined` = the catalog could not be
   // read, which proves nothing — attempt every drop rather than skip a real one,
@@ -240,6 +249,7 @@ export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Pr
   // whether the sweep ran or not.
   const rows = await resolveGateRows(indexRows);
   for (const { table, indexName } of FTS_INDEXES) {
+    if (tables && !tables.has(table)) continue;
     // Skip only what the catalog POSITIVELY proves absent. Without this, a
     // machine whose FTS extension cannot load, analyzing a DB that never carried
     // an FTS index, pays one failed `CALL DROP_FTS_INDEX` per configured table on
@@ -255,6 +265,32 @@ export async function dropSearchFTSIndexes(indexRows?: IndexCatalogSnapshot): Pr
     if (provenAbsent) continue;
     await dropFTSIndex(table, indexName);
   }
+}
+
+/**
+ * The configured FTS tables whose index the catalog proves is ABSENT right now.
+ *
+ * `undefined` means the catalog could not be read, which proves nothing — the
+ * same fail-closed reading the sweep above applies. Callers narrowing a rebuild
+ * to a subset of tables (#3016) must union this in, or must not narrow at all
+ * when it is `undefined`: a run that rebuilds only the tables it wrote leaves
+ * keyword search permanently degraded on every table whose index went missing
+ * earlier (a prior escalation drops all of them, and only the next full rebuild
+ * would ever put them back).
+ */
+export async function missingSearchFTSIndexTables(
+  indexRows?: IndexCatalogSnapshot,
+): Promise<Set<string> | undefined> {
+  const rows = await resolveGateRows(indexRows);
+  if (rows === undefined) return undefined;
+  const missing = new Set<string>();
+  for (const { table, indexName } of FTS_INDEXES) {
+    const present = rows.some(
+      (row) => indexRowTable(row) === table && indexRowName(row) === indexName,
+    );
+    if (!present) missing.add(table);
+  }
+  return missing;
 }
 
 /** One configured index that could not be (re)built, and why. */
@@ -290,6 +326,7 @@ export async function createSearchFTSIndexes(
   const stemmer = getSearchFTSStemmer();
   const failures: FtsIndexBuildFailure[] = [];
   for (const { table, indexName, properties } of FTS_INDEXES) {
+    if (options?.tables && !options.tables.has(table)) continue;
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
     // idempotent-by-name (skips when the index already exists), so without the
@@ -298,10 +335,19 @@ export async function createSearchFTSIndexes(
     // the old name+content index would silently persist. `dropFTSIndex` no-ops
     // when the index is absent (first-ever analyze) and clears the per-connection
     // memo so the create below actually runs.
-    // ponytail: this rebuilds every FTS index on every analyze instead of
-    // skipping when present; FTS build is proportional to symbol-table size and
-    // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
-    // this rebuild cost ever shows up in analyze profiles.
+    // The cost DID show up in analyze profiles — 7.5s of a 31.7s edit loop on a
+    // 5350-file repo, `bench/analyze-phase-breakdown.md` — and a "skip when the
+    // index is already present" gate is NOT the answer, so don't reach for it.
+    // Every caller that reaches this loop has already dropped the indexes it
+    // passes in `tables`: the incremental writeback drops them because Ladybug
+    // cannot DML a table with a live FTS index (#2589), and a full rebuild
+    // builds into a fresh staging DB that never had one. A presence gate would
+    // therefore never fire. The cost is inherent — Ladybug's FTS is not
+    // incremental, so one changed row means re-tokenizing the whole table, and
+    // `File` alone is ~33MB of file content at ~10MB/s. The measured floor and
+    // the four exits that were tried and closed (narrow further, build
+    // concurrently, raise the connection thread count, drop `content`) are in
+    // that document.
     try {
       await dropFTSIndex(table, indexName);
       await createFTSIndex(table, indexName, [...properties], stemmer);

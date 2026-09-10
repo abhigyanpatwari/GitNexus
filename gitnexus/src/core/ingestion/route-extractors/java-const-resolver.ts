@@ -49,6 +49,7 @@ import {
   type ModuleConstants,
   type Operand,
   type RepoConstants,
+  unfoldableDeclarationsOf,
 } from './constant-resolver.js';
 
 export type {
@@ -57,6 +58,11 @@ export type {
   Operand,
   RepoConstants,
 } from './constant-resolver.js';
+
+export interface JavaModuleConstants extends ModuleConstants {
+  /** Declaration keys whose initializer exists but cannot be folded. */
+  readonly unfoldableDeclarations: ReadonlySet<string>;
+}
 
 /**
  * Cheap content gate: can this Java file DEFINE a string constant that a route
@@ -140,10 +146,16 @@ export const resolveJavaImport: ImportResolver = (_importingFileKey, moduleSpec,
   const asPath = moduleSpec.replace(/\./g, '/');
   const classFile = `${asPath}.java`;
 
+  // Compare in POSIX space: on Windows the repo keys can carry backslash
+  // separators, which would otherwise never match a '/'-joined class file
+  // (observed as 675 calls with zero hits on a backslash-keyed repo).
+  const toPosix = (p: string): string => p.replace(/\\/g, '/');
+
   // Exact package-path suffix match, unique or nothing.
   let hit: string | null = null;
   for (const key of repoKeys) {
-    if (key === classFile || key.endsWith(`/${classFile}`)) {
+    const posixKey = toPosix(key);
+    if (posixKey === classFile || posixKey.endsWith(`/${classFile}`)) {
       if (hit !== null) return null; // 2+ modules carry this FQN — unresolvable
       hit = key;
     }
@@ -264,29 +276,53 @@ export function parseJavaConstOperands(
  * Last-wins in source order; a non-foldable rebind (`X = compute()`) drops X
  * to unresolvable rather than keeping a stale literal.
  */
-export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
+export function extractJavaModuleConstants(tree: Parser.Tree): JavaModuleConstants {
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, ImportBinding>();
+  const unfoldableDeclarations = new Set<string>();
+
+  // On-demand static imports (`import static a.b.C.*`) — expanded post-map
+  // by expandJavaWildcardStaticImports below.
+  const wildcardImports: string[] = [];
 
   // Pass 1: imports (both shapes).
   const walkImports = (node: Parser.SyntaxNode): void => {
     if (node.type === 'import_declaration') {
       // import a.b.C;  |  import static a.b.C;  |  import static a.b.C.F;
+      // import static a.b.C.*;  — asterisk is a sibling of scoped_identifier
+      // (tree-sitter-java), not the last path segment. Same detection as
+      // import-decomposer.ts (`static-wildcard`).
       const isStatic = node.children.some((c) => c.type === 'static' && c.text === 'static');
-      const scoped = node.children.find((c) => c.type === 'scoped_identifier');
+      const isWildcard = node.children.some((c) => c.type === 'asterisk');
+      const scoped =
+        node.children.find((c) => c.type === 'scoped_identifier') ??
+        node.children.find((c) => c.type === 'identifier');
       if (scoped) {
         const text = scoped.text;
-        const lastDot = text.lastIndexOf('.');
-        const fqn = text.slice(0, lastDot);
-        const name = text.slice(lastDot + 1);
-        if (isStatic) {
-          // import static a.b.C.F → local F from module a.b.C, original F.
-          imports.set(name, { module: fqn, originalName: name });
+        if (isStatic && isWildcard) {
+          // Class FQN only — members are materialized post-map.
+          if (text.length > 0 && !wildcardImports.includes(text)) {
+            wildcardImports.push(text);
+          }
         } else {
-          // import a.b.C → module IS the class FQN; originalName is the class
-          // simple name. resolveJavaImport maps `a.b.C` → `a/b/C.java`.
-          imports.set(name, { module: text, originalName: name });
+          const lastDot = text.lastIndexOf('.');
+          const fqn = text.slice(0, lastDot);
+          const name = text.slice(lastDot + 1);
+          if (isStatic) {
+            // Preserve the declaring type in the target lookup. Constants from
+            // multiple types share one file-level map, so a bare `F` could
+            // otherwise resolve to a sibling type's flattened field.
+            const declaringClass = fqn.slice(fqn.lastIndexOf('.') + 1);
+            imports.set(name, {
+              module: fqn,
+              originalName: `${declaringClass}.${name}`,
+            });
+          } else {
+            // import a.b.C → module IS the class FQN; originalName is the class
+            // simple name. resolveJavaImport maps `a.b.C` → `a/b/C.java`.
+            imports.set(name, { module: text, originalName: name });
+          }
         }
       }
     }
@@ -343,6 +379,7 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
         if (operands === null) {
           literals.delete(name);
           exprs.delete(name);
+          unfoldableDeclarations.add(name);
           // …and the static IMPORT of the same simple name. A local
           // `static final String` shadows `import static a.b.C.PATH` inside
           // that class (JLS 6.4.1), so the correct answer for a non-foldable
@@ -363,9 +400,12 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
           if (qname) {
             literals.delete(qname);
             exprs.delete(qname);
+            unfoldableDeclarations.add(qname);
           }
           continue;
         }
+        unfoldableDeclarations.delete(name);
+        if (qname) unfoldableDeclarations.delete(qname);
         const literalValue =
           operands.length === 1 && operands[0].kind === 'literal'
             ? (operands[0] as { value: string }).value
@@ -436,7 +476,13 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
   };
   walkTypes(tree.rootNode, false);
 
-  return { literals, exprs, imports: imports as Map<string, ImportBinding> };
+  return {
+    literals,
+    exprs,
+    imports: imports as Map<string, ImportBinding>,
+    wildcardImports,
+    unfoldableDeclarations,
+  };
 }
 
 /**
@@ -578,6 +624,7 @@ function computeJavaFold(
   if (literal !== undefined) return literal;
   const expr = mc.exprs.get(name);
   if (expr !== undefined) return foldOperands(fileKey, expr, state, depth + 1);
+  if (unfoldableDeclarationsOf(mc).has(name)) return null;
   const imp = mc.imports.get(name);
   if (imp !== undefined) {
     const targetFile = resolveJavaImport(fileKey, imp.module, constantKeys);
@@ -627,4 +674,118 @@ export function foldJavaOperands(
 ): string | null {
   const out = foldOperands(fileKey, operands, newFoldState(repo), 0);
   return out === '' ? null : out;
+}
+
+/**
+ * Constant-defining file keys used by Java import resolution.
+ *
+ * Build once per repo pass. Recomputing this set for every wildcard-importing
+ * controller makes expansion quadratic in controller count.
+ */
+export function buildJavaConstantKeys(repo: RepoConstants): ReadonlySet<string> {
+  const repoKeys = new Set<string>();
+  for (const [key, target] of repo) {
+    if (target.literals.size > 0 || target.exprs.size > 0) repoKeys.add(key);
+  }
+  return repoKeys;
+}
+
+/** Direct static members owned by `classSimple`, excluding nested-type members. */
+function directJavaMembers(target: ModuleConstants, classSimple: string): Set<string> {
+  const members = new Set<string>();
+  const prefix = `${classSimple}.`;
+  for (const map of [target.literals, target.exprs]) {
+    for (const key of map.keys()) {
+      if (!key.startsWith(prefix)) continue;
+      const member = key.slice(prefix.length);
+      if (member.length > 0 && !member.includes('.')) members.add(member);
+    }
+  }
+  return members;
+}
+
+export interface JavaConstantIndex {
+  readonly keys: ReadonlySet<string>;
+  /** Every resolvable path suffix as a dotted module name; null means ambiguous. */
+  readonly byModule: ReadonlyMap<string, string | null>;
+  /** Direct members by constant-defining file, built once for all importers. */
+  readonly membersByFile: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/**
+ * Build all Java import suffixes once, turning repeated wildcard target lookup
+ * from O(importers × constant files) into O(path segments + importers).
+ */
+export function buildJavaConstantIndex(repo: RepoConstants): JavaConstantIndex {
+  const keys = buildJavaConstantKeys(repo);
+  const byModule = new Map<string, string | null>();
+  const membersByFile = new Map<string, ReadonlySet<string>>();
+  for (const key of keys) {
+    const normalized = key.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!normalized.endsWith('.java')) continue;
+    const segments = normalized.slice(0, -'.java'.length).split('/');
+    const classSimple = segments[segments.length - 1];
+    const constants = repo.get(key);
+    if (constants) membersByFile.set(key, directJavaMembers(constants, classSimple));
+    for (let start = 0; start < segments.length; start++) {
+      const moduleName = segments.slice(start).join('.');
+      const existing = byModule.get(moduleName);
+      if (existing === undefined) byModule.set(moduleName, key);
+      else if (existing !== key) byModule.set(moduleName, null);
+    }
+  }
+  return { keys, byModule, membersByFile };
+}
+
+export function expandJavaWildcardStaticImports(
+  mc: ModuleConstants,
+  _fileKey: string,
+  repo: RepoConstants,
+  index: JavaConstantIndex = buildJavaConstantIndex(repo),
+): ModuleConstants {
+  const wildcards = mc.wildcardImports;
+  if (!wildcards || wildcards.length === 0) return mc;
+  // Resolve targets against constant-DEFINING files only. Ingestion's harvest
+  // also admits import-only files; measuring uniqueness over every key made
+  // a duplicate empty FQN floor ingestion to skip while group still folded
+  // (#2980 R4).
+  const explicitImports = new Set(mc.imports.keys());
+  const pending = new Map<string, ImportBinding | null>();
+  for (const fqn of wildcards) {
+    const targetKey = index.byModule.get(fqn) ?? null;
+    if (targetKey === null) continue;
+    const classSimple = fqn.slice(fqn.lastIndexOf('.') + 1);
+    const members = index.membersByFile.get(targetKey);
+    if (!members) continue;
+    for (const name of members) {
+      // Same-file declarations and explicit imports have higher precedence
+      // than on-demand imports. An unfoldable declaration must remain a skip,
+      // not be resurrected from a wildcard target.
+      if (
+        mc.literals.has(name) ||
+        mc.exprs.has(name) ||
+        unfoldableDeclarationsOf(mc).has(name) ||
+        explicitImports.has(name)
+      ) {
+        continue;
+      }
+      const binding = { module: fqn, originalName: `${classSimple}.${name}` };
+      const previous = pending.get(name);
+      if (previous === undefined) pending.set(name, binding);
+      else if (previous !== null && previous.module !== fqn) pending.set(name, null);
+    }
+  }
+  for (const [name, binding] of pending) {
+    if (binding !== null) mc.imports.set(name, binding);
+  }
+  return mc;
+}
+
+/** Prepare every Java constants entry with one shared suffix index. */
+export function prepareJavaRouteConstants(repo: RepoConstants): JavaConstantIndex {
+  const index = buildJavaConstantIndex(repo);
+  for (const [fileKey, mc] of repo) {
+    expandJavaWildcardStaticImports(mc, fileKey, repo, index);
+  }
+  return index;
 }

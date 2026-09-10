@@ -9,35 +9,128 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner
+from workflow_bench import runner, runner_artifacts
+from workflow_bench import proposer_sandbox
 
 from workflow_bench.process_control import ManagedProcessResult, run_managed
+
+
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_CLAUDE,
     SANDBOX_NODE,
     SANDBOX_NODE_PREFIX,
+    SANDBOX_EVIDENCE,
+    SANDBOX_GITNEXUS_CLI,
+    SANDBOX_GIT_EXCLUDES,
     VITE_TEMP_DIR,
     SANDBOX_PATH,
+    SANDBOX_REVIEW_OUTPUT,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
+    SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
     _runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
+    _force_rmtree,
+    host_workspace_write_boundary,
+    prepare_review_workspace,
     prepare_sandbox,
     preflight_bubblewrap,
+    sandbox_workspace_write_boundary,
     stage_evidence_bundle,
     stage_task_assets,
 )
+from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
+
+
+@pytest.mark.parametrize("entry", ["directory", "relative-link", "absolute-link"])
+def test_review_preparation_rejects_a_reused_artifact_directory(tmp_path, entry):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("must survive")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        stale = proposer_sandbox.review_output_path(sandbox, "review-output.json").parent
+        if entry == "directory":
+            stale.mkdir()
+            (stale / "review-output.json").write_text("a previous cell's verdict")
+        else:
+            # relpath, not a hand-written "../sentinel": stale is
+            # <private_root>/review-output, which is nowhere near tmp_path, so the
+            # literal produced a dangling link and the assertion below proved nothing.
+            stale.symlink_to(
+                sentinel if entry == "absolute-link" else Path(os.path.relpath(sentinel, stale.parent))
+            )
+        with pytest.raises(SandboxError, match="already exists"):
+            proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert sentinel.read_text() == "must survive"
+
+
+def test_review_preparation_leaves_a_clone_entry_of_the_same_name_alone(tmp_path):
+    # The artifact no longer lives in the workspace, so a file that happens to
+    # share its name is just one of the repository's own files.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "review-output.json").write_text("repository content")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert (clone / "review-output.json").read_text() == "repository content"
+    assert clone not in output.parents
+
+
+def test_review_preparation_creates_a_private_directory_and_not_the_file(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+        assert output == proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        # The DIRECTORY is what has to exist and be writable: the agent writes
+        # a temp file beside the target and renames it.
+        assert output.parent.is_dir()
+        assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
+        # The file is deliberately absent — absence is how "never written" is
+        # told apart from "written badly".
+        assert not output.exists()
+
+
+def test_review_preparation_preserves_existing_runtime_files_and_tracks_only_created_paths(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "bunfig.toml").write_text("existing configuration\n")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+        created = json.loads((sandbox.private_root / "review-created-paths.json").read_text())
+        assert "bunfig.toml" not in created
+        assert ".npmrc" in created
+        assert ".mcp.json" in created
+        assert json.loads((clone / ".mcp.json").read_text()) == {}
+        assert (clone / "bunfig.toml").read_text() == "existing configuration\n"
+        assert (clone / ".git/commondir").read_text() == ".\n"
+
+
+def test_review_preparation_rejects_a_runtime_symlink_parent(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (clone / ".claude").symlink_to(outside, target_is_directory=True)
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        with pytest.raises(SandboxError):
+            proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+    assert list(outside.iterdir()) == []
 
 
 def test_environment_is_allowlisted_and_shell_children_are_credential_free(monkeypatch) -> None:
@@ -65,11 +158,179 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert settings["sandbox"]["failIfUnavailable"] is True
     assert settings["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings["sandbox"]["network"]["deniedDomains"] == ["*"]
+    assert SANDBOX_EVIDENCE in settings["sandbox"]["filesystem"]["allowRead"]
+    # Headless `claude -p` (2.1.247) never dispatches PreToolUse from any
+    # settings source, so a hook here would be confinement theater: it would
+    # read as a control in review while enforcing nothing at runtime.
+    assert "hooks" not in settings
     # ENV_SCRUB forces "default" mode; the proposer's tools (Bash writes the
     # overlay) run headless only because they are explicitly pre-approved.
     # Requesting a non-default defaultMode would merely warn, so it must be gone.
     assert settings["permissions"]["allow"] == ["Read", "Grep", "Glob", "Bash"]
     assert "defaultMode" not in settings["permissions"]
+
+
+def test_unsafe_host_session_translates_virtual_paths_and_disables_containment(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    evidence = tmp_path / "evidence"
+    for directory in (clone, evidence):
+        directory.mkdir()
+
+    with prepare_sandbox(
+        clone=clone,
+        backend="host-unsafe",
+        claude_bin=sys.executable,
+        read_only_mounts=(ReadOnlyMount(evidence, "/evidence"),),
+    ) as sandbox:
+        assert sandbox.command_prefix == []
+        assert sandbox.require_pid_namespace is False
+        assert sandbox.host_path("/workspace/review-output.json") == str(clone / "review-output.json")
+        assert sandbox.host_path("/evidence/selected-rows.json") == str(evidence / "selected-rows.json")
+        # The review artifact left the workspace, so the host-unsafe backend has
+        # to translate its new home too. Untranslated, the review prompt names a
+        # path that exists on neither backend and the cell writes nothing.
+        assert sandbox.host_path(
+            f"{proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == str(proposer_sandbox.review_output_path(sandbox, "review-output.json"))
+        assert sandbox.host_text(
+            f"write {proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == f"write {proposer_sandbox.review_output_path(sandbox, 'review-output.json')}"
+        assert sandbox.host_text("read /evidence and write /workspace/out") == (
+            f"read {evidence} and write {clone}/out"
+        )
+        # Sessions spawn the binary directly, so it must be the host executable
+        # rather than the sandbox-only mount target.
+        assert sandbox.claude_bin != SANDBOX_CLAUDE
+        assert Path(sandbox.claude_bin).exists()
+        assert sandbox.environment()["HOME"] == str(sandbox.home)
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in sandbox.environment()
+        assert all(
+            Path(entry).is_dir() for entry in sandbox.environment()["PATH"].split(":")
+        )
+        unsafe_settings = json.loads(sandbox.settings_json)
+        assert unsafe_settings["sandbox"]["enabled"] is False
+        assert unsafe_settings["sandbox"]["failIfUnavailable"] is False
+        assert "disableBypassPermissionsMode" not in unsafe_settings["permissions"]
+
+
+def test_host_workspace_write_boundary_keeps_only_the_review_artifact_writable(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    nested = clone / "src"
+    nested.mkdir(parents=True)
+    source = nested / "source.ts"
+    source.write_text("trusted\n")
+    output = clone / "review-output.json"
+    output.write_text("")
+    original_source_mode = stat.S_IMODE(source.stat().st_mode)
+    original_output_mode = stat.S_IMODE(output.stat().st_mode)
+
+    with host_workspace_write_boundary(clone, writable=(output,)):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        with pytest.raises(OSError):
+            (clone / "extra.py").write_text("nope\n")
+        output.write_text('{"schema_version":1}\n')
+
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == '{"schema_version":1}\n'
+    assert not (clone / "extra.py").exists()
+    assert stat.S_IMODE(source.stat().st_mode) == original_source_mode
+    assert stat.S_IMODE(output.stat().st_mode) == original_output_mode
+
+
+def test_host_workspace_write_boundary_keeps_files_under_an_allowed_directory(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    artifacts = clone / "artifacts"
+    artifacts.mkdir(parents=True)
+    existing = artifacts / "review-output.json"
+    existing.write_text("{}\n")
+    (clone / "src").mkdir()
+    locked = clone / "src" / "source.ts"
+    locked.write_text("trusted\n")
+
+    with host_workspace_write_boundary(clone, writable=(artifacts,)):
+        existing.write_text('{"schema_version":1}\n')
+        with pytest.raises(OSError):
+            locked.write_text("tampered\n")
+
+    assert existing.read_text() == '{"schema_version":1}\n'
+    assert locked.read_text() == "trusted\n"
+
+
+def test_host_workspace_write_boundary_rejects_a_symlinked_writable_artifact(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    target = tmp_path / "outside.json"
+    target.write_text("{}\n")
+    output = clone / "review-output.json"
+    output.symlink_to(target)
+    with pytest.raises(SandboxError, match="non-symlink"):
+        with host_workspace_write_boundary(clone, writable=(output,)):
+            pass
+
+
+def test_sandbox_workspace_write_boundary_is_noop_unless_host_unsafe(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    bwrap_sandbox = SimpleNamespace(backend="bwrap", clone=clone)
+    with sandbox_workspace_write_boundary(
+        bwrap_sandbox,
+        read_only_workspace=True,
+        writable=(),
+    ):
+        source.write_text("still writable under bwrap no-op\n")
+    assert source.read_text() == "still writable under bwrap no-op\n"
+
+    output = clone / "review-output.json"
+    output.write_text("")
+    source.write_text("trusted\n")
+    unsafe = SimpleNamespace(backend="host-unsafe", clone=clone)
+    with sandbox_workspace_write_boundary(
+        unsafe,
+        read_only_workspace=True,
+        writable=(output,),
+    ):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        output.write_text("ok\n")
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == "ok\n"
+
+
+def test_force_rmtree_deletes_nonempty_directories_copied_from_a_locked_workspace(tmp_path) -> None:
+    locked = tmp_path / "locked"
+    nested = locked / "gitnexus-shared" / "src"
+    nested.mkdir(parents=True)
+    (nested / "index.ts").write_text("export {}\n")
+    os.chmod(nested, 0o500)
+    os.chmod(locked / "gitnexus-shared", 0o500)
+    os.chmod(locked, 0o500)
+
+    copied = tmp_path / "sandbox-tmp" / "tmp.XXXX" / "gitnexus-shared"
+    copied.parent.mkdir(parents=True)
+    shutil.copytree(locked / "gitnexus-shared", copied)
+    assert stat.S_IMODE(copied.stat().st_mode) & 0o222 == 0
+
+    _force_rmtree(copied.parent)
+    assert not copied.parent.exists()
+
+
+def test_host_unsafe_sandbox_cleanup_survives_readonly_tmpdir_copies(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    leftover = None
+    with prepare_sandbox(clone=clone, backend="host-unsafe", claude_bin=sys.executable) as sandbox:
+        leftover = sandbox.private_root
+        copied = sandbox.temp / "tmp.XXXX" / "gitnexus-shared" / "src"
+        copied.mkdir(parents=True)
+        (copied / "index.ts").write_text("export {}\n")
+        os.chmod(copied, 0o500)
+        os.chmod(copied.parent, 0o500)
+        os.chmod(copied.parent.parent, 0o500)
+    assert leftover is not None
+    assert not leftover.exists()
 
 
 @pytest.mark.parametrize(
@@ -169,6 +430,16 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout == f"/home/agent|{SANDBOX_PATH}"
+
+        gitnexus_index = argv.index(SANDBOX_GITNEXUS_CLI)
+        gitnexus_wrapper = Path(argv[gitnexus_index - 1])
+        assert stat.S_IMODE(gitnexus_wrapper.stat().st_mode) == 0o500
+        assert "/opt/gitnexus/dist/cli/index.js" in gitnexus_wrapper.read_text()
+
+        excludes_index = argv.index(SANDBOX_GIT_EXCLUDES)
+        excludes = Path(argv[excludes_index - 1])
+        assert stat.S_IMODE(excludes.stat().st_mode) == 0o400
+        assert "/.bash_profile" in excludes.read_text().splitlines()
 
         # The evidence-provenance.mjs plan-writer's PATH-scan trusts a Python 3
         # candidate only if it (and its directory) is owned by root or by the
@@ -617,6 +888,63 @@ finally:
     assert not (clone / "oracle-leak.txt").exists()
 
 
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_read_only_review_workspace_exposes_only_one_writable_artifact(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    script = """
+import os
+from pathlib import Path
+try:
+    Path('/workspace/source.ts').write_text('tampered')
+except OSError:
+    pass
+else:
+    raise SystemExit('review source remained writable')
+# Write the way the agent's Write tool does: a temp file beside the target,
+# then rename. Writing in place would pass against the mount shape that
+# shipped every artifact empty, which is the regression this canary exists for.
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text('{"schema_version":1}')
+os.replace(staging, target)
+"""
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+        result = run_managed(
+            [
+                *sandbox.command_prefix_for(
+                    read_only_workspace=True,
+                    extra_writable_mounts=(
+                        ReadOnlyMount(
+                            source=output.parent, target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                        ),
+                    ),
+                ),
+                "/usr/bin/python3",
+                "-c",
+                script,
+            ],
+            timeout=10,
+            env=sandbox.environment(),
+            require_pid_namespace=True,
+        )
+
+        # Inside the sandbox scope: the artifact now lives under the session's
+        # private root, which prepare_sandbox removes on exit. run_arm reads it
+        # here too, while the session is still alive.
+        assert result.ok, result.stderr_tail
+        assert source.read_text() == "trusted\n"
+        assert output.read_text() == '{"schema_version":1}'
+        # The staging file is gone: the rename landed rather than a copy.
+        assert list(output.parent.iterdir()) == [output]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
 @pytest.mark.parametrize("operation", ["stage", "sandbox"])
 def test_clone_root_symlink_is_rejected_before_host_access(tmp_path: Path, operation: str) -> None:
@@ -839,13 +1167,15 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
     os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
     reason="real Claude/Bash/MCP canary is mandatory in the named Ubuntu CI job",
 )
-def test_real_claude_bare_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("review_layout", [False, True])
+def test_real_claude_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path, review_layout: bool) -> None:
     """Exercise the exact CLI boundary without contacting a paid model."""
 
     claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
     assert claude.is_file()
     clone = tmp_path / "clone"
     clone.mkdir()
+    (clone / "canary.txt").write_text("hook-readable")
     fake_mcp = clone / "fake_mcp.py"
     fake_mcp.write_text(
         """import json
@@ -872,7 +1202,7 @@ for line in sys.stdin:
             }]
         }
     elif method == "tools/call":
-        Path("/workspace/mcp-called").write_text("ok")
+        Path("/tmp/mcp-called").write_text("ok")
         result = {"content": [{"type": "text", "text": "repository list ready"}]}
     else:
         result = {}
@@ -880,6 +1210,35 @@ for line in sys.stdin:
 """
     )
     fake_mcp.chmod(0o500)
+
+    review_command = """test -z "${ANTHROPIC_API_KEY:-}" && python3 - <<'PY'
+import json
+import os
+import subprocess
+from pathlib import Path
+source = Path('/workspace/canary.txt')
+assert 'hook-readable' in source.read_text()
+assert 'changed for review' in subprocess.check_output(['git', 'diff', '--', 'canary.txt'], text=True)
+for operation in (lambda: source.write_text('forbidden'), lambda: source.rename(source.with_name('renamed')), source.unlink):
+    try:
+        operation()
+    except OSError:
+        pass
+    else:
+        raise AssertionError('source mutation was allowed')
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text(json.dumps({'schema_version': 1, 'verdict': 'approve', 'findings': []}))
+os.replace(staging, target)
+PY"""
+    if review_layout:
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "add", "canary.txt", "fake_mcp.py"],
+            ["git", "-c", "user.name=Canary", "-c", "user.email=canary@example.test", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=clone, check=True, capture_output=True)
+        (clone / "canary.txt").write_text("hook-readable\nchanged for review\n")
 
     observed_tool_results: dict[str, dict] = {}
 
@@ -910,7 +1269,19 @@ for line in sys.stdin:
                     and isinstance(block.get("tool_use_id"), str)
                 }
             )
-            if "toolu_mcp_canary" not in tool_result_ids:
+            if "toolu_read_canary" not in tool_result_ids:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_canary",
+                        "name": "Read",
+                        "input": {
+                            "file_path": "/workspace/canary.txt",
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_mcp_canary" not in tool_result_ids:
                 blocks = [
                     {
                         "type": "tool_use",
@@ -927,7 +1298,9 @@ for line in sys.stdin:
                         "id": "toolu_bash_canary",
                         "name": "Bash",
                         "input": {
-                            "command": ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
+                            "command": review_command
+                            if review_layout
+                            else ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
                         },
                     }
                 ]
@@ -1024,6 +1397,22 @@ for line in sys.stdin:
             }
         )
         with prepare_sandbox(clone=clone, claude_bin=claude, preflight=True) as sandbox:
+            output = None
+            before = {}
+            if review_layout:
+                output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+                before = runner_artifacts.workspace_snapshot(clone)
+                sandbox = replace(
+                    sandbox,
+                    command_prefix=sandbox.command_prefix_for(
+                        read_only_workspace=True,
+                        extra_writable_mounts=(
+                            ReadOnlyMount(
+                                output.parent, proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                            ),
+                        ),
+                    ),
+                )
             result = sandbox.run(
                 [
                     sandbox.claude_bin,
@@ -1032,7 +1421,6 @@ for line in sys.stdin:
                     "text",
                     "--output-format",
                     "json",
-                    "--bare",
                     "--settings",
                     sandbox.settings_json,
                     "--strict-mcp-config",
@@ -1044,7 +1432,12 @@ for line in sys.stdin:
                     # authoritative empirical gate for that behavior.
                     "--model",
                     "claude-canary-20260718",
+                    "--tools",
+                    "Read",
+                    "Bash",
+                    "mcp__gitnexus__list_repos",
                     "--allowedTools",
+                    "Read",
                     "Bash",
                     "mcp__gitnexus__list_repos",
                 ],
@@ -1053,17 +1446,121 @@ for line in sys.stdin:
                     auth_token="offline-canary-key",
                     base_url=f"http://127.0.0.1:{server.server_port}",
                 ),
-                stdin_data=b"Use both available tools, then finish.",
+                stdin_data=b"Use all three available tools, then finish.",
             )
+            assert result.ok, result.stderr_tail + result.stdout_tail
+            report = json.loads(result.stdout_tail)
+            assert report["subtype"] == "success" and report["is_error"] is False, report
+            read_result = observed_tool_results["toolu_read_canary"]
+            assert read_result.get("is_error") is not True, read_result
+            assert "hook-readable" in json.dumps(read_result)
+            bash_result = observed_tool_results["toolu_bash_canary"]
+            assert bash_result.get("is_error") is not True, bash_result
+            assert (sandbox.temp / "mcp-called").read_text() == "ok"
+            if review_layout:
+                assert output is not None
+                runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=None)
+                assert json.loads(output.read_text())["verdict"] == "approve"
+                assert (clone / "canary.txt").read_text() == "hook-readable\nchanged for review\n"
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
-    assert result.ok, result.stderr_tail + result.stdout_tail
-    report = json.loads(result.stdout_tail)
-    assert report["subtype"] == "success" and report["is_error"] is False, report
-    bash_result = observed_tool_results["toolu_bash_canary"]
-    assert bash_result.get("is_error") is not True, bash_result
-    assert (clone / "bash-called").read_text() == "canary"
-    assert (clone / "mcp-called").read_text() == "ok"
+    if not review_layout:
+        assert (clone / "bash-called").read_text() == "canary"
+
+
+def test_review_artifact_binds_a_writable_directory_outside_the_workspace(tmp_path):
+    """The bwrap argv, since the mount shape is the whole bug.
+
+    bwrap cannot create a mount point inside an already-read-only bind, so a
+    writable path has to live outside /workspace — and it has to be the
+    directory, or the agent has nowhere to put the temp file it renames into
+    place.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as session:
+        sandbox = replace(session, backend="bwrap")
+        output = proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        output.parent.mkdir(mode=0o700)
+        argv = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                proposer_sandbox.ReadOnlyMount(
+                    source=output.parent,
+                    target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT,
+                ),
+            ),
+        )
+
+        target = proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+        assert not target.startswith(proposer_sandbox.SANDBOX_WORKSPACE + "/")
+        # The workspace itself is bound read-only...
+        workspace_at = argv.index(proposer_sandbox.SANDBOX_WORKSPACE)
+        assert argv[workspace_at - 2] == "--ro-bind"
+        # ...and the artifact directory is bound writable, as a directory.
+        artifact_at = argv.index(target)
+        assert argv[artifact_at - 2] == "--bind"
+        assert Path(argv[artifact_at - 1]) == output.parent
+        assert Path(argv[artifact_at - 1]).is_dir()
+        assert f"{proposer_sandbox.SANDBOX_WORKSPACE}/review-output.json" not in argv
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_lets_a_review_artifact_be_written_atomically(tmp_path: Path) -> None:
+    """The filesystem contract the EROFS defect broke, under a real sandbox.
+
+    Argv assertions cannot establish this. The artifact came back empty because
+    an atomic write - temp file beside the target, then rename - needs a
+    WRITABLE PARENT DIRECTORY, and only a real bwrap invocation shows whether
+    the mount grants one. A deterministic writer stands in for the agent: no
+    model session, no credentials.
+
+    Scope: this proves the filesystem and process contract of the production
+    mount configuration. It does not establish that a particular agent CLI's
+    own file-access policy permits the same operation - that is a second,
+    independent gate.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "tracked.txt").write_text("original\n")
+
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        review_output = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
+        # The production configuration, not a hand-built mount tuple: the same
+        # command_prefix_for call run_arm makes for a review cell.
+        prefix = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                ReadOnlyMount(source=review_output.parent, target=SANDBOX_REVIEW_OUTPUT),
+            ),
+        )
+        target = f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}"
+        script = (
+            # 1. temp file beside the destination, then atomic rename over it.
+            f'printf %s \'{{"schema_version": 1, "verdict": "approve", "findings": []}}\' > {target}.tmp && '
+            f"mv {target}.tmp {target} && "
+            # 2. the workspace must refuse the write that the mount forbids.
+            f"(printf x >> {SANDBOX_WORKSPACE}/tracked.txt 2>/dev/null && echo WORKSPACE-WRITABLE || echo workspace-readonly)"
+        )
+        result = subprocess.run(
+            [*prefix, "/bin/sh", "-c", script],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+
+        assert result.returncode == 0, f"atomic write failed inside the sandbox: {result.stderr[-400:]}"
+        assert "workspace-readonly" in result.stdout, "the workspace must stay read-only"
+        assert (clone / "tracked.txt").read_text() == "original\n", "the clone was modified"
+
+        # Read while the session is alive: the artifact lives under the private
+        # root that prepare_sandbox removes on exit, which is also why run_arm
+        # consumes it before leaving the scope.
+        _verdict, findings = parse_review_output(review_output)
+        assert findings == ()

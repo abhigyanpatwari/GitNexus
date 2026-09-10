@@ -6,6 +6,7 @@ import type {
   CrossLink,
   ContractRegistry,
   GroupManifestLink,
+  GroupImpactResult,
   MatchType,
 } from '../../../src/core/group/types.js';
 
@@ -20,6 +21,7 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,
@@ -48,7 +50,7 @@ describe('Group types', () => {
   });
 
   it('ExtractedContract accepts all contract types', () => {
-    const types: ContractType[] = ['http', 'grpc', 'topic', 'lib', 'custom'];
+    const types: ContractType[] = ['http', 'graphql', 'grpc', 'topic', 'lib', 'custom'];
     types.forEach((t) => {
       const contract: ExtractedContract = {
         contractId: `${t}::test`,
@@ -88,6 +90,7 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,
@@ -129,5 +132,21 @@ describe('Group types', () => {
       role: 'provider',
     };
     expect(l.contract).toBe('/x');
+  });
+
+  it('uses the shared closed union for unused impact-axis reasons', () => {
+    type UnusedAxis = NonNullable<GroupImpactResult['riskScale']>['unusedAxes'][number];
+    const valid = {
+      axis: 'processes',
+      reason: 'enrichment-query-failed',
+    } satisfies UnusedAxis;
+    const invalid = {
+      axis: 'processes',
+      // @ts-expect-error unknown reasons must not widen the shared contract
+      reason: 'not-a-real-reason',
+    } satisfies UnusedAxis;
+
+    expect(valid.reason).toBe('enrichment-query-failed');
+    expect(invalid.reason).toBe('not-a-real-reason');
   });
 });

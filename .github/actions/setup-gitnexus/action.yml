@@ -6,6 +6,13 @@ inputs:
     description: Whether to run npm run build after install
     required: false
     default: 'false'
+  lifecycle-scripts:
+    description: >
+      Run npm lifecycle scripts (prepare/postinstall) during gitnexus npm ci.
+      Typecheck-only and pack-only jobs should set this to false: they do not
+      need dist/ or native grammar builds.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -16,15 +23,29 @@ runs:
         cache: npm
         cache-dependency-path: gitnexus/package-lock.json
 
-    - name: Build gitnexus-shared
-      run: npm install && npm run build
-      shell: bash
-      working-directory: gitnexus-shared
-
+    # Do not npm-ci gitnexus-shared. Its TypeScript 7 install is a 7-minute
+    # stall (optional platform packages) and is not in the CLI npm cache.
+    # prepare/build.js compiles shared with gitnexus's tsc; typecheck does
+    # the same below after an ignore-scripts install.
     - name: Install dependencies
+      if: ${{ inputs.lifecycle-scripts != 'false' }}
       run: npm ci
       shell: bash
       working-directory: gitnexus
+
+    - name: Install dependencies
+      if: ${{ inputs.lifecycle-scripts == 'false' }}
+      run: npm ci --ignore-scripts
+      shell: bash
+      working-directory: gitnexus
+
+    - name: Build gitnexus-shared
+      if: ${{ inputs.lifecycle-scripts == 'false' }}
+      # node + lib/tsc.js — same on Windows/macOS/Linux. Do not use .bin/tsc
+      # (tsc.cmd on Windows; execFileSync cannot launch .cmd without a shell).
+      run: node ../gitnexus/node_modules/typescript/lib/tsc.js
+      shell: bash
+      working-directory: gitnexus-shared
 
     - name: Build
       if: ${{ inputs.build == 'true' }}

@@ -54,10 +54,14 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
-vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: vi.fn(async () => []),
-  readRegistryStrict: vi.fn(async () => []),
-}));
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    readRegistry: vi.fn(async () => []),
+    readRegistryStrict: vi.fn(async () => []),
+  };
+});
 
 vi.mock('../../../src/core/group/extractors/http-route-extractor.js', () => ({
   HttpRouteExtractor: class {

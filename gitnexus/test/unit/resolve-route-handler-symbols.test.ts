@@ -65,6 +65,19 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     expect(out.has(GET_ORDERS)).toBe(false);
   });
 
+  it('treats an empty routePath as a valid root route when resolving its handler', () => {
+    const model = createSemanticModel();
+    model.symbols.add(FILE, 'root', 'method:OrderController.root', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [decoratorRoute({ routePath: '', handlerName: 'root' })],
+    );
+
+    expect(out.get(routeNodeKey('GET', '/'))).toBe('method:OrderController.root');
+  });
+
   it('same-identity collision: an unresolvable first route reserves the slot so a later resolvable route cannot stamp it', () => {
     const model = createSemanticModel();
     // Only the SECOND route's handler exists in the model.

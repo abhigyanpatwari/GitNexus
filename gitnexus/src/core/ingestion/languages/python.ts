@@ -45,6 +45,7 @@ import {
 import { extractDjangoRoutes } from '../route-extractors/django.js';
 import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
 import { extractPythonModuleConstants } from '../route-extractors/python-const-resolver.js';
+import { pythonDecoratorRouteHandlerName } from '../route-extractors/python-decorator-handler.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -143,6 +144,7 @@ export const pythonProvider = defineLanguage({
     discoverDjangoRootUrls(files, contentMap, reader),
   extractRoutes: (tree, filePath, reader, parser) =>
     parser ? extractDjangoRoutes(tree, filePath, parser, reader) : [],
+  decoratorRouteHandlerName: pythonDecoratorRouteHandlerName,
   labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

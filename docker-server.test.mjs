@@ -271,6 +271,12 @@ it('does not inject config into static assets', async () => {
 const TEST_AUTH_TOKEN = 'proxy-test-token-0123456789abcdefghij';
 const TEST_BEARER = `Bearer ${TEST_AUTH_TOKEN}`;
 
+// The protocol token the upstream expects on /api/mcp. Deliberately unlike the
+// edge token, so "injected the backend credential" and "forwarded the edge one"
+// can never both satisfy an assertion.
+const TEST_MCP_TOKEN = 'backend-mcp-token-0123456789abcdefghij';
+const TEST_MCP_BEARER = `Bearer ${TEST_MCP_TOKEN}`;
+
 // rawRequest never sends credentials; apiRequest does. In a file whose subject
 // is who gets let through, no test should pass because a helper quietly
 // authenticated for it.
@@ -376,6 +382,11 @@ async function withProxy(
   const proc = spawnServerWithEnv(dir, port, {
     GITNEXUS_UPSTREAM_URL: schemeless ? target : `http://${target}`,
     GITNEXUS_SERVE_AUTH_TOKEN: TEST_AUTH_TOKEN,
+    // An ambient GITNEXUS_MCP_AUTH_TOKEN in the developer's shell would make the
+    // proxy inject one on /api/mcp, so drop it: spawn omits undefined entries,
+    // which unsets the inherited value. A test that wants injection sets it via
+    // `env` below.
+    GITNEXUS_MCP_AUTH_TOKEN: undefined,
     ...env,
   });
   proc.stderr.setEncoding('utf8');
@@ -969,12 +980,79 @@ it('forwards an /api/* request that carries the correct token', async () => {
 });
 
 it('strips the Authorization header instead of forwarding the edge token', async () => {
-  // The token is spent at this hop. `serve` reads no Authorization header, so
-  // forwarding would only copy a live credential into another service's logs.
+  // The edge credential is spent and stripped at this hop. Forwarding it
+  // would copy a live credential into another service's logs. With no
+  // GITNEXUS_MCP_AUTH_TOKEN configured — the default — nothing replaces it.
   await withProxy({}, async (port, ctx) => {
     const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
     assert.equal(res.status, 200, 'the request itself must still be proxied');
     assert.equal(ctx.received.headers.authorization, undefined);
+  });
+});
+
+// -- Upstream MCP token injection (GITNEXUS_MCP_AUTH_TOKEN) -----------------
+//
+// A backend running protocol-layer MCP auth expects its own Bearer on
+// /api/mcp, and the edge credential can't serve as one. Both services are
+// configured with the same GITNEXUS_MCP_AUTH_TOKEN; this hop spends the edge
+// token and substitutes the backend one, for that route only.
+
+// Stands in for a `serve` with MCP Bearer auth enabled: only the exact backend
+// credential gets through, so a passing two-hop request proves what was sent.
+const mcpBackend = (req, res) => {
+  if (req.headers.authorization !== TEST_MCP_BEARER) {
+    res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end('{"error":"unauthorized"}');
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end('{"ok":true}');
+};
+
+it('treats a blank GITNEXUS_MCP_AUTH_TOKEN as unset and still strips', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: '   ' };
+  await withProxy({ env }, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
+    assert.equal(res.status, 200);
+    assert.equal(ctx.received.headers.authorization, undefined);
+  });
+});
+
+it('replaces the edge credential with the upstream MCP token on /api/mcp', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ upstream: mcpBackend, env }, async (port, ctx) => {
+    const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
+    assert.equal(res.status, 200, 'a backend that demands the MCP token must accept this hop');
+    assert.equal(ctx.received.headers.authorization, TEST_MCP_BEARER);
+    assert.notEqual(
+      ctx.received.headers.authorization,
+      TEST_BEARER,
+      'the edge credential must never be forwarded',
+    );
+  });
+});
+
+it('injects the upstream MCP token on /api/mcp subpaths and ignores the query string', async () => {
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ upstream: mcpBackend, env }, async (port, ctx) => {
+    for (const path of ['/api/mcp/messages', '/api/mcp?session=abc']) {
+      const res = await apiRequest(port, path, { method: 'POST', body: '{}' });
+      assert.equal(res.status, 200, `${path} must reach the MCP backend authenticated`);
+      assert.equal(ctx.received.headers.authorization, TEST_MCP_BEARER, path);
+    }
+  });
+});
+
+it('leaves non-MCP routes stripped when an upstream MCP token is configured', async () => {
+  // /api/mcpfoo shares a prefix with the MCP route but is not it, and a plain
+  // API route never carries a protocol credential.
+  const env = { GITNEXUS_MCP_AUTH_TOKEN: TEST_MCP_TOKEN };
+  await withProxy({ env }, async (port, ctx) => {
+    for (const path of ['/api/mcpfoo', '/api/health']) {
+      const res = await apiRequest(port, path);
+      assert.equal(res.status, 200);
+      assert.equal(ctx.received.headers.authorization, undefined, path);
+    }
   });
 });
 

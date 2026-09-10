@@ -1,0 +1,17 @@
+.{
+    .name = .idioms,
+    .version = "0.1.0",
+    .fingerprint = 0x9a2f1c4e7b3d5061,
+    .minimum_zig_version = "0.14.0",
+    .dependencies = .{
+        // Library laid out by `zig init` ≥ 0.12: src/root.zig, declared in its build.zig.
+        .geo = .{ .path = "libs/geo" },
+        // Older convention: src/<name>.zig, no addModule in build.zig.
+        .oldlib = .{ .path = "libs/oldlib" },
+        .remote = .{
+            .url = "https://example.invalid/remote.tar.gz",
+            .hash = "1220deadbeef",
+        },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

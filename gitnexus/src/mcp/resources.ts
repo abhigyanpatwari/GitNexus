@@ -313,7 +313,10 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
 
   if (repos.length > 1) {
     lines.push('');
-    lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
+    lines.push(
+      '# Multiple repos indexed. Read-only tools may omit repo when an MCP default is configured or GitNexus process.cwd() is inside one listed path without crossing an unindexed nested Git checkout.',
+    );
+    lines.push('# Otherwise—and for mutating tools without an MCP default—pass repo explicitly:');
     lines.push(`# query({search_query: "auth", repo: "${repos[0].name}"})`);
   }
 
@@ -364,6 +367,14 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  indexed_at: ${JSON.stringify(freshMeta?.indexedAt ?? null)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
+  lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
+  // Surfaced beside the Actuator flag, and it matters more than that one does:
+  // Actuator only annotates nodes the source pass already found, whereas
+  // document reading MINTS destinations and edges that have no code site at
+  // all. Without this line an agent reading the context sees `Destination`
+  // nodes rooted at `asyncapi:`-prefixed pseudo-files with nothing to say where
+  // they came from.
+  lines.push(`  asyncapi_spec: ${JSON.stringify(freshMeta?.asyncApiSpec ?? null)}`);
   const indexedRunnerSchema = (freshMeta?.runnerIdentity as { schemaVersion?: unknown } | undefined)
     ?.schemaVersion;
   lines.push(

@@ -5,8 +5,8 @@
  * PREVIOUS run's index. This drives the real `runFullAnalysis` incremental
  * path (real git repo, real LadybugDB, real FTS extension) and asserts,
  * at the moment `deleteNodesForFiles` is invoked, that `SHOW_INDEXES()`
- * already reports every FTS index absent — proving the drop-before-delete
- * ordering end-to-end rather than only unit-testing the call sequence.
+ * already reports FTS indexes for tables that will be DML'd as absent
+ * (#2589 drop-before-delete). #3016: empty-language FTS tables may remain.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -67,7 +67,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
     vi.resetModules();
   });
 
-  it('SHOW_INDEXES() reports every FTS index absent by the time deleteNodesForFiles runs', async () => {
+  it('SHOW_INDEXES() reports the FTS indexes of every table being written as absent by the time deleteNodesForFiles runs', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -128,8 +128,24 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       expect(indexNamesAtDeleteTime).toBeDefined();
-      for (const { indexName } of FTS_INDEXES) {
-        expect(indexNamesAtDeleteTime).not.toContain(indexName);
+      // handler.ts writes File/Function/Class/Method. The incremental write set
+      // also pulls importer-expanded mini-repo files (index.ts re-exports
+      // handler; validator.ts holds Interface + Property), so those FTS
+      // indexes must be down before DETACH DELETE (#2589). Every other
+      // configured FTS index must still be live (#3016 narrowing).
+      const down = new Set([
+        'file_fts',
+        'function_fts',
+        'class_fts',
+        'method_fts',
+        'interface_fts',
+        'property_fts',
+      ]);
+      const configured = FTS_INDEXES.map((i) => i.indexName);
+      const ftsAtDelete = indexNamesAtDeleteTime!.filter((name) => configured.includes(name));
+      expect([...ftsAtDelete].sort()).toEqual(configured.filter((name) => !down.has(name)).sort());
+      for (const name of down) {
+        expect(ftsAtDelete).not.toContain(name);
       }
     } finally {
       await repo.cleanup();

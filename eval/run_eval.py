@@ -27,12 +27,10 @@ import threading
 import time
 from itertools import product
 from pathlib import Path
-from typing import Any
 
 import typer
 import yaml
 from rich.console import Console
-from rich.live import Live
 from rich.table import Table
 
 from utils.errors import is_debug_enabled, log_safe_exception

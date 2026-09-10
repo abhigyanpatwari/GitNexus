@@ -17,10 +17,10 @@
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
-import os from 'os';
 import { getInferredRepoName, resolveRepoIdentityRoot, stripUrlCredentials } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
+import { getGlobalDir } from './global-dir.js';
 import { logger } from '../core/logger.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
@@ -53,6 +53,7 @@ export type { BranchSummary };
 // `tryReadMetaFile` stay module-private here, exactly as before.
 export { getStoragePath, INDEX_METADATA_FILE, isMissingFilesystemError, loadMeta };
 export type { AnalyzerRunnerIdentity, RepoMeta };
+export { getGlobalDir } from './global-dir.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -518,13 +519,6 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
 // ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────
 
 /**
- * Get the path to the global GitNexus directory
- */
-export const getGlobalDir = (): string => {
-  return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
-};
-
-/**
  * Get the path to the global registry file
  */
 export const getGlobalRegistryPath = (): string => {
@@ -563,11 +557,9 @@ const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
  * registry-private lock namespace; the handle is kernel-owned on supported
  * platforms and crash-reclaimable by the existing fallback.
  *
- * On timeout the transaction proceeds UNLOCKED rather than throwing: the lock
- * closes a lost-update race that existed unguarded before #2716, so degrading
- * to the old best-effort behaviour is strictly better than failing an
- * `analyze`/`list`/`augment` outright on a wedged lock (a stale pid-reuse
- * ghost on platforms without start-time verification can look live forever).
+ * On timeout the transaction fails closed: continuing unlocked would reintroduce
+ * the lost-update race this lock exists to prevent and can silently discard a
+ * concurrent registration.
  */
 const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   let lock: IndexLockHandle | null = null;
@@ -581,11 +573,13 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
         logger.info('Waiting for another GitNexus process to finish a registry update…'),
     });
   } catch (err) {
-    if (!(err instanceof IndexLockTimeoutError)) throw err;
-    logger.warn(
-      { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
-      'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
-    );
+    if (err instanceof IndexLockTimeoutError) {
+      logger.error(
+        { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
+        'Timed out waiting for the global registry lock; refusing an unlocked registry transaction.',
+      );
+    }
+    throw err;
   }
   try {
     return await operation();
@@ -754,14 +748,11 @@ export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegi
  * Atomic tmp+rename: a crash mid-write can never leave a truncated
  * registry.json that the next load would treat as empty and silently drop
  * every registered repo (#2106 R9). The tmp path must stay per-write — the
- * registry is the one file every gitnexus process on the machine writes, and
- * `withRegistryLock` degrades to unlocked on timeout, so the write cannot rely
- * on the lock to keep two writers off one staging path (#2888).
- *
- * `attempts` is forwarded to the rename retry; best-effort callers pass `1`.
+ * registry is the one file every gitnexus process on the machine writes (#2888).
  */
 const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
-  await fs.mkdir(getGlobalDir(), { recursive: true });
+  const dir = getGlobalDir();
+  await fs.mkdir(dir, { recursive: true });
   await writeFileAtomic(
     getGlobalRegistryPath(),
     JSON.stringify(sanitizeEntries(entries), null, 2),
@@ -909,7 +900,10 @@ const registerRepoUnlocked = async (
   // falling back to `path.resolve` when the path doesn't exist.
   const canonicalInput = canonicalizePath(repoPath);
 
-  const entries = await readRegistry();
+  // Mutating writes must not treat an unreadable/truncated registry as empty
+  // (#3094): lenient `readRegistry()` returns `[]` on parse failure and would
+  // replace the machine-wide file with only this entry. ENOENT stays empty.
+  const entries = await readRegistryStrict();
   const existingIdx = entries.findIndex((e) => {
     // Canonicalise the STORED entry too so pre-canonicalisation
     // registries (written by older versions, or paths passed in a
@@ -1024,7 +1018,7 @@ const registerRepoUnlocked = async (
   // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
   // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
   // survives instead of being clobbered by a stale entry-time view.
-  const fresh = await readRegistry();
+  const fresh = await readRegistryStrict();
   const freshIdx = fresh.findIndex((e) => {
     const a = canonicalizePath(e.path);
     return registryPathEquals(a, canonicalInput);
@@ -1470,6 +1464,27 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 };
 
 /**
+ * Name-only registry match (the name tier of {@link resolveRegistryEntry},
+ * without path matching). Used by `group.yaml` member *values*, which are
+ * registry aliases, not filesystem paths.
+ *
+ * Zero matches → `undefined` (caller treats as missing). One match → that
+ * entry. Two or more → {@link RegistryAmbiguousTargetError}.
+ */
+export const findRegistryEntryByName = (
+  entries: RegistryEntry[],
+  name: string,
+): RegistryEntry | undefined => {
+  const targetLower = name.toLowerCase();
+  const nameMatches = entries.filter((e) => e.name.toLowerCase() === targetLower);
+  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length > 1) {
+    throw new RegistryAmbiguousTargetError(name, nameMatches);
+  }
+  return undefined;
+};
+
+/**
  * List all registered repos from the global registry.
  *
  * With `validate: true`, prunes only entries whose metadata is *provably* gone
@@ -1545,8 +1560,6 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
-        // attempts: 1 — the catch below discards a failure, so the rename
-        // backoff would only make every other process wait out this lock.
         await writeRegistry(
           fresh.filter((entry) => !pruned.has(entry.path)),
           1,
@@ -1582,11 +1595,13 @@ export interface CLIConfig {
     | 'claude'
     | 'codex'
     | 'opencode'
+    | 'grok'
     | 'minimax';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
   opencodeModel?: string;
+  grokModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */

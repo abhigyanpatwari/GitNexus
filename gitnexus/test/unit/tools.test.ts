@@ -193,6 +193,17 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.description).toContain('truncatedBy');
   });
 
+  it('documents riskSharedAxes as a compare aid, not the edit gate', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    expect(impactTool.description).toContain('riskSharedAxes');
+    expect(impactTool.description).toContain('Never substitute it for `risk`');
+    expect(impactTool.description).toContain('IMPACT_MAX_CHUNKS=0');
+    expect(impactTool.description).toContain('sampled a subset of impacted symbols');
+    expect(impactTool.description).toContain('Graph-RAG');
+    expect(impactTool.description).toContain('cross-repo crossing overlay');
+    expect(impactTool.description).toContain('known HIGH/CRITICAL warnings survive');
+  });
+
   it.each(['query', 'context', 'impact'])(
     '%s advertises an optional positive maxTokens budget',
     (name) => {
@@ -272,6 +283,25 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('repo descriptions explain the cwd default and mutating exception (#3073)', () => {
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /process cwd/i,
+    );
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /unindexed nested Git checkout/i,
+    );
+    for (const tool of GITNEXUS_TOOLS) {
+      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) continue;
+      const description = tool.inputSchema.properties.repo.description;
+      if (tool.name === 'rename') {
+        expect(description).toMatch(/mutating tools require an explicit repo/i);
+      } else {
+        expect(description).toMatch(/process cwd/i);
+        expect(description).toMatch(/unindexed nested Git checkout/i);
+      }
+    }
+  });
+
   it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
     for (const tool of GITNEXUS_TOOLS) {
       if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
@@ -312,6 +342,10 @@ describe('GITNEXUS_TOOLS', () => {
     // `not-attempted` is unreachable through this tool; documenting it would
     // advertise an outcome no caller can observe.
     expect(d).not.toContain('not-attempted');
+    expect(d).toContain('READ THE RESULT:');
+    expect(d).toContain('degradedLinks');
+    expect(d).toContain('failedRepos');
+    expect(d).toContain('warnings');
     // 'preserved' rewrites contracts.json (keeping the previous contracts and
     // cross-links, refreshing the diagnostic lists). ITS clause may not say the
     // file was left alone — that sent an operator reading an unchanged mtime to

@@ -28,6 +28,7 @@ import {
   adoptFlatBranchLabel,
   listRegisteredRepos,
   resolveRegistryEntry,
+  findRegistryEntryByName,
   canonicalizePath,
   registryPathEquals,
   cloneDirBelongsToEntry,
@@ -228,6 +229,30 @@ describe('saveMeta dual-write', () => {
     const legacy = await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8');
     expect(JSON.parse(primary)).toEqual(meta);
     expect(JSON.parse(legacy)).toEqual(meta);
+  });
+
+  it('round-trips scope extraction failure metadata through the production writer', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    const withFailures: RepoMeta = {
+      ...meta,
+      scopeExtractionReceipt: 1,
+      scopeExtractionFailures: {
+        total: 3,
+        paths: ['src/a.ts', 'src/b.ts'],
+        truncated: true,
+      },
+    };
+
+    await saveMeta(storagePath, withFailures);
+
+    expect(await loadMeta(storagePath)).toMatchObject({
+      scopeExtractionReceipt: 1,
+      scopeExtractionFailures: {
+        total: 3,
+        paths: ['src/a.ts', 'src/b.ts'],
+        truncated: true,
+      },
+    });
   });
 
   it('leaves no stray tmp files behind after a successful write', async () => {
@@ -814,6 +839,25 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].name).toBe('custom-alias');
     expect(entries[0].name).not.toBe(path.basename(tmpRepoA.dbPath));
+  });
+
+  it('preserves every concurrent registration', async () => {
+    const repoPaths = Array.from({ length: 12 }, (_, index) =>
+      path.join(tmpRepoA.dbPath, `concurrent-${index}`),
+    );
+    await Promise.all(repoPaths.map((repoPath) => fs.mkdir(repoPath, { recursive: true })));
+
+    await Promise.all(
+      repoPaths.map((repoPath, index) =>
+        registerRepo(repoPath, meta, { name: `concurrent-${index}` }),
+      ),
+    );
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(repoPaths.length);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(
+      repoPaths.map((_, index) => `concurrent-${index}`).sort(),
+    );
   });
 
   it('re-registerRepo on same path without name preserves an existing alias', async () => {
@@ -1509,6 +1553,13 @@ describe('resolveRegistryEntry (#664)', () => {
   it('name match is case-insensitive', () => {
     expect(resolveRegistryEntry(entries, 'WEBSITE')).toBe(entries[2]);
     expect(resolveRegistryEntry(entries, 'Website')).toBe(entries[2]);
+  });
+
+  it('findRegistryEntryByName is name-only: a filesystem path is a miss, not a path-tier hit', () => {
+    expect(findRegistryEntryByName(entries, pathA)).toBeUndefined();
+    expect(findRegistryEntryByName(entries, 'website')).toBe(entries[2]);
+    expect(findRegistryEntryByName(entries, 'WEBSITE')).toBe(entries[2]);
+    expect(() => findRegistryEntryByName(entries, 'app')).toThrow(RegistryAmbiguousTargetError);
   });
 
   it('path match is case-insensitive on Windows only', () => {

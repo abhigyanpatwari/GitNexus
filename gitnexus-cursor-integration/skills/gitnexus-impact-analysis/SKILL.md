@@ -93,6 +93,15 @@ dispatch, cross-language calls), so few-callers ⇒ LOW does **not** apply. The
 result carries a `riskNote` saying so. Confirm with a text search before
 treating the symbol as safe to change or delete.
 
+`risk` is the edit gate: warn on HIGH/CRITICAL and stop on UNKNOWN until the
+uncertainty is resolved. Within single-repo mode, compare File and symbol
+targets with local `riskSharedAxes` (direct/total only). Within group mode,
+compare only group results: their `riskSharedAxes` overlays resolved
+cross-repo crossings on that local value. Never use either field to waive the
+edit gate. Check `riskScale.unusedAxes` before comparing kinds: MCP File walks
+omit process/module axes, while web Graph-RAG expands File targets to in-file
+symbols before enrichment.
+
 ## Tools
 
 **impact** — the primary tool for symbol blast radius. If MCP is unavailable, use `node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .` instead:

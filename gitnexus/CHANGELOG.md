@@ -4,6 +4,50 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.11] - 2026-09-04
+
+### Added
+
+- **Zig is a supported language** — functions, methods, structs/enums/unions, relative and `build.zig` / `build.zig.zon` imports, and CALLS including receiver-bound dispatch. `comptime`-false branches mark CALLS as `staticGated`. The grammar is an optional dependency, so a missing native binding skips `.zig` files instead of failing install (#1432, #3161)
+- **Update notifications** — cache-first npm `latest` check with one stderr line on interactive CLI, a `doctor` line, one MCP process log, and a dismissible web banner from `/api/info`. Silent for npx, dev checkouts, and Docker; opt out with `GITNEXUS_NO_UPDATE_NOTIFIER` (#3175)
+- **`gitnexus auto-sync`** — scheduled SSH clone/pull and analyze from `GITNEXUS_HOME/watch_config.yml`. `gitnexus watch` is reserved and prints the split with `analyze --watch` (#2493)
+- **`analyze --watch`** — local incremental re-index with debounce, serialized writers, and last-good graph on failure (#3072)
+- **`--no-parse-cache` forces a cold parser rebuild** on analyze (#3153)
+- **Spring / JVM modeling** — vendor-suffix mapping annotations (#2883), messaging destinations (#3132), handler annotation arguments and template publishes (#3128), Kotlin decorator routes and config consumers (#3133, #3126), optional Actuator runtime import (#3107), `SpringContextUtil.getBeans` dynamic lookups (#2886), Lombok and Kotlin accessor synthesis (#2885), and Java static-wildcard / Kotlin star-import folding for route constants (#3110, #3059)
+- **More contract and route surfaces** — AsyncAPI 3.x Destination nodes (#3140), wrapped-client HTTP consumers with leading-prefix template stripping (#3111), GraphQL cross-repo contracts (#3070), and PHP generated-client `Request(method, host + resourcePath)` consumers (#3079)
+- **Wiki `grok` local CLI provider** (#3069)
+- **Optional bearer auth on the `serve` MCP route** (#3100)
+
+### Fixed
+
+- **Web UI is built from `prepack`**, not on every `npm ci` (#3166)
+- **`analyze --watch` no longer drops events** across a gitignore reload (#3159)
+- **`detect_changes` does not call a zero-symbol result a clean tree** (#3138)
+- **`includeTests` is honored** for C#, Java, Swift and PHP test paths (#2866)
+- **Decorator routes connect to their handler function** (#2865)
+- **Analyze no longer clobbers customized GitNexus skills** (#3124)
+- **Generated agent block requires graph tools** on structural reads (#3125)
+- **`group` degraded links, sync warnings and UID-only impact actually work** (#3113); Maven child coordinates parse independently of parent POMs (#3108); ambiguous sync names fail closed and `analyze --name` is honored (#3094)
+- **Grep tool honors regex, `fileFilter`, and `caseSensitive`** in serve and the web UI (#3109)
+- **Razor ViewComponent names bind to in-repo classes** (#3104)
+- **Incremental analyze skips derived layers it can reuse** (#3016, #3102)
+- **Parse-cache chunks are stable** and ParsedFile loads are cheaper (#3093)
+- **MCP omitted `repo` resolves from cwd** (#3085)
+- **`status` judges freshness by covered files**, not a dirty working tree (#3083)
+- **`impact` File risk is comparable via shared axes** (#3075, #3082), repo-relative paths resolve through `filePath` (#3074, #3084), and scope-extraction omissions are reported (#3071)
+- **Cursor hooks preserve quoted shell search patterns** (#2938)
+
+### Performance
+
+- **Six equivalent redundancies dropped** on the Java-scale emit path (#3129)
+- **V8 sidecars plus hardlinked ParsedFile restore** (#3099)
+
+### Chore / Dependencies
+
+- **Transitive CVE patches** (#3095)
+- **Major runtime bumps** — `chokidar` 4 → 5 (#3117), `graphql` 16 → 17 (#3119)
+- **Dependency bumps** across gitnexus (`js-yaml`, `qs`, `fast-uri`, `ignore`, `tsx`, `@types/node`, `onnxruntime-node`), gitnexus-web (`axios`, `mermaid`, Playwright, Vitest, Testing Library), and the CodeQL action group (#3115, #3118, #3135, #3141–#3151, #3154, #3155, #3158)
+
 ## [1.6.10] - 2026-08-27
 
 ### Added

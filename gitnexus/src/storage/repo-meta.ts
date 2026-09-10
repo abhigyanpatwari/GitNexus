@@ -21,14 +21,16 @@
  * `isMissingFilesystemError`) so every existing import site keeps working
  * unchanged.
  *
- * Imports `node:fs`/`node:path` and two type-only shapes. Keep it that way: a
+ * Imports `node:fs`/`node:path` and a few type-only summary shapes. Keep it that way: a
  * value import here would land in every consumer of `storage/`.
  */
 
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
 export const GITNEXUS_DIR = '.gitnexus';
@@ -85,6 +87,35 @@ export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  /**
+   * Runtime enrichment mode plus redacted scan exclusions. Payload data and
+   * absolute/external paths are deliberately excluded from metadata.
+   */
+  springActuator?: {
+    enabled: boolean;
+    /**
+     * Normalized repo-relative inputs that must remain excluded from all future
+     * source scans. The list is empty when every configured input was external.
+     */
+    repoRelativeInputs: string[];
+  };
+  /**
+   * Whether the index was built with AsyncAPI document reading enabled.
+   *
+   * Only the FLAG is recorded, unlike `springActuator` above, because the two
+   * options need different things from this field. Actuator inputs are retained
+   * so future scans keep excluding them; documents are deliberately NOT
+   * excluded from scanning — a committed one wants its real `File` node — so
+   * there is nothing to retain, and recording the configured path would put an
+   * operator's absolute directory layout into index metadata for no consumer.
+   *
+   * The flag alone is what the disable transition needs: without it, dropping
+   * the option leaves document-derived destinations in an index with nothing
+   * able to notice they should go.
+   */
+  asyncApiSpec?: {
+    enabled: boolean;
+  };
   /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain
@@ -190,6 +221,11 @@ export interface RepoMeta {
    */
   analysisFeatures?: Record<string, number>;
   /**
+   * Canonical registered-prefix list used to resolve vendor Spring mapping
+   * annotations. A changed value invalidates persisted JVM Route evidence.
+   */
+  springVendorPrefixes?: string;
+  /**
    * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
    * existing index's content/description columns were last written under
    * (#2331/#2339). On mismatch with the live process's resolved mode,
@@ -246,6 +282,21 @@ export interface RepoMeta {
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
+   * Files omitted from scope-resolution because their provider capture or
+   * extraction step threw. The rest of each file may still be present in the
+   * graph, so this is an index-completeness signal rather than a parse failure.
+   * Absent means the successful run recorded no such omission; older indexes
+   * also read as absent until re-analyzed.
+   */
+  scopeExtractionFailures?: ScopeExtractionFailureSummary;
+  /**
+   * Completeness receipt for scope extraction in the successful run represented
+   * by this metadata. A missing or different value means completeness is
+   * unknown (legacy, malformed, or unreadable metadata), not that zero files
+   * were omitted.
+   */
+  scopeExtractionReceipt?: 1;
+  /**
    * Interfaces whose structural-satisfaction check this run could not COMPLETE
    * (#2873) — not interfaces found to have no implementors.
    *
@@ -262,12 +313,33 @@ export interface RepoMeta {
    */
   undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
   /**
+   * Census of name-guessed call sites before edge coalescing, the impossible
+   * candidates the run refused, and the ambiguous
+   * `export *` names it declined to publish. Absent on indexes built before the
+   * census existed. The legacy key does not imply final edge counts: a precise
+   * site may prove a dependency shared with a guessed site.
+   * See `scope-resolution/name-fallback-summary.ts`.
+   */
+  nameFallbackEdges?: NameFallbackSummary;
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Coverage policy used when `fileHashes` was recorded. `status` replays it
+   * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
+   * a later default-cap walk drop a file the index actually covers.
+   * `dirtyPaths` are covered files that were dirty vs HEAD at that moment —
+   * status must re-hash those even after Git becomes clean (indexed-dirty then
+   * restore). Absent on indexes written before this field.
+   */
+  indexCoverage?: {
+    maxFileSizeBytes: number;
+    dirtyPaths?: string[];
+  };
   /**
    * Set when a run finished but the persisted edge count came back far short
    * of what the pipeline produced — the B2 "refresh reports SUCCESS while the

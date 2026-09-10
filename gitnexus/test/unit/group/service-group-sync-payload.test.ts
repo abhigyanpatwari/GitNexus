@@ -50,6 +50,7 @@ const syncGroupMock = vi.fn<() => Promise<SyncResult>>();
 
 vi.mock('../../../src/core/group/sync.js', () => ({
   syncGroup: (...args: unknown[]) => syncGroupMock(...(args as [])),
+  formatGroupSyncAmbiguousError: (err: Error) => err.message,
 }));
 
 const { GroupService } = await import('../../../src/core/group/service.js');
@@ -81,11 +82,20 @@ const syncResult = (overrides: Partial<SyncResult> = {}): SyncResult => ({
   unmatched: [],
   missingRepos: [],
   unreadableRepos: [],
+  degradedLinks: 0,
+  failedRepos: [],
+  warnings: [],
   repoSnapshots: {},
   suppressedMatchStages: [],
   registryOutcome: 'written',
   ...overrides,
 });
+
+const WIRE_SYNC_QUALITY = {
+  degradedLinks: 0,
+  failedRepos: [],
+  warnings: [],
+} as const;
 
 /**
  * `syncGroupMock` is declared zero-arg, so `mock.calls` is typed as an array of
@@ -184,6 +194,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unreadableRepos: ['app/backend'],
       suppressedMatchStages: [],
       registryOutcome: 'preserved',
+      ...WIRE_SYNC_QUALITY,
     });
   });
 
@@ -203,6 +214,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unreadableRepos: [],
       suppressedMatchStages: [],
       registryOutcome: 'written',
+      ...WIRE_SYNC_QUALITY,
     });
   });
 

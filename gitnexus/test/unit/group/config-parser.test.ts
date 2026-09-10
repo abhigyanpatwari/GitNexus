@@ -45,6 +45,7 @@ describe('parseGroupConfig', () => {
     expect(config.packages['hr/common'].npm).toBe('@hr/common');
     expect(config.detect.http).toBe(true);
     expect(config.detect.grpc).toBe(false);
+    expect(config.detect.graphql).toBe(false);
   });
 
   it('applies defaults for missing optional fields', () => {
@@ -175,6 +176,50 @@ detect:
     });
   });
 
+  describe('detect.graphql opt-in default', () => {
+    it('defaults GraphQL extraction to false', () => {
+      const config = parseGroupConfig(`version: 1\nname: test\nrepos: { app: my-app }\n`);
+      expect(config.detect.graphql).toBe(false);
+    });
+
+    it('honors explicit GraphQL extraction', () => {
+      const config = parseGroupConfig(
+        `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  graphql: true\n`,
+      );
+      expect(config.detect.graphql).toBe(true);
+    });
+
+    it('rejects string-like detect booleans instead of silently changing behavior', () => {
+      expect(() =>
+        parseGroupConfig(
+          `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  graphql: yes\n`,
+        ),
+      ).toThrow(/detect\.graphql must be true or false/i);
+      expect(() =>
+        parseGroupConfig(
+          `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  http: "false"\n`,
+        ),
+      ).toThrow(/detect\.http must be true or false/i);
+    });
+
+    it('rejects GraphQL manifest links until they can resolve real endpoint symbols', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  web: web-repo
+  api: api-repo
+links:
+  - from: web
+    to: api
+    type: graphql
+    contract: query::health
+    role: consumer
+`;
+      expect(() => parseGroupConfig(yaml)).toThrow(/type "graphql" is invalid/i);
+    });
+  });
+
   it('parses thrift manifest links', () => {
     const yaml = `
 version: 1
@@ -198,6 +243,25 @@ links:
     expect(() => parseGroupConfig('version: 1')).toThrow(/name.*required/i);
     expect(() => parseGroupConfig('name: test')).toThrow(/version.*required/i);
     expect(() => parseGroupConfig('version: 1\nname: test')).toThrow(/repos.*required/i);
+  });
+
+  it('throws when a repos value is not a string (YAML number/boolean)', () => {
+    expect(() =>
+      parseGroupConfig(`version: 1
+name: test
+repos:
+  app: 12
+`),
+    ).toThrow(/non-empty registry name string/);
+  });
+
+  it('trims padded registry aliases so they match the registry name', () => {
+    const config = parseGroupConfig(`version: 1
+name: test
+repos:
+  app: "  my-app  "
+`);
+    expect(config.repos.app).toBe('my-app');
   });
 
   it('allows empty repos object (fresh group before first add)', () => {

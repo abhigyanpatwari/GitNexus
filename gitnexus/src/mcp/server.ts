@@ -11,8 +11,8 @@
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
-import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { packageVersion } from '../core/package-version.js';
 import { CompatibleStdioServerTransport } from './compatible-stdio-transport.js';
 import {
   CallToolRequestSchema,
@@ -106,12 +106,10 @@ export function createMCPServer(
   }
   const repositoryPolicy = options.repositoryPolicy ?? McpRepositoryPolicy.unrestricted();
   const scopedBackend = repositoryPolicy.scopeBackend(backend);
-  const require = createRequire(import.meta.url);
-  const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
     {
       name: 'gitnexus',
-      version: pkgVersion,
+      version: packageVersion(),
     },
     {
       capabilities: {
@@ -185,11 +183,12 @@ export function createMCPServer(
     }
   });
 
-  // With multiple visible repositories and no process-wide default, make the
-  // routing requirement machine-readable. Agents then supply `repo` before the
-  // call instead of discovering the ambiguity through a failed tool response.
+  // Make the effective routing contract machine-readable. Read-only tools may
+  // use a cwd-derived default; mutating rename remains explicit unless policy
+  // supplies a single/default repository.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const requireRepo = await repositoryPolicy.requiresExplicitRepo(backend);
+    const { readOnlyRequiresRepo, mutatingRequiresRepo } =
+      await repositoryPolicy.toolSchemaRepoRequirements(backend);
     return {
       tools: GITNEXUS_TOOLS.filter(
         (tool) =>
@@ -201,7 +200,8 @@ export function createMCPServer(
           name: tool.name,
           description: tool.description,
           inputSchema:
-            requireRepo && REPO_SCOPED_TOOLS.has(tool.name)
+            (tool.name === 'rename' ? mutatingRequiresRepo : readOnlyRequiresRepo) &&
+            REPO_SCOPED_TOOLS.has(tool.name)
               ? {
                   ...tool.inputSchema,
                   required: [...new Set([...tool.inputSchema.required, 'repo'])],

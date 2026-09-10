@@ -32,6 +32,22 @@ describe('Spring annotation static arguments', () => {
     expect(parseStaticStringValues('NAMES')).toBeNull();
   });
 
+  it('tolerates a trailing comma in the top-level argument list', () => {
+    expect(parseSpringAnnotationArguments('@RequestMapping("/api",)')).toEqual([
+      { value: '"/api"' },
+    ]);
+    expect(parseSpringAnnotationArguments('@RequestMapping(path = "/api",)')).toEqual([
+      { name: 'path', value: '"/api"' },
+    ]);
+    expect(springAnnotationHttpMethods('RequestMapping', '@RequestMapping("/api",)')).toEqual([
+      '*',
+    ]);
+    expect(parseSpringAnnotationArguments('@RequestMapping("/api",,)')).toEqual([
+      { value: '"/api"' },
+    ]);
+    expect(parseSpringAnnotationArguments('@RequestMapping("/api", , method = GET)')).toBeNull();
+  });
+
   it('keeps generic call expressions intact while splitting top-level arguments', () => {
     expect(
       parseSpringAnnotationArguments(

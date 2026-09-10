@@ -1,4 +1,15 @@
-export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
+import type { ImpactRisk, ImpactRiskResult } from 'gitnexus-shared';
+
+export type ContractType =
+  | 'http'
+  | 'graphql'
+  | 'grpc'
+  | 'thrift'
+  | 'topic'
+  | 'lib'
+  | 'custom'
+  | 'include';
+export type ManifestContractType = Exclude<ContractType, 'graphql'>;
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -16,13 +27,14 @@ export interface GroupConfig {
 export interface GroupManifestLink {
   from: string;
   to: string;
-  type: ContractType;
+  type: ManifestContractType;
   contract: string;
   role: ContractRole;
 }
 
 export interface DetectConfig {
   http: boolean;
+  graphql?: boolean;
   grpc: boolean;
   thrift: boolean;
   topics: boolean;
@@ -32,11 +44,12 @@ export interface DetectConfig {
 
 export interface MatchingConfig {
   /**
-   * HTTP paths to exclude from cross-link matching. Contracts at these paths
+   * HTTP paths or GraphQL root fields to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce
    * cross-repo links. Useful for health-check endpoints (`/ping`, `/health`)
    * that every service exposes and would otherwise create N×M false links.
-   * Trailing slashes are normalized before comparison.
+   * Trailing slashes are normalized before comparison. GraphQL fields may be
+   * written as `health` or `/health`.
    * @default []
    */
   exclude_links_paths?: string[];
@@ -84,6 +97,19 @@ export interface CrossLink {
   contractId: string;
   matchType: MatchType;
   confidence: number;
+  /**
+   * `true` when the PROVIDER endpoint (`to`) has no resolved graph symbol —
+   * empty `symbolUid` / `symbolRef` at sync time (e.g. the handler failed to
+   * resolve and `symbolName` degraded to the file name). The contract boundary
+   * is still proven, but the link cannot anchor a cross-impact fan-out: an
+   * empty provider uid never matches a Phase-1 symbol id, and a downstream
+   * fan-out into it has no neighbor symbol to resolve. Derived once at the
+   * sync persistence boundary (`isUnresolvedEndpoint` in normalization.ts) and
+   * re-derived by `dedupeCrossLinks` when a merge backfills the uid. Absent on
+   * fully-anchored links. Distinct from manifest `manifest::…` synthetic UIDs,
+   * which have their own `fanout_status: 'not_attempted'` channel downstream.
+   */
+  degraded?: boolean;
 }
 
 export interface RepoSnapshot {
@@ -183,7 +209,17 @@ export interface GroupImpactResult {
     modules_affected: number;
     cross_repo_hits: number;
   };
-  risk: string;
+  risk: ImpactRisk;
+  /**
+   * Two-axis (direct + total) risk from the local leg, then `mergeRisk` with
+   * crossings — compare File vs symbol here, not via top-level `risk`.
+   */
+  riskSharedAxes?: ImpactRisk;
+  /**
+   * Local-leg scale metadata (File / skipped enrichment). Crossings do not
+   * invent process/module membership for File nodes.
+   */
+  riskScale?: ImpactRiskResult['riskScale'];
   /**
    * `'lower-bound'` when the fan-out was cut short, so `risk` is a FLOOR, not a
    * verdict. Same vocabulary as single-repo `impact`'s `epistemic` field.

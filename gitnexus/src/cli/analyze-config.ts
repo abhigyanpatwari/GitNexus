@@ -30,15 +30,17 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { readRepoControlFile } from '../config/repo-control-file.js';
+import {
+  InvalidBranchError,
+  validateBranchName as validateBranchNameCore,
+} from '../core/git-ref.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
 
 /** Final fallback when no branch is configured or detectable. */
 export const DEFAULT_BRANCH_FALLBACK = 'main';
-
-/** Git refs longer than this are almost certainly a mistake / injection attempt. */
-const BRANCH_MAX_LENGTH = 255;
 
 /**
  * Thrown for any `.gitnexusrc` problem (missing-file is NOT an error — it
@@ -59,7 +61,8 @@ type ValueKind =
   | 'string-array'
   | 'numeric-string'
   | 'embeddings'
-  | 'branch';
+  | 'branch'
+  | 'path';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -107,6 +110,9 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Explicit local Actuator snapshot input (#2418). The path itself is safe in
+  // project config; payload contents are never copied into the graph wholesale.
+  springActuator: { target: 'springActuator', kind: 'path' },
   // Auth token AND dims are intentionally CLI/env-only — no embeddingAuthToken
   // or embeddingDims key here:
   //   - the token keeps secrets out of a committed .gitnexusrc;
@@ -152,45 +158,18 @@ const assertNoHiddenChars = (value: string, source: string): void => {
 
 /**
  * Validate a user-supplied branch name (from CLI or `.gitnexusrc`). Returns the
- * trimmed name or throws {@link GitNexusRcError}. Conservative but accepts the
- * shapes real branches use (`feature/foo-bar`, `release/1.2`, `develop`).
+ * trimmed name or throws {@link GitNexusRcError}. Rules live in
+ * `core/git-ref.ts`; this wrapper keeps the CLI / `.gitnexusrc` error type.
  */
 export function validateBranchName(value: string, source: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    throw new GitNexusRcError(`${source}: branch name must not be empty.`);
+  try {
+    return validateBranchNameCore(value, source);
+  } catch (err) {
+    if (err instanceof InvalidBranchError) {
+      throw new GitNexusRcError(err.message);
+    }
+    throw err;
   }
-  if (trimmed.length > BRANCH_MAX_LENGTH) {
-    throw new GitNexusRcError(`${source}: branch name is too long (max ${BRANCH_MAX_LENGTH}).`);
-  }
-  assertNoHiddenChars(trimmed, source);
-  if (/\s/.test(trimmed)) {
-    throw new GitNexusRcError(`${source}: branch name must not contain whitespace.`);
-  }
-  // git ref-name rules (subset): reject characters git itself forbids in refs.
-  if (/[~^:?*[\\]/.test(trimmed)) {
-    throw new GitNexusRcError(
-      `${source}: branch name contains characters not allowed in a git ref (~ ^ : ? * [ \\).`,
-    );
-  }
-  if (trimmed.startsWith('-')) {
-    throw new GitNexusRcError(`${source}: branch name must not start with "-".`);
-  }
-  if (trimmed.includes('..')) {
-    throw new GitNexusRcError(`${source}: branch name must not contain "..".`);
-  }
-  // Git permits a backtick in a ref, but the branch is embedded inside a
-  // Markdown inline-code span in the generated AGENTS.md/CLAUDE.md regression
-  // example, where a backtick would close the span early and let the rest of
-  // the template render as instruction text. Reject it at this single
-  // chokepoint so all three tiers (CLI flag, .gitnexusrc, auto-detect via
-  // sanitizeDetectedBranch) are covered (#1996 tri-review P1).
-  if (trimmed.includes('`')) {
-    throw new GitNexusRcError(
-      `${source}: branch name must not contain a backtick (it would break the generated Markdown).`,
-    );
-  }
-  return trimmed;
 }
 
 /**
@@ -225,6 +204,17 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         throw new GitNexusRcError(`${source} must be a string branch name.`);
       }
       return validateBranchName(value, source);
+    case 'path': {
+      if (typeof value !== 'string') {
+        throw new GitNexusRcError(`${source} must be a file or directory path.`);
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new GitNexusRcError(`${source} must not be empty.`);
+      }
+      assertNoHiddenChars(trimmed, source);
+      return trimmed;
+    }
     case 'string': {
       if (typeof value !== 'string') {
         throw new GitNexusRcError(`${source} must be a string.`);
@@ -370,7 +360,6 @@ const normalizeLevel = (
  */
 export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | undefined {
   const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
-
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
@@ -378,6 +367,25 @@ export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | u
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
+
+  return parseAnalyzeConfig(raw);
+}
+
+/** Load `.gitnexusrc` through the strict bounded reader used by watch mode. */
+export async function loadAnalyzeConfigStrict(
+  repoRoot: string,
+): Promise<Partial<AnalyzeOptions> | undefined> {
+  let raw: string | null;
+  try {
+    raw = await readRepoControlFile(repoRoot, GITNEXUS_RC_FILENAME);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
+  }
+  return raw === null ? undefined : parseAnalyzeConfig(raw);
+}
+
+function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
+  let raw = rawInput;
 
   // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
   // then fails with a confusing "Unexpected token" on an otherwise-valid file

@@ -46,12 +46,18 @@ describe('PHP hasConsumerSignals — superset of scan() consumer idioms', () => 
     ['Laravel Http facade', "Http::get('/api/x');"],
     ['Guzzle member call', "$client->post('/api/x', []);"],
     ['file_get_contents', "file_get_contents('https://x/api');"],
+    ['bare Request constructor', 'new Request($method, $host . $resourcePath);'],
+    ['namespaced Request constructor', "new Foo\\Bar\\Request('GET', $url);"],
   ])('detects %s', (_label, src) => {
     expect(has(PHP_HTTP_PLUGIN, src)).toBe(true);
   });
 
   it('returns false for a pure Laravel route file (provider only)', () => {
     expect(has(PHP_HTTP_PLUGIN, "Route::get('/api/a/list', 'AController@list');")).toBe(false);
+  });
+
+  it('returns false for an unrelated constructor call (not *Request)', () => {
+    expect(has(PHP_HTTP_PLUGIN, 'new Response($body, 200);')).toBe(false);
   });
 });
 

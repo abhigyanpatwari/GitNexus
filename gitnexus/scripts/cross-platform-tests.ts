@@ -36,6 +36,18 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The tsconfig loader rebases `paths` targets through `path.resolve`, so the
+  // wildcard suffix it must recognise is `/*` on POSIX and `\*` on Windows. It
+  // only looked for `/*`, and every alias target came back as `src*` on
+  // Windows while the Ubuntu run stayed green — so this file has to run where
+  // the separator differs.
+  'test/unit/tsconfig-index.test.ts',
+  // The unit half of the same rebasing rule. Fixture-free and pathApi-injectable
+  // (every separator assertion passes an explicit `path.win32` / `path.posix`),
+  // so unlike the fixture suite above it fails on EVERY runner when the
+  // normalisation is removed rather than only on windows-latest. Registered
+  // beside its fixture sibling so the two halves stay discoverable as one group.
+  'test/unit/tsconfig-rebase-target.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)
@@ -90,6 +102,7 @@ const PLATFORM_LOGIC = [
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
+  'test/unit/group/fs-utils.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
   // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
   // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
@@ -113,6 +126,9 @@ const PLATFORM_LOGIC = [
   // POSIX and Windows — the fail-closed path-claim semantics must hold on the
   // real windows-latest path implementation (#2419/#2420).
   'test/unit/server-api-repo-resolution.test.ts',
+  // #3073: cwd-based repository selection canonicalizes real paths, compares
+  // platform separators/case, and rejects nested Git-boundary fallthrough.
+  'test/unit/calltool-dispatch.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -140,6 +156,7 @@ const LBUG_NATIVE = [
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
+  'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
@@ -195,6 +212,8 @@ const SPAWN_CLI = [
   'test/integration/analyze-heap-oom-e2e.test.ts',
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
+  // Real CLI spawn + directory symlinks for the update-notice parent/child path.
+  'test/integration/cli/update-notice.test.ts',
   'test/integration/setup-skills.test.ts',
   'test/integration/setup-antigravity.test.ts',
   'test/integration/antigravity-hook-e2e.test.ts',
@@ -232,7 +251,7 @@ const SPAWN_CLI = [
   // Cheap: measured on the Windows runner at 448 ms, 53 ms and sub-second. An
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
-  // file re-partitioned the list and happened to cluster `cli-e2e` (361 s) with
+  // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
   // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
   // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
   // heavy one.
@@ -271,6 +290,7 @@ const NATIVE_ADDON_SMOKE = [
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

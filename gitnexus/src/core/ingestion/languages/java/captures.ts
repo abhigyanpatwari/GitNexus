@@ -39,12 +39,18 @@ import {
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
+  setJavaSpringDynamicLookupFacts,
+  setJavaSpringMessageProducerFacts,
   setJavaSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
+import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import { captureJavaSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
+import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
+import { captureJavaSpringMessageProducerFact } from './spring-message-producers.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureJavaSpringAopFacts, type JavaSpringAopFact } from './spring-aop.js';
 import {
@@ -56,6 +62,7 @@ import {
   type JavaSpringNonHttpHandlerFact,
 } from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
+import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -146,6 +153,9 @@ export function emitJavaScopeCaptures(
   const springDiFacts: JavaSpringDiClassFact[] = [];
   const springNonHttpHandlerFacts: JavaSpringNonHttpHandlerFact[] = [];
   const springDiClassNodeIds = new Set<number>();
+  const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
+  const springMessageProducerFacts: SpringMessageProducerFact[] = [];
+  const springMemberCallNodeIds = new Set<number>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -164,6 +174,17 @@ export function emitJavaScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // One visit per member call node: the same invocation can back several
+    // query matches, and both Spring call-shape captures must see it once.
+    const memberCallNode = nodeIfType(nodeMap['@reference.call.member'], 'method_invocation');
+    if (memberCallNode !== null && !springMemberCallNodeIds.has(memberCallNode.id)) {
+      springMemberCallNodeIds.add(memberCallNode.id);
+      const lookupFact = captureJavaSpringDynamicLookupFact(memberCallNode, filePath);
+      if (lookupFact !== null) springDynamicLookupFacts.push(lookupFact);
+      const producerFact = captureJavaSpringMessageProducerFact(memberCallNode, filePath);
+      if (producerFact !== null) springMessageProducerFacts.push(producerFact);
+    }
 
     const springAopTypeNode = [
       nodeIfType(nodeMap['@scope.class'], 'class_declaration'),
@@ -336,6 +357,26 @@ export function emitJavaScopeCaptures(
       }
     }
 
+    // Qualified constructor `new pkg.Foo()` already binds the simple tail as
+    // `@reference.name` (F35). Copy the scoped spelling onto
+    // `@reference.qualified-name` so constructor resolution can treat it as a
+    // written qualifier instead of a bare unique-name guess (C# does the same).
+    const ctorQualifiedNode = nodeMap['@reference.call.constructor.qualified'];
+    const ctorQualifiedText = grouped['@reference.call.constructor.qualified']?.text;
+    if (
+      ctorQualifiedNode !== undefined &&
+      ctorQualifiedText !== undefined &&
+      ctorQualifiedText.length > 0 &&
+      ctorQualifiedText !== grouped['@reference.name']?.text &&
+      grouped['@reference.qualified-name'] === undefined
+    ) {
+      grouped['@reference.qualified-name'] = syntheticCapture(
+        '@reference.qualified-name',
+        ctorQualifiedNode,
+        ctorQualifiedText,
+      );
+    }
+
     // Synthesize `@reference.arity` on every callsite.
     const callTag = (
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
@@ -401,7 +442,9 @@ export function emitJavaScopeCaptures(
   setJavaSpringAopFacts(filePath, springAopFacts);
   setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
+  setJavaSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
   setJavaSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
+  setJavaSpringMessageProducerFacts(filePath, springMessageProducerFacts);
 
   return [
     ...resolveVarTypeBindings(out),
@@ -409,6 +452,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
     ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
+    ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];
 }

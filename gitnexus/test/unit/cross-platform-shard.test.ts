@@ -3,7 +3,7 @@
  *
  * The regression this guards is specific and was expensive: three CHEAP files
  * were registered in `SPAWN_CLI`, vitest re-partitioned the list by file COUNT,
- * and the reshuffle clustered `cli-e2e` (361 s on Windows) with `cli-limit-e2e`
+ * and the reshuffle clustered `cli-e2e` (now 621 s on Windows) with `cli-limit-e2e`
  * (75 s) and `analyze-heap-oom-e2e` (23 s) on one shard, which then blew the
  * 20-minute watchdog. The added files cost nothing; the COUNT-split did it.
  *
@@ -29,6 +29,33 @@ const allShards = (files: readonly string[], total: number): readonly (readonly 
   Array.from({ length: total }, (_unused, i) => shardFiles(files, i + 1, total));
 
 describe('cross-platform shard partition', () => {
+  it('does not recreate the overloaded Windows shard from the #3190 CI run', () => {
+    // Run 34014266125: these serialized DB suites were missing or undercharged
+    // in the scheduling table. Keep the observed profile independent of the
+    // table so deleting a weight cannot make this regression pass again.
+    const observed: Readonly<Record<string, number>> = {
+      'test/integration/skills-e2e.test.ts': 444,
+      'test/unit/incremental-index-extension-dml-gate.test.ts': 414,
+      'test/integration/fts-extension-e2e.test.ts': 146,
+      'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+    };
+    const floor = weightOf('test/unmeasured.test.ts');
+    const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
+      files.reduce((sum, file) => sum + Math.max(weightOf(file), (observed[file] ?? 0) + floor), 0),
+    );
+    // This is a deterministic replay of recorded weights, not a timing test.
+    // The runner's existing watchdog remains 20 minutes.
+    expect(Math.max(...loads)).toBeLessThan(20 * 60);
+    const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
+    const heavyweightLocations = [
+      'test/integration/cli-e2e.test.ts',
+      'test/integration/skills-e2e.test.ts',
+      'test/unit/incremental-index-extension-dml-gate.test.ts',
+    ].map((file) => shards.findIndex((files) => files.includes(file)));
+    expect(heavyweightLocations).not.toContain(-1);
+    expect(new Set(heavyweightLocations).size).toBe(SHARD_TOTAL);
+  });
+
   it('covers every file exactly once, with no overlap between shards', () => {
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
     const seen = shards.flatMap((s) => [...s]);
@@ -48,8 +75,8 @@ describe('cross-platform shard partition', () => {
     expect(Math.max(...weights)).toBeLessThanOrEqual(ideal * 1.34);
   });
 
-  it('never puts the two heaviest suites on the same shard', () => {
-    // The exact shape of the outage: cli-e2e and worker-pool are 361 s and
+  it('keeps the CLI and worker-pool suites on different shards', () => {
+    // The exact shape of the outage: cli-e2e and worker-pool are 621 s and
     // 222 s, so together they are most of a shard's budget before anything else
     // is scheduled.
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);

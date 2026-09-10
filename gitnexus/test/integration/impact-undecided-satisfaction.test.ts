@@ -108,6 +108,7 @@ withTestLbugDB(
       // uses, and it is atomic and dual-writes the legacy mirror. Writing the
       // file directly would pin a shape no real analyze can produce.
       await saveMeta(path.dirname(h.dbPath), {
+        scopeExtractionReceipt: 1,
         undecidedInterfaceSatisfaction: {
           counts: { CtxStore: 2 },
           totalInterfaces: 1,

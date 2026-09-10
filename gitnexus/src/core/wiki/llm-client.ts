@@ -18,6 +18,7 @@ export type LLMProvider =
   | 'claude'
   | 'codex'
   | 'opencode'
+  | 'grok'
   | 'minimax';
 
 export const MINIMAX_OPENAI_BASE_URLS = {
@@ -112,12 +113,15 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
           ? savedConfig.codexModel
           : savedProvider === 'opencode'
             ? savedConfig.opencodeModel
-            : undefined;
+            : savedProvider === 'grok'
+              ? savedConfig.grokModel
+              : undefined;
   const localProvider =
     savedProvider === 'cursor' ||
     savedProvider === 'claude' ||
     savedProvider === 'codex' ||
-    savedProvider === 'opencode';
+    savedProvider === 'opencode' ||
+    savedProvider === 'grok';
 
   const apiKey =
     overrides?.apiKey ||

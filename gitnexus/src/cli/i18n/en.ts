@@ -7,6 +7,16 @@ export const en = {
   'common.storage': 'Storage',
   'common.deleted': 'Deleted: {{target}}',
   'common.error': 'Error: {{message}}',
+  'update.available':
+    'GitNexus {{latestVersion}} is available (you are running {{installedVersion}}).',
+  'update.current':
+    'GitNexus {{installedVersion}} is current or newer than the latest stable version.',
+  'update.installing': 'Installing with {{command}}…',
+  'update.installed': 'Installed gitnexus@{{version}}. Restart long-running mcp/serve processes.',
+  'update.installFailed': 'npm install failed. You can retry: {{command}}',
+  'update.installError': 'Could not run npm: {{message}}',
+  'update.checkFailed':
+    'Could not check for updates (offline, private registry, or the check failed open).',
   'list.title': 'Indexed Repositories ({{count}})',
   'list.indexed': 'Indexed',
   'list.commit': 'Commit',
@@ -33,6 +43,17 @@ export const en = {
   'status.workspaceIndexLabel':
     "Workspace index: last analyzed on '{{primary}}' (re-run gitnexus analyze to follow the current branch)",
   'status.status': 'Status',
+  'status.indexContentCurrent': 'Index content: matches all {{count}} covered file(s)',
+  'status.indexContentDrifted':
+    'Index content: {{changed}} changed, {{added}} added, {{deleted}} deleted',
+  'status.indexContentMore': '  ...and {{count}} more {{label}}',
+  'status.indexContentUnmeasurable':
+    'Index content: not comparable ({{reason}}); fell back to the working-tree check',
+  'status.indexContentScanFailed':
+    'Index content: coverage scan failed; treating the index as stale',
+  'status.driftChanged': 'changed',
+  'status.driftAdded': 'added',
+  'status.driftDeleted': 'deleted',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',
@@ -65,6 +86,8 @@ export const en = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
+  'tool.detectChanges.noOverlappingSymbols':
+    'Diff touched {{files}} file(s) but no indexed symbols overlap those hunks — not a clean tree.',
   'tool.detectChanges.partial':
     'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
   'tool.detectChanges.truncated':
@@ -100,8 +123,10 @@ export const en = {
   'doctor.labels.onnx': 'ONNX:',
   'doctor.labels.graphStore': 'Graph store:',
   'doctor.labels.fullTextSearch': 'Full-text search:',
-  'doctor.labels.vectorIndex': 'VECTOR index:',
-  'doctor.labels.semanticMode': 'Semantic mode:',
+  'doctor.labels.vectorIndex': 'VECTOR extension:',
+  'doctor.labels.semanticMode': 'Semantic support:',
+  'doctor.vectorCapability.indexUnverified': 'vector-index capable (repository index not checked)',
+  'doctor.vectorCapability.exactScanOnly': 'exact-scan only (VECTOR extension unavailable)',
   'doctor.labels.exactScanLimit': 'Exact scan limit:',
   'doctor.labels.note': 'Note:',
   'doctor.labels.backend': 'Backend:',
@@ -132,6 +157,16 @@ export const en = {
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
+  'help.command.autoSync.description':
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  'help.autoSync.details':
+    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: only SSH URLs on github.com, gitlab.com, and gitee.com are allowed.\nRuns once immediately, then repeats on sync_interval_minutes.',
+  'help.command.watch.description':
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  'help.watch.details':
+    '\n`gitnexus watch` does not start a watcher.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
+  'error.watch.ambiguous':
+    '`gitnexus watch` is ambiguous.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
   'help.command.analyze.description': 'Index a repository (full analysis)',
   'help.command.embeddings.sync.description':
     'Add missing embeddings to an existing index, checkpointing each batch for safe resume',
@@ -144,6 +179,8 @@ export const en = {
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':
     'Show runtime platform capabilities and embedding configuration',
+  'help.command.update.description':
+    'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
     'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
@@ -183,7 +220,9 @@ export const en = {
   'help.command.group.contracts.description': 'Inspect Contract Registry',
   'help.option.setup.codingAgent':
     'Configure only these coding agents (comma-separated or repeatable)',
-  'help.option.analyze.force': 'Force full re-index even if up to date',
+  'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
+  'help.option.analyze.noParseCache':
+    'Re-parse every source file instead of replaying cached parser output',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':
     'Enable embedding generation for semantic search (off by default). Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
@@ -192,7 +231,7 @@ export const en = {
   'help.option.analyze.skills':
     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
   'help.option.analyze.skipAgentsMd':
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
   'help.option.analyze.selfCommit':
     'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',
@@ -219,6 +258,8 @@ export const en = {
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
   'help.option.analyze.embeddingDevice': 'Embedding device: auto, cpu, dml, cuda, or wasm',
+  'help.option.analyze.watch': 'Keep the index current with serialized incremental refreshes',
+  'help.option.analyze.debounce': 'Watch quiet period before refreshing (milliseconds)',
   'help.option.index.force': 'Register even if index metadata is missing (stats will be empty)',
   'help.option.index.allowNonGit': 'Allow registering folders that are not Git repositories',
   'help.option.port': 'Port number',
@@ -227,7 +268,7 @@ export const en = {
   'help.option.mcp.host':
     'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
   'help.option.mcp.authToken':
-    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+    "Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var, which also enables MCP Bearer auth on gitnexus serve's /api/mcp route. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.",
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
@@ -236,7 +277,7 @@ export const en = {
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
-    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: minimax)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
   'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',

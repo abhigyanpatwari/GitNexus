@@ -8,10 +8,19 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
-import { isIP } from 'net';
+import os from 'node:os';
 import { logger } from '../core/logger.js';
-import { parseRepoNameFromUrl, stripUrlCredentials } from '../storage/git.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import { branchSlug } from '../storage/branch-index.js';
+import { sanitizeRepoName, stripUrlCredentials } from '../storage/git.js';
+import { validateGitUrl } from '../core/net/url-guard.js';
+import {
+  assertDirectoryOwnerAndPermissions,
+  quarantineAutoSyncPartial,
+} from '../core/auto-sync/path-security.js';
+import { validateAutoSyncRemoteUrl } from '../core/auto-sync/config.js';
+
+export { validateGitUrl };
 
 /**
  * Root directory for all cloned repositories. Targets must resolve inside this.
@@ -39,12 +48,16 @@ export const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
  * clone root via path traversal.
  */
 export function extractRepoName(url: string): string {
-  const name = parseRepoNameFromUrl(url);
+  let trimmed = url.trim();
+  while (trimmed.endsWith('/')) trimmed = trimmed.slice(0, -1);
+  const withoutGit = trimmed.toLowerCase().endsWith('.git') ? trimmed.slice(0, -4) : trimmed;
+  const name = withoutGit.split(/[/:]/).filter(Boolean).pop() ?? '';
   if (
     !name ||
     name === '.' ||
     name === '..' ||
     name === 'unknown' ||
+    name.startsWith('-') ||
     !REPO_NAME_PATTERN.test(name)
   ) {
     throw new Error('Could not extract a valid repository name from URL');
@@ -52,188 +65,134 @@ export function extractRepoName(url: string): string {
   return name;
 }
 
-/** Get the clone target directory for a repo name. */
-export function getCloneDir(repoName: string): string {
+/**
+ * Derive a clone directory name for the web `/api/analyze` boundary.
+ *
+ * The API historically accepted Azure DevOps and similar URLs whose repo
+ * segment contains spaces or other directory-unsafe characters by sanitizing
+ * the final segment. Keep that compatibility at the web boundary while leaving
+ * `extractRepoName()` strict for internal/security-sensitive callers.
+ */
+export function extractWebRepoName(url: string): string {
+  let trimmed = url.trim();
+  while (trimmed.endsWith('/')) trimmed = trimmed.slice(0, -1);
+  const withoutGit = trimmed.toLowerCase().endsWith('.git') ? trimmed.slice(0, -4) : trimmed;
+  const rawName = withoutGit.split(/[/:]/).filter(Boolean).pop() ?? '';
+  const safeName = sanitizeRepoName(rawName);
+  if (!rawName || safeName === 'unknown') {
+    throw new Error('Could not extract a valid repository name from URL');
+  }
+  return safeName;
+}
+
+/**
+ * Longest single path component the supported filesystems accept (ext4, APFS,
+ * NTFS all cap at 255). Compared against `.length`, which equals the byte
+ * count here because every name this guards is ASCII by construction
+ * (REPO_NAME_PATTERN and sanitizeRepoName both restrict to `[a-zA-Z0-9._-]`).
+ */
+const MAX_PATH_COMPONENT_BYTES = 255;
+
+/**
+ * `branchSlug` for a clone-directory name, trimmed to fit one path component.
+ *
+ * `validateBranchName` allows a ref up to 255 characters and `branchSlug`
+ * appends `-` plus 8 hash characters, so `<repo>__<slug>` can reach 267 — past
+ * the filesystem limit, and the clone would then fail to create its target
+ * directory (#3199 review).
+ *
+ * Only the READABLE half is trimmed; the 8-character hash is always kept, and
+ * it is a digest of the full ref, so two long branches that share a prefix
+ * still get different directories. The slug is not trimmed inside
+ * `branchSlug` itself because the per-branch *index* slots already use those
+ * names on disk — shortening them there would orphan existing indexes.
+ */
+const boundedBranchSegment = (repoName: string, branch: string): string => {
+  const slug = branchSlug(branch);
+  if (`${repoName}__${slug}`.length <= MAX_PATH_COMPONENT_BYTES) return slug;
+
+  const hash = slug.slice(slug.lastIndexOf('-')); // "-" + 8 hex
+  const budget = MAX_PATH_COMPONENT_BYTES - repoName.length - '__'.length - hash.length;
+  // A repo name long enough to leave no budget falls through to the caller's
+  // length check, which rejects it rather than building an unusable path.
+  return `${slug.slice(0, Math.max(0, budget))}${hash}`;
+};
+
+/** Get the clone target directory for a repo name, optionally pinned to a branch. */
+export function getCloneDir(repoName: string, branch?: string): string {
   // Re-validate at the boundary even though extractRepoName already checked —
   // callers may pass a repoName from another source (test fixtures, scripts).
   if (!repoName || repoName === '.' || repoName === '..' || !REPO_NAME_PATTERN.test(repoName)) {
     throw new Error('Invalid repository name');
   }
-  return path.join(CLONE_ROOT, repoName);
-}
-
-// Cloud metadata hostnames that must never be reachable via user-supplied URLs
-const BLOCKED_HOSTNAMES = new Set([
-  'localhost',
-  'metadata.google.internal',
-  'metadata.azure.com',
-  'metadata.internal',
-]);
-
-/**
- * Validate a git URL to prevent SSRF attacks.
- * Only allows https:// and http:// schemes. Blocks private/internal addresses,
- * IPv6 private ranges, cloud metadata hostnames, and numeric IP encodings.
- */
-export function validateGitUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error('Invalid URL');
+  // A branch-pinned analyze gets its OWN working tree.
+  //
+  // Sharing one checkout per repo made `branch` unusable in practice: the tree
+  // is dirty after any analyze (generated AGENTS.md / CLAUDE.md / .claude/), so
+  // a pinned request hit `cloneOrPull`'s porcelain refusal; and a later request
+  // that OMITTED `branch` would pull whatever branch the last pin left checked
+  // out and index it as the default (#3199 review). Separate directories remove
+  // both, because the two requests no longer share a tree.
+  //
+  // `branchSlug` is the same helper the per-branch index slots use, so the two
+  // layouts agree on how a ref becomes a path segment. It emits only
+  // `[a-zA-Z0-9._-]`, so the composed name still satisfies REPO_NAME_PATTERN and
+  // round-trips through this function — which is how DELETE /api/repo re-derives
+  // the directory from the registry name.
+  const dirName = branch ? `${repoName}__${boundedBranchSegment(repoName, branch)}` : repoName;
+  if (!REPO_NAME_PATTERN.test(dirName) || dirName.length > MAX_PATH_COMPONENT_BYTES) {
+    throw new Error('Invalid repository name');
   }
-
-  if (!['https:', 'http:'].includes(parsed.protocol)) {
-    throw new Error('Only https:// and http:// git URLs are allowed');
-  }
-
-  const host = parsed.hostname.toLowerCase();
-
-  // Block known dangerous hostnames (cloud metadata services)
-  if (BLOCKED_HOSTNAMES.has(host)) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // Strip IPv6 brackets if present (URL parser behavior varies across Node versions)
-  let normalizedHost = host;
-  if (host.startsWith('[') && host.endsWith(']')) {
-    normalizedHost = host.slice(1, -1);
-  }
-
-  // Check if this is an IPv6 address
-  // Use manual colon detection as fallback since isIP may return 0 for some
-  // normalized IPv6 forms (e.g. ::ffff:7f00:1)
-  const isIPv6 = isIP(normalizedHost) === 6 || normalizedHost.includes(':');
-  if (isIPv6) {
-    assertNotPrivateIPv6(normalizedHost);
-    return;
-  }
-
-  // Check if this is an IPv4 address (including numeric encodings)
-  if (isIP(normalizedHost) === 4) {
-    assertNotPrivateIPv4(normalizedHost);
-    return;
-  }
-
-  // For non-IP hostnames, check for numeric IP tricks
-  // Decimal encoding: 2130706433 = 127.0.0.1
-  // Hex encoding: 0x7f000001 = 127.0.0.1
-  if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // Standard IPv4 regex checks for dotted notation
-  if (
-    /^127\./.test(host) ||
-    /^10\./.test(host) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
-    /^192\.168\./.test(host) ||
-    /^169\.254\./.test(host) ||
-    /^0\./.test(host) ||
-    host === '0.0.0.0' ||
-    /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host) ||
-    /^198\.1[89]\./.test(host)
-  ) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-}
-
-function assertNotPrivateIPv6(ip: string): void {
-  // Expand common compressed forms for comparison
-  const lower = ip.toLowerCase();
-
-  // IPv6 loopback
-  if (lower === '::1' || lower === '0:0:0:0:0:0:0:1') {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // Unspecified address
-  if (lower === '::' || lower === '0:0:0:0:0:0:0:0') {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // IPv6 Unique Local Address (fc00::/7 = fc and fd prefixes)
-  if (lower.startsWith('fc') || lower.startsWith('fd')) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // IPv6 link-local (fe80::/10)
-  if (
-    lower.startsWith('fe80') ||
-    lower.startsWith('fe8') ||
-    lower.startsWith('fe9') ||
-    lower.startsWith('fea') ||
-    lower.startsWith('feb')
-  ) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // IPv4-mapped IPv6 (::ffff:x.x.x.x or ::ffff:hex:hex)
-  // Node may normalize ::ffff:127.0.0.1 to ::ffff:7f00:1
-  if (lower.startsWith('::ffff:')) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // Also catch the expanded form: 0:0:0:0:0:ffff:
-  if (lower.includes(':ffff:')) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // IPv4-compatible IPv6 (RFC 4291 § 2.5.5.1, deprecated form: ::w.x.y.z).
-  // Node's URL parser collapses http://[::127.0.0.1]/ to "::7f00:1" — the IPv4
-  // is hidden in the last 32 bits without the ::ffff: marker, so the check
-  // above misses it. The form is still routable to the embedded IPv4 on most
-  // network stacks, so any address compressed to ::xxxx[:yyyy] must be blocked.
-  if (/^::[0-9a-f]{1,4}(:[0-9a-f]{1,4})?$/.test(lower)) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // NAT64 well-known prefix (RFC 6052 § 2.1: 64:ff9b::/96, plus the local
-  // 64:ff9b:1::/48 from RFC 8215). Maps any IPv4 address — including private
-  // ranges — into IPv6, so a host with NAT64 can reach the embedded IPv4 via
-  // e.g. 64:ff9b::7f00:1 → 127.0.0.1.
-  // The check intentionally covers the full 64:ff9b::/32 block (broader than
-  // the two cited ranges): IANA reserves it for IPv4-IPv6 translation, so
-  // blocking the whole prefix is defensively sound and prevents a narrower
-  // CIDR check from quietly re-opening the bypass for 64:ff9b:1::/48 or any
-  // future translation assignment.
-  if (lower.startsWith('64:ff9b:')) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-
-  // 6to4 (RFC 3056, 2002::/16). Encodes an IPv4 address in bits 17-48, so
-  // 2002:7f00:0001::1 routes to 127.0.0.1 on 6to4-capable stacks. The
-  // protocol was deprecated by RFC 7526 and the public relay anycast
-  // (192.88.99.1) has been retired, so broad-blocking the prefix has near-
-  // zero false-positive cost while closing the IPv4-embedded bypass.
-  // Teredo (2001::/32) embeds IPv4 obfuscated by XOR; precise blocking is
-  // impractical and is out of scope here.
-  if (lower.startsWith('2002:')) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
-}
-
-function assertNotPrivateIPv4(ip: string): void {
-  const parts = ip.split('.').map(Number);
-  const [a, b] = parts;
-  if (
-    a === 127 ||
-    a === 10 ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 169 && b === 254) ||
-    a === 0 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 198 && (b === 18 || b === 19))
-  ) {
-    throw new Error('Cloning from private/internal addresses is not allowed');
-  }
+  return path.join(CLONE_ROOT, dirName);
 }
 
 export interface CloneProgress {
   phase: 'cloning' | 'pulling';
   message: string;
 }
+
+/**
+ * Build the `cloneOrPull` options for an `/api/analyze` request.
+ *
+ * Extracted from the route so the token/branch combination is unit-testable.
+ * Inline, the branch-only case was the one nothing asserted: every existing
+ * test still passed if `branch` were dropped whenever no token was supplied —
+ * i.e. silently cloning the default branch for every public URL, which is the
+ * exact behavior #3198 is about (#3199 review).
+ *
+ * Returns `undefined` rather than `{}` when neither is set, because that is
+ * what `cloneOrPull` treats as "no options" at its own call sites.
+ */
+export function analyzeCloneOptions(
+  token?: string,
+  branch?: string,
+): Pick<CloneOrPullOptions, 'token' | 'branch'> | undefined {
+  if (!token && !branch) return undefined;
+  return {
+    ...(token ? { token } : {}),
+    ...(branch ? { branch } : {}),
+  };
+}
+
+export interface CloneOrPullOptions {
+  token?: string;
+  allowedCloneRoot?: string;
+  expectedRepoName?: string;
+  quarantineRoot?: string;
+  allowAutoSyncSsh?: boolean;
+  timeoutMs?: number;
+  branch?: string;
+  overwriteLocalChanges?: boolean;
+  runGitForTest?: typeof runGit;
+}
+
+type RunGitOptions = {
+  token?: string;
+  url?: string;
+  timeoutMs?: number;
+  timeoutKillGraceMs?: number;
+  spawnForTest?: typeof spawn;
+};
 
 /**
  * Build the `git clone` argument list for a given URL and target directory.
@@ -304,6 +263,10 @@ export function buildCloneArgs(url: string, targetDir: string): string[] {
   return ['clone', '--depth', '1', '--', url, targetDir];
 }
 
+export function buildBranchCloneArgs(url: string, targetDir: string, branch: string): string[] {
+  return ['clone', '--depth', '1', '--branch', branch, '--', url, targetDir];
+}
+
 /**
  * Normalize a git URL into a comparable form.
  *
@@ -363,27 +326,14 @@ export function normalizeGitUrlForCompare(url: string): string {
  * remote means for its threat model — for cloneOrPull, a missing remote
  * on an existing clone is treated as a refuse-to-pull condition.
  */
-export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    const proc = spawn('git', ['config', '--get', 'remote.origin.url'], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    });
-    let stdout = '';
-    proc.stdout.on('data', (chunk: Buffer) => {
-      stdout += chunk;
-    });
-    proc.on('close', (code) => {
-      if (code === 0 && stdout.trim()) {
-        resolve(stdout.trim());
-      } else {
-        resolve(null);
-      }
-    });
-    proc.on('error', () => resolve(null));
-  });
+export async function getRemoteOriginUrl(cwd: string, timeoutMs?: number): Promise<string | null> {
+  try {
+    const stdout = await runGit(['config', '--get', 'remote.origin.url'], cwd, { timeoutMs });
+    return stdout.trim() || null;
+  } catch (error) {
+    if ((error as Error).message.includes('timed out')) throw error;
+    return null;
+  }
 }
 
 /**
@@ -403,8 +353,9 @@ export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
 export async function assertRemoteMatchesRequestedUrl(
   targetDir: string,
   requestedUrl: string,
+  timeoutMs?: number,
 ): Promise<void> {
-  const remoteUrl = await getRemoteOriginUrl(targetDir);
+  const remoteUrl = await getRemoteOriginUrl(targetDir, timeoutMs);
   if (remoteUrl === null) {
     throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
   }
@@ -419,10 +370,126 @@ export async function assertRemoteMatchesRequestedUrl(
 }
 
 /**
+ * Fetch refspec that updates `origin/<branch>` from `refs/heads/<branch>`.
+ *
+ * The leading `+` is git's dest-update prefix (`+refs/heads/*:refs/remotes/origin/*`
+ * is what `git clone` writes into `.git/config`). Without it, `fetch --depth 1`
+ * refuses to move `origin/<branch>` when the shallow history cannot prove a
+ * fast-forward — so a same-branch re-index stays stuck on the old tip.
+ *
+ * The user string is interpolated inside `refs/heads/…`, never as a raw pull
+ * dest. A branch named `+develop` becomes `+refs/heads/+develop:…`, not a
+ * force-update of `develop`.
+ */
+function branchFetchRefspec(branch: string): string {
+  return `+refs/heads/${branch}:refs/remotes/origin/${branch}`;
+}
+
+/** Overlays `analyze` writes into a clone; they must not block a same-ref update. */
+const GITNEXUS_GENERATED_OVERLAYS = ['./AGENTS.md', './CLAUDE.md', './.claude'] as const;
+
+/**
+ * Restore only GitNexus-generated overlays so a same-ref update is not
+ * blocked by analyze dirt. Path-limited and root-anchored (`./`): tracked
+ * files are checked out from HEAD; untracked overlays (including gitignored
+ * ones — `AGENTS.md` / `.claude/` are commonly ignored) are `git clean -fdx`'d.
+ * A slash-free `AGENTS.md` would also hit `docs/AGENTS.md`. Never a
+ * whole-clone `git clean --force -d`.
+ */
+async function restoreGitNexusGeneratedOverlays(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  gitOpts: RunGitOptions,
+): Promise<void> {
+  for (const overlay of GITNEXUS_GENERATED_OVERLAYS) {
+    const listed = (await runGitImpl(['ls-files', '--', overlay], cwd, gitOpts)).trim();
+    if (!listed) continue;
+    await runGitImpl(['checkout', 'HEAD', '--', overlay], cwd, gitOpts);
+  }
+  // Path-limited: untracked analyze output still blocks checkout when the
+  // incoming tree has the same path, and otherwise leaves a dirty tree to
+  // index. `-x` is required because these overlays are often gitignored.
+  // Never a whole-clone `git clean --force -d`.
+  await runGitImpl(['clean', '-fdx', '--', ...GITNEXUS_GENERATED_OVERLAYS], cwd, gitOpts);
+}
+
+/**
+ * True when the working tree is already at the requested pin: either HEAD is
+ * that named branch, or HEAD is detached at the same SHA as `branch` /
+ * `origin/<branch>`. A missing ref falls through to the switch path.
+ */
+async function matchRequestedRef(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  branch: string,
+  gitOpts: RunGitOptions,
+): Promise<'branch' | 'sha' | undefined> {
+  const abbrev = (await runGitImpl(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, gitOpts)).trim();
+  if (abbrev === branch) return 'branch';
+  // Detached HEAD reports `HEAD`; compare SHAs so a tag/SHA pin is not a switch.
+  if (abbrev !== 'HEAD') return undefined;
+
+  let headSha: string;
+  try {
+    headSha = (await runGitImpl(['rev-parse', 'HEAD'], cwd, gitOpts)).trim();
+  } catch {
+    return undefined;
+  }
+
+  for (const candidate of [branch, `origin/${branch}`] as const) {
+    try {
+      // Peel annotated tags (`v1.0` is a tag object; HEAD is the commit).
+      const requestedSha = (
+        await runGitImpl(['rev-parse', `${candidate}^{commit}`], cwd, gitOpts)
+      ).trim();
+      if (requestedSha && requestedSha === headSha) return 'sha';
+    } catch {
+      // Ref missing — try origin/<branch>, then the switch path.
+    }
+  }
+  return undefined;
+}
+
+async function fetchAndCheckoutRequestedBranch(
+  runGitImpl: typeof runGit,
+  cwd: string,
+  branch: string,
+  gitOpts: RunGitOptions,
+): Promise<void> {
+  // Analyze clones are `--depth 1`. `merge --ff-only` cannot walk O→N when
+  // the remote moved 2+ commits (the merge-base is not in the shallow
+  // history). `checkout -B` points the local branch at the fetched tip —
+  // same as the switch path, no ancestry walk. No `--force`: leftover
+  // non-overlay dirt still refuses.
+  await runGitImpl(['fetch', '--depth', '1', 'origin', branchFetchRefspec(branch)], cwd, gitOpts);
+  await runGitImpl(['checkout', '-B', branch, `origin/${branch}`], cwd, gitOpts);
+}
+
+/**
  * Clone or pull a git repository.
- * If targetDir doesn't exist: git clone --depth 1
- * If targetDir exists with .git: git pull --ff-only (after verifying the
- * existing clone's remote.origin matches the requested URL).
+ *
+ * If targetDir doesn't exist: git clone --depth 1, adding `--branch <branch>`
+ * when one is requested.
+ *
+ * If targetDir exists with .git, its remote.origin is verified against the
+ * requested URL first, and then the branch decides the update:
+ *   - no `options.branch`: git pull --ff-only, which updates the current
+ *     branch in place via its configured upstream. Nothing moves, so no
+ *     dirty-tree check applies.
+ *   - a `options.branch` that is ALREADY the current named branch: restore
+ *     GitNexus overlays, then fetch via
+ *     `+refs/heads/<branch>:refs/remotes/origin/<branch>` and
+ *     `checkout -B <branch> origin/<branch>` (shallow clones cannot
+ *     `merge --ff-only` across a 2+ commit move). Never a raw
+ *     `origin <branch>` pull refspec. No porcelain refuse.
+ *   - a detached HEAD whose SHA already matches the requested ref (tag /
+ *     SHA pin): restore overlays only. Do not fetch/merge — a same-named
+ *     branch could otherwise fast-forward the pin past the tag.
+ *   - a `options.branch` that DIFFERS from the current pin: fetch that ref,
+ *     then `checkout -B <branch> origin/<branch>` — so the requested branch,
+ *     not the one already checked out, is what ends up in the working tree.
+ *     This is the switching case, and it refuses a dirty tree unless
+ *     `overwriteLocalChanges` is set.
  *
  * Security:
  *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
@@ -446,49 +513,219 @@ export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
-  options?: { token?: string },
+  options?: CloneOrPullOptions,
 ): Promise<string> {
   // Containment barrier — inline with the canonical path.relative idiom so
   // CodeQL recognizes the sanitizer at every following filesystem and
   // subprocess sink. The same `safeTarget` is used for every downstream
   // path operation — no reassignment that the analyzer could lose track of.
   //
-  // Limitation: this is a lexical containment check, not a realpath check.
-  // If an attacker can place a symlink under CLONE_ROOT pointing outside it,
-  // the lexical check passes but the clone lands at the symlink target. That
-  // requires pre-existing local write access to CLONE_ROOT, so the threat
-  // model considers it out of scope; CodeQL js/path-injection accepts the
-  // lexical form. Tracked as a follow-up if defense-in-depth is needed.
+  // The lexical check runs before filesystem creation; realpath and symlink
+  // checks below run before pull/clone and again after clone completes.
+  const cloneRoot = path.resolve(options?.allowedCloneRoot ?? CLONE_ROOT);
+  const expectedRepoName = options?.expectedRepoName;
+  if (expectedRepoName !== undefined && expectedRepoName !== extractRepoName(url)) {
+    throw new Error(`Clone target repo name ${expectedRepoName} does not match requested URL`);
+  }
+
   const safeTarget = path.resolve(targetDir);
-  const rel = path.relative(CLONE_ROOT, safeTarget);
+  if (expectedRepoName !== undefined && path.basename(safeTarget) !== expectedRepoName) {
+    throw new Error(`Clone target basename must match repository name ${expectedRepoName}`);
+  }
+
+  const rel = path.relative(cloneRoot, safeTarget);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`Clone target must be a subdirectory of ${CLONE_ROOT}`);
+    throw new Error(`Clone target must be a subdirectory of ${cloneRoot}`);
   }
 
   // Always validate the requested URL — the prior shape only ran this in
   // the code path where the repo was cloned. Now it runs unconditionally,
   // preventing SSRF / blocked-host bypasses even when targetDir already exists.
-  validateGitUrl(url);
+  if (options?.allowAutoSyncSsh) validateAutoSyncRemoteUrl(url);
+  else validateGitUrl(url);
+  await fs.mkdir(cloneRoot, { recursive: true });
+  if (options?.allowedCloneRoot) {
+    await assertDirectoryOwnerAndPermissions(cloneRoot);
+  }
+  await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
+  await fs.mkdir(path.dirname(safeTarget), { recursive: true });
+  await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
+  await assertPreRealpathContainment(cloneRoot, safeTarget);
 
   const exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
 
+  const targetExists = await fs.access(safeTarget).then(
+    () => true,
+    () => false,
+  );
+
   if (exists) {
+    if (options?.allowedCloneRoot) {
+      await assertNoSymlinkPath(cloneRoot, path.join(safeTarget, '.git'), true);
+    }
+    await assertPostRealpathContainment(cloneRoot, safeTarget);
     // Confirm the existing clone is actually the same repository the caller
     // requested. Without this check, a pull would silently succeed against
     // whatever remote the dir was originally cloned from.
-    await assertRemoteMatchesRequestedUrl(safeTarget, url);
+    await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], safeTarget, { token: options?.token, url });
+    const runGitImpl = options?.runGitForTest ?? runGit;
+    const gitOpts = {
+      token: options?.token,
+      url,
+      timeoutMs: options?.timeoutMs,
+    };
+    // Already at the requested pin? Then there is no switch to make, so do
+    // not take the checkout path below — that would run the porcelain check
+    // against a tree ANALYZE ITSELF dirtied (it writes AGENTS.md / CLAUDE.md /
+    // .claude/ into the clone), which made a pinned RE-index impossible: the
+    // first pin succeeded and every later one failed asking for
+    // `overwrite_local_changes`, a flag this route deliberately does not pass
+    // because it would `git clean --force -d` the directory (#3199 review).
+    //
+    // "Already there" is a named-branch match OR a detached HEAD whose SHA
+    // equals `branch` / `origin/<branch>` (tag / SHA pin). A missing ref
+    // falls through to the switch path, which still refuses a dirty tree.
+    //
+    // Same-named-branch update uses the heads/ → remotes/ fetch refspec plus
+    // `checkout -B <branch> origin/<branch>`, never `pull origin <user-string>`
+    // (a leading `+` would otherwise be a force-fetch). Only
+    // `remote.origin.url` is verified above; `branch.<name>.remote` /
+    // `.merge` are not, so an implicit-upstream pull can update a different
+    // ref while the job still carries this branch (#3199 review).
+    const requestedRefMatch = options?.branch
+      ? await matchRequestedRef(runGitImpl, safeTarget, options.branch, gitOpts)
+      : undefined;
+
+    if (options?.branch && !requestedRefMatch) {
+      if (!options.overwriteLocalChanges) {
+        const status = await runGitImpl(['status', '--porcelain'], safeTarget, gitOpts);
+        if (status.trim()) {
+          throw new Error(
+            `Refusing to update ${safeTarget}: local changes detected. Set overwrite_local_changes: true to overwrite them.`,
+          );
+        }
+      }
+      await runGitImpl(
+        ['fetch', '--depth', '1', 'origin', branchFetchRefspec(options.branch)],
+        safeTarget,
+        gitOpts,
+      );
+      await runGitImpl(
+        [
+          'checkout',
+          ...(options.overwriteLocalChanges ? ['--force'] : []),
+          '-B',
+          options.branch,
+          `origin/${options.branch}`,
+        ],
+        safeTarget,
+        gitOpts,
+      );
+      if (options.overwriteLocalChanges) {
+        // `checkout --force` rewrites tracked files only, so untracked sources
+        // left by an operator or an earlier branch survive and then get indexed
+        // as if they were part of the remote commit. Deliberately no `-x`/`-X`:
+        // ignored paths must survive, and `-e /.gitnexus` is belt-and-braces
+        // because `.git/info/exclude` is skipped on a read-only storage mount
+        // and a freshly cloned repo may not have been analyzed yet at all.
+        await runGitImpl(['clean', '--force', '-d', '-e', '/.gitnexus'], safeTarget, gitOpts);
+      }
+    } else if (options?.branch && requestedRefMatch === 'branch') {
+      await restoreGitNexusGeneratedOverlays(runGitImpl, safeTarget, gitOpts);
+      await fetchAndCheckoutRequestedBranch(runGitImpl, safeTarget, options.branch, gitOpts);
+    } else if (options?.branch && requestedRefMatch === 'sha') {
+      // Tag / SHA pin: already at the requested commit. Fetching
+      // `refs/heads/<name>` would follow a same-named branch past the pin.
+      await restoreGitNexusGeneratedOverlays(runGitImpl, safeTarget, gitOpts);
+    } else {
+      await runGitImpl(['pull', '--ff-only'], safeTarget, gitOpts);
+    }
   } else {
-    await fs.mkdir(path.dirname(safeTarget), { recursive: true });
+    if (targetExists && (await fs.readdir(safeTarget)).length > 0) {
+      throw new Error(`Clone target already exists but is not a git repository: ${safeTarget}`);
+    }
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(buildCloneArgs(url, safeTarget), undefined, { token: options?.token, url });
+    try {
+      const runGitImpl = options?.runGitForTest ?? runGit;
+      const cloneArgs = options?.branch
+        ? buildBranchCloneArgs(url, safeTarget, options.branch)
+        : buildCloneArgs(url, safeTarget);
+      await runGitImpl(cloneArgs, undefined, {
+        token: options?.token,
+        url,
+        timeoutMs: options?.timeoutMs,
+      });
+      await assertPostRealpathContainment(cloneRoot, safeTarget);
+    } catch (err: unknown) {
+      if (options?.quarantineRoot) {
+        const partialExists = await fs.access(safeTarget).then(
+          () => true,
+          () => false,
+        );
+        if (partialExists) {
+          try {
+            await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot);
+          } catch (quarantineError) {
+            throw new AggregateError(
+              [err, quarantineError],
+              `Clone failed and partial checkout could not be quarantined: ${safeTarget}`,
+            );
+          }
+        }
+      }
+      throw err;
+    }
   }
 
   return safeTarget;
+}
+
+async function assertPreRealpathContainment(root: string, target: string): Promise<void> {
+  const realRoot = await fs.realpath(root);
+  const realParent = await fs.realpath(path.dirname(target));
+  const parentRel = path.relative(realRoot, realParent);
+  if (parentRel.startsWith('..') || path.isAbsolute(parentRel)) {
+    throw new Error(`Clone target parent must resolve inside ${root}`);
+  }
+}
+
+async function assertPostRealpathContainment(root: string, target: string): Promise<void> {
+  const realRoot = await fs.realpath(root);
+  const realTarget = await fs.realpath(target);
+  const rel = path.relative(realRoot, realTarget);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Clone target must resolve inside ${root}`);
+  }
+}
+
+async function assertNoSymlinkPath(
+  root: string,
+  target: string,
+  verifyOwnership = false,
+): Promise<void> {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  const relativeTarget = path.relative(resolvedRoot, resolvedTarget);
+  if (relativeTarget.startsWith('..') || path.isAbsolute(relativeTarget)) return;
+  let current = resolvedRoot;
+  for (const segment of relativeTarget.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') break;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing symlink in clone target path: ${current}`);
+    }
+    if (verifyOwnership) await assertDirectoryOwnerAndPermissions(current);
+  }
 }
 
 /**
@@ -592,11 +829,10 @@ function warnIfCleartextCredential(url?: string): void {
 }
 
 /**
- * Build the spawn env for `git`. Suppresses credential prompts and, when a
- * credential resolves (see resolveGitCredential), injects a single
- * host-scoped Authorization header via the `GIT_CONFIG_*` env protocol
- * (git ≥2.31) so credentials never appear in argv or the URL. Appends after
- * any existing `GIT_CONFIG_COUNT` rather than overwriting it. Exported for
+ * Build the spawn env for managed `git` commands. Suppresses credential
+ * prompts, disables repository hooks, and injects at most one host-scoped
+ * Authorization header via the `GIT_CONFIG_*` env protocol (git ≥2.31).
+ * Managed settings append after any existing GIT_CONFIG_COUNT. Exported for
  * unit tests.
  */
 export function buildGitEnv(
@@ -619,18 +855,21 @@ export function buildGitEnv(
     GIT_CURL_VERBOSE: undefined,
   };
 
+  const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
+  let next = Number.isInteger(existing) && existing > 0 ? existing : 0;
+  env[`GIT_CONFIG_KEY_${next}`] = 'core.hooksPath';
+  env[`GIT_CONFIG_VALUE_${next}`] = os.devNull;
+  next += 1;
+
   const credential = resolveGitCredential(options);
   const key = options?.url ? buildExtraHeaderKey(options.url) : undefined;
   if (credential && key) {
-    // Append after any GIT_CONFIG_* the operator already set, so we never
-    // clobber their git config (e.g. an enforced http.sslVerify).
-    const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
-    const base = Number.isInteger(existing) && existing > 0 ? existing : 0;
-    env.GIT_CONFIG_COUNT = String(base + 1);
-    env[`GIT_CONFIG_KEY_${base}`] = key;
-    env[`GIT_CONFIG_VALUE_${base}`] = `Authorization: Basic ${credential}`;
+    env[`GIT_CONFIG_KEY_${next}`] = key;
+    env[`GIT_CONFIG_VALUE_${next}`] = `Authorization: Basic ${credential}`;
+    next += 1;
     warnIfCleartextCredential(options?.url);
   }
+  env.GIT_CONFIG_COUNT = String(next);
 
   return env;
 }
@@ -640,35 +879,65 @@ export function buildGitEnv(
 // host-scoped Authorization header (GitHub PAT for github.com, else the
 // server's AZURE_DEVOPS_PAT for Azure hosts) via the GIT_CONFIG_* protocol —
 // never in argv. See resolveGitCredential / buildExtraHeaderKey.
-function runGit(
-  args: string[],
-  cwd?: string,
-  options?: { token?: string; url?: string },
-): Promise<void> {
+export function runGit(args: string[], cwd?: string, options?: RunGitOptions): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('git', args, {
+    const spawnGit = options?.spawnForTest ?? spawn;
+    const proc = spawnGit('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: buildGitEnv(process.env, options),
     });
 
+    let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timedOut = false;
+    let killTimer: NodeJS.Timeout | undefined;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      fn();
+    };
+    const timer =
+      options?.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            proc.kill('SIGTERM');
+            killTimer = setTimeout(() => {
+              proc.kill('SIGKILL');
+              finish(() =>
+                reject(new Error(`git ${args[0]} timed out after ${options.timeoutMs}ms`)),
+              );
+            }, options.timeoutKillGraceMs ?? 1_000);
+          }, options.timeoutMs)
+        : undefined;
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk;
+    });
     proc.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk;
     });
 
     proc.on('close', (code) => {
-      if (code === 0) resolve();
+      if (timedOut) {
+        finish(() => reject(new Error(`git ${args[0]} timed out after ${options?.timeoutMs}ms`)));
+        return;
+      }
+      if (code === 0) finish(() => resolve(stdout));
       else {
         // Log full stderr internally but don't expose it to API callers (SSRF mitigation)
         if (stderr.trim()) logger.error(`git ${args[0]} stderr: ${stderr.trim()}`);
-        reject(new Error(`git ${args[0]} failed (exit code ${code})`));
+        finish(() => reject(new Error(`git ${args[0]} failed (exit code ${code})`)));
       }
     });
 
     proc.on('error', (err) => {
-      reject(new Error(`Failed to spawn git: ${err.message}`));
+      finish(() => reject(new Error(`Failed to spawn git: ${err.message}`)));
     });
   });
 }
+
+export const runGitForTest = runGit;

@@ -90,7 +90,7 @@ import {
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import {
   callableFlowSiteKey,
-  collectDeferredIndirectSites,
+  collectDeferredIndirectCollection,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
@@ -464,6 +464,8 @@ interface RunScopeResolutionInput {
 interface RunScopeResolutionStats {
   readonly filesProcessed: number;
   readonly filesSkipped: number;
+  /** Files still missing a ParsedFile after the main-thread fallback. */
+  readonly scopeExtractionFailedPaths: readonly string[];
   readonly importsEmitted: number;
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
@@ -564,6 +566,7 @@ export function runScopeResolution(
 
   // ── Phase 1: extract each file → ParsedFile ────────────────────────────
   const parsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailedPaths: string[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
   const preExtracted = input.preExtractedParsedFiles;
@@ -587,15 +590,20 @@ export function runScopeResolution(
     }
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
+      let extractionWarned = false;
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
         file.path,
-        onWarn,
+        (warning) => {
+          extractionWarned = true;
+          onWarn(warning);
+        },
         cachedTree,
       );
       if (parsed === undefined) {
         filesSkipped++;
+        if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
     }
@@ -631,6 +639,11 @@ export function runScopeResolution(
     `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
   );
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  provider.populateWorkspaceReferences?.(parsedFiles, {
+    fileContents: getFileContents(),
+    treeCache,
+    resolutionConfig: input.resolutionConfig,
+  });
 
   // A callable-flow-only provider has no reason to build the whole-graph
   // lookup or finalize ordinary references when none of its files emitted a
@@ -643,6 +656,7 @@ export function runScopeResolution(
     return {
       filesProcessed: parsedFiles.length,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -680,6 +694,7 @@ export function runScopeResolution(
     return {
       filesProcessed: 0,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -711,6 +726,7 @@ export function runScopeResolution(
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
+      importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,
@@ -722,9 +738,23 @@ export function runScopeResolution(
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
+      wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
+      namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
+  // `export *` collisions the shared finalize refused to bind (WS1 C2). Recorded
+  // as outcomes so the refusal is auditable next to the name-fallback census —
+  // a silently unresolved importer is indistinguishable from a resolver gap.
+  for (const refused of finalized.stats.ambiguousWildcardExports) {
+    recordResolutionOutcome({
+      kind: 'reexport-ambiguous',
+      candidateIds: refused.candidateDefIds,
+      phase: 'finalize',
+      filePath: refused.filePath,
+      name: refused.name,
+    });
+  }
   // One store and ONE writer rule for heritage instantiations (#2912), shared by
   // the pre-pass below and by the language hook further down — a heritage shape
   // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
@@ -978,7 +1008,8 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles, indexes);
+  const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
+  const deferredIndirectSites = deferredIndirectCollection.sites;
   const callableArgumentSites = new Set<string>();
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
@@ -1069,7 +1100,14 @@ export function runScopeResolution(
         workspaceIndex,
         {
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+          language: provider.language,
+          isGlobalNameFallbackPlausible: provider.isGlobalNameFallbackPlausible,
+          sourceTextOf:
+            provider.isGlobalNameFallbackPlausible !== undefined
+              ? (filePath: string) => getFileContents().get(filePath)
+              : undefined,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
+          markConstructionSites: provider.markConstructionSites === true,
           isFileLocalDef: provider.isFileLocalDef,
           isBuiltInName: provider.languageProvider.isBuiltInName,
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
@@ -1100,6 +1138,7 @@ export function runScopeResolution(
         // both correctly emit. See the build site above for why the earlier
         // allowlist could not be made safe this way.
         functionLocalValueDefIds,
+        { markConstructionSites: provider.markConstructionSites === true },
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a
@@ -1192,7 +1231,12 @@ export function runScopeResolution(
         indexes,
         emitParsedFiles,
         postHeritageNodeLookup,
+        readonlyModel,
         calleeIdAccumulator,
+        // Same provider hook the receiver-bound pass consults for a namespace
+        // member (Case 1). Without it a hub module's re-exported callable
+        // resolves when CALLED and declines when REGISTERED.
+        provider.namespaceExportsIncludeImportedNames === true,
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the
@@ -1227,6 +1271,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          deferredIndirectSites,
+          callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>
             logger.warn(
               warning,
@@ -1644,6 +1690,7 @@ export function runScopeResolution(
   return {
     filesProcessed: parsedFiles.length,
     filesSkipped,
+    scopeExtractionFailedPaths,
     importsEmitted,
     resolve: resolveStats,
     referenceEdgesEmitted:

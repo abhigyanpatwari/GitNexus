@@ -5,6 +5,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import type { ImpactRisk } from 'gitnexus-shared';
 import type {
   BridgeHandle,
   BridgeMeta,
@@ -158,6 +159,15 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
       name: string;
       repoPath: string;
       target: string;
+      // Target selectors, same names/semantics as the single-repo impact tool
+      // (target_uid = zero-ambiguity lookup that wins over the name;
+      // file_path/kind narrow a name shared by same-named symbols). Threading
+      // them through HERE is what makes the MCP boundary's forwarding live —
+      // dropping them at this boundary silently re-broke the group-mode
+      // disambiguation loop once already.
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth: number;
       crossDepth: number;
@@ -172,11 +182,21 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   | { ok: false; error: string } {
   const name = String(params.name ?? '').trim();
   const repoPath = String(params.repo ?? '').trim();
-  const target = String(params.target ?? '').trim();
+  // Optional string, same helper shape as cross-trace's `str()`: empty/blank
+  // counts as absent so `target_uid: ''` degrades to the name lookup rather
+  // than a zero-ambiguity lookup of the empty uid. Parsed before the required
+  // check so UID-only callers (MCP impact schema requires `direction`, not
+  // `target`) are accepted.
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v : undefined;
+  const targetName = String(params.target ?? '').trim();
+  const target_uidEarly = str(params.target_uid);
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
     return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
-  if (!target) return { ok: false, error: 'target is required' };
+  if (!targetName && !target_uidEarly)
+    return { ok: false, error: 'target or target_uid is required' };
+  const target = targetName || target_uidEarly!;
   if (
     params.service !== undefined &&
     params.service !== null &&
@@ -204,6 +224,10 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
+  const target_uid = target_uidEarly;
+  const file_path = str(params.file_path);
+  const kind = str(params.kind);
+
   // Clamp at the validate boundary so the downstream `deadline` (line
   // ~366) and `safeLocalImpact`'s `setTimeout` both see a single
   // bounded value. Without this, the outer deadline budgeted Phase-2
@@ -223,6 +247,9 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth,
@@ -243,6 +270,17 @@ async function resolveGroupRepo(
 ): Promise<GroupRepoHandle | { error: string }> {
   const registryName = config.repos[repoPath];
   if (!registryName) {
+    const matchingMemberPaths = Object.entries(config.repos)
+      .filter(([, alias]) => alias.toLowerCase() === repoPath.toLowerCase())
+      .map(([memberPath]) => memberPath);
+    if (matchingMemberPaths.length > 0) {
+      return {
+        error:
+          `Unknown repo path "${repoPath}" in this group. ` +
+          `That value is a registry alias for member path(s): ${matchingMemberPaths.join(', ')}. ` +
+          `Pass the group.yaml key to --repo, not the alias.`,
+      };
+    }
     return { error: `Unknown repo path "${repoPath}" in this group.` };
   }
   try {
@@ -381,7 +419,17 @@ function extractProcessNames(impact: unknown): string[] {
 // permanently that a PDG `risk:'UNKNOWN'` never coalesces to a confident `LOW`.
 // No behavior change — `'UNKNOWN'` was already handled correctly at the
 // `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
-export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
+function asImpactRisk(value: unknown, fallback: ImpactRisk = 'LOW'): ImpactRisk {
+  return value === 'LOW' ||
+    value === 'MEDIUM' ||
+    value === 'HIGH' ||
+    value === 'CRITICAL' ||
+    value === 'UNKNOWN'
+    ? value
+    : fallback;
+}
+
+export function mergeRisk(localRisk: ImpactRisk, cross: CrossRepoImpact[]): ImpactRisk {
   const traversed = cross.filter((c) => c.fanout_status !== 'not_attempted');
   const highConf = traversed.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
@@ -389,6 +437,22 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   if (highConf) return 'HIGH';
   if (traversed.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
   return localRisk;
+}
+
+function liftLocalRiskMeta(
+  local: unknown,
+  cross: CrossRepoImpact[],
+): Pick<GroupImpactResult, 'riskSharedAxes' | 'riskScale'> {
+  const { riskSharedAxes, riskScale } = local as {
+    riskSharedAxes?: unknown;
+    riskScale?: GroupImpactResult['riskScale'];
+  };
+  return {
+    ...(riskSharedAxes !== undefined
+      ? { riskSharedAxes: mergeRisk(asImpactRisk(riskSharedAxes), cross) }
+      : {}),
+    ...(riskScale !== undefined ? { riskScale } : {}),
+  };
 }
 
 /**
@@ -541,6 +605,9 @@ export async function runGroupImpact(
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth: _crossDepth,
@@ -568,6 +635,14 @@ export async function runGroupImpact(
 
   const impactParams: Parameters<GroupToolPort['impact']>[1] = {
     target,
+    // Selector params pass through to the member repo's impact (the port
+    // contract in service.ts documents them), so the single-repo tool's
+    // "re-call with target_uid to disambiguate" loop works unchanged in
+    // group mode. `undefined` keeps the call shape flat — same convention
+    // as the relationTypes line below.
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     relationTypes: relationTypes && relationTypes.length > 0 ? relationTypes : undefined,
@@ -601,6 +676,7 @@ export async function runGroupImpact(
         cross_repo_hits: 0,
       },
       risk: 'UNKNOWN',
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
       crossDepthWarning,
     };
@@ -656,7 +732,8 @@ export async function runGroupImpact(
         modules_affected: s.modules_affected ?? 0,
         cross_repo_hits: 0,
       },
-      risk: String((local as { risk?: string }).risk ?? 'LOW'),
+      risk: asImpactRisk((local as { risk?: unknown }).risk),
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
       crossDepthWarning,
     };
@@ -826,7 +903,7 @@ export async function runGroupImpact(
   }
 
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
-  const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
+  const localRisk = asImpactRisk((local as { risk?: unknown }).risk);
   const localPartial = Boolean((local as { partial?: boolean }).partial);
   // The bridge's own incompleteness, in the shared vocabulary, read through
   // what this query DECLARED. The fan-out above already drops every neighbour
@@ -905,6 +982,7 @@ export async function runGroupImpact(
       cross_repo_hits: cross.length,
     },
     risk: mergeRisk(localRisk, cross),
+    ...liftLocalRiskMeta(local, cross),
     timeoutMs,
     crossDepthWarning,
   };

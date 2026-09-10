@@ -82,13 +82,14 @@
  *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
  *     Sites a pass touched but couldn't resolve do NOT get marked —
  *     they still get a chance from the shared resolver. Exception:
- *     the free-call fallback marks the site unconditionally after
- *     attempting emission (even on dedup-collapse), because the
- *     per-(caller, target) collapse semantics require multiple call
- *     sites in the same caller body not produce multiple edges.
- *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
- *     the generic bridge cannot remap class heritage into method-owned
- *     EXTENDS edges via `resolveCallerGraphId`.
+ *     the free-call fallback marks the site after it decides the site,
+ *     including when it emits no edge — dedup-collapse, a visibility
+ *     veto (`fallback-refused`), or a selected callable that is deleted
+ *     / invisible. The later generic pass must not recreate an edge
+ *     that pass just refused. `preEmitInheritanceEdges` also pre-marks
+ *     every `inherits` site so the generic bridge cannot remap class
+ *     heritage into method-owned EXTENDS edges via
+ *     `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
@@ -248,8 +249,8 @@
  * ## Semantic-model source of truth
  *
  * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
- * is the single semantic model consumed by both the legacy DAG and the
- * scope-resolution pipeline. Scope-resolution passes MUST NOT build a
+ * is the single semantic model consumed by the scope-resolution pipeline.
+ * Scope-resolution passes MUST NOT build a
  * parallel parse representation; if a pass needs AST-level facts that
  * `ParsedFile` doesn't expose, it should reuse the orchestrator's
  * `treeCache` (see `RunScopeResolutionInput.treeCache`) rather than
@@ -257,23 +258,20 @@
  *
  * ## Same-graph guarantee
  *
- * Edges emitted by `runScopeResolution` and edges emitted by the legacy
- * DAG are indistinguishable to downstream consumers:
+ * All language resolvers emit edges through `runScopeResolution` using the
+ * shared graph contract:
  *   - Node identity: same `generateId(...)` helper, same qualified-name
  *     keyspace, same File/Folder/Method/Class node labels.
  *   - Edge vocabulary: `'import-resolved' | 'global' | 'local-call' |
- *     'same-file' | 'interface-dispatch' | 'read' | 'write'` — both
- *     paths emit the same reasons (see
- *     `gitnexus/src/core/ingestion/call-processor.ts` for the legacy
- *     emitter and `passes/receiver-bound-calls.ts` /
+ *     'same-file' | 'interface-dispatch' | 'read' | 'write' |
+ *     'global-name-fallback'` (see `passes/receiver-bound-calls.ts` /
  *     `passes/free-call-fallback.ts` for the scope-resolution emitters).
- *   - Overload disambiguation: both paths use
+ *   - Overload disambiguation: resolvers use
  *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
  *     method has overloads — see `graph-bridge/ids.ts`.
  *
- * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
- * runs both paths on every migrated language's fixture corpus and
- * fails if the graph outputs diverge.
+ * Resolver fixture coverage lives in `ci-tests.yml` (the separate
+ * `ci-scope-parity.yml` gate was removed in RING4-1 #942).
  *
  * Plan that introduced most of these invariants:
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
@@ -698,6 +696,21 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * after all files have been extracted and before reference finalization.
+   * Use this when a per-file capture needs conservative facts from an
+   * imported sibling (for example a compile-time branch constant).
+   */
+  readonly populateWorkspaceReferences?: (
+    parsedFiles: ParsedFile[],
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly treeCache?: { get(filePath: string): unknown };
+      readonly resolutionConfig?: unknown;
+    },
+  ) => void;
+
+  /**
    * Recognize a `super(...)`-style receiver text. Python returns
    * `/^super\s*\(/.test(t)`. Java returns `t === 'super'`. C++ may
    * also need `this` capture. Languages without inheritance return
@@ -850,6 +863,88 @@ export interface ScopeResolver {
    */
   readonly allowGlobalFreeCallFallback?: boolean;
 
+  /** Opt in to binding imports at their extracted lexical scope, rather than
+   * publishing every file's imports at module scope. */
+  readonly importsBindAtLexicalScope?: boolean;
+
+  /**
+   * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
+   * this language — ECMAScript `export *` semantics, where the module simply
+   * does not export the name and any binding is a guess. Opt-in: for a
+   * language whose wildcard import is `#include`, `require` or a package
+   * fan-out, the same name in two files is an overload set or a redeclaration,
+   * and refusing it would delete real edges (C++ arity-narrowed overloads
+   * across two headers). Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   */
+  readonly exclusiveWildcardReexports?: boolean;
+
+  /**
+   * A named import or named re-export can only bind to a MODULE-LEVEL
+   * declaration of the target file — ECMAScript semantics, where
+   * `import { x }` never reaches a class member. Opt-in: languages that bind
+   * module-level members by bare name (static members, module functions)
+   * leave it off. Forwarded to `FinalizeHooks.namedImportsBindTopLevelOnly`.
+   */
+  readonly namedImportsBindTopLevelOnly?: boolean;
+
+  /**
+   * Veto for a single `allowGlobalFreeCallFallback` guess.
+   *
+   * The fallback picks a callable because its SIMPLE NAME is unique in the
+   * workspace — it consults no import and no scope chain. For most languages a
+   * large share of those guesses are not merely unlikely but IMPOSSIBLE: Go
+   * cannot call an unexported identifier from another package, ESM cannot see a
+   * name it did not import, Rust cannot reach an item with no `use` path. This
+   * hook is where a language states those rules, so the shared pass can drop
+   * the edge instead of publishing a guess that the language forbids.
+   *
+   * Return `false` to REFUSE (no edge, recorded as `fallback-refused`). Return
+   * `true`, or leave the hook undefined, to emit the labeled
+   * `global-name-fallback` edge. **Only answer `false` when the call is
+   * impossible, not when it is merely unproven** — a wrongly-refused candidate
+   * is a lost real edge, whereas a wrongly-allowed one is at least labeled and
+   * excluded from flows.
+   *
+   * Deliberately NOT folded into `isCallableVisibleFromCaller`: that hook also
+   * gates precise dispatch paths (implicit-this, member calls), so a rule
+   * written for the name-guess tier would silently suppress resolved edges too.
+   *
+   * `parsedFileOf` reaches the CANDIDATE's parse result — a language whose rule
+   * depends on declaration-side facts not carried by `SymbolDefinition` (for
+   * example Rust's `pub` form) needs it. `isExported` is the tri-state export
+   * marker when the language supplies one; this hook still needs the parse for
+   * visibility facts that marker does not represent. It returns `undefined`
+   * for a path outside this pass's file set; treat that as "cannot decide"
+   * and allow.
+   */
+  readonly isGlobalNameFallbackPlausible?: (ctx: {
+    readonly callerParsed: ParsedFile;
+    readonly candidate: SymbolDefinition;
+    readonly parsedFileOf: (filePath: string) => ParsedFile | undefined;
+    /**
+     * Raw source of any parsed file, for languages whose visibility rule needs
+     * a declaration the parse does not carry (Go's package clause: a test file's
+     * `package foo_test` is a different package from its directory's `foo`).
+     * Absent when the pipeline has no contents at hand; hooks must then answer
+     * from paths alone and, when undecidable, allow.
+     */
+    readonly sourceTextOf?: (filePath: string) => string | undefined;
+    /**
+     * The call site, so a language can tell a BARE name from a PATH-QUALIFIED
+     * one. Both reach this tier — a qualified call whose qualifier the resolver
+     * could not follow falls through to the bare-name search with only its tail
+     * name — but they are not the same claim. Rust's `User::new(...)` named its
+     * type in source, so refusing it for lacking a `use` of the module would
+     * delete an edge the source spells out.
+     */
+    readonly site: {
+      readonly name: string;
+      readonly rawQualifiedName?: string;
+      /** Lexical call-site scope; absent only for legacy/synthetic hook callers. */
+      readonly inScope?: ScopeId;
+    };
+  }) => boolean;
+
   /**
    * In this language every `Method` belongs to a class instance, so a
    * FREE (receiver-less) call may resolve to a `Method` only when the
@@ -877,6 +972,71 @@ export interface ScopeResolver {
    * Swift — opt in.
    */
   readonly constructorCallTargetsClass?: boolean;
+
+  /**
+   * When true, the CALLS edge emitted for a constructor-form site
+   * (`callForm === 'constructor'`) carries ` (constructor)` appended to its
+   * `reason` — `local-call (constructor)`, `import-resolved (constructor)`,
+   * `scope-resolution: call (constructor)` — so a consumer can tell
+   * "constructs an instance of" apart from "invokes" on the edge alone.
+   *
+   * Opt-in because the unsuffixed strings are a pinned contract: the legacy
+   * DAG vocabulary (`'import-resolved' | 'local-call' | …`, see the
+   * same-graph guarantee above) is asserted verbatim by consumers and by the
+   * per-language resolver suites, constructor sites included. A language
+   * that links a construction site to the TYPE node itself — a struct
+   * literal `T{…}` in Zig, where nothing but the marker distinguishes the
+   * edge from an invocation in the schema (PR #1432 review) — opts in; the
+   * default leaves every existing edge byte-identical.
+   *
+   * The marker rides in `reason` because relationships carry no arbitrary
+   * properties (adding one moves SCHEMA_FINGERPRINT — the IMPLEMENTS
+   * `-pointer` precedent in `pipeline/run.ts`). Applies to the free-call
+   * fallback, the reference bridge and the receiver-bound paths — a
+   * namespace-qualified literal (`mod.T{…}`, Case 1), a type nested in the
+   * receiver's class (`A.Item{}`, Case 2) and a dotted type binding (Case 3)
+   * all go through `constructionSiteReason` — so an opted-in provider sees
+   * one vocabulary whichever path resolved the site.
+   */
+  readonly markConstructionSites?: boolean;
+
+  /**
+   * When true, a namespace's exported member may also be a name the target
+   * module IMPORTED and publishes as its own — the hub-module shape, a file
+   * made only of re-exports (`pub const Terminal = @import("Terminal.zig");`,
+   * `pub const Thing = @import("thing.zig").Thing;`). Such a file owns no
+   * local binding, so the default local-only export lookup
+   * (`findExportedDef`) finds nothing for `terminal.Terminal.init()`,
+   * `t: stdx.Thing`, `var p = stdx.PRNG.from_seed()` or `var a:
+   * stdx.BoundedArrayType(u8, 4)`, and the receiver-bound namespace paths
+   * (Case 1, Case 3, the compound resolver's namespace branch) fall through.
+   * With the flag those paths use `findExportedDefIncludingImportedNames`,
+   * which reads the finalized channel where the published names live.
+   *
+   * Off by default: in most languages a module's imports are not its exports
+   * (TypeScript `import { X }` publishes nothing), and the finalized edge does
+   * not record whether the import was written `pub`. Zig opts in — a hub
+   * member a consumer can name through the hub is public by construction.
+   */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
+
+  /**
+   * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
+   * verified namespace root instead of being split once at the last dot:
+   * `hub.sub.Thing{}` (a namespace republished by a hub — `pub const sub =
+   * @import("sub.zig");`), `mod.Outer.Inner{}` (a type nested in a type),
+   * `opmod.Op.lookup` (an enum variant reached through the module), and the
+   * typed forms `x: mod.Outer.Inner`. Each hop is either a class-like member
+   * of the current module(s) / the current class, or a namespace import
+   * edge the current module's scope binds under that name; a hop that is
+   * ambiguous — two files behind one handle disagree, or a name is both a
+   * type and a republished module — resolves nothing rather than picking a
+   * first match. Off, the receiver-bound paths (Case 1, Case 2's
+   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
+   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
+   * 8.10), whose module system is nothing but nested `const` handles.
+   */
+  readonly resolveNamespaceChains?: boolean;
 
   /**
    * How this language spells a construction expression, so the compound

@@ -16,11 +16,31 @@ export interface PipelineResult {
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
   /**
+   * Runs the community/process phases that `skipDerivedGraphPhases` held back
+   * (#3016), against the same graph and phase outputs the pipeline already
+   * produced, and populates `communityResult`/`processResult` on this object.
+   *
+   * Present ONLY when those phases were skipped for that reason, so a caller
+   * that optimistically skipped them can still get a byte-identical derived
+   * layer on the paths that turn out to need one (full rebuild, escalated
+   * write, or an incremental run with deleted files). Absent means the phases
+   * either already ran or were disabled for an unrelated reason.
+   */
+  runDeferredDerivedPhases?: () => Promise<void>;
+  /**
    * Additive diagnostics for registry-primary resolution decisions that
    * deliberately suppress edge emission. Empty means no diagnostic was
    * produced; graph edge semantics are unchanged.
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Caller node id → simple names of every callee it has a CALLS edge to, read
+   * through the streaming sink when one was active (the raw graph holds no
+   * streamed edge). Denominator for the name-fallback census
+   * (`countCallsByLanguage`), so a guess count can be read as a share of the
+   * call graph. Absent only when scope resolution did not run.
+   */
+  resolvedCalleeNamesByCaller?: ReadonlyMap<string, ReadonlySet<string>>;
   /**
    * Interfaces whose structural-satisfaction check could not be completed
    * (#2873). Empty for languages with no structural detection.
@@ -40,6 +60,14 @@ export interface PipelineResult {
    * affordance so regression suites can prove the pool engaged.
    */
   usedWorkerPool: boolean;
+  /** Files actually dispatched to parser workers after parse-cache lookup. */
+  reparsedFileCount: number;
+  /** Files restored from parse-cache chunks without parser-worker dispatch. */
+  parseCacheHitFileCount?: number;
+  /** Files omitted from scope-resolution while the rest of analysis continued. */
+  scopeExtractionFailures: readonly string[];
+  /** Files scope resolution could not inspect because their parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
   /**
    * Streamed PDG-emit COPY manifest (#2202). Present only when streaming/chunked
    * PDG emit was active (full rebuild + `--pdg` + enabled): the BasicBlock node

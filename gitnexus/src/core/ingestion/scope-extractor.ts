@@ -707,6 +707,10 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -725,6 +729,7 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 
@@ -847,6 +852,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
   switch (kindStr.toLowerCase()) {
     case 'class':
       return 'Class';
+    case 'protocol':
+      return 'Protocol';
+    case 'category':
+      return 'Category';
     case 'interface':
       return 'Interface';
     case 'enum':
@@ -1033,8 +1042,7 @@ function pass3CollectImports(
   if (provider.interpretImport === undefined) return;
   // Hoisted: the capability is a property of the language, identical for every
   // match in the file. A provider that declares its imports do not execute
-  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
-  // the position walk entirely — position cannot defer something that never
+  // where they are written skips the execution-deferral walk — position cannot defer something that never
   // runs, and marking one deferred would hide a real cycle. Absent reads as
   // `true`, so an undeclared provider is unchanged. See
   // `LanguageProvider.importsExecuteWhereWritten`.
@@ -1045,14 +1053,22 @@ function pass3CollectImports(
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
     // The statement's own position, resolved to the innermost scope holding
-    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // it. Provenance is retained independently of execution timing. An
+    // unlocatable anchor leaves the import unmarked, which reads as
     // "runs at initialization" — the fail-safe direction, since it can only
     // make `check --cycles` over-report.
-    const inScopeId = positionCanDefer
-      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
-      : undefined;
-    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
-    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred =
+      positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push({
+      ...parsed,
+      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      ...(deferred ? { runsOnlyWhenCalled: true } : {}),
+    });
   }
 }
 
@@ -1308,6 +1324,11 @@ function pass5CollectReferences(
     // detection knows what to do with that. Absent for every language without
     // pointer embedding, so their sites stay byte-identical.
     const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
+    // Static-gating marker: the call sits in a branch the language layer proved
+    // dead at index time (Zig `if (CONST_FALSE)`). Recorded on the site and
+    // copied to the CALLS edge; absent everywhere else (see
+    // `ReferenceSite.staticGated`).
+    const staticGated = kind === 'call' && match['@reference.static-gated'] !== undefined;
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -1329,6 +1350,7 @@ function pass5CollectReferences(
       ...(receiverChain !== undefined ? { receiverChain } : {}),
       ...(inCalleePosition ? { inCalleePosition: true } : {}),
       ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
+      ...(staticGated ? { staticGated: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1775,6 +1797,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.is-synthetic',
   '@import.name',
   '@import.source',
   '@import.alias',
@@ -1793,6 +1816,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',
+  '@reference.static-gated',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

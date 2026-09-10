@@ -98,8 +98,9 @@ function addImplements(
   ifaceName: string,
   ifaceLanguage = 'java',
   ifaceQualifiedName?: string,
+  sourceLabel: NodeLabel = 'Class',
 ): void {
-  const classId = generateId('Class', className);
+  const classId = generateId(sourceLabel, className);
   const ifaceId = generateId('Interface', `${ifaceLanguage}:${ifaceQualifiedName ?? ifaceName}`);
   graph.addRelationship({
     id: generateId('IMPLEMENTS', `${classId}->${ifaceId}`),
@@ -915,6 +916,137 @@ describe('di phase', () => {
     // intentional fail-closed skip rather than a simple-name guess.
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output).toMatchObject({ injectsEdges: 0, ambiguousSkipped: 1 });
+  });
+
+  it('walks interface assignability transitively, ignores intermediate interfaces, and terminates cycles', async () => {
+    const graph = createKnowledgeGraph();
+    const parentId = addInterface(graph, 'Parent');
+    const childId = addInterface(graph, 'Child');
+    const implId = addClass(graph, 'Impl', 'java');
+    addImplements(graph, 'Impl', 'Child');
+    graph.addRelationship({
+      id: generateId('IMPLEMENTS', `${childId}->${parentId}`),
+      sourceId: childId,
+      targetId: parentId,
+      type: 'IMPLEMENTS',
+      confidence: 1,
+      reason: '',
+    });
+    graph.addRelationship({
+      id: generateId('IMPLEMENTS', `${parentId}->${childId}`),
+      sourceId: parentId,
+      targetId: childId,
+      type: 'IMPLEMENTS',
+      confidence: 1,
+      reason: 'malformed-cycle regression guard',
+    });
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Parent',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: ctx.getBeans(Parent)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: implId,
+        type: 'INJECTS',
+        confidence: 0.8,
+      }),
+    ]);
+  });
+
+  it('keeps records and enums as concrete interface implementers', async () => {
+    const graph = createKnowledgeGraph();
+    addInterface(graph, 'Parent');
+    const recordId = addClass(graph, 'RecordImpl', 'java', 'Record');
+    const enumId = addClass(graph, 'EnumImpl', 'java', 'Enum');
+    addImplements(graph, 'RecordImpl', 'Parent', 'java', undefined, 'Record');
+    addImplements(graph, 'EnumImpl', 'Parent', 'java', undefined, 'Enum');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Parent',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: ctx.getBeans(Parent)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceId: consumerId, targetId: recordId }),
+        expect.objectContaining({ sourceId: consumerId, targetId: enumId }),
+      ]),
+    );
+    expect(injectsEdges(graph)).toHaveLength(2);
+  });
+
+  it('walks class inheritance and prefers concrete Spring bean candidates', async () => {
+    const graph = createKnowledgeGraph();
+    const baseId = addClass(graph, 'Base', 'java');
+    const concreteId = addClass(graph, 'Concrete', 'java', 'Class', {
+      [SPRING_DI_PROVIDER_PROPERTY]: { names: ['concrete'] },
+    });
+    graph.addRelationship({
+      id: generateId('EXTENDS', `${concreteId}->${baseId}`),
+      sourceId: concreteId,
+      targetId: baseId,
+      type: 'EXTENDS',
+      confidence: 1,
+      reason: '',
+    });
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Base',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: applicationContext.getBeansOfType(Base)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: concreteId,
+        confidence: 0.8,
+      }),
+    ]);
+  });
+
+  it('resolves a directly requested concrete class', async () => {
+    const graph = createKnowledgeGraph();
+    const concreteId = addClass(graph, 'Concrete', 'java');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Concrete',
+          cardinality: 'single',
+          reason: 'Spring dynamic lookup: ctx.getBean(Concrete)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: concreteId,
+        confidence: 0.9,
+      }),
+    ]);
   });
 });
 

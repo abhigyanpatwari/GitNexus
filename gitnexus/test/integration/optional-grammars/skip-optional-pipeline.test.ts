@@ -79,6 +79,7 @@ describe('optional-grammar pipeline exclusion (#2091/#2093)', () => {
 
   it('skips the Swift file at the parse phase (non-vacuity: Swift was present)', () => {
     expect(messages.some((m) => /Skipping 1 swift file\(s\)/.test(m))).toBe(true);
+    expect(result.unavailableScopeLanguageFiles).toBe(1);
   });
 
   it('routes the opt-out message, not the missing-binding "npm rebuild" hint', () => {

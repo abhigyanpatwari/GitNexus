@@ -58,7 +58,7 @@ let workerInstances: FakeWorker[] = [];
 class FakeWorker extends EventEmitter {
   readonly seenMessages: unknown[] = [];
 
-  constructor() {
+  constructor(startupExitCode?: number) {
     super();
     workerInstances.push(this);
     // Real Worker fires 'online' asynchronously after the runtime is ready;
@@ -67,6 +67,10 @@ class FakeWorker extends EventEmitter {
     // message instead — emit that too so replacement-worker tests don't
     // hit the WORKER_READY_TIMEOUT_MS budget (5s).
     queueMicrotask(() => {
+      if (startupExitCode !== undefined) {
+        this.emit('exit', startupExitCode);
+        return;
+      }
       this.emit('online');
       this.emit('message', { type: 'ready' });
     });
@@ -262,8 +266,8 @@ describe('worker pool resilience', () => {
       consecutiveFailureThreshold: 10,
       maxRespawnsPerSlot: 1,
     });
-    // Slot 0 dies twice, exceeding budget=1; slot 1 succeeds with the
-    // requeued remainder.
+    // Separate dispatches target the first live slot twice, independently
+    // of how multi-file packs are split across workers.
     nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
     nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
     nextActions.push({
@@ -272,9 +276,10 @@ describe('worker pool resilience', () => {
       result: { fileCount: 2 },
     });
 
+    await pool.dispatch([{ path: 'src/a.ts', content: '' }]);
+    await pool.dispatch([{ path: 'src/b.ts', content: '' }]);
+    expect(pool.getStats().activeSlots).toBe(1);
     const results = await pool.dispatch<{ path: string; content: string }, unknown>([
-      { path: 'src/a.ts', content: '' },
-      { path: 'src/b.ts', content: '' },
       { path: 'src/c.ts', content: '' },
       { path: 'src/d.ts', content: '' },
     ]);
@@ -495,18 +500,13 @@ describe('worker pool resilience', () => {
     await pool.terminate();
   });
 
-  it('drops slot when waitForWorkerOnline rejects (replaceWorker failure path)', async () => {
+  it('drops slot when replacement readiness rejects', async () => {
     let factoryCallCount = 0;
     const pool = createWorkerPool(workerUrl, 2, {
       workerFactory: () => {
         factoryCallCount++;
-        const worker = new FakeWorker();
-        // Slot 0's initial worker is healthy; the replacement (3rd factory
-        // call after slot 0 dies once) exits before emitting 'online'.
-        if (factoryCallCount === 3) {
-          // Override the queued 'online' microtask with an immediate 'exit'.
-          queueMicrotask(() => worker.emit('exit', 1));
-        }
+        // The replacement exits INSTEAD OF reporting ready.
+        const worker = new FakeWorker(factoryCallCount === 3 ? 1 : undefined);
         return worker as unknown as import('node:worker_threads').Worker;
       },
       consecutiveFailureThreshold: 10,
@@ -519,8 +519,9 @@ describe('worker pool resilience', () => {
       result: { fileCount: 2 },
     });
 
+    await pool.dispatch([{ path: 'src/a.ts', content: '' }]);
+    expect(pool.getStats().activeSlots).toBe(1);
     const results = await pool.dispatch<{ path: string; content: string }, unknown>([
-      { path: 'src/a.ts', content: '' },
       { path: 'src/b.ts', content: '' },
       { path: 'src/c.ts', content: '' },
     ]);
@@ -531,6 +532,33 @@ describe('worker pool resilience', () => {
     expect(factoryCallCount).toBe(3);
     await pool.terminate();
   });
+
+  it('finishes recovery when a failed worker never acknowledges termination', async () => {
+    const pool = createWorkerPool(workerUrl, 2, {
+      workerFactory: () => {
+        const worker = new FakeWorker();
+        if (workerInstances.length === 1) {
+          worker.terminate = () => new Promise<number>(() => {});
+        }
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+      shutdownDrainMs: 10,
+    });
+    nextActions.push({ kind: 'crash-exit', code: 134, afterStartingFiles: 1 });
+    nextActions.push({ kind: 'parse-ok', files: [{ path: 'src/good.ts' }] });
+    try {
+      const results = await pool.dispatch([
+        { path: 'src/bad.ts', content: '' },
+        { path: 'src/good.ts', content: '' },
+      ]);
+      expect(results).toEqual([{ fileCount: 1 }]);
+      expect(pool.getQuarantinedPaths()).toEqual(['src/bad.ts']);
+      expect(pool.getStats().slotGenerations).toEqual([1, 0]);
+      expect(pool.getStats().activeSlots).toBe(2);
+    } finally {
+      await pool.terminate();
+    }
+  }, 1000);
 
   it('trips the breaker when all slots exhaust their respawn budget', async () => {
     const pool = createWorkerPool(workerUrl, 2, {

@@ -66,6 +66,7 @@ vi.mock('../../src/storage/git.js', () => ({
   getCurrentBranch: vi.fn().mockReturnValue('main'),
   getGitRoot: vi.fn((p: string) => p),
   isWorkingTreeDirty: vi.fn().mockReturnValue(false),
+  listWorkingTreeDirtyPaths: vi.fn().mockReturnValue([]),
 }));
 
 import { listCommand } from '../../src/cli/list.js';
@@ -137,6 +138,7 @@ describe('status branch rendering (#2106)', () => {
       indexedAt: '2026-06-10T12:00:00.000Z',
       branch: 'main',
       runnerIdentity,
+      scopeExtractionReceipt: 1 as const,
     },
   };
 
@@ -287,6 +289,7 @@ describe('status branch rendering (#2106)', () => {
       indexedAt: '2026-06-10T14:00:00.000Z',
       branch: 'feature/z',
       runnerIdentity,
+      scopeExtractionReceipt: 1,
     });
 
     await statusCommand();

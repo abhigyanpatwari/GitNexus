@@ -51,6 +51,17 @@ export interface GroupToolPort {
     repo: GroupRepoHandle,
     params: {
       target: string;
+      /**
+       * Target-selector params, same semantics as the single-repo `impact`
+       * tool: `target_uid` is the zero-ambiguity lookup (it wins over the
+       * name), `file_path`/`kind` narrow a name shared by several symbols
+       * (e.g. same-named Api/Impl/Controller layers). The port implementation
+       * consumes them directly; the Phase-1 caller in cross-impact.ts is
+       * responsible for threading them from the MCP `impact` args.
+       */
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -479,8 +490,9 @@ export class GroupService {
     // group tools never need it — so deferring it here keeps that closure off
     // MCP server startup entirely and off every non-sync group call. The CLI
     // already does exactly this at `cli/group.ts`'s sync command.
-    const { syncGroup } = await import('./sync.js');
+    const { syncGroup, formatGroupSyncAmbiguousError } = await import('./sync.js');
     const { GroupSyncLockError } = await import('./group-lock.js');
+    const { RegistryAmbiguousTargetError } = await import('../../storage/repo-manager.js');
     let result: Awaited<ReturnType<typeof syncGroup>>;
     try {
       result = await syncGroup(config, {
@@ -492,6 +504,9 @@ export class GroupService {
         // expects. `SyncOptions.verbose` stays for the CLI, which can see them.
       });
     } catch (err) {
+      if (err instanceof RegistryAmbiguousTargetError) {
+        return { error: formatGroupSyncAmbiguousError(err) };
+      }
       // Fails closed (R9): this sync could not be protected against a concurrent
       // one, so it did not run and wrote nothing. Return it through the same
       // error channel a missing group uses — NEVER as a success payload of zeroes,
@@ -513,6 +528,14 @@ export class GroupService {
       // can otherwise see contract counts that disagree with this payload, with
       // nothing here explaining why the write was skipped.
       registryOutcome: result.registryOutcome,
+      // Data-quality signals surfaced from the sync run: links whose provider
+      // endpoint never resolved to a graph symbol, per-repo extraction
+      // failures with reasons, and operator warnings (e.g. bridge.lbug write
+      // failed after contracts.json was written). Always present so MCP
+      // consumers can branch on them without existence checks.
+      degradedLinks: result.degradedLinks,
+      failedRepos: result.failedRepos,
+      warnings: result.warnings,
     };
   }
 
