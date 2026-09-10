@@ -842,8 +842,8 @@ function takeCQuotedToken(
   return undefined;
 }
 
-function stripGitPathPrefix(raw: string, prefix: 'a/' | 'b/'): string | undefined {
-  return raw.startsWith(prefix) ? raw.slice(prefix.length) : undefined;
+function stripGitDstPrefix(raw: string): string | undefined {
+  return raw.startsWith('b/') ? raw.slice(2) : undefined;
 }
 
 /** Unified-diff paths end at the first TAB (timestamp / empty terminator). */
@@ -878,7 +878,7 @@ function filePathFromGitHeader(line: string): string | undefined {
     const destTok = takeCQuotedToken(rest, i);
     if (!destTok) return undefined;
     const dest = unquoteCStyleGitToken(destTok.token);
-    return dest ? stripGitPathPrefix(dest, 'b/') : undefined;
+    return dest ? stripGitDstPrefix(dest) : undefined;
   }
 
   if (rest.startsWith('a/')) {
@@ -898,7 +898,7 @@ function pathFromPlusPlusPlus(line: string): string | undefined {
   if (!line.startsWith('+++ ')) return undefined;
   const raw = decodeGitPathToken(line.slice(4));
   if (!raw || raw === '/dev/null') return undefined;
-  return stripGitPathPrefix(raw, 'b/');
+  return stripGitDstPrefix(raw);
 }
 
 function pathFromRenameTo(line: string): string | undefined {
