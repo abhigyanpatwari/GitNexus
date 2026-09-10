@@ -236,3 +236,151 @@ describe('free-call dedup: the label is decided from every collapsed site, never
     }
   });
 });
+
+const classTarget: SymbolDefinition = {
+  nodeId: 'def:UniqueWidget',
+  filePath: TARGET_FILE,
+  type: 'Class',
+  qualifiedName: 'UniqueWidget',
+};
+
+const ctorGuessedSite = (line: number): ReferenceSite => ({
+  name: 'UniqueWidget',
+  atRange: range(line, 2),
+  inScope: 'scope:caller-mod',
+  kind: 'call',
+  callForm: 'constructor',
+  arity: 0,
+});
+
+function classNode(graph: KnowledgeGraph, id: string, name: string, filePath: string): void {
+  graph.addNode({
+    id,
+    label: 'Class' as NodeLabel,
+    properties: { name, filePath, qualifiedName: name },
+  });
+}
+
+function runConstructor(
+  sites: readonly ReferenceSite[],
+  options: {
+    readonly bindImportedClass?: boolean;
+    readonly isGlobalNameFallbackPlausible?: () => boolean;
+  } = {},
+) {
+  const callerScope = mkScope(
+    'scope:caller-mod',
+    CALLER_FILE,
+    [callerDef],
+    options.bindImportedClass === true
+      ? new Map([['UniqueWidget', [{ def: classTarget, origin: 'import' as const }]]])
+      : new Map(),
+  );
+  const targetScope = mkScope('scope:target-mod', TARGET_FILE, [classTarget], new Map());
+  const callerParsed: ParsedFile = {
+    filePath: CALLER_FILE,
+    moduleScope: 'scope:caller-mod',
+    scopes: [callerScope],
+    parsedImports: [],
+    localDefs: [callerDef],
+    referenceSites: sites,
+  };
+  const targetParsed: ParsedFile = {
+    filePath: TARGET_FILE,
+    moduleScope: 'scope:target-mod',
+    scopes: [targetScope],
+    parsedImports: [],
+    localDefs: [classTarget],
+    referenceSites: [],
+  };
+  const scopes = [callerScope, targetScope];
+  const allDefs = [callerDef, classTarget];
+  const indexes = {
+    scopeTree: buildScopeTree(scopes),
+    defs: buildDefIndex(allDefs),
+    qualifiedNames: buildQualifiedNameIndex(allDefs),
+    moduleScopes: buildModuleScopeIndex(
+      scopes.map((s) => ({ filePath: s.filePath, moduleScopeId: s.id })),
+    ),
+    methodDispatch: buildMethodDispatchIndex({
+      owners: [],
+      computeMro: () => [],
+      implementsOf: () => [],
+    }),
+    imports: new Map(),
+    bindings: new Map(
+      options.bindImportedClass === true
+        ? [
+            [
+              'scope:caller-mod',
+              new Map([['UniqueWidget', [{ def: classTarget, origin: 'import' }]]]),
+            ],
+          ]
+        : [],
+    ),
+    bindingAugmentations: new Map(),
+    workspaceFqnBindings: new Map(),
+    workspaceTypeBindings: new Map(),
+    namespaceFqnBindings: new Map(),
+    namespaceTypeBindings: new Map(),
+    accessibleNamespacesByScope: new Map(),
+    referenceSites: [],
+    sccs: [],
+    stats: {
+      totalFiles: 2,
+      totalEdges: 0,
+      linkedEdges: 0,
+      unresolvedEdges: 0,
+      sccCount: 0,
+      largestSccSize: 0,
+      ambiguousWildcardExports: [],
+    },
+  } as unknown as ScopeResolutionIndexes;
+  const graph = createKnowledgeGraph();
+  fnNode(graph, 'fn:main', 'main', CALLER_FILE);
+  classNode(graph, 'cls:UniqueWidget', 'UniqueWidget', TARGET_FILE);
+  const outcomes: ResolutionOutcome[] = [];
+  emitFreeCallFallback(
+    graph,
+    indexes,
+    [callerParsed, targetParsed],
+    buildGraphNodeLookup(graph),
+    { bySourceScope: new Map() },
+    new Set<string>(),
+    createSemanticModel(),
+    buildWorkspaceResolutionIndex([callerParsed, targetParsed]),
+    {
+      allowGlobalFallback: true,
+      recordResolutionOutcome: (o) => outcomes.push(o),
+      isGlobalNameFallbackPlausible: options.isGlobalNameFallbackPlausible,
+    },
+  );
+  const calls = graph.relationships.filter((r) => r.type === 'CALLS');
+  return { calls, outcomes };
+}
+
+describe('constructor-form unique-name hits are guesses, not import-resolved', () => {
+  it('labels a unique class with no lexical binding as a name guess', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.5);
+    expect(calls[0]!.reason).toBe(GLOBAL_NAME_FALLBACK_REASON);
+    expect(outcomes.map((o) => o.kind)).toEqual(['fallback-guessed']);
+  });
+
+  it('refuses the same unique class when the language vetoes the guess', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
+      isGlobalNameFallbackPlausible: () => false,
+    });
+    expect(calls).toEqual([]);
+    expect(outcomes.map((o) => o.kind)).toEqual(['fallback-refused']);
+  });
+
+  it('keeps an imported constructor type as a precise import-resolved edge', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], { bindImportedClass: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.85);
+    expect(calls[0]!.reason).toBe('import-resolved');
+    expect(outcomes).toEqual([]);
+  });
+});
