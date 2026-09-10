@@ -250,6 +250,14 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.get\('\/api\/repo',\s*createRouteLimiter\(/);
   });
 
+  it('GET /api/repos is wired with createRouteLimiter', () => {
+    // Carries a limiter because it spawns a `git rev-list` per registered repo
+    // to answer freshness — an unauthenticated GET whose cost scales with the
+    // number of indexed repos. Pinned here so dropping the limiter fails a test
+    // before it has to be caught by CodeQL (#3232).
+    expect(apiSource).toMatch(/app\.get\('\/api\/repos',\s*createRouteLimiter\(/);
+  });
+
   it('POST /api/analyze is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
     // the route carries extra middleware like requireTrustedOrigin).
