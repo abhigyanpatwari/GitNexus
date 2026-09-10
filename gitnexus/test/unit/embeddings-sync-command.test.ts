@@ -235,7 +235,14 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     executeQueryMock.mockResolvedValue([{}]);
 
     await expect(run()).rejects.toThrow('Could not verify persisted embedding count.');
-    expect(saveMetaMock).not.toHaveBeenCalled();
+    expect(saveMetaMock).toHaveBeenCalledTimes(1);
+    const saved = saveMetaMock.mock.calls[0]?.[1] as {
+      stats?: { embeddings?: number };
+      embeddingCheckpoint?: { kind?: string; pendingNodeIds?: string[] };
+    };
+    expect(saved.stats?.embeddings).toBe(1);
+    expect(saved.embeddingCheckpoint?.kind).toBe('unverified-count');
+    expect(saved.embeddingCheckpoint?.pendingNodeIds).toEqual([]);
     expect(releaseMock).toHaveBeenCalled();
   });
 

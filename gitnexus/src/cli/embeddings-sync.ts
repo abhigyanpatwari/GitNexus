@@ -18,6 +18,7 @@ import {
   decideEmbeddingResume,
   mintInterruptedCheckpoint,
   mintPartialCheckpoint,
+  mintUnverifiedCountCheckpoint,
   type EmbeddingCheckpoint,
   type EmbeddingCheckpointProgress,
 } from '../core/embedding-checkpoint.js';
@@ -26,7 +27,7 @@ import {
   persistedEmbeddingCountOrUndefined,
 } from '../core/embedding-count.js';
 
-/** Add missing embeddings directly to a healthy index, checkpointing every batch. */
+/** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
   const repoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
   if (!repoPath) throw new Error('Not inside a git repository. Pass a repository path.');
@@ -135,8 +136,23 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       );
 
       const embeddings = await countEmbeddings();
-      if (embeddings === undefined) throw new Error('Could not verify persisted embedding count.');
       const latest = (await loadMeta(metaDir)) ?? meta;
+      if (embeddings === undefined) {
+        // Keep last-known stats.embeddings. An interrupted window marker would
+        // fail the identity gate on the next run even though this run finished;
+        // unverified-count is the recovery kind that forces a recount (#2790).
+        await saveMeta(metaDir, {
+          ...latest,
+          embeddingCheckpoint: result.failedNodeIds.length
+            ? mintPartialCheckpoint(identity, result, resumedFrom)
+            : mintUnverifiedCountCheckpoint(identity, {
+                nodesProcessed: result.nodesProcessed,
+                totalNodes: result.nodesProcessed,
+                chunksProcessed: result.chunksProcessed,
+              }),
+        });
+        throw new Error('Could not verify persisted embedding count.');
+      }
       await saveMeta(metaDir, {
         ...latest,
         stats: { ...latest.stats, embeddings },
