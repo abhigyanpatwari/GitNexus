@@ -106,7 +106,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       };
 
       cliInfo(`Embedding ${repoPath}`);
-      cliInfo(`Checkpointed vectors already present: ${existing?.size ?? 0}`);
+      cliInfo(`Checkpointed nodes already present: ${existing?.size ?? 0}`);
 
       const result = await runEmbeddingPipeline(
         executeQuery,

@@ -169,7 +169,7 @@ export const en = {
     '`gitnexus watch` is ambiguous.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
   'help.command.analyze.description': 'Index a repository (full analysis)',
   'help.command.embeddings.sync.description':
-    'Add missing embeddings to an existing index, checkpointing each batch for safe resume',
+    'Add missing embeddings to an existing index, checkpointing periodically for safe resume',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   'help.command.serve.description': 'Start local HTTP server for web UI connection',
