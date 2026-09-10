@@ -17,9 +17,11 @@
  * registries only consult pre-finalize local bindings — imported names live
  * in finalized bindings (the same reason free calls need
  * `emitFreeCallFallback`) — so `resolveReferenceSites` skips `value-ref`
- * sites and this pass resolves them post-finalize via
- * `findCallableBindingInScope` (Function/Method/Constructor only — the
- * callable gate that keeps `{ port: DEFAULT_PORT }` from emitting anything).
+ * sites and this pass resolves them post-finalize (see
+ * `resolveValueRefTarget` — Function/Method/Constructor only, the callable
+ * gate that keeps `{ port: DEFAULT_PORT }` from emitting anything, and
+ * receiver-aware so a qualified reference binds the owner it was written
+ * with).
  *
  * Precision posture (mirrors `emitInterfaceDispatchFor`):
  *   - reason `'property-dispatch'` keeps synthesized CALLS auditable;
@@ -36,13 +38,29 @@
  * emits the capture participates) and generic member-call sites.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  ReferenceSite,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
-import { findCallableBindingInScope } from '../scope/walkers.js';
+import {
+  findCallableBindingInScope,
+  findClassBindingInScope,
+  findOwnedMember,
+  isNamespaceNameShadowed,
+  isOwnerNameShadowedBySomethingElse,
+  lookupBindingsAt,
+} from '../scope/walkers.js';
+import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
+import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
 
 /**
  * Keys registered by more than this many distinct functions are skipped —
@@ -65,12 +83,282 @@ export const MAX_PROPERTY_DISPATCH_FANOUT = (() => {
 /** Below the 0.85 resolved baseline; same discount idea as interface-dispatch. */
 export const PROPERTY_DISPATCH_CONFIDENCE = 0.7;
 
+/**
+ * Resolve a `value-ref` site to the callable it names.
+ *
+ * Two shapes, and the difference matters:
+ *
+ *   - BARE (`{ handler: onClick }`, `register(onTick)`) — the name is resolved
+ *     up the lexical chain, which is what an unqualified name means. Be exact
+ *     about what that walk does, because it is not a plain lexical lookup:
+ *     `findCallableBindingInScope` applies the callable predicate WHILE walking,
+ *     so a scope binding the name to a parameter or a local contributes nothing
+ *     and the walk continues outward. A nearer non-callable binding is stepped
+ *     over — the same shape the qualified path guards against below, unguarded
+ *     here. Pre-existing (#2437) and out of scope for #3399; reachable in JS/TS
+ *     (`function outer(handler) { return { h: handler }; }` beside a top-level
+ *     `function handler`), and narrow in Zig, which rejects a local shadowing a
+ *     container declaration.
+ *
+ *   - QUALIFIED (`bridge.accessor(Element.getNamespaceUri, …)`) — the source
+ *     WROTE the owner, so the lexical chain is the wrong instrument. It gives
+ *     local bindings precedence (`walkScopeChain`), so a nested container
+ *     holding its own `getNamespaceUri` answers first and the registration is
+ *     attached to a DIFFERENT function than the one written. That is a wrong
+ *     edge, not a missing one — strictly worse for a tool whose value is that
+ *     its edges can be trusted — and it is reachable in any language that
+ *     allows a same-named callable in a nested container, Zig included.
+ *
+ * So a qualified site resolves through its receiver: name the owner, then take
+ * the member off that owner. An owner is either a MODULE or a CLASS-like
+ * container — `utils.compare` and `Element.getNamespaceUri` are the same shape
+ * written against the two kinds of namespace a language has, and the member-call
+ * path already resolves both (receiver-bound-calls Case 1 / Case 2). Both are
+ * tried here, MODULE FIRST: see `findNamespaceValueRefTarget` for why a module
+ * receiver cannot simply be declined, and the comment on the call below for why
+ * the container channel must not go first.
+ *
+ * If neither channel names the owner, or the owner is named but owns no such
+ * callable, this DECLINES rather than falling back to the lexical walk.
+ *
+ * Be precise about what declining costs, because it is more than one reference:
+ * a site that emits NO edge leaves no evidence for `impact`'s value-reference
+ * probe to read, so the target keeps `epistemic: "exact"` — silence, not a
+ * hedge. That is why the module channel above exists rather than being waved
+ * through as "just a decline". What remains declined is the case where the
+ * written receiver names nothing this index knows at all (a Zig `@This()` alias
+ * whose name differs from its container's, an owner from outside the workspace):
+ * there the alternative is not a hedge either, it is a confident edge to a
+ * lexically-nearer function that the source did not name, and a wrong edge is
+ * strictly worse than a missing one for a tool whose value is that its edges can
+ * be trusted.
+ *
+ * `CALL_TARGET_TYPES`, not a hand-rolled label set: `findOwnedMember` also
+ * answers with FIELDS, and a field named like the member would otherwise
+ * register as if it were the callable.
+ *
+ * Exported for `bench/value-ref-resolution/measure.mjs`, which gates both the
+ * resolved-target SET and the per-site cost of the four channels above across a
+ * 4x file-count step. It is the per-site half of the pass, so timing it in
+ * isolation is what makes a workspace-size dependency visible; timing
+ * `emitPropertyDispatchCalls` would fold that signal into edge emission, and
+ * re-implementing the channel order in the bench would pin the bench's idea of
+ * this function rather than this function.
+ */
+export function resolveValueRefTarget(
+  site: ReferenceSite,
+  filePath: string,
+  scopes: ScopeResolutionIndexes,
+  model: SemanticModel,
+  publishesImportedNames: boolean,
+): SymbolDefinition | undefined {
+  const receiverName = site.explicitReceiver?.name;
+  if (receiverName === undefined) {
+    return findCallableBindingInScope(site.inScope, site.name, scopes);
+  }
+  // NAMESPACE FIRST, and the order is load-bearing. `findClassBindingInScope`
+  // does not stop at the scope chain: when its `isClassLike` walk misses — and a
+  // namespace handle binds a Module, so it always misses — it falls back to
+  // `scopes.qualifiedNames`, a WORKSPACE-wide index, and answers with the unique
+  // def of that name anywhere in the repo. Trying it first therefore lets a
+  // same-named container in a file this one never imported preempt the `@import`
+  // this file actually wrote:
+  //
+  //     const dom_utils = @import("dom_utils.zig");   // namespace-only module
+  //     … bridge.accessor(dom_utils.compare, …)       // → decoy.zig's compare
+  //
+  // The shadow guard below cannot catch it: the import binds at MODULE scope,
+  // which the guard treats as the floor. An import written in this file is the
+  // strongest statement about what the name means here, so it outranks a global
+  // guess — and when the handle is not an import of this file, this answers
+  // nothing and the container channel runs exactly as before.
+  const viaNamespace = findNamespaceValueRefTarget(
+    site,
+    filePath,
+    receiverName,
+    scopes,
+    publishesImportedNames,
+  );
+  if (viaNamespace !== undefined) {
+    // `'owned'` is NOT "no answer" — it is "this receiver is a namespace handle
+    // this file wrote, and it names no callable member". The two must not be
+    // conflated, because falling through from the second one reaches
+    // `findClassBindingInScope`, whose miss path answers from the WORKSPACE-wide
+    // qualified-name index: a same-named container in a file this one never
+    // imported then supplies the member the written module does not have. That
+    // is a confident edge into an unrelated file, and the owner-shadow guard
+    // below does not stop it — a plain `const utils = @import("utils.zig");`
+    // records a namespace IMPORT EDGE, not a module-scope binding, so the guard
+    // sees nothing bound under the name and reads the container as unshadowed.
+    // Verified with a fixture rather than argued: `dom_utils.onlyOnDecoy`, where
+    // `dom_utils.zig` has no such member and `decoy.zig` declares a same-named
+    // struct that does, minted `JsApi → onlyOnDecoy` before this line existed.
+    //
+    // The file said which module it meant. If that module does not expose the
+    // name as a callable, the honest answer is no edge.
+    return viaNamespace === 'owned' ? undefined : viaNamespace;
+  }
+
+  const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
+  if (owner !== undefined) {
+    // The container lookup is a CLASS-ONLY walk: `walkScopeChain` filters by
+    // `isClassLike`, so it steps over a nearer binding that is a value and keeps
+    // climbing — and past the scope chain entirely, into a qualified-name
+    // fallback that answers with the unique workspace definition of the name.
+    // `fn f(Ticker: u8) { register(Ticker.fire) }` in a file that neither
+    // declares nor imports `Ticker` therefore resolves to some other file's
+    // `Ticker` container. That is the wrong-edge failure R1-2 exists to prevent,
+    // arriving through the class channel instead of the lexical one, and a
+    // registration pointing at a function the source never named is worse than
+    // no registration at all.
+    //
+    // So the name has to still MEAN that container at this site. The namespace
+    // channel below asks the same question through `isNamespaceNameShadowed`;
+    // a container needs the variant that exempts the container ITSELF, because
+    // `fn make() { const Local = struct {…}; register(Local.go); }` binds the
+    // name locally to the very def we resolved, and reading that as its own
+    // shadow would suppress the resolutions this path exists to make.
+    if (isOwnerNameShadowedBySomethingElse(receiverName, owner, site.inScope, scopes))
+      return undefined;
+    const member = findOwnedMember(owner.nodeId, site.name, model);
+    if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
+    return member;
+  }
+  return undefined;
+}
+
+/**
+ * The second kind of owner: a namespace handle.
+ *
+ * `const utils = @import("utils.zig"); register(utils.compare);` — `utils` is a
+ * MODULE, not a class, so `findClassBindingInScope` answers nothing and the
+ * class path above declines. Declining here would be a silent hole rather than
+ * a conservative one: no USES edge is emitted, so
+ * `callableValueReferenceBoundaries` measures a real zero and `impact` on
+ * `compare` republishes `exact` — the very claim this feature exists to stop
+ * making. Nothing downstream can hedge on evidence that was never recorded.
+ *
+ * So resolve it, through the SAME channel the member-CALL path already trusts
+ * for `utils.compare()` (receiver-bound-calls Case 1): the file's namespace
+ * import edges name the target module, and the target module's own local
+ * module-scope bindings name its members. `utils.compare` and `utils.compare()`
+ * disagreeing about what `utils` is would be the anomaly.
+ *
+ * The same three guards Case 1 applies, for the same reasons:
+ *   - a LOCAL declaration shadowing the handle suppresses the resolution
+ *     (`isNamespaceNameShadowed`) — `fn f(utils: Decoy) { register(utils.compare) }`
+ *     names the parameter's member, and resolving through the import would be a
+ *     wrong edge rather than a missing one;
+ *   - a locally declared member wins, and a name the target file merely IMPORTED
+ *     counts only when the provider says its imports ARE its exports
+ *     (`ScopeResolver.namespaceExportsIncludeImportedNames`). That opt-in is not
+ *     a detail to skip: a Zig HUB — a file made only of re-exports, ghostty's
+ *     `src/terminal/`, tigerbeetle's `stdx` — declares nothing, so requiring a
+ *     local declaration declines every member reached through one. `hub.fn()`
+ *     resolves and `register(hub.fn)` would not, and one name would mean two
+ *     things depending on whether a `(` followed it. In languages that do not
+ *     opt in, a module's imports are not its exports and this stays closed;
+ *   - two distinct defs under one name resolve NOTHING. Never guess a namespace
+ *     member — the whole point of reading the written receiver is precision.
+ *
+ * `CALL_TARGET_TYPES` gates the answer for the same reason the class path needs
+ * it: `utils.DEFAULT_PORT` is a module-scope binding too, and a registration
+ * table full of constants must keep emitting nothing.
+ */
+function findNamespaceValueRefTarget(
+  site: ReferenceSite,
+  filePath: string,
+  receiverName: string,
+  scopes: ScopeResolutionIndexes,
+  publishesImportedNames: boolean,
+): SymbolDefinition | 'owned' | undefined {
+  const moduleScopeId = scopes.moduleScopes.get(filePath);
+  if (moduleScopeId === undefined) return undefined;
+  const targetFiles: string[] = [];
+  for (const edge of scopes.imports.get(moduleScopeId) ?? []) {
+    if (edge.kind !== 'namespace' || edge.localName !== receiverName) continue;
+    if (edge.targetFile === null) continue;
+    if (!targetFiles.includes(edge.targetFile)) targetFiles.push(edge.targetFile);
+  }
+  if (targetFiles.length === 0) return undefined;
+  if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
+
+  /** The unique callable `select` finds across every target file, or nothing. */
+  const uniqueMember = (
+    select: (moduleScope: ScopeId) => readonly BindingRef[],
+  ): SymbolDefinition | undefined | 'ambiguous' => {
+    let picked: SymbolDefinition | undefined;
+    for (const targetFile of targetFiles) {
+      const targetScopeId = scopes.moduleScopes.get(targetFile);
+      if (targetScopeId === undefined) continue;
+      for (const ref of select(targetScopeId)) {
+        if (!CALL_TARGET_TYPES.has(ref.def.type)) continue;
+        if (picked !== undefined && picked.nodeId !== ref.def.nodeId) return 'ambiguous';
+        picked = ref.def;
+      }
+    }
+    return picked;
+  };
+
+  // A locally declared member first — same precedence `findExportedDef` states
+  // and `walkScopeChain` applies: what the target file DECLARED beats what it
+  // merely re-published.
+  const localRefs = (scope: ScopeId): readonly BindingRef[] =>
+    (scopes.bindings.get(scope)?.get(site.name) ?? []).filter((ref) => ref.origin === 'local');
+  const local = uniqueMember(localRefs);
+  if (local === 'ambiguous') return 'owned';
+  if (local !== undefined) return local;
+  if (!publishesImportedNames) return 'owned';
+
+  // PRECEDENCE IS DECIDED BEFORE THE TYPE GATE, not by it. `uniqueMember`
+  // applies `CALL_TARGET_TYPES` while it selects, so a target file declaring a
+  // NON-callable under this name answers `undefined` above and would otherwise
+  // fall through to the published channel — publishing a re-exported callable
+  // under a name the module's own declaration owns. `findExportedDef` does not
+  // do that: it returns any local def it finds and lets its caller's type gate
+  // reject it, so `findExportedDefIncludingImportedNames` never reaches the
+  // imported names for a name the file declares. Same rule here, so `x.f` and
+  // `x.f()` cannot disagree about which module owns the name.
+  //
+  // Not reachable through valid Zig today — a container cannot declare a name
+  // twice, so one target file cannot hold both spellings, and Zig is the only
+  // provider that sets `namespaceExportsIncludeImportedNames`. It becomes
+  // reachable the moment a second provider opts in, or a receiver binds more
+  // than one target file; the guard is one `some` and the alternative failure
+  // is a confident edge into the wrong module.
+  const declaredLocally = targetFiles.some((targetFile) => {
+    const targetScopeId = scopes.moduleScopes.get(targetFile);
+    return targetScopeId !== undefined && localRefs(targetScopeId).length > 0;
+  });
+  if (declaredLocally) return 'owned';
+
+  // Then a name the target file publishes but did not declare — the hub case.
+  // `lookupBindingsAt`, not `scopes.bindings`, because a hub's module scope owns
+  // no local binding for these names and the finalized/augmented channel is the
+  // only place they exist; the same read `findExportedDefIncludingImportedNames`
+  // does for the CALL form.
+  const published = uniqueMember((scope) =>
+    lookupBindingsAt(scope, site.name, scopes).filter(
+      (ref) => ref.origin === 'import' || ref.origin === 'namespace' || ref.origin === 'reexport',
+    ),
+  );
+  return published === 'ambiguous' || published === undefined ? 'owned' : published;
+}
+
 export function emitPropertyDispatchCalls(
   graph: KnowledgeGraph,
   scopes: ScopeResolutionIndexes,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
+  model: SemanticModel,
   calleeIdSink?: CalleeIdSink,
+  /**
+   * `ScopeResolver.namespaceExportsIncludeImportedNames`, forwarded rather than
+   * re-derived. The pass names no language; it asks the provider the same
+   * question `receiver-bound-calls` asks before resolving a namespace member,
+   * so the CALL and the REGISTRATION forms of `hub.fn` cannot disagree.
+   */
+  publishesImportedNames = false,
 ): {
   usesEmitted: number;
   callsEmitted: number;
@@ -86,18 +374,16 @@ export function emitPropertyDispatchCalls(
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'value-ref') continue;
-      const def = findCallableBindingInScope(site.inScope, site.name, scopes);
+      const def = resolveValueRefTarget(
+        site,
+        parsed.filePath,
+        scopes,
+        model,
+        publishesImportedNames,
+      );
       if (def === undefined) continue;
 
-      const ok = tryEmitEdge(
-        graph,
-        scopes,
-        nodeLookup,
-        site,
-        def,
-        'scope-resolution: value-ref',
-        seen,
-      );
+      const ok = tryEmitEdge(graph, scopes, nodeLookup, site, def, VALUE_REF_EDGE_REASON, seen);
       if (ok) usesEmitted++;
 
       if (site.propertyKey === undefined) continue;
