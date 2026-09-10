@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiffHunks } from '../../src/storage/git.js';
+import { parseDiffHunks, parseDiffHunksResult } from '../../src/storage/git.js';
 
 describe('parseDiffHunks', () => {
   it('parses a single file with one hunk', () => {
@@ -165,5 +165,98 @@ describe('parseDiffHunks', () => {
     expect(parseDiffHunks(diff)).toEqual([
       { filePath: 'src/format.ts', hunks: [{ startLine: 4, endLine: 5 }] },
     ]);
+  });
+
+  it('retains a mode-only change from the git header', () => {
+    const diff = [
+      'diff --git a/script.sh b/script.sh',
+      'old mode 100644',
+      'new mode 100755',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'script.sh', hunks: [] }]);
+  });
+
+  it('decodes a C-quoted metadata-only header', () => {
+    const diff = [
+      'diff --git "a/assets/\\344\\270\\255.png" "b/assets/\\344\\270\\255.png"',
+      'Binary files differ',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'assets/中.png', hunks: [] }]);
+  });
+
+  it('does not attach a later C-quoted hunk to a previous metadata-only file', () => {
+    const diff = [
+      'diff --git a/script.sh b/script.sh',
+      'old mode 100644',
+      'new mode 100755',
+      'diff --git "a/src/\\344\\275\\240\\345\\245\\275.ts" "b/src/\\344\\275\\240\\345\\245\\275.ts"',
+      '--- "a/src/\\344\\275\\240\\345\\245\\275.ts"',
+      '+++ "b/src/\\344\\275\\240\\345\\245\\275.ts"',
+      '@@ -1,0 +1,1 @@',
+      '+export const ok = 1;',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'script.sh', hunks: [] },
+      { filePath: 'src/你好.ts', hunks: [{ startLine: 1, endLine: 1 }] },
+    ]);
+  });
+
+  it('strips the unified-diff TAB on +++ so a spaced path is one FileDiff', () => {
+    const diff = [
+      'diff --git a/My Documents/file.ts b/My Documents/file.ts',
+      '--- a/My Documents/file.ts',
+      '+++ b/My Documents/file.ts\t',
+      '@@ -1,0 +1,1 @@',
+      '+x',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'My Documents/file.ts', hunks: [{ startLine: 1, endLine: 1 }] },
+    ]);
+  });
+
+  it('recovers a same-path dest that itself contains " b/"', () => {
+    const diff = [
+      'diff --git a/foo b/bar.png b/foo b/bar.png',
+      'Binary files a/foo b/bar.png and b/foo b/bar.png differ',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'foo b/bar.png', hunks: [] }]);
+  });
+
+  it('prefers rename to over a greedy b/ split', () => {
+    const diff = [
+      'diff --git a/plain.ts b/foo b/plain.ts',
+      'similarity index 100%',
+      'rename from plain.ts',
+      'rename to foo b/plain.ts',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'foo b/plain.ts', hunks: [] }]);
+  });
+
+  it('keeps one FileDiff when a content line repeats +++ b/<same-path>', () => {
+    const diff = [
+      'diff --git a/code.py b/code.py',
+      '--- a/code.py',
+      '+++ b/code.py',
+      '@@ -5,0 +5,1 @@',
+      '+++ b/code.py',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'code.py', hunks: [{ startLine: 5, endLine: 5 }] },
+    ]);
+  });
+
+  it('counts an unparsed git header and does not keep current live', () => {
+    const diff = [
+      'diff --git a/script.sh b/script.sh',
+      'old mode 100644',
+      'new mode 100755',
+      'diff --git not-a-valid-header',
+      '@@ -1,0 +1,1 @@',
+      '+stolen',
+    ].join('\n');
+    expect(parseDiffHunksResult(diff)).toEqual({
+      files: [{ filePath: 'script.sh', hunks: [] }],
+      unparsedGitHeaders: 1,
+    });
   });
 });

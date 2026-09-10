@@ -36,13 +36,12 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  parseDiffHunks,
+  parseDiffHunksResult,
   coalesceHunksByPath,
   hunksOverlapRange,
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
-  type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import {
@@ -1178,6 +1177,12 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
   // not `--default-prefix`, which needs git >= 2.42. `--no-ext-diff` stops a
   // configured external diff driver from replacing the unified output we parse.
   const args = [
+    // Before the subcommand: default core.quotePath C-quotes non-ASCII so
+    // `diff --git` / `+++` tokens no longer match the unquoted `a/` `b/` forms
+    // the parser also accepts. The parser still decodes quoted tokens; this
+    // pin keeps production git from emitting them.
+    '-c',
+    'core.quotePath=false',
     'diff',
     '--ignore-cr-at-eol',
     '--no-ext-diff',
@@ -5606,14 +5611,14 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput);
 
     if (fileDiffs.length === 0) {
       // Git printed a diff but none of it parsed: the `+++ b/` headers were not
       // where `parseDiffHunks` looks. That is a PARSE failure, not a clean tree,
       // and the clean branch below would report it to the pre-commit gate as
       // `risk_level:'none'`, no `partial`, exit 0 — a false all-clear (#2915).
-      const parseFailed = diffOutput.trim().length > 0;
+      const parseFailed = diffOutput.trim().length > 0 || unparsedGitHeaders > 0;
       return {
         summary: {
           changed_count: 0,
@@ -5643,7 +5648,9 @@ export class LocalBackend {
     const changedSymbols = new Map<string, any>();
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
-    let queryDegraded = false;
+    // An unparsed `diff --git` is the same class: later hunks must not make
+    // the gate look complete.
+    let queryDegraded = unparsedGitHeaders > 0;
 
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).

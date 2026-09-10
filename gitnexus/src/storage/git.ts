@@ -750,9 +750,160 @@ export interface FileDiff {
   hunks: DiffHunk[];
 }
 
+/** `parseDiffHunks` plus how many `diff --git` headers could not be decoded. */
+export interface DiffHunkParseResult {
+  files: FileDiff[];
+  unparsedGitHeaders: number;
+}
+
+const DIFF_GIT_PREFIX = 'diff --git ';
+
+/**
+ * Decode one Git C-quoted token (`"a/\\344\\270\\255.png"`). Returns
+ * `undefined` when the quotes are unbalanced or a trailing escape is bare.
+ */
+function unquoteCStyleGitToken(quoted: string): string | undefined {
+  if (quoted.length < 2 || quoted[0] !== '"' || quoted[quoted.length - 1] !== '"') {
+    return undefined;
+  }
+  // Git C-quotes are byte-oriented: non-ASCII is `\nnn` octal of the UTF-8
+  // code units, not JS UTF-16 characters.
+  const bytes: number[] = [];
+  const pushChar = (ch: string): void => {
+    const code = ch.charCodeAt(0);
+    if (code < 0x80) bytes.push(code);
+    else bytes.push(...new TextEncoder().encode(ch));
+  };
+  for (let i = 1; i < quoted.length - 1; i++) {
+    const ch = quoted[i];
+    if (ch !== '\\') {
+      pushChar(ch);
+      continue;
+    }
+    const next = quoted[++i];
+    if (next === undefined) return undefined;
+    switch (next) {
+      case '\\':
+      case '"':
+        pushChar(next);
+        break;
+      case 'n':
+        bytes.push(0x0a);
+        break;
+      case 't':
+        bytes.push(0x09);
+        break;
+      case 'r':
+        bytes.push(0x0d);
+        break;
+      case 'a':
+        bytes.push(0x07);
+        break;
+      case 'b':
+        bytes.push(0x08);
+        break;
+      case 'v':
+        bytes.push(0x0b);
+        break;
+      case 'f':
+        bytes.push(0x0c);
+        break;
+      default: {
+        if (next < '0' || next > '7') {
+          pushChar(next);
+          break;
+        }
+        let oct = next;
+        while (oct.length < 3 && i + 1 < quoted.length - 1) {
+          const digit = quoted[i + 1];
+          if (digit < '0' || digit > '7') break;
+          oct += digit;
+          i++;
+        }
+        bytes.push(parseInt(oct, 8));
+      }
+    }
+  }
+  return new TextDecoder('utf-8').decode(Uint8Array.from(bytes));
+}
+
+function takeCQuotedToken(
+  source: string,
+  start: number,
+): { token: string; end: number } | undefined {
+  if (source[start] !== '"') return undefined;
+  for (let i = start + 1; i < source.length; i++) {
+    if (source[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (source[i] === '"') return { token: source.slice(start, i + 1), end: i + 1 };
+  }
+  return undefined;
+}
+
+function stripGitPathPrefix(raw: string, prefix: 'a/' | 'b/'): string | undefined {
+  return raw.startsWith(prefix) ? raw.slice(prefix.length) : undefined;
+}
+
+/** Unified-diff paths end at the first TAB (timestamp / empty terminator). */
+function stripUnifiedDiffTab(pathWithOptionalTab: string): string {
+  const tab = pathWithOptionalTab.indexOf('\t');
+  return tab === -1 ? pathWithOptionalTab : pathWithOptionalTab.slice(0, tab);
+}
+
+function decodeGitPathToken(raw: string): string | undefined {
+  const trimmed = stripUnifiedDiffTab(raw);
+  if (trimmed.startsWith('"')) return unquoteCStyleGitToken(trimmed);
+  return trimmed;
+}
+
+/**
+ * Destination path from `diff --git a/<src> b/<dst>`.
+ *
+ * Same-path headers recover `name` from `a/${name} b/${name}` so a dest that
+ * itself contains ` b/` is not split at the last occurrence. C-quoted tokens
+ * (default `core.quotePath`) are decoded. Renames that the greedy split would
+ * mis-parse stay a best-effort dest; `rename to` / `+++` correct them.
+ */
 function filePathFromGitHeader(line: string): string | undefined {
-  const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+  if (!line.startsWith(DIFF_GIT_PREFIX)) return undefined;
+  const rest = line.slice(DIFF_GIT_PREFIX.length);
+
+  if (rest.startsWith('"')) {
+    const srcTok = takeCQuotedToken(rest, 0);
+    if (!srcTok) return undefined;
+    let i = srcTok.end;
+    while (rest[i] === ' ') i++;
+    const destTok = takeCQuotedToken(rest, i);
+    if (!destTok) return undefined;
+    const dest = unquoteCStyleGitToken(destTok.token);
+    return dest ? stripGitPathPrefix(dest, 'b/') : undefined;
+  }
+
+  if (rest.startsWith('a/')) {
+    for (let i = 2; i < rest.length; i++) {
+      if (!rest.startsWith(' b/', i)) continue;
+      const nameA = rest.slice(2, i);
+      const nameB = rest.slice(i + 3);
+      if (nameA.length > 0 && nameA === nameB) return nameA;
+    }
+  }
+
+  const match = rest.match(/^a\/(.+) b\/(.+)$/);
   return match?.[2];
+}
+
+function pathFromPlusPlusPlus(line: string): string | undefined {
+  if (!line.startsWith('+++ ')) return undefined;
+  const raw = decodeGitPathToken(line.slice(4));
+  if (!raw || raw === '/dev/null') return undefined;
+  return stripGitPathPrefix(raw, 'b/');
+}
+
+function pathFromRenameTo(line: string): string | undefined {
+  if (!line.startsWith('rename to ')) return undefined;
+  return decodeGitPathToken(line.slice('rename to '.length));
 }
 
 /**
@@ -779,17 +930,42 @@ function filePathFromGitHeader(line: string): string | undefined {
  * gap — the widening {@link coalesceHunks} is careful never to do.
  */
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
+  return parseDiffHunksResult(diffOutput).files;
+}
+
+/**
+ * Same as {@link parseDiffHunks}, plus a count of `diff --git` lines that
+ * could not be decoded. `detect_changes` uses the count to fail closed
+ * (`partial` + `risk_level:'unknown'`) instead of attaching later hunks to a
+ * previous file.
+ */
+export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
+  let unparsedGitHeaders = 0;
   for (const line of diffOutput.split('\n')) {
-    if (line.startsWith('diff --git ')) {
+    if (line.startsWith(DIFF_GIT_PREFIX)) {
+      // Drop the previous file first: an unparsed header must not leave
+      // `current` live for a later `@@` / quoted `+++` to steal.
+      current = null;
       const filePath = filePathFromGitHeader(line);
       if (filePath) {
         current = { filePath, hunks: [] };
         files.push(current);
+      } else {
+        unparsedGitHeaders++;
       }
-    } else if (line.startsWith('+++ b/')) {
-      const filePath = line.slice(6);
+    } else if (line.startsWith('rename to ')) {
+      const filePath = pathFromRenameTo(line);
+      if (!filePath) continue;
+      if (current) current.filePath = filePath;
+      else {
+        current = { filePath, hunks: [] };
+        files.push(current);
+      }
+    } else if (line.startsWith('+++ ')) {
+      const filePath = pathFromPlusPlusPlus(line);
+      if (!filePath) continue;
       if (!current || current.filePath !== filePath) {
         current = { filePath, hunks: [] };
         files.push(current);
@@ -810,7 +986,7 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
       }
     }
   }
-  return files;
+  return { files, unparsedGitHeaders };
 }
 
 /**
