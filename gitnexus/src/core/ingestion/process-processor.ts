@@ -10,8 +10,9 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel, RelationshipType } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -436,12 +437,28 @@ type AdjacencyList = Map<string, string[]>;
  */
 const MIN_TRACE_CONFIDENCE = 0.5;
 
+/**
+ * True when an edge may seed or extend a traced flow.
+ *
+ * The confidence floor alone is not sufficient: the global-name fallback emits
+ * at exactly `MIN_TRACE_CONFIDENCE`, so a `<` comparison admits every one of
+ * its guesses. A flow assembled from name guesses reads as a real execution
+ * path through code that may never call each other, so the reason is checked
+ * too — see `graph/edge-reasons.ts`.
+ */
+const isTraceableCallsEdge = (
+  type: RelationshipType,
+  confidence: number,
+  reason: string,
+): boolean =>
+  type === 'CALLS' && confidence >= MIN_TRACE_CONFIDENCE && !isHeuristicEdgeReason(reason);
+
 const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  // Field-wise scan (#2680) — whole-graph walk, four fields, no object needed.
-  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
-    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+  // Field-wise scan (#2680) — whole-graph walk, five fields, no object needed.
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
+    if (!isTraceableCallsEdge(type, confidence, reason)) return;
     const existing = adj.get(sourceId);
     if (existing === undefined) adj.set(sourceId, [targetId]);
     else existing.push(targetId);
@@ -453,8 +470,8 @@ const buildCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
 const buildReverseCallsGraph = (graph: KnowledgeGraph): AdjacencyList => {
   const adj = new Map<string, string[]>();
 
-  graph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
-    if (type !== 'CALLS' || confidence < MIN_TRACE_CONFIDENCE) return;
+  graph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
+    if (!isTraceableCallsEdge(type, confidence, reason)) return;
     const existing = adj.get(targetId);
     if (existing === undefined) adj.set(targetId, [sourceId]);
     else existing.push(sourceId);
