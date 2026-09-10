@@ -14,9 +14,10 @@ import { goPackageDir, inferGoPackageName } from './package-clause.js';
  * Go test files. `_test.go` files are compiled into the package's test binary:
  * an INTERNAL test (`package foo`) sees every name its non-test siblings and
  * the other `_test.go` files of the package declare; an EXTERNAL test
- * (`package foo_test`) is a separate package that imports `foo` and therefore
- * sees only its EXPORTED names. Non-test files never see test-only helpers —
- * `go build` does not compile them.
+ * (`package foo_test`) is a separate package. This table publishes no
+ * bare-name sibling bindings across that partition — qualified `foo.X` and
+ * `import .` stay on the import resolver. Non-test files never see
+ * test-only helpers — `go build` does not compile them.
  *
  * Before this, `_test.go` files were dropped from sibling augmentation
  * entirely, so every same-package free call from a test fell through to the
@@ -73,9 +74,10 @@ export function populateGoPackageSiblings(
   //    must not see each other's unqualified names.
   //
   //    `_test.go` files join the INTERNAL package's bucket (a `foo_test`
-  //    external test is keyed by `foo`, its `external` flag recording the
-  //    exported-only rule), so one bucket holds everything the test binary
-  //    compiles together, and the visibility rules below decide who sees whom.
+  //    external test is keyed by `foo`, its `external` flag marking the
+  //    partition so no bare-name bindings cross it), so one bucket holds
+  //    everything the test binary compiles together, and the visibility
+  //    rules below decide who sees whom.
   interface SiblingFile {
     readonly filePath: string;
     readonly defs: readonly SymbolDefinition[];

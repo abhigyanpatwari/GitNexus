@@ -16,16 +16,11 @@
  * Also pins: an INTERNAL test file (`package foo`, e.g. `a_test.go`) keeps
  * its bare-name sibling bindings (unchanged).
  *
- * The same boundary is enforced on the heuristic channel too: the Go
- * name-fallback hook classifies files by package (internal test / external
- * `foo_test` / non-test), not by directory, so neither binding gets even a
- * 0.5-confidence `global-name-fallback` edge (asserted at the bottom).
- * `populateGoPackageSiblings` (touched by this diff) correctly refuses it on
- * its own channel, but Go's separate `global-name-fallback` heuristic
- * (`goIsGlobalNameFallbackPlausible`, untouched by either commit under test)
- * treats "same directory" as always plausible, independent of the Go
- * package/test boundary, and reopens both this case and the external-test
- * bare-call case at 0.5 confidence.
+ * The same boundary is enforced on the heuristic channel too (#3190, not
+ * this commit): the Go name-fallback hook classifies files by package
+ * (internal test / external `foo_test` / non-test), not by directory, so
+ * neither binding gets even a 0.5-confidence `global-name-fallback` edge
+ * (asserted at the bottom).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';

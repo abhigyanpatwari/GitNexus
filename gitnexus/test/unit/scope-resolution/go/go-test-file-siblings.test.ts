@@ -117,7 +117,7 @@ describe('Go _test.go package siblings', () => {
   // Two `_test.go` files that are BOTH external (`package foo_test`) are, to
   // each other, the same package — full visibility, unexported names
   // included. Distinct from "internal tests see each other" above (that case
-  // never touches the `exportedOnly` branch at all).
+  // never crosses the external partition).
   it('two external test files in the same directory see each other fully, unexported included', () => {
     const extA = def('ext-a', 'pkg/a/a_ext_test.go', 'scaffold');
     const extB = def('ext-b', 'pkg/a/b_ext_test.go', 'teardown');
@@ -169,5 +169,58 @@ describe('Go _test.go package siblings', () => {
     ]);
     expect(see('m:a-ext', 'setUpHelper')).toEqual([]);
     expect(see('m:a-ext', 'NewThing')).toEqual([]);
+  });
+
+  // `expandGoDotImports(parsedFiles)` — not `nonTestFiles` — so a `_test.go`
+  // `import .` can augment that file's own scope. `setup()` above uses an
+  // empty imports map, so this is the pin that a revert to `nonTestFiles`
+  // would break. Sibling republish copies `localDefs` only, so the
+  // non-test sibling must not receive the wildcard name.
+  it("a `_test.go` import . receives origin: 'wildcard'; a non-test sibling does not", () => {
+    const libExport = def('lib-export', 'other/lib.go', 'Exported');
+    const prod = def('prod', 'pkg/a/a.go', 'Prod');
+    const testOnlyDef = def('test-only', 'pkg/a/a_test.go', 'fakeStore');
+    const parsedFiles = [
+      parsed('other/lib.go', 'm:lib', libExport),
+      parsed('pkg/a/a.go', 'm:a', prod),
+      parsed('pkg/a/a_test.go', 'm:a-test', testOnlyDef),
+    ];
+    const indexes = {
+      moduleScopes: {
+        byFilePath: new Map([
+          ['other/lib.go', 'm:lib'],
+          ['pkg/a/a.go', 'm:a'],
+          ['pkg/a/a_test.go', 'm:a-test'],
+        ]),
+      },
+      imports: new Map([
+        [
+          'm:a-test',
+          [
+            {
+              localName: 'Exported',
+              targetFile: 'other/lib.go',
+              targetExportedName: 'Exported',
+              kind: 'wildcard-expanded',
+            },
+          ],
+        ],
+      ]),
+      bindings: new Map([
+        ['m:lib', new Map([['Exported', [{ def: libExport, origin: 'local' }]]])],
+      ]),
+      bindingAugmentations: new Map(),
+    } as unknown as ScopeResolutionIndexes;
+    populateGoPackageSiblings(parsedFiles, indexes, {
+      fileContents: new Map([
+        ['other/lib.go', 'package lib\n'],
+        ['pkg/a/a.go', 'package a\n'],
+        ['pkg/a/a_test.go', 'package a\n'],
+      ]),
+    });
+    const testWild = indexes.bindingAugmentations.get('m:a-test')?.get('Exported') ?? [];
+    expect(testWild.map((b) => b.origin)).toEqual(['wildcard']);
+    expect(testWild.map((b) => b.def.nodeId)).toEqual(['lib-export']);
+    expect(indexes.bindingAugmentations.get('m:a')?.get('Exported') ?? []).toEqual([]);
   });
 });
