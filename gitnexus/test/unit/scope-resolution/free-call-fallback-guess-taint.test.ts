@@ -266,36 +266,44 @@ function runConstructor(
   options: {
     readonly bindImportedClass?: boolean;
     readonly importTargetFile?: string;
+    readonly importExportedName?: string;
+    readonly importTargetDefId?: string;
+    readonly callerFile?: string;
+    readonly targetFile?: string;
     readonly isGlobalNameFallbackPlausible?: () => boolean;
   } = {},
 ) {
+  const callerFile = options.callerFile ?? CALLER_FILE;
+  const targetFile = options.targetFile ?? TARGET_FILE;
+  const classDef = { ...classTarget, filePath: targetFile };
+  const caller = { ...callerDef, filePath: callerFile };
   const callerScope = mkScope(
     'scope:caller-mod',
-    CALLER_FILE,
-    [callerDef],
+    callerFile,
+    [caller],
     options.bindImportedClass === true
-      ? new Map([['UniqueWidget', [{ def: classTarget, origin: 'import' as const }]]])
+      ? new Map([['UniqueWidget', [{ def: classDef, origin: 'import' as const }]]])
       : new Map(),
   );
-  const targetScope = mkScope('scope:target-mod', TARGET_FILE, [classTarget], new Map());
+  const targetScope = mkScope('scope:target-mod', targetFile, [classDef], new Map());
   const callerParsed: ParsedFile = {
-    filePath: CALLER_FILE,
+    filePath: callerFile,
     moduleScope: 'scope:caller-mod',
     scopes: [callerScope],
     parsedImports: [],
-    localDefs: [callerDef],
+    localDefs: [caller],
     referenceSites: sites,
   };
   const targetParsed: ParsedFile = {
-    filePath: TARGET_FILE,
+    filePath: targetFile,
     moduleScope: 'scope:target-mod',
     scopes: [targetScope],
     parsedImports: [],
-    localDefs: [classTarget],
+    localDefs: [classDef],
     referenceSites: [],
   };
   const scopes = [callerScope, targetScope];
-  const allDefs = [callerDef, classTarget];
+  const allDefs = [caller, classDef];
   const indexes = {
     scopeTree: buildScopeTree(scopes),
     defs: buildDefIndex(allDefs),
@@ -315,9 +323,12 @@ function runConstructor(
               'scope:caller-mod',
               [
                 {
-                  localName: 'UniqueWidget',
+                  localName: options.importExportedName ?? 'UniqueWidget',
                   targetFile: options.importTargetFile,
-                  targetExportedName: 'UniqueWidget',
+                  targetExportedName: options.importExportedName ?? 'UniqueWidget',
+                  ...(options.importTargetDefId !== undefined
+                    ? { targetDefId: options.importTargetDefId }
+                    : {}),
                   kind: 'named' as const,
                 },
               ],
@@ -327,12 +338,7 @@ function runConstructor(
     ),
     bindings: new Map(
       options.bindImportedClass === true
-        ? [
-            [
-              'scope:caller-mod',
-              new Map([['UniqueWidget', [{ def: classTarget, origin: 'import' }]]]),
-            ],
-          ]
+        ? [['scope:caller-mod', new Map([['UniqueWidget', [{ def: classDef, origin: 'import' }]]])]]
         : [],
     ),
     bindingAugmentations: new Map(),
@@ -354,8 +360,8 @@ function runConstructor(
     },
   } as unknown as ScopeResolutionIndexes;
   const graph = createKnowledgeGraph();
-  fnNode(graph, 'fn:main', 'main', CALLER_FILE);
-  classNode(graph, 'cls:UniqueWidget', 'UniqueWidget', TARGET_FILE);
+  fnNode(graph, 'fn:main', 'main', callerFile);
+  classNode(graph, 'cls:UniqueWidget', 'UniqueWidget', targetFile);
   const outcomes: ResolutionOutcome[] = [];
   emitFreeCallFallback(
     graph,
@@ -414,6 +420,46 @@ describe('constructor-form unique-name hits are guesses, not import-resolved', (
   it('treats a unique class as precise when an import reaches its file', () => {
     const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
       importTargetFile: TARGET_FILE,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.85);
+    expect(calls[0]!.reason).toBe('import-resolved');
+    expect(outcomes).toEqual([]);
+  });
+
+  it('does not treat a sibling-file import of a different name as constructor visibility', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
+      callerFile: 'src/main.rs',
+      targetFile: 'src/models/handler.rs',
+      importTargetFile: 'src/models/other.rs',
+      importExportedName: 'bar',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.5);
+    expect(calls[0]!.reason).toBe(GLOBAL_NAME_FALLBACK_REASON);
+    expect(outcomes.map((o) => o.kind)).toEqual(['fallback-guessed']);
+  });
+
+  it('treats a unique class as precise when the import names it via a re-export file', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
+      callerFile: 'src/main.rs',
+      targetFile: 'src/models/handler.rs',
+      importTargetFile: 'src/models/mod.rs',
+      importExportedName: 'UniqueWidget',
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.85);
+    expect(calls[0]!.reason).toBe('import-resolved');
+    expect(outcomes).toEqual([]);
+  });
+
+  it('treats a unique class as precise when finalize resolved the import to that def', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
+      callerFile: 'src/main.rs',
+      targetFile: 'src/models/handler.rs',
+      importTargetFile: 'src/models/mod.rs',
+      importExportedName: 'Handler',
+      importTargetDefId: classTarget.nodeId,
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.confidence).toBe(0.85);

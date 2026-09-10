@@ -241,9 +241,10 @@ export function emitFreeCallFallback(
         // Lexical / written-qualifier first. A bare unique type with no
         // import/#include evidence is a guess (JS `new UniqueWidget()`,
         // Go unexported `uniqueWidget{}`). A unique type whose file is
-        // imported or sits in an imported directory is precise — C++
-        // `#include "user.h"` and Rust re-exports do not mint a lexical
-        // class binding, but they are not name guesses either.
+        // imported, whose import resolved to this def, or whose name
+        // was imported is precise — C++ `#include "user.h"` and Rust
+        // `use`/`pub use` often mint no lexical class binding. An
+        // imported sibling file of a different name is not evidence.
         let classDef = resolveInheritanceBaseInScope(
           site.inScope,
           site.name,
@@ -264,7 +265,7 @@ export function emitFreeCallFallback(
             classDef !== undefined &&
             classDef.type !== 'Interface' &&
             site.rawQualifiedName === undefined &&
-            !isClassFileImportGrounded(site.inScope, classDef, scopes)
+            !isClassFileImportGrounded(site.inScope, classDef, scopes, site.name)
           ) {
             fnDefFromGlobalNameFallback = true;
             globalFallbackVetoTarget = classDef;

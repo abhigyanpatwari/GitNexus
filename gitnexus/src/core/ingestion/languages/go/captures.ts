@@ -510,9 +510,12 @@ function normalizeGenericConstructorCapture(
     if (base !== null) {
       const simple = extractSimpleTypeNameText(base);
       // Keep the written `pkg.Box[T]` spelling so constructor resolution
-      // can tell a qualified type from a bare unique-name guess.
+      // can tell a package-qualified type from a bare unique-name guess.
+      // `Box[T]` is also `text !== simple` (`Box[T]` vs `Box`) — that is
+      // not a qualifier. Only a `qualified_type` base (`pkg.Box`) is.
       if (
         grouped['@reference.qualified-name'] === undefined &&
+        base.type === 'qualified_type' &&
         referenceNode.text.length > 0 &&
         referenceNode.text !== simple
       ) {

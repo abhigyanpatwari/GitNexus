@@ -1556,16 +1556,26 @@ function dirnameOf(filePath: string): string {
 }
 
 /**
- * True when `classDef` lives in the caller's file, an imported file, or a
- * file in an imported directory. Same evidence
- * `resolveAmbiguousInheritanceBaseViaImports` uses for ambiguous names;
- * applied to a UNIQUE class so `#include "user.h"` / a re-export directory
- * counts as a precise constructor bind, not a bare unique-name guess.
+ * True when the caller can see `classDef` through import evidence, not
+ * merely because the class name is workspace-unique.
+ *
+ * Exact imported file (`#include "user.h"`) and a finalize-resolved
+ * `targetDefId` (named `use` / `pub use` followed to the def) are
+ * precise. An import that *names* this class (`targetExportedName`)
+ * is also precise — a barrel's `targetFile` is the re-exporting module,
+ * not the defining file. A sibling-file import of a *different* name
+ * is not: `use crate::a::bar` does not make `Foo` in `a/foo.rs` visible.
+ *
+ * Directory-only matching is intentionally omitted. The same-directory
+ * tier on `resolveAmbiguousInheritanceBaseViaImports` is for picking
+ * among *ambiguous* names (C# namespace `using`); it is not proof a
+ * unique constructor type is in scope.
  */
 export function isClassFileImportGrounded(
   startScope: ScopeId,
-  classDef: Pick<SymbolDefinition, 'filePath'>,
+  classDef: Pick<SymbolDefinition, 'filePath' | 'nodeId'>,
   scopes: ScopeResolutionIndexes,
+  importedName: string,
 ): boolean {
   const callerModule = moduleScopeIdOf(startScope, scopes);
   const callerFile = scopes.scopeTree.getScope(startScope)?.filePath;
@@ -1573,11 +1583,11 @@ export function isClassFileImportGrounded(
   if (callerModule === null) return false;
   const importEdges = scopes.imports.get(callerModule);
   if (importEdges === undefined || importEdges.length === 0) return false;
-  const classDir = dirnameOf(classDef.filePath);
   for (const edge of importEdges) {
+    if (edge.targetDefId !== undefined && edge.targetDefId === classDef.nodeId) return true;
     if (edge.targetFile === null) continue;
     if (edge.targetFile === classDef.filePath) return true;
-    if (classDir !== '' && dirnameOf(edge.targetFile) === classDir) return true;
+    if (importedName.length > 0 && edge.targetExportedName === importedName) return true;
   }
   return false;
 }
