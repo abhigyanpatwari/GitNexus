@@ -782,6 +782,20 @@ function soleBoundBaseName(bound: string): string | undefined {
   return base.length === 0 ? undefined : base;
 }
 
+export type ClassBindingLookup = {
+  /**
+   * When false, skip the workspace-unique QualifiedNameIndex hit (and the
+   * dotted-tail variant). Default true — Go inheritance still needs that
+   * hit because namespace-style imports often create no scope binding.
+   *
+   * Constructor-form free calls pass false so a unique type name is not
+   * treated as a precise in-scope binding. Those sites belong to
+   * `pickUniqueGlobalClass`, which labels the edge as a guess and runs
+   * `isGlobalNameFallbackPlausible`.
+   */
+  readonly uniqueQualifiedNameFallback?: boolean;
+};
+
 export function findClassBindingInScope(
   startScope: ScopeId,
   receiverName: string,
@@ -798,6 +812,7 @@ export function findClassBindingInScope(
    * selection. Only receiver-chain base and step resolution passes this.
    */
   stripDecoration?: DecorationStripper,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   // A TYPE PARAMETER is not a class, and it is checked before every route below
   // rather than inside one of them because each route would otherwise reach a
@@ -806,7 +821,13 @@ export function findClassBindingInScope(
   // fallback after stripping. The declaration that introduced the parameter is
   // the only thing that knows, and it knows for all three.
   if (bindsTypeParameter(startScope, receiverName, scopes)) {
-    return resolveThroughTypeParameterBound(startScope, receiverName, scopes, stripDecoration);
+    return resolveThroughTypeParameterBound(
+      startScope,
+      receiverName,
+      scopes,
+      stripDecoration,
+      lookup,
+    );
   }
 
   const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
@@ -815,21 +836,25 @@ export function findClassBindingInScope(
   // Fallback for languages (Go) where namespace-style imports don't
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
   // when the scope-chain walk found nothing; single-match wins.
-  const qnames = scopes.qualifiedNames.get(receiverName);
-  if (qnames.length === 1) {
-    const def = scopes.defs.get(qnames[0]!);
-    if (def !== undefined && isClassLike(def.type)) return def;
-  }
-  // Second fallback: dotted names like "models.User" — try the simple
-  // name (tail after last dot) for languages where defs are indexed by
-  // simple name (Go). Only when the dotted lookup fails.
-  if (receiverName.includes('.')) {
-    const simple = receiverName.slice(receiverName.lastIndexOf('.') + 1);
-    if (simple.length > 0 && simple !== receiverName) {
-      const simpleIds = scopes.qualifiedNames.get(simple);
-      if (simpleIds.length === 1) {
-        const def = scopes.defs.get(simpleIds[0]!);
-        if (def !== undefined && isClassLike(def.type)) return def;
+  // Constructor-form free calls opt out — a unique type name is a guess,
+  // not proof the type is in scope (see `ClassBindingLookup`).
+  if (lookup?.uniqueQualifiedNameFallback !== false) {
+    const qnames = scopes.qualifiedNames.get(receiverName);
+    if (qnames.length === 1) {
+      const def = scopes.defs.get(qnames[0]!);
+      if (def !== undefined && isClassLike(def.type)) return def;
+    }
+    // Second fallback: dotted names like "models.User" — try the simple
+    // name (tail after last dot) for languages where defs are indexed by
+    // simple name (Go). Only when the dotted lookup fails.
+    if (receiverName.includes('.')) {
+      const simple = receiverName.slice(receiverName.lastIndexOf('.') + 1);
+      if (simple.length > 0 && simple !== receiverName) {
+        const simpleIds = scopes.qualifiedNames.get(simple);
+        if (simpleIds.length === 1) {
+          const def = scopes.defs.get(simpleIds[0]!);
+          if (def !== undefined && isClassLike(def.type)) return def;
+        }
       }
     }
   }
@@ -875,6 +900,7 @@ function resolveThroughTypeParameterBound(
   parameterName: string,
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   const bound = typeParameterAt(startScope, parameterName, scopes)?.bound;
   if (bound === undefined) return undefined;
@@ -882,7 +908,7 @@ function resolveThroughTypeParameterBound(
   if (baseName === undefined || baseName === parameterName) return undefined;
   // A bound naming another parameter terminates here rather than recursing.
   if (bindsTypeParameter(startScope, baseName, scopes)) return undefined;
-  return findClassBindingInScope(startScope, baseName, scopes, stripDecoration);
+  return findClassBindingInScope(startScope, baseName, scopes, stripDecoration, lookup);
 }
 
 function normalizeTemplateArgToken(value: string): string {
@@ -1283,6 +1309,7 @@ export function resolveInheritanceBaseInScope(
   scopes: ScopeResolutionIndexes,
   rawQualifiedName?: string,
   enclosingClassDef?: SymbolDefinition,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
   // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
@@ -1302,7 +1329,7 @@ export function resolveInheritanceBaseInScope(
     if (qualified !== undefined) return qualified;
   }
   return (
-    findClassBindingInScope(startScope, baseName, scopes) ??
+    findClassBindingInScope(startScope, baseName, scopes, undefined, lookup) ??
     resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
   );
 }
@@ -1526,6 +1553,43 @@ export function resolveAmbiguousInheritanceBaseViaImports(
 function dirnameOf(filePath: string): string {
   const idx = filePath.lastIndexOf('/');
   return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
+ * True when the caller can see `classDef` through import evidence, not
+ * merely because the class name is workspace-unique.
+ *
+ * Exact imported file (`#include "user.h"`) and a finalize-resolved
+ * `targetDefId` (named `use` / `pub use` followed to the def) are
+ * precise. An import that *names* this class (`targetExportedName`)
+ * is also precise — a barrel's `targetFile` is the re-exporting module,
+ * not the defining file. A sibling-file import of a *different* name
+ * is not: `use crate::a::bar` does not make `Foo` in `a/foo.rs` visible.
+ *
+ * Directory-only matching is intentionally omitted. The same-directory
+ * tier on `resolveAmbiguousInheritanceBaseViaImports` is for picking
+ * among *ambiguous* names (C# namespace `using`); it is not proof a
+ * unique constructor type is in scope.
+ */
+export function isClassFileImportGrounded(
+  startScope: ScopeId,
+  classDef: Pick<SymbolDefinition, 'filePath' | 'nodeId'>,
+  scopes: ScopeResolutionIndexes,
+  importedName: string,
+): boolean {
+  const callerModule = moduleScopeIdOf(startScope, scopes);
+  const callerFile = scopes.scopeTree.getScope(startScope)?.filePath;
+  if (callerFile !== undefined && classDef.filePath === callerFile) return true;
+  if (callerModule === null) return false;
+  const importEdges = scopes.imports.get(callerModule);
+  if (importEdges === undefined || importEdges.length === 0) return false;
+  for (const edge of importEdges) {
+    if (edge.targetDefId !== undefined && edge.targetDefId === classDef.nodeId) return true;
+    if (edge.targetFile === null) continue;
+    if (edge.targetFile === classDef.filePath) return true;
+    if (importedName.length > 0 && edge.targetExportedName === importedName) return true;
+  }
+  return false;
 }
 
 /**
