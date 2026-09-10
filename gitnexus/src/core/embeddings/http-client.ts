@@ -203,8 +203,7 @@ const readConfig = (): HttpConfig | null => {
       DEFAULT_HTTP_TIMEOUT_MS,
       MAX_HTTP_TIMEOUT_MS,
     ),
-    retryTimeouts:
-      parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_RETRY_TIMEOUTS', 0, 1) === 1,
+    retryTimeouts: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_RETRY_TIMEOUTS', 0, 1) === 1,
     requestDimensions,
   };
 };
@@ -342,7 +341,10 @@ class RetryableEmbeddingBodyError extends Error {
 }
 
 class RetryableEmbeddingTimeoutError extends Error {
-  constructor(readonly timeoutMs: number, options?: { cause?: unknown }) {
+  constructor(
+    readonly timeoutMs: number,
+    options?: { cause?: unknown },
+  ) {
     super(
       `Embedding request timed out after ${timeoutMs}ms`,
       options?.cause !== undefined ? { cause: options.cause } : undefined,
@@ -350,6 +352,23 @@ class RetryableEmbeddingTimeoutError extends Error {
     this.name = 'RetryableEmbeddingTimeoutError';
   }
 }
+
+/** Re-wrap an opt-in TimeoutError so `resilientFetch` retries it. Abort stays terminal. */
+const throwIfRetryableTimeout = (
+  err: unknown,
+  retryTimeouts: boolean,
+  callerAborted: boolean | undefined,
+  timeoutMs: number,
+): void => {
+  if (
+    retryTimeouts &&
+    !callerAborted &&
+    isTerminalNetworkError(err) &&
+    err.name === 'TimeoutError'
+  ) {
+    throw new RetryableEmbeddingTimeoutError(timeoutMs, { cause: err });
+  }
+};
 
 /**
  * Build the message for a 2xx body carrying the wrong number of vectors.
@@ -446,14 +465,7 @@ const httpEmbedBatch = async (
           try {
             attemptResp = await globalThis.fetch(input, { ...init, signal });
           } catch (err) {
-            if (
-              retryTimeouts &&
-              !requestOptions.signal?.aborted &&
-              err instanceof DOMException &&
-              err.name === 'TimeoutError'
-            ) {
-              throw new RetryableEmbeddingTimeoutError(timeoutMs, { cause: err });
-            }
+            throwIfRetryableTimeout(err, retryTimeouts, requestOptions.signal?.aborted, timeoutMs);
             throw err;
           }
           // Non-OK bodies are none of our business: hand the response straight
@@ -474,23 +486,19 @@ const httpEmbedBatch = async (
             // Not every `.json()` rejection is a parse error: the per-attempt
             // signal (`AbortSignal.any([caller, AbortSignal.timeout(...)])`) is
             // wired to the body stream, so a stalled body rejects with the abort
-            // reason. Re-raise those untouched — `isTerminalNetworkError` is
-            // `resilientFetch`'s own predicate, so this test agrees with
-            // `classifyOutcome` by construction. Wrapping one would flip its
-            // verdict from `terminal-network` (returned without retry AND
-            // without touching the breaker, via `recordNeutral()`) to
-            // `retryable-network` (retried, then `breaker.recordFailure()`): the
-            // same timeout would take 3 attempts instead of 1, count toward the
-            // process-global `embeddings-http` breaker, and reach the operator as
-            // "unparseable response" so they never reach for the timeout knob.
-            if (
-              retryTimeouts &&
-              !requestOptions.signal?.aborted &&
-              err instanceof DOMException &&
-              err.name === 'TimeoutError'
-            ) {
-              throw new RetryableEmbeddingTimeoutError(timeoutMs, { cause: err });
-            }
+            // reason. Re-raise AbortError (and TimeoutError when retry is off)
+            // untouched — `isTerminalNetworkError` is `resilientFetch`'s own
+            // predicate, so this test agrees with `classifyOutcome` by
+            // construction. Wrapping one would flip its verdict from
+            // `terminal-network` (returned without retry AND without touching
+            // the breaker, via `recordNeutral()`) to `retryable-network`
+            // (retried, then `breaker.recordFailure()`): the same timeout would
+            // take 3 attempts instead of 1, count toward the process-global
+            // `embeddings-http` breaker, and reach the operator as "unparseable
+            // response" so they never reach for the timeout knob.
+            // Opt-in `GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1` is the exception:
+            // TimeoutError is re-wrapped so the existing retry loop can retry it.
+            throwIfRetryableTimeout(err, retryTimeouts, requestOptions.signal?.aborted, timeoutMs);
             if (isTerminalNetworkError(err)) throw err;
             throw new RetryableEmbeddingBodyError(unparseableMessage(), { cause: err });
           }

@@ -75,8 +75,21 @@ const BASE_META = {
   stats: { embeddings: 1 },
 };
 
+const lockHandle = (release: () => void = releaseMock) => ({
+  record: {
+    v: 1 as const,
+    pid: 1,
+    hostname: 'h',
+    startTime: null,
+    token: 't',
+    invocationId: 'i',
+    acquiredAt: '',
+  },
+  release,
+});
+
 async function run(inputPath = '/tmp/emb-sync-repo') {
-  const { embeddingsSyncCommand } = await import('../../src/cli/embeddings.js');
+  const { embeddingsSyncCommand } = await import('../../src/cli/embeddings-sync.js');
   await embeddingsSyncCommand(inputPath);
 }
 
@@ -96,18 +109,7 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
 
   beforeEach(() => {
     vi.resetModules();
-    acquireIndexLockMock.mockReset().mockResolvedValue({
-      record: {
-        v: 1,
-        pid: 1,
-        hostname: 'h',
-        startTime: null,
-        token: 't',
-        invocationId: 'i',
-        acquiredAt: '',
-      },
-      release: releaseMock,
-    });
+    acquireIndexLockMock.mockReset().mockResolvedValue(lockHandle());
     releaseMock.mockReset();
     getStoragePathsMock.mockReset();
     loadMetaMock.mockReset().mockResolvedValue({ ...BASE_META });
@@ -134,21 +136,10 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     const order: string[] = [];
     acquireIndexLockMock.mockImplementation(async () => {
       order.push('lock');
-      return {
-        record: {
-          v: 1,
-          pid: 1,
-          hostname: 'h',
-          startTime: null,
-          token: 't',
-          invocationId: 'i',
-          acquiredAt: '',
-        },
-        release: () => {
-          order.push('release');
-          releaseMock();
-        },
-      };
+      return lockHandle(() => {
+        order.push('release');
+        releaseMock();
+      });
     });
     loadMetaMock.mockImplementation(async () => {
       order.push('loadMeta');
@@ -171,6 +162,15 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     const { lbugPath } = await store('missing');
     await expect(run()).rejects.toThrow(
       `The LadybugDB graph store at ${lbugPath} is missing. Run gitnexus analyze first.`,
+    );
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('refuses to open a LadybugDB path that is not a regular file', async () => {
+    const { lbugPath } = await store('dir');
+    await expect(run()).rejects.toThrow(
+      `The LadybugDB graph store at ${lbugPath} is not a usable database file. Run gitnexus analyze first.`,
     );
     expect(initLbugMock).not.toHaveBeenCalled();
     expect(releaseMock).toHaveBeenCalled();

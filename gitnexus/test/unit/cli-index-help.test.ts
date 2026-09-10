@@ -51,7 +51,6 @@ const allHelpCommands = [
   ['embeddings'],
   ['embeddings', 'install'],
   ['embeddings', 'sync'],
-  ['embeddings', 'sync'],
   ['group'],
   ['group', 'create'],
   ['group', 'add'],

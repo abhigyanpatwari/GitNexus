@@ -278,7 +278,7 @@ embeddings
   .command('sync [path]')
   .description(t('help.command.embeddings.sync.description'))
   .addHelpText('after', () => t('help.analyze.environment'))
-  .action(createLbugLazyAction(() => import('./embeddings.js'), 'embeddingsSyncCommand'));
+  .action(createLbugLazyAction(() => import('./embeddings-sync.js'), 'embeddingsSyncCommand'));
 
 program
   .command('clean')
