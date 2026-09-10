@@ -73,3 +73,41 @@ describe('Vite discovery follows only the exported static build.lib.entry', () =
     ).toContain('src/right');
   });
 });
+
+describe('Vite discovery uses the first existing config filename', () => {
+  async function entriesForConfigs(files: Record<string, string>): Promise<readonly string[]> {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-vite-leftover-'));
+    roots.push(root);
+    fs.mkdirSync(path.join(root, 'src'));
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: '@test/config', main: './dist/bundle.js' }),
+    );
+    for (const [name, text] of Object.entries(files)) {
+      fs.writeFileSync(path.join(root, name), text);
+    }
+    for (const name of ['from-js', 'from-ts', 'from-mjs']) {
+      fs.writeFileSync(path.join(root, 'src', `${name}.ts`), `export const ${name} = 1;`);
+    }
+    return (await loadNodeWorkspacePackages(root))!.byName.get('@test/config')!.entries;
+  }
+
+  it("adopts Vite's first existing file instead of refusing leftover siblings", async () => {
+    const entries = await entriesForConfigs({
+      'vite.config.js': `export default { build: { lib: { entry: 'src/from-js.ts' } } };\n`,
+      'vite.config.ts': `export default { build: { lib: { entry: 'src/from-ts.ts' } } };\n`,
+    });
+    expect(entries).toContain('src/from-js');
+    expect(entries).not.toContain('src/from-ts');
+    expect(entries).toContain('dist/bundle');
+  });
+
+  it('does not fall through to a later filename when the first config exists', async () => {
+    const entries = await entriesForConfigs({
+      'vite.config.mjs': `export default { build: { lib: { entry: 'src/from-mjs.ts' } } };\n`,
+      'vite.config.ts': `export default { build: { lib: { entry: 'src/from-ts.ts' } } };\n`,
+    });
+    expect(entries).toContain('src/from-mjs');
+    expect(entries).not.toContain('src/from-ts');
+  });
+});

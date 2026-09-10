@@ -1,28 +1,12 @@
 /**
- * Review finding on #3182 (magyargergo, node-workspace-packages.ts:730): the
- * vite `lib.entry` regex took its FIRST match, which could sit inside a comment
- * (`// old lib: { entry: 'src/wrong.ts' }`) ahead of the live config. Comments
- * are stripped first, and every live `lib.entry` is a candidate so two
- * disagreeing ones are refused as ambiguous rather than first-wins.
+ * AST Vite discovery ignores commented-out `lib.entry` text and refuses a
+ * default export that is not a single static config object.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  loadNodeWorkspacePackages,
-  stripJsComments,
-} from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
-
-describe('stripJsComments', () => {
-  it('drops line and block comments and keeps string contents intact', () => {
-    expect(stripJsComments("a; // lib: { entry: 'x' }\nb /* lib: {\n entry: 'y' } */ c")).toBe(
-      'a; \nb  c',
-    );
-    expect(stripJsComments("const u = 'http://x/*y'; // c")).toBe("const u = 'http://x/*y'; ");
-    expect(stripJsComments('const s = "a\\"//b"; x')).toBe('const s = "a\\"//b"; x');
-  });
-});
+import { loadNodeWorkspacePackages } from '../../src/core/ingestion/import-resolvers/node-workspace-packages.js';
 
 describe('vite lib.entry discovery ignores comments and refuses disagreeing entries', () => {
   let dir: string;

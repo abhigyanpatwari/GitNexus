@@ -4,27 +4,6 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { expandGoDotImports } from './expand-wildcards.js';
 import { goPackageDir, inferGoPackageName } from './package-clause.js';
 
-/**
- * O(n²×d) where n = files per package, d = defs per file.
- * Acceptable for V1 since Go packages are typically small (< 20 files).
- * Future optimization: build a name→def inverted index per package to reduce
- * to O(n×d).
- */
-/**
- * Go test files. `_test.go` files are compiled into the package's test binary:
- * an INTERNAL test (`package foo`) sees every name its non-test siblings and
- * the other `_test.go` files of the package declare; an EXTERNAL test
- * (`package foo_test`) is a separate package. This table publishes no
- * bare-name sibling bindings across that partition — qualified `foo.X` and
- * `import .` stay on the import resolver. Non-test files never see
- * test-only helpers — `go build` does not compile them.
- *
- * Before this, `_test.go` files were dropped from sibling augmentation
- * entirely, so every same-package free call from a test fell through to the
- * global unique-name fallback: 4,857 labeled guesses on grafana@871af0720,
- * 25/25 sampled being test → same-directory helper — the right target reached
- * through the wrong path, at guess confidence.
- */
 function isGoTestFile(filePath: string): boolean {
   return filePath.endsWith('_test.go');
 }
@@ -60,6 +39,73 @@ function testFilePackageOf(
   return { pkg: declared, external: false };
 }
 
+interface IndexedDef {
+  readonly filePath: string;
+  readonly ref: BindingRef;
+}
+
+/** name → defs, in package file order. */
+type NameIndex = Map<string, IndexedDef[]>;
+
+function defBareName(def: SymbolDefinition): string {
+  return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+}
+
+function appendToIndex(
+  index: NameIndex,
+  filePath: string,
+  defs: readonly SymbolDefinition[],
+): void {
+  for (const def of defs) {
+    const name = defBareName(def);
+    if (name === '') continue;
+    const list = index.get(name) ?? [];
+    list.push({ filePath, ref: { def, origin: 'namespace' } });
+    index.set(name, list);
+  }
+}
+
+function publishIndex(
+  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  index: NameIndex,
+  receiverPath: string,
+  receiverModule: ScopeId,
+): void {
+  if (index.size === 0) return;
+  let scopeBindings = augmentations.get(receiverModule);
+  if (scopeBindings === undefined) {
+    scopeBindings = new Map<string, BindingRef[]>();
+    augmentations.set(receiverModule, scopeBindings);
+  }
+  for (const [name, entries] of index) {
+    let bucket = scopeBindings.get(name);
+    const seen =
+      bucket === undefined ? new Set<string>() : new Set(bucket.map((b) => b.def.nodeId));
+    for (const entry of entries) {
+      if (entry.filePath === receiverPath) continue;
+      if (seen.has(entry.ref.def.nodeId)) continue;
+      if (bucket === undefined) {
+        bucket = [];
+        scopeBindings.set(name, bucket);
+      }
+      bucket.push(entry.ref);
+      seen.add(entry.ref.def.nodeId);
+    }
+  }
+}
+
+/**
+ * Publish same-package sibling bindings, including `_test.go` files.
+ *
+ * Internal tests (`package foo`) see production and other internal-test names.
+ * External tests (`package foo_test`) get no bare-name bindings across that
+ * partition — qualified `foo.X` and `import .` stay on the import resolver.
+ * Non-test files never see test-only helpers (`go build` does not compile them).
+ *
+ * Per-package name→def indexes are built in O(n×d). Each receiver walks only
+ * the partitions it can see, so defs are not re-scanned against every sibling
+ * file. Binding refs are allocated once and reused across receivers.
+ */
 export function populateGoPackageSiblings(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
@@ -111,64 +157,36 @@ export function populateGoPackageSiblings(
       : { pkg: declared, external: false };
     const key = `${dir}\0${pkg}`;
     const list = filesByPackage.get(key) ?? [];
-    list.push({ filePath: parsed.filePath, defs: [...parsed.localDefs], isTest, external });
+    list.push({ filePath: parsed.filePath, defs: parsed.localDefs, isTest, external });
     filesByPackage.set(key, list);
   }
 
-  // 3. Use bindingAugmentations channel per I8
+  // 3. Use bindingAugmentations channel per I8. Same-package files see ALL
+  //    sibling names (exported and unexported). Cross-package visibility is
+  //    the import resolver's job.
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
-  for (const [, siblings] of filesByPackage) {
-    for (const target of siblings) {
-      const targetModule = indexes.moduleScopes.byFilePath.get(target.filePath);
-      if (targetModule === undefined) continue;
-
-      for (const receiver of siblings) {
-        if (receiver.filePath === target.filePath) continue; // no self-reference
-        // Non-test files never see test-only declarations.
-        if (target.isTest && !receiver.isTest) continue;
-        // A `foo` internal test does not see a `foo_test` file's declarations
-        // at all (different packages) — and an external test package sees `foo`
-        // ONLY qualified (`foo.NewThing`), never as a bare name: that binding
-        // comes from its explicit import of the package path, through the
-        // ordinary import resolver. Publishing bare exported names here bound
-        // `NewThing()` in `foo_test` to a call Go itself would reject.
-        if (target.external && !receiver.external) continue;
-        if (receiver.external && !target.external) continue;
-
-        const receiverModule = indexes.moduleScopes.byFilePath.get(receiver.filePath);
-        if (receiverModule === undefined) continue;
-
-        for (const def of target.defs) {
-          // Go: same-package sibling files can see ALL names (both
-          // exported/uppercase and unexported/lowercase). Only cross-
-          // package visibility requires uppercase first letter.
-          const name = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-          if (name === '') continue;
-
-          const bucket = getAugmentationBucket(augmentations, receiverModule, name);
-          if (bucket.some((b) => b.def.nodeId === def.nodeId)) continue;
-          bucket.push({ def, origin: 'namespace' });
-        }
+  for (const siblings of filesByPackage.values()) {
+    if (siblings.length < 2) continue;
+    const production: NameIndex = new Map();
+    const internalTest: NameIndex = new Map();
+    const external: NameIndex = new Map();
+    const receivers: { file: SiblingFile; module: ScopeId }[] = [];
+    for (const file of siblings) {
+      const module = indexes.moduleScopes.byFilePath.get(file.filePath);
+      if (module === undefined) continue;
+      receivers.push({ file, module });
+      if (file.external) appendToIndex(external, file.filePath, file.defs);
+      else if (file.isTest) appendToIndex(internalTest, file.filePath, file.defs);
+      else appendToIndex(production, file.filePath, file.defs);
+    }
+    for (const { file, module } of receivers) {
+      if (file.external) {
+        publishIndex(augmentations, external, file.filePath, module);
+        continue;
       }
+      publishIndex(augmentations, production, file.filePath, module);
+      if (file.isTest) publishIndex(augmentations, internalTest, file.filePath, module);
     }
   }
-}
-
-function getAugmentationBucket(
-  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
-  scopeId: ScopeId,
-  name: string,
-): BindingRef[] {
-  let scopeBindings = augmentations.get(scopeId);
-  if (scopeBindings === undefined) {
-    scopeBindings = new Map<string, BindingRef[]>();
-    augmentations.set(scopeId, scopeBindings);
-  }
-  let bucketArr = scopeBindings.get(name);
-  if (bucketArr === undefined) {
-    bucketArr = [];
-    scopeBindings.set(name, bucketArr);
-  }
-  return bucketArr;
 }

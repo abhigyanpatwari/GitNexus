@@ -215,6 +215,8 @@ interface WorkspaceScope {
   readonly include: readonly string[];
   /** `!`-prefixed patterns, with the `!` stripped. */
   readonly exclude: readonly string[];
+  readonly includeRe: readonly RegExp[];
+  readonly excludeRe: readonly RegExp[];
 }
 
 /** Whether `dir` (repo-relative, `''` for the root) is an admitted package. */
@@ -225,9 +227,8 @@ function admits(scope: WorkspaceScope | null, dir: string): boolean {
   // An exclusion covers the directory AND everything under it: `!packages/legacy`
   // must keep `packages/legacy/foo` out even when a nested workspace root inside
   // the excluded subtree re-declares `packages/*`.
-  if (scope.exclude.some((pattern) => matchesDirOrAncestor(globToRegExp(pattern), dir)))
-    return false;
-  return scope.include.some((pattern) => globToRegExp(pattern).test(dir));
+  if (scope.excludeRe.some((re) => matchesDirOrAncestor(re, dir))) return false;
+  return scope.includeRe.some((re) => re.test(dir));
 }
 
 function matchesDirOrAncestor(re: RegExp, dir: string): boolean {
@@ -300,37 +301,56 @@ async function loadWorkspaceScope(repoRoot: string): Promise<WorkspaceScope | nu
   // `workspaces`) admit its example packages — and, being shallow, outrank the
   // real package of the same name — and let a root inside an excluded subtree
   // re-admit what the outer `!exclusion` had removed.
-  const rootPatterns = await readWorkspacePatternsAt(repoRoot);
+  const [rootPatterns, workspaceRoots] = await Promise.all([
+    readWorkspacePatternsAt(repoRoot),
+    findWorkspaceRoots(repoRoot),
+  ]);
   const rootScope = rootPatterns.length === 0 ? null : toScope(rootPatterns);
   const patterns: string[] = [...rootPatterns];
-  for (const root of await findWorkspaceRoots(repoRoot)) {
+  const admitted: { root: string; prefix: string }[] = [];
+  for (const root of workspaceRoots) {
     if (root === repoRoot) continue;
     const prefix = repoRelativeDir(repoRoot, root);
     if (rootScope !== null && !admits(rootScope, prefix)) continue;
-    const rebase = (p: string): string => {
-      const negated = p.startsWith('!');
-      const body = negated ? p.slice(1) : p;
-      const joined = prefix === '' ? body : `${prefix}/${body.replace(/^\.\//, '')}`;
-      return negated ? `!${joined}` : joined;
-    };
-    for (const pattern of await readWorkspacePatternsAt(root)) patterns.push(rebase(pattern));
+    admitted.push({ root, prefix });
   }
+  const nested = await Promise.all(
+    admitted.map(async ({ root, prefix }) => {
+      const rebase = (p: string): string => {
+        const negated = p.startsWith('!');
+        const body = negated ? p.slice(1) : p;
+        const joined = prefix === '' ? body : `${prefix}/${body.replace(/^\.\//, '')}`;
+        return negated ? `!${joined}` : joined;
+      };
+      return (await readWorkspacePatternsAt(root)).map(rebase);
+    }),
+  );
+  for (const batch of nested) patterns.push(...batch);
 
   if (patterns.length === 0) return null;
   return toScope(patterns);
 }
 
 function toScope(patterns: readonly string[]): WorkspaceScope {
+  const include = patterns.filter((p) => !p.startsWith('!'));
+  const exclude = patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1));
   return {
-    include: patterns.filter((p) => !p.startsWith('!')),
-    exclude: patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1)),
+    include,
+    exclude,
+    includeRe: include.map(globToRegExp),
+    excludeRe: exclude.map(globToRegExp),
   };
 }
 
 /** The workspace patterns declared at ONE directory, all three spellings merged. */
 async function readWorkspacePatternsAt(root: string): Promise<string[]> {
+  const [rootManifest, yamlPkgs, ymlPkgs, lerna] = await Promise.all([
+    readJsonFile(path.join(root, 'package.json')),
+    readYamlPackages(path.join(root, 'pnpm-workspace.yaml')),
+    readYamlPackages(path.join(root, 'pnpm-workspace.yml')),
+    readJsonFile(path.join(root, 'lerna.json')),
+  ]);
   const patterns: string[] = [];
-  const rootManifest = await readJsonFile(path.join(root, 'package.json'));
   const workspaces = rootManifest?.workspaces;
   if (Array.isArray(workspaces)) {
     patterns.push(...workspaces.filter((w): w is string => typeof w === 'string'));
@@ -341,9 +361,7 @@ async function readWorkspacePatternsAt(root: string): Promise<string[]> {
       patterns.push(...nested.filter((w): w is string => typeof w === 'string'));
     }
   }
-  patterns.push(...(await readYamlPackages(path.join(root, 'pnpm-workspace.yaml'))));
-  patterns.push(...(await readYamlPackages(path.join(root, 'pnpm-workspace.yml'))));
-  const lerna = await readJsonFile(path.join(root, 'lerna.json'));
+  patterns.push(...yamlPkgs, ...ymlPkgs);
   if (Array.isArray(lerna?.packages)) {
     patterns.push(...lerna.packages.filter((w): w is string => typeof w === 'string'));
   }
@@ -363,7 +381,14 @@ const WORKSPACE_ROOT_MAX_DEPTH = 4;
  * it now warns, so a truncated scan is a logged fact rather than a quiet one.
  */
 const WORKSPACE_ROOT_SCAN_MAX_DIRS = 50_000;
-/** Directory names whose nested `workspaces` are starters/fixtures, never members. */
+/**
+ * Directory names whose nested `workspaces` are starters, fixtures, or test
+ * trees — never members. A leftover `test/pnpm-workspace.yaml` must not become
+ * a workspace root when the repo root declares none (the #2953 first-wins
+ * class). A root `workspaces` glob that lists `test/*` still admits those
+ * packages through the package.json walk; this set only stops nested-root
+ * discovery from descending into those names.
+ */
 const NON_MEMBER_ROOT_DIRS = new Set([
   'example',
   'examples',
@@ -373,7 +398,41 @@ const NON_MEMBER_ROOT_DIRS = new Set([
   'templates',
   'sample',
   'samples',
+  'test',
+  'tests',
+  'e2e',
+  '__tests__',
+  'spec',
+  'specs',
 ]);
+
+/**
+ * Vite's `DEFAULT_CONFIG_FILES` order. The first filename that exists is the
+ * config Vite loads; leftover siblings are not a second live entry.
+ */
+const VITE_CONFIG_FILES = [
+  'vite.config.js',
+  'vite.config.mjs',
+  'vite.config.ts',
+  'vite.config.cjs',
+  'vite.config.mts',
+  'vite.config.cts',
+] as const;
+
+function isMissingPath(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+async function readDirSorted(dir: string): Promise<import('fs').Dirent[] | null> {
+  try {
+    return (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+  } catch {
+    return null;
+  }
+}
+
 async function findWorkspaceRoots(repoRoot: string): Promise<string[]> {
   const roots: string[] = [repoRoot];
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
@@ -386,14 +445,8 @@ async function findWorkspaceRoots(repoRoot: string): Promise<string[]> {
       break;
     }
     const { dir, depth } = queue[scanned++]!;
-    let entries: import('fs').Dirent[];
-    try {
-      entries = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
-        a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-      );
-    } catch {
-      continue;
-    }
+    const entries = await readDirSorted(dir);
+    if (entries === null) continue;
     if (dir !== repoRoot) {
       const names = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
       let declares =
@@ -445,13 +498,6 @@ async function readYamlPackages(filePath: string): Promise<string[]> {
 }
 
 /**
- * Collect the `package.json` of every ADMITTED workspace package.
- *
- * Directory-only BFS: the sole files opened are manifests and the workspace
- * declaration, so this is far cheaper than the C# namespace scan next door,
- * which reads every `.cs` file.
- */
-/**
  * Per-repo memo. The TS/JS/Vue scope resolvers and the unresolved-call ledger
  * classifier each ask for the same map during one analyze; without this the
  * 20k-directory walk ran once per asker (four times on a full run, one of them
@@ -460,9 +506,8 @@ async function readYamlPackages(filePath: string): Promise<string[]> {
  */
 const workspacePackagesMemo = new Map<string, Promise<NodeWorkspacePackages | null>>();
 
-export function invalidateNodeWorkspacePackages(repoRoot?: string): void {
-  if (repoRoot === undefined) workspacePackagesMemo.clear();
-  else workspacePackagesMemo.delete(path.resolve(repoRoot));
+export function invalidateNodeWorkspacePackages(repoRoot: string): void {
+  workspacePackagesMemo.delete(path.resolve(repoRoot));
 }
 
 export async function loadNodeWorkspacePackages(
@@ -485,6 +530,13 @@ export async function loadNodeWorkspacePackages(
   return pending;
 }
 
+/**
+ * Collect the `package.json` of every ADMITTED workspace package.
+ *
+ * Directory-only BFS: the sole files opened are manifests and the workspace
+ * declaration, so this is far cheaper than the C# namespace scan next door,
+ * which reads every `.cs` file.
+ */
 async function loadNodeWorkspacePackagesUncached(
   repoRoot: string,
 ): Promise<NodeWorkspacePackages | null> {
@@ -504,16 +556,10 @@ async function loadNodeWorkspacePackagesUncached(
     const { dir, depth } = queue[queueHead++]!;
     dirsScanned++;
 
-    let entries: import('fs').Dirent[];
-    try {
-      // Sorted like findWorkspaceRoots: same-depth name collisions resolve first-wins,
-      // and readdir order is filesystem-dependent.
-      entries = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
-        a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-      );
-    } catch {
-      continue;
-    }
+    // Sorted: same-depth name collisions resolve first-wins, and readdir order
+    // is filesystem-dependent.
+    const entries = await readDirSorted(dir);
+    if (entries === null) continue;
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -592,7 +638,7 @@ async function readManifest(
   const rootlessExports = declaresExports && rootExports.length === 0;
   const discovered = rootlessExports
     ? { entries: [], ambiguous: [], allowConventional: false }
-    : await discoverSourceEntries(parsed, dir, rebase, packageDir, repoRoot);
+    : await discoverSourceEntries(parsed, dir, repoRoot);
   for (const entry of discovered.entries) push(entries, entry);
   if (!declaresExports && discovered.allowConventional) {
     for (const conventional of ['src/index', 'index', 'lib/index']) {
@@ -698,24 +744,32 @@ function looksLikeBuildOutput(entry: string): boolean {
   return /(^|\/)(dist|build|lib|out|esm|cjs|umd)\//.test(entry) || /\.min\.[cm]?js$/.test(entry);
 }
 
+function declaredRootExportStrings(exportsRoot: unknown): string[] {
+  if (typeof exportsRoot === 'string') return [exportsRoot];
+  if (exportsRoot === null || typeof exportsRoot !== 'object') return [];
+  const dot = (exportsRoot as Record<string, unknown>)['.'];
+  if (typeof dot === 'string') return [dot];
+  if (dot === null || typeof dot !== 'object') return [];
+  return Object.values(dot).filter((v): v is string => typeof v === 'string');
+}
+
+async function existingStems(repoRoot: string, stems: readonly string[]): Promise<string[]> {
+  const present = await Promise.all(stems.map((stem) => stemExists(repoRoot, stem)));
+  const existing: string[] = [];
+  for (let i = 0; i < stems.length; i++) {
+    if (present[i]) push(existing, stems[i]!);
+  }
+  return existing;
+}
+
 async function discoverSourceEntries(
   parsed: Record<string, unknown>,
   dir: string,
-  rebase: (raw: string) => string,
-  packageDir: string,
   repoRoot: string,
 ): Promise<{ entries: string[]; ambiguous: string[]; allowConventional: boolean }> {
-  const declared: string[] = [];
-  const exportsRoot = parsed.exports;
-  if (typeof exportsRoot === 'string') declared.push(exportsRoot);
-  else if (exportsRoot !== null && typeof exportsRoot === 'object') {
-    const dot = (exportsRoot as Record<string, unknown>)['.'];
-    if (typeof dot === 'string') declared.push(dot);
-    else if (dot !== null && typeof dot === 'object') {
-      for (const v of Object.values(dot as Record<string, unknown>))
-        if (typeof v === 'string') declared.push(v);
-    }
-  }
+  const packageDir = repoRelativeDir(repoRoot, dir);
+  const rebase = (raw: string): string => joinRepoPath(packageDir, stripEntryPrefixes(raw));
+  const declared: string[] = declaredRootExportStrings(parsed.exports);
   for (const field of ['module', 'main']) {
     const value = parsed[field];
     if (typeof value === 'string') declared.push(value);
@@ -734,26 +788,32 @@ async function discoverSourceEntries(
     if (typeof ps === 'string') candidates.push(rebase(ps));
   }
   let hasViteConfig = false;
-  for (const cfg of ['vite.config.ts', 'vite.config.mts', 'vite.config.js', 'vite.config.mjs']) {
+  for (const cfg of VITE_CONFIG_FILES) {
+    let text: string;
     try {
-      const text = await fs.readFile(path.join(dir, cfg), 'utf-8');
+      text = await fs.readFile(path.join(dir, cfg), 'utf-8');
+    } catch (err) {
+      if (isMissingPath(err)) continue;
+      // Present but unreadable: Vite still selected this filename.
       hasViteConfig = true;
+      break;
+    }
+    hasViteConfig = true;
+    try {
       const entry = await staticViteEntry(text);
       if (entry !== null) push(candidates, rebase(entry));
     } catch {
-      /* no such config */
+      // Parse/load failure is not a missing file — do not fall through to a leftover sibling.
     }
+    break;
   }
-  const existing: string[] = [];
-  for (const candidate of candidates) {
-    if (await stemExists(repoRoot, candidate)) push(existing, candidate);
-  }
+  let existing = await existingStems(repoRoot, candidates);
   // A config we cannot establish is not evidence for a conventional entry.
   if (existing.length === 0 && !hasViteConfig) {
-    for (const conventional of ['src/main', 'src/index']) {
-      const stem = joinRepoPath(packageDir, conventional);
-      if (await stemExists(repoRoot, stem)) push(existing, stem);
-    }
+    existing = await existingStems(
+      repoRoot,
+      ['src/main', 'src/index'].map((conventional) => joinRepoPath(packageDir, conventional)),
+    );
   }
   const allowConventional = !hasViteConfig && candidates.length === 0;
   if (existing.length > 1) return { entries: [], ambiguous: existing, allowConventional };
@@ -776,39 +836,48 @@ async function staticViteEntry(text: string): Promise<string | null> {
     (node) => node.type === 'export_statement' && node.children.some((c) => c.type === 'default'),
   );
   if (exports.length !== 1) return null;
-  let config = exports[0]!.childForFieldName('value');
-  if (config?.type === 'call_expression') {
-    if (config.childForFieldName('function')?.text !== 'defineConfig') return null;
-    // A locally defined helper need not preserve its argument like Vite does.
-    if (
-      tree.rootNode
-        .descendantsOfType(['function_declaration', 'variable_declarator'])
-        .some((node) => node.childForFieldName('name')?.text === 'defineConfig')
-    )
-      return null;
-    for (const statement of tree.rootNode.namedChildren) {
-      if (statement.type !== 'import_statement') continue;
-      if (!statement.descendantsOfType('identifier').some((n) => n.text === 'defineConfig'))
-        continue;
-      const source = statement.childForFieldName('source')?.text;
-      if (source !== "'vite'" && source !== '"vite"') return null;
-      const identityImport = statement.descendantsOfType('import_specifier').some((specifier) => {
-        const imported = specifier.childForFieldName('name')?.text;
-        const local = specifier.childForFieldName('alias')?.text ?? imported;
-        return imported === 'defineConfig' && local === 'defineConfig';
-      });
-      if (!identityImport) return null;
-    }
-    const args = config
-      .childForFieldName('arguments')
-      ?.namedChildren.filter((n) => n.type !== 'comment');
-    if (args?.length !== 1) return null;
-    config = args[0]!;
-  }
+  let config = unwrapViteDefineConfig(tree, exports[0]!.childForFieldName('value'));
+  if (config === null) return null;
   for (const key of ['build', 'lib', 'entry']) config = staticObjectProperty(config, key);
-  if (config?.type !== 'string' || config.namedChildren.some((n) => n.type === 'escape_sequence'))
+  return staticStringValue(config);
+}
+
+/** Unwrap `defineConfig({...})` from Vite; refuse local or re-exported helpers. */
+function unwrapViteDefineConfig(
+  tree: { rootNode: Parser.SyntaxNode },
+  config: Parser.SyntaxNode | null,
+): Parser.SyntaxNode | null {
+  if (config?.type !== 'call_expression') return config;
+  if (config.childForFieldName('function')?.text !== 'defineConfig') return null;
+  // A locally defined helper need not preserve its argument like Vite does.
+  if (
+    tree.rootNode
+      .descendantsOfType(['function_declaration', 'variable_declarator'])
+      .some((node) => node.childForFieldName('name')?.text === 'defineConfig')
+  )
     return null;
-  return config.text.slice(1, -1);
+  for (const statement of tree.rootNode.namedChildren) {
+    if (statement.type !== 'import_statement') continue;
+    if (!statement.descendantsOfType('identifier').some((n) => n.text === 'defineConfig')) continue;
+    if (staticStringValue(statement.childForFieldName('source')) !== 'vite') return null;
+    const identityImport = statement.descendantsOfType('import_specifier').some((specifier) => {
+      const imported = specifier.childForFieldName('name')?.text;
+      const local = specifier.childForFieldName('alias')?.text ?? imported;
+      return imported === 'defineConfig' && local === 'defineConfig';
+    });
+    if (!identityImport) return null;
+  }
+  const args = config
+    .childForFieldName('arguments')
+    ?.namedChildren.filter((n) => n.type !== 'comment');
+  if (args?.length !== 1) return null;
+  return args[0]!;
+}
+
+function staticStringValue(node: Parser.SyntaxNode | null): string | null {
+  if (node?.type !== 'string' || node.namedChildren.some((n) => n.type === 'escape_sequence'))
+    return null;
+  return node.text.slice(1, -1);
 }
 
 /** Reject computed keys, spreads and duplicate properties that could override a value. */
@@ -823,49 +892,17 @@ function staticObjectProperty(
     if (member.type !== 'pair') return null;
     const name = member.childForFieldName('key');
     if (name?.type !== 'property_identifier' && name?.type !== 'string') return null;
-    if (name.type === 'string' && name.namedChildren.some((n) => n.type === 'escape_sequence'))
-      return null;
-    const property = name.type === 'string' ? name.text.slice(1, -1) : name.text;
-    if (property !== key) continue;
+    if (name.type === 'string') {
+      const property = staticStringValue(name);
+      if (property === null) return null;
+      if (property !== key) continue;
+    } else if (name.text !== key) {
+      continue;
+    }
     if (value !== null) return null;
     value = member.childForFieldName('value');
   }
   return value;
-}
-
-/**
- * Remove line (`//`) and block comments from JS/TS config text before a regex
- * reads it. String contents are preserved (a `//` inside quotes is not a
- * comment), so `entry: 'src/index.ts'` survives, as does a comment opener
- * written inside a string.
- */
-export function stripJsComments(text: string): string {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    const ch = text[i]!;
-    const next = text[i + 1];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch;
-      let j = i + 1;
-      while (j < text.length && text[j] !== quote) {
-        if (text[j] === '\\') j++;
-        j++;
-      }
-      out += text.slice(i, j + 1);
-      i = j + 1;
-    } else if (ch === '/' && next === '/') {
-      const end = text.indexOf('\n', i);
-      i = end === -1 ? text.length : end;
-    } else if (ch === '/' && next === '*') {
-      const end = text.indexOf('*/', i + 2);
-      i = end === -1 ? text.length : end + 2;
-    } else {
-      out += ch;
-      i++;
-    }
-  }
-  return out;
 }
 
 /** A repo-relative stem exists as a source file (with any TS/JS extension). */

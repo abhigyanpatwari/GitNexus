@@ -1,12 +1,9 @@
 /**
- * Final-review fixes on workspace-package discovery:
- *  - B2: an `exports` map with no `"."` (rootless) refuses the bare specifier —
- *    discovery must not manufacture a `src/index` root entry for it.
- *  - M6: nested workspace roots are gated by the outer scope; an outer
- *    `!exclusion` keeps binding under a nested root; starter/fixture roots
- *    (`examples/`, `fixtures/`, `templates/`, `samples/`) are never roots.
- *  - M9: the package map is memoised per repo root within a process and can be
- *    invalidated explicitly.
+ * Workspace-package discovery contracts:
+ *  - an `exports` map with no `"."` refuses the bare specifier
+ *  - nested workspace roots are gated by the outer scope; starter, fixture,
+ *    and test trees are never roots
+ *  - the package map is memoised per repo root and can be invalidated
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
@@ -202,6 +199,51 @@ describe('M6 — nested workspace roots are gated by the outer scope', () => {
     expect(pkgs!.byName.get('@repo/leaf')?.entries).toContain(
       'packages/nested/inner/leaf/src/index',
     );
+  });
+});
+
+describe('test/ is never a nested workspace root', () => {
+  it('a leftover test/pnpm-workspace.yaml does not admit fixture package names', async () => {
+    const { dir, w } = mkRepo('gn-m6-test-root-');
+    try {
+      w('README.md', '# polyglot\n');
+      w('js/pnpm-workspace.yaml', 'packages:\n  - "libs/*"\n');
+      w('js/libs/lodash/package.json', JSON.stringify({ name: 'lodash', main: 'src/index.ts' }));
+      w('js/libs/lodash/src/index.ts', 'export const real = 1;\n');
+      w('test/pnpm-workspace.yaml', 'packages:\n  - "fixtures/*"\n');
+      w(
+        'test/fixtures/lodash/package.json',
+        JSON.stringify({ name: 'lodash', main: 'src/index.ts' }),
+      );
+      w('test/fixtures/lodash/src/index.ts', 'export const fake = 1;\n');
+      const pkgs = await loadNodeWorkspacePackages(dir);
+      expect(pkgs!.byName.get('lodash')?.dir).toBe('js/libs/lodash');
+      for (const pkg of pkgs!.byName.values()) expect(pkg.dir.startsWith('test/')).toBe(false);
+    } finally {
+      rm(dir);
+    }
+  });
+
+  it('a root workspaces glob that lists test/* still admits those packages', async () => {
+    const { dir, w } = mkRepo('gn-m6-test-listed-');
+    try {
+      w(
+        'package.json',
+        JSON.stringify({ name: 'root', private: true, workspaces: ['packages/*', 'test/*'] }),
+      );
+      w('packages/real/package.json', JSON.stringify({ name: '@repo/real', main: 'src/index.ts' }));
+      w('packages/real/src/index.ts', 'export const real = 1;\n');
+      w(
+        'test/helpers/package.json',
+        JSON.stringify({ name: '@repo/test-helpers', main: 'src/index.ts' }),
+      );
+      w('test/helpers/src/index.ts', 'export const help = 1;\n');
+      const pkgs = await loadNodeWorkspacePackages(dir);
+      expect(pkgs!.byName.get('@repo/test-helpers')?.dir).toBe('test/helpers');
+      expect(pkgs!.byName.get('@repo/real')?.dir).toBe('packages/real');
+    } finally {
+      rm(dir);
+    }
   });
 });
 
