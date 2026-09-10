@@ -358,7 +358,11 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       fromFile: 'src/PROG.cbl',
       resolutionConfig: undefined,
       external: 'EXTERNAL',
-      decoy: 'vendor/EXTERNAL.cpy',
+      // After the copybook-dir preference, vendor/EXTERNAL.cpy is intentionally
+      // unreachable (that is the #2967 fix). The reachable decoy is the in-repo
+      // copybook; vendor/EXTERNAL.cpy stays in `files` so EXTERNAL→[] is not a
+      // vacuous miss of an empty workspace.
+      decoy: 'copybooks/CUSTREC.cpy',
       reachesDecoy: 'CUSTREC',
     },
   ],
@@ -405,7 +409,6 @@ const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLan
   [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
-  [SupportedLanguages.Cobol, '`EXTERNAL` -> `vendor/EXTERNAL.cpy`'],
 ]);
 
 /**
