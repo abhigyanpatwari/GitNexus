@@ -3,8 +3,9 @@
  *
  * Ruby import resolution rules:
  *   - `require_relative './foo'` → resolve relative to the importing file's dir
- *   - `require 'foo'`           → suffix-match via the existing Ruby import resolver
- *   - External gems             → null (unresolvable within the repo)
+ *   - `require 'foo'` → use scoped gem metadata before legacy suffix matching
+ *   - Known local gems → resolve only within their declared load roots
+ *   - Known external gems → null, even if an unrelated repo file suffix matches
  */
 
 import { resolveRubyImportInternal } from '../../import-resolvers/ruby.js';
@@ -31,10 +32,11 @@ export interface RubyResolveContext {
  * against the importing file's directory, trying `.rb` and `/index.rb`
  * suffixes.
  *
- * For bare requires (gem-style like `'json'`, `'serializable'`), delegates
- * to the existing `resolveRubyImportInternal` which uses suffix matching.
- *
- * Returns `null` for external gems that have no matching file in the repo.
+ * For bare requires, scoped manifest metadata takes precedence: known local
+ * gems resolve only within their declared load roots (a miss returns `null`),
+ * and known external gem prefixes return `null` even if a repo suffix matches.
+ * Only requires without matching gem evidence delegate to the existing
+ * `resolveRubyImportInternal` suffix matcher.
  */
 export function resolveRubyImportTarget(
   targetRaw: string,

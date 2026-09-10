@@ -23,7 +23,7 @@ import { rubyScopeResolver } from '../../src/core/ingestion/languages/ruby/scope
 const baselinePath = fileURLToPath(new URL('./baseline.json', import.meta.url));
 const CHECK = process.argv.includes('--check');
 const WARMUP = 2;
-const REPS = 9;
+const REPS = 15;
 const IMPORTS_PER_PROJECT = 256;
 const roots = [];
 
@@ -159,9 +159,6 @@ try {
     load_scaling_ratio: timings.large.load_ms / timings.small.load_ms / scale,
     resolve_scaling_ratio: timings.large.resolve_ms / timings.small.resolve_ms / scale,
     dependency_count_ratio: timings.dense.resolve_ms / timings.small.resolve_ms,
-    small_load_ms: timings.small.load_ms,
-    small_resolve_ms: timings.small.resolve_ms,
-    dense_load_ms: timings.dense.load_ms,
   };
   const report = {
     shapes,
