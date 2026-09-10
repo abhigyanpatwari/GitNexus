@@ -41,19 +41,87 @@ describe('Go package siblings', () => {
     expect(augmentations.get('module:foo-a')?.get('OnlyBar')).toBeUndefined();
     expect(augmentations.get('module:bar-a')?.get('OnlyFoo')).toBeUndefined();
   });
+
+  it("publishes same-name sibling defs in file order and never includes a file's own defs", () => {
+    const aFoo = def('a-foo', 'pkg/a/a.go', 'Foo');
+    const bFoo = def('b-foo', 'pkg/a/b.go', 'Foo');
+    const bBar = def('b-bar', 'pkg/a/b.go', 'Bar');
+    const cBaz = def('c-baz', 'pkg/a/c.go', 'Baz');
+
+    const parsedFiles: ParsedFile[] = [
+      parsed('pkg/a/a.go', 'module:a', aFoo),
+      parsed('pkg/a/b.go', 'module:b', bFoo, bBar),
+      parsed('pkg/a/c.go', 'module:c', cBaz),
+    ];
+    const indexes = {
+      moduleScopes: {
+        byFilePath: new Map([
+          ['pkg/a/a.go', 'module:a'],
+          ['pkg/a/b.go', 'module:b'],
+          ['pkg/a/c.go', 'module:c'],
+        ]),
+      },
+      imports: new Map(),
+      bindings: new Map(),
+      bindingAugmentations: new Map(),
+    } as unknown as ScopeResolutionIndexes;
+    const fileContents = new Map([
+      ['pkg/a/a.go', 'package a\n'],
+      ['pkg/a/b.go', 'package a\n'],
+      ['pkg/a/c.go', 'package a\n'],
+    ]);
+
+    populateGoPackageSiblings(parsedFiles, indexes, { fileContents });
+
+    const augmentations = indexes.bindingAugmentations;
+    expect(
+      augmentations
+        .get('module:c')
+        ?.get('Foo')
+        ?.map((b) => b.def.nodeId),
+    ).toEqual(['a-foo', 'b-foo']);
+    expect(
+      augmentations
+        .get('module:a')
+        ?.get('Foo')
+        ?.map((b) => b.def.nodeId),
+    ).toEqual(['b-foo']);
+    expect(
+      augmentations
+        .get('module:a')
+        ?.get('Bar')
+        ?.map((b) => b.def.nodeId),
+    ).toEqual(['b-bar']);
+    expect(
+      augmentations
+        .get('module:a')
+        ?.get('Baz')
+        ?.map((b) => b.def.nodeId),
+    ).toEqual(['c-baz']);
+    expect(
+      augmentations
+        .get('module:b')
+        ?.get('Foo')
+        ?.map((b) => b.def.nodeId),
+    ).toEqual(['a-foo']);
+  });
 });
 
 function def(nodeId: string, filePath: string, name: string): SymbolDefinition {
   return { nodeId, filePath, type: 'Function', qualifiedName: name };
 }
 
-function parsed(filePath: string, moduleScope: string, localDef: SymbolDefinition): ParsedFile {
+function parsed(
+  filePath: string,
+  moduleScope: string,
+  ...localDefs: SymbolDefinition[]
+): ParsedFile {
   return {
     filePath,
     moduleScope,
     scopes: [],
     parsedImports: [],
-    localDefs: [localDef],
+    localDefs,
     referenceSites: [],
   };
 }

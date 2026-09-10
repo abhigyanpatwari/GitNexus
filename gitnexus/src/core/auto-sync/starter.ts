@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { acquireFileLock, FileLockBusyError } from '../../storage/file-lock.js';
 import { getGlobalDir } from '../../storage/repo-manager.js';
-import { isProcessAlive, readProcessStartTime } from '../../utils/process-identity.js';
+import { isProcessAlive, readProcessStartTimeCached } from '../../utils/process-identity.js';
 import { loadAutoSyncConfig } from './config.js';
 import { runAutoSyncOnce } from './runner.js';
 import { getAutoSyncMutexPath, getAutoSyncWatchDir } from './state.js';
@@ -632,7 +632,7 @@ function resolveWatchDeps(deps: Partial<AutoSyncWatchControlDeps> = {}): AutoSyn
           return undefined;
         }
       }),
-    readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTime,
+    readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTimeCached,
     sleep:
       deps.sleep ??
       ((ms) =>

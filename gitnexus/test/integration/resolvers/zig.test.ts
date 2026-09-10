@@ -229,6 +229,328 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('main → incr');
   });
 
+  /**
+   * #3399 — a callable named in VALUE position.
+   *
+   * `src/webapi/Element.zig` is the JS-API binding-table idiom verbatim:
+   * `pub const namespaceURI = bridge.accessor(Element.getNamespaceUri, null, .{});`
+   * registers a Zig function with the JS bridge instead of calling it. Zig
+   * emitted NO `value-ref` capture at all, so every one of those references was
+   * dropped — 2,047 of them across 257 files in lightpanda-io/browser, the whole
+   * JS<->Zig surface — and `impact` on a public DOM accessor answered with its
+   * two in-file callers and the verdict `epistemic: "exact"`.
+   *
+   * These assert USES and not CALLS on purpose. A registration is not an
+   * invocation (Kythe `ref` vs `ref/call`; Joern METHOD_REF), and the call that
+   * eventually happens goes through comptime reflection this analyzer cannot
+   * follow. The claim being pinned is the reference, not the dispatch.
+   */
+  describe('callable values (#3399)', () => {
+    let uses: string[];
+    let valueRefs: string[];
+    let valueRefTargetIds: string[];
+    beforeAll(() => {
+      const edges = getRelationships(result, 'USES');
+      uses = edgeSet(edges);
+      valueRefTargetIds = edges
+        .filter((e) => e.rel.reason === 'scope-resolution: value-ref')
+        .map((e) => e.rel.targetId)
+        .sort();
+      // The reason text is spelled out rather than imported from
+      // `VALUE_REF_EDGE_REASON`, deliberately and as `typescript-value-refs.test.ts`
+      // already does: `impact`'s epistemic probe matches this exact string in
+      // the stored graph, so a change to the constant's VALUE (as opposed to
+      // its name) must fail a test rather than quietly agree with itself on
+      // both sides.
+      valueRefs = edgeSet(edges.filter((e) => e.rel.reason === 'scope-resolution: value-ref'));
+    });
+
+    it('records a QUALIFIED function value handed to a call (`bridge.accessor(Element.getNamespaceUri, …)`)', () => {
+      expect(valueRefs).toContain('JsApi → getNamespaceUri');
+    });
+
+    it('records a BARE function value handed to a call (`bridge.accessor(_tagName, …)`)', () => {
+      expect(valueRefs).toContain('JsApi → _tagName');
+    });
+
+    it('records a function value in a const initialiser (`pub const defaultHandler = onReset;`)', () => {
+      expect(valueRefs).toContain('Element → onReset');
+    });
+
+    it('records a function passed into a `comptime f: anytype` parameter and stored', () => {
+      // The shape the non-goal is about: `register(onTick)` stores the value in
+      // a module-level field and nothing in the file ever calls `onTick`. The
+      // terminal invoke needs comptime evaluation and is NOT modelled — but the
+      // reference must survive, or `onTick` reads as dead code.
+      expect(valueRefs).toContain('boot → onTick');
+      expect(calls).not.toContain('boot → onTick');
+    });
+
+    it('emits USES, never CALLS, for a registration', () => {
+      // The whole distinction: if these became CALLS, `impact` would claim the
+      // accessor is invoked from the binding table, which is not a fact the
+      // analyzer has.
+      expect(calls).not.toContain('JsApi → getNamespaceUri');
+      expect(calls).not.toContain('JsApi → _tagName');
+    });
+
+    it('does not mint a value reference for a non-callable argument', () => {
+      // `Bridge(Element)` passes a TYPE. The property-dispatch pass keeps only
+      // Function/Method/Constructor targets, which is what makes the broad
+      // capture rules safe — the same gate that stops TypeScript's
+      // `{ port: DEFAULT_PORT }` from registering anything.
+      expect(valueRefs).not.toContain('JsApi → Element');
+      expect(uses.filter((u) => u === 'JsApi → Element')).toHaveLength(0);
+    });
+
+    it('leaves a method that is only ever CALLED untouched', () => {
+      // The control. `getTagNameLower` is called twice and registered nowhere;
+      // a change that sprayed USES edges over every method would satisfy every
+      // assertion above and still be wrong.
+      expect(calls).toContain('describe → getTagNameLower');
+      expect(calls).toContain('_tagName → getTagNameLower');
+      expect(valueRefs.filter((v) => v.endsWith(' → getTagNameLower'))).toEqual([]);
+    });
+
+    it('binds a QUALIFIED reference to the owner that was written, not the nearest lexical match', () => {
+      // `JsApi` declares its own `getLocalName` next to
+      // `bridge.accessor(Element.getLocalName, …)`. `walkScopeChain` gives that
+      // local binding precedence, so resolving the registration by tail name
+      // alone attaches it to the SIBLING — a confidently wrong edge, which is a
+      // worse failure than the missing edge this whole change is about. The
+      // written receiver is the only thing that tells them apart.
+      const local = valueRefTargetIds.filter((id) => id.endsWith('.getLocalName#0'));
+      expect(local).toEqual(['Method:src/webapi/Element.zig:Element.getLocalName#0']);
+      expect(local).not.toContain('Method:src/webapi/Element.zig:JsApi.getLocalName#0');
+    });
+
+    it('declines a qualified reference whose receiver cannot be resolved', () => {
+      // `bridge.accessor(unresolvable_ns.tick, …)` names an owner this index
+      // does not have, while a file-level `tick` sits in the lexical chain
+      // waiting to be mis-bound. Emitting nothing is the safe direction, but be
+      // exact about what it buys: no edge means no evidence, and `impact` on
+      // `tick` therefore stays `epistemic: "exact"` — this decline costs the
+      // reference AND the hedge. It is still the right trade, because the
+      // alternative is a confident edge to a function the source did not name,
+      // and a wrong edge is worse than a missing one. See
+      // `resolveValueRefTarget`'s docstring for the same distinction, and the
+      // module-owner case below for the half of it that IS recoverable.
+      expect(valueRefTargetIds.filter((id) => id.includes('.tick#'))).toEqual([]);
+      expect(valueRefs).not.toContain('JsApi → tick');
+    });
+
+    it('records a QUALIFIED function value owned by a MODULE, not a container (`bridge.accessor(dom_utils.compare, …)`)', () => {
+      // `dom_utils` is a namespace-only file — no `@This()`, so no container
+      // symbol to look the member up on. Resolving only through class-like
+      // owners declines here, and a decline is SILENT: with no USES edge the
+      // boundary probe measures a real zero and `impact` on `compare` goes back
+      // to `epistemic: "exact"`, which is the defect, not a conservative answer.
+      // The member-CALL path already resolves `dom_utils.compare()` through the
+      // file's namespace import; the registration reads the same channel.
+      expect(valueRefs).toContain('JsApi → compare');
+      // And it must be dom_utils.zig's `compare`, not `decoy.zig`'s. That file
+      // declares a CONTAINER also called `dom_utils`, with its own `compare`,
+      // and `Element.zig` never imports it. `findClassBindingInScope` does not
+      // stop at the scope chain: a namespace handle binds a Module, so the
+      // `isClassLike` walk misses and its workspace-wide `qualifiedNames`
+      // fallback answers with that unique container — preempting the `@import`
+      // this very file wrote. The written import has to outrank a global guess.
+      expect(valueRefTargetIds.filter((id) => id.includes('compare'))).toEqual([
+        'Function:src/webapi/dom_utils.zig:compare',
+      ]);
+    });
+
+    it('resolves a value reference through a HUB the same way a call through it resolves', () => {
+      // `hub.zig` declares nothing: every name it publishes it imported
+      // (`pub const normalize = @import("dom_utils.zig").normalize;`). That is
+      // the shape `ScopeResolver.namespaceExportsIncludeImportedNames` exists
+      // for, and `receiver-bound-calls` honours it — so `hub.scale(v)`
+      // resolves. Accepting only locally-declared members here would make
+      // `bridge.accessor(hub.scale, …)` decline, and one name would mean
+      // two different things depending on whether a `(` followed it.
+      expect(calls).toContain('callsThroughTheHub → scale');
+      expect(valueRefs).toContain('JsApi → scale');
+      expect(valueRefTargetIds.filter((id) => id.includes('scale'))).toEqual([
+        'Function:src/webapi/dom_utils.zig:scale',
+      ]);
+    });
+
+    it('applies the callable gate through a HUB too', () => {
+      expect(valueRefs).not.toContain('JsApi → DEFAULT_NS');
+    });
+
+    it('applies the callable gate to a MODULE owner too', () => {
+      // `dom_utils.DEFAULT_NS` is a module-scope constant. Widening the owner
+      // channel must not widen what counts as a registration, or every
+      // `bridge.accessor(mod.SOME_CONST, …)` in a binding table starts claiming
+      // a callable was registered.
+      expect(valueRefs).not.toContain('JsApi → DEFAULT_NS');
+      expect(valueRefTargetIds.filter((id) => id.includes('DEFAULT_NS'))).toEqual([]);
+    });
+
+    it('declines a module-qualified reference whose handle is locally shadowed', () => {
+      // `shadowsTheModuleHandle(dom_utils: u8)` names a PARAMETER, not the
+      // file-level `@import`. Reading through the import here would attach the
+      // registration to a module this site never named — the same wrong-edge
+      // failure `isNamespaceNameShadowed` prevents on the member-call path, and
+      // the reason the module channel is guarded rather than merely added.
+      expect(valueRefs).not.toContain('shadowsTheModuleHandle → normalize');
+      expect(valueRefTargetIds.filter((id) => id.includes('normalize'))).toEqual([]);
+    });
+
+    it('declines a container-qualified reference whose owner name is locally shadowed', () => {
+      // `shadowsAContainerName(Ticker: u8)` names a PARAMETER. This file neither
+      // declares nor imports `Ticker.zig`'s container, so
+      // `findClassBindingInScope` walks past the parameter (it filters by
+      // `isClassLike`) and its qualified-name fallback answers with the unique
+      // workspace `Ticker` — a struct the source never named at this site.
+      // Verified to emit `shadowsAContainerName → fire` without the guard.
+      expect(valueRefs).not.toContain('shadowsAContainerName → fire');
+      expect(valueRefTargetIds.filter((id) => id.includes('Ticker'))).toEqual([]);
+    });
+
+    it('still binds a reference whose container IS the local declaration', () => {
+      // `registersALocalContainer` declares `Local` in its own body and registers
+      // `Local.go`. The shadow guard above must exempt the container it just
+      // resolved, or the nearer binding — which is that container — reads as its
+      // own shadow and every function-local registry stops registering.
+      expect(valueRefs).toContain('registersALocalContainer → go');
+    });
+
+    it('declines a container-qualified reference shadowed at MODULE scope', () => {
+      // `Element.zig` binds `Gauge` at module scope to something that is NOT a
+      // container, and never imports `Gauge.zig`, which declares one. The class
+      // walk filters by `isClassLike`, steps over that binding, and its
+      // workspace-wide qualified-name fallback answers with the other file's
+      // struct. The shadow guard has to inspect the MODULE scope to catch it —
+      // stopping one rung short, as it did, permitted precisely this case.
+      //
+      // The binding is an IMPORT (`const Gauge = @import("dom_utils.zig").DEFAULT_NS;`),
+      // not a local `const Gauge: u8 = 3;`, and that is the difference between a
+      // live case and a self-defeating one: a local declaration would ALSO claim
+      // the workspace qualified name `Gauge`, leaving two candidates, and the
+      // fallback refuses to guess between two — so the case this test exists for
+      // would never be reached. See the fixture's own note at `Element.zig:30-35`.
+      expect(valueRefs).not.toContain('JsApi → read');
+      expect(valueRefTargetIds.filter((id) => id.includes('Gauge'))).toEqual([]);
+    });
+
+    it('declines a namespace member the written module does not have, rather than reaching a same-named container', () => {
+      // The fall-through the channel order creates, and the guard that closes
+      // it. `dom_utils` IS a namespace import here, but `dom_utils.zig` has no
+      // `onlyOnDecoy`, so the namespace channel declines — and declining is not
+      // the end: `findClassBindingInScope` runs next, its `isClassLike` walk
+      // misses (an import binds a Module), and its WORKSPACE-WIDE
+      // `qualifiedNames` fallback answers with `decoy.zig`'s same-named struct,
+      // which does declare `onlyOnDecoy`. Only `isOwnerNameShadowedBySomethingElse`
+      // stands between that and a confident edge into a file this one never
+      // imported — the wrong-edge failure, arriving through the container
+      // channel after the namespace channel said no.
+      expect(valueRefs).not.toContain('JsApi → onlyOnDecoy');
+      expect(valueRefTargetIds.filter((id) => id.includes('onlyOnDecoy'))).toEqual([]);
+    });
+
+    it('does not mint a value reference for the CALLEE of an ordinary call', () => {
+      // `register(onTick)` must produce ONE value reference (the argument), not
+      // two: without binding the callee to the `function:` field the same rule
+      // also matches `register` itself and every call in the repo would emit a
+      // USES edge shadowing its own CALLS edge.
+      expect(valueRefs).not.toContain('boot → register');
+      expect(calls).toContain('boot → register');
+    });
+  });
+
+  /**
+   * `@This()` aliases (#3219 review round 8).
+   *
+   * `@This()` IS the enclosing container, and `const Self = @This();` is how
+   * most Zig files say so. The container itself is minted under the FILE STEM,
+   * and the alias bound nothing class-like — a file-level alias mints no Const
+   * at all, a container-level one mints a Variable that every `isClassLike`
+   * walk steps over — so `Self.member` resolved to nothing at all: not a wrong
+   * edge, no edge. On the corpora at hand that is 302 `Alias.member`
+   * references (ghostty 73 files, tigerbeetle 93, mach 8), 96 of them calls.
+   *
+   * `bindZigThisAliases` binds the alias name to its container in the
+   * post-finalize augmentation channel, so a compiler's answer and this
+   * index's answer agree. Both spellings of the alias are exercised:
+   * `Widget.zig`'s file-level `Self` and `Metrics`' container-level `Me`.
+   */
+  describe('@This() aliases (#3219)', () => {
+    let valueRefs: string[];
+    let valueRefTargetIds: string[];
+    beforeAll(() => {
+      // Recomputed here rather than shared with the block above: these are
+      // sibling describes, and a shared `beforeAll` would make the order of
+      // the two blocks load-bearing.
+      const edges = getRelationships(result, 'USES').filter(
+        (e) => e.rel.reason === 'scope-resolution: value-ref',
+      );
+      valueRefs = edgeSet(edges);
+      valueRefTargetIds = edges.map((e) => e.rel.targetId).sort();
+    });
+
+    it('resolves a qualified CALL written through a file-level alias', () => {
+      // `Widget.zig` writes `const Self = @This();` and calls `Self.width(self)`.
+      expect(calls).toContain('describeWidth → width');
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((e) => e.source === 'describeWidth')
+          .map((e) => e.rel.targetId),
+      ).toEqual(['Method:src/webapi/Widget.zig:Widget.width#0']);
+    });
+
+    it('resolves a qualified REGISTRATION written through a file-level alias', () => {
+      // The #3399 shape spelled the ordinary way: `binder.accessor(Self.width, …)`.
+      // Declining it cost the reference AND the hedge — no edge means no
+      // evidence, so `impact` on `width` went back to claiming `exact`.
+      expect(valueRefs).toContain('WidgetApi → width');
+      expect(valueRefTargetIds.filter((id) => id.includes('Widget.width'))).toEqual([
+        'Method:src/webapi/Widget.zig:Widget.width#0',
+      ]);
+    });
+
+    it('resolves a qualified call through a CONTAINER-level alias', () => {
+      // `Metrics` declares `const Me = @This();`, which mints a Variable beside
+      // the Struct — the binding is there, it is just not class-like, so the
+      // walk stepped over it and kept climbing.
+      expect(calls).toContain('readTwice → read');
+      expect(
+        getRelationships(result, 'CALLS')
+          .filter((e) => e.source === 'readTwice')
+          .map((e) => e.rel.targetId),
+      ).toEqual([
+        'Method:src/webapi/Widget.zig:Metrics.read#0',
+        'Method:src/webapi/Widget.zig:Metrics.read#0',
+      ]);
+    });
+
+    it('leaves a stem-spelled alias resolving exactly as it did', () => {
+      // The control. `Element.zig` writes `const Element = @This();`, so its
+      // qualified references already resolved through the stem binding. The
+      // alias binding is an ADDITION to the augmentation channel, consulted
+      // only after a scope's own bindings, so it must move nothing here.
+      expect(valueRefTargetIds.filter((id) => id.endsWith('.getNamespaceUri#0'))).toEqual([
+        'Method:src/webapi/Element.zig:Element.getNamespaceUri#0',
+      ]);
+      expect(valueRefs).toContain('JsApi → getNamespaceUri');
+    });
+
+    it('does not make the alias name resolvable from another file', () => {
+      // `Self` and `Me` are container-private: Zig has no way to import them,
+      // and the binding is appended at the declaring scope only. If it leaked
+      // to the workspace channels, every file in a repo would see one
+      // arbitrary `Self` — 66 files in ghostty declare that exact name.
+      const targets = valueRefTargetIds.concat(
+        getRelationships(result, 'CALLS').map((e) => e.rel.targetId),
+      );
+      // The alias's OWN def (`Metrics.Me`, a Variable) must never be an edge
+      // target — matched on the last segment so `Metrics.read` is not read as
+      // a hit on `Me`.
+      expect(targets.filter((id) => /[:.](Self|Me)(#\d+)?$/.test(id))).toEqual([]);
+    });
+  });
+
   it('types a receiver from its ANNOTATION (`var b: Counter = undefined; b.twice()`, `const c: Counter = .init(); c.get()`)', () => {
     // The declared type is the ONLY type source for `= undefined` and for
     // 0.14+ decl literals (`.init`, `.empty`), which current std uses for
@@ -1207,3 +1529,64 @@ describe.skipIf(!zigAvailable)(
     });
   },
 );
+
+// ── Monorepo: several build packages, no build.zig at the repo root ──────────
+//
+// The layout the root-only config loader could not see. `loadZigBuildConfig`
+// read `<repoRoot>/build.zig{,.zon}` and nothing else, so a repo whose packages
+// live under `packages/<name>/` had no config at all and every bare
+// `@import("<module>")` in it went unresolved — cross-file resolution silently
+// degraded to relative imports. It now takes a `packageDir` and
+// `loadZigWorkspaceIndex` walks the repo for the packages to hand it, which is
+// the change these assert.
+//
+// They assert the EDGES, not the config: the unit tests in
+// `test/unit/zig-import-resolver.test.ts` pin the index, and this pins that the
+// index actually reaches symbol resolution.
+describe.skipIf(!zigAvailable)('Zig monorepo package resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-monorepo'), () => {});
+  }, 60000);
+
+  it('resolves a cross-package @import declared by the package’s own build files', () => {
+    // `packages/app` depends on `packages/core` through `.path = "../core"` —
+    // package-relative, and rejected outright when read from the repo root.
+    const imports = getRelationships(result, 'IMPORTS').filter((e) =>
+      e.sourceFilePath.includes('packages/app/src/main.zig'),
+    );
+    expect(imports.map((e) => e.targetFilePath).join('\n')).toContain('packages/core/src/root.zig');
+  });
+
+  it('emits CALLS across the package boundary, from the module root and from a non-root file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const crossPackage = calls.filter(
+      (e) =>
+        e.sourceFilePath.includes('packages/app/') &&
+        e.targetFilePath.includes('packages/core/src/root.zig'),
+    );
+    // `run` is in the module ROOT, `clamp` in a sibling file of the same
+    // package: membership is the root plus what it reaches, so both must
+    // resolve the alias — a fix that only worked for module roots would pass an
+    // assertion on `run` alone.
+    expect(edgeSet(crossPackage)).toContain('run → retryBudget');
+    expect(edgeSet(crossPackage)).toContain('clamp → retryBudget');
+  });
+
+  it('binds one alias to two different roots in two packages without crossing them', () => {
+    // The discriminating case, and the reason the index is scoped per package
+    // rather than flattened repo-wide: `tool` binds `core` to its OWN
+    // src/core.zig. Flattened, `measure` would call into `packages/core` — a
+    // confident edge into a package `tool` does not depend on, which is worse
+    // than the unresolved import this change set out to fix.
+    const fromTool = getRelationships(result, 'CALLS').filter((e) =>
+      e.sourceFilePath.includes('packages/tool/src/main.zig'),
+    );
+    expect(edgeSet(fromTool)).toContain('measure → retryBudget');
+    expect(fromTool.map((e) => e.targetFilePath).join('\n')).toContain(
+      'packages/tool/src/core.zig',
+    );
+    expect(fromTool.map((e) => e.targetFilePath).join('\n')).not.toContain('packages/core/');
+  });
+});

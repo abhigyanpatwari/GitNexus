@@ -499,4 +499,408 @@ export const TwoDocument = ${generatedDocument('query', 'Two', ['two'])};
     ]);
     expect(parseSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('binds NestJS providers at the 0-based graph startLine (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/health.resolver.ts': `import { Query, Mutation, Resolver } from '@nestjs/graphql';
+@Resolver()
+class HealthResolver {
+  @Query()
+  health() { return 'ok'; }
+
+  @Mutation()
+  save = async () => true;
+}`,
+    });
+    const graphStartLine: Record<string, number> = { health: 4, save: 6 };
+    const startLines: Array<{ name: string; startLine: number }> = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      const name = String(params.name);
+      const startLine = Number(params.startLine);
+      startLines.push({ name, startLine });
+      if (graphStartLine[name] !== startLine) return [];
+      return [{ uid: `sym:${name}`, name, filePath: 'src/health.resolver.ts' }];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(startLines).toEqual([
+      { name: 'health', startLine: 4 },
+      { name: 'save', startLine: 6 },
+    ]);
+    expect(contracts.map((contract) => contract.contractId)).toEqual([
+      'graphql::query::health',
+      'graphql::mutation::save',
+    ]);
+  });
+
+  it('tries the PascalCased Document name graphql-codegen emits (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/timeline.graphql': `query widgetTimeline { getWidget }`,
+      'src/generated.ts': `export const WidgetTimelineDocument = ${generatedDocument(
+        'query',
+        'widgetTimeline',
+        ['getWidget'],
+      )};`,
+    });
+    const lookedUp: string[] = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      const name = String(params.name ?? '');
+      lookedUp.push(name);
+      return name === 'WidgetTimelineDocument'
+        ? [
+            {
+              uid: 'const:timeline',
+              name: 'WidgetTimelineDocument',
+              filePath: 'src/generated.ts',
+            },
+          ]
+        : [];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(lookedUp).toEqual(['widgetTimelineDocument', 'WidgetTimelineDocument']);
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::getWidget',
+        role: 'consumer',
+        symbolUid: 'const:timeline',
+      }),
+    ]);
+  });
+
+  it('tries the full PascalCased Document name for underscored operations (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/widget.graphql': `query get_widget { getWidget }`,
+      'src/generated.ts': `export const GetWidgetDocument = ${generatedDocument(
+        'query',
+        'get_widget',
+        ['getWidget'],
+      )};`,
+    });
+    const lookedUp: string[] = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      const name = String(params.name ?? '');
+      lookedUp.push(name);
+      return name === 'GetWidgetDocument'
+        ? [
+            {
+              uid: 'const:widget',
+              name: 'GetWidgetDocument',
+              filePath: 'src/generated.ts',
+            },
+          ]
+        : [];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(lookedUp).toEqual(['get_widgetDocument', 'GetWidgetDocument']);
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::getWidget',
+        role: 'consumer',
+        symbolUid: 'const:widget',
+      }),
+    ]);
+  });
+
+  it('inlines sibling ${FragmentDoc} interpolations to prove generated documents (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `
+fragment widget on Widget { id }
+query GetWidget { getWidget { ...widget } }
+`,
+      'src/root-spread.graphql': `
+fragment MoreRoots on Query { gadget }
+query GetWidgets { ...MoreRoots }
+`,
+      'src/generated.ts': `
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget {
+  getWidget {
+    ...widget
+  }
+}
+    \${WidgetFragmentDoc}\`;
+export const MoreRootsFragmentDoc = /*#__PURE__*/ \`
+    fragment MoreRoots on Query { gadget }
+    \`;
+export const GetWidgetsDocument = gql\`
+    query GetWidgets { ...MoreRoots }
+    \${MoreRootsFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+        GetWidgetsDocument: [
+          { uid: 'const:widgets', name: 'GetWidgetsDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => [contract.contractId, contract.symbolUid]).sort()).toEqual([
+      ['graphql::query::gadget', 'const:widgets'],
+      ['graphql::query::getWidget', 'const:widget'],
+    ]);
+  });
+
+  it('fails closed for dynamic or cyclic generated interpolations (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/dynamic.graphql': `query Dynamic { dynamic }`,
+      'src/cycle.graphql': `query Cycle { cycle }`,
+      'src/generated.ts': `
+export const DynamicDocument = \`query Dynamic { dynamic }\${foo.bar}\`;
+export const CycleFragmentDoc = \`\${CycleDocument}\`;
+export const CycleDocument = \`query Cycle { cycle }\${CycleFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        DynamicDocument: [
+          { uid: 'const:dynamic', name: 'DynamicDocument', filePath: 'src/generated.ts' },
+        ],
+        CycleDocument: [
+          { uid: 'const:cycle', name: 'CycleDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('fails closed when sibling ${FragmentDoc} names resolve to two static sources (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `query GetWidget { getWidget }`,
+      'src/generated.ts': `
+{
+  const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+}
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { name }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget { getWidget { ...widget } }
+    \${WidgetFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('fails closed when a FragmentDoc name has a static and a dynamic declarator (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `query GetWidget { getWidget }`,
+      'src/generated.ts': `
+{
+  const WidgetFragmentDoc = \`\${foo.bar}\`;
+}
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget { getWidget { ...widget } }
+    \${WidgetFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('treats template line continuations as empty while inlining ${FragmentDoc} (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\
+\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
+  });
+
+  it('fails closed for NonOctalDecimalEscapeSequence in interpolated gql templates (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\8\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('decodes escape_sequence nodes while inlining ${FragmentDoc} (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = gql\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
+  });
+
+  it('fails closed for interpolated templates under a non-gql tag (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = String.raw\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
+
+  it('memoizes interpolation sources so duplicated fragment layers stay linear (#3201)', async () => {
+    const layers = 16;
+    let generated = `
+export const F0 = \`fragment f0 on Query { q }\`;
+{ const F0 = \`fragment f0 on Query { q }\`; }
+`;
+    for (let i = 1; i <= layers; i++) {
+      const prev = `F${i - 1}`;
+      const cur = `F${i}`;
+      generated += `
+export const ${cur} = \`\${${prev}}\`;
+{ const ${cur} = \`\${${prev}}\`; }
+`;
+    }
+    generated += `
+export const QDocument = gql\`query Q { q }\${F${layers}}\`;
+`;
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': generated,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::q',
+        role: 'consumer',
+        symbolUid: 'const:q',
+      }),
+    ]);
+  });
+
+  it('fails closed for interpolated templates under a member .gql tag (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/q.graphql': `query Q { q }`,
+      'src/generated.ts': `
+export const QFragmentDoc = /*#__PURE__*/ \`
+    fragment extra on Query { q }
+    \`;
+export const QDocument = formatter.gql\`query Q { q }\\n\${QFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        QDocument: [{ uid: 'const:q', name: 'QDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
 });

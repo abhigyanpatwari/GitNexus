@@ -85,7 +85,7 @@
   },
   "go-constructor-type-inference/cmd/main.go": {
     "captureGroups": 19,
-    "digest": "4f2e8bb6dbca59bcb82fc2efd43899b7a92816af28811cfc1858f0ce7ba9f6fe"
+    "digest": "8dff73176d5890d7ede1d8b9cd9f8555518a1dcc11fbf02190beb474c0f9e47e"
   },
   "go-constructor-type-inference/models/repo.go": {
     "captureGroups": 8,
@@ -252,8 +252,8 @@
     "digest": "ad4cfabcd53397ab664ba4bb05df4e1a803455b5c255a19e2ed283c6523a1660"
   },
   "go-method-enrichment/app.go": {
-    "captureGroups": 15,
-    "digest": "35929a31f6921feb074f50385aa91879e93f25b88d7f50774fddcfbb7b4e8539"
+    "captureGroups": 16,
+    "digest": "b2ab0936ab28e22d0333119838c929ec6e3d460cc0be8d27aa4d178b9f6452d3"
   },
   "go-mixed-chain/cmd/main.go": {
     "captureGroups": 22,
