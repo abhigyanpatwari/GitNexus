@@ -63,7 +63,9 @@ function rustModulePathOf(filePath: string): string {
  * refused on a missing workspace prefix.
  */
 function rustCrateRootOf(filePath: string): string {
-  const segments = stripExtension(filePath).split('/').filter((s) => s !== '');
+  const segments = stripExtension(filePath)
+    .split('/')
+    .filter((s) => s !== '');
   const stem = segments[segments.length - 1];
   if (stem !== undefined && RUST_DIRECTORY_MODULE_STEMS.has(stem)) segments.pop();
   const rootIdx = segments.findIndex((s) => RUST_CRATE_ROOT_DIRS.has(s));
