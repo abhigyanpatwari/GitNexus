@@ -866,20 +866,34 @@ function decodeGitPathToken(raw: string): string | undefined {
  * (default `core.quotePath`) are decoded. Renames that the greedy split would
  * mis-parse stay a best-effort dest; `rename to` / `+++` correct them.
  */
+function takeGitHeaderPathToken(
+  source: string,
+  start: number,
+): { path: string; end: number } | undefined {
+  if (start >= source.length) return undefined;
+  if (source[start] === '"') {
+    const tok = takeCQuotedToken(source, start);
+    if (!tok) return undefined;
+    const path = unquoteCStyleGitToken(tok.token);
+    if (path === undefined) return undefined;
+    return { path, end: tok.end };
+  }
+  if (source.startsWith('b/', start)) {
+    return { path: stripUnifiedDiffTab(source.slice(start)), end: source.length };
+  }
+  if (source.startsWith('a/', start)) {
+    for (let i = start + 2; i < source.length; i++) {
+      if (source.startsWith(' b/', i) || source.startsWith(' "', i)) {
+        return { path: source.slice(start, i), end: i };
+      }
+    }
+  }
+  return undefined;
+}
+
 function filePathFromGitHeader(line: string): string | undefined {
   if (!line.startsWith(DIFF_GIT_PREFIX)) return undefined;
   const rest = line.slice(DIFF_GIT_PREFIX.length);
-
-  if (rest.startsWith('"')) {
-    const srcTok = takeCQuotedToken(rest, 0);
-    if (!srcTok) return undefined;
-    let i = srcTok.end;
-    while (rest[i] === ' ') i++;
-    const destTok = takeCQuotedToken(rest, i);
-    if (!destTok) return undefined;
-    const dest = unquoteCStyleGitToken(destTok.token);
-    return dest ? stripGitDstPrefix(dest) : undefined;
-  }
 
   if (rest.startsWith('a/')) {
     for (let i = 2; i < rest.length; i++) {
@@ -890,8 +904,12 @@ function filePathFromGitHeader(line: string): string | undefined {
     }
   }
 
-  const match = rest.match(/^a\/(.+) b\/(.+)$/);
-  return match?.[2];
+  const src = takeGitHeaderPathToken(rest, 0);
+  if (!src) return undefined;
+  let i = src.end;
+  while (rest[i] === ' ') i++;
+  const dest = takeGitHeaderPathToken(rest, i);
+  return dest ? stripGitDstPrefix(dest.path) : undefined;
 }
 
 function pathFromPlusPlusPlus(line: string): string | undefined {
@@ -943,11 +961,15 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
   let unparsedGitHeaders = 0;
+  // `+++` after the first `@@` of a file is hunk body (`+` plus source text
+  // that itself starts `++ …`), not another file header.
+  let inHunk = false;
   for (const line of diffOutput.split('\n')) {
     if (line.startsWith(DIFF_GIT_PREFIX)) {
       // Drop the previous file first: an unparsed header must not leave
       // `current` live for a later `@@` / quoted `+++` to steal.
       current = null;
+      inHunk = false;
       const filePath = filePathFromGitHeader(line);
       if (filePath) {
         current = { filePath, hunks: [] };
@@ -963,7 +985,7 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
         current = { filePath, hunks: [] };
         files.push(current);
       }
-    } else if (line.startsWith('+++ ')) {
+    } else if (!inHunk && line.startsWith('+++ ')) {
       const filePath = pathFromPlusPlusPlus(line);
       if (!filePath) continue;
       if (!current || current.filePath !== filePath) {
@@ -971,6 +993,7 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
         files.push(current);
       }
     } else if (line.startsWith('@@') && current) {
+      inHunk = true;
       const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
       if (match) {
         const start = parseInt(match[1], 10);

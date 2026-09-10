@@ -168,11 +168,9 @@ describe('parseDiffHunks', () => {
   });
 
   it('retains a mode-only change from the git header', () => {
-    const diff = [
-      'diff --git a/script.sh b/script.sh',
-      'old mode 100644',
-      'new mode 100755',
-    ].join('\n');
+    const diff = ['diff --git a/script.sh b/script.sh', 'old mode 100644', 'new mode 100755'].join(
+      '\n',
+    );
     expect(parseDiffHunks(diff)).toEqual([{ filePath: 'script.sh', hunks: [] }]);
   });
 
@@ -243,6 +241,45 @@ describe('parseDiffHunks', () => {
     expect(parseDiffHunks(diff)).toEqual([
       { filePath: 'code.py', hunks: [{ startLine: 5, endLine: 5 }] },
     ]);
+  });
+
+  it('does not treat a quoted +++ content line as a second file', () => {
+    const diff = [
+      'diff --git a/src/foo.ts b/src/foo.ts',
+      '--- a/src/foo.ts',
+      '+++ b/src/foo.ts',
+      '@@ -1,0 +1,1 @@',
+      '+++ "b/generated.ts"',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'src/foo.ts', hunks: [{ startLine: 1, endLine: 1 }] },
+    ]);
+  });
+
+  it('parses a quoted source and unquoted dest on the same git header', () => {
+    const diff = [
+      'diff --git "a/old name.ts" b/new.ts',
+      'similarity index 100%',
+      'rename from old name.ts',
+      'rename to new.ts',
+    ].join('\n');
+    expect(parseDiffHunksResult(diff)).toEqual({
+      files: [{ filePath: 'new.ts', hunks: [] }],
+      unparsedGitHeaders: 0,
+    });
+  });
+
+  it('parses an unquoted source and quoted dest on the same git header', () => {
+    const diff = [
+      'diff --git a/old.ts "b/new name.ts"',
+      'similarity index 100%',
+      'rename from old.ts',
+      'rename to new name.ts',
+    ].join('\n');
+    expect(parseDiffHunksResult(diff)).toEqual({
+      files: [{ filePath: 'new name.ts', hunks: [] }],
+      unparsedGitHeaders: 0,
+    });
   });
 
   it('counts an unparsed git header and does not keep current live', () => {
