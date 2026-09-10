@@ -18,6 +18,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { createRequire } from 'node:module';
+import type Parser from 'tree-sitter';
 
 import { isHardcodedIgnoredDirectoryAtPath } from '../../../config/ignore-service.js';
 import { logger } from '../../logger.js';
@@ -214,6 +215,8 @@ interface WorkspaceScope {
   readonly include: readonly string[];
   /** `!`-prefixed patterns, with the `!` stripped. */
   readonly exclude: readonly string[];
+  readonly includeRe: readonly RegExp[];
+  readonly excludeRe: readonly RegExp[];
 }
 
 /** Whether `dir` (repo-relative, `''` for the root) is an admitted package. */
@@ -221,8 +224,21 @@ function admits(scope: WorkspaceScope | null, dir: string): boolean {
   // The root package is always itself, workspace or not.
   if (dir === '') return true;
   if (scope === null) return false;
-  if (scope.exclude.some((pattern) => globToRegExp(pattern).test(dir))) return false;
-  return scope.include.some((pattern) => globToRegExp(pattern).test(dir));
+  // An exclusion covers the directory AND everything under it: `!packages/legacy`
+  // must keep `packages/legacy/foo` out even when a nested workspace root inside
+  // the excluded subtree re-declares `packages/*`.
+  if (scope.excludeRe.some((re) => matchesDirOrAncestor(re, dir))) return false;
+  return scope.includeRe.some((re) => re.test(dir));
+}
+
+function matchesDirOrAncestor(re: RegExp, dir: string): boolean {
+  let current = dir;
+  while (current !== '') {
+    if (re.test(current)) return true;
+    const slash = current.lastIndexOf('/');
+    current = slash === -1 ? '' : current.slice(0, slash);
+  }
+  return false;
 }
 
 /**
@@ -272,9 +288,69 @@ function globToRegExp(pattern: string): RegExp {
  * tooling that does not read pnpm's file).
  */
 async function loadWorkspaceScope(repoRoot: string): Promise<WorkspaceScope | null> {
-  const patterns: string[] = [];
+  // Every workspace ROOT in the repo, not just the top level. keycloak keeps its
+  // JavaScript workspace at `js/pnpm-workspace.yaml`; reading only the repo root
+  // found no workspace, admitted no package, and `@keycloak/keycloak-ui-shared`
+  // (780–845 raw calls per SHA) resolved 7 times. Patterns from a nested root
+  // are rebased onto that root so `packages/*` under `js/` admits `js/packages/x`.
+  //
+  // Gated, though: a nested root counts only when the repo root declares NO
+  // workspace (keycloak), or when the nested root's directory is itself admitted
+  // by the root's scope. Unioning every nested root unconditionally let an
+  // `examples/*/package.json` starter (turborepo/vite/nuxt templates carry
+  // `workspaces`) admit its example packages — and, being shallow, outrank the
+  // real package of the same name — and let a root inside an excluded subtree
+  // re-admit what the outer `!exclusion` had removed.
+  const [rootPatterns, workspaceRoots] = await Promise.all([
+    readWorkspacePatternsAt(repoRoot),
+    findWorkspaceRoots(repoRoot),
+  ]);
+  const rootScope = rootPatterns.length === 0 ? null : toScope(rootPatterns);
+  const patterns: string[] = [...rootPatterns];
+  const admitted: { root: string; prefix: string }[] = [];
+  for (const root of workspaceRoots) {
+    if (root === repoRoot) continue;
+    const prefix = repoRelativeDir(repoRoot, root);
+    if (rootScope !== null && !admits(rootScope, prefix)) continue;
+    admitted.push({ root, prefix });
+  }
+  const nested = await Promise.all(
+    admitted.map(async ({ root, prefix }) => {
+      const rebase = (p: string): string => {
+        const negated = p.startsWith('!');
+        const body = negated ? p.slice(1) : p;
+        const joined = prefix === '' ? body : `${prefix}/${body.replace(/^\.\//, '')}`;
+        return negated ? `!${joined}` : joined;
+      };
+      return (await readWorkspacePatternsAt(root)).map(rebase);
+    }),
+  );
+  for (const batch of nested) patterns.push(...batch);
 
-  const rootManifest = await readJsonFile(path.join(repoRoot, 'package.json'));
+  if (patterns.length === 0) return null;
+  return toScope(patterns);
+}
+
+function toScope(patterns: readonly string[]): WorkspaceScope {
+  const include = patterns.filter((p) => !p.startsWith('!'));
+  const exclude = patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1));
+  return {
+    include,
+    exclude,
+    includeRe: include.map(globToRegExp),
+    excludeRe: exclude.map(globToRegExp),
+  };
+}
+
+/** The workspace patterns declared at ONE directory, all three spellings merged. */
+async function readWorkspacePatternsAt(root: string): Promise<string[]> {
+  const [rootManifest, yamlPkgs, ymlPkgs, lerna] = await Promise.all([
+    readJsonFile(path.join(root, 'package.json')),
+    readYamlPackages(path.join(root, 'pnpm-workspace.yaml')),
+    readYamlPackages(path.join(root, 'pnpm-workspace.yml')),
+    readJsonFile(path.join(root, 'lerna.json')),
+  ]);
+  const patterns: string[] = [];
   const workspaces = rootManifest?.workspaces;
   if (Array.isArray(workspaces)) {
     patterns.push(...workspaces.filter((w): w is string => typeof w === 'string'));
@@ -285,20 +361,114 @@ async function loadWorkspaceScope(repoRoot: string): Promise<WorkspaceScope | nu
       patterns.push(...nested.filter((w): w is string => typeof w === 'string'));
     }
   }
-
-  patterns.push(...(await readYamlPackages(path.join(repoRoot, 'pnpm-workspace.yaml'))));
-  patterns.push(...(await readYamlPackages(path.join(repoRoot, 'pnpm-workspace.yml'))));
-
-  const lerna = await readJsonFile(path.join(repoRoot, 'lerna.json'));
+  patterns.push(...yamlPkgs, ...ymlPkgs);
   if (Array.isArray(lerna?.packages)) {
     patterns.push(...lerna.packages.filter((w): w is string => typeof w === 'string'));
   }
+  return patterns;
+}
 
-  if (patterns.length === 0) return null;
-  return {
-    include: patterns.filter((p) => !p.startsWith('!')),
-    exclude: patterns.filter((p) => p.startsWith('!')).map((p) => p.slice(1)),
-  };
+/**
+ * Directories that declare a workspace: the repo root plus any directory (to a
+ * shallow depth — workspace roots sit near the top) holding a
+ * `pnpm-workspace.yaml`, a `lerna.json`, or a `package.json` with `workspaces`.
+ */
+const WORKSPACE_ROOT_MAX_DEPTH = 4;
+/**
+ * Bound on the depth-≤4 directory walk. Generous on purpose: the previous 2,000
+ * cap tripped silently in readdir order, so WHICH packages existed — and which
+ * imports resolved — varied between two checkouts of the same commit. Tripping
+ * it now warns, so a truncated scan is a logged fact rather than a quiet one.
+ */
+const WORKSPACE_ROOT_SCAN_MAX_DIRS = 50_000;
+/**
+ * Directory names whose nested `workspaces` are starters, fixtures, or test
+ * trees — never members. A leftover `test/pnpm-workspace.yaml` must not become
+ * a workspace root when the repo root declares none (the #2953 first-wins
+ * class). A root `workspaces` glob that lists `test/*` still admits those
+ * packages through the package.json walk; this set only stops nested-root
+ * discovery from descending into those names.
+ */
+const NON_MEMBER_ROOT_DIRS = new Set([
+  'example',
+  'examples',
+  'fixture',
+  'fixtures',
+  'template',
+  'templates',
+  'sample',
+  'samples',
+  'test',
+  'tests',
+  'e2e',
+  '__tests__',
+  'spec',
+  'specs',
+]);
+
+/**
+ * Vite's `DEFAULT_CONFIG_FILES` order. The first filename that exists is the
+ * config Vite loads; leftover siblings are not a second live entry.
+ */
+const VITE_CONFIG_FILES = [
+  'vite.config.js',
+  'vite.config.mjs',
+  'vite.config.ts',
+  'vite.config.cjs',
+  'vite.config.mts',
+  'vite.config.cts',
+] as const;
+
+function isMissingPath(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+async function readDirSorted(dir: string): Promise<import('fs').Dirent[] | null> {
+  try {
+    return (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    );
+  } catch {
+    return null;
+  }
+}
+
+async function findWorkspaceRoots(repoRoot: string): Promise<string[]> {
+  const roots: string[] = [repoRoot];
+  const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  let scanned = 0;
+  while (scanned < queue.length) {
+    if (scanned >= WORKSPACE_ROOT_SCAN_MAX_DIRS) {
+      logger.warn(
+        `[node] workspace-root scan of ${repoRoot} hit the ${WORKSPACE_ROOT_SCAN_MAX_DIRS}-directory cap; nested workspace roots below it were not considered`,
+      );
+      break;
+    }
+    const { dir, depth } = queue[scanned++]!;
+    const entries = await readDirSorted(dir);
+    if (entries === null) continue;
+    if (dir !== repoRoot) {
+      const names = new Set(entries.filter((e) => e.isFile()).map((e) => e.name));
+      let declares =
+        names.has('pnpm-workspace.yaml') ||
+        names.has('pnpm-workspace.yml') ||
+        names.has('lerna.json');
+      if (!declares && names.has('package.json')) {
+        const manifest = await readJsonFile(path.join(dir, 'package.json'));
+        declares = manifest?.workspaces !== undefined && manifest.workspaces !== null;
+      }
+      if (declares) roots.push(dir);
+    }
+    if (depth >= WORKSPACE_ROOT_MAX_DEPTH) continue;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (NON_MEMBER_ROOT_DIRS.has(entry.name.toLowerCase())) continue;
+      const child = path.join(dir, entry.name);
+      if (isHardcodedIgnoredDirectoryAtPath(repoRoot, child)) continue;
+      queue.push({ dir: child, depth: depth + 1 });
+    }
+  }
+  return roots;
 }
 
 async function readJsonFile(filePath: string): Promise<Record<string, unknown> | null> {
@@ -328,13 +498,46 @@ async function readYamlPackages(filePath: string): Promise<string[]> {
 }
 
 /**
+ * Per-repo memo. The TS/JS/Vue scope resolvers and the unresolved-call ledger
+ * classifier each ask for the same map during one analyze; without this the
+ * 20k-directory walk ran once per asker (four times on a full run, one of them
+ * inside the index lock). Invalidated at the start of every `runFullAnalysis`
+ * so a long-lived server never serves a stale package map across runs.
+ */
+const workspacePackagesMemo = new Map<string, Promise<NodeWorkspacePackages | null>>();
+
+export function invalidateNodeWorkspacePackages(repoRoot: string): void {
+  workspacePackagesMemo.delete(path.resolve(repoRoot));
+}
+
+export async function loadNodeWorkspacePackages(
+  repoRoot: string,
+): Promise<NodeWorkspacePackages | null> {
+  const key = path.resolve(repoRoot);
+  const cached = workspacePackagesMemo.get(key);
+  if (cached !== undefined) return cached;
+  const pending: Promise<NodeWorkspacePackages | null> = loadNodeWorkspacePackagesUncached(
+    repoRoot,
+  ).catch((err: unknown) => {
+    // Evict only OUR entry. If this load was invalidated while in flight and a
+    // newer load has since been installed under the same key, deleting by key
+    // alone would evict that one, and every later caller would start another
+    // full scan instead of joining it.
+    if (workspacePackagesMemo.get(key) === pending) workspacePackagesMemo.delete(key);
+    throw err;
+  });
+  workspacePackagesMemo.set(key, pending);
+  return pending;
+}
+
+/**
  * Collect the `package.json` of every ADMITTED workspace package.
  *
  * Directory-only BFS: the sole files opened are manifests and the workspace
  * declaration, so this is far cheaper than the C# namespace scan next door,
  * which reads every `.cs` file.
  */
-export async function loadNodeWorkspacePackages(
+async function loadNodeWorkspacePackagesUncached(
   repoRoot: string,
 ): Promise<NodeWorkspacePackages | null> {
   const scope = await loadWorkspaceScope(repoRoot);
@@ -353,12 +556,10 @@ export async function loadNodeWorkspacePackages(
     const { dir, depth } = queue[queueHead++]!;
     dirsScanned++;
 
-    let entries: import('fs').Dirent[];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    // Sorted: same-depth name collisions resolve first-wins, and readdir order
+    // is filesystem-dependent.
+    const entries = await readDirSorted(dir);
+    if (entries === null) continue;
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -421,9 +622,33 @@ async function readManifest(
       const value = parsed[field];
       if (typeof value === 'string') push(entries, rebase(value));
     }
+  }
+  // Entry points that name BUILD OUTPUT (`main: dist/x.js`, `exports: ./dist/…`)
+  // never match an indexed source file — the package's real source entry has to
+  // be discovered. keycloak's `@keycloak/keycloak-ui-shared` publishes
+  // `dist/keycloak-ui-shared.js` and keeps its entry in `vite.config.ts`
+  // (`build.lib.entry: 'src/main.ts'`); with only the declared fields it had 7
+  // resolved calls against ~845 raw. Tried in a fixed order, and ONLY appended
+  // (declared entries keep precedence): `source` / `publishConfig.source`, the
+  // vite `lib.entry`, then `src/main` / `src/index`. More than one candidate
+  // that exists on disk is recorded as ambiguous rather than picked — a wrong
+  // entry binds every import of the package to the wrong file.
+  // A package whose `exports` map has no `"."` (only subpaths) refuses the bare
+  // specifier outright; discovery must not manufacture a `src/index` root for it.
+  const rootlessExports = declaresExports && rootExports.length === 0;
+  const discovered = rootlessExports
+    ? { entries: [], ambiguous: [], allowConventional: false }
+    : await discoverSourceEntries(parsed, dir, repoRoot);
+  for (const entry of discovered.entries) push(entries, entry);
+  if (!declaresExports && discovered.allowConventional) {
     for (const conventional of ['src/index', 'index', 'lib/index']) {
       push(entries, joinRepoPath(packageDir, conventional));
     }
+  }
+  if (discovered.ambiguous.length > 0) {
+    logger.warn(
+      `[node] package ${name}: ${discovered.ambiguous.length} candidate source entries (${discovered.ambiguous.join(', ')}) — none adopted; declare \`source\` or a single lib entry`,
+    );
   }
 
   const subpathImports = new Map<string, readonly string[]>();
@@ -506,6 +731,195 @@ function collectImports(
   for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
     collectImports(value, out, rebase, key.startsWith('#') ? key : currentKey);
   }
+}
+
+/**
+ * Does a declared entry point at build output rather than source? Output
+ * directories and minified bundles. A plain `.js` is NOT build output on its
+ * own — `main: "src/index.js"` / `index.js` is a JavaScript package's source,
+ * and treating every `.js` as output ran discovery for essentially every CJS
+ * package and could adopt a `src/main` beside the real entry.
+ */
+function looksLikeBuildOutput(entry: string): boolean {
+  return /(^|\/)(dist|build|lib|out|esm|cjs|umd)\//.test(entry) || /\.min\.[cm]?js$/.test(entry);
+}
+
+function declaredRootExportStrings(exportsRoot: unknown): string[] {
+  if (typeof exportsRoot === 'string') return [exportsRoot];
+  if (exportsRoot === null || typeof exportsRoot !== 'object') return [];
+  const dot = (exportsRoot as Record<string, unknown>)['.'];
+  if (typeof dot === 'string') return [dot];
+  if (dot === null || typeof dot !== 'object') return [];
+  return Object.values(dot).filter((v): v is string => typeof v === 'string');
+}
+
+async function existingStems(repoRoot: string, stems: readonly string[]): Promise<string[]> {
+  const present = await Promise.all(stems.map((stem) => stemExists(repoRoot, stem)));
+  const existing: string[] = [];
+  for (let i = 0; i < stems.length; i++) {
+    if (present[i]) push(existing, stems[i]!);
+  }
+  return existing;
+}
+
+async function discoverSourceEntries(
+  parsed: Record<string, unknown>,
+  dir: string,
+  repoRoot: string,
+): Promise<{ entries: string[]; ambiguous: string[]; allowConventional: boolean }> {
+  const packageDir = repoRelativeDir(repoRoot, dir);
+  const rebase = (raw: string): string => joinRepoPath(packageDir, stripEntryPrefixes(raw));
+  const declared: string[] = declaredRootExportStrings(parsed.exports);
+  for (const field of ['module', 'main']) {
+    const value = parsed[field];
+    if (typeof value === 'string') declared.push(value);
+  }
+  // Only when every declared entry is build output (or nothing is declared and
+  // the conventional stems are absent) does discovery run at all.
+  if (declared.length > 0 && !declared.every(looksLikeBuildOutput))
+    return { entries: [], ambiguous: [], allowConventional: true };
+
+  const candidates: string[] = [];
+  const source = parsed.source;
+  if (typeof source === 'string') candidates.push(rebase(source));
+  const publishConfig = parsed.publishConfig;
+  if (publishConfig !== null && typeof publishConfig === 'object') {
+    const ps = (publishConfig as Record<string, unknown>).source;
+    if (typeof ps === 'string') candidates.push(rebase(ps));
+  }
+  let hasViteConfig = false;
+  for (const cfg of VITE_CONFIG_FILES) {
+    let text: string;
+    try {
+      text = await fs.readFile(path.join(dir, cfg), 'utf-8');
+    } catch (err) {
+      if (isMissingPath(err)) continue;
+      // Present but unreadable: Vite still selected this filename.
+      hasViteConfig = true;
+      break;
+    }
+    hasViteConfig = true;
+    try {
+      const entry = await staticViteEntry(text);
+      if (entry !== null) push(candidates, rebase(entry));
+    } catch {
+      // Parse/load failure is not a missing file — do not fall through to a leftover sibling.
+    }
+    break;
+  }
+  let existing = await existingStems(repoRoot, candidates);
+  // A config we cannot establish is not evidence for a conventional entry.
+  if (existing.length === 0 && !hasViteConfig) {
+    existing = await existingStems(
+      repoRoot,
+      ['src/main', 'src/index'].map((conventional) => joinRepoPath(packageDir, conventional)),
+    );
+  }
+  const allowConventional = !hasViteConfig && candidates.length === 0;
+  if (existing.length > 1) return { entries: [], ambiguous: existing, allowConventional };
+  return { entries: existing, ambiguous: [], allowConventional };
+}
+
+/** Read a literal exported build.lib.entry without evaluating repository code. */
+async function staticViteEntry(text: string): Promise<string | null> {
+  // Most manifests need no Vite discovery. Keep native grammars off that path.
+  const [{ default: TreeSitter }, { default: grammar }, { parseSourceSafe }] = await Promise.all([
+    import('tree-sitter'),
+    import('tree-sitter-typescript'),
+    import('../../tree-sitter/safe-parse.js'),
+  ]);
+  const parser = new TreeSitter();
+  parser.setLanguage(grammar.typescript);
+  const tree = parseSourceSafe(parser, text);
+  if (tree.rootNode.hasError) return null;
+  const exports = tree.rootNode.namedChildren.filter(
+    (node) => node.type === 'export_statement' && node.children.some((c) => c.type === 'default'),
+  );
+  if (exports.length !== 1) return null;
+  let config = unwrapViteDefineConfig(tree, exports[0]!.childForFieldName('value'));
+  if (config === null) return null;
+  for (const key of ['build', 'lib', 'entry']) config = staticObjectProperty(config, key);
+  return staticStringValue(config);
+}
+
+/** Unwrap `defineConfig({...})` from Vite; refuse local or re-exported helpers. */
+function unwrapViteDefineConfig(
+  tree: { rootNode: Parser.SyntaxNode },
+  config: Parser.SyntaxNode | null,
+): Parser.SyntaxNode | null {
+  if (config?.type !== 'call_expression') return config;
+  if (config.childForFieldName('function')?.text !== 'defineConfig') return null;
+  // A locally defined helper need not preserve its argument like Vite does.
+  if (
+    tree.rootNode
+      .descendantsOfType(['function_declaration', 'variable_declarator'])
+      .some((node) => node.childForFieldName('name')?.text === 'defineConfig')
+  )
+    return null;
+  for (const statement of tree.rootNode.namedChildren) {
+    if (statement.type !== 'import_statement') continue;
+    if (!statement.descendantsOfType('identifier').some((n) => n.text === 'defineConfig')) continue;
+    if (staticStringValue(statement.childForFieldName('source')) !== 'vite') return null;
+    const identityImport = statement.descendantsOfType('import_specifier').some((specifier) => {
+      const imported = specifier.childForFieldName('name')?.text;
+      const local = specifier.childForFieldName('alias')?.text ?? imported;
+      return imported === 'defineConfig' && local === 'defineConfig';
+    });
+    if (!identityImport) return null;
+  }
+  const args = config
+    .childForFieldName('arguments')
+    ?.namedChildren.filter((n) => n.type !== 'comment');
+  if (args?.length !== 1) return null;
+  return args[0]!;
+}
+
+function staticStringValue(node: Parser.SyntaxNode | null): string | null {
+  if (node?.type !== 'string' || node.namedChildren.some((n) => n.type === 'escape_sequence'))
+    return null;
+  return node.text.slice(1, -1);
+}
+
+/** Reject computed keys, spreads and duplicate properties that could override a value. */
+function staticObjectProperty(
+  node: Parser.SyntaxNode | null,
+  key: string,
+): Parser.SyntaxNode | null {
+  if (node?.type !== 'object') return null;
+  let value: Parser.SyntaxNode | null = null;
+  for (const member of node.namedChildren) {
+    if (member.type === 'comment') continue;
+    if (member.type !== 'pair') return null;
+    const name = member.childForFieldName('key');
+    if (name?.type !== 'property_identifier' && name?.type !== 'string') return null;
+    if (name.type === 'string') {
+      const property = staticStringValue(name);
+      if (property === null) return null;
+      if (property !== key) continue;
+    } else if (name.text !== key) {
+      continue;
+    }
+    if (value !== null) return null;
+    value = member.childForFieldName('value');
+  }
+  return value;
+}
+
+/** A repo-relative stem exists as a source file (with any TS/JS extension). */
+// The root is threaded explicitly: a module-level "current root" clobbered
+// under two concurrent scans and turned an ambiguity refusal into a confident
+// wrong entry (the second repo's root made one candidate "not exist").
+async function stemExists(repoRoot: string, stem: string): Promise<boolean> {
+  const abs = path.join(repoRoot, stem);
+  for (const ext of ['', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']) {
+    try {
+      const st = await fs.stat(abs + ext);
+      if (st.isFile()) return true;
+    } catch {
+      /* try next */
+    }
+  }
+  return false;
 }
 
 /** `"./src/index.ts"` -> `"src/index"`; leaves an extension-less path alone. */

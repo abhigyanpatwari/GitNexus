@@ -759,14 +759,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // USES edge, `callableValueReferenceBoundaries` measures a real zero, and
 // `impact` on a registered accessor republishes `epistemic: "exact"` — the exact
 // #3399 defect this change exists to close, silently un-fixed.
-//
-// 94-97 went to #3179 (Objective-C), which has since merged; 98 is the next
-// value above it. Re-checked against origin/main and every open PR touching
-// this file at merge time, which is the rule the paragraphs above were written
-// by PRs that each checked only once: main is at 97, and the remaining open
-// claims (#3190 at 94, #2840 at 71, #1616 at 2) all sit below it and must
-// re-bump themselves.
-const SCHEMA_BUMP = 98;
+// v99: ParsedImport retains declaredAtScope and export evidence changes in
+// #3190. Old durable ParsedFiles lack the facts needed for scoped binding;
+// invalidate both stores so warm indexing actually applies the correction.
+// origin/main took 98 for #3219; 99 is the next free value.
+const SCHEMA_BUMP = 99;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
