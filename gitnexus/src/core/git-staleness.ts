@@ -8,6 +8,11 @@ import { promisify } from 'node:util';
 import path from 'path';
 import { readRegistry, type RegistryEntry, type CwdMatch } from '../storage/repo-manager.js';
 import { findGitRootByDotGit, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
+import type { StalenessInfo } from './staleness-status.js';
+
+// The status/payload types and helpers live in the pure `staleness-status.ts`
+// (#3256); the types are re-exported here for existing importers.
+export type { StalenessInfo, StalenessStatus } from './staleness-status.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -18,16 +23,65 @@ const execFileAsync = promisify(execFile);
  */
 const STALENESS_TIMEOUT_MS = 5_000;
 
-export interface StalenessInfo {
-  isStale: boolean;
-  commitsBehind: number;
-  hint?: string;
-}
+const behindHint = (n: number): string =>
+  `⚠️ Index is ${n} commit${n > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`;
+
+const DIVERGED_HINT =
+  "⚠️ Index was built from a commit that is no longer in this clone's history, and HEAD has moved on. Run analyze tool to update.";
+
+const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
+
+const fromCount = (commitsBehind: number): StalenessInfo =>
+  commitsBehind > 0
+    ? { isStale: true, commitsBehind, hint: behindHint(commitsBehind), status: 'behind' }
+    : { isStale: false, commitsBehind: 0, status: 'current' };
+
+/**
+ * `rev-list` could not answer. Separate "HEAD has moved off the indexed commit"
+ * from "cannot tell" by asking for HEAD alone, which needs no history walk. The
+ * historical fail-open values are kept either way; only `status` differs.
+ */
+const fromHead = (head: string | null, lastCommit: string): StalenessInfo => {
+  if (!head) return unknown();
+  if (head === lastCommit) return { isStale: false, commitsBehind: 0, status: 'current' };
+  return { isStale: false, commitsBehind: 0, hint: DIVERGED_HINT, status: 'diverged' };
+};
+
+const readHeadSync = (repoPath: string): string | null => {
+  try {
+    return (
+      execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      }).trim() || null
+    );
+  } catch {
+    return null;
+  }
+};
+
+const readHeadAsync = async (repoPath: string): Promise<string | null> => {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      windowsHide: true,
+      timeout: STALENESS_TIMEOUT_MS,
+    });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+};
 
 /**
  * Check how many commits the index is behind HEAD (synchronous; uses git CLI).
  */
 export function checkStaleness(repoPath: string, lastCommit: string): StalenessInfo {
+  // No recorded commit is not "at HEAD": there is nothing to measure against.
+  if (!lastCommit) return unknown();
   try {
     const result = execFileSync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
       cwd: repoPath,
@@ -36,19 +90,9 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
       windowsHide: true,
     }).trim();
 
-    const commitsBehind = parseInt(result, 10) || 0;
-
-    if (commitsBehind > 0) {
-      return {
-        isStale: true,
-        commitsBehind,
-        hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`,
-      };
-    }
-
-    return { isStale: false, commitsBehind: 0 };
+    return fromCount(parseInt(result, 10) || 0);
   } catch {
-    return { isStale: false, commitsBehind: 0 };
+    return fromHead(readHeadSync(repoPath), lastCommit);
   }
 }
 
@@ -61,6 +105,7 @@ export async function checkStalenessAsync(
   repoPath: string,
   lastCommit: string,
 ): Promise<StalenessInfo> {
+  if (!lastCommit) return unknown();
   try {
     // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
     // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
@@ -73,24 +118,17 @@ export async function checkStalenessAsync(
       // A working tree on a disconnected network mount or behind a stuck lock
       // does exactly that, and `/api/repos` fans this out once per registered
       // repo, so one unreachable mount could hold the whole listing open
-      // (#3232 review). The timeout kills the child and rejects, which routes
-      // a hang into the same fail-closed "not stale" answer as a bad SHA.
+      // (#3232 review). The timeout kills the child and rejects, and the catch
+      // below reports it as `unknown` — still the fail-closed `isStale: false`.
       timeout: STALENESS_TIMEOUT_MS,
     });
 
-    const commitsBehind = parseInt(stdout.trim(), 10) || 0;
-
-    if (commitsBehind > 0) {
-      return {
-        isStale: true,
-        commitsBehind,
-        hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`,
-      };
-    }
-
-    return { isStale: false, commitsBehind: 0 };
-  } catch {
-    return { isStale: false, commitsBehind: 0 };
+    return fromCount(parseInt(stdout.trim(), 10) || 0);
+  } catch (err) {
+    // A rev-list that timed out means the working tree is not answering. Asking
+    // it again for HEAD would only double the bound #3232 put on a hung mount.
+    if ((err as { killed?: boolean }).killed) return unknown();
+    return fromHead(await readHeadAsync(repoPath), lastCommit);
   }
 }
 

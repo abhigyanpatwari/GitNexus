@@ -98,11 +98,12 @@ import {
   isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
+import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import {
-  checkStalenessAsync,
-  checkCwdMatch,
+  stalenessPayload,
   type StalenessInfo,
-} from '../../core/git-staleness.js';
+  type StalenessPayload,
+} from '../../core/staleness-status.js';
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
@@ -1333,7 +1334,7 @@ export interface RepoListing {
   lastCommit: string;
   remoteUrl?: string;
   stats?: any;
-  staleness?: { commitsBehind: number; hint?: string };
+  staleness?: StalenessPayload;
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
@@ -1423,21 +1424,21 @@ function canCarryStaleness(result: unknown): result is Record<string, unknown> {
 
 /**
  * #2655: attach a non-blocking `staleness` signal to a tool result when the
- * index is behind HEAD, mirroring the `list_repos` `{commitsBehind, hint}`
- * shape. Only ever ADDS a field to a carryable object result (see
+ * index is not at HEAD, in the same {@link stalenessPayload} shape `list_repos`
+ * returns. Only ever ADDS a field to a carryable object result (see
  * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ *
+ * `diverged` is attached: it is a positive finding that the index is not at
+ * HEAD, only uncountable. `unknown` is not — these are the hot read tools, and a
+ * `--skip-git` folder has no history to measure, so it would ride on every
+ * response as noise rather than signal (#3256).
  */
-export function attachToolStaleness(
-  result: unknown,
-  staleness: StalenessInfo | undefined,
-): unknown {
-  if (!staleness?.isStale || !canCarryStaleness(result)) {
+export function attachToolStaleness(result: unknown, info: StalenessInfo | undefined): unknown {
+  const staleness = stalenessPayload(info);
+  if (!staleness || !canCarryStaleness(result)) {
     return result;
   }
-  return {
-    ...result,
-    staleness: { commitsBehind: staleness.commitsBehind, hint: staleness.hint },
-  };
+  return { ...result, staleness };
 }
 
 /** tri-review Residual-2: see `LocalBackend.lastObservedPoolState`'s doc comment. */
@@ -2463,9 +2464,7 @@ export class LocalBackend {
         lastCommit: h.lastCommit,
         remoteUrl: h.remoteUrl,
         stats: h.stats,
-        staleness: stale.isStale
-          ? { commitsBehind: stale.commitsBehind, hint: stale.hint }
-          : undefined,
+        staleness: stalenessPayload(stale, { includeUnknown: true }),
         siblings:
           siblings.length > 0
             ? siblings.map((s) => ({
@@ -2619,9 +2618,9 @@ export class LocalBackend {
    * one `git rev-list` per index per TTL window; the resolved value is cached
    * for TOOL_STALENESS_TTL_MS. Keyed by lbugPath so flat and branch handles
    * (same repoPath, different lastCommit) don't share an entry. Non-blocking by
-   * construction: `checkStalenessAsync` swallows git failures to
-   * `{ isStale: false }`, so a git error never fails the tool — it just omits
-   * the `staleness` field.
+   * construction: `checkStalenessAsync` swallows git failures into a `status`
+   * (`diverged` or `unknown`) with `isStale: false`, so a git error never fails
+   * the tool — at most it attaches a `diverged` staleness field.
    */
   private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
     const now = Date.now();

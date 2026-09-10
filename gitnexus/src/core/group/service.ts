@@ -6,6 +6,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
+import { stalenessStatus, type StalenessInfo, type StalenessStatus } from '../staleness-status.js';
 import {
   canonicalizePath,
   loadMeta,
@@ -843,6 +844,12 @@ export class GroupService {
         /** Set only when `unresolvable`; says what could not be resolved. */
         unresolvableReason?: string;
         commitsBehind?: number;
+        /**
+         * What the staleness check could establish (#3256). Additive:
+         * `indexStale` and `commitsBehind` keep their meaning. `unknown` when no
+         * commit was recorded — the case `commitsBehind: -1` has always meant.
+         */
+        status?: StalenessStatus;
       }
     > = {};
 
@@ -872,9 +879,9 @@ export class GroupService {
         const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
           (await loadMeta(repoObj.storagePath)) ?? {};
 
-        const staleness = meta.lastCommit
+        const staleness: StalenessInfo = meta.lastCommit
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)
-          : { isStale: true, commitsBehind: -1 };
+          : { isStale: true, commitsBehind: -1, status: 'unknown' };
 
         const snapshot = registry?.repoSnapshots?.[repoPath];
         const contractsStale =
@@ -886,6 +893,7 @@ export class GroupService {
           missing: false,
           unresolvable: false,
           commitsBehind: staleness.commitsBehind,
+          status: stalenessStatus(staleness),
         };
       } catch (err) {
         // The registry read succeeded, so its answer about this row is
