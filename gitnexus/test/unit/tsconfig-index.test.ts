@@ -231,6 +231,24 @@ describe('parsing', () => {
     expect(scope?.paths[0]?.targets).toEqual(['src/*', 'generated/*']);
   });
 
+  it('encodes a repo-root target as the bare `*`', async () => {
+    // `"*": ["./*"]` resolves to the repo root itself, so the repo-relative
+    // prefix is empty and the suffix is the whole target. `/*` substitutes to
+    // `/lib/date`, which `resolveFile` never matches — see the unit assertions
+    // in `tsconfig-rebase-target.test.ts` for both path flavours.
+    const root = repo({
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { baseUrl: '.', paths: { '*': ['./*'], '@/*': ['./src/*'] } },
+      }),
+    });
+
+    const scope = tsconfigFor(await loadTsconfigIndex(root), 'src/a.ts');
+
+    expect(scope?.paths.find((mapping) => mapping.pattern === '*')?.targets).toEqual(['*']);
+    // The common alias is unaffected — only the empty-prefix case changes.
+    expect(scope?.paths.find((mapping) => mapping.pattern === '@/*')?.targets).toEqual(['src/*']);
+  });
+
   it('returns null for a repo with no config at all', async () => {
     expect(await loadTsconfigIndex(repo({ 'src/a.ts': '' }))).toBeNull();
   });

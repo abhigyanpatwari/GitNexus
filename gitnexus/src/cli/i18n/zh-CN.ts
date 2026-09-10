@@ -119,8 +119,10 @@ export const zhCN = {
   'doctor.labels.onnx': 'ONNX：',
   'doctor.labels.graphStore': '图存储：',
   'doctor.labels.fullTextSearch': '全文搜索：',
-  'doctor.labels.vectorIndex': '向量索引：',
-  'doctor.labels.semanticMode': '语义模式：',
+  'doctor.labels.vectorIndex': 'VECTOR 扩展：',
+  'doctor.labels.semanticMode': '语义支持：',
+  'doctor.vectorCapability.indexUnverified': '支持向量索引（未检查仓库索引）',
+  'doctor.vectorCapability.exactScanOnly': '仅精确扫描（VECTOR 扩展不可用）',
   'doctor.labels.exactScanLimit': '精确扫描上限：',
   'doctor.labels.note': '说明：',
   'doctor.labels.backend': '后端：',
@@ -162,6 +164,8 @@ export const zhCN = {
   'error.watch.ambiguous':
     '`gitnexus watch` 含义不明确。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
   'help.command.analyze.description': '索引仓库（完整分析）',
+  'help.command.embeddings.sync.description':
+    '向现有索引添加缺失的嵌入，并定期保存检查点以安全续跑',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
   'help.command.mcp.description':
@@ -327,5 +331,5 @@ export const zhCN = {
   'help.identityCache.environment':
     '\n分析器身份缓存：\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    由操作员明确信任的持久缓存，用于跨进程快速查询状态。目录必须预先存在、位于 GitNexus 包/构建根目录之外，且路径中不得包含符号链接或 junction。缺少 POSIX 所有权 API 的平台默认保持故障关闭。',
   'help.analyze.environment':
-    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。MCP 默认 0.6，其他路径默认 0.5。\n\n当参数和对应环境变量同时提供时，参数优先。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
+    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  将单次 HTTP 嵌入超时纳入 GITNEXUS_EMBEDDING_MAX_ATTEMPTS 重试（默认关闭，超时仍为终止错误）。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。MCP 默认 0.6，其他路径默认 0.5。\n\n当参数和对应环境变量同时提供时，参数优先。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
 } satisfies EnglishMessages;

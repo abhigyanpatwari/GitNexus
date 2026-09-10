@@ -65,6 +65,8 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
+import { checkStalenessAsync } from '../core/git-staleness.js';
+import { projectRepoDetail, projectRepoListEntry, resolveLastCommit } from './repo-projection.js';
 // Shared with the CLI's `--branch` (via the analyze-config wrapper) so both
 // entry points accept the same refs. Imported from core — not cli/ — so
 // createServer does not close a cycle with cli/serve.ts.
@@ -1000,18 +1002,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // List all registered repos
-  app.get('/api/repos', async (_req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting) because this route now spawns
+  // one `git rev-list` per registered repo to answer freshness: an unauthenticated
+  // GET that costs N subprocesses is worth the same 60 rpm/IP ceiling `/api/repo`
+  // already carries. Web callers hit this on connect/switch, never in a loop.
+  app.get('/api/repos', createRouteLimiter(), async (_req, res) => {
     try {
       const repos = await listRegisteredRepos();
+      // Checked in parallel, for the reason `list_repos` already does it that
+      // way: each check spawns an async `git rev-list`, and the sequential
+      // variant took ~50s across 200 repos (#1363). Projecting inside the map
+      // keeps the entry and its own check together — an index-matched second
+      // array is the shape that silently mispairs them if either is reordered.
       res.json(
-        repos.map((r) => ({
-          name: r.name,
-          path: r.path,
-          repoPath: r.path,
-          indexedAt: r.indexedAt,
-          lastCommit: r.lastCommit,
-          stats: r.stats,
-        })),
+        await Promise.all(
+          repos.map(async (r) =>
+            projectRepoListEntry(r, await checkStalenessAsync(r.path, r.lastCommit)),
+          ),
+        ),
       );
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to list repos' });
@@ -1038,12 +1046,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const meta = await loadMeta(entry.storagePath);
-      res.json({
-        name: entry.name,
-        repoPath: entry.path,
-        indexedAt: meta?.indexedAt ?? entry.indexedAt,
-        stats: meta?.stats ?? entry.stats ?? {},
-      });
+      const staleness = await checkStalenessAsync(entry.path, resolveLastCommit(entry, meta));
+      res.json(projectRepoDetail(entry, meta, staleness));
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }

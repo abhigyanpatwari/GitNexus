@@ -92,6 +92,134 @@ function unquote(text: string): string | null {
   return value.includes('${') ? null : value;
 }
 
+const SIMPLE_TEMPLATE_ESCAPES: Record<string, string> = {
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+  '0': '\0',
+  "'": "'",
+  '"': '"',
+  '\\': '\\',
+  '`': '`',
+};
+
+/** Graph Method `startLine` is the 0-based wrapper row (see line-base.ts). */
+function providerMemberStartLine(member: Parser.SyntaxNode): number {
+  // Class-field arrows are `@declaration.property`; parse-worker falls back to
+  // the `public_field_definition` wrapper (decorator row when it is a child),
+  // not the initializer. Do not probe the `value` child.
+  return member.startPosition.row;
+}
+
+/** tree-sitter `escape_sequence.text` is the source spelling (`\\n`), not the JS value. */
+function decodeEscapeSequence(text: string): string | null {
+  if (!text.startsWith('\\') || text.length < 2) return null;
+  const escaped = text.slice(1);
+  // Tagged-template cooked value: LineContinuation is empty; `\8`/`\9` and
+  // LegacyOctalEscapeSequence (`\1`–`\7`, `\00`…) make cooked undefined.
+  if (/^[\n\r\u2028\u2029]$/.test(escaped) || escaped === '\r\n') return '';
+  if (/^[1-9]$/.test(escaped) || /^[0-7]{2,3}$/.test(escaped)) return null;
+  if (escaped.length === 1) return SIMPLE_TEMPLATE_ESCAPES[escaped] ?? escaped;
+  if (escaped[0] === 'x' && /^[0-9A-Fa-f]{2}$/.test(escaped.slice(1))) {
+    return String.fromCharCode(Number.parseInt(escaped.slice(1), 16));
+  }
+  if (escaped.startsWith('u{') && escaped.endsWith('}')) {
+    const hex = escaped.slice(2, -1);
+    if (!/^[0-9A-Fa-f]{1,6}$/.test(hex)) return null;
+    const codePoint = Number.parseInt(hex, 16);
+    if (codePoint > 0x10ffff) return null;
+    return String.fromCodePoint(codePoint);
+  }
+  if (escaped[0] === 'u' && /^[0-9A-Fa-f]{4}$/.test(escaped.slice(1))) {
+    return String.fromCharCode(Number.parseInt(escaped.slice(1), 16));
+  }
+  return null;
+}
+
+function substitutionIdentifier(substitution: Parser.SyntaxNode): string | null {
+  if (substitution.namedChildren.length !== 1) return null;
+  const expr = unwrapExpression(substitution.namedChildren[0]);
+  return expr.type === 'identifier' ? expr.text : null;
+}
+
+function isGraphqlTagCall(call: Parser.SyntaxNode): boolean {
+  const callee = call.childForFieldName('function');
+  return callee?.type === 'identifier' && callee.text === 'gql';
+}
+
+function pascalCaseGraphqlName(name: string): string {
+  return name
+    .split(/[^A-Za-z0-9]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => `${part[0]!.toUpperCase()}${part.slice(1)}`)
+    .join('');
+}
+
+type InterpolationCache = Map<string, string | null>;
+
+function uniqueStaticSource(
+  name: string,
+  declarators: GeneratedSymbolIndex,
+  resolving: Set<string>,
+  cache: InterpolationCache,
+): string | null {
+  if (cache.has(name)) return cache.get(name) ?? null;
+  if (resolving.has(name) || resolving.size >= MAX_GRAPHQL_TRAVERSAL_DEPTH) return null;
+  const values = declarators.get(name) ?? [];
+  if (values.length === 0) {
+    cache.set(name, null);
+    return null;
+  }
+  resolving.add(name);
+  const sources = new Set<string>();
+  for (const value of values) {
+    const source = staticGraphqlSource(value, declarators, resolving, cache);
+    // A dynamic or unprovable sibling makes the name ambiguous — do not pick
+    // the one static spelling and ignore the rest.
+    if (source === null) {
+      resolving.delete(name);
+      cache.set(name, null);
+      return null;
+    }
+    sources.add(source);
+  }
+  resolving.delete(name);
+  const unique = sources.size === 1 ? [...sources][0]! : null;
+  cache.set(name, unique);
+  return unique;
+}
+
+function interpolatedTemplateSource(
+  template: Parser.SyntaxNode,
+  declarators: GeneratedSymbolIndex,
+  resolving: Set<string>,
+  cache: InterpolationCache,
+): string | null {
+  let out = '';
+  for (const child of template.namedChildren) {
+    if (child.type === 'string_fragment') {
+      out += child.text;
+    } else if (child.type === 'escape_sequence') {
+      const decoded = decodeEscapeSequence(child.text);
+      if (decoded === null) return null;
+      out += decoded;
+    } else if (child.type === 'template_substitution') {
+      const name = substitutionIdentifier(child);
+      if (!name) return null;
+      const inlined = uniqueStaticSource(name, declarators, resolving, cache);
+      if (inlined === null) return null;
+      out += inlined;
+    } else {
+      return null;
+    }
+    if (out.length > MAX_GRAPHQL_TOKENS) return null;
+  }
+  return out;
+}
+
 function unwrapExpression(node: Parser.SyntaxNode): Parser.SyntaxNode {
   let current = node;
   while (
@@ -214,7 +342,12 @@ function parsedDocumentProof(
   return false;
 }
 
-function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
+function staticGraphqlSource(
+  initializer: Parser.SyntaxNode,
+  declarators?: GeneratedSymbolIndex,
+  resolving: Set<string> = new Set(),
+  cache: InterpolationCache = new Map(),
+): string | null {
   const value = unwrapExpression(initializer);
   if (value.type === 'string') {
     if (value.text.startsWith('"')) {
@@ -226,11 +359,24 @@ function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
     }
     return unquote(value.text);
   }
-  if (value.type === 'template_string') return unquote(value.text);
+  if (value.type === 'template_string') {
+    const hasSubstitution = value.namedChildren.some(
+      (child) => child.type === 'template_substitution',
+    );
+    if (!hasSubstitution) return unquote(value.text);
+    return declarators ? interpolatedTemplateSource(value, declarators, resolving, cache) : null;
+  }
 
   if (value.type === 'call_expression') {
     const template = value.namedChildren.find((child) => child.type === 'template_string');
-    return template ? unquote(template.text) : null;
+    if (!template) return null;
+    const hasSubstitution = template.namedChildren.some(
+      (child) => child.type === 'template_substitution',
+    );
+    // Interpolated reconstruction is the cooked template. Only `gql` is
+    // treated as preserving that source; String.raw / unknown tags stay fail-closed.
+    if (hasSubstitution && !isGraphqlTagCall(value)) return null;
+    return staticGraphqlSource(template, declarators, resolving, cache);
   }
 
   if (value.type !== 'new_expression') return null;
@@ -238,7 +384,7 @@ function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
   if (!constructor || !constructor.text.endsWith('TypedDocumentString')) return null;
   const args = value.childForFieldName('arguments');
   const first = args?.namedChildren[0];
-  return first ? staticGraphqlSource(first) : null;
+  return first ? staticGraphqlSource(first, declarators, resolving, cache) : null;
 }
 
 export function hasGeneratedDocumentProof(
@@ -246,9 +392,10 @@ export function hasGeneratedDocumentProof(
   operationKind: GraphqlOperationKind,
   operationName: string,
   requiredFields: readonly string[],
+  declarators?: GeneratedSymbolIndex,
 ): boolean {
   if (!withinGeneratedAstBudget(initializer)) return false;
-  const staticSource = staticGraphqlSource(initializer);
+  const staticSource = staticGraphqlSource(initializer, declarators);
   if (staticSource !== null) {
     return parsedDocumentProof(staticSource, operationKind, operationName, requiredFields);
   }
@@ -430,7 +577,10 @@ function rootFields(
 
 function generatedCandidates(operation: OperationDefinitionNode): string[] {
   const name = operation.name?.value;
-  return name ? [`${name}Document`] : [];
+  if (!name) return [];
+  const exact = `${name}Document`;
+  const pascal = `${pascalCaseGraphqlName(name)}Document`;
+  return exact === pascal ? [exact] : [exact, pascal];
 }
 
 async function generatedDocumentMatches(
@@ -450,7 +600,13 @@ async function generatedDocumentMatches(
   const index = await pendingIndex;
   const values = index?.get(symbol.name) ?? [];
   return values.some((value) =>
-    hasGeneratedDocumentProof(value, operationKind, operationName, requiredFields),
+    hasGeneratedDocumentProof(
+      value,
+      operationKind,
+      operationName,
+      requiredFields,
+      index ?? undefined,
+    ),
   );
 }
 
@@ -593,11 +749,7 @@ export class GraphqlExtractor implements ContractExtractor {
               await dbExecutor(RESOLVE_METHOD_QUERY, {
                 name: methodName,
                 filePath,
-                startLine:
-                  member.type === 'public_field_definition'
-                    ? (member.childForFieldName('value')?.startPosition.row ??
-                        member.startPosition.row) + 1
-                    : member.startPosition.row + 1,
+                startLine: providerMemberStartLine(member),
               }),
             );
             if (!symbol) continue;

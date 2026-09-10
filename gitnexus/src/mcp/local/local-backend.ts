@@ -36,13 +36,12 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  parseDiffHunks,
+  parseDiffHunksResult,
   coalesceHunksByPath,
   hunksOverlapRange,
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
-  type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import {
@@ -129,6 +128,7 @@ import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resol
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
+import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
@@ -328,6 +328,8 @@ export const VALID_NODE_LABELS = new Set([
   'Folder',
   'Function',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Method',
   'CodeElement',
@@ -709,6 +711,39 @@ export interface EpistemicCauses {
    * "nothing was undecided", and a re-index is what tells the two apart.
    */
   readonly undecidedSatisfaction: number;
+  /**
+   * Symbols that name this callable in VALUE position rather than calling it
+   * (#3399) — a registration table (`bridge.accessor(Element.getNamespaceUri,
+   * …)`), a callback argument, a function pointer stored in a field.
+   *
+   * Unit: SYMBOLS — distinct referrers, the same unit and the same reason as
+   * `dispatchBoundary`: the reference edge is per-site but the walk's question
+   * is "who else might reach this", and a referrer that names the callable
+   * twice is still one place the value escapes from.
+   *
+   * Kept separate from `dispatchBoundary` even though both describe dispatch
+   * the walk cannot follow. That slot counts implementations and
+   * interface-level consumers found by the heritage probe; these are neither,
+   * and folding them in would tell a consumer branching on the numbers that an
+   * interface boundary exists where there is none. The distinction is also the
+   * actionable one: a dispatch boundary is irreducible, whereas a callable
+   * value CAN often be followed once the language models the store/load that
+   * carries it.
+   *
+   * The reference itself IS modelled — that is what makes it countable. What is
+   * missing is the invocation through the value: it happens later, through a
+   * struct field, a registry lookup, or comptime reflection, and no CALLS edge
+   * connects the eventual call site back to this symbol.
+   *
+   * Zero when the property-dispatch pass DID synthesize that invocation
+   * (`x.<key>()` through a registered object-literal key): the walk followed
+   * the registration, so nothing was missed and the result stays `exact`.
+   *
+   * Also zero — WITH a boundary note — when the probe itself could not run.
+   * The note is the signal there; the count is not, which is why a reader must
+   * branch on `epistemic` first and read the causes as explanation.
+   */
+  readonly callableValueReferences: number;
 }
 
 function epistemicFrom(dropped: {
@@ -718,6 +753,7 @@ function epistemicFrom(dropped: {
   undecided: number;
   dispatch: number;
   scopeExtraction: number;
+  callableValueReferences: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -736,6 +772,7 @@ function epistemicFrom(dropped: {
             dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
+            callableValueReferences: dropped.callableValueReferences,
           },
         }
       : { epistemic: 'exact' }
@@ -752,6 +789,7 @@ function epistemicFrom(dropped: {
           dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
+          callableValueReferences: dropped.callableValueReferences,
         },
       };
 }
@@ -849,6 +887,153 @@ function undecidedSatisfactionBoundaries(
     }
   }
   return { notes, undecided };
+}
+
+/**
+ * Boundary evidence for callables named in VALUE position (#3399).
+ *
+ * `bridge.accessor(Element.getNamespaceUri, null, .{})`, `{ onClick: handler }`,
+ * `qsort(xs, n, sz, compareItems)` — each REGISTERS a function somewhere
+ * instead of calling it. The registration is modelled (`value-ref` → a USES
+ * edge, Kythe `ref` / Joern `METHOD_REF`); the invocation through the stored
+ * value is not, because it happens later through a struct field, a registry
+ * lookup or comptime reflection.
+ *
+ * That gap is precisely the first half of `tools.ts`'s definition of
+ * `lower-bound` — the walk provably missed callers — and it was previously
+ * reported as `exact`. (The second half, a probe that could not run, is what
+ * the failure branch below publishes; the contract states both because this
+ * function can produce either.) A
+ * public DOM accessor bound into a JS bridge table came back LOW/exact with two
+ * internal callers, which is worse than no answer: `lower-bound` invites the
+ * reader to look further, `exact` tells them not to bother.
+ *
+ * Counted as DISTINCT REFERRERS rather than sites: the question the count
+ * serves is "how many places does this value escape from", and a table that
+ * registers the same callable twice is still one table.
+ *
+ * NOT every value reference is a gap. Where the property-dispatch pass
+ * synthesized the invocation side, the walk followed it and the answer stays
+ * `exact` — see the second probe below.
+ *
+ * Three failure modes, three different answers, none of them silence:
+ *   - the query cannot run       → hedge, count 0 (a probe that did not answer
+ *                                  is not evidence of completeness);
+ *   - the query returns nothing  → no hedge (a real, measured zero);
+ *   - the reference was followed → no hedge (nothing was missed).
+ *
+ * The probe reads the edge's `reason`, which is why writer and reader share
+ * {@link VALUE_REF_EDGE_REASON}. Language-neutral by construction — every
+ * provider that emits a `value-ref` capture participates, and one that emits
+ * none simply gets no rows.
+ */
+async function callableValueReferenceBoundaries(
+  lbugPath: string,
+  symId: string,
+): Promise<{ notes: string[]; referrers: number }> {
+  // `COUNT(DISTINCT …)`, not a capped row list. A `LIMIT n` here would make the
+  // published cause silently understate a target with more than n
+  // registrations — and this number is documented as "how many symbols", so a
+  // reader comparing its magnitude against `receiverTyping` would be comparing
+  // a truth to a ceiling. Aggregating in the database keeps the work bounded
+  // without capping the answer; scalar `sym.id` equality plus an implicit
+  // group-by is the shape `countByType` below already relies on.
+  //
+  // `null`, not `[]`, on failure: see below — an empty result set and an
+  // unanswerable query must not be the same value.
+  const rows = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'USES' AND r.reason = $reason
+     RETURN COUNT(DISTINCT other.id) AS cnt`,
+    { symId, reason: VALUE_REF_EDGE_REASON },
+  ).catch(() => null);
+
+  // A probe that could not run must never read as certainty — the same rule the
+  // `loadMeta` read above states, and the whole reason this function exists.
+  // Returning zero here would publish `exact` on the strength of a query that
+  // never answered.
+  if (rows === null) {
+    return {
+      referrers: 0,
+      notes: [
+        'The callable-value-reference probe could not be run against this index, so whether ' +
+          'this symbol is registered somewhere as a value is unknown. Treat the caller list as ' +
+          'incomplete until it can be re-checked.',
+      ],
+    };
+  }
+  const referrers = rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
+  if (!Number.isFinite(referrers) || referrers <= 0) return { notes: [], referrers: 0 };
+
+  // Registrations whose invocation side the analyzer ALREADY synthesized are
+  // not a gap. `emitPropertyDispatchCalls` sweep 2 connects `x.<key>()` member
+  // calls to every function registered under `<key>` and stamps those edges
+  // `property-dispatch`; where that happened, the walk did not "provably miss"
+  // the caller and `lower-bound` would be noise sprayed over an answer the
+  // analyzer actually computed. Zig — the case this was built for — never sets
+  // a property key (no object-literal key to dispatch through), so it is never
+  // excluded here; the exclusion exists to keep TypeScript/JavaScript hook
+  // tables that ARE followed from being downgraded.
+  //
+  // SYMBOL-LEVEL, NOT PER-EDGE, and that is only sound because of an invariant
+  // that lives nowhere near this line. The graph does not record which
+  // registration produced which synthesized call, so if one symbol could carry
+  // both a followed and an unfollowed registration, this would zero the note
+  // over a gap the analyzer provably did not close — #3399 returning through a
+  // side door. Today no symbol can:
+  //
+  //   - sweep 2 synthesizes CALLS only for a registration whose site carried a
+  //     `propertyKey` (sweep 1 skips the index when it is undefined);
+  //   - every JS/TS `@reference.value-ref` rule also captures
+  //     `@reference.property-key` — both are object-literal shapes;
+  //   - no Zig `@reference.value-ref` rule captures one.
+  //
+  // So a dispatchable registration is always a JS/TS one, an undispatchable
+  // registration is always a Zig one, and the two never meet on one symbol.
+  // `test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day
+  // that stops holding — a JS/TS rule for a bare callback argument
+  // (`register(handler)`), a Zig rule that grows a key. When it does, the
+  // choice to make here is between (a) splitting the edge `reason` into
+  // dispatchable / undispatchable so this probe can count them apart, and
+  // (b) hedging any symbol with an undispatchable registration regardless of
+  // dispatch. (a) is precise and costs a graph-content change; (b) is cheap and
+  // over-hedges. What is NOT acceptable is leaving this as-is, because a signal
+  // that quietly stops firing is the defect this whole feature removes.
+  //
+  // Given the invariant, the residual today is only the coarseness of the
+  // exclusion within JS/TS, and hedging every property-value registration in
+  // every JS/TS codebase is worse: a signal that fires on everything stops
+  // carrying information, and the fan-out cap warning still sits behind it.
+  const dispatched = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'CALLS' AND r.reason = 'property-dispatch'
+     RETURN COUNT(r) AS cnt`,
+    { symId },
+  ).catch(() => null);
+  // Failure here is NOT a reason to skip the hedge: we already know a value
+  // reference exists, and being unable to prove it was followed leaves the
+  // conservative answer standing.
+  const dispatchedCount =
+    dispatched === null || dispatched.length === 0
+      ? 0
+      : Number((dispatched[0] as any).cnt ?? (dispatched[0] as any)[0] ?? 0);
+  if (Number.isFinite(dispatchedCount) && dispatchedCount > 0) {
+    return { notes: [], referrers: 0 };
+  }
+
+  const one = referrers === 1;
+  return {
+    referrers,
+    notes: [
+      `${referrers} ${one ? 'symbol references' : 'symbols reference'} this callable as a VALUE ` +
+        `rather than calling it (a registration table, a callback argument, a stored function ` +
+        `pointer). The reference is recorded, but the call made THROUGH that value is not: it is ` +
+        `dispatched later from wherever the value is stored. Callers reached that way are absent ` +
+        `from this result — actual impact may be higher.`,
+    ],
+  };
 }
 
 interface RepoHandle {
@@ -992,6 +1177,12 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
   // not `--default-prefix`, which needs git >= 2.42. `--no-ext-diff` stops a
   // configured external diff driver from replacing the unified output we parse.
   const args = [
+    // Before the subcommand: default core.quotePath C-quotes non-ASCII so
+    // `diff --git` / `+++` tokens no longer match the unquoted `a/` `b/` forms
+    // the parser also accepts. The parser still decodes quoted tokens; this
+    // pin keeps production git from emitting them.
+    '-c',
+    'core.quotePath=false',
     'diff',
     '--ignore-cr-at-eol',
     '--no-ext-diff',
@@ -4249,7 +4440,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
@@ -4404,7 +4596,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
@@ -5418,11 +5611,11 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput);
 
     if (fileDiffs.length === 0) {
-      // Git printed a diff but none of it parsed: the `+++ b/` headers were not
-      // where `parseDiffHunks` looks. That is a PARSE failure, not a clean tree,
+      // Git printed a diff but none of it parsed: no `diff --git` / `+++`
+      // file header was recognised. That is a PARSE failure, not a clean tree,
       // and the clean branch below would report it to the pre-commit gate as
       // `risk_level:'none'`, no `partial`, exit 0 — a false all-clear (#2915).
       const parseFailed = diffOutput.trim().length > 0;
@@ -5455,7 +5648,9 @@ export class LocalBackend {
     const changedSymbols = new Map<string, any>();
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
-    let queryDegraded = false;
+    // An unparsed `diff --git` is the same class: later hunks must not make
+    // the gate look complete.
+    let queryDegraded = unparsedGitHeaders > 0;
 
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
@@ -6994,6 +7189,19 @@ export class LocalBackend {
       direction === 'downstream'
         ? Promise.resolve(undefined)
         : queryConvexDispatchMetadata(repo.lbugPath, symId, symName, symType);
+    // #3399 — callables named in value position. Upstream only: the question
+    // "who can reach this symbol" is the one a registration makes unanswerable.
+    // A downstream walk asks what THIS symbol reaches, which a reference INTO
+    // it does not affect.
+    //
+    // Issued alongside the heritage probe rather than after it, and read into
+    // `droppedBoundaries` below, so it hedges even when that probe finds
+    // nothing AND when it throws — a value reference is an independent reason
+    // a count is short, exactly as the receiver drops above are.
+    const valueRefPromise =
+      direction === 'downstream'
+        ? Promise.resolve({ notes: [] as string[], referrers: 0 })
+        : callableValueReferenceBoundaries(repo.lbugPath, symId);
     const interfaceRowsPromise = executeParameterized(
       repo.lbugPath,
       `MATCH (x)-[r:CodeRelation]->(iface)
@@ -7014,12 +7222,14 @@ export class LocalBackend {
               : []),
           ]);
     const convexDispatch = await convexDispatchPromise;
+    const valueRefDrops = await valueRefPromise;
     const droppedBoundaries = {
       ...receiverDrops,
       notes: [
         ...receiverDrops.notes,
         ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
+        ...valueRefDrops.notes,
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
       undecided: undecidedDrops.undecided,
@@ -7028,6 +7238,7 @@ export class LocalBackend {
       // inventing one from the presence of a note.
       dispatch: 0,
       scopeExtraction: scopeExtractionDrops.files,
+      callableValueReferences: valueRefDrops.referrers,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -7119,6 +7330,7 @@ export class LocalBackend {
           dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
           undecidedSatisfaction: droppedBoundaries.undecided,
+          callableValueReferences: droppedBoundaries.callableValueReferences,
         },
       };
     } catch {

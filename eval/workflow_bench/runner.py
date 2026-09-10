@@ -1591,6 +1591,21 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "review_category_accuracy",
         "review_grounded_evidence",
     )
+    # NOTE: a skill-not-invoked row still contributes to these medians. That is
+    # a real measurement gap - an arm exists to measure a SKILL, and a cell
+    # where the skill never ran did not measure it - but the narrow fix is
+    # WORSE than the gap, so it is deliberately not applied here.
+    #
+    # Filtering those rows out of the quality metrics alone leaves valid_runs
+    # and excluded_runs counting them, so the promotion gate sees N clean runs
+    # while the median was taken over fewer. Because the dropped rows are
+    # systematically an arm's worst, that biases toward PROMOTING: measured on
+    # one real run at 0.9 plus two uninvoked rows at 0.0, the gate flipped from
+    # keep_incumbent to promote. The three verdict fields below compound it -
+    # they are all() reducers, so one uninvoked cell flips a whole arm.
+    # Closing this honestly needs a scored-run count and a paired-equality
+    # check in the gate itself: a promotion-semantics change, not an
+    # aggregation fix.
     if any("review_weighted_f1" in record for record in valid):
         for metric in review_metrics:
             values = [record[metric] for record in valid if record.get(metric) is not None]

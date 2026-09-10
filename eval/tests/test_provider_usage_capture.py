@@ -24,7 +24,7 @@ from workflow_bench.model_gateway import (
 )
 from workflow_bench.provider_usage import (
     ANTHROPIC,
-    OPENAI_RESPONSES,
+    LITELLM_NORMALIZED,
     USAGE_ENV_VARS,
     normalize_usage,
 )
@@ -49,11 +49,16 @@ def _openai_response(usage: dict) -> SimpleNamespace:
     )
 
 
+# The shape a callback actually receives: LiteLLM normalises usage into its own
+# Chat-Completions-style object before any logger sees it, so an OpenAI reply
+# arrives as prompt_tokens / prompt_tokens_details. Confirmed against a real
+# proxy in tests/test_mock_provider.py; a fixture in the wire shape would test
+# an object this code path never gets.
 NATIVE = {
-    "input_tokens": 48_000,
-    "input_tokens_details": {"cached_tokens": 44_000, "cache_write_tokens": 1_000},
-    "output_tokens": 900,
-    "output_tokens_details": {"reasoning_tokens": 640},
+    "prompt_tokens": 48_000,
+    "prompt_tokens_details": {"cached_tokens": 44_000, "cache_write_tokens": 1_000},
+    "completion_tokens": 900,
+    "completion_tokens_details": {"reasoning_tokens": 640},
 }
 
 
@@ -79,9 +84,9 @@ def test_native_openai_usage_survives_the_anthropic_translation(logged) -> None:
     event = logged(NATIVE)
     native = event["native_usage"]
     # Verbatim: the fields an Anthropic-shaped response cannot carry.
-    assert native["input_tokens_details"]["cached_tokens"] == 44_000
-    assert native["input_tokens_details"]["cache_write_tokens"] == 1_000
-    assert native["output_tokens_details"]["reasoning_tokens"] == 640
+    assert native["prompt_tokens_details"]["cached_tokens"] == 44_000
+    assert native["prompt_tokens_details"]["cache_write_tokens"] == 1_000
+    assert native["completion_tokens_details"]["reasoning_tokens"] == 640
     assert event["response_id"] == "resp_68f2c1"
 
 
@@ -100,7 +105,10 @@ def test_the_captured_event_normalizes_with_openai_arithmetic(logged) -> None:
     event = logged(NATIVE)
     # The provider the LOG recorded, not one the test supplies - passing
     # OPENAI_RESPONSES by hand here is what hid the adapter-key mismatch.
-    assert event["provider"] == OPENAI_RESPONSES
+    # LITELLM_NORMALIZED, not OPENAI_RESPONSES: a proxy callback never sees the
+    # upstream body. Measured against a real gateway - the Responses adapter
+    # found none of its keys there and reported every field unknown.
+    assert event["provider"] == LITELLM_NORMALIZED
     assert event["provider_label"] == "openai"
     usage = normalize_usage(event["provider"], event["native_usage"])
     assert usage.total_input_tokens == 48_000
@@ -112,7 +120,7 @@ def test_the_captured_event_normalizes_with_openai_arithmetic(logged) -> None:
 def test_usage_without_details_normalizes_to_unknown_rather_than_zero(logged) -> None:
     """The mutation the accounting must not survive: dropped details, silent zeros."""
 
-    stripped = {k: v for k, v in NATIVE.items() if k != "input_tokens_details"}
+    stripped = {k: v for k, v in NATIVE.items() if k != "prompt_tokens_details"}
     event = logged(stripped)
     usage = normalize_usage(event["provider"], event["native_usage"])
     assert usage.cache_read_input_tokens is None
@@ -238,10 +246,16 @@ def test_an_unresolvable_provider_is_refused_rather_than_guessed() -> None:
 
     from workflow_bench.provider_usage import canonical_provider
 
-    assert canonical_provider("openai", "responses") == OPENAI_RESPONSES
-    assert canonical_provider("openai", "completion") is None
-    assert canonical_provider("openai", None) is None
+    # Every openai call reaching this callback has already been normalised by
+    # LiteLLM, whatever endpoint it used - the observed call_type for a Claude
+    # Code request through the gateway is "anthropic_messages". The adapter has
+    # to match the object in hand, not the protocol on the wire.
+    assert canonical_provider("openai", "responses") == LITELLM_NORMALIZED
+    assert canonical_provider("openai", "anthropic_messages") == LITELLM_NORMALIZED
     assert canonical_provider("anthropic", "completion") == ANTHROPIC
+    # An unrecognised provider is still refused rather than guessed.
+    assert canonical_provider("some-new-provider", "responses") is None
+    assert canonical_provider(None, None) is None
 
 
 def test_request_identity_cannot_come_from_the_proxy_environment() -> None:
