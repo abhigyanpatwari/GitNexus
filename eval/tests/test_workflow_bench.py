@@ -195,6 +195,11 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert containment["env"] == {
         "GITNEXUS_REQUIRE_BWRAP_CANARY": "1",
         "GITNEXUS_REQUIRE_CLAUDE_CANARY": "1",
+        # This job is the only place with bubblewrap, the pinned runtime and a
+        # built GitNexus together, so it is where the offline sweep runs with
+        # nothing provisioning-stubbed. Pinned here so the gate cannot be
+        # dropped and leave the sweep silently running the stubbed path.
+        "GITNEXUS_REQUIRE_FULL_SWEEP": "1",
     }
     assert containment["timeout-minutes"] == 20
     assert containment_node_setup["with"] == {
@@ -239,6 +244,12 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "tests/test_proposer_sandbox.py",
         "tests/test_workflow_bench_sessions.py",
         "tests/test_ce_plugin_runtime.py",
+        # The offline sweep, run here with nothing stubbed: this job is the only
+        # one carrying bubblewrap, the pinned runtime and a built GitNexus.
+        "tests/test_offline_sweep_integration.py",
+        # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
+        # set only on this job. Omitted from this list it skipped everywhere.
+        "tests/test_mock_provider.py",
         "-q",
     ]
     bwrap_canary_marker = re.compile(
@@ -1052,3 +1063,33 @@ def test_a_raising_packed_cell_still_persists_its_settled_siblings():
         )
 
     assert (1, "review") in folded, "the sibling that completed was never recorded"
+
+
+def test_an_uninvoked_skill_still_counts_toward_the_arm_median():
+    """Pins a KNOWN GAP, not a desired behaviour.
+
+    A cell whose skill never ran still moves the arm's quality median, even
+    though an arm exists to measure a SKILL. The narrow fix - filtering those
+    rows out of the quality metrics - is worse than the gap: valid_runs and
+    excluded_runs keep counting them, so the promotion gate sees N clean runs
+    while the median came from fewer. Since the dropped rows are systematically
+    an arm's worst, that biases toward promoting, and it was measured flipping
+    keep_incumbent to promote.
+
+    Closing it honestly needs a scored-run count and a paired-equality check in
+    the promotion gate. Pinned here so the half-fix cannot be reapplied without
+    someone reading why it was reverted.
+    """
+
+    good = record(review_weighted_f1=1.0, cost_usd=2.0)
+    uninvoked = record(
+        review_weighted_f1=0.0, cost_usd=4.0, error_kind="skill-not-invoked", skill_invoked=False
+    )
+    agg = aggregate([good, uninvoked])
+
+    assert agg["review_weighted_f1"] == 0.5, "the uninvoked row is counted - the known gap"
+    assert agg["cost_usd"] == 3.0
+    # The invariant that makes the half-fix unsafe: the median and the run count
+    # the gate reads must cover the same rows.
+    assert agg["valid_runs"] == 2
+

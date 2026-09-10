@@ -68,6 +68,7 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-typescript": ("tree-sitter/tree-sitter-typescript", "master",  "typescript/src/parser.c"),
     # Vendored parsers — kept here so the upstream coords for drift
     # detection are co-located with every other grammar's coords.
+    "tree-sitter-objc":       ("tree-sitter-grammars/tree-sitter-objc", "master", "src/parser.c"),
     "tree-sitter-proto":      ("coder3101/tree-sitter-proto",        "main",   "src/parser.c"),
     "tree-sitter-zig":        ("tree-sitter-grammars/tree-sitter-zig", "master", "src/parser.c"),
 }

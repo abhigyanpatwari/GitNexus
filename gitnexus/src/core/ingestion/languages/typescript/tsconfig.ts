@@ -278,10 +278,11 @@ async function firstReadableConfig(base: string): Promise<string | null> {
 async function findTsconfigFiles(repoRoot: string): Promise<string[]> {
   const found: string[] = [];
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  let queueHead = 0;
   let dirsScanned = 0;
 
-  while (queue.length > 0 && dirsScanned < SCAN_MAX_DIRS) {
-    const { dir, depth } = queue.shift()!;
+  while (queueHead < queue.length && dirsScanned < SCAN_MAX_DIRS) {
+    const { dir, depth } = queue[queueHead++]!;
     dirsScanned++;
     let entries: import('fs').Dirent[];
     try {

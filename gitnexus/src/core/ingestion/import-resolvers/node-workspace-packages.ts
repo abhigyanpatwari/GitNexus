@@ -340,16 +340,17 @@ export async function loadNodeWorkspacePackages(
   const scope = await loadWorkspaceScope(repoRoot);
   const byName = new Map<string, NodeWorkspacePackage>();
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
+  let queueHead = 0;
   let dirsScanned = 0;
 
-  while (queue.length > 0) {
+  while (queueHead < queue.length) {
     if (dirsScanned >= SCAN_MAX_DIRS) {
       logger.warn(
         `[node] package.json scan of ${repoRoot} hit the ${SCAN_MAX_DIRS}-directory cap; workspace packages below it will not resolve`,
       );
       break;
     }
-    const { dir, depth } = queue.shift()!;
+    const { dir, depth } = queue[queueHead++]!;
     dirsScanned++;
 
     let entries: import('fs').Dirent[];
