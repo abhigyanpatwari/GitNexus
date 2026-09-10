@@ -274,17 +274,14 @@ describe('PARSE_CACHE_VERSION', () => {
   // edge is emitted, the boundary probe measures a real zero, and `impact` on a
   // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
   // silently un-fixed on exactly the incremental path most users are on.
-  // 94-97 belong to #3179, which merged first; 98 is the next value above it.
-  // Re-checked against origin/main and every open PR touching parse-cache.ts at
-  // merge time — the rule the paragraphs above were written by PRs that each
-  // checked only once — and the remaining open claims (#3190 at 94, #2840 at
-  // 71, #1616 at 2) all sit below main and must re-bump themselves.
-  it('pins SCHEMA_BUMP to 98 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(98);
+  // Moved 98 -> 99 for #3190: lexical import provenance and corrected export
+  // evidence. origin/main took 98 for #3219; 99 is the next free value.
+  it('pins SCHEMA_BUMP to 99 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(99);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

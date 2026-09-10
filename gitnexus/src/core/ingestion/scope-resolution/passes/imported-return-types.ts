@@ -120,19 +120,10 @@ export function followChainPostFinalize(
  * typeBindings — the in-extractor pass-4 ran before propagation and
  * missed any chain whose terminal lived in a foreign file.
  *
- * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
- * documents that function-local `from x import y` binds `y` to the
- * inner function scope, which would make a module-only write miss
- * non-module importers. In practice `finalize-algorithm` hoists those
- * bindings into `indexes.bindings[moduleScope]` regardless of where
- * the `import` statement appears — the integration fixture
- * `python-function-local-import-chain` exercises a chained
- * receiver-bound call `u = get_user(); u.save()` inside a function
- * body and emits the expected `do_work → User.save` edge. The
- * module-scope write is sufficient today. If finalize routing ever
- * changes to honor the hook's per-scope contract, this pass must
- * iterate `indexes.bindings` over every scope and mirror into the
- * binding-owning scope's `typeBindings`, not just the module's.
+ * Finalize can retain lexical import ownership. Mirror into each binding's
+ * owning scope, never hoist local import-derived types into the file scope.
+ * Module ordering remains SCC-based; non-module chains are followed after
+ * all import bindings have been mirrored.
  */
 export function propagateImportedReturnTypes(
   parsedFiles: readonly ParsedFile[],
@@ -140,6 +131,7 @@ export function propagateImportedReturnTypes(
   index: WorkspaceResolutionIndex,
 ): void {
   const moduleScopeByFile = index.moduleScopeByFile;
+  const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
 
   // Walk SCCs in reverse-topological order (`indexes.sccs` is leaves-
   // first per `tarjanSccs`). For each file we mirror import bindings
@@ -167,42 +159,44 @@ export function propagateImportedReturnTypes(
       // import-derived typeBinding mirror. Both helpers fast-path when
       // no augmentations exist for the scope, so the common case is
       // allocation-free. See I8.
-      for (const localName of namesAtScope(importerModule.id, indexes)) {
-        // Skip if importer already has a typeBinding for this name —
-        // an explicit local annotation must win over import-derived.
-        if (importerModule.typeBindings.has(localName)) continue;
+      for (const importerScope of scopesByFile.get(filePath) ?? [importerModule]) {
+        for (const localName of namesAtScope(importerScope.id, indexes)) {
+          // Skip if importer already has a typeBinding for this name —
+          // an explicit local annotation must win over import-derived.
+          if (importerScope.typeBindings.has(localName)) continue;
 
-        const refs = lookupBindingsAt(importerModule.id, localName, indexes);
-        for (const ref of refs) {
-          if (ref.origin !== 'import' && ref.origin !== 'reexport' && ref.origin !== 'wildcard')
-            continue;
-          const sourceModule = moduleScopeByFile.get(ref.def.filePath);
-          if (sourceModule === undefined) continue;
+          const refs = lookupBindingsAt(importerScope.id, localName, indexes);
+          for (const ref of refs) {
+            if (ref.origin !== 'import' && ref.origin !== 'reexport' && ref.origin !== 'wildcard')
+              continue;
+            const sourceModule = moduleScopeByFile.get(ref.def.filePath);
+            if (sourceModule === undefined) continue;
 
-          // The source file's typeBinding is keyed by the def's simple
-          // name (e.g. `get_user`), not the importer's local alias.
-          const qn = ref.def.qualifiedName;
-          if (qn === undefined) continue;
-          const dot = qn.lastIndexOf('.');
-          const sourceName = dot === -1 ? qn : qn.slice(dot + 1);
+            // The source file's typeBinding is keyed by the def's simple
+            // name (e.g. `get_user`), not the importer's local alias.
+            const qn = ref.def.qualifiedName;
+            if (qn === undefined) continue;
+            const dot = qn.lastIndexOf('.');
+            const sourceName = dot === -1 ? qn : qn.slice(dot + 1);
 
-          const sourceTypeRef = sourceModule.typeBindings.get(sourceName);
-          if (sourceTypeRef === undefined) continue;
+            const sourceTypeRef = sourceModule.typeBindings.get(sourceName);
+            if (sourceTypeRef === undefined) continue;
 
-          // Chain-follow inside the source module so we mirror the
-          // terminal type, not an intermediate intra-source reference.
-          const terminal = followChainPostFinalize(sourceTypeRef, sourceModule.id, indexes);
+            // Chain-follow inside the source module so we mirror the
+            // terminal type, not an intermediate intra-source reference.
+            const terminal = followChainPostFinalize(sourceTypeRef, sourceModule.id, indexes);
 
-          // Mutating typeBindings is safe because draftToScope
-          // produced a non-frozen Map (Contract Invariant I3/I8).
-          (importerModule.typeBindings as Map<string, TypeRef>).set(localName, terminal);
-          // First-write-wins for the local alias: if the same
-          // `localName` was registered multiple times via
-          // `mergeBindings` (rare; happens with conflicting
-          // re-exports), only the first ref with a usable
-          // typeBinding source is mirrored. Conflict resolution
-          // among multiple sources is the merger's job, not ours.
-          break;
+            // Mutating typeBindings is safe because draftToScope
+            // produced a non-frozen Map (Contract Invariant I3/I8).
+            (importerScope.typeBindings as Map<string, TypeRef>).set(localName, terminal);
+            // First-write-wins for the local alias: if the same
+            // `localName` was registered multiple times via
+            // `mergeBindings` (rare; happens with conflicting
+            // re-exports), only the first ref with a usable
+            // typeBinding source is mirrored. Conflict resolution
+            // among multiple sources is the merger's job, not ours.
+            break;
+          }
         }
       }
 
