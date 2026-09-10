@@ -190,17 +190,15 @@ type ParsedImportSyntax =
        * field exists.** The natural place to decide it looks like the graph
        * bridge, by walking the scope the finalized edges hang off; that is
        * exactly what `graph-bridge/imports-to-edges.ts` once attempted, and it
-       * is dead code by construction. `finalize-algorithm.ts:295` publishes
-       * every file's finalized edges as
-       * `linkedByScope.set(file.moduleScope, …)`, so the map the bridge
-       * receives is keyed by the file's **Module** scope and by nothing else:
-       * the walk starts at a `Module` every time and answers `false` for every
-       * import in the tree. Finalize cannot recover the position either —
-       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]`.
-       * Lexical location rides on optional `declaredAtScope` when extraction
-       * could place the statement; binding still keys off that field only when
-       * a resolver opts into `importsBindAtLexicalScope`. The extractor is the
-       * last stage that still knows
+       * is dead code by construction. Default finalize still publishes each
+       * file's edges under `file.moduleScope`, so a bridge walk that starts
+       * there answers `false` for every import. Resolvers that opt into
+       * `importsBindAtLexicalScope` instead key the edge by
+       * `parsed.declaredAtScope` when extraction placed the statement (Rust
+       * `use` in a function body is the example). Even then the *execution*
+       * question — does this import run at module init? — is not the same as
+       * the lexical key, and `FinalizeFile.parsedImports` is still a flat
+       * per-file list. The extractor is the last stage that still knows
        * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
        * fact here and it rides the edge from there — see
        * {@link ImportEdge.runsOnlyWhenCalled}.

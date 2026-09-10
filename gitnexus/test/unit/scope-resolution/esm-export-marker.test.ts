@@ -13,11 +13,11 @@ import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/t
 type Emit = typeof emitTsScopeCaptures;
 
 function verdicts(emit: Emit, src: string, filePath: string): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {};
+  const out = Object.create(null) as Record<string, string | undefined>;
   for (const m of emit(src, filePath)) {
     const name = m['@declaration.name']?.text;
     if (name === undefined) continue;
-    if (name in out && out[name] !== undefined) continue;
+    if (Object.hasOwn(out, name) && out[name] !== undefined) continue;
     out[name] = m['@declaration.is-exported']?.text;
   }
   return out;
@@ -46,6 +46,11 @@ describe('@declaration.is-exported (TypeScript emitter)', () => {
     expect(v.f).toBe('true');
     expect(v.g).toBe('false');
     expect(v.inner).toBe('false');
+  });
+
+  it('does not skip a declaration named toString as an Object.prototype hit', () => {
+    const v = verdicts(emitTsScopeCaptures, 'export function toString() {}\n', 'test.ts');
+    expect(v.toString).toBe('true');
   });
 
   it('a member of an exported class is NOT itself exported; nested functions never are (magyargergo)', () => {

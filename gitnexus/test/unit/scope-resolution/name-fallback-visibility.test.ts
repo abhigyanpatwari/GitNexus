@@ -630,6 +630,21 @@ describe('Swift: isGlobalNameFallbackPlausible', () => {
     ).toBe(false);
   });
 
+  it('does not treat same-named targets in different packages as one module', () => {
+    expect(
+      swiftIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('Sources/Core/Caller.swift'),
+        candidate: mkCandidate('Package/Sources/Core/Helper.swift', 'uniqueHelperXyz'),
+      }),
+    ).toBe(false);
+    expect(
+      swiftIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('Sources/Core/Caller.swift', [namedImport('Core')]),
+        candidate: mkCandidate('Package/Sources/Core/Helper.swift', 'uniqueHelperXyz'),
+      }),
+    ).toBe(true);
+  });
+
   it('allows a candidate in another target the caller imports', () => {
     expect(
       swiftIsGlobalNameFallbackPlausible({

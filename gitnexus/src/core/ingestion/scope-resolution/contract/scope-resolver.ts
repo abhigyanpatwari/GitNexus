@@ -82,13 +82,14 @@
  *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
  *     Sites a pass touched but couldn't resolve do NOT get marked —
  *     they still get a chance from the shared resolver. Exception:
- *     the free-call fallback marks the site unconditionally after
- *     attempting emission (even on dedup-collapse), because the
- *     per-(caller, target) collapse semantics require multiple call
- *     sites in the same caller body not produce multiple edges.
- *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
- *     the generic bridge cannot remap class heritage into method-owned
- *     EXTENDS edges via `resolveCallerGraphId`.
+ *     the free-call fallback marks the site after it decides the site,
+ *     including when it emits no edge — dedup-collapse, a visibility
+ *     veto (`fallback-refused`), or a selected callable that is deleted
+ *     / invisible. The later generic pass must not recreate an edge
+ *     that pass just refused. `preEmitInheritanceEdges` also pre-marks
+ *     every `inherits` site so the generic bridge cannot remap class
+ *     heritage into method-owned EXTENDS edges via
+ *     `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
@@ -269,8 +270,8 @@
  *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
  *     method has overloads — see `graph-bridge/ids.ts`.
  *
- * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
- * exercises the registered language resolvers against their fixture corpus.
+ * Resolver fixture coverage lives in `ci-tests.yml` (the separate
+ * `ci-scope-parity.yml` gate was removed in RING4-1 #942).
  *
  * Plan that introduced most of these invariants:
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.

@@ -36,7 +36,12 @@ const SWIFT_TARGET_ROOTS: ReadonlySet<string> = new Set(['Sources', 'src']);
 function swiftModuleOf(filePath: string): string {
   const segments = filePath.split('/').filter((s) => s !== '');
   for (let i = 0; i < segments.length - 2; i++) {
-    if (SWIFT_TARGET_ROOTS.has(segments[i]!)) return segments[i + 1]!;
+    if (SWIFT_TARGET_ROOTS.has(segments[i]!)) {
+      // Keep the path through the target so `Sources/Core` and
+      // `Package/Sources/Core` stay distinct modules. `import Core` still
+      // reaches either via trailing-segment containment.
+      return segments.slice(0, i + 2).join('/');
+    }
   }
   return '';
 }
