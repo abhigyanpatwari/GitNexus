@@ -1669,6 +1669,14 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
+      if (err.guardPath !== undefined) {
+        cliError(err.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath: err.guardPath,
+        });
+        process.exitCode = 1;
+        return;
+      }
       cliError(
         `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
           `already refreshing this index and did not finish within the wait window.\n` +

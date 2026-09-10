@@ -555,7 +555,8 @@ const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
  * The registry is shared by every indexed repository, so per-index locks do
  * not protect this file. Reuse the cross-platform index lock primitive with a
  * registry-private lock namespace; the handle is kernel-owned on supported
- * platforms and crash-reclaimable by the existing fallback.
+ * platforms. The file fallback reclaims dead workload holders; an orphan
+ * acquisition guard requires quiesced recovery (RUNBOOK.md).
  *
  * On timeout the transaction fails closed: continuing unlocked would reintroduce
  * the lost-update race this lock exists to prevent and can silently discard a
@@ -582,6 +583,11 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
     throw err;
   }
   try {
+    if (lock.lockFree) {
+      throw new Error(
+        'Cannot acquire the global registry lock; refusing an unlocked registry transaction.',
+      );
+    }
     return await operation();
   } finally {
     lock?.release();

@@ -56,6 +56,7 @@ import {
   mkdirSync,
   readdirSync,
   realpathSync,
+  lstatSync,
 } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -284,12 +285,9 @@ const unknownHolder = (): LockRecord => ({
 });
 
 /**
- * Filesystem-create error codes we tolerate by proceeding lock-free: a
- * read-only mount (EROFS) or a denied create (EACCES/EPERM). Such a filesystem
- * rejects every index WRITE in the same directory too, so no concurrent writer
- * can exist and the lock is moot — an already-indexed repo on a `:ro` mount
- * must still reach its `alreadyUpToDate` fast path (#2658). A genuinely-needed
- * write fails later exactly as it would have without the lock.
+ * Filesystem-create errors eligible for a read-only, non-owning handle when
+ * neither lock nor guard exists. Denied creation does NOT prove other writers
+ * lack access (ACLs may differ). Callers that write must reject lockFree handles.
  */
 export const LOCK_UNWRITABLE_CODES: ReadonlySet<string> = new Set(['EROFS', 'EACCES', 'EPERM']);
 export const isLockUnwritableCode = (code: string | undefined): boolean =>
@@ -304,6 +302,25 @@ const noopHandle = (record: LockRecord): IndexLockHandle => ({
   lockFree: true,
   release: () => {},
 });
+
+const deniedCreateHandle = (
+  lockPath: string,
+  record: LockRecord,
+  error: unknown,
+): IndexLockHandle => {
+  // Do not turn an existing (even malformed/unreadable) owner into permission
+  // to proceed. lstat also sees dangling links; only ENOENT proves absence.
+  for (const candidate of [lockPath, `${lockPath}.guard`]) {
+    try {
+      lstatSync(candidate);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw err;
+    }
+    throw error;
+  }
+  return noopHandle(record);
+};
 
 /**
  * Delete orphaned build/staging artifacts left in the lock directory by a
@@ -388,14 +405,15 @@ const acquireViaFile = async (
   me: LockRecord,
   opts: AcquireOptions,
 ): Promise<IndexLockHandle> => {
+  const lockPath = path.join(lockDir, LOCK_FILENAME);
   try {
     mkdirSync(lockDir, { recursive: true });
   } catch (err) {
     // Read-only / denied filesystem → proceed lock-free (see LOCK_UNWRITABLE_CODES).
-    if (isLockUnwritableCode((err as NodeJS.ErrnoException).code)) return noopHandle(me);
+    if (isLockUnwritableCode((err as NodeJS.ErrnoException).code))
+      return deniedCreateHandle(lockPath, me, err);
     throw err;
   }
-  const lockPath = path.join(lockDir, LOCK_FILENAME);
   const guardPath = `${lockPath}.guard`;
   const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
   const timeoutMs = resolveTimeoutMs(opts.timeoutMs);
@@ -406,30 +424,48 @@ const acquireViaFile = async (
   // first observed it unreadable — used to reclaim a crash-orphan after a grace.
   let malformedSince: number | null = null;
   let guardWaitSince: number | null = null;
+  let permissionWaitSince: number | null = null;
+  let permissionError: unknown;
 
   for (;;) {
+    const permissionDeadline =
+      permissionWaitSince === null
+        ? Number.POSITIVE_INFINITY
+        : permissionWaitSince + GUARD_TIMEOUT_MS;
+    if (Date.now() >= Math.min(startedAt + timeoutMs, permissionDeadline) && permissionError) {
+      throw permissionError;
+    }
     let guardFd: number;
     try {
       guardFd = openSync(guardPath, 'wx');
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
+      // Windows can report EPERM while an unlinked guard is delete-pending.
+      // Retry under the same bounded budget, never interpret it as ownership.
+      if (code === 'EEXIST' || code === 'EPERM') {
         const now = Date.now();
         guardWaitSince ??= now;
-        const deadline = Math.min(startedAt + timeoutMs, guardWaitSince + GUARD_TIMEOUT_MS);
+        const deadline = Math.min(
+          startedAt + timeoutMs,
+          guardWaitSince + GUARD_TIMEOUT_MS,
+          permissionDeadline,
+        );
         if (now >= deadline) {
+          if (permissionError && now >= permissionDeadline) throw permissionError;
+          if (code === 'EPERM') throw err;
           throw new IndexLockTimeoutError(unknownHolder(), now - startedAt, false, guardPath);
         }
         await sleep(jitteredDelay(pollMs, deadline - now, 0));
         continue;
       }
-      if (isLockUnwritableCode(code)) return noopHandle(me);
+      if (isLockUnwritableCode(code)) return deniedCreateHandle(lockPath, me, err);
       throw err;
     }
     guardWaitSince = null;
     // Metadata aids diagnostics only. Without a readable token-exact ownership
     // record, cleanup must leave the guard and fail closed.
     let holder: LockRecord | null = null;
+    let createdMain = false;
     try {
       try {
         writeSync(guardFd, JSON.stringify(me));
@@ -463,7 +499,9 @@ const acquireViaFile = async (
         let fd: number;
         try {
           fd = openSync(lockPath, 'wx');
+          createdMain = true;
         } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === 'EPERM') throw err;
           if (isLockUnwritableCode((err as NodeJS.ErrnoException).code)) return noopHandle(me);
           throw err;
         }
@@ -492,16 +530,56 @@ const acquireViaFile = async (
           },
         };
       }
-    } finally {
-      if (readRecord(guardPath)?.token !== me.token) {
-        throw new Error(
-          `Cannot verify acquisition/reclaim guard ownership: ${guardPath}. ` +
-            'Acquisition refused; see RUNBOOK.md for quiesced recovery.',
-        );
+      permissionWaitSince = null;
+      permissionError = undefined;
+    } catch (error) {
+      if (!createdMain && (error as NodeJS.ErrnoException).code === 'EPERM') {
+        // A releasing owner may leave the main file delete-pending on Windows.
+        // Release our guard in finally and retry; never reclaim an unreadable file.
+        permissionWaitSince ??= Date.now();
+        permissionError = error;
+        holder = null;
+        if (Date.now() >= Math.min(startedAt + timeoutMs, permissionWaitSince + GUARD_TIMEOUT_MS)) {
+          throw error;
+        }
+      } else {
+        if (createdMain) {
+          try {
+            if (readRecord(lockPath)?.token === me.token) unlinkSync(lockPath);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              `Workload-lock cleanup failed: ${lockPath}. Acquisition refused; see RUNBOOK.md for quiesced recovery.`,
+            );
+          }
+        }
+        throw error;
       }
-      // Must complete before returning a workload handle or polling. Unlike
-      // workload release, cleanup failure here rejects acquisition.
-      unlinkSync(guardPath);
+    } finally {
+      try {
+        if (readRecord(guardPath)?.token !== me.token) {
+          throw new Error(
+            `Cannot verify acquisition/reclaim guard ownership: ${guardPath}. ` +
+              'Acquisition refused; see RUNBOOK.md for quiesced recovery.',
+          );
+        }
+        // Must complete before returning a workload handle or polling.
+        unlinkSync(guardPath);
+      } catch (guardError) {
+        // A failed finally discards the pending handle. Roll back only the
+        // token-exact record this attempt created, never another owner's file.
+        if (createdMain) {
+          try {
+            if (readRecord(lockPath)?.token === me.token) unlinkSync(lockPath);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [guardError, cleanupError],
+              `Guard and workload-lock cleanup failed: ${guardPath}. Acquisition refused; see RUNBOOK.md for quiesced recovery.`,
+            );
+          }
+        }
+        throw guardError;
+      }
     }
     const waited = Date.now() - startedAt;
 
@@ -529,7 +607,13 @@ const acquireViaFile = async (
     }
 
     if (waited >= timeoutMs) throw new IndexLockTimeoutError(unknownHolder(), waited, false);
-    await sleep(jitteredDelay(pollMs, timeoutMs, waited));
+    const waitCeiling = Math.min(
+      timeoutMs,
+      permissionWaitSince === null
+        ? Number.POSITIVE_INFINITY
+        : permissionWaitSince + GUARD_TIMEOUT_MS - startedAt,
+    );
+    await sleep(jitteredDelay(pollMs, waitCeiling, waited));
   }
 };
 
@@ -724,10 +808,9 @@ export const acquireIndexLock = async (
   } else {
     handle = await acquireViaFile(lockDir, me, opts);
   }
-  // Reclaim crashed-build staging orphans while we hold the lock. Best-effort:
-  // a read-only mount (no orphans reachable) just no-ops.
+  // Without ownership, a staging file may belong to an active writer.
   try {
-    sweepStagingArtifacts(lockDir, opts.log);
+    if (!handle.lockFree) sweepStagingArtifacts(lockDir, opts.log);
   } catch {
     /* best-effort */
   }

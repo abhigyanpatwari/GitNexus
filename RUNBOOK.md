@@ -223,12 +223,18 @@ mutual exclusion is not guaranteed. The file protocol assumes reliable atomic
 local-filesystem `O_EXCL` creation and cooperating processes. Network/distributed
 filesystems, external file replacement, and uncoordinated manual deletion are not
 covered. A process crash while holding the short-lived guard trades automatic
-recovery for fail-closed safety. Read-only/denied-create `lockFree` degradation
-remains an existing API limitation, not a guarantee of protected execution.
-In particular, heterogeneous permissions can deny guard creation to one process
-while another process can still write the index. A `lockFree` handle does not
-guarantee mutual exclusion in that situation; callers requiring protection must
-refuse that degraded outcome.
+recovery for fail-closed safety. Denied file creation returns a non-owning
+`lockFree` handle only when neither workload lock nor acquisition guard exists;
+unreadable paths fail closed. No staging sweep runs without ownership. Analysis,
+registry transactions, and group synchronization refuse `lockFree` handles,
+including an otherwise up-to-date analysis on a file-backend read-only mount.
+The socket backend can still acquire ownership on a read-only index mount.
+Heterogeneous permissions are not proof that another process cannot write.
+
+If guard cleanup fails after this attempt created its workload record, acquisition
+is refused and token-exact workload cleanup is attempted before returning the
+error. Failed or unverifiable cleanup must be diagnosed under the same quiesced
+recovery procedure above; never delete a possibly active successor's record.
 
 ---
 

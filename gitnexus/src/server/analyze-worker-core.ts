@@ -84,9 +84,15 @@ export async function runWorkerAnalysis(
     // #2658 review M2: a lock-wait timeout is transient contention (another
     // analyze held the single-writer lock), not a broken build — tag it so the
     // parent can surface a retry signal instead of an opaque hard failure.
+    // An orphan guard needs quiesced recovery, not automatic retries.
     terminal =
       err instanceof IndexLockTimeoutError
-        ? { type: 'error', message, code: 'index-lock-timeout', retryable: true }
+        ? {
+            type: 'error',
+            message,
+            code: 'index-lock-timeout',
+            retryable: err.guardPath === undefined,
+          }
         : { type: 'error', message };
   }
 
