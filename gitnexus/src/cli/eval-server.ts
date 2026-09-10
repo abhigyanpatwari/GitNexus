@@ -609,10 +609,20 @@ export function formatImpactResult(result: any): string {
   }
   // #1858 — an interface / indirection boundary on the path makes this a lower
   // bound; surface it so the count is not read as exhaustive.
+  //
+  // The header names no cause AND asserts no omitted caller, because it cannot
+  // know either. DI / dynamic dispatch was the only producer of `lower-bound`
+  // when this was written; #3399 added callables named in VALUE position (a
+  // registration table, a callback argument), and one of its producers is a
+  // probe that could not RUN — `callableValueReferenceBoundaries` hedges on a
+  // failed query and says in so many words that whether the symbol is
+  // registered is unknown. A header claiming "some callers are not traced"
+  // would there assert an omission nothing established, and would contradict
+  // the bullet printed directly under it. The bullets carry the cause — they
+  // are generated per-cause by `computeEpistemicBoundary` — so the header only
+  // has to say the count is a floor.
   if (result.epistemic === 'lower-bound') {
-    lines.push(
-      '⚠️  Lower bound — unresolved indirection on the path (callers binding via DI / dynamic dispatch are not traced; actual impact may be higher):',
-    );
+    lines.push('⚠️  Lower bound — impact may be incomplete and actual impact may be higher:');
     for (const b of result.boundaries || []) lines.push(`    • ${b}`);
   }
   pushCallgraphRiskLines(lines, result);
