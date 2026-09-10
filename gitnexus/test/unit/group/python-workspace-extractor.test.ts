@@ -152,6 +152,34 @@ describe('PythonWorkspaceExtractor', () => {
     expect(result.links[0].contract).toBe('datalib::Record');
   });
 
+  it('discovers function-local imports', async () => {
+    await writeFile(
+      'lib/pyproject.toml',
+      '[project]\nname = "datalib"\nversion = "0.1.0"\ndependencies = []\n',
+    );
+    await writeFile('lib/datalib/models.py', 'class Record: pass\n');
+
+    await writeFile(
+      'app/pyproject.toml',
+      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = ["datalib"]\n',
+    );
+    await writeFile(
+      'app/myapp/main.py',
+      'def load_record():\n    from datalib.models import Record\n    return Record()\n',
+    );
+
+    const repos = { lib: 'datalib', app: 'myapp' };
+    const repoPaths = new Map([
+      ['lib', path.join(tmpDir, 'lib')],
+      ['app', path.join(tmpDir, 'app')],
+    ]);
+
+    const result = await extractPythonWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(1);
+    expect(result.links[0].contract).toBe('datalib::Record');
+  });
+
   it('ignores snake_case imports (functions, not types)', async () => {
     await writeFile(
       'lib/pyproject.toml',

@@ -115,7 +115,7 @@ async function scanPythonImports(
 
     // from <pkg> import Foo, Bar
     // from <pkg>.module import Foo
-    const fromImportRegex = /^from\s+(\w[\w.]*)\s+import\s+(.+)/gm;
+    const fromImportRegex = /^\s*from\s+(\w[\w.]*)\s+import\s+(.+)/gm;
     let match;
     while ((match = fromImportRegex.exec(content)) !== null) {
       const modulePath = match[1];
