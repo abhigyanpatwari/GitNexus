@@ -66,17 +66,19 @@ function legacyResolveCobolImportTarget(
   const upper = targetRaw.toUpperCase();
   // Check copybook files first
   for (const fp of allFilePaths) {
-    const ext = path.extname(fp).toLowerCase();
-    if (!LEGACY_COPYBOOK_EXTENSIONS.has(ext)) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
+    const extRaw = path.extname(fp);
+    const extLower = extRaw.toLowerCase();
+    if (!LEGACY_COPYBOOK_EXTENSIONS.has(extLower)) continue;
+    const basename = path.basename(fp, extRaw).toUpperCase();
     if (basename === upper) return fp;
   }
   // Also search COBOL source files (.cbl, .cob, .cobol)
   const COBOL_SOURCE_EXTS = new Set(['.cbl', '.cob', '.cobol']);
   for (const fp of allFilePaths) {
-    const ext = path.extname(fp).toLowerCase();
-    if (!COBOL_SOURCE_EXTS.has(ext)) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
+    const extRaw = path.extname(fp);
+    const extLower = extRaw.toLowerCase();
+    if (!COBOL_SOURCE_EXTS.has(extLower)) continue;
+    const basename = path.basename(fp, extRaw).toUpperCase();
     if (basename === upper) return fp;
   }
   return null;
@@ -219,6 +221,23 @@ describe('COBOL COPY-target index hoist — output parity with the pre-change sc
     expect(resolve('EXTERNAL', files)).toBe('vendor/EXTERNAL.cpy');
   });
 
+  it('P1-A: uppercase .CPY extension does not break stem extraction', () => {
+    const files = new Set(['copybooks/CUSTREC.CPY', 'src/PROG.cbl']);
+    expect(resolve('CUSTREC', files)).toBe('copybooks/CUSTREC.CPY');
+  });
+
+  it('P1-B: polyglot file set with copy/cpy segments does not latch preferred-class', () => {
+    const files = new Set([
+      'docs/copy/README.md',
+      'src/copy/clipboard.ts',
+      'copybooks/CUSTREC.cpy',
+      'vendor/EXTERNAL.cpy',
+      'src/PROG.cbl',
+    ]);
+    expect(resolve('CUSTREC', files)).toBe('copybooks/CUSTREC.cpy');
+    expect(resolve('EXTERNAL', files)).toBeNull();
+  });
+
   it('the corpus actually resolves things (the parity arm is not vacuous)', () => {
     // A corpus that resolved nothing would make the arm above pass on
     // `null === null` forever. Measured on this corpus: 390 hits.
@@ -302,27 +321,21 @@ const HANDBUILT: readonly HandBuilt[] = [
     expected: 'copybooks/CUSTREC.cpy',
   },
   {
-    why: 'the extension is matched LOWER-cased, so `Foo.CPY` is a copybook at all',
+    why: 'the extension is matched LOWER-cased for tier, stem stripped with lowercase ext, so `Foo.CPY` is reachable as FOO',
     files: ['copybooks/Foo.CPY'],
-    target: 'FOO.CPY',
+    target: 'FOO',
     expected: 'copybooks/Foo.CPY',
   },
   {
-    why: '`path.basename(fp, ext)` strips case-SENSITIVELY, so `Foo.CPY` is NOT reachable as FOO',
-    files: ['copybooks/Foo.CPY'],
-    target: 'FOO',
-    expected: null,
-  },
-  {
-    why: 'a `.CPY` file keyed with its suffix loses `BOOK` to a `.cbl` in the later tier',
+    why: 'a `.CPY` file (uppercase ext) is keyed without suffix, hits in tier 1',
     files: ['x/BOOK.cbl', 'y/BOOK.CPY'],
     target: 'BOOK',
-    expected: 'x/BOOK.cbl',
+    expected: 'y/BOOK.CPY',
   },
   {
-    why: 'an uppercase source extension is a source file (`.CBL` → tier 2, keyed with its suffix)',
+    why: 'an uppercase source extension is a source file (`.CBL` → tier 2, keyed without suffix)',
     files: ['src/Pay.CBL'],
-    target: 'PAY.CBL',
+    target: 'PAY',
     expected: 'src/Pay.CBL',
   },
   {

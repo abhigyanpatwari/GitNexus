@@ -75,4 +75,37 @@ describe('COBOL processor COPY EXTERNAL does not fabricate vendor IMPORTS (#2967
     const targets = cobolCopyTargets(graph);
     expect(targets).toContain(generateId('File', 'vendor/EXTERNAL.cpy'));
   });
+
+  it('P1-A: uppercase .CPY extension does not break stem extraction', () => {
+    const files = [
+      { path: 'copybooks/CUSTREC.CPY', content: CUSTREC },
+      { path: 'src/PROG.cbl', content: PROG },
+    ];
+    const graph = createKnowledgeGraph();
+    seedFiles(graph, files);
+    processCobol(graph, files, new Set(files.map((f) => f.path)));
+
+    const targets = cobolCopyTargets(graph);
+    expect(targets).toContain(generateId('File', 'copybooks/CUSTREC.CPY'));
+  });
+
+  it('P1-B: polyglot allPathSet with copy/cpy segments does not latch preferred-class', () => {
+    const files = [
+      { path: 'copybooks/CUSTREC.cpy', content: CUSTREC },
+      { path: 'vendor/EXTERNAL.cpy', content: EXTERNAL },
+      { path: 'src/PROG.cbl', content: PROG },
+    ];
+    const polyglotPaths = new Set([
+      'docs/copy/README.md',
+      'src/copy/clipboard.ts',
+      ...files.map((f) => f.path),
+    ]);
+    const graph = createKnowledgeGraph();
+    seedFiles(graph, files);
+    processCobol(graph, files, polyglotPaths);
+
+    const targets = cobolCopyTargets(graph);
+    expect(targets).toContain(generateId('File', 'copybooks/CUSTREC.cpy'));
+    expect(targets).not.toContain(generateId('File', 'vendor/EXTERNAL.cpy'));
+  });
 });

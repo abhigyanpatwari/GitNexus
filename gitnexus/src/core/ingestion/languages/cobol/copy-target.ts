@@ -63,15 +63,16 @@ const getCobolCopyIndex = perFileSet((allFilePaths: ReadonlySet<string>): CobolC
   const sources = new Map<string, string[]>();
   let hasPreferredDir = false;
   for (const fp of allFilePaths) {
-    if (!hasPreferredDir && pathHasPreferredDir(fp)) hasPreferredDir = true;
-    const ext = path.extname(fp).toLowerCase();
-    const tier = COPYBOOK_EXTENSIONS.has(ext)
+    const extRaw = path.extname(fp);
+    const extLower = extRaw.toLowerCase();
+    const tier = COPYBOOK_EXTENSIONS.has(extLower)
       ? copybooks
-      : COBOL_SOURCE_EXTENSIONS.has(ext)
+      : COBOL_SOURCE_EXTENSIONS.has(extLower)
         ? sources
         : undefined;
     if (tier === undefined) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
+    if (!hasPreferredDir && pathHasPreferredDir(fp)) hasPreferredDir = true;
+    const basename = path.basename(fp, extRaw).toUpperCase();
     pushUnique(tier, basename, fp);
   }
   return { copybooks, sources, hasPreferredDir };
