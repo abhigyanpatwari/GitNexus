@@ -73,6 +73,8 @@ describe('Ruby dependency resolution config (#2966)', () => {
     expect(
       rubyScopeResolver.resolveImportTarget('rails/generators', 'lib/main.rb', files, config),
     ).toBeNull();
+    expect(resolveRubyImportTarget('rails.rb', 'lib/main.rb', files, config)).toBeNull();
+    expect(resolveRubyImportTarget('rails/generators.rb', 'lib/main.rb', files, config)).toBeNull();
     expect(
       rubyScopeResolver.resolveImportTarget('app/models/user', 'lib/main.rb', files, config),
     ).toBe('lib/app/models/user.rb');
@@ -94,6 +96,7 @@ describe('Ruby dependency resolution config (#2966)', () => {
     const config = loadRubyResolutionConfig(repo);
 
     expect(resolveRubyImportTarget('dry/types', 'lib/main.rb', files, config)).toBeNull();
+    expect(resolveRubyImportTarget('dry/types.rb', 'lib/main.rb', files, config)).toBeNull();
     expect(resolveRubyImportTarget('dry-types', 'lib/main.rb', files, config)).toBeNull();
     expect(resolveRubyImportTarget('types', 'lib/main.rb', files, config)).toBe('lib/types.rb');
   });
@@ -108,6 +111,7 @@ describe('Ruby dependency resolution config (#2966)', () => {
     );
     const files = new Set([
       'engines/my_engine/lib/my_engine.rb',
+      'engines/my_engine/lib/my_engine/feature.rb',
       'lib/my_engine.rb',
       'lib/main.rb',
     ]);
@@ -115,6 +119,12 @@ describe('Ruby dependency resolution config (#2966)', () => {
 
     expect(resolveRubyImportTarget('my_engine', 'lib/main.rb', files, config)).toBe(
       'engines/my_engine/lib/my_engine.rb',
+    );
+    expect(resolveRubyImportTarget('my_engine.rb', 'lib/main.rb', files, config)).toBe(
+      'engines/my_engine/lib/my_engine.rb',
+    );
+    expect(resolveRubyImportTarget('my_engine/feature.rb', 'lib/main.rb', files, config)).toBe(
+      'engines/my_engine/lib/my_engine/feature.rb',
     );
     expect(config?.scopesByDirectory.get('')?.externalRequirePrefixes).not.toContain('my_engine');
   });

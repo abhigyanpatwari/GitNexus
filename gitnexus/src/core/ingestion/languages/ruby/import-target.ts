@@ -112,15 +112,19 @@ function resolveRelative(
 }
 
 /**
- * Yield the target itself, then each slash-delimited ancestor. This makes both
+ * Yield the require stem, then each slash-delimited ancestor. This makes both
  * local-root and external-gem lookup O(require path depth), not O(gem count).
+ * A trailing `.rb` is stripped first so `require 'my_engine.rb'` matches the
+ * configured prefix `my_engine`, matching Ruby's optional-suffix require.
  */
 function requirePrefixCandidates(targetRaw: string): readonly string[] {
-  const candidates = [targetRaw];
-  let slash = targetRaw.lastIndexOf('/');
+  const stem = targetRaw.endsWith('.rb') ? targetRaw.slice(0, -3) : targetRaw;
+  if (stem.length === 0) return [];
+  const candidates = [stem];
+  let slash = stem.lastIndexOf('/');
   while (slash !== -1) {
-    candidates.push(targetRaw.slice(0, slash));
-    slash = targetRaw.lastIndexOf('/', slash - 1);
+    candidates.push(stem.slice(0, slash));
+    slash = stem.lastIndexOf('/', slash - 1);
   }
   return candidates;
 }
