@@ -1,0 +1,61 @@
+{
+  "_what": "Synthetic Ruby manifest + ScopeResolver gate for #3096, following bench/parse-dispatch-rounds/baselines.json: exact correctness floors and fingerprints, with ratios as the only timing gates. Calls the real config loader and resolver; parser, DB, installed gems and full-pipeline memory are outside this microbenchmark.",
+  "_triage": "Shape and fingerprint failures are deterministic: inspect the fixture and resolved targets, never rebaseline just to make CI green. For a timing failure, rerun on an idle machine and verify the report uses 15 samples after 2 warmups before investigating a regression. Millisecond observations are context, not gates.",
+  "shapes": {
+    "small": {
+      "projects": 32,
+      "declarations_per_project": 12,
+      "scopes": 64,
+      "files": 131,
+      "imports": 8192,
+      "resolved": 3264,
+      "fingerprint": "e37f4c81bc7f4bc8416732d0e8ebb00e16743b08a44646e1a6fa45c04283cfb3"
+    },
+    "large": {
+      "projects": 128,
+      "declarations_per_project": 12,
+      "scopes": 256,
+      "files": 515,
+      "imports": 32768,
+      "resolved": 13056,
+      "fingerprint": "2524217404b1d4cf118e7d13895d757c821029bf59230b6c3cc7ce2fc2cf5dd2"
+    },
+    "dense": {
+      "projects": 32,
+      "declarations_per_project": 132,
+      "scopes": 64,
+      "files": 131,
+      "imports": 8192,
+      "resolved": 3264,
+      "fingerprint": "e37f4c81bc7f4bc8416732d0e8ebb00e16743b08a44646e1a6fa45c04283cfb3"
+    }
+  },
+  "_shape_note": "Exact projects, declarations, scopes, files, imports and resolved counts are the workload FLOOR, not ceilings. They prevent a shrunken corpus or disconnected manifest loader from passing by doing less work. Small/large grow projects 4x; dense keeps files/imports fixed while growing extra Gemfile declarations from 8 to 128 per project.",
+  "_fingerprint_note": "Hashes pin every importer/require/target tuple, including external decoys, aliases, local path gem hits and misses, relative/local imports and sibling isolation. The runner also checks each expected target before hashing and proves the external decoy is reachable without config. An always-null resolver or missing config must fail, not get a new fingerprint.",
+  "budgets": {
+    "load_scaling_ratio": 2.2,
+    "resolve_scaling_ratio": 2.2,
+    "dependency_count_ratio": 2
+  },
+  "_scaling_note": "load_scaling_ratio and resolve_scaling_ratio are (t_4n/t_n)/4: about 1 is linear, about 4 is quadratic. Keep the existing 2.2 regression budgets; do not tighten them to local milliseconds. Filesystem loading and lookup are measured separately with fresh config/file Sets per pass.",
+  "_dependency_count_note": "dense.resolve_ms/small.resolve_ms should stay near 1: require lookup must scale with prefix/path depth, not all declared gems. The budget remains 2. Extra declaration parsing belongs to config loading, not this fixed-query lookup arm.",
+  "_negative_controls_note": "Disconnecting loadResolutionConfig fails the real-loader assertion. A wrapper scanning all scopes' external prefixes on every import leaves targets/fingerprints unchanged but fails resolve_scaling_ratio (3.427 > 2.2) and dependency_count_ratio (7.912 > 2) with 15 samples. These are deliberate regressions, not baseline observations.",
+  "_measured": {
+    "environment": "macOS arm64 / Node 25.8.0, 2026-09-10",
+    "load_scaling_ratio": 1.094,
+    "load_scaling_ratio_samples": [0.993, 1.06, 1.05, 1.019, 1.094],
+    "resolve_scaling_ratio": 1.066,
+    "resolve_scaling_ratio_samples": [1.058, 1.059, 1.056, 1.066, 1.061],
+    "dependency_count_ratio": 1.009,
+    "dependency_count_ratio_samples": [1.009, 1.003, 0.994, 0.999, 1.0],
+    "small_load_ms": 3.569,
+    "small_resolve_ms": 11.782,
+    "large_load_ms": 14.812,
+    "large_resolve_ms": 50.222,
+    "dense_load_ms": 7.27,
+    "dense_resolve_ms": 11.852,
+    "reps": 15,
+    "warmup": 2
+  },
+  "_measured_note": "Five consecutive local runs using the min-of-15 estimator from parse-dispatch-rounds, with 2 warmups here. Scalar ratios and millisecond values are per-metric maxima across those runs (rounded), not one combined run. Budgets retain about 2x headroom above observed ratios. Milliseconds are diagnostic context only, not gated or real-repository speed claims. Exact shapes and fingerprints are unchanged."
+}
