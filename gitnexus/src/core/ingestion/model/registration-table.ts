@@ -15,11 +15,11 @@
  *       └── symbols (SymbolTable)     ← owns fileIndex + callableByName,
  *                                       calls dispatch() in add()
  *
- * ## Behavior groups (5 hooks, 13 table entries)
+ * ## Behavior groups (4 hooks, 12 table entries)
  *
  * | Group         | NodeLabel values                                  | Hook         | Skip callable? |
  * |---------------|---------------------------------------------------|--------------|----------------|
- * | class-like    | Class, Struct, Interface, Enum, Record, Trait     | classLikeHook    | no             |
+ * | class-like    | Class, Protocol, Category, Struct, Interface, Enum, Record, Trait | classLikeHook    | no             |
  * | method-like   | Method, Constructor                               | methodHook   | no             |
  * | property      | Property                                          | propertyHook | YES            |
  * | impl-block    | Impl                                              | implHook     | no             |
@@ -95,7 +95,7 @@ export interface RegistrationTableDeps {
  * registry (if any) receives the symbol write during `SymbolTable.add()`:
  *
  *   - `dispatch`     — owner-scoped registry write via the dispatch table
- *                      (Class/Struct/Interface/Enum/Record/Trait → types.registerClass,
+ *                      (Class/Protocol/Category/Struct/Interface/Enum/Record/Trait → types.registerClass,
  *                       Method/Constructor → methods.register,
  *                       Property → fields.register,
  *                       Impl → types.registerImpl)
@@ -143,6 +143,8 @@ export type LabelBehavior = 'dispatch' | 'callable-only' | 'inert';
 const LABEL_BEHAVIOR = {
   // dispatch — owner-scoped registry writes
   Class: 'dispatch',
+  Protocol: 'dispatch',
+  Category: 'dispatch',
   Struct: 'dispatch',
   Interface: 'dispatch',
   Enum: 'dispatch',
@@ -271,8 +273,8 @@ export const createRegistrationTable = (
 ): Map<NodeLabel, RegistrationHook> => {
   const { types, methods, fields } = deps;
 
-  // Hook 1: class-like — Class, Struct, Interface, Enum, Record, Trait.
-  // Shared reference — six table entries point at this one closure.
+  // Hook 1: class-like — Class, Protocol, Category, Struct, Interface, Enum, Record, Trait.
+  // Shared reference — eight table entries point at this one closure.
   const classLikeHook: RegistrationHook = (name, def) => {
     const qualifiedKey = def.qualifiedName ?? name;
     types.registerClass(name, qualifiedKey, def);
@@ -311,11 +313,13 @@ export const createRegistrationTable = (
   // classified as 'dispatch'. This is the compile-time twin of the
   // runtime taxonomy — no drift possible.
   const dispatchByLabel = {
-    // class-like — six labels share the single `classLikeHook` closure,
+    // class-like — eight labels share the single `classLikeHook` closure,
     // kept in lockstep with `CLASS_TYPES_TUPLE` via the
     // `Record<ClassLikeLabel, 'dispatch'>` cross-invariant on
     // `LABEL_BEHAVIOR`.
     Class: classLikeHook,
+    Protocol: classLikeHook,
+    Category: classLikeHook,
     Struct: classLikeHook,
     Interface: classLikeHook,
     Enum: classLikeHook,

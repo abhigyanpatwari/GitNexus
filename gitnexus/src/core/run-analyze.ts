@@ -560,6 +560,8 @@ export interface AnalyzeResult {
    * extension loaded but the index build/verify failed non-fatally — remedied by
    * `--repair-fts`, not by installing the extension). Lets the CLI show the
    * correct recovery hint instead of always blaming a missing extension.
+   * `disabled-by-flag` and `disabled-by-env` record intentional opt-out;
+   * neither calls for extension installation or repair.
    */
   ftsSkipReason?: FtsSkipReason;
   /**

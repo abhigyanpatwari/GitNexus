@@ -9,14 +9,17 @@ tasks:
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2718.patch]
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2718.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2718. Report only actionable defects introduced by the local diff.
-    verify: test -s review-output.json
+    verify: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2718-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: &deps
       - { source: node_modules, target: node_modules }
       - { source: gitnexus/node_modules, target: gitnexus/node_modules }
       - { source: gitnexus-shared/node_modules, target: gitnexus-shared/node_modules }
+      # Host-built types/JS. Historical clones have no dist/, so `tsc` in the
+      # read-only workspace otherwise reports TS2307/TS6379 (run 33962002890).
+      - { source: gitnexus-shared/dist, target: gitnexus-shared/dist }
 
   - <<: *review_case
     id: review-pr-2794-defect
@@ -25,7 +28,7 @@ tasks:
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2794.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2794. Report only actionable defects introduced by the local diff.
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2794-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
@@ -36,7 +39,7 @@ tasks:
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2108.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2108. Report only actionable defects introduced by the local diff.
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2108-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
@@ -47,7 +50,7 @@ tasks:
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2258-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
@@ -59,7 +62,7 @@ tasks:
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258b.patch && rm -rf eval/workflow_bench
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2258-clean.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
@@ -71,6 +74,6 @@ tasks:
     setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2773.patch && rm -rf eval/workflow_bench
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2773. Report only actionable defects introduced by the local diff.
     oracle:
-      command: test -s review-output.json
+      command: test -s "$GITNEXUS_BENCH_REVIEW_OUTPUT"
       files: [{ source: review-pr-2773-clean.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps

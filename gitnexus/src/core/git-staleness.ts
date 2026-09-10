@@ -11,6 +11,13 @@ import { findGitRootByDotGit, getCurrentCommit, getRemoteUrl } from '../storage/
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Ceiling for one `git rev-list` staleness probe. Generous for the local
+ * history walk this is, and short enough that an unresponsive working tree
+ * degrades to "not stale" quickly rather than holding a request open.
+ */
+const STALENESS_TIMEOUT_MS = 5_000;
+
 export interface StalenessInfo {
   isStale: boolean;
   commitsBehind: number;
@@ -61,6 +68,14 @@ export async function checkStalenessAsync(
       cwd: repoPath,
       encoding: 'utf-8',
       windowsHide: true,
+      // The catch below fails closed on every git ERROR, but a hang is not an
+      // error — it is silence, and without a bound this await never settles.
+      // A working tree on a disconnected network mount or behind a stuck lock
+      // does exactly that, and `/api/repos` fans this out once per registered
+      // repo, so one unreachable mount could hold the whole listing open
+      // (#3232 review). The timeout kills the child and rejects, which routes
+      // a hang into the same fail-closed "not stale" answer as a bad SHA.
+      timeout: STALENESS_TIMEOUT_MS,
     });
 
     const commitsBehind = parseInt(stdout.trim(), 10) || 0;

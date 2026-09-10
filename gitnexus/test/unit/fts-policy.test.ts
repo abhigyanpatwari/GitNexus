@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   FTS_DISABLED_MESSAGE,
   getFtsDisabledReason,
@@ -66,16 +69,24 @@ describe('explicit FTS opt-out', () => {
     ).resolves.toEqual({ results: [], ftsAvailable: false });
   });
 
-  it.each([{ skipFts: true }, {}])(
-    'rejects FTS repair while explicitly disabled (%j)',
-    async (options) => {
-      vi.stubEnv('GITNEXUS_SKIP_FTS', '1');
+  it.each([
+    { skipFts: true, env: undefined },
+    { skipFts: false, env: '1' },
+    { skipFts: true, env: '1' },
+  ])('rejects FTS repair while explicitly disabled (%j)', async ({ skipFts, env }) => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fts-policy-'));
+    vi.stubEnv('GITNEXUS_HOME', home);
+    vi.stubEnv('GITNEXUS_SKIP_FTS', env);
+    try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await expect(
-        runFullAnalysis('nonexistent-repo', { ...options, repairFts: true }, { onProgress() {} }),
+        runFullAnalysis(path.join(home, 'repo'), { skipFts, repairFts: true }, { onProgress() {} }),
       ).rejects.toThrow('--repair-fts cannot be used with --skip-fts or GITNEXUS_SKIP_FTS=1');
-    },
-  );
+      expect(await fs.readdir(home)).toEqual([]);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
 
   it('keeps semantic results when keyword search is explicitly disabled', async () => {
     const executeQuery = vi.fn();

@@ -1,7 +1,5 @@
 # GitNexus (Akon Labs)
 
-**⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
-
 <div align="center">
 
   <a href="https://trendshift.io/repositories/19809" target="_blank">
@@ -26,7 +24,7 @@
     </a>
   </p>
 
-  <p><strong>The nervous system for agent context.</strong></p>
+  <p><strong>The context engine for Enterprise Codebases</strong></p>
 
   <p>
     Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow —
@@ -101,6 +99,10 @@ Every `/api/*` request carries that token as a header, and the proxy answers `40
 The proxy strips `Origin` before forwarding, so the server's CSRF guard does nothing for proxied traffic; it passes `Origin`-less requests through by design. The token is the only control on this deploy, not a second layer behind the guard. Anyone holding it can read every indexed repo. See [SECURITY.md](SECURITY.md#hosted-deploys-on-render).
 
 Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large repo, raise its `plan`, which sets available RAM: `standard` is 2 GB, `pro` is 4 GB. Raise `sizeGB` only if the disk fills with clones and indexes.
+
+### Deploy to RepoCloud
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/gitnexus/)
 
 ## Two Ways to Use GitNexus
 
@@ -405,7 +407,7 @@ backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
 until the control file is fixed. Stop the watcher with Ctrl+C.
 
 Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
-`--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--max-file-size`, `--branch`, `--pdg`, `--skip-fts`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
 embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
@@ -661,6 +663,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Objective-C | ✓      | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 
