@@ -718,6 +718,13 @@ jobs:
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby gem-boundary correctness + scaling guards (#3096)
+        if: ${{ !cancelled() }}
+        # Includes real manifest loading; checks scoped resolution and scaling
+        # as sibling projects or declared gem counts grow independently.
+        run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
         if: ${{ !cancelled() }}
         # NOT build-free: this one runs the real pipeline, so it needs dist/

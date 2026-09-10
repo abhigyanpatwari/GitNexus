@@ -66,17 +66,19 @@ function legacyResolveCobolImportTarget(
   const upper = targetRaw.toUpperCase();
   // Check copybook files first
   for (const fp of allFilePaths) {
-    const ext = path.extname(fp).toLowerCase();
-    if (!LEGACY_COPYBOOK_EXTENSIONS.has(ext)) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
+    const extRaw = path.extname(fp);
+    const extLower = extRaw.toLowerCase();
+    if (!LEGACY_COPYBOOK_EXTENSIONS.has(extLower)) continue;
+    const basename = path.basename(fp, extRaw).toUpperCase();
     if (basename === upper) return fp;
   }
   // Also search COBOL source files (.cbl, .cob, .cobol)
   const COBOL_SOURCE_EXTS = new Set(['.cbl', '.cob', '.cobol']);
   for (const fp of allFilePaths) {
-    const ext = path.extname(fp).toLowerCase();
-    if (!COBOL_SOURCE_EXTS.has(ext)) continue;
-    const basename = path.basename(fp, ext).toUpperCase();
+    const extRaw = path.extname(fp);
+    const extLower = extRaw.toLowerCase();
+    if (!COBOL_SOURCE_EXTS.has(extLower)) continue;
+    const basename = path.basename(fp, extRaw).toUpperCase();
     if (basename === upper) return fp;
   }
   return null;
@@ -119,13 +121,16 @@ const STEMS = ['CUSTREC', 'custrec', 'AcctRec', 'PAYROLL', 'BOOK', 'COMMON', 'TA
  */
 const EXTS = ['.cpy', '.copybook', '.CPY', '.cbl', '.cob', '.cobol', '.CBL', '.txt', ''];
 
-function corpus(seed: number, fileCount: number): Set<string> {
+/** Directories with no well-known copybook segment — fail-open parity only. */
+const FAIL_OPEN_DIRS = ['', 'src', 'jcl/proclib', 'win\\dir'];
+
+function corpusFromDirs(seed: number, fileCount: number, dirs: readonly string[]): Set<string> {
   const files = new Set<string>();
   for (let i = 0; i < fileCount; i++) {
     const a = mix(seed * 7919 + i);
     const b = mix(a ^ 0x9e3779b9);
     const c = mix(b ^ 0x85ebca6b);
-    const dir = DIRS[a % DIRS.length];
+    const dir = dirs[a % dirs.length];
     const stem = STEMS[b % STEMS.length];
     const rel = `${stem}${EXTS[c % EXTS.length]}`;
     files.add(dir === '' ? rel : `${dir}/${rel}`);
@@ -135,6 +140,10 @@ function corpus(seed: number, fileCount: number): Set<string> {
   files.add('win\\dir\\BOOK.cpy');
   files.add('win\\dir\\PAYROLL.cbl');
   return files;
+}
+
+function corpus(seed: number, fileCount: number): Set<string> {
+  return corpusFromDirs(seed, fileCount, DIRS);
 }
 
 /**
@@ -166,11 +175,31 @@ const TARGETS = [
 
 const REPOS = 40;
 
+function hasPreferredCopyDir(files: ReadonlySet<string>): boolean {
+  for (const fp of files) {
+    const parts = fp.split('/');
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (
+        parts[i] === 'copybooks' ||
+        parts[i] === 'COPYBOOKS' ||
+        parts[i] === 'cpy' ||
+        parts[i] === 'copy'
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 describe('COBOL COPY-target index hoist — output parity with the pre-change scans (#2908)', () => {
-  it('agrees with the verbatim pre-change resolver over the generated corpus', () => {
+  it('agrees with the verbatim pre-change resolver over fail-open corpora (no well-known copybook dir)', () => {
     let checked = 0;
     for (let repo = 0; repo < REPOS; repo++) {
-      const files = corpus(repo, 6 + (repo % 25));
+      const files = corpusFromDirs(repo, 6 + (repo % 25), FAIL_OPEN_DIRS);
+      expect(hasPreferredCopyDir(files), `repo=${repo} accidentally grew a copybook dir`).toBe(
+        false,
+      );
       for (const target of TARGETS) {
         expect(resolve(target, files), `cobol "${target}" repo=${repo}`).toEqual(
           legacyResolveCobolImportTarget(target, files),
@@ -179,6 +208,34 @@ describe('COBOL COPY-target index hoist — output parity with the pre-change sc
       }
     }
     expect(checked).toBe(REPOS * TARGETS.length);
+  });
+
+  it('COPY EXTERNAL misses vendor/EXTERNAL.cpy when a copybooks/ dir is present (#2967)', () => {
+    const files = new Set(['copybooks/CUSTREC.cpy', 'vendor/EXTERNAL.cpy', 'src/PROG.cbl']);
+    expect(resolve('EXTERNAL', files)).toBeNull();
+    expect(resolve('CUSTREC', files)).toBe('copybooks/CUSTREC.cpy');
+  });
+
+  it('fail-open: without a copybook dir, COPY EXTERNAL still basename-matches (#2967)', () => {
+    const files = new Set(['vendor/EXTERNAL.cpy', 'src/PROG.cbl']);
+    expect(resolve('EXTERNAL', files)).toBe('vendor/EXTERNAL.cpy');
+  });
+
+  it('P1-A: uppercase .CPY extension does not break stem extraction', () => {
+    const files = new Set(['copybooks/CUSTREC.CPY', 'src/PROG.cbl']);
+    expect(resolve('CUSTREC', files)).toBe('copybooks/CUSTREC.CPY');
+  });
+
+  it('P1-B: polyglot file set with copy/cpy segments does not latch preferred-class', () => {
+    const files = new Set([
+      'docs/copy/README.md',
+      'src/copy/clipboard.ts',
+      'copybooks/CUSTREC.cpy',
+      'vendor/EXTERNAL.cpy',
+      'src/PROG.cbl',
+    ]);
+    expect(resolve('CUSTREC', files)).toBe('copybooks/CUSTREC.cpy');
+    expect(resolve('EXTERNAL', files)).toBeNull();
   });
 
   it('the corpus actually resolves things (the parity arm is not vacuous)', () => {
@@ -264,27 +321,21 @@ const HANDBUILT: readonly HandBuilt[] = [
     expected: 'copybooks/CUSTREC.cpy',
   },
   {
-    why: 'the extension is matched LOWER-cased, so `Foo.CPY` is a copybook at all',
+    why: 'the extension is matched LOWER-cased for tier, stem stripped with lowercase ext, so `Foo.CPY` is reachable as FOO',
     files: ['copybooks/Foo.CPY'],
-    target: 'FOO.CPY',
+    target: 'FOO',
     expected: 'copybooks/Foo.CPY',
   },
   {
-    why: '`path.basename(fp, ext)` strips case-SENSITIVELY, so `Foo.CPY` is NOT reachable as FOO',
-    files: ['copybooks/Foo.CPY'],
-    target: 'FOO',
-    expected: null,
-  },
-  {
-    why: 'a `.CPY` file keyed with its suffix loses `BOOK` to a `.cbl` in the later tier',
+    why: 'a `.CPY` file (uppercase ext) is keyed without suffix, hits in tier 1',
     files: ['x/BOOK.cbl', 'y/BOOK.CPY'],
     target: 'BOOK',
-    expected: 'x/BOOK.cbl',
+    expected: 'y/BOOK.CPY',
   },
   {
-    why: 'an uppercase source extension is a source file (`.CBL` → tier 2, keyed with its suffix)',
+    why: 'an uppercase source extension is a source file (`.CBL` → tier 2, keyed without suffix)',
     files: ['src/Pay.CBL'],
-    target: 'PAY.CBL',
+    target: 'PAY',
     expected: 'src/Pay.CBL',
   },
   {
