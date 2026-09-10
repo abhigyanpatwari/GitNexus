@@ -50,6 +50,8 @@ const allHelpCommands = [
   ['eval-server'],
   ['embeddings'],
   ['embeddings', 'install'],
+  ['embeddings', 'sync'],
+  ['embeddings', 'sync'],
   ['group'],
   ['group', 'create'],
   ['group', 'add'],
