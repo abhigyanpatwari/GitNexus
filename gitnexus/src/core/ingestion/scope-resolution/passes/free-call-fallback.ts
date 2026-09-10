@@ -44,7 +44,9 @@ import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
+  findClassBindingInScope,
   findEnclosingClassDef,
+  isClassFileImportGrounded,
   resolveInheritanceBaseInScope,
   type CallableBindingCandidate,
 } from '../scope/walkers.js';
@@ -236,12 +238,13 @@ export function emitFreeCallFallback(
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
       if (site.callForm === 'constructor') {
-        // Bare unique type names are guesses (`pickUniqueGlobalClass`).
-        // A written qualifier (`new pkg.Foo()`, `models.Box[T]{}`)
-        // licenses the unique QualifiedNameIndex hit — Go/Java strip
-        // the qualifier down to the simple tail, so lexical lookup
-        // misses and the unique name is how the type is recovered.
-        const classDef = resolveInheritanceBaseInScope(
+        // Lexical / written-qualifier first. A bare unique type with no
+        // import/#include evidence is a guess (JS `new UniqueWidget()`,
+        // Go unexported `uniqueWidget{}`). A unique type whose file is
+        // imported or sits in an imported directory is precise — C++
+        // `#include "user.h"` and Rust re-exports do not mint a lexical
+        // class binding, but they are not name guesses either.
+        let classDef = resolveInheritanceBaseInScope(
           site.inScope,
           site.name,
           scopes,
@@ -249,6 +252,24 @@ export function emitFreeCallFallback(
           undefined,
           { uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined },
         );
+        if (classDef === undefined) {
+          classDef =
+            findClassBindingInScope(site.inScope, site.name, scopes, undefined, {
+              uniqueQualifiedNameFallback: true,
+            }) ??
+            (options.allowGlobalFallback === true
+              ? pickUniqueGlobalClass(site.name, globalClassesBySimpleName)
+              : undefined);
+          if (
+            classDef !== undefined &&
+            classDef.type !== 'Interface' &&
+            site.rawQualifiedName === undefined &&
+            !isClassFileImportGrounded(site.inScope, classDef, scopes)
+          ) {
+            fnDefFromGlobalNameFallback = true;
+            globalFallbackVetoTarget = classDef;
+          }
+        }
         if (classDef !== undefined && classDef.type !== 'Interface') {
           // Most languages link `Type(...)` to the explicit Constructor def
           // when one exists (else the Class). Languages that model the call
@@ -258,25 +279,6 @@ export function emitFreeCallFallback(
             options.constructorCallTargetsClass === true
               ? classDef
               : pickConstructorOrClass(classDef, workspaceIndex, scopes, site.arity);
-        } else if (options.allowGlobalFallback === true) {
-          // The constructed type may live in a sibling/imported file that is
-          // not in the call-site's lexical scope-chain bindings. Fall back to
-          // a unique workspace-wide Class def by simple name (gated on the
-          // same global-fallback opt-in as free calls). Then target the
-          // Class or its Constructor per the language's preference.
-          const globalClass = pickUniqueGlobalClass(site.name, globalClassesBySimpleName);
-          if (globalClass !== undefined) {
-            fnDef =
-              globalClass.type === 'Interface'
-                ? undefined
-                : options.constructorCallTargetsClass === true
-                  ? globalClass
-                  : pickConstructorOrClass(globalClass, workspaceIndex, scopes, site.arity);
-            if (fnDef !== undefined) {
-              fnDefFromGlobalNameFallback = true;
-              globalFallbackVetoTarget = globalClass;
-            }
-          }
         }
       }
       // Module-qualified free call (`mod::fn()`): the source named the module

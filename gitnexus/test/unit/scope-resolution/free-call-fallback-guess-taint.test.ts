@@ -265,6 +265,7 @@ function runConstructor(
   sites: readonly ReferenceSite[],
   options: {
     readonly bindImportedClass?: boolean;
+    readonly importTargetFile?: string;
     readonly isGlobalNameFallbackPlausible?: () => boolean;
   } = {},
 ) {
@@ -307,7 +308,23 @@ function runConstructor(
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: new Map(
+      options.importTargetFile !== undefined
+        ? [
+            [
+              'scope:caller-mod',
+              [
+                {
+                  localName: 'UniqueWidget',
+                  targetFile: options.importTargetFile,
+                  targetExportedName: 'UniqueWidget',
+                  kind: 'named' as const,
+                },
+              ],
+            ],
+          ]
+        : [],
+    ),
     bindings: new Map(
       options.bindImportedClass === true
         ? [
@@ -388,6 +405,16 @@ describe('constructor-form unique-name hits are guesses, not import-resolved', (
     const { calls, outcomes } = runConstructor([
       { ...ctorGuessedSite(3), rawQualifiedName: 'pkg.UniqueWidget' },
     ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.confidence).toBe(0.85);
+    expect(calls[0]!.reason).toBe('import-resolved');
+    expect(outcomes).toEqual([]);
+  });
+
+  it('treats a unique class as precise when an import reaches its file', () => {
+    const { calls, outcomes } = runConstructor([ctorGuessedSite(3)], {
+      importTargetFile: TARGET_FILE,
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0]!.confidence).toBe(0.85);
     expect(calls[0]!.reason).toBe('import-resolved');
