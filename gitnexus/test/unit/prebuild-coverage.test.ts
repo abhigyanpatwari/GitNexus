@@ -71,10 +71,9 @@ const KNOWN_NPM_GAPS: Record<string, string[]> = {};
  * source (binding.gyp). Without this list the strict 6/6 assertion is dormant for
  * every grammar that carries source — a dropped prebuild would pass CI silently.
  * Grammars graduate into this set as the build-tree-sitter-prebuilds workflow
- * lands their binaries (today only Swift ships 6/6; c/dart/proto/kotlin are
- * source-build-only until the workflow runs).
+ * lands their binaries with all six supported tuples.
  */
-const FULLY_PREBUILT = new Set<string>(['tree-sitter-swift']);
+const FULLY_PREBUILT = new Set<string>(['tree-sitter-objc', 'tree-sitter-swift']);
 
 function isNapiBinary(file: string): boolean {
   return readFileSync(file).includes(NAPI_SYMBOL);

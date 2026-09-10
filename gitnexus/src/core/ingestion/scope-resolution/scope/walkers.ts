@@ -181,6 +181,8 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
 export function isClassLike(t: string): boolean {
   return (
     t === 'Class' ||
+    t === 'Protocol' ||
+    t === 'Category' ||
     t === 'Interface' ||
     t === 'Struct' ||
     t === 'Record' ||
@@ -351,6 +353,82 @@ export function isNamespaceNameShadowed(
   return true;
 }
 
+/**
+ * Does something between `inScope` and its module scope bind `name` to
+ * ANYTHING other than `def`?
+ *
+ * `isNamespaceNameShadowed` asks the same question for a namespace handle,
+ * where any local binding of the name is by definition not the import. A
+ * CONTAINER receiver needs the extra clause: the container may itself be the
+ * local declaration (`fn make() { const Local = struct {…}; … Local.go … }`),
+ * and reading that as its own shadow would suppress exactly the resolutions it
+ * is meant to permit — the #2723 mistake, one channel over.
+ *
+ * So a scope that binds the name answers immediately, and the answer is "not
+ * shadowed" only when one of that scope's bindings IS `def`. A name bound in a
+ * nearer scope to something else — a parameter, a local, a type binding — wins
+ * the lexical race, which is the whole point: `findClassBindingInScope` filters
+ * the chain by `isClassLike` and therefore cannot see that it lost it.
+ *
+ * The MODULE scope is inspected too, unlike `isNamespaceNameShadowed`, and the
+ * exemption is what makes that safe. That guard stops one rung short because a
+ * namespace import writes its own name into the module scope and would read as
+ * its own shadow (#2723); here the owner is compared by identity, so the binding
+ * that IS the owner exempts itself and only a binding to something ELSE answers
+ * `true`. Stopping short would leave the exact hole this walk exists to close:
+ * `findClassBindingInScope` steps over a module-scope binding that is not
+ * class-like and then answers from a WORKSPACE-wide qualified-name index, so
+ * `const Gauge = @import("other.zig").SOME_CONST;` in a file that never imports
+ * `Gauge.zig` would still resolve `Gauge.read` to that file's container.
+ * `lookupBindingsAt` is used at that scope and only there, because an imported
+ * alias lives in the finalized channel rather than in `scope.bindings`.
+ *
+ * Fail-closed like its sibling: a missing scope or a parent cycle answers
+ * `true`, because suppressing a resolution costs a missing edge while trusting a
+ * corrupt chain costs a wrong one.
+ */
+export function isOwnerNameShadowedBySomethingElse(
+  name: string,
+  def: SymbolDefinition,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = inScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return true;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return true;
+    if (scope.kind !== 'Object') {
+      const isModule = scope.kind === 'Module';
+      const imported = isModule ? lookupBindingsAt(currentId, name, scopes) : [];
+      const bindsHere =
+        scope.bindings.has(name) ||
+        scope.typeBindings.has(name) ||
+        scope.lexicalNames?.has(name) === true ||
+        imported.length > 0 ||
+        scope.ownedDefs.some((d) => {
+          const qualifiedName = d.qualifiedName;
+          if (qualifiedName === undefined) return false;
+          const dot = qualifiedName.lastIndexOf('.');
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === name;
+        });
+      if (bindsHere) {
+        if ((scope.bindings.get(name) ?? []).some((b) => b.def.nodeId === def.nodeId)) return false;
+        if (scope.ownedDefs.some((d) => d.nodeId === def.nodeId)) return false;
+        if (imported.some((b) => b.def.nodeId === def.nodeId)) return false;
+        return true;
+      }
+    }
+    // The module scope is the last rung, not a rung to skip: nothing above it
+    // can shadow a name for this file.
+    if (scope.kind === 'Module') return false;
+    currentId = scope.parent;
+  }
+  return true;
+}
+
 export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,
@@ -431,9 +509,10 @@ export function moduleScopeIdOf(
 /**
  * Look up a class-like binding by name in the given scope's chain.
  *
- * "Class-like" covers `Class | Interface | Struct | Record | Enum |
- * Trait` via the shared `isClassLike` predicate — every kind that
- * collapses to `@scope.class` in the scope-extractor query contract.
+ * "Class-like" covers `Class | Interface | Struct | Record | Enum | Trait |
+ * Protocol | Category` via the shared `isClassLike` predicate. Objective-C
+ * protocol and category definitions are graph-side containers rather than
+ * `@scope.class` captures.
  *
  * Walks the scope chain upward and consults TWO sources at each step:
  *   1. `scope.bindings` — populated during scope-extraction Pass 2 with

@@ -16,7 +16,7 @@ const EMPTY: readonly SymbolDefinition[] = Object.freeze([]);
 
 export interface TypeRegistry {
   /**
-   * Look up class-like definitions (Class, Struct, Interface, Enum, Record, Trait)
+   * Look up class-like definitions (Class, Protocol, Category, Struct, Interface, Enum, Record, Trait)
    * by simple name. Returns all matching definitions across files
    * (e.g. partial classes). Returned array is a view into the live
    * internal index — do not mutate.
