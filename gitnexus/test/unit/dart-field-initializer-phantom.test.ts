@@ -66,7 +66,10 @@ describe('Dart field/variable declarations with constructor initializers', () =>
     if (!parser) throw new Error('parser unavailable');
     const tree = parser.parse(CODE);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const query = new (Parser as any).Query((tree as any).language ?? parser.getLanguage(), DART_QUERIES);
+    const query = new (Parser as any).Query(
+      (tree as any).language ?? parser.getLanguage(),
+      DART_QUERIES,
+    );
     const property: string[] = [];
     const variable: string[] = [];
     for (const match of query.matches(tree.rootNode)) {
