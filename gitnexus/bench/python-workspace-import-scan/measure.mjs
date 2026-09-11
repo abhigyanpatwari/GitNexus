@@ -45,9 +45,7 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { extractPythonWorkspaceLinks } from '../../src/core/group/extractors/python-workspace-extractor.ts';
 
-const baselines = JSON.parse(
-  readFileSync(new URL('./baselines.json', import.meta.url), 'utf8'),
-);
+const baselines = JSON.parse(readFileSync(new URL('./baselines.json', import.meta.url), 'utf8'));
 
 const REPS = 15;
 const FROM_FILES = 40;
@@ -176,10 +174,10 @@ try {
 
   console.log(`from_files             : ${FROM_FILES}  (expect ${baselines.from_files})`);
   console.log(`no_from_files          : ${NO_FROM_FILES}  (expect ${baselines.no_from_files})`);
+  console.log(`lookalike_files        : ${LOOKALIKE_FILES}  (expect ${baselines.lookalike_files})`);
   console.log(
-    `lookalike_files        : ${LOOKALIKE_FILES}  (expect ${baselines.lookalike_files})`,
+    `from_links             : ${fromResult.links.length}  (expect ${baselines.from_links})`,
   );
-  console.log(`from_links             : ${fromResult.links.length}  (expect ${baselines.from_links})`);
   console.log(
     `lookalike_links        : ${lookalikeResult.links.length}  (expect ${baselines.lookalike_links})`,
   );
