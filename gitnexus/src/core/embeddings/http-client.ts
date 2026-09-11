@@ -12,6 +12,7 @@
  */
 
 import { chunk } from '../../lib/utils.js';
+import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import {
   CircuitOpenError,
   ResilientFetchExhaustedError,
@@ -203,7 +204,12 @@ const readConfig = (): HttpConfig | null => {
       DEFAULT_HTTP_TIMEOUT_MS,
       MAX_HTTP_TIMEOUT_MS,
     ),
-    retryTimeouts: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_RETRY_TIMEOUTS', 0, 1) === 1,
+    // A boolean toggle, so it takes the repo's truthy convention (`1`/`true`/
+    // `yes`) and falls back to the documented default on anything else. The
+    // integer parser this used throws on a non-digit, which turned the
+    // conventional `=true` into a hard failure of every embedding call rather
+    // than either enabling the flag or leaving it off.
+    retryTimeouts: parseTruthyEnv(process.env.GITNEXUS_EMBEDDING_RETRY_TIMEOUTS),
     requestDimensions,
   };
 };
