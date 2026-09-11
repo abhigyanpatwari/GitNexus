@@ -755,6 +755,33 @@ describe('HTTP embedding backend', () => {
       expect(result).toBeInstanceOf(Float32Array);
     });
 
+    it('retries a body-read timeout when explicitly configured', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_RETRY_TIMEOUTS = '1';
+      process.env.GITNEXUS_EMBEDDING_MAX_ATTEMPTS = '2';
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
+
+      // The motivating fault stalls mid-body rather than rejecting the initial
+      // fetch: the per-attempt signal is wired to the body stream, so the
+      // timeout surfaces out of `.json()`. That is a second re-wrap site, and
+      // the fetch-rejects test above does not reach it.
+      const stalledBody = {
+        ok: true,
+        json: async () => {
+          throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+        },
+      };
+      const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(stalledBody).mockResolvedValueOnce(ok));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const result = await embedText('test');
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(result).toBeInstanceOf(Float32Array);
+    });
+
     it('retries on network error then succeeds', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
