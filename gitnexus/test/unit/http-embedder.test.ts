@@ -11,6 +11,7 @@ const ENV_KEYS = [
   'GITNEXUS_EMBEDDING_RETRY_CAP_MS',
   'GITNEXUS_EMBEDDING_MIN_INTERVAL_MS',
   'GITNEXUS_EMBEDDING_REQUEST_DIMS',
+  'GITNEXUS_EMBEDDING_RETRY_TIMEOUTS',
 ] as const;
 
 /** 384d mock vector matching the default schema dimensions. */
@@ -731,6 +732,27 @@ describe('HTTP embedding backend', () => {
       // Type-completeness fence: a timeout must stay classifiable (#2385).
       expect(isHttpEmbeddingError(err)).toBe(true);
       expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a timeout when explicitly configured', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_RETRY_TIMEOUTS = '1';
+      process.env.GITNEXUS_EMBEDDING_MAX_ATTEMPTS = '2';
+      process.env.GITNEXUS_EMBEDDING_RETRY_CAP_MS = '1';
+
+      const timeoutErr = new DOMException(
+        'The operation was aborted due to timeout',
+        'TimeoutError',
+      );
+      const ok = { ok: true, json: async () => ({ data: [{ embedding: mockVec }] }) };
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(timeoutErr).mockResolvedValueOnce(ok));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const result = await embedText('test');
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(result).toBeInstanceOf(Float32Array);
     });
 
     it('retries on network error then succeeds', async () => {
