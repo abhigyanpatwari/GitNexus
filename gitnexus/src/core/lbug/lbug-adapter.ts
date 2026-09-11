@@ -709,8 +709,6 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
   return null;
 };
 
-type LbugInitOptions = { readOnly?: boolean; skipFts?: boolean };
-
 export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
 };
@@ -726,7 +724,7 @@ export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = 
 export const withLbugDb = async <T>(
   dbPath: string,
   operation: () => Promise<T>,
-  options: LbugInitOptions = {},
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
 ): Promise<T> => {
   let lastError: unknown;
   const readOnly = options.readOnly === true;
@@ -766,7 +764,10 @@ export const withLbugDb = async <T>(
 
 let currentDbSkipFts = false;
 
-const ensureLbugInitialized = async (dbPath: string, options: LbugInitOptions = {}) => {
+const ensureLbugInitialized = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
   const readOnly = options.readOnly === true;
   const skipFts = options.skipFts === true;
   if (
@@ -781,7 +782,10 @@ const ensureLbugInitialized = async (dbPath: string, options: LbugInitOptions = 
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
+const doInitLbug = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
   const readOnly = options.readOnly === true;
   const skipFts = options.skipFts === true;
   // Different database requested — close the old one first
