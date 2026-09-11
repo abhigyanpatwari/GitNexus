@@ -15,6 +15,8 @@ import {
   getFtsDisabledReason,
   withExplicitFtsDisablement,
   FTS_DISABLED_MESSAGE,
+  DEFAULT_GRAPH_CAPABILITY,
+  DEFAULT_VECTOR_SEARCH_CAPABILITY,
   type FtsSkipReason,
 } from './search/fts-policy.js';
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
@@ -519,6 +521,12 @@ function recordLiveIndexMutationRisk(error: unknown): void {
   if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
     liveIndexMutationRisks.add(error);
   }
+}
+
+function formatMetaWriteFailureReason(err: unknown): string {
+  return isReadOnlyFilesystemError(err)
+    ? `${(err as Error).message} — storage may be read-only (#1549)`
+    : (err as Error).message;
 }
 
 /** Whether a failed analyze may already have changed the live DB. */
@@ -1352,16 +1360,9 @@ async function runFullAnalysisInner(
         await saveMeta(metaDir, {
           ...latestMeta,
           capabilities: {
-            graph: latestMeta.capabilities?.graph ?? {
-              provider: 'ladybugdb',
-              status: 'available',
-            },
+            graph: latestMeta.capabilities?.graph ?? DEFAULT_GRAPH_CAPABILITY,
             fts: { provider: 'ladybugdb-fts', status: 'available' },
-            vectorSearch: latestMeta.capabilities?.vectorSearch ?? {
-              provider: 'exact-scan',
-              status: 'unavailable',
-              exactScanLimit: 0,
-            },
+            vectorSearch: latestMeta.capabilities?.vectorSearch ?? DEFAULT_VECTOR_SEARCH_CAPABILITY,
           },
         });
       } catch (err) {
@@ -1914,11 +1915,8 @@ async function runFullAnalysisInner(
             // EACCES/EPERM also arise from ownership problems and transient
             // Windows locks, so keep the real error visible alongside the
             // #1549 read-only hint instead of replacing it.
-            const reason = isReadOnlyFilesystemError(err)
-              ? `${(err as Error).message} — storage may be read-only (#1549)`
-              : (err as Error).message;
             log(
-              `Warning: could not restamp the workspace branch label (${reason}); will retry on the next run.`,
+              `Warning: could not restamp the workspace branch label (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
             );
           }
         } else if (ftsDisabledReason && ftsDisabledReason !== previousFtsDisabledReason) {
@@ -1927,11 +1925,8 @@ async function runFullAnalysisInner(
           try {
             await saveMeta(metaDir, existingMeta);
           } catch (err) {
-            const reason = isReadOnlyFilesystemError(err)
-              ? `${(err as Error).message} — storage may be read-only (#1549)`
-              : (err as Error).message;
             log(
-              `Warning: could not restamp the FTS skip reason (${reason}); will retry on the next run.`,
+              `Warning: could not restamp the FTS skip reason (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
             );
           }
         }
@@ -2716,9 +2711,9 @@ async function runFullAnalysisInner(
       // creates or drops an index.
       const indexCatalogRows = await readIndexCatalogSnapshot();
       const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe(indexCatalogRows);
-      const ftsRowDmlSafe = ftsDisabledReason
-        ? await ensureFtsRowDmlSafe(indexCatalogRows, { skipFts: true })
-        : await ensureFtsRowDmlSafe(indexCatalogRows);
+      const ftsRowDmlSafe = await ensureFtsRowDmlSafe(indexCatalogRows, {
+        skipFts: Boolean(ftsDisabledReason),
+      });
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
