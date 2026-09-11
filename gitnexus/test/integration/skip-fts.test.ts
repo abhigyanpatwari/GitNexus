@@ -288,47 +288,76 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     });
     expect((await cli(['status'])).stdout).toContain('FTS disabled for this index');
 
-    const port = await new Promise<number>((resolve, reject) => {
-      const probe = createServer();
-      probe.once('error', reject);
-      probe.listen(0, '127.0.0.1', () => {
-        const address = probe.address();
-        if (!address || typeof address === 'string') {
-          probe.close();
-          reject(new Error('No port'));
-          return;
-        }
-        probe.close((error) => (error ? reject(error) : resolve(address.port)));
+    // Spawned `serve` socket readiness is not reliable on Windows — the child can
+    // report ready before its listen socket is reachable from the parent, which is
+    // why both sibling spawned-server suites skip there (server-http-startup.test.ts,
+    // server-analyze-token-validation.test.ts). The CLI flag and status-capability
+    // assertions above already ran on every platform.
+    if (process.platform === 'win32') return;
+
+    const pickPort = () =>
+      new Promise<number>((resolve, reject) => {
+        const probe = createServer();
+        probe.once('error', reject);
+        probe.listen(0, '127.0.0.1', () => {
+          const address = probe.address();
+          if (!address || typeof address === 'string') {
+            probe.close();
+            reject(new Error('No port'));
+            return;
+          }
+          probe.close((error) => (error ? reject(error) : resolve(address.port)));
+        });
       });
-    });
-    const server = spawn(
-      process.execPath,
-      [...CLI_SPAWN_PREFIX, 'serve', '--port', String(port), '--host', '127.0.0.1'],
-      {
-        cwd: repo.dbPath,
-        env: { ...process.env, GITNEXUS_MEMORY: 'off', GITNEXUS_NO_UPDATE_NOTIFIER: '1' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    let output = '';
-    server.stdout.on('data', (data) => {
-      output += String(data);
-    });
-    server.stderr.on('data', (data) => {
-      output += String(data);
-    });
-    const exited = new Promise<void>((resolve) => server.once('exit', () => resolve()));
+
+    // The probe must release its ephemeral port before the child can bind it, so
+    // another process can win that gap and the child dies with EADDRINUSE. Re-pick
+    // and respawn a bounded number of times rather than failing on a lost race.
+    const startServe = async () => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const port = await pickPort();
+        let output = '';
+        const child = spawn(
+          process.execPath,
+          [...CLI_SPAWN_PREFIX, 'serve', '--port', String(port), '--host', '127.0.0.1'],
+          {
+            cwd: repo.dbPath,
+            env: { ...process.env, GITNEXUS_MEMORY: 'off', GITNEXUS_NO_UPDATE_NOTIFIER: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+          },
+        );
+        child.stdout.on('data', (data) => {
+          output += String(data);
+        });
+        child.stderr.on('data', (data) => {
+          output += String(data);
+        });
+        const childExited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+        const healthy = vi.waitFor(
+          async () => {
+            const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
+              signal: AbortSignal.timeout(2_000),
+            });
+            expect(health.status).toBe(200);
+          },
+          { timeout: 60_000, interval: 250 },
+        );
+        // Race readiness against the child dying so a lost port does not burn the
+        // whole health-wait timeout before retrying.
+        const outcome = await Promise.race([
+          healthy.then(() => 'ready' as const),
+          childExited.then(() => 'exited' as const),
+        ]);
+        if (outcome === 'ready') return { child, port, exited: childExited };
+        healthy.catch(() => {});
+        if (attempt === 3 || !/EADDRINUSE/i.test(output)) {
+          throw new Error(`Server exited: ${output}`);
+        }
+      }
+      throw new Error('unreachable');
+    };
+    const { child: server, port, exited } = await startServe();
     try {
-      await vi.waitFor(
-        async () => {
-          if (server.exitCode !== null) throw new Error(`Server exited: ${output}`);
-          const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
-            signal: AbortSignal.timeout(2_000),
-          });
-          expect(health.status).toBe(200);
-        },
-        { timeout: 60_000, interval: 250 },
-      );
       for (const mode of ['bm25', 'hybrid']) {
         const response = await fetch(`http://127.0.0.1:${port}/api/search`, {
           method: 'POST',

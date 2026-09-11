@@ -3206,8 +3206,10 @@ async function runFullAnalysisInner(
     // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
     // stay honest even though that failure no longer aborts the whole analyze.
     let ftsReady = ftsAvailable;
-    // Why FTS ended up skipped (#2658 review L2): extension-unavailable up front,
-    // or build-failed in the degrade branch below.
+    // Why FTS ended up skipped (#2658 review L2): an explicit opt-out
+    // (`disabled-by-flag` / `disabled-by-env`, #3091) when one was recorded,
+    // else extension-unavailable up front, or build-failed in the degrade
+    // branch below.
     let ftsSkipReason: FtsSkipReason | undefined = ftsAvailable
       ? undefined
       : (ftsDisabledReason ?? 'extension-unavailable');
