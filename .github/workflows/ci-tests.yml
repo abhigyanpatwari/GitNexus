@@ -599,6 +599,15 @@ jobs:
         run: node --import tsx bench/parse-dispatch-rounds/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Python workspace import-scan guards (#3254)
+        if: ${{ !cancelled() }}
+        # Build-free: same baseline approach as parse-dispatch-rounds —
+        # exact link/lookalike floors plus a fingerprint, then ratio timing
+        # only (scan scaling and from-token prefilter advantage). See
+        # bench/python-workspace-import-scan/measure.mjs.
+        run: node --import tsx bench/python-workspace-import-scan/measure.mjs --check
+        working-directory: gitnexus
+
       - name: C++ qualified-namespace resolution guards (#2788)
         if: ${{ !cancelled() }}
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
@@ -716,6 +725,13 @@ jobs:
         # file-count and path-depth scaling. Rationale and history: see the
         # header of bench/kotlin-import-target/measure.mjs.
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Ruby gem-boundary correctness + scaling guards (#3096)
+        if: ${{ !cancelled() }}
+        # Includes real manifest loading; checks scoped resolution and scaling
+        # as sibling projects or declared gem counts grow independently.
+        run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
         working-directory: gitnexus
 
       - name: Receiver-resolution drop guards
