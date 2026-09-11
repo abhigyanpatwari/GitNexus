@@ -37,8 +37,10 @@ const fromCount = (commitsBehind: number): StalenessInfo =>
     : { isStale: false, commitsBehind: 0, status: 'current' };
 
 /**
- * `rev-list` could not answer. Separate "HEAD has moved off the indexed commit"
- * from "cannot tell" by asking for HEAD alone, which needs no history walk. The
+ * `rev-list` could not answer. Asking for HEAD alone needs no history walk and
+ * still separates all three answers: HEAD unreadable is `unknown`, HEAD past the
+ * indexed commit is `diverged`, and HEAD still *at* it is `current` — the ref
+ * prints the indexed SHA, so the index is at HEAD however `rev-list` failed. The
  * historical fail-open values are kept either way; only `status` differs.
  */
 const fromHead = (head: string | null, lastCommit: string): StalenessInfo => {

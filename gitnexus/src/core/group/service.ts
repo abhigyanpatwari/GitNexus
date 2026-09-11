@@ -846,8 +846,13 @@ export class GroupService {
         commitsBehind?: number;
         /**
          * What the staleness check could establish (#3256). Additive:
-         * `indexStale` and `commitsBehind` keep their meaning. `unknown` when no
-         * commit was recorded — the case `commitsBehind: -1` has always meant.
+         * `indexStale` and `commitsBehind` keep their meaning. Two rows report
+         * `unknown` and they do NOT agree on those two fields, so read them
+         * together with this one: no commit was recorded (`indexStale: true`,
+         * `commitsBehind: -1`, the sentinel that case has always used), or the
+         * git probe could not answer (`indexStale: false`, `commitsBehind: 0`,
+         * straight from `checkStaleness`). MCP/HTTP `stalenessPayload` reports
+         * neither number — it omits `commitsBehind` for `unknown` entirely.
          */
         status?: StalenessStatus;
       }

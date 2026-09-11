@@ -18,7 +18,8 @@
  * provably stale index indistinguishable from a fresh one. `status` is the
  * additive channel that separates them for a caller that wants to act on it:
  *
- * - `current`  — `rev-list` answered 0.
+ * - `current`  — the index is at HEAD: `rev-list` answered 0, or it could not
+ *   answer but HEAD alone resolved to the indexed commit.
  * - `behind`   — `rev-list` answered N > 0; `commitsBehind` is N.
  * - `diverged` — `rev-list` could not answer, but HEAD resolved and is not the
  *   indexed commit. The index is provably not at HEAD; only the count is

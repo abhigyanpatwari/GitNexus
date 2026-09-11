@@ -2623,9 +2623,10 @@ export class LocalBackend {
    * one `git rev-list` per index per TTL window; the resolved value is cached
    * for TOOL_STALENESS_TTL_MS. Keyed by lbugPath so flat and branch handles
    * (same repoPath, different lastCommit) don't share an entry. Non-blocking by
-   * construction: `checkStalenessAsync` swallows git failures into a `status`
-   * (`diverged` or `unknown`) with `isStale: false`, so a git error never fails
-   * the tool — at most it attaches a `diverged` staleness field.
+   * construction: `checkStalenessAsync` keeps `isStale: false` on every git
+   * failure and reports what it could still establish in `status` (`diverged`,
+   * `unknown`, or `current` when HEAD alone matches the index), so a git error
+   * never fails the tool — at most it attaches a `diverged` staleness field.
    */
   private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
     const now = Date.now();
