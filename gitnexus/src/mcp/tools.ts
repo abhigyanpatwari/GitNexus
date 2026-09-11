@@ -28,6 +28,7 @@ export interface ToolDefinition {
       }
     >;
     required: string[];
+    additionalProperties?: false;
   };
 }
 
@@ -575,6 +576,13 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           minimum: 1,
           maximum: IMPACT_MAX_DEPTH,
         },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel (#2279).',
+          minimum: 0,
+          maximum: IMPACT_MAX_DEPTH,
+        },
         crossDepth: {
           type: 'number',
           description:
@@ -931,6 +939,13 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
           minimum: 1,
           maximum: 30,
         },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel (#2279).',
+          minimum: 0,
+          maximum: 30,
+        },
         includeTests: {
           type: 'boolean',
           description: 'Include test-file symbols in traversal (default: false)',
@@ -993,6 +1008,8 @@ export const REPO_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
+  // Schema is the dispatch contract (#3261): unknown keys fail closed at tools/call.
+  tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's

@@ -329,6 +329,54 @@ describe('MCP output budgets', () => {
     }
   });
 
+  it('rejects unknown tool arguments before backend execution (#3261)', async () => {
+    const backend = createMockBackend();
+    const { text, isError } = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'downstream',
+      notARealArg: 2,
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/Unknown argument "notARealArg" for tool "impact"/);
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('accepts CLI-style depth as a known impact alias (#3261)', async () => {
+    // The CLI flag is --depth; MCP advertises maxDepth. Before #3261, `depth`
+    // was silently dropped. After the fix it is a known alias and is forwarded.
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'downstream',
+      depth: 2,
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('impact', {
+      target: 'auth',
+      direction: 'downstream',
+      depth: 2,
+    });
+  });
+
+  it('still accepts unpublished context target through tools/call', async () => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'context', {
+      repo: '@g1',
+      target: 'Sym',
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('context', { repo: '@g1', target: 'Sym' });
+  });
+
+  it('still accepts the unpublished query alias for query/cypher (#2175)', async () => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'query', {
+      query: 'auth',
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('query', { query: 'auth' });
+  });
+
   it('rejects a non-positive explicit maxTokens before backend execution', async () => {
     const backend = createMockBackend();
     const { text, isError } = await callToolThroughServer(backend, 'query', {

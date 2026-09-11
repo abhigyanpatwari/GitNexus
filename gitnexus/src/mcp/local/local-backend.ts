@@ -117,6 +117,7 @@ import {
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
 } from '../tools.js';
+import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
@@ -274,10 +275,8 @@ function normalizeToolParams(
 ): { params: Record<string, unknown> } | { error: string } {
   const input = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
   const definitions = TOOL_STRING_ALIASES[method];
-  if (!definitions) return { params: input };
-
   const normalized = { ...input };
-  for (const { canonical, aliases } of definitions) {
+  for (const { canonical, aliases } of definitions ?? []) {
     const keys = [canonical, ...aliases];
     const supplied: Array<{ key: string; value: string }> = [];
     for (const key of keys) {
@@ -308,14 +307,17 @@ function normalizeToolParams(
     if (supplied.length > 0) normalized[canonical] = supplied[0].value;
   }
 
+  const folded = foldNumericToolArgumentAliases(method, normalized);
+  if ('error' in folded) return folded;
+
   if (
     method === 'impact' &&
-    typeof normalized.target !== 'string' &&
-    (typeof normalized.target_uid !== 'string' || !normalized.target_uid.trim())
+    typeof folded.params.target !== 'string' &&
+    (typeof folded.params.target_uid !== 'string' || !folded.params.target_uid.trim())
   ) {
     return { error: 'MCP impact requires target, name, symbol, or target_uid.' };
   }
-  return { params: normalized };
+  return { params: folded.params };
 }
 
 // AI context generation is CLI-only (gitnexus analyze)

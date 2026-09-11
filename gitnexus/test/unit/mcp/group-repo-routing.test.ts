@@ -123,6 +123,26 @@ repos:
     );
   });
 
+  it('forwards folded depth as maxDepth on group impact (#3261)', async () => {
+    const backend = new LocalBackend();
+    await backend.callTool('impact', {
+      repo: '@g1',
+      target: 'Sym',
+      direction: 'upstream',
+      depth: 2,
+    });
+    expect(groupSpyImpact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'g1',
+        target: 'Sym',
+        direction: 'upstream',
+        maxDepth: 2,
+      }),
+    );
+    const arg = groupSpyImpact.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('depth');
+  });
+
   it('routes context to groupContext', async () => {
     const backend = new LocalBackend();
     await backend.callTool('context', { repo: '@g1', target: 'Sym' });
