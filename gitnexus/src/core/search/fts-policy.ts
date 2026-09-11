@@ -5,12 +5,12 @@ export type FtsSkipReason = FtsDisabledReason | 'extension-unavailable' | 'build
 
 type RepoCapabilities = NonNullable<RepoMeta['capabilities']>;
 
-const DEFAULT_GRAPH_CAPABILITY: RepoCapabilities['graph'] = {
+export const DEFAULT_GRAPH_CAPABILITY: RepoCapabilities['graph'] = {
   provider: 'ladybugdb',
   status: 'available',
 };
 
-const DEFAULT_VECTOR_SEARCH_CAPABILITY: RepoCapabilities['vectorSearch'] = {
+export const DEFAULT_VECTOR_SEARCH_CAPABILITY: RepoCapabilities['vectorSearch'] = {
   provider: 'exact-scan',
   status: 'unavailable',
   exactScanLimit: 0,

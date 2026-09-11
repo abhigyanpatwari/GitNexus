@@ -735,8 +735,12 @@ async function loadFtsSession(storagePath: string): Promise<{
   return {
     meta,
     ftsDisabledReason,
-    ...(ftsDisabledReason ? { skipFts: true as const } : {}),
+    ...skipFtsOption(Boolean(ftsDisabledReason)),
   };
+}
+
+function skipFtsOption(skipFts?: boolean): { skipFts?: true } {
+  return skipFts ? { skipFts: true } : {};
 }
 
 function readOnlyFtsOptions(skipFts?: true): { readOnly: true; skipFts?: true } {
@@ -2039,7 +2043,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 );
                 await saveMeta(entry.storagePath, embeddingMeta);
               },
-              { ...(ftsSession.skipFts ? { skipFts: true } : {}) },
+              skipFtsOption(ftsSession.skipFts),
             );
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
