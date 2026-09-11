@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { getPythonParser } from '../../ingestion/languages/python/query.js';
-import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { ParseTimeoutError, parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import {
   shouldIgnorePath,
   loadIgnoreRules,
@@ -115,7 +115,13 @@ async function scanPythonImports(
       continue;
     }
 
-    const tree = parseSourceSafe(getPythonParser(), content, undefined, undefined, relFile);
+    let tree;
+    try {
+      tree = parseSourceSafe(getPythonParser(), content, undefined, undefined, relFile);
+    } catch (error) {
+      if (error instanceof ParseTimeoutError) continue;
+      throw error;
+    }
     const visit = (node: (typeof tree)['rootNode']): void => {
       if (node.type !== 'import_from_statement') {
         for (let i = 0; i < node.namedChildCount; i++) {
