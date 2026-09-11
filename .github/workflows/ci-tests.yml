@@ -608,6 +608,17 @@ jobs:
         run: node --import tsx bench/python-workspace-import-scan/measure.mjs --check
         working-directory: gitnexus
 
+      - name: MCP tools/list countRepos vs listRepos guards (#3259, #3184)
+        if: ${{ !cancelled() }}
+        # Build-free: exact registry cardinality + tool-roster + schema-flag
+        # floors, then ratio timing only (countRepos/listRepos and
+        # listTools/listRepos). No millisecond ceiling — this repo has
+        # already been bitten by a fixed ms budget. Isolated GITNEXUS_HOME;
+        # fixture is N real git repos so listRepos pays rev-list. See
+        # bench/mcp-tools-list/measure.mjs.
+        run: node --import tsx bench/mcp-tools-list/measure.mjs --check
+        working-directory: gitnexus
+
       - name: C++ qualified-namespace resolution guards (#2788)
         if: ${{ !cancelled() }}
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
