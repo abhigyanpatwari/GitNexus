@@ -203,7 +203,10 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(releaseMock).toHaveBeenCalled();
   });
 
-  it('allows an unverified-count checkpoint under a different identity', async () => {
+  it('fails closed on an identity-mismatched unverified-count checkpoint', async () => {
+    // `decideEmbeddingResume` abandons this kind before comparing identity, so
+    // the command's own gate is the only thing that keeps a foreign model from
+    // filling the remaining holes beside the old model's vectors.
     await store();
     loadMetaMock.mockResolvedValue({
       ...BASE_META,
@@ -225,9 +228,95 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
       provider: 'http:deadbeef',
     });
 
+    await expect(run()).rejects.toThrow(/Cannot sync embeddings: the index checkpoint was written/);
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(runEmbeddingPipelineMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('refuses to sync when the recorded vector width differs from this run', async () => {
+    await store();
+    loadMetaMock.mockResolvedValue({ ...BASE_META, embeddingDims: 1 });
+
+    await expect(run()).rejects.toThrow(/Cannot sync embeddings: this index stores FLOAT\[1\]/);
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('refuses to sync while the structural index is incomplete', async () => {
+    await store();
+    loadMetaMock.mockResolvedValue({
+      ...BASE_META,
+      incrementalInProgress: { startedAt: '2026-01-01T00:00:00.000Z', toWriteCount: 3 },
+    });
+
+    await expect(run()).rejects.toThrow(
+      'The structural index is incomplete. Run gitnexus analyze --force first.',
+    );
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(saveMetaMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('persists an interrupted checkpoint from the pipeline checkpoint callbacks', async () => {
+    // The resume contract lives in these callbacks; a mock that never invokes
+    // them leaves the whole save path unexecuted.
+    await store();
+    runEmbeddingPipelineMock.mockImplementation(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _signal: unknown,
+        _existing: unknown,
+        options: {
+          onCheckpointWindowStart: (checkpoint: Record<string, unknown>) => Promise<void>;
+          onCheckpoint: (checkpoint: Record<string, unknown>) => Promise<void>;
+        },
+      ) => {
+        await options.onCheckpointWindowStart({
+          nodeIds: ['n2', 'n3'],
+          nodesProcessed: 1,
+          totalNodes: 3,
+          chunksProcessed: 1,
+        });
+        await options.onCheckpoint({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 3 });
+        return { nodesProcessed: 3, chunksProcessed: 3, failedNodeIds: [] };
+      },
+    );
+
     await run();
-    expect(initLbugMock).toHaveBeenCalled();
-    expect(runEmbeddingPipelineMock).toHaveBeenCalled();
+
+    type SavedMeta = {
+      stats?: { embeddings?: number };
+      embeddingCheckpoint?: { pendingNodeIds?: string[] };
+    };
+    const windowStart = saveMetaMock.mock.calls[0]?.[1] as SavedMeta;
+    expect(windowStart.embeddingCheckpoint?.pendingNodeIds).toEqual(['n2', 'n3']);
+    // The window marker carries no count, so the last known one must survive.
+    expect(windowStart.stats?.embeddings).toBe(1);
+
+    const windowEnd = saveMetaMock.mock.calls[1]?.[1] as SavedMeta;
+    expect(windowEnd.embeddingCheckpoint?.pendingNodeIds).toEqual([]);
+    expect(windowEnd.stats?.embeddings).toBe(2);
+  });
+
+  it('keeps a partial checkpoint when some nodes failed to embed', async () => {
+    await store();
+    runEmbeddingPipelineMock.mockResolvedValue({
+      nodesProcessed: 2,
+      chunksProcessed: 2,
+      failedNodeIds: ['n9'],
+    });
+
+    await run();
+
+    const saved = saveMetaMock.mock.calls.at(-1)?.[1] as {
+      embeddingCheckpoint?: { pendingNodeIds?: string[] };
+    };
+    expect(saved.embeddingCheckpoint).toBeDefined();
+    expect(saved.embeddingCheckpoint?.pendingNodeIds).toEqual(['n9']);
   });
 
   it('does not publish a missing count cell as zero', async () => {
