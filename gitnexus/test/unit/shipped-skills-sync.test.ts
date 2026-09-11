@@ -265,6 +265,10 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       const content = fs.readFileSync(file, 'utf-8');
       expect(content).toContain('### Inline staleness signal');
       expect(content).toContain('commitsBehind');
+      // #3256: the field gained `status`, and the `diverged` arm carries no
+      // count — the reason an agent has to read `status` before the number.
+      expect(content).toContain('{ status, commitsBehind?, hint? }');
+      expect(content).toContain('"status": "diverged"');
     }
   });
 
