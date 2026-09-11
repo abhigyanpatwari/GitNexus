@@ -93,6 +93,17 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     expect(repeat.alreadyUpToDate).toBe(true);
     expect(repeat.ftsSkipReason).toBe('disabled-by-flag');
     expect(ensure.mock.calls.filter((call) => call[1] === 'fts')).toEqual([]);
+    vi.stubEnv('GITNEXUS_SKIP_FTS', '1');
+    const switched = await runFullAnalysis(repo.dbPath, options, callbacks);
+    expect(switched.alreadyUpToDate).toBe(true);
+    expect(switched.ftsSkipReason).toBe('disabled-by-env');
+    expect(ensure.mock.calls.filter((call) => call[1] === 'fts')).toEqual([]);
+    expect((await loadMeta(getStoragePaths(repo.dbPath).storagePath))?.capabilities?.fts).toEqual({
+      provider: 'ladybugdb-fts',
+      status: 'unavailable',
+      skipReason: 'disabled-by-env',
+    });
+    vi.stubEnv('GITNEXUS_SKIP_FTS', undefined);
     const backend = new LocalBackend();
     try {
       expect(await backend.init()).toBe(true);
@@ -154,12 +165,35 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
     expect(afterEnable.cache).toEqual(before.cache);
     expect(afterEnable.embeddings.embeddings).toEqual([embedding]);
     const ensure = vi.spyOn(extensionManager, 'ensure');
+    const enabledMeta = (await loadMeta(storagePath))!;
+    let dirtyDuringDisable: Promise<Awaited<ReturnType<typeof loadMeta>>> | undefined;
     const disabledAgain = await runFullAnalysis(
       repo.dbPath,
       { ...options, skipFts: true },
-      callbacks,
+      {
+        onProgress() {},
+        onLog(msg) {
+          // vi.spyOn cannot intercept run-analyze's ESM saveMeta binding.
+          // The escalation log is emitted after the dirty stamp and before wipe.
+          if (
+            !dirtyDuringDisable &&
+            msg.includes('FTS is explicitly disabled and existing search indexes')
+          ) {
+            dirtyDuringDisable = loadMeta(storagePath);
+          }
+        },
+      },
     );
     expect(disabledAgain.ftsSkipReason).toBe('disabled-by-flag');
+    expect(dirtyDuringDisable).toBeDefined();
+    const dirty = await dirtyDuringDisable!;
+    expect(dirty?.incrementalInProgress).toBeDefined();
+    expect(dirty?.indexedAt).toBe(enabledMeta.indexedAt);
+    expect(dirty?.capabilities?.fts).toEqual({
+      provider: 'ladybugdb-fts',
+      status: 'unavailable',
+      skipReason: 'disabled-by-flag',
+    });
     expect(ensure.mock.calls.filter((call) => call[1] === 'fts')).toEqual([]);
     const after = await graphSnapshot();
     expect(after.functions).toEqual(before.functions);

@@ -5,8 +5,11 @@ import path from 'node:path';
 import {
   FTS_DISABLED_MESSAGE,
   getFtsDisabledReason,
+  isExplicitFtsDisablement,
   resolveFtsDisableReason,
+  withExplicitFtsDisablement,
 } from '../../src/core/search/fts-policy.js';
+import type { RepoMeta } from '../../src/storage/repo-meta.js';
 import { ftsDegradedWarning } from '../../src/core/search/fts-indexes.js';
 import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
 import { hybridSearch } from '../../src/core/search/hybrid-search.js';
@@ -27,6 +30,9 @@ describe('explicit FTS opt-out', () => {
     expect(resolveFtsDisableReason(false, '1')).toBe('disabled-by-env');
     expect(resolveFtsDisableReason(true, '1')).toBe('disabled-by-flag');
     expect(resolveFtsDisableReason(true, '0')).toBe('disabled-by-flag');
+    expect(isExplicitFtsDisablement('disabled-by-flag')).toBe(true);
+    expect(isExplicitFtsDisablement('disabled-by-env')).toBe(true);
+    expect(isExplicitFtsDisablement('build-failed')).toBe(false);
   });
 
   it('does not infer intent from a failed or legacy index', () => {
@@ -50,6 +56,38 @@ describe('explicit FTS opt-out', () => {
         skipReason: 'disabled-by-env',
       }),
     ).toBe('disabled-by-env');
+  });
+
+  it('stamps explicit disablement without rewriting freshness or sibling capabilities', () => {
+    const indexedAt = '2026-01-01T00:00:00.000Z';
+    const meta = {
+      indexedAt,
+      lastCommit: 'abc',
+      capabilities: {
+        graph: { provider: 'ladybugdb', status: 'available' },
+        fts: { provider: 'ladybugdb-fts', status: 'available' },
+        vectorSearch: {
+          provider: 'ladybugdb-vector',
+          status: 'vector-index',
+          exactScanLimit: 10,
+        },
+      },
+    } as RepoMeta;
+    const stamped = withExplicitFtsDisablement(meta, 'disabled-by-flag');
+    expect(stamped.indexedAt).toBe(indexedAt);
+    expect(stamped.lastCommit).toBe('abc');
+    expect(stamped.capabilities?.graph).toEqual(meta.capabilities?.graph);
+    expect(stamped.capabilities?.vectorSearch).toEqual(meta.capabilities?.vectorSearch);
+    expect(stamped.capabilities?.fts).toEqual({
+      provider: 'ladybugdb-fts',
+      status: 'unavailable',
+      skipReason: 'disabled-by-flag',
+    });
+    expect(withExplicitFtsDisablement(meta, undefined)).toBe(meta);
+    expect(withExplicitFtsDisablement(stamped, 'disabled-by-flag')).toBe(stamped);
+    expect(withExplicitFtsDisablement(stamped, 'disabled-by-env').capabilities?.fts?.skipReason).toBe(
+      'disabled-by-env',
+    );
   });
 
   it('reports intent even when another database has an extension failure', async () => {

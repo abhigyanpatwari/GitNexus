@@ -37,7 +37,7 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
-import { getFtsDisabledReason } from '../core/search/fts-policy.js';
+import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -725,6 +725,24 @@ export const handleFileRequest = async (
   }
 };
 
+async function loadFtsSession(storagePath: string): Promise<{
+  meta: Awaited<ReturnType<typeof loadMeta>>;
+  ftsDisabledReason: FtsDisabledReason | undefined;
+  skipFts?: true;
+}> {
+  const meta = await loadMeta(storagePath);
+  const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+  return {
+    meta,
+    ftsDisabledReason,
+    ...(ftsDisabledReason ? { skipFts: true as const } : {}),
+  };
+}
+
+function readOnlyFtsOptions(skipFts?: true): { readOnly: true; skipFts?: true } {
+  return skipFts ? { readOnly: true, skipFts: true } : { readOnly: true };
+}
+
 export const handleQueryRequest = async (
   req: express.Request,
   res: express.Response,
@@ -750,13 +768,12 @@ export const handleQueryRequest = async (
       return;
     }
     const lbugPath = path.join(entry.storagePath, 'lbug');
-    const ftsDisabledReason = getFtsDisabledReason(
-      (await loadMeta(entry.storagePath))?.capabilities?.fts,
+    const { skipFts } = await loadFtsSession(entry.storagePath);
+    const result = await withLbugDb(
+      lbugPath,
+      () => executePrepared(cypher, queryParams ?? {}),
+      readOnlyFtsOptions(skipFts),
     );
-    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
-      readOnly: true,
-      ...(ftsDisabledReason ? { skipFts: true } : {}),
-    });
     res.json({ result });
   } catch (err: any) {
     if (isReadOnlyDbError(err)) {
@@ -1156,9 +1173,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
-      const ftsDisabledReason = getFtsDisabledReason(
-        (await loadMeta(entry.storagePath))?.capabilities?.fts,
-      );
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
       if (stream) {
         const abortController = new AbortController();
@@ -1190,7 +1205,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await withLbugDb(
             lbugPath,
             async () => streamGraphNdjson(res, includeContent, abortController.signal),
-            { readOnly: true, ...(ftsDisabledReason ? { skipFts: true } : {}) },
+            readOnlyFtsOptions(skipFts),
           );
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
@@ -1203,10 +1218,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent), {
-        readOnly: true,
-        ...(ftsDisabledReason ? { skipFts: true } : {}),
-      });
+      const graph = await withLbugDb(
+        lbugPath,
+        async () => buildGraph(includeContent),
+        readOnlyFtsOptions(skipFts),
+      );
       res.json(graph);
     } catch (err: any) {
       if (err instanceof ClientDisconnectedError) {
@@ -1247,9 +1263,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
-      const ftsDisabledReason = getFtsDisabledReason(
-        (await loadMeta(entry.storagePath))?.capabilities?.fts,
-      );
+      const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
@@ -1278,9 +1292,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               sources: ['semantic'],
             }));
           } else if (mode === 'bm25') {
-            const ftsResponse = ftsDisabledReason
-              ? await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason)
-              : await searchFTSFromLbug(query, limit);
+            const ftsResponse = await searchFTSFromLbug(
+              query,
+              limit,
+              undefined,
+              ftsDisabledReason,
+            );
             ftsAvailable = ftsResponse.ftsAvailable;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
@@ -1293,14 +1310,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (isEmbedderReady()) {
               const { semanticSearch: semSearch } =
                 await import('../core/embeddings/embedding-pipeline.js');
-              searchResults = ftsDisabledReason
-                ? await hybridSearch(query, limit, executeQuery, semSearch, ftsDisabledReason)
-                : await hybridSearch(query, limit, executeQuery, semSearch);
+              searchResults = await hybridSearch(
+                query,
+                limit,
+                executeQuery,
+                semSearch,
+                ftsDisabledReason,
+              );
               if (ftsDisabledReason) ftsAvailable = false;
             } else {
-              const ftsResponse = ftsDisabledReason
-                ? await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason)
-                : await searchFTSFromLbug(query, limit);
+              const ftsResponse = await searchFTSFromLbug(
+                query,
+                limit,
+                undefined,
+                ftsDisabledReason,
+              );
               ftsAvailable = ftsResponse.ftsAvailable;
               searchResults = ftsResponse.results;
             }
@@ -1394,7 +1418,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           return { searchResults: enriched, ftsAvailable };
         },
-        ftsDisabledReason ? { readOnly: true, skipFts: true } : { readOnly: true },
+        readOnlyFtsOptions(skipFts),
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
@@ -1434,16 +1458,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // cut a stuck regex.test() when the wall-clock budget expires.
       const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const repoRoot = path.resolve(entry.path);
-      const ftsDisabledReason = getFtsDisabledReason(
-        (await loadMeta(entry.storagePath))?.capabilities?.fts,
-      );
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(
         lbugPath,
         () =>
           executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
-        { readOnly: true, ...(ftsDisabledReason ? { skipFts: true } : {}) },
+        readOnlyFtsOptions(skipFts),
       );
 
       const filePaths: string[] = [];
@@ -1833,9 +1855,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
             const lbugPath = path.join(entry.storagePath, 'lbug');
-            const ftsDisabledReason = getFtsDisabledReason(
-              (await loadMeta(entry.storagePath))?.capabilities?.fts,
-            );
+            const ftsSession = await loadFtsSession(entry.storagePath);
+            let embeddingMeta = ftsSession.meta;
             await withLbugDb(
               lbugPath,
               async () => {
@@ -1844,7 +1865,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 const { resolveEmbeddingIdentity } =
                   await import('../core/embeddings/embedding-identity.js');
                 const embeddingIdentity = resolveEmbeddingIdentity();
-                let embeddingMeta = await loadMeta(entry.storagePath);
                 if (!embeddingMeta) {
                   throw new Error('Repository metadata is missing; run gitnexus analyze first');
                 }
@@ -2024,7 +2044,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 );
                 await saveMeta(entry.storagePath, embeddingMeta);
               },
-              { ...(ftsDisabledReason ? { skipFts: true } : {}) },
+              { ...(ftsSession.skipFts ? { skipFts: true } : {}) },
             );
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running

@@ -176,9 +176,7 @@ export const hybridSearch = async (
   // semantic-only search instead of crashing with "bm25Results is not iterable".
   let bm25Results: BM25SearchResult[] = [];
   try {
-    const ftsResponse = disabledReason
-      ? await searchFTSFromLbug(query, limit, undefined, disabledReason)
-      : await searchFTSFromLbug(query, limit);
+    const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
     bm25Results = ftsResponse?.results ?? [];
   } catch {
     // FTS unavailable — continue with semantic-only search

@@ -2892,7 +2892,6 @@ export class LocalBackend {
     // each so both get independent wall-time records without fighting
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
-    // Reuse this per-query metadata snapshot for the diagnostics below.
     const meta = await loadMeta(path.dirname(repo.lbugPath));
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const [bm25SearchResult, semanticResults] = await Promise.all([

@@ -13,6 +13,7 @@ import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './inde
 import {
   resolveFtsDisableReason,
   getFtsDisabledReason,
+  withExplicitFtsDisablement,
   FTS_DISABLED_MESSAGE,
   type FtsSkipReason,
 } from './search/fts-policy.js';
@@ -1200,9 +1201,19 @@ async function runFullAnalysisInner(
     log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
   }
 
-  const existingMeta = await loadMeta(metaDir);
-  const previousFtsDisabledReason = getFtsDisabledReason(existingMeta?.capabilities?.fts);
-  const ftsModeChanged = ftsDisabledReason !== previousFtsDisabledReason;
+  const loadedMeta = await loadMeta(metaDir);
+  const previousFtsDisabledReason = getFtsDisabledReason(loadedMeta?.capabilities?.fts);
+  // Flag and env are equivalent disablements. Only a true enable↔disable flip
+  // needs a write plan; a discriminator-only change restamps on the
+  // already-up-to-date path.
+  const ftsModeChanged = Boolean(ftsDisabledReason) !== Boolean(previousFtsDisabledReason);
+  // Fold explicit disablement into the in-memory prior meta so every later
+  // saveMeta that spreads it (dirty flag, incremental phase stamps) advertises
+  // "FTS disabled" instead of leftover available/build-failed while a wipe is
+  // in flight. Re-enable leaves the prior stamp untouched.
+  const existingMeta = loadedMeta
+    ? withExplicitFtsDisablement(loadedMeta, ftsDisabledReason)
+    : undefined;
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -1908,6 +1919,19 @@ async function runFullAnalysisInner(
               : (err as Error).message;
             log(
               `Warning: could not restamp the workspace branch label (${reason}); will retry on the next run.`,
+            );
+          }
+        } else if (ftsDisabledReason && ftsDisabledReason !== previousFtsDisabledReason) {
+          // Discriminator-only restamp (flag↔env). `existingMeta` already
+          // carries the folded skipReason; persist it without a write plan.
+          try {
+            await saveMeta(metaDir, existingMeta);
+          } catch (err) {
+            const reason = isReadOnlyFilesystemError(err)
+              ? `${(err as Error).message} — storage may be read-only (#1549)`
+              : (err as Error).message;
+            log(
+              `Warning: could not restamp the FTS skip reason (${reason}); will retry on the next run.`,
             );
           }
         }

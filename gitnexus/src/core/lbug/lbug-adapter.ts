@@ -710,7 +710,7 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
 };
 
 export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath, false, options.skipFts === true));
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
 };
 
 /**
@@ -731,7 +731,7 @@ export const withLbugDb = async <T>(
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath, readOnly, options.skipFts === true);
+        await ensureLbugInitialized(dbPath, { readOnly, skipFts: options.skipFts });
         return operation();
       });
     } catch (err) {
@@ -764,7 +764,12 @@ export const withLbugDb = async <T>(
 
 let currentDbSkipFts = false;
 
-const ensureLbugInitialized = async (dbPath: string, readOnly = false, skipFts = false) => {
+const ensureLbugInitialized = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
+  const readOnly = options.readOnly === true;
+  const skipFts = options.skipFts === true;
   if (
     conn &&
     currentDbPath === dbPath &&
@@ -773,11 +778,16 @@ const ensureLbugInitialized = async (dbPath: string, readOnly = false, skipFts =
   ) {
     return { db, conn };
   }
-  await doInitLbug(dbPath, readOnly, skipFts);
+  await doInitLbug(dbPath, { readOnly, skipFts });
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string, readOnly = false, skipFts = false) => {
+const doInitLbug = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
+  const readOnly = options.readOnly === true;
+  const skipFts = options.skipFts === true;
   // Different database requested — close the old one first
   if (conn || db) {
     await safeClose();
