@@ -611,7 +611,7 @@ describe('POST /api/embed route wiring (#2790)', () => {
     const head = source.match(/await withLbugDb\(\s*lbugPath,\s*async \(\) => \{/);
     expect(head).not.toBeNull();
     const start = head!.index!;
-    const end = source.indexOf('{ ...(ftsSession.skipFts', start);
+    const end = source.indexOf('skipFtsOption(ftsSession.skipFts)', start);
     expect(end).toBeGreaterThan(start);
     return source.slice(start, end);
   };

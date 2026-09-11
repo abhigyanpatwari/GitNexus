@@ -1452,7 +1452,8 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
-      if (result.ftsSkipped) console.log(`  ${FTS_DISABLED_MESSAGE}\n`);
+      if (isExplicitFtsDisablement(result.ftsSkipReason))
+        console.log(`  ${FTS_DISABLED_MESSAGE}\n`);
       if (runOptions.registryName) {
         console.log(`  Registry name: ${result.repoName}\n`);
       }
