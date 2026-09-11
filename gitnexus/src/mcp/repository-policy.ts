@@ -201,17 +201,17 @@ export class McpRepositoryPolicy {
     // One fresh listing supplies both schema decisions. Besides keeping the
     // advertised contract internally consistent, this avoids doing two full
     // per-repo staleness fan-outs for every tools/list request.
-    const visibleRepos = await this.listAllowedRepos(backend);
-    if (visibleRepos.length <= 1) {
+    // Use a lightweight registry count (no git spawns, no staleness checks)
+    // to decide whether the repo parameter is required. The full staleness
+    // fan-out is reserved for actual list_repos tool calls.
+    const repoCount = await backend.countRepos();
+    if (repoCount <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
     try {
-      // listAllowedRepos() refreshed this backend immediately above. Resolve
-      // against that exact cache snapshot instead of racing another registry
-      // read; only read-only schemas may advertise the cwd-derived default.
       await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
-        refreshRegistry: false,
+        refreshRegistry: true,
       });
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
     } catch {

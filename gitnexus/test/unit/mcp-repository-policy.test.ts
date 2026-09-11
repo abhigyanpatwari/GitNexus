@@ -37,6 +37,7 @@ const REPOS: RepoListing[] = [
 function createBackend(repos = REPOS) {
   return {
     listRepos: vi.fn().mockResolvedValue(repos.map((repo) => ({ ...repo }))),
+    countRepos: vi.fn().mockResolvedValue(repos.length),
     callTool: vi.fn().mockImplementation(async (name: string, args: Record<string, unknown>) => ({
       name,
       args,
