@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
+import { getPythonParser } from '../../ingestion/languages/python/query.js';
 import {
   shouldIgnorePath,
   loadIgnoreRules,
@@ -113,35 +114,42 @@ async function scanPythonImports(
       continue;
     }
 
-    // from <pkg> import Foo, Bar
-    // from <pkg>.module import Foo
-    const fromImportRegex = /^\s*from\s+(\w[\w.]*)\s+import\s+(.+)/gm;
-    let match;
-    while ((match = fromImportRegex.exec(content)) !== null) {
-      const modulePath = match[1];
-      const importClause = match[2];
+    const tree = getPythonParser().parse(content);
+    const visit = (node: (typeof tree)['rootNode']): void => {
+      if (node.type !== 'import_from_statement') {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const child = node.namedChild(i);
+          if (child) visit(child);
+        }
+        return;
+      }
+
+      const moduleNode = node.childForFieldName('module_name');
+      const modulePath = moduleNode?.text;
+      if (!modulePath) return;
       const rootModule = modulePath.split('.')[0];
       const originalName = knownPackages.get(rootModule);
-      if (!originalName) continue;
+      if (!originalName) return;
 
-      if (importClause.trim() === '(') continue;
-
-      const symbols = importClause
-        .replace(/\(|\)/g, '')
-        .split(',')
-        .map((s) => {
-          const trimmed = s.trim();
-          const asMatch = trimmed.match(/^(\S+)\s+as\s+/);
-          return asMatch ? asMatch[1] : trimmed;
-        })
-        .filter(Boolean);
+      const symbols: string[] = [];
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (!child || child.id === moduleNode.id) continue;
+        if (child.type === 'dotted_name') {
+          symbols.push(child.text);
+        } else if (child.type === 'aliased_import') {
+          const imported = child.childForFieldName('name');
+          if (imported) symbols.push(imported.text);
+        }
+      }
 
       for (const sym of symbols) {
         if (isPascalCase(sym)) {
           results.push({ packageName: originalName, symbolName: sym, filePath: relFile });
         }
       }
-    }
+    };
+    visit(tree.rootNode);
   }
 
   return results;
