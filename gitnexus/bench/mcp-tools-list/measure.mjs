@@ -71,9 +71,7 @@ function positiveInt(value, fallback) {
 }
 
 const REPS = CHECK ? PINNED_REPS : positiveInt(process.env.BENCH_REPS, PINNED_REPS);
-const N = CHECK
-  ? baselines.n_repos
-  : positiveInt(process.env.BENCH_REPOS, baselines.n_repos);
+const N = CHECK ? baselines.n_repos : positiveInt(process.env.BENCH_REPOS, baselines.n_repos);
 const ROOT = process.env.BENCH_ROOT ?? path.join(os.tmpdir(), 'gn-mcp-tools-list-bench');
 const WORK = path.join(ROOT, `n-${N}`);
 const HOME = path.join(WORK, 'home');
