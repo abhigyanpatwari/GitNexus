@@ -25,9 +25,7 @@ export function resolveFtsDisableReason(
   return undefined;
 }
 
-export function isExplicitFtsDisablement(
-  reason: string | undefined,
-): reason is FtsDisabledReason {
+export function isExplicitFtsDisablement(reason: string | undefined): reason is FtsDisabledReason {
   return reason === 'disabled-by-flag' || reason === 'disabled-by-env';
 }
 

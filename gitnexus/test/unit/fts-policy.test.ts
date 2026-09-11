@@ -85,9 +85,9 @@ describe('explicit FTS opt-out', () => {
     });
     expect(withExplicitFtsDisablement(meta, undefined)).toBe(meta);
     expect(withExplicitFtsDisablement(stamped, 'disabled-by-flag')).toBe(stamped);
-    expect(withExplicitFtsDisablement(stamped, 'disabled-by-env').capabilities?.fts?.skipReason).toBe(
-      'disabled-by-env',
-    );
+    expect(
+      withExplicitFtsDisablement(stamped, 'disabled-by-env').capabilities?.fts?.skipReason,
+    ).toBe('disabled-by-env');
   });
 
   it('reports intent even when another database has an extension failure', async () => {

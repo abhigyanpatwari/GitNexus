@@ -1292,12 +1292,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               sources: ['semantic'],
             }));
           } else if (mode === 'bm25') {
-            const ftsResponse = await searchFTSFromLbug(
-              query,
-              limit,
-              undefined,
-              ftsDisabledReason,
-            );
+            const ftsResponse = await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason);
             ftsAvailable = ftsResponse.ftsAvailable;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
