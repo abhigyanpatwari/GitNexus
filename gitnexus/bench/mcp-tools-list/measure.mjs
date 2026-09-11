@@ -36,9 +36,12 @@
  *   `tools/list` path over the old `listRepos()` hot path. Restoring
  *   `listRepos()` on schema introspection collapses this toward 1+.
  *
- * Isolated `GITNEXUS_HOME` — never touches `~/.gitnexus`. Each fixture row
- * is a real git repo whose `lastCommit` matches HEAD, so `listRepos()` pays
- * `rev-list` instead of failing open.
+ * Isolated `GITNEXUS_HOME` — never touches `~/.gitnexus`. Also clears
+ * `GITNEXUS_MCP_ALLOWED_REPOS`, `GITNEXUS_MCP_DEFAULT_REPO`, and
+ * `GITNEXUS_MCP_READ_ONLY` so the invoking shell cannot shrink the roster.
+ * Each fixture row is a real git repo whose `lastCommit` matches HEAD, so
+ * `listRepos()` pays `rev-list` instead of failing open. The default root is
+ * `mkdtempSync`; set `BENCH_ROOT` to reuse a tree across local runs.
  *
  * Usage:
  *   node --import tsx bench/mcp-tools-list/measure.mjs
@@ -46,7 +49,7 @@
  *   BENCH_REPOS=3 node --import tsx bench/mcp-tools-list/measure.mjs   # report only
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -72,13 +75,15 @@ function positiveInt(value, fallback) {
 
 const REPS = CHECK ? PINNED_REPS : positiveInt(process.env.BENCH_REPS, PINNED_REPS);
 const N = CHECK ? baselines.n_repos : positiveInt(process.env.BENCH_REPOS, baselines.n_repos);
-const ROOT = process.env.BENCH_ROOT ?? path.join(os.tmpdir(), 'gn-mcp-tools-list-bench');
+const ROOT =
+  process.env.BENCH_ROOT ?? mkdtempSync(path.join(os.tmpdir(), 'gn-mcp-tools-list-bench-'));
 const WORK = path.join(ROOT, `n-${N}`);
 const HOME = path.join(WORK, 'home');
 
 process.env.GITNEXUS_HOME = HOME;
 delete process.env.GITNEXUS_MCP_ALLOWED_REPOS;
 delete process.env.GITNEXUS_MCP_DEFAULT_REPO;
+delete process.env.GITNEXUS_MCP_READ_ONLY;
 
 function git(cwd, args) {
   return execFileSync('git', args, {
@@ -98,7 +103,16 @@ function git(cwd, args) {
 function setupFixture() {
   mkdirSync(HOME, { recursive: true });
   const marker = path.join(WORK, 'ready');
-  if (existsSync(marker) && existsSync(path.join(HOME, 'registry.json'))) return;
+  // Reuse only when the caller pinned BENCH_ROOT. The default root is a
+  // mkdtempSync directory, so the ready marker cannot alias a previous run
+  // and there is no exists-then-write race on a predictable /tmp name.
+  if (
+    process.env.BENCH_ROOT &&
+    existsSync(marker) &&
+    existsSync(path.join(HOME, 'registry.json'))
+  ) {
+    return;
+  }
 
   const entries = [];
   for (let i = 0; i < N; i++) {
