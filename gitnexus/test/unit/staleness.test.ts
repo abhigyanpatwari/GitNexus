@@ -226,7 +226,9 @@ describe('staleness status (#3256)', () => {
       it('reports diverged, not current, when the recorded commit is not in history', async () => {
         const result = await check(fixture.repo, '0000000000000000000000000000000000000abc');
         expect(result.status).toBe('diverged');
-        expect(result.hint).toContain('no longer in this clone');
+        // The hint claims only the uncountable gap, not that the commit left
+        // history — every other `rev-list` failure reaches the same branch.
+        expect(result.hint).toContain('could not be counted');
         // The fail-open values the tests above pin are unchanged.
         expect(result).toMatchObject({ isStale: false, commitsBehind: 0 });
       });

@@ -26,8 +26,12 @@ const STALENESS_TIMEOUT_MS = 5_000;
 const behindHint = (n: number): string =>
   `⚠️ Index is ${n} commit${n > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`;
 
+// Says only what a failed count plus a resolved HEAD establish: the index is not
+// at HEAD and the gap is uncountable. Reaching here does NOT prove the indexed
+// commit left history — that is the usual cause (a pruned `fetch --depth 1`),
+// but any other `rev-list` failure lands here too, so the cause is hedged.
 const DIVERGED_HINT =
-  "⚠️ Index was built from a commit that is no longer in this clone's history, and HEAD has moved on. Run analyze tool to update.";
+  "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update.";
 
 const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
 

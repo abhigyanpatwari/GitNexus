@@ -91,11 +91,11 @@ These four hot read tools attach a non-blocking `staleness` field to their respo
 }
 ```
 
-`commitsBehind` is present only when git counted the gap. When the indexed commit is no longer in the clone's history and HEAD has moved on, the index is provably not at HEAD but the count is unknowable, so no number is reported:
+`commitsBehind` is present only when git counted the gap. When git could not count it but HEAD still resolves to a commit other than the indexed one — usually because the indexed commit is no longer in the clone's history — the index is provably not at HEAD with no countable gap, so no number is reported:
 
 ```jsonc
 { /* …the tool's normal result… */
-  "staleness": { "status": "diverged", "hint": "⚠️ Index was built from a commit that is no longer in this clone's history, and HEAD has moved on. Run analyze tool to update." }
+  "staleness": { "status": "diverged", "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update." }
 }
 ```
 
