@@ -190,6 +190,7 @@ describeBlock('repo routes expose branch and freshness (real server)', () => {
     expect(entry.branch).toBe('main');
     // Genuinely computed by `git rev-list`, not a fixture constant.
     expect(entry.staleness).toEqual({
+      status: 'behind',
       commitsBehind: 1,
       hint: expect.stringContaining('1 commit behind'),
     });
@@ -216,6 +217,7 @@ describeBlock('repo routes expose branch and freshness (real server)', () => {
     expect(repo.lastCommit).toMatch(/^[0-9a-f]{40}$/);
     expect(repo.branch).toBe('main');
     expect(repo.staleness).toEqual({
+      status: 'behind',
       commitsBehind: 1,
       hint: expect.stringContaining('1 commit behind'),
     });

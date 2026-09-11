@@ -58,15 +58,29 @@ describe('stalenessField', () => {
 
   it('reports commits behind and the hint when the index is behind', () => {
     expect(stalenessField(BEHIND)).toEqual({
-      staleness: { commitsBehind: 3, hint: BEHIND.hint },
+      staleness: { status: 'behind', commitsBehind: 3, hint: BEHIND.hint },
     });
   });
 
-  it('treats an unresolvable check as fresh rather than as an error', () => {
-    // checkStalenessAsync self-catches to {isStale:false, commitsBehind:0} for a
-    // shallow clone, rewritten history or a non-git path. That must degrade to a
-    // normal response, never a 500 on a route whose job is to list repos.
+  it('reads an info built without a status as current, and omits the key', () => {
+    // Hand-built and legacy infos carry no `status`; `stalenessStatus` derives
+    // it from `isStale`, so a fail-open `{isStale:false}` stays a normal
+    // response rather than an error on a route whose job is to list repos.
     expect(stalenessField({ isStale: false, commitsBehind: 0 })).toEqual({});
+  });
+
+  it('reports diverged with its hint and no invented count (#3256)', () => {
+    // HEAD has moved off the indexed commit but the history needed to count the
+    // gap is gone: the state a branch-pinned url clone reaches after gc.
+    expect(
+      stalenessField({ isStale: false, commitsBehind: 0, status: 'diverged', hint: 'moved on' }),
+    ).toEqual({ staleness: { status: 'diverged', hint: 'moved on' } });
+  });
+
+  it('reports unknown on a listing, where a monitor is looking (#3256)', () => {
+    expect(stalenessField({ isStale: false, commitsBehind: 0, status: 'unknown' })).toEqual({
+      staleness: { status: 'unknown' },
+    });
   });
 });
 
@@ -117,6 +131,7 @@ describe('projectRepoListEntry — GET /api/repos', () => {
 
   it('carries staleness through for a behind index', () => {
     expect(projectRepoListEntry(entry(), BEHIND).staleness).toEqual({
+      status: 'behind',
       commitsBehind: 3,
       hint: BEHIND.hint,
     });

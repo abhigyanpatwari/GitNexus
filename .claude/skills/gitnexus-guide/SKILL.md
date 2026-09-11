@@ -83,15 +83,23 @@ Notes: `offset` ≥ `total` returns an empty page (with `total` still reported).
 
 ### Inline staleness signal (`query` / `context` / `impact` / `cypher`)
 
-These four hot read tools attach a non-blocking `staleness` field to their response when the index is behind the checkout's current HEAD — the same `{ commitsBehind, hint }` shape `list_repos` already reports — so a direct tool call surfaces a behind-HEAD index without a separate `list_repos` call:
+These four hot read tools attach a non-blocking `staleness` field to their response when the index is not at the checkout's current HEAD — the same `{ status, commitsBehind?, hint? }` shape `list_repos` already reports — so a direct tool call surfaces a stale index without a separate `list_repos` call:
 
 ```jsonc
 { /* …the tool's normal result… */
-  "staleness": { "commitsBehind": 3, "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update." }
+  "staleness": { "status": "behind", "commitsBehind": 3, "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update." }
 }
 ```
 
-The field is **absent when the index is current** (or when the freshness check can't run), so its presence is the signal. It is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When you see it, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
+`commitsBehind` is present only when git counted the gap. When git could not count it but HEAD still resolves to a commit other than the indexed one — usually because the indexed commit is no longer in the clone's history — the index is provably not at HEAD with no countable gap, so no number is reported:
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": { "status": "diverged", "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update." }
+}
+```
+
+The field is **absent when the index is current**, and these four tools also omit it when the freshness check could not run at all — that case is `status: "unknown"`, which only the `list_repos` listing reports. So its presence means the status is not `current`: read `status` before using `commitsBehind`. It is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When you see it, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
 
 ### Taint findings (`explain`)
 

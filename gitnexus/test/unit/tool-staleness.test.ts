@@ -71,3 +71,35 @@ describe('attachToolStaleness (#2655)', () => {
     expect(out.staleness).toMatchObject({ commitsBehind: 1 });
   });
 });
+
+describe('attachToolStaleness — status (#3256)', () => {
+  it('labels a counted gap as behind', () => {
+    const out = attachToolStaleness({ ok: true }, STALE) as { staleness: unknown };
+    expect(out.staleness).toEqual({ status: 'behind', commitsBehind: 3, hint: STALE.hint });
+  });
+
+  it('attaches diverged with its hint and no invented count', () => {
+    const out = attachToolStaleness(
+      { ok: true },
+      { isStale: false, commitsBehind: 0, status: 'diverged', hint: 'HEAD moved on' },
+    ) as { staleness: Record<string, unknown> };
+    expect(out.staleness).toEqual({ status: 'diverged', hint: 'HEAD moved on' });
+    expect('commitsBehind' in out.staleness).toBe(false);
+  });
+
+  it('does not attach unknown to a hot read tool result', () => {
+    // A `--skip-git` folder has no history to measure; repeating that on every
+    // read tool response is noise, so `unknown` stays off this path.
+    const result = { ok: true };
+    expect(
+      attachToolStaleness(result, { isStale: false, commitsBehind: 0, status: 'unknown' }),
+    ).toBe(result);
+  });
+
+  it('still leaves a current index untouched', () => {
+    const result = { ok: true };
+    expect(
+      attachToolStaleness(result, { isStale: false, commitsBehind: 0, status: 'current' }),
+    ).toBe(result);
+  });
+});

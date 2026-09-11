@@ -4437,6 +4437,37 @@ describe('LocalBackend.listRepos', () => {
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
   });
+
+  // #3256: `unknown` is listing-only (the hot read tools drop it; see
+  // tool-staleness.test.ts), so list_repos is where it must appear. `diverged`
+  // carries its hint and no invented count; `current` carries nothing.
+  it('reports unknown and diverged staleness on the listing (#3256)', async () => {
+    setupSingleRepo();
+    await backend.init();
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    const check = checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+    try {
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'unknown' });
+      expect((await backend.listRepos())[0].staleness).toEqual({ status: 'unknown' });
+
+      check.mockResolvedValue({
+        isStale: false,
+        commitsBehind: 0,
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+      expect((await backend.listRepos())[0].staleness).toEqual({
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'current' });
+      expect((await backend.listRepos())[0].staleness).toBeUndefined();
+    } finally {
+      // The module-level mock is shared; put back the factory's default.
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0 });
+    }
+  });
 });
 
 // ─── list_repos pagination (#2119) ─────────────────────────────────────
