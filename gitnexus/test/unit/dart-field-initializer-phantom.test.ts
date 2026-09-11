@@ -65,18 +65,12 @@ describe('Dart field/variable declarations with constructor initializers', () =>
   function capturedNames(): { property: string[]; variable: string[] } {
     if (!parser) throw new Error('parser unavailable');
     const tree = parser.parse(CODE);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const query = new (Parser as any).Query(
-      (tree as any).language ?? parser.getLanguage(),
-      DART_QUERIES,
-    );
+    const query = new Parser.Query(parser.getLanguage(), DART_QUERIES);
     const property: string[] = [];
     const variable: string[] = [];
     for (const match of query.matches(tree.rootNode)) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const name = match.captures.find((c: any) => c.name === 'name');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const def = match.captures.find((c: any) => c.name.startsWith('definition.'));
+      const name = match.captures.find((c) => c.name === 'name');
+      const def = match.captures.find((c) => c.name.startsWith('definition.'));
       if (!name || !def) continue;
       if (def.name === 'definition.property') property.push(name.node.text);
       if (def.name === 'definition.variable') variable.push(name.node.text);
