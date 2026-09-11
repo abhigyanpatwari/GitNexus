@@ -198,20 +198,13 @@ export class McpRepositoryPolicy {
       };
     }
 
-    // Count the validated registry (fs.access only — no git / staleness).
-    // tools/list used to call listAllowedRepos() → listRepos() → N git
-    // rev-list processes. countRepos() is the cheap substitute; the
-    // staleness fan-out stays on list_repos. Validation is required so
-    // ENOENT ghosts cannot inflate the count past the set
-    // selectToolRepository will see after refresh. Restricted servers
-    // never reach this arm — they return from this.allowed above.
+    // Validated registry cardinality only — no listRepos() staleness git.
     const repoCount = await backend.countRepos();
     if (repoCount <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
     try {
-      // countRepos() does not populate this.repos. Refresh so the cwd
-      // probe sees the validated registry rather than a stale in-memory map.
+      // countRepos() does not refresh the backend; this cwd probe must.
       await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: true,
