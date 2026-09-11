@@ -81,6 +81,7 @@ program
     'Re-parse every source file instead of replaying cached parser output',
   )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+  .option('--skip-fts', 'Skip FTS extension loading and keyword search indexes')
   .option(
     '--embeddings [limit]',
     'Enable embedding generation for semantic search (off by default). ' +

@@ -605,9 +605,13 @@ describe('POST /api/embed route wiring (#2790)', () => {
    * a character-distance regex so a comment edit cannot silently un-assert it.
    */
   const insideWithLbugDb = (source: string): string => {
-    const start = source.indexOf('await withLbugDb(lbugPath, async () => {');
-    const end = source.indexOf('\n            });', start);
-    expect(start).toBeGreaterThan(-1);
+    // The open is a multi-line `withLbugDb(lbugPath, async () => {…}, opts)` call
+    // since #3091 added the FTS-mode options argument, so anchor on the call head
+    // and close on that options argument rather than a fixed-indent literal.
+    const head = source.match(/await withLbugDb\(\s*lbugPath,\s*async \(\) => \{/);
+    expect(head).not.toBeNull();
+    const start = head!.index!;
+    const end = source.indexOf('{ ...(ftsSession.skipFts', start);
     expect(end).toBeGreaterThan(start);
     return source.slice(start, end);
   };
@@ -653,8 +657,8 @@ describe('POST /api/embed route wiring (#2790)', () => {
 
   it('measures in the post-flush checkpoint callback and nowhere else in the pipeline options', async () => {
     const source = await readSource();
-    expect(source).toContain(
-      'await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());',
+    expect(source).toMatch(
+      /await saveEmbeddingCheckpoint\(\s*checkpoint,\s*\[\],\s*await countPersistedEmbeddings\(\),?\s*\)/,
     );
     // The window-start callback fires before any row exists — it must pass no
     // count rather than restate a stale one.
