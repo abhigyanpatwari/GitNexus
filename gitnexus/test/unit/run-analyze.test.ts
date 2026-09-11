@@ -92,6 +92,65 @@ describe('run-analyze module', () => {
     }
   });
 
+  it('restamps FTS skipReason on the already-up-to-date path when only the discriminator changes', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fts-restamp-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const indexedAt = '2026-01-01T00:00:00.000Z';
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: {
+            provider: 'ladybugdb-fts',
+            status: 'unavailable',
+            skipReason: 'disabled-by-env',
+          },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+        },
+      };
+      await saveMeta(storagePath, meta);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipFts: true },
+        { onProgress: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('disabled-by-flag');
+      const restamped = await loadMeta(storagePath);
+      expect(restamped?.indexedAt).toBe(indexedAt);
+      expect(restamped?.lastCommit).toBe(currentCommit);
+      expect(restamped?.incrementalInProgress).toBeUndefined();
+      expect(restamped?.capabilities?.fts).toEqual({
+        provider: 'ladybugdb-fts',
+        status: 'unavailable',
+        skipReason: 'disabled-by-flag',
+      });
+      expect(restamped?.capabilities?.graph).toEqual(meta.capabilities?.graph);
+      expect(restamped?.capabilities?.vectorSearch).toEqual(meta.capabilities?.vectorSearch);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('applies analyze --name on the already-up-to-date path without --force', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-home-');

@@ -13,6 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { FTS_DISABLED_MESSAGE, isExplicitFtsDisablement } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
@@ -1349,6 +1350,7 @@ const analyzeCommandImpl = async (
       force: options.force || options.skills || options.parseCache === false,
       useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
+      skipFts: options.skipFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
       dropEmbeddings: options.dropEmbeddings,
@@ -1450,6 +1452,7 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (result.ftsSkipped) console.log(`  ${FTS_DISABLED_MESSAGE}\n`);
       if (runOptions.registryName) {
         console.log(`  Registry name: ${result.repoName}\n`);
       }
@@ -1610,7 +1613,9 @@ const analyzeCommandImpl = async (
     if (result.ftsSkipped) {
       // #2658 review L2: a build/verify failure is NOT an extension-unavailable
       // problem — sending the user to install the extension is the wrong remedy.
-      if (result.ftsSkipReason === 'build-failed') {
+      if (isExplicitFtsDisablement(result.ftsSkipReason)) {
+        console.log(`\n  ${FTS_DISABLED_MESSAGE}`);
+      } else if (result.ftsSkipReason === 'build-failed') {
         console.log(
           `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
             `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +

@@ -294,6 +294,78 @@ describe('LocalBackend.init', () => {
   });
 });
 
+describe('LocalBackend.countRepos', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    backend = new LocalBackend();
+    vi.clearAllMocks();
+  });
+
+  it('counts the validated registry, ignoring raw ENOENT ghost entries', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(1);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('returns 0 when every registry row is a ghost', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? []
+        : [
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-a',
+              path: '/tmp/ghost-a',
+              storagePath: '/tmp/.gitnexus/ghost-a',
+            },
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-b',
+              path: '/tmp/ghost-b',
+              storagePath: '/tmp/.gitnexus/ghost-b',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(0);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('reports the in-memory size after refresh, not the raw registry file', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    expect(backend.cachedRepoCount()).toBe(0);
+    await backend.init();
+    expect(backend.cachedRepoCount()).toBe(1);
+  });
+});
+
 describe('LocalBackend.disconnect', () => {
   let backend: LocalBackend;
 
@@ -4436,6 +4508,37 @@ describe('LocalBackend.listRepos', () => {
     await backend.listRepos();
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
+  });
+
+  // #3256: `unknown` is listing-only (the hot read tools drop it; see
+  // tool-staleness.test.ts), so list_repos is where it must appear. `diverged`
+  // carries its hint and no invented count; `current` carries nothing.
+  it('reports unknown and diverged staleness on the listing (#3256)', async () => {
+    setupSingleRepo();
+    await backend.init();
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    const check = checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+    try {
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'unknown' });
+      expect((await backend.listRepos())[0].staleness).toEqual({ status: 'unknown' });
+
+      check.mockResolvedValue({
+        isStale: false,
+        commitsBehind: 0,
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+      expect((await backend.listRepos())[0].staleness).toEqual({
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'current' });
+      expect((await backend.listRepos())[0].staleness).toBeUndefined();
+    } finally {
+      // The module-level mock is shared; put back the factory's default.
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0 });
+    }
   });
 });
 

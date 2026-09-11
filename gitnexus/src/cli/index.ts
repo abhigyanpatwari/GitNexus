@@ -81,6 +81,7 @@ program
     'Re-parse every source file instead of replaying cached parser output',
   )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+  .option('--skip-fts', 'Skip FTS extension loading and keyword search indexes')
   .option(
     '--embeddings [limit]',
     'Enable embedding generation for semantic search (off by default). ' +
@@ -304,15 +305,13 @@ program
   .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
   .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
 
-program
+const embeddings = program
   .command('embeddings')
-  .description('Manage the on-demand local embedding runtime')
+  .description(t('help.command.embeddings.description'));
+
+embeddings
   .command('install')
-  .description(
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
-      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
-      'Downloads only from your configured npm registry — mirrors and proxies apply.',
-  )
+  .description(t('help.command.embeddings.install.description'))
   .option(
     '--cuda',
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
@@ -320,6 +319,12 @@ program
   )
   .option('--force', 'Install into the runtime prefix even when the stack already resolves')
   .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
+
+embeddings
+  .command('sync [path]')
+  .description(t('help.command.embeddings.sync.description'))
+  .addHelpText('after', () => t('help.analyze.environment'))
+  .action(createLbugLazyAction(() => import('./embeddings-sync.js'), 'embeddingsSyncCommand'));
 
 program
   .command('clean')

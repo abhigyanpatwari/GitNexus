@@ -9,34 +9,33 @@
  * These are pure: the caller resolves the registry entry, the on-disk metadata
  * and the staleness check, and passes the results in.
  */
-import type { StalenessInfo } from '../core/git-staleness.js';
+import {
+  stalenessPayload,
+  type StalenessInfo,
+  type StalenessPayload,
+} from '../core/staleness-status.js';
 import type { RegistryEntry } from '../storage/repo-manager.js';
 import type { RepoMeta } from '../storage/repo-meta.js';
 
 /**
- * Staleness in the shape MCP `list_repos` already returns
- * (`mcp/local/local-backend.ts`): the key is present only when the index is
- * actually behind, so "fresh" stays the absence of a field rather than a second
- * thing for a client to interpret. Deliberately identical across the two
- * surfaces — the same fact should not have two shapes.
+ * Staleness through the shared {@link stalenessPayload} builder, so this route
+ * and MCP `list_repos` emit one shape for one fact (#3232 review, #3256).
  *
- * `checkStalenessAsync` self-catches and reports 0 commits behind when the
- * commit cannot be resolved, so an unanswerable check degrades to "not stale"
- * rather than failing the request that carries it.
+ * Absent when the index is current. Otherwise `staleness.status` says what git
+ * could establish: `behind` with the counted `commitsBehind`; `diverged` when
+ * HEAD has provably moved off the indexed commit but the history needed to
+ * count the gap is gone — the state a branch-pinned `url` clone reaches once
+ * git prunes the commit a failed re-index left behind; or `unknown` when the
+ * repository could not be measured at all. This is a listing a monitor reads,
+ * so `unknown` is included here, unlike on the hot read tools.
  *
- * That makes the field meaningful mainly for `path`-registered repositories,
- * where an operator commits into the working tree the index was built from.
- * A `url` repository is cloned `--depth 1` and is re-analyzed by the same run
- * that pulls it, so its recorded commit is HEAD; and were the two ever to
- * diverge, `git rev-list <old>..HEAD` cannot walk a shallow history and fails
- * closed to "not stale". Reporting fresh there is not a claim that the remote
- * has not moved — this measures the index against the local working tree, the
- * same thing `gitnexus status` and MCP `list_repos` measure.
+ * All of it measures the index against the local working tree — the same thing
+ * `gitnexus status` and MCP `list_repos` measure — not against the remote.
  */
-export const stalenessField = (
-  info: StalenessInfo,
-): { staleness?: { commitsBehind: number; hint?: string } } =>
-  info.isStale ? { staleness: { commitsBehind: info.commitsBehind, hint: info.hint } } : {};
+export const stalenessField = (info: StalenessInfo): { staleness?: StalenessPayload } => {
+  const staleness = stalenessPayload(info, { includeUnknown: true });
+  return staleness ? { staleness } : {};
+};
 
 /** One entry of `GET /api/repos`. */
 export const projectRepoListEntry = (entry: RegistryEntry, staleness: StalenessInfo) => ({

@@ -64,6 +64,7 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
@@ -144,6 +145,7 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
