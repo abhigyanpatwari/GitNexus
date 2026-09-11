@@ -294,6 +294,58 @@ describe('LocalBackend.init', () => {
   });
 });
 
+describe('LocalBackend.countRepos', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    backend = new LocalBackend();
+    vi.clearAllMocks();
+  });
+
+  it('counts the validated registry, ignoring raw ENOENT ghost entries', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(1);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('returns 0 when every registry row is a ghost', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? []
+        : [
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-a',
+              path: '/tmp/ghost-a',
+              storagePath: '/tmp/.gitnexus/ghost-a',
+            },
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-b',
+              path: '/tmp/ghost-b',
+              storagePath: '/tmp/.gitnexus/ghost-b',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(0);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+});
+
 describe('LocalBackend.disconnect', () => {
   let backend: LocalBackend;
 

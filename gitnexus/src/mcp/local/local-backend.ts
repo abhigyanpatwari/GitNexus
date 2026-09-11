@@ -2494,11 +2494,13 @@ export class LocalBackend {
   /**
    * Lightweight registry count for schema-introspection callers that only
    * need to know "one repo or many?" without paying the full staleness fan-out
-   * cost that listRepos() incurs. Reads the registry file once and returns the
-   * count. No git processes are spawned.
+   * cost that listRepos() incurs. Uses the same validated registry
+   * `refreshRepos` / `selectToolRepository` see (`validate: true` prunes
+   * entries whose metadata is provably gone) so tools/list cannot advertise a
+   * multi-repo schema for ENOENT ghosts. No git processes are spawned.
    */
   async countRepos(): Promise<number> {
-    const entries = await listRegisteredRepos({ validate: false });
+    const entries = await listRegisteredRepos({ validate: true });
     return entries.length;
   }
 

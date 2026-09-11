@@ -198,17 +198,20 @@ export class McpRepositoryPolicy {
       };
     }
 
-    // One fresh listing supplies both schema decisions. Besides keeping the
-    // advertised contract internally consistent, this avoids doing two full
-    // per-repo staleness fan-outs for every tools/list request.
-    // Use a lightweight registry count (no git spawns, no staleness checks)
-    // to decide whether the repo parameter is required. The full staleness
-    // fan-out is reserved for actual list_repos tool calls.
+    // Count the validated registry (fs.access only — no git / staleness).
+    // tools/list used to call listAllowedRepos() → listRepos() → N git
+    // rev-list processes. countRepos() is the cheap substitute; the
+    // staleness fan-out stays on list_repos. Validation is required so
+    // ENOENT ghosts cannot inflate the count past the set
+    // selectToolRepository will see after refresh. Restricted servers
+    // never reach this arm — they return from this.allowed above.
     const repoCount = await backend.countRepos();
     if (repoCount <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
     try {
+      // countRepos() does not populate this.repos. Refresh so the cwd
+      // probe sees the validated registry rather than a stale in-memory map.
       await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: true,

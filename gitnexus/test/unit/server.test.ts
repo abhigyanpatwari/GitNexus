@@ -31,6 +31,7 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
   return {
     callTool: vi.fn().mockResolvedValue({ result: 'ok' }),
     listRepos: vi.fn().mockResolvedValue([]),
+    countRepos: vi.fn().mockResolvedValue(0),
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
@@ -110,6 +111,7 @@ describe('createMCPServer', () => {
   });
   it('requires repo in repo-scoped tool schemas when cwd cannot resolve multiple repos', async () => {
     const backend = createMockBackend({
+      countRepos: vi.fn().mockResolvedValue(2),
       listRepos: vi.fn().mockResolvedValue([
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
@@ -139,6 +141,7 @@ describe('createMCPServer', () => {
 
   it('keeps repo optional when cwd resolves one of multiple visible repos', async () => {
     const backend = createMockBackend({
+      countRepos: vi.fn().mockResolvedValue(2),
       listRepos: vi.fn().mockResolvedValue([
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
@@ -162,11 +165,12 @@ describe('createMCPServer', () => {
       const response = await client.callTool({ name: 'context', arguments: { name: 'Example' } });
       expect(response.isError).not.toBe(true);
       expect(backend.callTool).toHaveBeenCalledWith('context', { name: 'Example' });
-      expect(backend.listRepos).toHaveBeenCalledTimes(1);
+      expect(backend.countRepos).toHaveBeenCalledTimes(1);
+      expect(backend.listRepos).not.toHaveBeenCalled();
       expect(backend.selectToolRepository).toHaveBeenCalledTimes(1);
       expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
         allowCwdDefault: true,
-        refreshRegistry: false,
+        refreshRegistry: true,
       });
     } finally {
       await client.close();
