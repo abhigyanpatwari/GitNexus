@@ -17,8 +17,8 @@ import { DART_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
  * applies to static_final_declaration (class statics and top-level final/const),
  * so all five graph-node rules anchor @name to the first named child.
  *
- * Regression guard: no captured name may be a type that only ever appears on the
- * right-hand side, and every real declared name must still be captured.
+ * Regression guard: constructor-callee type names must never be captured as
+ * declarations, and every real declared name must still be captured.
  */
 
 const CODE = `class S {
@@ -32,7 +32,7 @@ final Baz topLevelFinal = Baz();
 var topLevelVar = Qux();
 `;
 
-/** Names that appear ONLY as constructor callees — never legal captures. */
+/** Constructor callee names that must never be captured as declaration names. */
 const RHS_ONLY_TYPES = ['TextEditingController', 'Foo', 'Bar', 'Baz', 'Qux'];
 
 /** Every name actually declared in CODE. */
