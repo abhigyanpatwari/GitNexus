@@ -711,7 +711,7 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
 
 type LbugInitOptions = { readOnly?: boolean; skipFts?: boolean };
 
-export const initLbug = async (dbPath: string, options: LbugInitOptions = {}) => {
+export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
   return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
 };
 
@@ -3697,7 +3697,7 @@ export const ensureEmbeddingRowDmlSafe = async (
  */
 export const ensureFtsRowDmlSafe = async (
   indexRows?: IndexCatalogSnapshot,
-  options: LbugInitOptions = {},
+  options: { skipFts?: boolean } = {},
 ): Promise<boolean> => {
   // Unconditional precondition, same regression as the VECTOR twin's (#2841
   // review §5.B): a caller-supplied snapshot must not let a closed DB be
