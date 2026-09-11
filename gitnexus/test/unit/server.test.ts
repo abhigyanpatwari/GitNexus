@@ -32,6 +32,7 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
     callTool: vi.fn().mockResolvedValue({ result: 'ok' }),
     listRepos: vi.fn().mockResolvedValue([]),
     countRepos: vi.fn().mockResolvedValue(0),
+    cachedRepoCount: vi.fn().mockReturnValue(0),
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
@@ -142,6 +143,7 @@ describe('createMCPServer', () => {
   it('keeps repo optional when cwd resolves one of multiple visible repos', async () => {
     const backend = createMockBackend({
       countRepos: vi.fn().mockResolvedValue(2),
+      cachedRepoCount: vi.fn().mockReturnValue(2),
       listRepos: vi.fn().mockResolvedValue([
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },

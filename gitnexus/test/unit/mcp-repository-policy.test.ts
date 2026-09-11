@@ -38,6 +38,7 @@ function createBackend(repos = REPOS) {
   return {
     listRepos: vi.fn().mockResolvedValue(repos.map((repo) => ({ ...repo }))),
     countRepos: vi.fn().mockResolvedValue(repos.length),
+    cachedRepoCount: vi.fn().mockReturnValue(repos.length),
     callTool: vi.fn().mockImplementation(async (name: string, args: Record<string, unknown>) => ({
       name,
       args,
@@ -142,6 +143,21 @@ describe('MCP repository policy', () => {
       policy.scopeBackend(backend).callTool('query', { search_query: 'auth' }),
     ).rejects.toThrow(/explicit repo.*multiple repositories are allowed/i);
     expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('aligns unrestricted schema with the refreshed snapshot when count and cache diverge', async () => {
+    const backend = createBackend();
+    vi.mocked(backend.countRepos).mockResolvedValue(2);
+    vi.mocked(backend.cachedRepoCount).mockReturnValue(1);
+    const policy = await createMcpRepositoryPolicy(backend, {});
+    await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
+      readOnlyRequiresRepo: false,
+      mutatingRequiresRepo: false,
+    });
+    expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
+      allowCwdDefault: true,
+      refreshRegistry: true,
+    });
   });
 
   it('keeps restricted schemas explicit when a multi-repo allowlist listing shrinks', async () => {

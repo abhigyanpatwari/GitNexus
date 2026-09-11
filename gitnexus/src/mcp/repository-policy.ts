@@ -199,6 +199,7 @@ export class McpRepositoryPolicy {
     }
 
     // Validated registry cardinality only — no listRepos() staleness git.
+    // The 0–1 arm stays a cheap countRepos() (no refreshRepos / kuzu cleanup).
     const repoCount = await backend.countRepos();
     if (repoCount <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
@@ -209,10 +210,15 @@ export class McpRepositoryPolicy {
         allowCwdDefault: true,
         refreshRegistry: true,
       });
-      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
     } catch {
       return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
     }
+    // The probe just refreshed. If that snapshot is now a singleton, match the
+    // <=1 arm rather than advertising a split mutating-only schema.
+    if (backend.cachedRepoCount() <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
   }
 
   private async listReposPage(

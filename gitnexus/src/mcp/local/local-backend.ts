@@ -2505,6 +2505,17 @@ export class LocalBackend {
   }
 
   /**
+   * In-memory validated registry size after the last `refreshRepos` / init /
+   * `selectToolRepository` refresh. `countRepos()` does not populate this map.
+   * Schema introspection uses this after a refreshed cwd probe so cardinality
+   * and the probe share one snapshot — without putting `refreshRepos()` (and
+   * its kuzu cleanup) on the 0–1 `countRepos` path.
+   */
+  cachedRepoCount(): number {
+    return this.repos.size;
+  }
+
+  /**
    * Paginated view over {@link listRepos} for the `list_repos` MCP tool (#2119).
    *
    * `listRepos()` itself still returns the FULL array — its resource and CLI

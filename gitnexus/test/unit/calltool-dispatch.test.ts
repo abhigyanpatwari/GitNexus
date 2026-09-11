@@ -344,6 +344,26 @@ describe('LocalBackend.countRepos', () => {
     await expect(backend.countRepos()).resolves.toBe(0);
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('reports the in-memory size after refresh, not the raw registry file', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    expect(backend.cachedRepoCount()).toBe(0);
+    await backend.init();
+    expect(backend.cachedRepoCount()).toBe(1);
+  });
 });
 
 describe('LocalBackend.disconnect', () => {

@@ -64,12 +64,19 @@ const baselines = JSON.parse(readFileSync(new URL('./baselines.json', import.met
 
 const CHECK = process.argv.includes('--check');
 const PINNED_REPS = 7;
-const REPS = CHECK ? PINNED_REPS : Number(process.env.BENCH_REPS ?? PINNED_REPS);
+
+function positiveInt(value, fallback) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+const REPS = CHECK ? PINNED_REPS : positiveInt(process.env.BENCH_REPS, PINNED_REPS);
 const N = CHECK
   ? baselines.n_repos
-  : Number(process.env.BENCH_REPOS ?? baselines.n_repos);
+  : positiveInt(process.env.BENCH_REPOS, baselines.n_repos);
 const ROOT = process.env.BENCH_ROOT ?? path.join(os.tmpdir(), 'gn-mcp-tools-list-bench');
-const HOME = path.join(ROOT, 'home');
+const WORK = path.join(ROOT, `n-${N}`);
+const HOME = path.join(WORK, 'home');
 
 process.env.GITNEXUS_HOME = HOME;
 delete process.env.GITNEXUS_MCP_ALLOWED_REPOS;
@@ -92,12 +99,12 @@ function git(cwd, args) {
 
 function setupFixture() {
   mkdirSync(HOME, { recursive: true });
-  const marker = path.join(ROOT, `ready-${N}`);
+  const marker = path.join(WORK, 'ready');
   if (existsSync(marker) && existsSync(path.join(HOME, 'registry.json'))) return;
 
   const entries = [];
   for (let i = 0; i < N; i++) {
-    const repoPath = path.join(ROOT, 'repos', `r${i}`);
+    const repoPath = path.join(WORK, 'repos', `r${i}`);
     const storagePath = path.join(repoPath, '.gitnexus');
     mkdirSync(storagePath, { recursive: true });
     writeFileSync(path.join(repoPath, 'f.txt'), `${i}\n`);
