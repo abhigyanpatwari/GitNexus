@@ -24,10 +24,10 @@ export const LEGACY_TOOL_SCHEMA_SOURCE: Readonly<Record<string, string>> = {
 export const UNPUBLISHED_TOOL_ARGUMENT_ALIASES: Readonly<Record<string, readonly string[]>> = {
   query: ['query'],
   cypher: ['query'],
-  search: ['query'],
   // Group-mode context still reads `target` as the symbol name; local
   // `name` is the advertised key. Advertising `target` would collide with
-  // impact's target vocabulary and is not in tools/list.
+  // impact's target vocabulary and is not in tools/list. Legacy `search`
+  // and `explore` inherit via schemaSourceToolName.
   context: ['target'],
 };
 
@@ -115,10 +115,11 @@ export function assertKnownMcpToolArguments(
       : advertisedToolPropertyNames(toolName);
   if (!propertyNames) return;
 
-  const allowed = new Set([
-    ...propertyNames,
-    ...(UNPUBLISHED_TOOL_ARGUMENT_ALIASES[toolName] ?? []),
-  ]);
+  const unpublished =
+    UNPUBLISHED_TOOL_ARGUMENT_ALIASES[toolName] ??
+    UNPUBLISHED_TOOL_ARGUMENT_ALIASES[schemaSourceToolName(toolName)] ??
+    [];
+  const allowed = new Set([...propertyNames, ...unpublished]);
   const unknownKeys = Object.keys(args).filter((key) => !allowed.has(key));
   if (unknownKeys.length === 0) return;
   throw new Error(formatUnknownArgumentError(toolName, unknownKeys, propertyNames));

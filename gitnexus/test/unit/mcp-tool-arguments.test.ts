@@ -46,6 +46,19 @@ describe('assertKnownMcpToolArguments (#3261)', () => {
     expect(() =>
       assertKnownMcpToolArguments('query', { query: 'auth' }, queryProperties),
     ).not.toThrow();
+    const cypherProperties = GITNEXUS_TOOLS.find((tool) => tool.name === 'cypher')!.inputSchema
+      .properties;
+    expect(() =>
+      assertKnownMcpToolArguments('cypher', { query: 'MATCH (n) RETURN n' }, cypherProperties),
+    ).not.toThrow();
+  });
+
+  it('still accepts unpublished query on the legacy search name', () => {
+    const queryProperties = GITNEXUS_TOOLS.find((tool) => tool.name === 'query')!.inputSchema
+      .properties;
+    expect(() =>
+      assertKnownMcpToolArguments('search', { query: 'auth' }, queryProperties),
+    ).not.toThrow();
   });
 
   it('still accepts unpublished context target (group-mode alias)', () => {
@@ -53,6 +66,9 @@ describe('assertKnownMcpToolArguments (#3261)', () => {
       .properties;
     expect(() =>
       assertKnownMcpToolArguments('context', { repo: '@g1', target: 'Sym' }, contextProperties),
+    ).not.toThrow();
+    expect(() =>
+      assertKnownMcpToolArguments('explore', { repo: '@g1', target: 'Sym' }, contextProperties),
     ).not.toThrow();
   });
 

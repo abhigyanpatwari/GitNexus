@@ -579,7 +579,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         depth: {
           type: 'number',
           description:
-            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel (#2279).',
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
           minimum: 0,
           maximum: IMPACT_MAX_DEPTH,
         },
@@ -942,7 +942,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
         depth: {
           type: 'number',
           description:
-            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel (#2279).',
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
           minimum: 0,
           maximum: 30,
         },
@@ -1008,7 +1008,7 @@ export const REPO_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
-  // Schema is the dispatch contract (#3261): unknown keys fail closed at tools/call.
+  // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
   tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
