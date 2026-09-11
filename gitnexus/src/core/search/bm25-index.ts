@@ -2,7 +2,10 @@
  * Full-Text Search via LadybugDB FTS
  *
  * Uses LadybugDB's built-in full-text search indexes for keyword-based search.
- * Always reads from the database (no cached state to drift).
+ * Reads from the database on every query it runs (no cached state to drift).
+ * The one exception is an explicit opt-out (#3091): when a caller passes an
+ * `FtsDisabledReason`, the search short-circuits to an empty, unavailable
+ * response without opening or querying the database at all.
  */
 
 // tri-review Residual-1: `classifyFtsQueryError` now lives in lbug-adapter.ts
@@ -96,14 +99,20 @@ async function queryFTSViaExecutor(
 }
 
 /**
- * Search using LadybugDB's built-in FTS (always fresh, reads from disk)
+ * Search using LadybugDB's built-in FTS (fresh, reads from disk)
  *
  * Queries multiple node tables (File, Function, Class, Method) in parallel
  * and merges results by filePath, summing scores for the same file.
  *
+ * When `disabledReason` is set the index intentionally has no FTS (#3091), so
+ * this returns an empty `ftsAvailable: false` response immediately and never
+ * touches the database — callers render that as deliberate disablement rather
+ * than as a missing index or a failed extension load.
+ *
  * @param query - Search query string
  * @param limit - Maximum results
  * @param repoId - If provided, queries will be routed via the MCP connection pool
+ * @param disabledReason - Explicit FTS opt-out recorded for this index; short-circuits the search
  * @returns Ranked search results from FTS indexes
  */
 export const searchFTSFromLbug = async (
