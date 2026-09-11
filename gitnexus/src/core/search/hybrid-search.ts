@@ -10,6 +10,7 @@
 
 import { searchFTSFromLbug, type BM25SearchResult } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
+import type { FtsDisabledReason } from './fts-policy.js';
 
 /**
  * RRF constant - standard value used in the literature
@@ -153,11 +154,13 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
 
 /**
  * Execute BM25 + semantic search and merge with RRF.
- * Uses LadybugDB FTS for always-fresh BM25 results (no cached data).
+ * Uses LadybugDB FTS for fresh BM25 results (no cached data).
  * The semanticSearch function is injected to keep this module environment-agnostic.
  *
- * When FTS is unavailable (e.g. read-only MCP connection, missing indexes),
- * falls back to semantic-only results instead of crashing (#1489).
+ * When FTS is unavailable (e.g. read-only MCP connection, missing indexes) or
+ * explicitly disabled for this index (`disabledReason`, #3091), falls back to
+ * semantic-only results instead of crashing (#1489). In the disabled case no
+ * BM25 query is issued at all.
  */
 export const hybridSearch = async (
   query: string,
@@ -168,13 +171,15 @@ export const hybridSearch = async (
     query: string,
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
+  disabledReason?: FtsDisabledReason,
 ): Promise<HybridSearchResult[]> => {
-  // Use LadybugDB FTS for always-fresh BM25 results.
+  // Use LadybugDB FTS for fresh BM25 results — skipped entirely when this
+  // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
   // If FTS fails (e.g. extension not loaded in MCP process), fall back to
   // semantic-only search instead of crashing with "bm25Results is not iterable".
   let bm25Results: BM25SearchResult[] = [];
   try {
-    const ftsResponse = await searchFTSFromLbug(query, limit);
+    const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
     bm25Results = ftsResponse?.results ?? [];
   } catch {
     // FTS unavailable — continue with semantic-only search

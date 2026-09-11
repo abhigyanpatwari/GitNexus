@@ -18,6 +18,7 @@ import {
   resolveAnalyzerRunnerIdentity,
 } from '../core/analyzer-identity.js';
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import { getFtsDisabledReason, FTS_DISABLED_MESSAGE } from '../core/search/fts-policy.js';
 import { detectIndexContentDrift, type IndexContentDrift } from '../core/index-content-drift.js';
 import { t } from './i18n/index.js';
 
@@ -186,6 +187,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
         index: {
           indexedAt: activeMeta.indexedAt,
           commit: activeMeta.lastCommit,
+          ...(activeMeta.capabilities ? { capabilities: activeMeta.capabilities } : {}),
           runnerIdentity: activeMeta.runnerIdentity ?? null,
           runnerIdentityStatus: runnerIdentityIsCurrent ? 'current' : 'stale-or-unknown',
           incompleteReasons,
@@ -211,6 +213,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   console.log(`${t('status.indexed')}: ${new Date(activeMeta.indexedAt).toLocaleString()}`);
   console.log(`${t('status.indexedCommit')}: ${activeMeta.lastCommit?.slice(0, 7)}`);
   console.log(`${t('status.currentCommit')}: ${currentCommit?.slice(0, 7)}`);
+  if (getFtsDisabledReason(activeMeta.capabilities?.fts)) console.log(FTS_DISABLED_MESSAGE);
   // Emit the complete, versioned receipt as JSON so humans can inspect it and
   // automation can compare it without reverse-engineering a display string.
   // `null` is the backward-compatible signal for pre-receipt metadata.

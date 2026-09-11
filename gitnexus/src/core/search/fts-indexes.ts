@@ -8,6 +8,7 @@ import {
   type IndexCatalogSnapshot,
 } from '../lbug/lbug-adapter.js';
 import { getFtsCapability } from '../lbug/extension-loader.js';
+import { FTS_DISABLED_MESSAGE, type FtsDisabledReason } from './fts-policy.js';
 import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
@@ -73,8 +74,12 @@ const formatWarningContext = (context: FtsWarningContext): string => {
  * text itself (#2767). Optional and additive: omitting it reproduces today's
  * exact message.
  */
-export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
+export const ftsDegradedWarning = (
+  context?: FtsWarningContext,
+  disabledReason?: FtsDisabledReason,
+): string => {
   const suffix = context ? formatWarningContext(context) : '';
+  if (disabledReason) return FTS_DISABLED_MESSAGE + suffix;
   const fts = getFtsCapability();
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;

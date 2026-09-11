@@ -90,6 +90,7 @@ import {
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
+import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
 import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
@@ -2915,8 +2916,10 @@ export class LocalBackend {
     // each so both get independent wall-time records without fighting
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const [bm25SearchResult, semanticResults] = await Promise.all([
-      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit)),
+      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
     ]);
 
@@ -3248,7 +3251,7 @@ export class LocalBackend {
       warnings.push(
         ftsQueryErrors
           ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
-          : ftsDegradedWarning(warningContext),
+          : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
       // #2767: at least one FTS table succeeded (ftsUsed=true) but another
@@ -3302,7 +3305,6 @@ export class LocalBackend {
     // GITNEXUS_FTS_CJK_SEGMENTATION (the only thing that actually throws in
     // there) cannot take an unrelated diagnostic down with it. Needs no guard
     // of its own: loadMeta() returns null on any read/parse failure.
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
     try {
       // meta.json is on-disk state inside the analyzed repo, read via a
       // schema-less JSON.parse — not trusted input. Validate before
@@ -3408,7 +3410,9 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
+    disabledReason?: FtsDisabledReason,
   ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+    if (disabledReason) return { results: [], ftsUsed: false };
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));

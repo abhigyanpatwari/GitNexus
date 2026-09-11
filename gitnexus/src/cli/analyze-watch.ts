@@ -176,6 +176,7 @@ export async function resolveWatchOptions(
 
   return {
     pdg: merged.pdg,
+    skipFts: merged.skipFts,
     branch,
     registryName: merged.name,
     allowDuplicateName: merged.allowDuplicateName,

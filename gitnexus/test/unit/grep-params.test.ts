@@ -155,6 +155,8 @@ describe('/api/grep handler wiring (source-level, api-readonly-wiring.test.ts st
     expect(section).toContain('runGrepScanInWorker(');
     expect(section).toMatch(/filePath\.toLowerCase\(\)\.includes\(fileFilter\)/);
     expect(section).toContain('timedOut: true');
-    expect(section).toContain('readOnly: true'); // unchanged read-only DB open
+    // Unchanged read-only DB open — now expressed via readOnlyFtsOptions(skipFts),
+    // whose read-only guarantee is pinned in api-readonly-wiring.test.ts.
+    expect(section).toMatch(/readOnly: true|readOnlyFtsOptions\(/);
   });
 });
