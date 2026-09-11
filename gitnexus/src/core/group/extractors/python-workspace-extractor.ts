@@ -3,14 +3,21 @@ import path from 'node:path';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { getPythonParser } from '../../ingestion/languages/python/query.js';
-import { ParseTimeoutError, parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
+import {
+  ParseTimeoutError,
+  parseHadErrors,
+  parseSourceSafe,
+} from '../../tree-sitter/safe-parse.js';
 import {
   shouldIgnorePath,
   loadIgnoreRules,
   isHardcodedIgnoredDirectoryAtPath,
 } from '../../../config/ignore-service.js';
+import { readSafeBounded } from './fs-utils.js';
 
 import { logger } from '../../logger.js';
+
 interface PythonPackageMeta {
   name: string;
   importName: string;
@@ -20,9 +27,8 @@ interface PythonPackageMeta {
 }
 
 interface ImportedSymbol {
-  packageName: string;
+  importName: string;
   symbolName: string;
-  filePath: string;
 }
 
 async function parsePythonManifest(
@@ -53,7 +59,7 @@ function parsePyproject(
   const nameMatch = content.match(/^\[project\]\s*\n(?:[^\n\[]*\n)*?name\s*=\s*"([^"]+)"/m);
   if (!nameMatch) return null;
   const name = nameMatch[1];
-  const importName = name.replace(/-/g, '_');
+  const importName = toPythonImportName(name);
 
   const deps: string[] = [];
   const depsMatch = content.match(/^\[project\]\s*\n[\s\S]*?dependencies\s*=\s*\[([\s\S]*?)\]/m);
@@ -81,7 +87,7 @@ function parseSetupPy(
   const nameMatch = content.match(/name\s*=\s*['"]([^'"]+)['"]/);
   if (!nameMatch) return null;
   const name = nameMatch[1];
-  const importName = name.replace(/-/g, '_');
+  const importName = toPythonImportName(name);
 
   const deps: string[] = [];
   const installMatch = content.match(/install_requires\s*=\s*\[([\s\S]*?)\]/);
@@ -99,29 +105,68 @@ function extractPepName(spec: string): string {
   return spec.split(/[><=!~;\[]/)[0].trim();
 }
 
+function toPythonImportName(name: string): string {
+  return name.replace(/-/g, '_');
+}
+
+function collectFromImportNames(
+  node: {
+    namedChildCount: number;
+    namedChild(index: number): {
+      id: number;
+      type: string;
+      text: string;
+      childForFieldName(name: string): { text: string } | null;
+    } | null;
+  },
+  moduleNodeId: number,
+): string[] {
+  const symbols: string[] = [];
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (!child || child.id === moduleNodeId) continue;
+    if (child.type === 'dotted_name') {
+      symbols.push(child.text);
+    } else if (child.type === 'aliased_import') {
+      const imported = child.childForFieldName('name');
+      if (imported) symbols.push(imported.text);
+    }
+  }
+  return symbols;
+}
+
+/** Cheap skip before tree-sitter: real `from <mod>` tokens, not `fromage`. */
+function hasFromImportToken(content: string): boolean {
+  return /(?:^|[\s;])from\s+\S/.test(content);
+}
+
 async function scanPythonImports(
   repoPath: string,
-  knownPackages: Map<string, string>,
+  knownPackages: Set<string>,
 ): Promise<ImportedSymbol[]> {
   const results: ImportedSymbol[] = [];
   const sourceFiles = await findPythonFiles(repoPath);
+  const parser = getPythonParser();
+  const maxFileSizeBytes = getMaxFileSizeBytes();
 
   for (const relFile of sourceFiles) {
-    const absPath = path.join(repoPath, relFile);
-    let content: string;
-    try {
-      content = await fs.readFile(absPath, 'utf-8');
-    } catch {
-      continue;
-    }
+    const content = await readSafeBounded(repoPath, relFile, maxFileSizeBytes);
+    if (content == null || !hasFromImportToken(content)) continue;
 
     let tree;
     try {
-      tree = parseSourceSafe(getPythonParser(), content, undefined, undefined, relFile);
+      tree = parseSourceSafe(parser, content, undefined, undefined, relFile);
     } catch (error) {
-      if (error instanceof ParseTimeoutError) continue;
+      if (error instanceof ParseTimeoutError) {
+        logger.warn(
+          { file: relFile },
+          'python-workspace-extractor: parse timed out, skipping file',
+        );
+        continue;
+      }
       throw error;
     }
+    const degraded = parseHadErrors(tree);
     const visit = (node: (typeof tree)['rootNode']): void => {
       if (node.type !== 'import_from_statement') {
         for (let i = 0; i < node.namedChildCount; i++) {
@@ -131,28 +176,20 @@ async function scanPythonImports(
         return;
       }
 
+      // Error recovery can promote unclosed-docstring lookalikes into real
+      // import_from_statement nodes. Keep column-0 imports; drop indented ones
+      // on a degraded tree so function-local discovery stays on clean parses.
+      if (degraded && node.startPosition.column > 0) return;
+
       const moduleNode = node.childForFieldName('module_name');
       const modulePath = moduleNode?.text;
       if (!modulePath) return;
       const rootModule = modulePath.split('.')[0];
-      const originalName = knownPackages.get(rootModule);
-      if (!originalName) return;
+      if (!knownPackages.has(rootModule)) return;
 
-      const symbols: string[] = [];
-      for (let i = 0; i < node.namedChildCount; i++) {
-        const child = node.namedChild(i);
-        if (!child || child.id === moduleNode.id) continue;
-        if (child.type === 'dotted_name') {
-          symbols.push(child.text);
-        } else if (child.type === 'aliased_import') {
-          const imported = child.childForFieldName('name');
-          if (imported) symbols.push(imported.text);
-        }
-      }
-
-      for (const sym of symbols) {
+      for (const sym of collectFromImportNames(node, moduleNode.id)) {
         if (isPascalCase(sym)) {
-          results.push({ packageName: originalName, symbolName: sym, filePath: relFile });
+          results.push({ importName: rootModule, symbolName: sym });
         }
       }
     };
@@ -239,21 +276,14 @@ export async function extractPythonWorkspaceLinks(
   const seen = new Set<string>();
 
   for (const [, pkg] of packagesByGroupPath) {
-    const normalizedDeps = pkg.workspaceDeps.map((d) => d.replace(/-/g, '_'));
+    const normalizedDeps = pkg.workspaceDeps.map(toPythonImportName);
     const groupPkgDeps = normalizedDeps.filter((d) => packagesByImportName.has(d));
     if (groupPkgDeps.length === 0) continue;
 
-    const knownPackages = new Map<string, string>();
-    for (const dep of groupPkgDeps) {
-      const meta = packagesByImportName.get(dep);
-      if (meta) knownPackages.set(dep, meta.name);
-    }
-
-    const imports = await scanPythonImports(pkg.repoPath, knownPackages);
+    const imports = await scanPythonImports(pkg.repoPath, new Set(groupPkgDeps));
 
     for (const imp of imports) {
-      const providerImportName = imp.packageName.replace(/-/g, '_');
-      const providerPkg = packagesByImportName.get(providerImportName);
+      const providerPkg = packagesByImportName.get(imp.importName);
       if (!providerPkg) continue;
 
       const qualifiedContract = `${providerPkg.name}::${imp.symbolName}`;

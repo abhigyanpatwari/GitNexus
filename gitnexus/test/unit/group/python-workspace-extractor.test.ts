@@ -21,6 +21,44 @@ describe('PythonWorkspaceExtractor', () => {
     await fs.writeFile(absPath, content, 'utf-8');
   }
 
+  function twoRepos(aDir: string, aName: string, bDir: string, bName: string) {
+    return {
+      repos: { [aDir]: aName, [bDir]: bName },
+      repoPaths: new Map([
+        [aDir, path.join(tmpDir, aDir)],
+        [bDir, path.join(tmpDir, bDir)],
+      ]),
+    };
+  }
+
+  async function writeDatalibMyapp(appMainPy: string) {
+    await writeFile(
+      'lib/pyproject.toml',
+      '[project]\nname = "datalib"\nversion = "0.1.0"\ndependencies = []\n',
+    );
+    await writeFile('lib/datalib/models.py', 'class Record: pass\n');
+    await writeFile(
+      'app/pyproject.toml',
+      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = ["datalib"]\n',
+    );
+    await writeFile('app/myapp/main.py', appMainPy);
+    return twoRepos('lib', 'datalib', 'app', 'myapp');
+  }
+
+  async function writeUtilsMyapp(appMainPy: string) {
+    await writeFile(
+      'lib/pyproject.toml',
+      '[project]\nname = "utils"\nversion = "0.1.0"\ndependencies = []\n',
+    );
+    await writeFile('lib/utils/__init__.py', 'def helper(): pass\nclass Config: pass\n');
+    await writeFile(
+      'app/pyproject.toml',
+      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = ["utils"]\n',
+    );
+    await writeFile('app/myapp/main.py', appMainPy);
+    return twoRepos('lib', 'utils', 'app', 'myapp');
+  }
+
   it('discovers cross-package imports via pyproject.toml', async () => {
     await writeFile(
       'models/pyproject.toml',
@@ -128,23 +166,7 @@ describe('PythonWorkspaceExtractor', () => {
   });
 
   it('handles submodule imports (from pkg.sub import Class)', async () => {
-    await writeFile(
-      'lib/pyproject.toml',
-      '[project]\nname = "datalib"\nversion = "0.1.0"\ndependencies = []\n',
-    );
-    await writeFile('lib/datalib/models.py', 'class Record: pass\n');
-
-    await writeFile(
-      'app/pyproject.toml',
-      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = [\n  "datalib",\n]\n',
-    );
-    await writeFile('app/myapp/main.py', 'from datalib.models import Record\n');
-
-    const repos = { lib: 'datalib', app: 'myapp' };
-    const repoPaths = new Map([
-      ['lib', path.join(tmpDir, 'lib')],
-      ['app', path.join(tmpDir, 'app')],
-    ]);
+    const { repos, repoPaths } = await writeDatalibMyapp('from datalib.models import Record\n');
 
     const result = await extractPythonWorkspaceLinks(repos, repoPaths);
 
@@ -153,26 +175,9 @@ describe('PythonWorkspaceExtractor', () => {
   });
 
   it('discovers function-local imports', async () => {
-    await writeFile(
-      'lib/pyproject.toml',
-      '[project]\nname = "datalib"\nversion = "0.1.0"\ndependencies = []\n',
-    );
-    await writeFile('lib/datalib/models.py', 'class Record: pass\n');
-
-    await writeFile(
-      'app/pyproject.toml',
-      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = ["datalib"]\n',
-    );
-    await writeFile(
-      'app/myapp/main.py',
+    const { repos, repoPaths } = await writeDatalibMyapp(
       'def load_record():\n    from datalib.models import Record\n    return Record()\n',
     );
-
-    const repos = { lib: 'datalib', app: 'myapp' };
-    const repoPaths = new Map([
-      ['lib', path.join(tmpDir, 'lib')],
-      ['app', path.join(tmpDir, 'app')],
-    ]);
 
     const result = await extractPythonWorkspaceLinks(repos, repoPaths);
 
@@ -181,50 +186,49 @@ describe('PythonWorkspaceExtractor', () => {
   });
 
   it('ignores import-shaped text inside indented docstrings', async () => {
-    await writeFile(
-      'lib/pyproject.toml',
-      '[project]\nname = "datalib"\nversion = "0.1.0"\ndependencies = []\n',
-    );
-    await writeFile('lib/datalib/models.py', 'class Record: pass\n');
-
-    await writeFile(
-      'app/pyproject.toml',
-      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = ["datalib"]\n',
-    );
-    await writeFile(
-      'app/myapp/main.py',
+    const { repos, repoPaths } = await writeDatalibMyapp(
       'def describe():\n    """Example:\n    from datalib.models import Record\n    """\n    return None\n',
     );
-
-    const repos = { lib: 'datalib', app: 'myapp' };
-    const repoPaths = new Map([
-      ['lib', path.join(tmpDir, 'lib')],
-      ['app', path.join(tmpDir, 'app')],
-    ]);
 
     const result = await extractPythonWorkspaceLinks(repos, repoPaths);
 
     expect(result.links).toHaveLength(0);
   });
 
+  it('ignores import-shaped text inside an unclosed indented docstring', async () => {
+    const { repos, repoPaths } = await writeDatalibMyapp(
+      'def describe():\n    """\n    from datalib.models import Record\n',
+    );
+
+    const result = await extractPythonWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(0);
+  });
+
+  it('discovers parenthesized function-local imports', async () => {
+    const { repos, repoPaths } = await writeDatalibMyapp(
+      'def load_record():\n    from datalib.models import (\n        Record,\n    )\n    return Record()\n',
+    );
+
+    const result = await extractPythonWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(1);
+    expect(result.links[0].contract).toBe('datalib::Record');
+  });
+
+  it('keeps PascalCase from a function-local mixed import', async () => {
+    const { repos, repoPaths } = await writeUtilsMyapp(
+      'def load():\n    from utils import helper, Config\n    return Config()\n',
+    );
+
+    const result = await extractPythonWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(1);
+    expect(result.links[0].contract).toBe('utils::Config');
+  });
+
   it('ignores snake_case imports (functions, not types)', async () => {
-    await writeFile(
-      'lib/pyproject.toml',
-      '[project]\nname = "utils"\nversion = "0.1.0"\ndependencies = []\n',
-    );
-    await writeFile('lib/utils/__init__.py', 'def helper(): pass\nclass Config: pass\n');
-
-    await writeFile(
-      'app/pyproject.toml',
-      '[project]\nname = "myapp"\nversion = "0.1.0"\ndependencies = [\n  "utils",\n]\n',
-    );
-    await writeFile('app/myapp/main.py', 'from utils import helper, Config\n');
-
-    const repos = { lib: 'utils', app: 'myapp' };
-    const repoPaths = new Map([
-      ['lib', path.join(tmpDir, 'lib')],
-      ['app', path.join(tmpDir, 'app')],
-    ]);
+    const { repos, repoPaths } = await writeUtilsMyapp('from utils import helper, Config\n');
 
     const result = await extractPythonWorkspaceLinks(repos, repoPaths);
 
