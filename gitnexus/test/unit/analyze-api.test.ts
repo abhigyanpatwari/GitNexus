@@ -698,7 +698,7 @@ describe('HTTP repo catalog validation', () => {
     const source = await readSource();
     expect(source).toMatch(/const repos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/);
     expect(source).toMatch(
-      /const freshRepos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
+      /const freshRepos = await listRegisteredRepos\(\{\s*validate:\s*options\.validateStorage !== false,\s*\}\)/,
     );
     expect(source).toMatch(
       /app\.get\('\/api\/repos'[\s\S]*listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
