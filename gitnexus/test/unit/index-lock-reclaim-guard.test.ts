@@ -85,7 +85,9 @@ it('never admits B and C while A resumes a stale reclaim judgment', async () => 
   });
   vi.mocked(fs.unlinkSync).mockImplementation((p) => {
     const reclaimingDead =
-      p === lockPath && launchedB && String(actual.readFileSync(lockPath, 'utf8')).includes('dead-D');
+      p === lockPath &&
+      launchedB &&
+      String(actual.readFileSync(lockPath, 'utf8')).includes('dead-D');
     actual.unlinkSync(p);
     if (reclaimingDead && !launchedC) {
       launchedC = true;
