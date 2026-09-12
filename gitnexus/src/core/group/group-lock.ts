@@ -30,7 +30,9 @@
  * distinct ways it can fail to be protected; all three throw
  * {@link GroupSyncLockError}:
  *
- *   1. TIMEOUT — the holder is still alive when the ceiling elapses.
+ *   1. TIMEOUT — a live holder still held the lock when the ceiling
+ *      elapsed, or an unrecoverable acquisition/reclaim guard leftover
+ *      exhausted the guard wait (see RUNBOOK.md).
  *   2. LOCK-FREE DEGRADATION — `acquireIndexLock` answers a read-only or
  *      permission-denied filesystem with a no-op handle that is byte-identical
  *      to a real one at the API boundary. That is a deliberate tolerance for

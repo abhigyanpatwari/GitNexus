@@ -607,7 +607,8 @@ const acquireViaFile = async (
           createdMain = true;
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code === 'EPERM') throw err;
-          if (isLockUnwritableCode((err as NodeJS.ErrnoException).code)) return noopHandle(me);
+          if (isLockUnwritableCode((err as NodeJS.ErrnoException).code))
+            return deniedCreateHandle(lockPath, me, err);
           throw err;
         }
         try {

@@ -83,15 +83,13 @@ it('never admits B and C while A resumes a stale reclaim judgment', async () => 
     }
     return snapshot;
   });
-  vi.mocked(fs.renameSync).mockImplementation((from, to) => {
-    const displacedLiveB =
-      from === lockPath &&
-      launchedB &&
-      !String(actual.readFileSync(lockPath, 'utf8')).includes('dead-D');
-    actual.renameSync(from, to);
-    if (displacedLiveB && !launchedC) {
+  vi.mocked(fs.unlinkSync).mockImplementation((p) => {
+    const reclaimingDead =
+      p === lockPath && launchedB && String(actual.readFileSync(lockPath, 'utf8')).includes('dead-D');
+    actual.unlinkSync(p);
+    if (reclaimingDead && !launchedC) {
       launchedC = true;
-      start(); // C verifies before A can inspect/restore the displaced inode.
+      start();
     }
   });
   start();
@@ -99,6 +97,7 @@ it('never admits B and C while A resumes a stale reclaim judgment', async () => 
   await Promise.all(pending);
   try {
     expect(launchedB).toBe(true);
+    expect(launchedC).toBe(true);
     expect(entered).toHaveLength(1);
   } finally {
     for (const handle of entered) handle.release();
@@ -329,6 +328,21 @@ it.each(['malformed', 'unreadable', 'guard'])(
     expect(fs.unlinkSync).not.toHaveBeenCalled();
   },
 );
+
+it('fails closed when main-lock wx is denied after existsSync reports absence', async () => {
+  vi.mocked(fs.openSync).mockImplementation((...args) => {
+    if (args[0] === lockPath && args[1] === 'wx') {
+      throw Object.assign(new Error('main denied'), { code: 'EACCES' });
+    }
+    return actual.openSync(...args);
+  });
+  await expect(acquireIndexLock(dir)).rejects.toMatchObject({
+    message: 'main denied',
+    code: 'EACCES',
+  });
+  expect(fs.existsSync(guardPath)).toBe(false);
+  expect(fs.existsSync(lockPath)).toBe(false);
+});
 
 it('never sweeps staging files with a lock-free handle', async () => {
   const staging = path.join(dir, 'lbug.staging.active');
