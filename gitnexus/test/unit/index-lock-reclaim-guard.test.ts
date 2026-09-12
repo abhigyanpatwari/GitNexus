@@ -188,8 +188,12 @@ it('caps guard wait by the remaining acquisition budget after waiting on a workl
     timeoutMs: 200,
     pollMs: 10,
     onWaitStart: () => {
-      expect(fs.existsSync(guardPath)).toBe(false);
-      fs.writeFileSync(guardPath, 'orphan');
+      const fd = actual.openSync(guardPath, 'wx');
+      try {
+        actual.writeSync(fd, 'orphan');
+      } finally {
+        actual.closeSync(fd);
+      }
     },
   }).catch((e) => e);
   await vi.runAllTimersAsync();
@@ -276,10 +280,9 @@ it.each([
   // to our old record afterward to prove the handle cannot retry either.
   fs.writeFileSync(lockPath, '');
   handle.release();
-  expect(fs.existsSync(lockPath)).toBe(true);
   fs.writeFileSync(lockPath, JSON.stringify(handle.record));
   handle.release();
-  expect(fs.existsSync(lockPath)).toBe(true);
+  expect(actual.readFileSync(lockPath, 'utf8')).toContain(handle.record.token);
 });
 
 it.each(['EPERM', 'EIO'])('fails closed on guard cleanup error %s', async (code) => {

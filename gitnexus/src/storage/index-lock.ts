@@ -52,7 +52,6 @@ import {
   closeSync,
   readFileSync,
   unlinkSync,
-  existsSync,
   mkdirSync,
   readdirSync,
   realpathSync,
@@ -578,7 +577,7 @@ const acquireViaFile = async (
         closeSync(guardFd);
       }
       holder = readRecord(lockPath);
-      let canCreate = !existsSync(lockPath);
+      let tryCreate = false;
       if (holder) {
         malformedSince = null;
         if (isStale(holder)) {
@@ -587,54 +586,68 @@ const acquireViaFile = async (
               `invocation ${holder.invocationId}).`,
           );
           unlinkSync(lockPath);
-          canCreate = true;
-        }
-      } else if (!canCreate) {
-        malformedSince ??= Date.now();
-        if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
-          opts.log?.('Reclaiming a malformed/partial index lock file (no readable owner record).');
-          unlinkSync(lockPath);
-          canCreate = true;
-          malformedSince = null;
+          tryCreate = true;
+          holder = null;
         }
       } else {
-        malformedSince = null;
+        tryCreate = true;
       }
-      if (canCreate) {
-        let fd: number;
+      if (tryCreate) {
+        let fd: number | undefined;
         try {
           fd = openSync(lockPath, 'wx');
           createdMain = true;
         } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'EPERM') throw err;
-          if (isLockUnwritableCode((err as NodeJS.ErrnoException).code))
-            return deniedCreateHandle(lockPath, me, err);
-          throw err;
-        }
-        try {
-          writeSync(fd, JSON.stringify(me));
-        } finally {
-          closeSync(fd);
-        }
-        if (readRecord(lockPath)?.token !== me.token) {
-          throw new Error(`Index lock verification failed: ${lockPath}`);
-        }
-        let released = false;
-        return {
-          record: me,
-          release: () => {
-            if (released) return;
-            released = true;
-            // No async boundary: a cooperating contender cannot replace a live
-            // owner's record before this one-shot unlink. Unknown is not ours.
-            try {
-              if (readRecord(lockPath)?.token !== me.token) return;
-              unlinkSync(lockPath);
-            } catch {
-              /* best-effort on exit; never retry against a successor */
+          const code = (err as NodeJS.ErrnoException).code;
+          if (code === 'EEXIST') {
+            // Exclusive create is the presence check — do not existsSync first.
+            const current = readRecord(lockPath);
+            if (current === null) {
+              malformedSince ??= Date.now();
+              if (Date.now() - malformedSince >= malformedGraceMs(pollMs)) {
+                opts.log?.(
+                  'Reclaiming a malformed/partial index lock file (no readable owner record).',
+                );
+                unlinkSync(lockPath);
+                malformedSince = null;
+              }
+            } else {
+              holder = current;
             }
-          },
-        };
+          } else if (code === 'EPERM') {
+            throw err;
+          } else if (isLockUnwritableCode(code)) {
+            return deniedCreateHandle(lockPath, me, err);
+          } else {
+            throw err;
+          }
+        }
+        if (createdMain && fd !== undefined) {
+          try {
+            writeSync(fd, JSON.stringify(me));
+          } finally {
+            closeSync(fd);
+          }
+          if (readRecord(lockPath)?.token !== me.token) {
+            throw new Error(`Index lock verification failed: ${lockPath}`);
+          }
+          let released = false;
+          return {
+            record: me,
+            release: () => {
+              if (released) return;
+              released = true;
+              // No async boundary: a cooperating contender cannot replace a live
+              // owner's record before this one-shot unlink. Unknown is not ours.
+              try {
+                if (readRecord(lockPath)?.token !== me.token) return;
+                unlinkSync(lockPath);
+              } catch {
+                /* best-effort on exit; never retry against a successor */
+              }
+            },
+          };
+        }
       }
       permissionWaitSince = null;
       permissionError = undefined;
