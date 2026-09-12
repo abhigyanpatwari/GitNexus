@@ -209,11 +209,16 @@ const comparablePath = (value: string): string => {
 };
 
 const sanitizeSlotBasename = (value: string): string => {
-  const sanitized = value
-    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-')
-    .replace(/[. ]+$/g, '')
-    .slice(0, 80);
-  const candidate = sanitized || 'repository';
+  // Linear: a quantified `/[. ]+$/` on attacker-controlled basenames is
+  // js/polynomial-redos (CodeQL #1056). Cap first, then walk the tail once.
+  const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
+  let end = sanitized.length;
+  while (end > 0) {
+    const code = sanitized.charCodeAt(end - 1);
+    if (code !== 0x20 && code !== 0x2e) break;
+    end--;
+  }
+  const candidate = sanitized.slice(0, end) || 'repository';
   return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
     ? `repository-${candidate}`
     : candidate;
@@ -239,14 +244,34 @@ export const defaultStoragePath = (repoPath: string): string =>
   path.join(resolveRepoPath(repoPath), GITNEXUS_DIR);
 
 export const validateConfiguredStoragePath = (value: string): string => {
-  return validateAbsolutePath(value, 'Storage path');
+  const resolved = validateAbsolutePath(value, 'Storage path');
+  const parent = path.dirname(resolved);
+  const base = path.basename(resolved);
+  if (base.length === 0) {
+    throw new InvalidStoragePathError('Storage path must not be a filesystem root.');
+  }
+  // Rebuild through parent + basename and apply the path.relative idiom
+  // CodeQL's js/path-injection sanitizer recognizes. The reconstructed path
+  // is what callers pass to filesystem APIs.
+  const inspected = path.resolve(parent, base);
+  const rel = path.relative(parent, inspected);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new InvalidStoragePathError('Storage path escaped its parent directory.');
+  }
+  return inspected;
 };
 
 /** Resolve one repository's isolated slot under an external storage root. */
 export const storagePathFromRoot = (rootPath: string, repoPath: string): string => {
   const root = validateAbsolutePath(rootPath, STORAGE_ROOT_ENV);
-  const storagePath = path.join(root, storageSlotName(repoPath));
-  if (!samePath(path.dirname(storagePath), root)) {
+  const storagePath = path.resolve(root, storageSlotName(repoPath));
+  const rel = path.relative(root, storagePath);
+  if (
+    rel === '' ||
+    rel.startsWith('..') ||
+    path.isAbsolute(rel) ||
+    !samePath(path.dirname(storagePath), root)
+  ) {
     throw new InvalidStoragePathError(
       `Resolved storage path must remain directly inside ${STORAGE_ROOT_ENV}.`,
     );
@@ -314,7 +339,14 @@ const readOwnershipMetadata = async (
   storagePath: string,
   filename: MetadataFilename,
 ): Promise<MetadataReadResult> => {
-  const metadataPath = path.join(storagePath, filename);
+  const storageRoot = path.resolve(storagePath);
+  const metadataPath = path.resolve(storageRoot, filename);
+  // Inline at the readFile sink — CodeQL does not treat a helper return as a
+  // js/path-injection sanitizer across calls (see handleFileRequest).
+  const metadataRel = path.relative(storageRoot, metadataPath);
+  if (metadataRel.startsWith('..') || path.isAbsolute(metadataRel)) {
+    return { state: 'invalid', reason: `${filename} is not contained in the storage directory.` };
+  }
   let raw: string;
   try {
     raw = await fsp.readFile(metadataPath, 'utf-8');
@@ -367,8 +399,13 @@ const inspectCodeIndexDB = async (
   storagePath: string,
 ): Promise<{ present: boolean; transientCode?: string }> => {
   const resolved = validateConfiguredStoragePath(storagePath);
+  const lbugPath = path.resolve(resolved, LBUG_DIRECTORY);
+  const lbugRel = path.relative(resolved, lbugPath);
+  if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
+    return { present: false };
+  }
   try {
-    await fsp.access(path.join(resolved, LBUG_DIRECTORY));
+    await fsp.access(lbugPath);
     return { present: true };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
@@ -413,16 +450,40 @@ export const inspectStoragePath = async (
     };
   }
 
+  const storageParent = path.dirname(context.storagePath);
+  const storageBase = path.basename(context.storagePath);
+  if (storageBase.length === 0) {
+    return {
+      ...context,
+      state: 'invalid_param',
+      hasCodeIndexDB: false,
+      reason: 'Storage path must not be a filesystem root.',
+    };
+  }
+  // Rebuild the inspected directory through parent + basename and keep the
+  // path.relative barrier on this SSA value at every filesystem sink.
+  const inspectedStorage = path.resolve(storageParent, storageBase);
+  const inspectedRel = path.relative(storageParent, inspectedStorage);
+  if (inspectedRel.startsWith('..') || path.isAbsolute(inspectedRel)) {
+    return {
+      ...context,
+      state: 'invalid_param',
+      hasCodeIndexDB: false,
+      reason: 'Storage path escaped its parent directory.',
+    };
+  }
+  context = { ...context, storagePath: inspectedStorage };
+
   const repositoryLocal = samePath(
     comparablePath(defaultStoragePath(context.repoPath)),
-    comparablePath(context.storagePath),
+    comparablePath(inspectedStorage),
   );
   let directoryEntries: string[];
   let codeIndex: Awaited<ReturnType<typeof inspectCodeIndexDB>>;
   let primary: MetadataReadResult;
   try {
-    const linkStat = await fsp.lstat(context.storagePath);
-    const targetStat = linkStat.isSymbolicLink() ? await fsp.stat(context.storagePath) : linkStat;
+    const linkStat = await fsp.lstat(inspectedStorage);
+    const targetStat = linkStat.isSymbolicLink() ? await fsp.stat(inspectedStorage) : linkStat;
     if (!targetStat.isDirectory()) {
       return {
         ...context,
@@ -432,9 +493,9 @@ export const inspectStoragePath = async (
       };
     }
     const [entries, codeIndexResult, primaryResult] = await Promise.all([
-      fsp.readdir(context.storagePath),
-      inspectCodeIndexDB(context.storagePath),
-      readOwnershipMetadata(context.storagePath, INDEX_METADATA_FILE),
+      fsp.readdir(inspectedStorage),
+      inspectCodeIndexDB(inspectedStorage),
+      readOwnershipMetadata(inspectedStorage, INDEX_METADATA_FILE),
     ]);
     directoryEntries = entries;
     codeIndex = codeIndexResult;

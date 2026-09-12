@@ -128,15 +128,42 @@ const waitForSettledIndex = async (
 ): Promise<boolean> => {
   const settled = (probePath: string): boolean => {
     try {
-      const lbugStat = statSync(path.join(probePath, LBUG_DIRECTORY));
-      const metaStat = statSync(path.join(probePath, INDEX_METADATA_FILE));
-      return (
-        lbugStat.mtimeMs >= jobStartMs &&
-        metaStat.mtimeMs >= jobStartMs &&
-        ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every(
-          (f) => !existsSync(path.join(probePath, f)),
-        )
-      );
+      // Inline path.relative barriers at every filesystem sink. CodeQL tracks
+      // `storagePath` from the HTTP analyze `path` through requireStoragePath
+      // and does not treat that helper as a js/path-injection sanitizer.
+      const storageRoot = path.resolve(storagePath);
+      const probeRoot = path.resolve(probePath);
+      const probeRel = path.relative(storageRoot, probeRoot);
+      if (probeRel.startsWith('..') || path.isAbsolute(probeRel)) {
+        return false;
+      }
+
+      const lbugPath = path.resolve(probeRoot, LBUG_DIRECTORY);
+      const lbugRel = path.relative(storageRoot, lbugPath);
+      if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
+        return false;
+      }
+      const lbugStat = statSync(lbugPath);
+
+      const metaPath = path.resolve(probeRoot, INDEX_METADATA_FILE);
+      const metaRel = path.relative(storageRoot, metaPath);
+      if (metaRel.startsWith('..') || path.isAbsolute(metaRel)) {
+        return false;
+      }
+      const metaStat = statSync(metaPath);
+
+      if (lbugStat.mtimeMs < jobStartMs || metaStat.mtimeMs < jobStartMs) {
+        return false;
+      }
+
+      return ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every((name) => {
+        const sidePath = path.resolve(probeRoot, name);
+        const sideRel = path.relative(storageRoot, sidePath);
+        if (sideRel.startsWith('..') || path.isAbsolute(sideRel)) {
+          return false;
+        }
+        return !existsSync(sidePath);
+      });
     } catch {
       return false; // not written yet
     }

@@ -16,8 +16,10 @@ import {
   defaultStoragePath,
   ensureStoragePathWritable,
   getIndexStorageRequirements,
+  inspectStoragePath,
   resolveStoragePath,
   storagePathFromRoot,
+  storageSlotName,
   validateConfiguredStoragePath,
 } from '../../src/storage/storage-resolver.js';
 
@@ -164,12 +166,34 @@ describe('storage resolver', () => {
     expect(() => resolveStoragePath(repo)).toThrow(InvalidStoragePathError);
   });
 
-  it.each(['', 'relative/index', `bad\0index`])(
+  it.each(['', 'relative/index', `bad\0index`, path.parse(process.cwd()).root])(
     'rejects invalid configured storage path %j',
     (value) => {
       expect(() => validateConfiguredStoragePath(value)).toThrow(InvalidStoragePathError);
     },
   );
+
+  it('strips trailing dots and spaces from a storage slot basename without a regex', () => {
+    const slot = storageSlotName(path.join(path.sep, 'tmp', 'My Repo. . '));
+    expect(slot.startsWith('My Repo-')).toBe(true);
+    expect(slot).toMatch(/-[0-9a-f]{12}$/);
+  });
+
+  it('maps a Windows-reserved basename into a safe slot prefix', () => {
+    const slot = storageSlotName(path.join(path.sep, 'tmp', 'CON'));
+    expect(slot.startsWith('repository-CON-')).toBe(true);
+  });
+
+  it('trims an adversarial run of trailing spaces in linear time', () => {
+    const slot = storageSlotName(path.join(path.sep, 'tmp', `keep${' '.repeat(10_000)}`));
+    expect(slot.startsWith('keep-')).toBe(true);
+  });
+
+  it('rejects inspecting a filesystem-root storage path', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-root-repo-');
+    const inspection = await inspectStoragePath(path.parse(process.cwd()).root, repo);
+    expect(inspection.state).toBe('invalid_param');
+  });
 
   it('creates independent external slots and verifies they are writable', async () => {
     const root = await makeTempDir('gitnexus-storage-resolver-slots-');
