@@ -934,9 +934,10 @@ export async function runChunkedParseAndResolve(
      * Chunk hashes whose durable ParsedFile directory could not be reset. The
      * old generation's shards are still on disk, so a warm hit would union
      * stale shards with the new ones. Treated exactly like a quarantined chunk:
-     * skip the parse-cache write AND retire the hash (#3204), so neither the
-     * old `.v8` nor the durable directory survives the save and the next run
-     * re-dispatches into a clean directory. Kept as its own set rather than
+     * skip the parse-cache write AND, when shards from that generation are
+     * still on disk, retire the hash (#3204): the old `.v8` is not carried
+     * forward and the directory is dropped from the durable index, so the next
+     * run re-dispatches. Kept as its own set rather than
      * read back off `staleKeys`, which is a superset — it is what selects the
      * warn below over the quarantine branch's dev-only log.
      */

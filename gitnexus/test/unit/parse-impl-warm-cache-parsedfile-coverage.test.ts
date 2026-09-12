@@ -662,9 +662,19 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     expect(warm.staleKeys?.has(aHash)).toBe(true);
     expect(warm.staleKeys?.has(bHash) ?? false).toBe(false);
 
-    const third = (await loadParseCache(storageDir)) as ParseCache;
-    expect(third.onDiskKeys?.has(aHash)).toBe(false);
-    expect(third.onDiskKeys?.has(bHash)).toBe(true);
+    // Actually perform the next run. An index entry alone does not exercise the
+    // warm-hit/coherence path, so the claim in the title has to be paid for.
+    // Run each chunk on its own so the single global spawn marker is
+    // unambiguous about WHICH chunk re-dispatched.
+    const bOnly = (await loadParseCache(storageDir)) as ParseCache;
+    fs.rmSync(markerPath, { force: true });
+    await run(bOnly, [b], 1);
+    expect(fs.existsSync(markerPath)).toBe(false); // sibling served warm
+
+    const aOnly = (await loadParseCache(storageDir)) as ParseCache;
+    fs.rmSync(markerPath, { force: true });
+    await run(aOnly, [a], 1);
+    expect(fs.existsSync(markerPath)).toBe(true); // retired chunk re-parsed
   });
 
   it('retains worker ParsedFiles when the main-thread run-store write fails', async () => {

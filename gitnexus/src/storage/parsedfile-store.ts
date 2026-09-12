@@ -878,9 +878,13 @@ const replaceDurableChunkDir = async (from: string, to: string): Promise<void> =
     /* dest exists, or the rename is cross-device */
   }
   const backup = `${to}.replacing`;
-  // Best-effort: a leftover backup that cannot be deleted must not fail an
-  // otherwise-publishable replacement — the rename below overwrites it (#3204).
-  await fs.rm(backup, { recursive: true, force: true }).catch(() => {});
+  // Deliberately NOT best-effort. If a non-empty backup survives, the
+  // `fs.rename(to, backup)` below cannot overwrite it and is swallowed as
+  // "dest was missing", so the `fs.cp` fallback would merge the staged
+  // generation INTO the live directory — manufacturing exactly the old+new
+  // union this fix exists to prevent. Let it throw; the caller's per-entry
+  // guard keeps one such chunk from costing the others their prune.
+  await fs.rm(backup, { recursive: true, force: true });
   let backedUp = false;
   try {
     await fs.rename(to, backup);
