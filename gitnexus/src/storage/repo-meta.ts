@@ -3,8 +3,9 @@
  *
  * Holds the on-disk shape of a GitNexus index's metadata file
  * (`.gitnexus/gitnexus.json`, plus its legacy `meta.json` mirror) and the
- * read-side helpers that locate and parse it. Nothing here writes, and nothing
- * here knows about the global registry.
+ * read-side helpers that locate and parse it. Nothing here writes. Path
+ * lookup may consult configured or registered storage via `resolveStoragePath`;
+ * registry mutation stays in `repo-manager.ts`.
  *
  * Why it is its own module: `repo-manager.ts` owns the registry and the write
  * side, and `branch-index.ts` (#2106) owns the multi-branch slug/placement
