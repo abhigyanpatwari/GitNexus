@@ -422,26 +422,23 @@ it.each(['mismatched', 'malformed', 'read-error', 'unlink-error'])(
   },
 );
 
-it.each(['missing', 'mismatched'])(
-  'does not delete a %s guard during cleanup',
-  async (mode) => {
-    vi.mocked(fs.readFileSync).mockImplementation((...args) => {
-      if (args[0] === guardPath) {
-        if (mode === 'missing') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
-        return JSON.stringify({ pid: process.pid, token: 'other' });
-      }
-      return actual.readFileSync(...args);
-    });
-    if (mode === 'missing') {
-      vi.mocked(fs.lstatSync).mockImplementation((p) => {
-        if (p === guardPath) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
-        return actual.lstatSync(p);
-      });
+it.each(['missing', 'mismatched'])('does not delete a %s guard during cleanup', async (mode) => {
+  vi.mocked(fs.readFileSync).mockImplementation((...args) => {
+    if (args[0] === guardPath) {
+      if (mode === 'missing') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      return JSON.stringify({ pid: process.pid, token: 'other' });
     }
-    await expect(acquireIndexLock(dir)).rejects.toThrow('Cannot verify');
-    expect(fs.unlinkSync).not.toHaveBeenCalledWith(guardPath);
-  },
-);
+    return actual.readFileSync(...args);
+  });
+  if (mode === 'missing') {
+    vi.mocked(fs.lstatSync).mockImplementation((p) => {
+      if (p === guardPath) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      return actual.lstatSync(p);
+    });
+  }
+  await expect(acquireIndexLock(dir)).rejects.toThrow('Cannot verify');
+  expect(fs.unlinkSync).not.toHaveBeenCalledWith(guardPath);
+});
 
 it('unlinks a self-created unreadable guard after metadata write failure', async () => {
   vi.mocked(fs.readFileSync).mockImplementation((...args) => {

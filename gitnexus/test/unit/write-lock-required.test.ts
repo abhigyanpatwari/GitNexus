@@ -67,9 +67,7 @@ it('refuses a registry transaction without exclusive ownership', async () => {
 
 it('refuses analysis without exclusive ownership after the write slot moves', async () => {
   resolvePlacement.mockResolvedValueOnce({}).mockResolvedValueOnce({ branch: 'moved' });
-  acquire
-    .mockResolvedValueOnce({ release })
-    .mockResolvedValueOnce({ lockFree: true, release });
+  acquire.mockResolvedValueOnce({ release }).mockResolvedValueOnce({ lockFree: true, release });
 
   await expect(
     runFullAnalysis(home, { branch: 'moved' }, { onProgress: () => {} }),
