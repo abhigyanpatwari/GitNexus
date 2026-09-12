@@ -4,8 +4,8 @@
  * A crashed/killed process can leave a `.staging-*` directory under
  * UPLOAD_ROOT (the normal path removes it on success/failure/abort). This
  * sweep, run once at server startup, removes staging dirs older than a
- * threshold. Promoted upload dirs are persistent registered repos (like
- * clones) and are NOT touched here — they are removed via DELETE /api/repo.
+ * threshold. Stale promoted upload directories that are no longer registered
+ * are also removed. Registered promoted dirs stay (DELETE /api/repo).
  */
 
 import path from 'path';

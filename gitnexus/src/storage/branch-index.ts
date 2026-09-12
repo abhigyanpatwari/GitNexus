@@ -72,9 +72,8 @@ export const resolveBranchPlacement = async (
 ): Promise<{ branch?: string }> => {
   // Detached HEAD / non-git / no label → flat (CI-safe, byte-identical).
   if (!label) return {};
-  // The flat slot only — identical to `getStoragePaths(repoPath).storagePath`,
-  // which is `getStoragePath(repoPath)` verbatim (the `branch` argument only
-  // ever scopes `lbugPath`/`metaPath`, never `storagePath`).
+  // The resolved flat slot. Callers may pass an ownership-validated path
+  // (including external storage); otherwise this falls back to getStoragePath.
   const storagePath = resolvedStoragePath ?? getStoragePath(repoPath);
   const flatMeta = await loadMeta(storagePath);
   // The flat slot's owner is authoritative ONLY when it is a non-empty string.

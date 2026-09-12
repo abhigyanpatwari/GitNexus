@@ -266,6 +266,11 @@ const registeredStoragePath = (repoPath: string): string | undefined => {
     const registryEntry = entry as RegistryStorageEntry;
     if (typeof registryEntry.path !== 'string') continue;
     if (!samePath(canonicalRegistryPath(registryEntry.path), resolvedRepoPath)) continue;
+    if (registryEntry.storagePath === undefined) {
+      // Pre-external-storage rows have no storagePath. Match readRegistry():
+      // fall through to the repository-local default instead of failing closed.
+      return undefined;
+    }
     if (typeof registryEntry.storagePath !== 'string') {
       throw new InvalidStoragePathError(
         `Registered storage path for ${repoPath} must be an absolute, non-empty path.`,
@@ -296,17 +301,6 @@ const readOwnershipMetadata = async (
   filename: MetadataFilename,
 ): Promise<MetadataReadResult> => {
   const metadataPath = path.join(storagePath, filename);
-  try {
-    await fsp.access(metadataPath);
-  } catch (error) {
-    return isMissingFilesystemError(error)
-      ? { state: 'absent' }
-      : {
-          state: 'invalid',
-          reason: `${filename} could not be read: ${filesystemErrorDetail(error)}`,
-        };
-  }
-
   let raw: string;
   try {
     raw = await fsp.readFile(metadataPath, 'utf-8');
@@ -606,11 +600,13 @@ export const requireDeletableStoragePath = async (entry: {
     comparablePath(expectedStoragePath),
     comparablePath(actualStoragePath),
   );
-  const filesystemRoot = path.parse(actualStoragePath).root;
+  const comparableStorage = comparablePath(actualStoragePath);
+  const comparableRepo = comparablePath(repoPath);
+  const comparableRoot = comparablePath(path.parse(actualStoragePath).root);
   if (
-    samePath(actualStoragePath, filesystemRoot) ||
-    samePath(actualStoragePath, repoPath) ||
-    isPathAncestor(actualStoragePath, repoPath)
+    samePath(comparableStorage, comparableRoot) ||
+    samePath(comparableStorage, comparableRepo) ||
+    isPathAncestor(comparableStorage, comparableRepo)
   ) {
     throw new StorageDeletionError(
       expectedStoragePath,

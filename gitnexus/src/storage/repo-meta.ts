@@ -36,7 +36,7 @@ import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.j
 
 export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
-/** The `.gitnexus` directory name, relative to a repo root. */
+/** How much source text an index is allowed to persist. */
 export type ContentRetention = 'full' | 'symbol' | 'none';
 export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
 export const CONTENT_RETENTION_SCHEMA_VERSION = 1;

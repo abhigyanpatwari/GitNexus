@@ -275,6 +275,7 @@ function findRegisteredRepoForTest(cwd: string) {
         path: string;
         storagePath: string;
         lbugPath: string;
+        metadata: { lastCommit?: string } | null;
       } | null;
     }
   ).findRegisteredRepo(cwd);
@@ -3498,6 +3499,134 @@ describe('Hook registry resolver compatibility', () => {
       withRegistryHome(homeDir, () => {
         expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
           lbugPath: path.join(storagePath, 'branches', branchSlug, 'lbug'),
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads metadata from the pinned branch slot, not the flat index', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'branch-meta-repo');
+    const storagePath = path.join(homeDir, 'indexes', 'branch-meta-repo');
+    const branch = 'feature/y';
+    const branchSlug = `feature_y-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
+    const branchDir = path.join(storagePath, 'branches', branchSlug);
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(branchDir, { recursive: true });
+      initRepoWithCommit(repoDir);
+      runGit(repoDir, ['checkout', '-b', branch]);
+      fs.writeFileSync(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: repoDir,
+          storagePath,
+          lastCommit: 'flat-commit',
+          stats: {},
+        }),
+      );
+      fs.writeFileSync(
+        path.join(branchDir, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: repoDir,
+          storagePath,
+          lastCommit: 'branch-commit',
+          stats: {},
+        }),
+      );
+      writeHookRegistry(homeDir, [
+        {
+          name: 'branch-meta-repo',
+          path: repoDir,
+          storagePath,
+          branches: [{ branch }],
+        },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+          lbugPath: path.join(branchDir, 'lbug'),
+          metadata: { lastCommit: 'branch-commit' },
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('maps a Windows-reserved branch name through the CLI slug rules', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'reserved-branch-repo');
+    const storagePath = path.join(homeDir, 'indexes', 'reserved-branch-repo');
+    const branch = 'CON';
+    const branchSlug = `unknown-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(storagePath, { recursive: true });
+      initRepoWithCommit(repoDir);
+      runGit(repoDir, ['checkout', '-b', branch]);
+      fs.writeFileSync(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
+      );
+      writeHookRegistry(homeDir, [
+        {
+          name: 'reserved-branch-repo',
+          path: repoDir,
+          storagePath,
+          branches: [{ branch }],
+        },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+          lbugPath: path.join(storagePath, 'branches', branchSlug, 'lbug'),
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('selects the longest matching registered path for a nested checkout', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const parentDir = path.join(homeDir, 'parent-repo');
+    const nestedDir = path.join(parentDir, 'nested-repo');
+    const parentStorage = path.join(homeDir, 'indexes', 'parent-repo');
+    const nestedStorage = path.join(homeDir, 'indexes', 'nested-repo');
+    try {
+      fs.mkdirSync(nestedDir, { recursive: true });
+      fs.mkdirSync(parentStorage, { recursive: true });
+      fs.mkdirSync(nestedStorage, { recursive: true });
+      fs.writeFileSync(
+        path.join(parentStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: parentDir,
+          storagePath: parentStorage,
+          lastCommit: 'parent',
+          stats: {},
+        }),
+      );
+      fs.writeFileSync(
+        path.join(nestedStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: nestedDir,
+          storagePath: nestedStorage,
+          lastCommit: 'nested',
+          stats: {},
+        }),
+      );
+      writeHookRegistry(homeDir, [
+        { name: 'parent-repo', path: parentDir, storagePath: parentStorage },
+        { name: 'nested-repo', path: nestedDir, storagePath: nestedStorage },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(nestedDir)).toMatchObject({
+          path: nestedDir,
+          storagePath: nestedStorage,
         });
       });
     } finally {

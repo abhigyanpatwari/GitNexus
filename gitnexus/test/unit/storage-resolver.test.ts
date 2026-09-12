@@ -133,6 +133,17 @@ describe('storage resolver', () => {
     },
   );
 
+  it('uses the repository-local default for a legacy registry row without storagePath', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-legacy-');
+    const home = await makeTempDir('gitnexus-storage-resolver-home-');
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
+    process.env.GITNEXUS_HOME = home;
+    await fs.writeFile(path.join(home, 'registry.json'), JSON.stringify([{ path: repo }]));
+
+    expect(resolveStoragePath(repo)).toBe(defaultStoragePath(repo));
+  });
+
   it('rejects a malformed matching registry row', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');
@@ -213,5 +224,18 @@ describe('storage resolver', () => {
     await expect(requireDeletableStoragePath({ path: repo, storagePath })).rejects.toBeInstanceOf(
       StorageDeletionError,
     );
+  });
+
+  it('rejects a storage path that is the repository after symlink resolution', async () => {
+    const root = await makeTempDir('gitnexus-storage-resolver-delete-symlink-');
+    const repo = path.join(root, 'repo');
+    const linkParent = path.join(root, 'link');
+    await fs.mkdir(repo);
+    await fs.symlink(root, linkParent, process.platform === 'win32' ? 'junction' : 'dir');
+    const aliasedRepo = path.join(linkParent, 'repo');
+
+    await expect(
+      requireDeletableStoragePath({ path: repo, storagePath: aliasedRepo }),
+    ).rejects.toBeInstanceOf(StorageDeletionError);
   });
 });

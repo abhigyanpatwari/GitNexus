@@ -143,7 +143,12 @@ function registryPathsForCwd(cwd) {
 }
 
 function branchSlug(rawRef) {
-  const safe = rawRef.replace(/^-+/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const sanitized = rawRef.replace(/^-+/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$/i;
+  const safe =
+    !sanitized || sanitized === '.' || sanitized === '..' || reserved.test(sanitized)
+      ? 'unknown'
+      : sanitized;
   const hash = createHash('sha256').update(rawRef).digest('hex').slice(0, 8);
   return `${safe}-${hash}`;
 }
@@ -161,6 +166,8 @@ function findRegisteredRepo(cwd) {
   }
   if (!Array.isArray(entries)) return null;
 
+  let best = null;
+  let bestLen = -1;
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (typeof entry.path !== 'string') continue;
@@ -174,31 +181,36 @@ function findRegisteredRepo(cwd) {
       continue;
     }
     const registeredPath = canonicalize(entry.path);
-    if (registeredPath && repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
-      // Registry rows written before configurable storage have no storagePath.
-      // Match the CLI's read-boundary compatibility rule for those rows only.
-      const storagePath = path.resolve(entry.storagePath ?? path.join(entry.path, GITNEXUS_DIR));
-      const repositoryLocal = samePath(
-        canonicalize(path.join(entry.path, GITNEXUS_DIR)),
-        canonicalize(storagePath),
-      );
-      const metadata = readIndexMetadata(storagePath);
-      if (!isOwnedStorage(entry.path, storagePath, repositoryLocal, metadata)) continue;
-      const branchIsIndexed =
-        branch &&
-        Array.isArray(entry.branches) &&
-        entry.branches.some((summary) => summary && summary.branch === branch);
-      return {
+    if (!registeredPath || !repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
+      continue;
+    }
+    // Registry rows written before configurable storage have no storagePath.
+    // Match the CLI's read-boundary compatibility rule for those rows only.
+    const storagePath = path.resolve(entry.storagePath ?? path.join(entry.path, GITNEXUS_DIR));
+    const repositoryLocal = samePath(
+      canonicalize(path.join(entry.path, GITNEXUS_DIR)),
+      canonicalize(storagePath),
+    );
+    const ownershipMetadata = readIndexMetadata(storagePath);
+    if (!isOwnedStorage(entry.path, storagePath, repositoryLocal, ownershipMetadata)) continue;
+    const branchIsIndexed =
+      branch &&
+      Array.isArray(entry.branches) &&
+      entry.branches.some((summary) => summary && summary.branch === branch);
+    const indexDir = branchIsIndexed
+      ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch))
+      : storagePath;
+    if (registeredPath.length > bestLen) {
+      bestLen = registeredPath.length;
+      best = {
         path: entry.path,
         storagePath,
-        lbugPath: branchIsIndexed
-          ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch), LBUG_DIRECTORY)
-          : path.join(storagePath, LBUG_DIRECTORY),
-        metadata,
+        lbugPath: path.join(indexDir, LBUG_DIRECTORY),
+        metadata: branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata,
       };
     }
   }
-  return null;
+  return best;
 }
 
 module.exports = {
