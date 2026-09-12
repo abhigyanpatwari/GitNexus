@@ -3830,9 +3830,11 @@ describe('Hook registry resolver compatibility', () => {
           path: canonicalPath(repoDir),
           storagePath: canonicalPath(localStorage),
         });
+        // Registry rows keep the written path; do not realpath them the way
+        // findLocalOwnedRepo does after walking the filesystem.
         expect(query.resolveHookRepo(repoDir)).toMatchObject({
-          path: canonicalPath(repoDir),
-          storagePath: canonicalPath(registeredStorage),
+          path: repoDir,
+          storagePath: registeredStorage,
         });
       });
     } finally {
