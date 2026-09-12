@@ -25,34 +25,13 @@ import { getGitRoot, getRemoteUrl, isGitRepo } from '../storage/git.js';
 import {
   getIndexStorageRequirements,
   requireStoragePath,
-  type StorageState,
+  StorageRequirementError,
 } from '../storage/storage-resolver.js';
 
 export interface IndexOptions {
   force?: boolean;
   allowNonGit?: boolean;
 }
-
-type StorageFailureInspection = {
-  storagePath: string;
-  state: StorageState;
-  hasCodeIndexDB: boolean;
-};
-
-const storageFailureInspection = (error: unknown): StorageFailureInspection | undefined => {
-  if (error === null || typeof error !== 'object' || !('inspection' in error)) return undefined;
-  const inspection = (error as { inspection?: unknown }).inspection;
-  if (inspection === null || typeof inspection !== 'object') return undefined;
-  const value = inspection as Partial<StorageFailureInspection>;
-  if (
-    typeof value.storagePath !== 'string' ||
-    typeof value.state !== 'string' ||
-    typeof value.hasCodeIndexDB !== 'boolean'
-  ) {
-    return undefined;
-  }
-  return value as StorageFailureInspection;
-};
 
 export const indexCommand = async (inputPathParts?: string[], options?: IndexOptions) => {
   console.log('\n  GitNexus Index\n');
@@ -98,22 +77,27 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
   try {
     storagePath = await requireStoragePath(repoPath, getIndexStorageRequirements(!!options?.force));
   } catch (error) {
-    const inspection = storageFailureInspection(error);
-    if (inspection?.state === 'missing' || inspection?.state === 'empty') {
+    if (!(error instanceof StorageRequirementError)) {
+      console.log(`  ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const inspection = error.inspection;
+    if (inspection.state === 'missing' || inspection.state === 'empty') {
       console.log(`  No GitNexus index found.`);
       console.log(
         `  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${inspection.storagePath}`,
       );
       console.log('  Run `gitnexus analyze` to build the index first.\n');
-    } else if (inspection?.state === 'unowned' && !options?.force) {
+    } else if (inspection.state === 'unowned' && !options?.force) {
       console.log(`  gitnexus.json or .gitnexus/meta.json is missing.`);
       console.log('  Use --force to register anyway (stats will be empty),');
       console.log('  or run `gitnexus analyze` to rebuild properly.\n');
-    } else if (inspection && !inspection.hasCodeIndexDB) {
+    } else if (!inspection.hasCodeIndexDB) {
       console.log(`  Index exists but contains no LadybugDB database.`);
       console.log('  Run `gitnexus analyze` to build the index.\n');
     } else {
-      console.log(`  ${error instanceof Error ? error.message : String(error)}\n`);
+      console.log(`  ${error.message}\n`);
     }
     process.exitCode = 1;
     return;
@@ -143,10 +127,19 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
   }
 
   // `index --force` is the explicit adoption path for an existing external
-  // database whose legacy metadata predates storagePath binding.
-  if (options?.force && meta.storagePath === undefined) {
-    meta = { ...meta, storagePath };
-    reconstructedMeta = true;
+  // database whose legacy metadata predates storagePath binding, and for a
+  // repository-local slot whose metadata still names another checkout.
+  if (options?.force) {
+    const adoptedRepoPath = path.resolve(repoPath);
+    const adoptedStoragePath = path.resolve(storagePath);
+    const ownershipChanged =
+      path.resolve(meta.repoPath) !== adoptedRepoPath ||
+      meta.storagePath === undefined ||
+      path.resolve(meta.storagePath) !== adoptedStoragePath;
+    if (ownershipChanged) {
+      meta = { ...meta, repoPath: adoptedRepoPath, storagePath: adoptedStoragePath };
+      reconstructedMeta = true;
+    }
   }
 
   // ── Register in global registry ───────────────────────────────────

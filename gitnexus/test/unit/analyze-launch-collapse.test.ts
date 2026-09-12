@@ -28,6 +28,8 @@ const H = vi.hoisted(() => ({
   STORAGE_PATH: '/tmp/gitnexus-test-storage',
   REPO_PATH: '/tmp/gitnexus-test-repo',
   METADATA_FILE: 'gitnexus.json',
+  // When false, the finalization gate sees no fresh index (timeout / lock-hold tests).
+  settleOk: true,
 }));
 const { forkMock, REPO_PATH } = H;
 
@@ -53,9 +55,14 @@ vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return {
     ...actual,
-    // Both index files were (re)written far in the future relative to jobStartMs…
-    statSync: () => ({ mtimeMs: Number.MAX_SAFE_INTEGER }),
-    // …and no WAL/shadow/checkpoint sidecar remains.
+    statSync: () => {
+      if (!H.settleOk) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      }
+      // Both index files were (re)written far in the future relative to jobStartMs.
+      return { mtimeMs: Number.MAX_SAFE_INTEGER };
+    },
+    // No WAL/shadow/checkpoint sidecar remains when the gate is allowed to settle.
     existsSync: () => false,
   };
 });
@@ -111,7 +118,9 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       jobManager,
       backend: { init: backendInit },
       acquireRepoLock: () => null,
-      releaseRepoLock: () => {},
+      releaseRepoLock: () => {
+        calls.push('releaseRepoLock');
+      },
       closeDbHandle,
     });
 
@@ -125,6 +134,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
 
   beforeEach(() => {
     calls = [];
+    H.settleOk = true;
     jobManager = new JobManager();
     child = makeChild();
     forkMock.mockImplementation(() => child);
@@ -217,9 +227,11 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     jobManager.dispose();
     vi.restoreAllMocks();
     forkMock.mockReset();
+    H.settleOk = true;
   });
 
   it('does not publish the index — backend.init() is never called for a collapsed run', async () => {
@@ -234,6 +246,8 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     // is not publication.
     expect(closeDbHandle).toHaveBeenCalledTimes(1);
     expect(calls.indexOf('closeDbHandle')).toBeLessThan(calls.indexOf('updateJob:failed'));
+    // Lock is held through the collapse decision and dropped afterwards, once.
+    expect(calls.indexOf('updateJob:failed')).toBeLessThan(calls.indexOf('releaseRepoLock'));
   });
 
   it('marks the collapsed run failed and still reports repoName', async () => {
@@ -263,6 +277,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
       'backend.init',
       'updateJob:complete',
       'updateJob:terminal',
+      'releaseRepoLock',
     ]);
   });
 
@@ -279,5 +294,68 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     expect(healthy.result.graphWriteCollapsed).toBeUndefined();
     const job = await runWorker(healthy);
     expect(job?.status).toBe('complete');
+  });
+
+  it('fails and does not publish when index finalization never becomes visible', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const releaseRepoLock = vi.fn(() => {
+      calls.push('releaseRepoLock');
+    });
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    child.emit('message', completeMessage());
+
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    // Must match FINALIZE_SETTLE_TIMEOUT_MS + one poll in analyze-launch.ts.
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toMatch(/finalization not visible after timeout/i);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(closeDbHandle).not.toHaveBeenCalled();
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the write lock until settle resolves, then releases once after publish', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const releaseRepoLock = vi.fn(() => {
+      calls.push('releaseRepoLock');
+    });
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    child.emit('message', completeMessage());
+
+    // First poll failed; the gate is sleeping. Lock must still be held.
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    H.settleOk = true;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(jobManager.getJob(job.id)?.status).toBe('complete');
+    expect(backendInit).toHaveBeenCalledTimes(1);
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(calls.indexOf('backend.init')).toBeLessThan(calls.indexOf('releaseRepoLock'));
   });
 });

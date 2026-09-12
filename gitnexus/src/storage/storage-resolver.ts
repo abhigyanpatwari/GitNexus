@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import fs from 'fs';
 import fsp from 'fs/promises';
-import os from 'os';
 import path from 'path';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
+import { getGlobalDir } from './global-dir.js';
 import {
   GITNEXUS_DIR,
   INDEX_METADATA_FILE,
@@ -44,13 +44,17 @@ export const ANALYZE_STORAGE_REQUIREMENTS = {
   allowedStates: ['missing', 'empty', 'owned'],
 } as const satisfies StorageRequirements;
 
+export const ANALYZE_FORCE_STORAGE_REQUIREMENTS = {
+  allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+} as const satisfies StorageRequirements;
+
 export const INDEX_STORAGE_REQUIREMENTS = {
   allowedStates: ['owned'],
   requireCodeIndexDB: true,
 } as const satisfies StorageRequirements;
 
 export const INDEX_FORCE_STORAGE_REQUIREMENTS = {
-  allowedStates: ['owned', 'unowned'],
+  allowedStates: ['owned', 'unowned', 'foreign'],
   requireCodeIndexDB: true,
 } as const satisfies StorageRequirements;
 
@@ -137,8 +141,15 @@ export class StorageDeletionError extends Error {
   }
 }
 
-const registryPath = (): string =>
-  path.join(process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'), 'registry.json');
+const registryPath = (): string => path.join(getGlobalDir(), 'registry.json');
+
+/** CLI "no usable index" — missing/empty, or owned metadata without LadybugDB. */
+export const isUnusableIndexInspection = (
+  inspection: Pick<StorageInspection, 'state' | 'hasCodeIndexDB'>,
+): boolean =>
+  inspection.state === 'missing' ||
+  inspection.state === 'empty' ||
+  (inspection.state === 'owned' && !inspection.hasCodeIndexDB);
 
 const samePath = (left: string, right: string): boolean =>
   process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
@@ -365,9 +376,6 @@ const inspectCodeIndexDB = async (
   }
 };
 
-export const checkHasCodeIndexDB = async (storagePath: string): Promise<boolean> =>
-  (await inspectCodeIndexDB(storagePath)).present;
-
 /** Whether an inspection failed because the filesystem could not be read reliably. */
 export const isTransientStorageInspection = (inspection: StorageInspection): boolean => {
   const reason = inspection.reason ?? '';
@@ -407,6 +415,8 @@ export const inspectStoragePath = async (
     comparablePath(context.storagePath),
   );
   let directoryEntries: string[];
+  let codeIndex: Awaited<ReturnType<typeof inspectCodeIndexDB>>;
+  let primary: MetadataReadResult;
   try {
     const linkStat = await fsp.lstat(context.storagePath);
     const targetStat = linkStat.isSymbolicLink() ? await fsp.stat(context.storagePath) : linkStat;
@@ -418,7 +428,14 @@ export const inspectStoragePath = async (
         reason: 'Storage path exists but is not a directory.',
       };
     }
-    directoryEntries = await fsp.readdir(context.storagePath);
+    const [entries, codeIndexResult, primaryResult] = await Promise.all([
+      fsp.readdir(context.storagePath),
+      inspectCodeIndexDB(context.storagePath),
+      readOwnershipMetadata(context.storagePath, INDEX_METADATA_FILE),
+    ]);
+    directoryEntries = entries;
+    codeIndex = codeIndexResult;
+    primary = primaryResult;
   } catch (error) {
     if (isMissingFilesystemError(error)) {
       return { ...context, state: 'missing', hasCodeIndexDB: false };
@@ -431,12 +448,10 @@ export const inspectStoragePath = async (
     };
   }
 
-  const codeIndex = await inspectCodeIndexDB(context.storagePath);
   const hasCodeIndexDB = codeIndex.present;
   const transientDBReason = codeIndex.transientCode
     ? `${codeIndex.transientCode}: LadybugDB directory could not be inspected.`
     : undefined;
-  const primary = await readOwnershipMetadata(context.storagePath, INDEX_METADATA_FILE);
   if (primary.state === 'invalid') {
     return {
       ...context,
@@ -525,12 +540,27 @@ export const inspectRegisteredStorage = async (entry: {
   storagePath: string;
 }): Promise<StorageInspection> => inspectStoragePath(entry.storagePath, entry.path);
 
+const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
+  samePath(defaultStoragePath(repoPath), storagePath);
+
 const requireInspectedStoragePath = (
   inspection: StorageInspection,
   requirements: StorageRequirements,
 ): string => {
   if (!requirements.allowedStates.includes(inspection.state)) {
     throw new StorageRequirementError(inspection, requirements);
+  }
+  // `foreign` is only adoptable for this checkout's own `.gitnexus`. An
+  // external slot that names another repository stays rejected even when the
+  // caller opted into `foreign` (analyze/index --force).
+  if (
+    inspection.state === 'foreign' &&
+    !isRepositoryLocalStoragePath(inspection.repoPath, inspection.storagePath)
+  ) {
+    throw new StorageRequirementError(inspection, {
+      ...requirements,
+      allowedStates: requirements.allowedStates.filter((state) => state !== 'foreign'),
+    });
   }
   if (requirements.requireCodeIndexDB && !inspection.hasCodeIndexDB) {
     throw new StorageRequirementError(inspection, requirements);
@@ -564,10 +594,11 @@ const isPathAncestor = (ancestor: string, child: string): boolean => {
  * Resolve a registry entry for a destructive operation.
  *
  * Repository-local `.gitnexus` is a path-owned namespace, so it remains
- * removable when it is missing, empty, or contains data without metadata.
+ * removable when it is missing, empty, contains data without metadata, or
+ * carries foreign metadata (this checkout's directory, another repo's stamp).
  * External storage has no such physical ownership proof and therefore must
  * contain metadata binding both the repository and the exact storage path.
- * In either case, foreign or malformed metadata is never removable.
+ * External foreign or malformed metadata is never removable.
  */
 export const requireDeletableStoragePath = async (entry: {
   path: string;
@@ -621,7 +652,7 @@ export const requireDeletableStoragePath = async (entry: {
     storagePath: actualStoragePath,
   });
   const allowedStates: readonly StorageState[] = storageIsLocal
-    ? ['missing', 'empty', 'unowned', 'owned']
+    ? ['missing', 'empty', 'unowned', 'owned', 'foreign']
     : ['owned'];
   if (!allowedStates.includes(inspection.state)) {
     throw new StorageDeletionError(

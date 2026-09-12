@@ -107,7 +107,7 @@ export const cleanCommand = async (options?: {
       }
       throw err;
     }
-    const lbugPath = path.join(storagePath, 'lbug');
+    const { lbugPath } = getStoragePaths(repo.repoPath, undefined, storagePath);
     const state = await inspectLbugSidecars(lbugPath);
     // Single roster authority (this shipping review, FIX 5): the aggregate
     // covers both parked-sidecar families — the timestamped missing-shadow

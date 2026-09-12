@@ -1061,6 +1061,30 @@ describe('Cross-platform DB lock probe (source)', () => {
 
 // ─── Source: hook slot must gate the DB-owner probe (#2163) ──────────
 
+describe('PreToolUse source order: tool guard before registry scan', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: tool guard appears before findRegisteredRepo in handlePreToolUse`, () => {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      const start = source.indexOf('function handlePreToolUse');
+      const end = source.indexOf('function handlePostToolUse');
+      expect(start).toBeGreaterThanOrEqual(0);
+      expect(end).toBeGreaterThan(start);
+      const preBody = source.slice(start, end);
+      const grepGuardIdx = preBody.indexOf("toolName !== 'Grep'");
+      const extractIdx = preBody.indexOf('extractPattern(');
+      const localIdx = preBody.indexOf('findLocalOwnedRepo(');
+      const registryIdx = preBody.indexOf('findRegisteredRepo(');
+      expect(grepGuardIdx).toBeGreaterThanOrEqual(0);
+      expect(extractIdx).toBeGreaterThan(grepGuardIdx);
+      expect(localIdx).toBeGreaterThan(extractIdx);
+      expect(registryIdx).toBeGreaterThan(localIdx);
+    });
+  }
+});
+
 describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
   const ANTIGRAVITY_HOOK = path.resolve(
     __dirname,
@@ -1102,6 +1126,21 @@ describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
       expect(probeIdx).toBeGreaterThan(acquireIdx);
     });
   }
+
+  it('Antigravity: extractPattern appears before findRegisteredRepo', () => {
+    const source = fs.readFileSync(ANTIGRAVITY_HOOK, 'utf-8');
+    const start = source.indexOf('function buildAfterToolContext');
+    const end = source.indexOf('function buildMcpQueryHint');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+    const extractIdx = body.indexOf('extractPattern(');
+    const localIdx = body.indexOf('findLocalOwnedRepo(');
+    const registryIdx = body.indexOf('findRegisteredRepo(');
+    expect(extractIdx).toBeGreaterThanOrEqual(0);
+    expect(localIdx).toBeGreaterThan(extractIdx);
+    expect(registryIdx).toBeGreaterThan(localIdx);
+  });
 });
 
 // ─── Behavior: slot-gated probe + wrapper-reaped orphans (#2163) ─────
@@ -1556,6 +1595,7 @@ describe.skipIf(process.platform !== 'linux')(
         'hook-lock.cjs',
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
+        'registry-query.cjs',
       ]) {
         fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
       }
@@ -1846,6 +1886,19 @@ describe('Cursor hook slot-skip diagnostic (source, #2163 follow-up)', () => {
     // '1'/'true' gate) so the default path stays silent.
     const before = source.slice(Math.max(0, idx - 600), idx);
     expect(before).toContain('process.env.GITNEXUS_DEBUG');
+  });
+
+  it('extracts a pattern before any registry scan', () => {
+    const source = fs.readFileSync(CURSOR_HOOK, 'utf-8');
+    const start = source.indexOf('function main()');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const body = source.slice(start);
+    const extractIdx = body.indexOf('extractPattern(');
+    const localIdx = body.indexOf('findLocalOwnedRepo(');
+    const registryIdx = body.indexOf('findRegisteredRepo(');
+    expect(extractIdx).toBeGreaterThanOrEqual(0);
+    expect(localIdx).toBeGreaterThan(extractIdx);
+    expect(registryIdx).toBeGreaterThan(localIdx);
   });
 });
 
@@ -3630,6 +3683,103 @@ describe('Hook registry resolver compatibility', () => {
         });
       });
     } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('selects a skip-git subdirectory index over the parent git worktree', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'git-repo');
+    const skipGitDir = path.join(repoDir, 'packages', 'isolated');
+    const cwdDir = path.join(skipGitDir, 'src');
+    const parentStorage = path.join(homeDir, 'indexes', 'git-repo');
+    const skipGitStorage = path.join(homeDir, 'indexes', 'isolated');
+    try {
+      fs.mkdirSync(cwdDir, { recursive: true });
+      fs.mkdirSync(parentStorage, { recursive: true });
+      fs.mkdirSync(skipGitStorage, { recursive: true });
+      initRepoWithCommit(repoDir);
+      fs.writeFileSync(
+        path.join(parentStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: repoDir,
+          storagePath: parentStorage,
+          lastCommit: 'parent',
+          stats: {},
+        }),
+      );
+      fs.writeFileSync(
+        path.join(skipGitStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: skipGitDir,
+          storagePath: skipGitStorage,
+          lastCommit: 'skip-git',
+          stats: {},
+        }),
+      );
+      writeHookRegistry(homeDir, [
+        { name: 'git-repo', path: repoDir, storagePath: parentStorage },
+        { name: 'isolated', path: skipGitDir, storagePath: skipGitStorage },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(cwdDir)).toMatchObject({
+          path: skipGitDir,
+          storagePath: skipGitStorage,
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses GITNEXUS_STORAGE_PATH when it is a non-empty absolute path', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'repo');
+    const registeredStorage = path.join(homeDir, 'indexes', 'registered');
+    const overrideStorage = path.join(homeDir, 'indexes', 'override');
+    const previousPath = process.env.GITNEXUS_STORAGE_PATH;
+    const previousRoot = process.env.GITNEXUS_STORAGE_ROOT;
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(registeredStorage, { recursive: true });
+      fs.mkdirSync(overrideStorage, { recursive: true });
+      initRepoWithCommit(repoDir);
+      fs.writeFileSync(
+        path.join(registeredStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: repoDir,
+          storagePath: registeredStorage,
+          lastCommit: 'registered',
+          stats: {},
+        }),
+      );
+      fs.writeFileSync(
+        path.join(overrideStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: repoDir,
+          storagePath: overrideStorage,
+          lastCommit: 'override',
+          stats: {},
+        }),
+      );
+      writeHookRegistry(homeDir, [
+        { name: 'repo', path: repoDir, storagePath: registeredStorage },
+      ]);
+      delete process.env.GITNEXUS_STORAGE_ROOT;
+      process.env.GITNEXUS_STORAGE_PATH = overrideStorage;
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+          path: repoDir,
+          storagePath: path.resolve(overrideStorage),
+        });
+      });
+    } finally {
+      if (previousPath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
+      else process.env.GITNEXUS_STORAGE_PATH = previousPath;
+      if (previousRoot === undefined) delete process.env.GITNEXUS_STORAGE_ROOT;
+      else process.env.GITNEXUS_STORAGE_ROOT = previousRoot;
       fs.rmSync(homeDir, { recursive: true, force: true });
     }
   });

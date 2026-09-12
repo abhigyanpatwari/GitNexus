@@ -367,7 +367,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             continue;
           }
           resolvedRepoPaths.set(groupPath, handle.repoPath);
-          lbugPath = path.join(handle.storagePath, LBUG_DIRECTORY);
 
           // Validate the registry-selected slot immediately before it is
           // opened. A foreign or incomplete external slot is a registered but

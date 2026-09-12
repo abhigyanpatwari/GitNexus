@@ -185,7 +185,7 @@ withTestLbugDB(
           }
         });
 
-        it('matches CWD at root level and repo in sub-directory (repo at /src, CWD at /)', async () => {
+        it('does not attach a nested registered checkout from a parent cwd (repo at /src, CWD at /)', async () => {
           const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
           const rootPath = path.resolve('/');
           const subDir = path.join(rootPath, 'src');
@@ -202,8 +202,7 @@ withTestLbugDB(
 
           try {
             const result = await augment('login', rootPath);
-            expect(result.length).toBeGreaterThan(0);
-            expect(result).toContain('[GitNexus]');
+            expect(result).toBe('');
           } finally {
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
               {
@@ -247,7 +246,7 @@ withTestLbugDB(
             }
           });
 
-          it('matches Windows sub-directory repo and drive-root CWD (repo at C:\\src, CWD at C:\\)', async () => {
+          it('does not attach a nested Windows checkout from a drive-root cwd (repo at C:\\src, CWD at C:\\)', async () => {
             const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
 
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -262,7 +261,7 @@ withTestLbugDB(
 
             try {
               const result = await augment('login', 'C:\\');
-              expect(result.length).toBeGreaterThan(0);
+              expect(result).toBe('');
             } finally {
               (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
                 {

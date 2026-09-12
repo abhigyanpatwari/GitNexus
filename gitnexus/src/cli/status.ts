@@ -19,6 +19,7 @@ import {
   requireStoragePath,
   STATUS_STORAGE_REQUIREMENTS,
   StorageRequirementError,
+  isUnusableIndexInspection,
 } from '../storage/storage-resolver.js';
 import {
   getCurrentCommit,
@@ -34,6 +35,11 @@ import {
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
 import { getFtsDisabledReason, FTS_DISABLED_MESSAGE } from '../core/search/fts-policy.js';
 import { detectIndexContentDrift, type IndexContentDrift } from '../core/index-content-drift.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
 import { t } from './i18n/index.js';
 
 /** How many drifted paths the report names before summarizing the rest. */
@@ -97,9 +103,7 @@ const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>
 };
 
 const isExpectedUnindexedStatus = (error: StorageRequirementError): boolean =>
-  error.inspection.state === 'missing' ||
-  error.inspection.state === 'empty' ||
-  (error.inspection.state === 'owned' && !error.inspection.hasCodeIndexDB);
+  isUnusableIndexInspection(error.inspection);
 
 const printNotIndexed = (repoPath: string, storagePath: string, json: boolean): void => {
   if (json) {
@@ -194,7 +198,10 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       currentRunnerIdentity,
     );
     const incompleteReasons = getIndexIncompleteReasons(meta);
-    const sourceAvailable = isGitRepo(entry.path);
+    const sourceAvailable = isFullSourceAvailable(
+      contentRetentionFromMeta(meta),
+      await checkoutIsDirectory(entry.path),
+    );
     const payload = {
       schemaVersion: 1,
       repository: entry.path,

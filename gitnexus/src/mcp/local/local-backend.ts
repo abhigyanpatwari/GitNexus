@@ -97,7 +97,11 @@ import {
   isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
-import { contentRetentionFromMeta } from '../../core/content-retention.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../../core/content-retention.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import {
   stalenessPayload,
@@ -1371,6 +1375,9 @@ export interface RepoListing {
   branch?: string;
   /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: Array<Omit<BranchSummary, 'stats'>>;
+  storagePath?: string;
+  contentRetention?: 'full' | 'symbol' | 'none';
+  sourceAvailable?: boolean;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -2469,12 +2476,22 @@ export class LocalBackend {
     // Check staleness for all repos in parallel instead of sequentially.
     // Each check spawns an async `git rev-list` — with 200 repos the sync
     // variant took ~50 s; parallel async brings it under a second (#1363).
-    const stalenessResults = await Promise.all(
-      handles.map((h) => checkStalenessAsync(h.repoPath, h.lastCommit)),
+    const listing = await Promise.all(
+      handles.map(async (h) => {
+        const [stale, meta] = await Promise.all([
+          checkStalenessAsync(h.repoPath, h.lastCommit),
+          loadMeta(h.storagePath).catch(() => null),
+        ]);
+        const contentRetention = contentRetentionFromMeta(meta);
+        const sourceAvailable = isFullSourceAvailable(
+          contentRetention,
+          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false,
+        );
+        return { h, stale, source: { contentRetention, sourceAvailable } };
+      }),
     );
 
-    return handles.map((h, i) => {
-      const stale = stalenessResults[i];
+    return listing.map(({ h, stale, source }) => {
       const selfNorm = norm(h.repoPath);
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
@@ -2504,6 +2521,9 @@ export class LocalBackend {
                 lastCommit: b.lastCommit,
               }))
             : undefined,
+        storagePath: h.storagePath,
+        contentRetention: source.contentRetention,
+        sourceAvailable: source.sourceAvailable,
       };
     });
   }

@@ -79,6 +79,24 @@ describe('sweepStaleUploads', () => {
     await expect(fs.access(path.join(root, 'registered'))).resolves.toBeUndefined();
   });
 
+  it('keeps a stale promoted dir when registry.json is absent (ENOENT)', async () => {
+    const now = 2_000_000_000_000;
+    const old = new Date(now - 10 * 60 * 60 * 1000);
+    const staging = path.join(root, '.staging-old');
+    const promoted = path.join(root, 'promoted');
+    await fs.mkdir(staging);
+    await fs.mkdir(promoted);
+    await fs.utimes(staging, old, old);
+    await fs.utimes(promoted, old, old);
+    await fs.rm(path.join(home, 'registry.json'));
+
+    const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });
+
+    expect(removed).toContain(staging);
+    await expect(fs.access(staging)).rejects.toBeTruthy();
+    await expect(fs.access(promoted)).resolves.toBeUndefined();
+  });
+
   it('still removes stale staging dirs but preserves promoted source dirs when the registry is corrupt', async () => {
     const now = 2_000_000_000_000;
     const old = new Date(now - 10 * 60 * 60 * 1000);
@@ -103,7 +121,9 @@ describe('sweepStaleUploads', () => {
     const orphan = path.join(root, 'orphan');
     await fs.mkdir(orphan);
     await fs.utimes(orphan, old, old);
-    const spy = vi.spyOn(fs, 'rm').mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+    const spy = vi
+      .spyOn(fs, 'rm')
+      .mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
 
     try {
       const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });

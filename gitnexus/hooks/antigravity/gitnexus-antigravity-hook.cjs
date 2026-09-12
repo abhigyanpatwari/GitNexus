@@ -29,7 +29,7 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
-const { findRegisteredRepo } = require('./registry-query.cjs');
+const { findLocalOwnedRepo, findRegisteredRepo } = require('./registry-query.cjs');
 
 function readInput() {
   try {
@@ -283,36 +283,39 @@ function toolSucceeded(toolResponse) {
 function buildAfterToolContext(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return null;
-  const repo = findRegisteredRepo(cwd);
-  if (!repo) return null;
-  const storagePath = repo.storagePath;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
   const toolResponse = input.tool_response || {};
+  const succeeded = toolSucceeded(toolResponse);
+  const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
+  const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
+  const gitMutation =
+    succeeded && /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command);
+  // Cheap tool-result guards first. Registry I/O is only for search augment
+  // or a git mutation that might need a stale-index hint.
+  if (!pattern && !gitMutation) return null;
+
+  const repo = findLocalOwnedRepo(cwd) || findRegisteredRepo(cwd);
+  if (!repo) return null;
+  const storagePath = repo.storagePath;
   const parts = [];
 
-  if (toolSucceeded(toolResponse)) {
-    const pattern = extractPattern(toolName, toolInput);
-    if (pattern) {
-      const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
-      if (augmentText) parts.push(augmentText);
-    }
+  if (pattern) {
+    const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
+    if (augmentText) parts.push(augmentText);
   }
 
-  if (toolName === 'run_shell_command' && toolSucceeded(toolResponse)) {
-    const command = toolInput.command || '';
-    if (/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) {
-      const hint = buildStaleIndexHint(repo.metadata, cwd);
-      if (hint) {
-        // The hint always reaches the agent via additionalContext (parts). Mirror
-        // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
-        // hook runners see no unexpected output on this normal path (#1913). The
-        // claude hook never mirrored this to stderr — this aligns the two adapters.
-        parts.push(hint);
-        if (isDebugEnabled()) {
-          process.stderr.write(`${hint}\n`);
-        }
+  if (gitMutation) {
+    const hint = buildStaleIndexHint(repo.metadata, cwd);
+    if (hint) {
+      // The hint always reaches the agent via additionalContext (parts). Mirror
+      // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
+      // hook runners see no unexpected output on this normal path (#1913). The
+      // claude hook never mirrored this to stderr — this aligns the two adapters.
+      parts.push(hint);
+      if (isDebugEnabled()) {
+        process.stderr.write(`${hint}\n`);
       }
     }
   }

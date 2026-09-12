@@ -3,13 +3,19 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS,
+  ANALYZE_STORAGE_REQUIREMENTS,
+  INDEX_FORCE_STORAGE_REQUIREMENTS,
   InvalidStoragePathError,
   STORAGE_PATH_ENV,
   STORAGE_ROOT_ENV,
   requireDeletableStoragePath,
+  requireStoragePath,
   StorageDeletionError,
+  StorageRequirementError,
   defaultStoragePath,
   ensureStoragePathWritable,
+  getIndexStorageRequirements,
   resolveStoragePath,
   storagePathFromRoot,
   validateConfiguredStoragePath,
@@ -194,7 +200,7 @@ describe('storage resolver', () => {
     );
   });
 
-  it('rejects a repository-local slot whose metadata belongs to another repository', async () => {
+  it('allows deletion of a repository-local slot whose metadata belongs to another repository', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-delete-repo-');
     const storagePath = defaultStoragePath(repo);
     await fs.mkdir(storagePath, { recursive: true });
@@ -203,8 +209,69 @@ describe('storage resolver', () => {
       JSON.stringify({ repoPath: path.join(path.dirname(repo), 'other-repo') }),
     );
 
+    await expect(requireDeletableStoragePath({ path: repo, storagePath })).resolves.toBe(
+      storagePath,
+    );
+  });
+
+  it('rejects a foreign external slot even when force requirements allow foreign', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-foreign-repo-');
+    const storagePath = await makeTempDir('gitnexus-storage-resolver-foreign-storage-');
+    await fs.mkdir(path.join(storagePath, 'lbug'), { recursive: true });
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify({
+        repoPath: path.join(path.dirname(repo), 'other-repo'),
+        storagePath,
+      }),
+    );
+    delete process.env[STORAGE_ROOT_ENV];
+    process.env[STORAGE_PATH_ENV] = storagePath;
+
+    await expect(
+      requireStoragePath(repo, ANALYZE_FORCE_STORAGE_REQUIREMENTS),
+    ).rejects.toBeInstanceOf(StorageRequirementError);
+    await expect(requireStoragePath(repo, INDEX_FORCE_STORAGE_REQUIREMENTS)).rejects.toBeInstanceOf(
+      StorageRequirementError,
+    );
     await expect(requireDeletableStoragePath({ path: repo, storagePath })).rejects.toBeInstanceOf(
       StorageDeletionError,
+    );
+  });
+
+  it('lets --force adopt a foreign repository-local slot, not the non-force analyze set', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-adopt-repo-');
+    const storagePath = defaultStoragePath(repo);
+    await fs.mkdir(path.join(storagePath, 'lbug'), { recursive: true });
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify({
+        repoPath: path.join(path.dirname(repo), 'other-repo'),
+        storagePath,
+      }),
+    );
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
+
+    expect(ANALYZE_FORCE_STORAGE_REQUIREMENTS.allowedStates).toEqual([
+      'missing',
+      'empty',
+      'owned',
+      'unowned',
+      'foreign',
+    ]);
+    expect(INDEX_FORCE_STORAGE_REQUIREMENTS.allowedStates).toEqual(['owned', 'unowned', 'foreign']);
+    expect(INDEX_FORCE_STORAGE_REQUIREMENTS.requireCodeIndexDB).toBe(true);
+    expect(getIndexStorageRequirements(true)).toBe(INDEX_FORCE_STORAGE_REQUIREMENTS);
+
+    await expect(requireStoragePath(repo, ANALYZE_STORAGE_REQUIREMENTS)).rejects.toBeInstanceOf(
+      StorageRequirementError,
+    );
+    await expect(requireStoragePath(repo, ANALYZE_FORCE_STORAGE_REQUIREMENTS)).resolves.toBe(
+      storagePath,
+    );
+    await expect(requireStoragePath(repo, INDEX_FORCE_STORAGE_REQUIREMENTS)).resolves.toBe(
+      storagePath,
     );
   });
 

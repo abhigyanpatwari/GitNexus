@@ -13,7 +13,7 @@ import fsp from 'node:fs/promises';
 import { UPLOAD_ROOT, STAGING_PREFIX } from './upload-paths.js';
 import {
   canonicalizePath,
-  readRegistryStrict,
+  readRegistryStrictIfPresent,
   registryPathEquals,
 } from '../storage/repo-manager.js';
 
@@ -72,9 +72,15 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
   // determined by registry membership, not by whether their index currently
   // happens to be materialized or where that index is stored. Registry failure
   // must never turn into deletion; staging cleanup above remains independent.
+  //
+  // A missing registry.json is first-run emptiness in readRegistryStrict.
+  // That must not be treated as "nothing is registered" here — we cannot
+  // prove a promoted dir is unregistered when the file is absent.
   let registeredPaths: string[];
   try {
-    registeredPaths = (await readRegistryStrict())
+    const entries = await readRegistryStrictIfPresent();
+    if (entries === undefined) return { removed };
+    registeredPaths = entries
       .filter((entry) => typeof entry.path === 'string' && entry.path.trim().length > 0)
       .map((entry) => canonicalizePath(entry.path));
   } catch {
@@ -82,8 +88,9 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
   }
 
   for (const full of stalePromotedDirs) {
+    const canonical = canonicalizePath(full);
     const isRegistered = registeredPaths.some((registeredPath) =>
-      registryPathEquals(registeredPath, canonicalizePath(full)),
+      registryPathEquals(registeredPath, canonical),
     );
     if (!isRegistered) {
       await removeSweptDir(full, removed);

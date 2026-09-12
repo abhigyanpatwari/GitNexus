@@ -16,6 +16,7 @@ import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { INDEX_METADATA_FILE } from '../storage/repo-manager.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
@@ -109,20 +110,21 @@ const settleDirFor = (
  * `storagePath` is the ownership-validated path from `requireStoragePath`,
  * not the request's user-provided repo path (CodeQL js/path-injection).
  *
- * Never rejects. Timing out logs and proceeds (pre-gate behavior) rather
- * than failing a job whose analysis genuinely succeeded. The `alreadyUpToDate`
- * fast path never rewrites `lbug` (see `run-analyze.ts`) and skips this wait
- * at the `complete` handler so it does not hold the analyze slot for 60s.
+ * Never rejects. Returns `true` once the index is settled. Timing out logs
+ * a warning and returns `false` — the caller must fail the job without
+ * publishing. The `alreadyUpToDate` fast path never rewrites `lbug` (see
+ * `run-analyze.ts`) and is treated as settled without waiting so it does
+ * not hold the analyze slot for 60s of polling.
  */
 const waitForSettledIndex = async (
   storagePath: string,
   jobStartMs: number,
   branch?: string,
   isPrimaryBranch?: boolean,
-): Promise<void> => {
+): Promise<boolean> => {
   const settled = (probePath: string): boolean => {
     try {
-      const lbugStat = statSync(path.join(probePath, 'lbug'));
+      const lbugStat = statSync(path.join(probePath, LBUG_DIRECTORY));
       const metaStat = statSync(path.join(probePath, INDEX_METADATA_FILE));
       return (
         lbugStat.mtimeMs >= jobStartMs &&
@@ -137,13 +139,13 @@ const waitForSettledIndex = async (
   };
   const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
   for (;;) {
-    if (settled(settleDirFor(storagePath, branch, isPrimaryBranch))) return;
+    if (settled(settleDirFor(storagePath, branch, isPrimaryBranch))) return true;
     if (Date.now() > deadline) {
       logger.warn(
         { storagePath },
-        'analyze finalization not visible after timeout; completing job anyway',
+        'analyze finalization not visible after timeout; not publishing',
       );
-      return;
+      return false;
     }
     await new Promise((resolve) => setTimeout(resolve, FINALIZE_SETTLE_POLL_MS));
   }
@@ -169,6 +171,16 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
       return;
     }
+
+    // One launch, one release. `releaseRepoLock` is Set.delete (idempotent),
+    // and this flag also stops error / exit / child.error / complete-finally
+    // from racing a second drop if a late terminal message lands mid-settle.
+    let lockReleased = false;
+    const releaseLockOnce = (): void => {
+      if (lockReleased) return;
+      lockReleased = true;
+      releaseRepoLock(analyzeLockKey);
+    };
 
     jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
@@ -228,7 +240,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
           });
         } else if (msg.type === 'complete') {
-          releaseRepoLock(analyzeLockKey);
+          // Hold the write lock through settle AND the collapse/publish
+          // decision. Release in `finally` so timeout / collapse / init
+          // failure / complete each drop it exactly once. alreadyUpToDate
+          // skips the mtime wait (resolved `true` immediately) so this
+          // does not occupy the slot for 60s of polling — the lock still
+          // drops only after that short path finishes.
+          //
           // Before marking complete: (1) wait for the worker's on-disk
           // finalization to settle (see waitForSettledIndex), (2) evict the
           // cached DB handle — same invalidation DELETE /api/repo performs, a
@@ -245,7 +263,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // ftsRepairedOnly DOES rewrite `lbug` (initLbug + createSearchFTSIndexes)
           // so it still waits.
           const settle = msg.result.alreadyUpToDate
-            ? Promise.resolve()
+            ? Promise.resolve(true)
             : waitForSettledIndex(
                 analyzeLockKey,
                 jobStartMs,
@@ -253,9 +271,25 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
                 msg.result.isPrimaryBranch,
               );
           settle
-            .then(() => closeDbHandle())
-            .catch(() => {}) // best-effort: eviction failure must not fail the job
-            .then(() => {
+            .then((settled) => {
+              if (!settled) {
+                // Finalization never became visible. Do not evict the cached
+                // handle (a previously published index should keep being
+                // served) and do not publish. On-disk files stay for a retry.
+                jobManager.updateJob(job.id, {
+                  status: 'failed',
+                  repoName: msg.result.repoName,
+                  error:
+                    'Analysis finalization not visible after timeout. The index was not published; on-disk files were left for a retry.',
+                });
+                return false;
+              }
+              return closeDbHandle()
+                .catch(() => {}) // best-effort: eviction failure must not fail the job
+                .then(() => true);
+            })
+            .then((readyToPublish) => {
+              if (!readyToPublish) return;
               // PARITY WITH THE CLI, which is what the IPC projection was added
               // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
               // "so a server-side caller sees the same degraded outcome the CLI
@@ -328,9 +362,12 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
                 status: 'failed',
                 error: 'Server failed to reload after analysis. Try again.',
               });
+            })
+            .finally(() => {
+              releaseLockOnce();
             });
         } else if (msg.type === 'error') {
-          releaseRepoLock(analyzeLockKey);
+          releaseLockOnce();
           // A failed (force) analyze may still have rewritten DB files first.
           void closeDbHandle().catch(() => {});
           jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
@@ -338,7 +375,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       });
 
       child.on('error', (err) => {
-        releaseRepoLock(analyzeLockKey);
+        releaseLockOnce();
         jobManager.updateJob(job.id, {
           status: 'failed',
           error: `Worker process error: ${err.message}`,
@@ -377,7 +414,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           setTimeout(forkWorker, delay);
         } else {
           // Exhausted retries — permanent failure
-          releaseRepoLock(analyzeLockKey);
+          releaseLockOnce();
           jobManager.updateJob(job.id, {
             status: 'failed',
             error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
@@ -407,7 +444,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     try {
       forkWorker();
     } catch (error) {
-      releaseRepoLock(analyzeLockKey);
+      releaseLockOnce();
       throw error;
     }
   };

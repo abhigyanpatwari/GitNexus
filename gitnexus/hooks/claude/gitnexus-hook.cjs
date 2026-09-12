@@ -20,7 +20,7 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
-const { findRegisteredRepo } = require('./registry-query.cjs');
+const { findLocalOwnedRepo, findRegisteredRepo } = require('./registry-query.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -301,9 +301,6 @@ function shouldEmitMcpHint(storagePath) {
 function handlePreToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
-  const repo = findRegisteredRepo(cwd);
-  if (!repo) return;
-  const storagePath = repo.storagePath;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
@@ -312,6 +309,13 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
+
+  // Cheap local owned `.gitnexus` first (up to 5 parents). Only scan the
+  // registry when that walk misses — Grep/Glob/Bash with a short pattern
+  // must not pay for registry I/O.
+  const repo = findLocalOwnedRepo(cwd) || findRegisteredRepo(cwd);
+  if (!repo) return;
+  const storagePath = repo.storagePath;
 
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap

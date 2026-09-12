@@ -684,14 +684,7 @@ const isResolvableEntry = (value: unknown): value is RegistryEntry => {
  * ENOENT is lenient in BOTH modes: no file genuinely means nothing has been
  * registered yet, and every first-run path depends on that.
  */
-const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
-  let raw: string;
-  try {
-    raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
-  } catch (err) {
-    if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-    return [];
-  }
+const parseRegistryContents = async (raw: string, strict: boolean): Promise<RegistryEntry[]> => {
   try {
     // The parse gets its OWN guarded region, narrower than the checks below,
     // and the parser's error is DISCARDED rather than rethrown.
@@ -756,6 +749,17 @@ const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
   }
 };
 
+const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
+  let raw: string;
+  try {
+    raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
+  } catch (err) {
+    if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return [];
+  }
+  return parseRegistryContents(raw, strict);
+};
+
 /**
  * Read the global registry. Returns empty array if not found — and, note, also
  * when the file exists but cannot be read or parsed. That is fine for a
@@ -785,6 +789,23 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => readRegistryFi
  * argument does not need the figure: it holds for one call site or fifty.
  */
 export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegistryFile(true);
+
+/**
+ * Strict registry read that distinguishes "file is absent" from "file is
+ * empty or unreadable". ENOENT returns `undefined`; corrupt/unreadable
+ * files still throw. Callers that delete based on membership must not treat
+ * a missing file as an empty registry.
+ */
+export const readRegistryStrictIfPresent = async (): Promise<RegistryEntry[] | undefined> => {
+  let raw: string;
+  try {
+    raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw err;
+  }
+  return parseRegistryContents(raw, true);
+};
 
 /**
  * Write the global registry to disk.
@@ -1419,7 +1440,9 @@ export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
  *      (the primary metadata file; the legacy `meta.json` mirror is not
  *      sufficient — a finalized analyze always writes the primary).
  *   2. The global registry (`getGlobalRegistryPath()`) must contain an
- *      entry whose canonical path matches `repoPath`.
+ *      entry whose canonical path matches `repoPath`. The registry is read
+ *      with {@link readRegistryStrict}: a corrupt or unreadable file throws
+ *      rather than being treated as a missing registry-entry.
  *
  * Throws {@link AnalysisNotFinalizedError} on the first failure with the
  * specific missing artifact. Pure read — does not mutate disk state.
@@ -1447,7 +1470,7 @@ export const assertAnalysisFinalized = async (
 
   const canonicalRepoPath = canonicalizePath(resolved);
   const canonicalStoragePath = canonicalizePath(storagePath);
-  const registeredAtStoragePath = (await readRegistry()).some(
+  const registeredAtStoragePath = (await readRegistryStrict()).some(
     (entry) =>
       registryPathEquals(canonicalizePath(entry.path), canonicalRepoPath) &&
       registryPathEquals(canonicalizePath(entry.storagePath), canonicalStoragePath),
@@ -1647,8 +1670,10 @@ export const listRegisteredRepos = async (opts?: {
   const prunedSlots = new Set<string>();
   const registrySlotKey = (entry: RegistryEntry): string =>
     `${canonicalizePath(entry.path)}\0${canonicalizePath(entry.storagePath)}`;
-  for (const entry of entries) {
-    const inspection = await inspectRegisteredStorage(entry);
+  const inspections = await Promise.all(entries.map((entry) => inspectRegisteredStorage(entry)));
+  for (const [entry, inspection] of entries.map(
+    (entry, i) => [entry, inspections[i]] as [RegistryEntry, (typeof inspections)[number]],
+  )) {
     const meetsRequirements =
       LIST_STORAGE_REQUIREMENTS.allowedStates.includes(inspection.state) &&
       (!LIST_STORAGE_REQUIREMENTS.requireCodeIndexDB || inspection.hasCodeIndexDB);

@@ -99,6 +99,19 @@ describe('assertAnalysisFinalized (#1169)', () => {
     }
   });
 
+  it('rejects a corrupt registry as unreadable, not as a missing registry-entry', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, meta);
+    await fs.writeFile(path.join(tmpHome.dbPath, 'registry.json'), '{"truncated":');
+
+    await expect(assertAnalysisFinalized(tmpRepo.dbPath)).rejects.toThrow(
+      /corrupt|not valid JSON/i,
+    );
+    await expect(assertAnalysisFinalized(tmpRepo.dbPath)).rejects.not.toBeInstanceOf(
+      AnalysisNotFinalizedError,
+    );
+  });
+
   it('throws missing="registry-entry" when meta.json exists but the registry was not updated', async () => {
     // Half-finalized state — meta.json was written but registerRepo
     // failed or was skipped. Surface this as a hard failure so the

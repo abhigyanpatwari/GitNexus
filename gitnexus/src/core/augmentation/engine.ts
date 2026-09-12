@@ -49,18 +49,14 @@ async function findRepoForCwd(cwd: string): Promise<{
       const repoResolved = path.resolve(entry.path);
       const normalizedRepo = isWindows ? repoResolved.toLowerCase() : repoResolved;
 
-      // Check if cwd is inside repo OR repo is inside cwd
-      // Must match at a path separator boundary to avoid false positives
-      // (e.g. /projects/gitnexusv2 should NOT match /projects/gitnexus)
+      // Exact path, or cwd inside the repo at a separator boundary.
+      // Parent-directory invocation must not attach to a nested registered checkout.
       let matched = false;
       if (normalizedCwd === normalizedRepo) {
         matched = true;
       } else {
         const repoPrefix = normalizedRepo.endsWith(sep) ? normalizedRepo : normalizedRepo + sep;
-        const cwdPrefix = normalizedCwd.endsWith(sep) ? normalizedCwd : normalizedCwd + sep;
         if (normalizedCwd.startsWith(repoPrefix)) {
-          matched = true;
-        } else if (normalizedRepo.startsWith(cwdPrefix)) {
           matched = true;
         }
       }

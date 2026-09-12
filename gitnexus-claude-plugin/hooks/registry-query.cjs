@@ -11,14 +11,25 @@ const INDEX_METADATA_FILE = 'gitnexus.json';
 const LEGACY_METADATA_FILE = 'meta.json';
 const LBUG_DIRECTORY = 'lbug';
 const BRANCHES_DIRECTORY = 'branches';
+const STORAGE_PATH_ENV = 'GITNEXUS_STORAGE_PATH';
+const STORAGE_ROOT_ENV = 'GITNEXUS_STORAGE_ROOT';
+const STORAGE_SLOT_HASH_LENGTH = 12;
+const LOCAL_OWNED_PARENT_HOPS = 5;
+
+function stripWindowsLongPathPrefix(p) {
+  if (process.platform !== 'win32') return p;
+  if (/^\\\\\?\\UNC\\(?=[^\\])/i.test(p)) return `\\\\${p.slice(8)}`;
+  if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
+  return p;
+}
 
 function canonicalize(value) {
   if (typeof value !== 'string' || !value || !path.isAbsolute(value)) return null;
   const resolved = path.resolve(value);
   try {
-    return fs.realpathSync.native(resolved);
+    return stripWindowsLongPathPrefix(fs.realpathSync.native(resolved));
   } catch {
-    return resolved;
+    return stripWindowsLongPathPrefix(resolved);
   }
 }
 
@@ -93,6 +104,33 @@ function ancestorPaths(cwd) {
   return paths;
 }
 
+function isInsideOrEqual(child, ancestor) {
+  if (child == null || ancestor == null) return false;
+  if (samePath(child, ancestor)) return true;
+  const relative = path.relative(ancestor, child);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function ancestorPathsThrough(cwd, stopAt) {
+  const paths = [];
+  let current = canonicalize(cwd);
+  const stop = canonicalize(stopAt);
+  while (current) {
+    if (stop && !isInsideOrEqual(current, stop)) break;
+    paths.push(current);
+    if (stop && samePath(current, stop)) break;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return paths;
+}
+
 function currentGitBranch(cwd) {
   try {
     const result = spawnSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
@@ -131,10 +169,36 @@ function registryPathsForCwd(cwd) {
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    const roots = [worktreeRoot];
-    if (commonDir) roots.push(path.dirname(commonDir));
+    if (!worktreeRoot || !path.isAbsolute(worktreeRoot)) {
+      return { repoPaths: fallbackPaths, branch: null };
+    }
+
+    // Keep ancestor paths of cwd that stay inside this worktree (cwd up to
+    // and including show-toplevel) so a --skip-git subdirectory index can
+    // win via longest-match. Do not walk ancestors outside the worktree —
+    // that would re-attribute a parent index to a nested git checkout.
+    const repoPaths = ancestorPathsThrough(cwd, worktreeRoot);
+    const worktreeCanon = canonicalize(worktreeRoot);
+    if (worktreeCanon && !repoPaths.some((repoPath) => samePath(repoPath, worktreeCanon))) {
+      repoPaths.push(worktreeCanon);
+    }
+
+    // Linked worktrees share the canonical repo's git dir. Include that
+    // parent so the registered main checkout is still discoverable, but do
+    // not walk any further outside this worktree.
+    if (commonDir) {
+      const commonParent = canonicalize(path.dirname(commonDir));
+      if (
+        commonParent &&
+        worktreeCanon &&
+        !samePath(commonParent, worktreeCanon) &&
+        !repoPaths.some((repoPath) => samePath(repoPath, commonParent))
+      ) {
+        repoPaths.push(commonParent);
+      }
+    }
     return {
-      repoPaths: roots.map(canonicalize).filter(Boolean),
+      repoPaths,
       branch: currentGitBranch(cwd),
     };
   } catch {
@@ -151,6 +215,117 @@ function branchSlug(rawRef) {
       : sanitized;
   const hash = createHash('sha256').update(rawRef).digest('hex').slice(0, 8);
   return `${safe}-${hash}`;
+}
+
+// Mirror gitnexus/src/storage/storage-resolver.ts storageSlotName exactly
+// (sanitize + sha256 of the canonical repo path, 12-hex suffix).
+function sanitizeSlotBasename(value) {
+  const sanitized = value
+    .replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-')
+    .replace(/[. ]+$/g, '')
+    .slice(0, 80);
+  const candidate = sanitized || 'repository';
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
+    ? `repository-${candidate}`
+    : candidate;
+}
+
+function storageSlotName(repoPath) {
+  const canonical = canonicalize(repoPath);
+  if (!canonical) return null;
+  const identity = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+  const basename = sanitizeSlotBasename(path.basename(canonical));
+  const digest = createHash('sha256')
+    .update(identity)
+    .digest('hex')
+    .slice(0, STORAGE_SLOT_HASH_LENGTH);
+  return `${basename}-${digest}`;
+}
+
+function envOverridesStorage() {
+  const envPath = process.env[STORAGE_PATH_ENV];
+  const envRoot = process.env[STORAGE_ROOT_ENV];
+  return (
+    (typeof envPath === 'string' && envPath.length > 0) ||
+    (typeof envRoot === 'string' && envRoot.length > 0)
+  );
+}
+
+function resolveEntryStoragePath(entry) {
+  const envPath = process.env[STORAGE_PATH_ENV];
+  if (
+    typeof envPath === 'string' &&
+    envPath.length > 0 &&
+    !envPath.includes('\0') &&
+    path.isAbsolute(envPath)
+  ) {
+    const resolved = path.resolve(envPath);
+    if (path.isAbsolute(resolved)) return resolved;
+  }
+
+  const envRoot = process.env[STORAGE_ROOT_ENV];
+  if (
+    typeof envRoot === 'string' &&
+    envRoot.length > 0 &&
+    !envRoot.includes('\0') &&
+    path.isAbsolute(envRoot)
+  ) {
+    const root = path.resolve(envRoot);
+    const slot = storageSlotName(entry.path);
+    if (slot) {
+      const storagePath = path.join(root, slot);
+      if (samePath(path.dirname(storagePath), root)) return storagePath;
+    }
+  }
+
+  if (entry.storagePath !== undefined) {
+    if (
+      typeof entry.storagePath !== 'string' ||
+      !entry.storagePath ||
+      entry.storagePath.includes('\0') ||
+      !path.isAbsolute(entry.storagePath)
+    ) {
+      return null;
+    }
+    return path.resolve(entry.storagePath);
+  }
+  return path.resolve(path.join(entry.path, GITNEXUS_DIR));
+}
+
+function hasLocalIndexSignal(storagePath) {
+  try {
+    return (
+      fs.existsSync(path.join(storagePath, INDEX_METADATA_FILE)) ||
+      fs.existsSync(path.join(storagePath, LBUG_DIRECTORY))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function findLocalOwnedRepo(cwd) {
+  // Environment storage overrides win; a leftover repo-local .gitnexus must
+  // not skip the registry scan that applies STORAGE_PATH / STORAGE_ROOT.
+  if (envOverridesStorage()) return null;
+  let current = canonicalize(cwd);
+  for (let hops = 0; hops <= LOCAL_OWNED_PARENT_HOPS && current; hops++) {
+    const storagePath = path.join(current, GITNEXUS_DIR);
+    if (hasLocalIndexSignal(storagePath)) {
+      const metadata = readIndexMetadata(storagePath);
+      if (isOwnedStorage(current, storagePath, true, metadata)) {
+        return {
+          path: current,
+          storagePath,
+          lbugPath: path.join(storagePath, LBUG_DIRECTORY),
+          metadata,
+        };
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
 }
 
 function findRegisteredRepo(cwd) {
@@ -172,21 +347,12 @@ function findRegisteredRepo(cwd) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (typeof entry.path !== 'string') continue;
     if (!path.isAbsolute(entry.path)) continue;
-    if (
-      entry.storagePath !== undefined &&
-      (typeof entry.storagePath !== 'string' ||
-        !entry.storagePath ||
-        !path.isAbsolute(entry.storagePath))
-    ) {
-      continue;
-    }
     const registeredPath = canonicalize(entry.path);
     if (!registeredPath || !repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
       continue;
     }
-    // Registry rows written before configurable storage have no storagePath.
-    // Match the CLI's read-boundary compatibility rule for those rows only.
-    const storagePath = path.resolve(entry.storagePath ?? path.join(entry.path, GITNEXUS_DIR));
+    const storagePath = resolveEntryStoragePath(entry);
+    if (!storagePath) continue;
     const repositoryLocal = samePath(
       canonicalize(path.join(entry.path, GITNEXUS_DIR)),
       canonicalize(storagePath),
@@ -215,6 +381,7 @@ function findRegisteredRepo(cwd) {
 
 module.exports = {
   findRegisteredRepo,
+  findLocalOwnedRepo,
   INDEX_METADATA_FILE,
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,

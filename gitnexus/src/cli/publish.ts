@@ -34,6 +34,7 @@ import {
   requireStoragePath,
   STATUS_STORAGE_REQUIREMENTS,
   StorageRequirementError,
+  isUnusableIndexInspection,
 } from '../storage/storage-resolver.js';
 import { cliInfo, cliError } from './cli-message.js';
 
@@ -104,11 +105,7 @@ export const publishCommand = async (
   } catch (error) {
     if (!(error instanceof StorageRequirementError)) throw error;
     const inspection = error.inspection;
-    const isMissingIndex =
-      inspection.state === 'missing' ||
-      inspection.state === 'empty' ||
-      (inspection.state === 'owned' && !inspection.hasCodeIndexDB);
-    if (!isMissingIndex) {
+    if (!isUnusableIndexInspection(inspection)) {
       cliError(`[understand-quickly] ${error.message}`);
       process.exitCode = 1;
       return;

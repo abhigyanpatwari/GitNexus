@@ -137,14 +137,15 @@ import {
   ensureStoragePathWritable,
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
+  CONTENT_RETENTION_SCHEMA_VERSION,
   type AnalyzerRunnerIdentity,
   type ContentRetention,
   type RepoMeta,
 } from '../storage/repo-manager.js';
 import {
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS,
   ANALYZE_STORAGE_REQUIREMENTS,
   requireStoragePath,
-  resolveStoragePath,
 } from '../storage/storage-resolver.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
@@ -1036,16 +1037,17 @@ interface WriteTarget {
  * `--branch` / checked-out mismatch error the pipeline used to throw inline, so
  * that failure still surfaces before any lock is taken.
  */
-async function resolveWriteTarget(
-  repoPath: string,
-  options: AnalyzeOptions,
-  validatedStoragePath?: string,
-): Promise<WriteTarget> {
+async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Promise<WriteTarget> {
   // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
   // (parse-cache, parsedfile-store) and kuzu-migration cleanup live there and
-  // are shared across branches (#2106 KTD7).
-  const storagePath =
-    validatedStoragePath ?? (await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS));
+  // are shared across branches (#2106 KTD7). Always re-run requireStoragePath:
+  // a cached path string must not skip ownership (STORAGE_PATH can move to a
+  // foreign slot while the lock is waited out). `--force` may adopt a
+  // repository-local foreign slot; the non-force set stays ANALYZE_STORAGE.
+  const storagePath = await requireStoragePath(
+    repoPath,
+    options.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
+  );
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   // Normalize the auto-detected branch the same way an explicit `--branch` is
@@ -1159,12 +1161,10 @@ export async function runFullAnalysis(
     // checkout) still releases the held lock via `finally` (no leak).
     const MAX_RELOCK = 3;
     for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
-      const resolvedStoragePath = resolveStoragePath(repoPath);
-      const fresh = await resolveWriteTarget(
-        repoPath,
-        options,
-        resolvedStoragePath === writeTarget.storagePath ? writeTarget.storagePath : undefined,
-      );
+      // Never pass the pre-lock storagePath as already-validated: requireStoragePath
+      // must run again under the lock so a now-foreign slot aborts (and finally
+      // still releases the lock).
+      const fresh = await resolveWriteTarget(repoPath, options);
       if (fresh.metaDir === writeTarget.metaDir) {
         writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
         break;
@@ -4067,7 +4067,7 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       contentRetention,
-      contentRetentionSchemaVersion: 1,
+      contentRetentionSchemaVersion: CONTENT_RETENTION_SCHEMA_VERSION,
       ftsProfile,
       runnerIdentity,
       // Persist only normalized repo-relative exclusions, never absolute paths

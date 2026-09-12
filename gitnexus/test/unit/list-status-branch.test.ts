@@ -6,6 +6,9 @@
  * is unchanged, and `status` reflects the checked-out branch.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 const { runnerIdentity } = vi.hoisted(() => ({
   runnerIdentity: {
@@ -63,19 +66,10 @@ vi.mock('../../src/core/analyzer-identity.js', () => ({
   ),
 }));
 
-vi.mock('../../src/storage/storage-resolver.js', () => ({
+vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/storage-resolver.js')>()),
   requireStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
   requireRegisteredStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
-  STATUS_STORAGE_REQUIREMENTS: { allowedStates: ['owned'], requireCodeIndexDB: true },
-  StorageRequirementError: class StorageRequirementError extends Error {
-    inspection: any;
-    requirements: any;
-    constructor(inspection: any, requirements: any) {
-      super('storage requirement failed');
-      this.inspection = inspection;
-      this.requirements = requirements;
-    }
-  },
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -206,6 +200,58 @@ describe('status branch rendering (#2106)', () => {
 
     expect(requireRegisteredStoragePath).toHaveBeenCalledWith(entry, STATUS_STORAGE_REQUIREMENTS);
     expect(JSON.parse(output())).toMatchObject({ storagePath: entry.storagePath });
+  });
+
+  it.each(['symbol', 'none'] as const)(
+    'status --repo reports source-unavailable when checkout exists but contentRetention is %s',
+    async (contentRetention) => {
+      const checkout = await fs.mkdtemp(path.join(os.tmpdir(), 'gnx-status-src-'));
+      try {
+        const entry = { path: checkout, storagePath: '/external/repo-slot' };
+        (readRegistryStrict as any).mockResolvedValue([entry]);
+        (resolveRegistryEntry as any).mockReturnValue(entry);
+        (requireRegisteredStoragePath as any).mockResolvedValue(entry.storagePath);
+        (loadMeta as any).mockResolvedValue({
+          ...baseRepo.meta,
+          repoPath: entry.path,
+          contentRetention,
+        });
+
+        await statusCommand({ repo: 'repo', json: true });
+
+        expect(JSON.parse(output())).toMatchObject({
+          sourceAvailable: false,
+          status: 'source-unavailable',
+          index: { contentRetention },
+        });
+      } finally {
+        await fs.rm(checkout, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('status --repo reports sourceAvailable when checkout exists and retention is full', async () => {
+    const checkout = await fs.mkdtemp(path.join(os.tmpdir(), 'gnx-status-full-'));
+    try {
+      const entry = { path: checkout, storagePath: '/external/repo-slot' };
+      (readRegistryStrict as any).mockResolvedValue([entry]);
+      (resolveRegistryEntry as any).mockReturnValue(entry);
+      (requireRegisteredStoragePath as any).mockResolvedValue(entry.storagePath);
+      (loadMeta as any).mockResolvedValue({
+        ...baseRepo.meta,
+        repoPath: entry.path,
+        contentRetention: 'full',
+      });
+
+      await statusCommand({ repo: 'repo', json: true });
+
+      expect(JSON.parse(output())).toMatchObject({
+        sourceAvailable: true,
+        status: 'registered',
+      });
+    } finally {
+      await fs.rm(checkout, { recursive: true, force: true });
+    }
   });
 
   it('rejects a foreign registered storage path instead of treating it as an index', async () => {

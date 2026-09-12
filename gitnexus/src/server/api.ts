@@ -26,6 +26,7 @@ import {
   requireRegisteredStoragePath,
   STATUS_STORAGE_REQUIREMENTS,
   StorageDeletionError,
+  StorageRequirementError,
 } from '../storage/storage-resolver.js';
 import {
   executeQuery,
@@ -42,7 +43,7 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
-import { contentRetentionFromMeta } from '../core/content-retention.js';
+import { checkoutIsDirectory, contentRetentionFromMeta } from '../core/content-retention.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
@@ -653,23 +654,47 @@ export const resolveRegisteredRepoEntry = (
 export interface SourceAvailability {
   available: boolean;
   reason?: 'content-retention' | 'checkout-missing';
+  contentRetention?: ReturnType<typeof contentRetentionFromMeta>;
 }
+
+/** Map a failed storage probe to a catalog status. Missing/empty slots are 404; anything else is 503. */
+export const storageRequirementToHttp = (
+  err: StorageRequirementError,
+): { status: 404 | 503; body: { error: string; code: 'index-unavailable'; state: string } } => {
+  const notPresent = err.inspection.state === 'missing' || err.inspection.state === 'empty';
+  return {
+    status: notPresent ? 404 : 503,
+    body: {
+      error: err.message,
+      code: 'index-unavailable',
+      state: err.inspection.state,
+    },
+  };
+};
+
+const sendStorageRequirementHttp = (
+  err: unknown,
+  res: { status: (code: number) => { json: (body: unknown) => void } },
+): boolean => {
+  if (!(err instanceof StorageRequirementError)) return false;
+  const mapped = storageRequirementToHttp(err);
+  res.status(mapped.status).json(mapped.body);
+  return true;
+};
 
 /** Full-file endpoints require a live checkout; normalized index text is not source-viewer data. */
 export const getSourceAvailability = async (
   entry: Pick<RegistryEntry, 'path' | 'storagePath'>,
+  loadedMeta?: Awaited<ReturnType<typeof loadMeta>>,
 ): Promise<SourceAvailability> => {
-  const meta = await loadMeta(entry.storagePath);
-  if (contentRetentionFromMeta(meta) !== 'full') {
-    return { available: false, reason: 'content-retention' };
+  const meta = loadedMeta === undefined ? await loadMeta(entry.storagePath) : loadedMeta;
+  const contentRetention = contentRetentionFromMeta(meta);
+  if (contentRetention !== 'full') {
+    return { available: false, reason: 'content-retention', contentRetention };
   }
-  try {
-    return (await fs.stat(entry.path)).isDirectory()
-      ? { available: true }
-      : { available: false, reason: 'checkout-missing' };
-  } catch {
-    return { available: false, reason: 'checkout-missing' };
-  }
+  return (await checkoutIsDirectory(entry.path))
+    ? { available: true, contentRetention }
+    : { available: false, reason: 'checkout-missing', contentRetention };
 };
 
 const sendSourceUnavailable = (
@@ -827,6 +852,7 @@ export const handleQueryRequest = async (
     );
     res.json({ result });
   } catch (err: any) {
+    if (sendStorageRequirementHttp(err, res)) return;
     if (isReadOnlyDbError(err)) {
       res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
       return;
@@ -988,7 +1014,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     req?: any,
     options: { validateStorage?: boolean } = {},
   ): Promise<any> => {
-    const repos = await listRegisteredRepos();
+    const repos = await listRegisteredRepos({ validate: true });
     const found = resolveRegisteredRepoEntry(repos, repoName);
     const validate = (entry: RegistryEntry | null): Promise<RegistryEntry | null> =>
       options.validateStorage === false ? Promise.resolve(entry) : validateResolvedRepoEntry(entry);
@@ -1031,7 +1057,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (!currentJob || currentJob.status === 'failed') break;
             if (currentJob.status === 'complete') {
               await backend.init();
-              const freshRepos = await listRegisteredRepos();
+              const freshRepos = await listRegisteredRepos({ validate: true });
               return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));
@@ -1098,7 +1124,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // already carries. Web callers hit this on connect/switch, never in a loop.
   app.get('/api/repos', createRouteLimiter(), async (_req, res) => {
     try {
-      const repos = await listRegisteredRepos();
+      const repos = await listRegisteredRepos({ validate: true });
       // Checked in parallel, for the reason `list_repos` already does it that
       // way: each check spawns an async `git rev-list`, and the sequential
       // variant took ~50s across 200 repos (#1363). Projecting inside the map
@@ -1106,9 +1132,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // array is the shape that silently mispairs them if either is reordered.
       res.json(
         await Promise.all(
-          repos.map(async (r) =>
-            projectRepoListEntry(r, await checkStalenessAsync(r.path, r.lastCommit)),
-          ),
+          repos.map(async (r) => {
+            const [staleness, availability] = await Promise.all([
+              checkStalenessAsync(r.path, r.lastCommit),
+              getSourceAvailability(r),
+            ]);
+            return projectRepoListEntry(r, staleness, {
+              contentRetention: availability.contentRetention ?? 'full',
+              sourceAvailable: availability.available,
+            });
+          }),
         ),
       );
     } catch (err: any) {
@@ -1136,9 +1169,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const meta = await loadMeta(entry.storagePath);
-      const staleness = await checkStalenessAsync(entry.path, resolveLastCommit(entry, meta));
-      res.json(projectRepoDetail(entry, meta, staleness));
+      const [staleness, availability] = await Promise.all([
+        checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
+        getSourceAvailability(entry, meta),
+      ]);
+      res.json(
+        projectRepoDetail(entry, meta, staleness, {
+          contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
+          sourceAvailable: availability.available,
+        }),
+      );
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }
   });
@@ -1303,6 +1345,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
       res.json(graph);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       if (err instanceof ClientDisconnectedError) {
         return;
       }
@@ -1499,6 +1542,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(response);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(500).json({ error: err.message || 'Search failed' });
     }
   });
@@ -1506,12 +1550,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Read file — with path traversal guard
   // Rate-limited (CodeQL js/missing-rate-limiting): per-request fs.readFile.
   app.get('/api/file', createRouteLimiter(), async (req, res) => {
-    const entry = await resolveRepo(requestedRepo(req));
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
+    } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
+      res.status(500).json({ error: err.message || 'Failed to read file' });
     }
-    await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
   });
 
   // Grep — regex search across file contents in the indexed repo
@@ -1564,6 +1613,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }
   });
@@ -1902,10 +1952,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // Re-check the exact registered slot immediately before taking the lock.
         // The query resolver already validates it, but this closes the gap between
         // lookup and a long-running metadata-writing job.
-        const storagePath = await requireRegisteredStoragePath(
-          entry,
-          STATUS_STORAGE_REQUIREMENTS,
-        );
+        const storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
 
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
         const repoLockPath = storagePath;
@@ -2175,6 +2222,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         res.status(202).json({ jobId: job.id, status: 'analyzing' });
       } catch (err: any) {
+        if (sendStorageRequirementHttp(err, res)) return;
         if (err.message?.includes('already in progress')) {
           res.status(409).json({ error: err.message });
         } else {

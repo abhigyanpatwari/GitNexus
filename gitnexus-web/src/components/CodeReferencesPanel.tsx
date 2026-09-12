@@ -432,13 +432,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 </SyntaxHighlighter>
               ) : (
                 <div className="px-3 py-3 text-sm text-text-muted">
-                  {sourceUnavailable ? (
-                    <>{t('graph:codePanel.sourceUnavailable')}</>
-                  ) : selectedIsFile ? (
-                    <>{t('graph:codePanel.codeNotAvailable', { path: selectedFilePath })}</>
-                  ) : (
-                    <>{t('graph:codePanel.selectFile')}</>
-                  )}
+                  {sourceUnavailable
+                    ? t('graph:codePanel.sourceUnavailable')
+                    : selectedIsFile
+                      ? t('graph:codePanel.codeNotAvailable', { path: selectedFilePath })
+                      : t('graph:codePanel.selectFile')}
                 </div>
               )}
             </div>

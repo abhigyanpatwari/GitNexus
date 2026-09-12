@@ -689,3 +689,22 @@ describe('POST /api/embed route wiring (#2790)', () => {
     expect(source).not.toMatch(/p\.phase === 'ready' \? 'complete'/);
   });
 });
+
+describe('HTTP repo catalog validation', () => {
+  const readSource = () =>
+    fs.readFile(path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'), 'utf-8');
+
+  it('lists and resolves repos with validate: true, and maps StorageRequirementError', async () => {
+    const source = await readSource();
+    expect(source).toMatch(/const repos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/);
+    expect(source).toMatch(
+      /const freshRepos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
+    );
+    expect(source).toMatch(
+      /app\.get\('\/api\/repos'[\s\S]*listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
+    );
+    expect(source).toMatch(/sendStorageRequirementHttp\(err, res\)/);
+    expect(source).toMatch(/storageRequirementToHttp\(err\)/);
+    expect(source).toMatch(/code: 'index-unavailable'/);
+  });
+});

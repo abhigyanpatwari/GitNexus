@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRegisteredRepoEntry } from '../../src/server/api.js';
+import { resolveRegisteredRepoEntry, storageRequirementToHttp } from '../../src/server/api.js';
 import type { RegistryEntry } from '../../src/storage/repo-manager.js';
+import {
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+  type StorageInspection,
+} from '../../src/storage/storage-resolver.js';
 
 const entry = (overrides: Partial<RegistryEntry>): RegistryEntry => ({
   name: 'repo',
@@ -123,5 +128,46 @@ describe('resolveRegisteredRepoEntry', () => {
     });
 
     expect(resolveRegisteredRepoEntry([reels], 'REELS')).toBe(reels);
+  });
+});
+
+describe('storageRequirementToHttp — GET /api/repo', () => {
+  const inspection = (state: StorageInspection['state']): StorageInspection => ({
+    repoPath: '/tmp/repo',
+    storagePath: '/tmp/repo/.gitnexus',
+    state,
+    hasCodeIndexDB: false,
+  });
+
+  it('maps a missing index slot to 404 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('missing'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err)).toEqual({
+      status: 404,
+      body: {
+        error: err.message,
+        code: 'index-unavailable',
+        state: 'missing',
+      },
+    });
+  });
+
+  it('maps an empty index slot to 404 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('empty'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err).status).toBe(404);
+    expect(storageRequirementToHttp(err).body.code).toBe('index-unavailable');
+  });
+
+  it('maps an owned slot without a code index to 503 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('owned'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err)).toMatchObject({
+      status: 503,
+      body: { code: 'index-unavailable', state: 'owned' },
+    });
+  });
+
+  it('maps a foreign storage path to 503 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('foreign'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err).status).toBe(503);
+    expect(storageRequirementToHttp(err).body.code).toBe('index-unavailable');
   });
 });

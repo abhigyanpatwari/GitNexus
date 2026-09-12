@@ -1,5 +1,11 @@
+import fs from 'node:fs/promises';
 import type { KnowledgeGraph } from './graph/types.js';
-import type { ContentRetention, FtsProfile, RepoMeta } from '../storage/repo-meta.js';
+import {
+  CONTENT_RETENTION_SCHEMA_VERSION,
+  type ContentRetention,
+  type FtsProfile,
+  type RepoMeta,
+} from '../storage/repo-meta.js';
 
 export const CONTENT_RETENTION_ENV = 'GITNEXUS_CONTENT_RETENTION';
 
@@ -46,10 +52,25 @@ export const contentRetentionMismatch = (
   if (meta.contentRetention === undefined) return requested !== 'full';
   return (
     meta.contentRetention !== requested ||
-    meta.contentRetentionSchemaVersion !== 1 ||
+    meta.contentRetentionSchemaVersion !== CONTENT_RETENTION_SCHEMA_VERSION ||
     meta.ftsProfile !== ftsProfileForContentRetention(requested)
   );
 };
+
+/** True when `repoPath` exists and is a directory (uploads / `--allow-non-git` included). */
+export const checkoutIsDirectory = async (repoPath: string): Promise<boolean> => {
+  try {
+    return (await fs.stat(repoPath)).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+/** Full-file HTTP/MCP source is available only for `full` retention plus a live checkout. */
+export const isFullSourceAvailable = (
+  retention: ContentRetention,
+  checkoutIsDir: boolean,
+): boolean => retention === 'full' && checkoutIsDir;
 
 /** Remove text that the active index profile is not allowed to persist. */
 export const applyContentRetention = (graph: KnowledgeGraph, retention: ContentRetention): void => {

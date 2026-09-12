@@ -73,6 +73,36 @@ describe('cleanCommand external storage ownership', () => {
     await fixture.cleanup();
   });
 
+  it('deletes a foreign repository-local .gitnexus on clean --all --force', async () => {
+    const localStorage = path.join(repoA, '.gitnexus');
+    await fs.mkdir(localStorage, { recursive: true });
+    const metadata = {
+      repoPath: repoB,
+      storagePath: localStorage,
+      lastCommit: 'foreign-local-commit',
+      indexedAt: '2026-09-05T00:00:00.000Z',
+    };
+    await fs.writeFile(path.join(localStorage, 'gitnexus.json'), JSON.stringify(metadata));
+    await fs.writeFile(path.join(localStorage, 'ownership-sentinel'), 'local-foreign\n');
+    await fs.writeFile(
+      registryPath,
+      JSON.stringify([
+        {
+          name: 'repo-a',
+          path: repoA,
+          storagePath: localStorage,
+          lastCommit: 'a-indexed-commit',
+          indexedAt: '2026-09-05T00:00:00.000Z',
+        },
+      ]),
+    );
+
+    await cleanCommand({ force: true, all: true });
+
+    await expect(fs.access(localStorage)).rejects.toBeTruthy();
+    expect(JSON.parse(await fs.readFile(registryPath, 'utf-8'))).toEqual([]);
+  });
+
   it('preserves a foreign external index and registry entry on ordinary clean --force', async () => {
     await cleanCommand({ force: true });
 
