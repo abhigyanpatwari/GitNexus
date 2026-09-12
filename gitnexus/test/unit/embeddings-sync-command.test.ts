@@ -40,7 +40,8 @@ vi.mock('../../src/storage/git.js', () => ({
   getGitRoot: () => '/tmp/emb-sync-repo',
 }));
 
-vi.mock('../../src/storage/index-lock.js', () => ({
+vi.mock('../../src/storage/index-lock.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/index-lock.js')>()),
   acquireIndexLock: (...args: unknown[]) => acquireIndexLockMock(...args),
 }));
 
@@ -156,6 +157,15 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(order.indexOf('loadMeta')).toBeGreaterThan(order.indexOf('lock'));
     expect(order.indexOf('init')).toBeGreaterThan(order.indexOf('loadMeta'));
     expect(order.at(-1)).toBe('release');
+  });
+
+  it('refuses an unlocked embeddings sync', async () => {
+    await store();
+    acquireIndexLockMock.mockResolvedValue({ ...lockHandle(), lockFree: true as const });
+    await expect(run()).rejects.toThrow('refusing an unlocked embeddings sync');
+    expect(loadMetaMock).not.toHaveBeenCalled();
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
   });
 
   it('refuses to create a new database when the LadybugDB file is missing', async () => {

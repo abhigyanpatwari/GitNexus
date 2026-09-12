@@ -43,7 +43,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -1675,7 +1675,7 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
-      if (err.guardPath !== undefined) {
+      if (isIndexLockGuardTimeout(err)) {
         cliError(err.message, {
           recoveryHint: 'index-lock-guard-recovery',
           guardPath: err.guardPath,

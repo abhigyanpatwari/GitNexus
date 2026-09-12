@@ -22,7 +22,12 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { getGlobalDir } from './global-dir.js';
 import { logger } from '../core/logger.js';
-import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
+import {
+  acquireIndexLock,
+  IndexLockTimeoutError,
+  requireExclusiveIndexLock,
+  type IndexLockHandle,
+} from './index-lock.js';
 import {
   branchSlug,
   BRANCHES_DIR,
@@ -583,11 +588,10 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
     throw err;
   }
   try {
-    if (lock.lockFree) {
-      throw new Error(
-        'Cannot acquire the global registry lock; refusing an unlocked registry transaction.',
-      );
-    }
+    requireExclusiveIndexLock(
+      lock,
+      'Cannot acquire the global registry lock; refusing an unlocked registry transaction.',
+    );
     return await operation();
   } finally {
     lock?.release();

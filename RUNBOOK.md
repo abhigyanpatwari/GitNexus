@@ -226,8 +226,9 @@ covered. A process crash while holding the short-lived guard trades automatic
 recovery for fail-closed safety. Denied file creation returns a non-owning
 `lockFree` handle only when neither workload lock nor acquisition guard exists;
 unreadable paths fail closed. No staging sweep runs without ownership. Analysis,
-registry transactions, and group synchronization refuse `lockFree` handles,
-including an otherwise up-to-date analysis on a file-backend read-only mount.
+registry transactions, group synchronization, and embeddings sync refuse
+`lockFree` handles, including an otherwise up-to-date analysis on a file-backend
+read-only mount.
 The socket backend can still acquire ownership on a read-only index mount.
 Heterogeneous permissions are not proof that another process cannot write.
 

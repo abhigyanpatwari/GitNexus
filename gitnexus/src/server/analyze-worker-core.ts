@@ -22,7 +22,7 @@ import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 // Value import (instanceof): index-lock is a lightweight storage primitive
 // (node:fs/net/crypto only), so this does NOT pull in run-analyze/repo-manager.
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 
 export interface WorkerAnalysisDeps {
   runFullAnalysis: typeof import('../core/run-analyze.js').runFullAnalysis;
@@ -91,7 +91,7 @@ export async function runWorkerAnalysis(
             type: 'error',
             message,
             code: 'index-lock-timeout',
-            retryable: err.guardPath === undefined,
+            retryable: !isIndexLockGuardTimeout(err),
           }
         : { type: 'error', message };
   }

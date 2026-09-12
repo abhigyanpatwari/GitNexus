@@ -8,6 +8,7 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 }));
 
 import { shouldStopAfterWatchRefreshFailure } from '../../src/cli/analyze-watch.js';
+import { IndexLockTimeoutError } from '../../src/storage/index-lock.js';
 
 describe('watch refresh failure policy', () => {
   beforeEach(() => analyzeFailureMayHaveMutatedLiveIndex.mockReset());
@@ -25,5 +26,45 @@ describe('watch refresh failure policy', () => {
 
     expect(shouldStopAfterWatchRefreshFailure(error, ['src/a.ts'])).toBe(true);
     expect(shouldStopAfterWatchRefreshFailure(error, [])).toBe(false);
+  });
+
+  it('stops on an orphan-guard timeout even when the live index was not mutated', () => {
+    analyzeFailureMayHaveMutatedLiveIndex.mockReturnValue(false);
+    const error = new IndexLockTimeoutError(
+      {
+        v: 1,
+        pid: -1,
+        hostname: 'h',
+        startTime: null,
+        token: '',
+        invocationId: '<unreadable>',
+        acquiredAt: '',
+      },
+      30_000,
+      false,
+      '/tmp/analyze.lock.guard',
+    );
+
+    expect(shouldStopAfterWatchRefreshFailure(error, ['src/a.ts'])).toBe(true);
+    expect(shouldStopAfterWatchRefreshFailure(error, [])).toBe(true);
+  });
+
+  it('retries a live-holder lock timeout', () => {
+    analyzeFailureMayHaveMutatedLiveIndex.mockReturnValue(false);
+    const error = new IndexLockTimeoutError(
+      {
+        v: 1,
+        pid: 42,
+        hostname: 'h',
+        startTime: null,
+        token: 't',
+        invocationId: 'i',
+        acquiredAt: '',
+      },
+      5_000,
+      true,
+    );
+
+    expect(shouldStopAfterWatchRefreshFailure(error, ['src/a.ts'])).toBe(false);
   });
 });

@@ -72,6 +72,7 @@ import path from 'node:path';
 import {
   acquireIndexLock,
   IndexLockTimeoutError,
+  isIndexLockGuardTimeout,
   type IndexLockHandle,
 } from '../../storage/index-lock.js';
 import { logger } from '../logger.js';
@@ -147,7 +148,7 @@ export const withGroupSyncLock = async <T>(
     // socket backend the holder is not identifiable at all. Re-word it around
     // what IS known: which group, which operation, and how long we waited.
     if (err instanceof IndexLockTimeoutError) {
-      if (err.guardPath !== undefined) {
+      if (isIndexLockGuardTimeout(err)) {
         throw new GroupSyncLockError(
           'timeout',
           groupDir,

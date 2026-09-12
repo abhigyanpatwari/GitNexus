@@ -13,6 +13,7 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...actual,
     readFileSync: vi.fn(actual.readFileSync),
+    lstatSync: vi.fn(actual.lstatSync),
     renameSync: vi.fn(actual.renameSync),
     openSync: vi.fn(actual.openSync),
     writeSync: vi.fn(actual.writeSync),
@@ -132,7 +133,7 @@ it('keeps an incomplete creator excluded beyond the old malformed grace', async 
   expect(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token).toBe('A');
 });
 
-it.each([0, -1, 120, Number.NaN])(
+it.each([0, -1, Number.NaN])(
   'never steals an orphan guard with timeoutMs=%s',
   async (timeoutMs) => {
     const orphan = JSON.stringify({ pid: 999999999, token: 'dead-guard', hostname: os.hostname() });
@@ -143,13 +144,29 @@ it.each([0, -1, 120, Number.NaN])(
     const error = await pending;
     expect(error).toBeInstanceOf(IndexLockTimeoutError);
     expect(error.holderKnown).toBe(false);
+    expect(error.guardPath).toBe(guardPath);
     expect(error.message).toContain(guardPath);
     expect(error.message).toContain('quiesced recovery');
-    expect(Date.now() - start).toBe(timeoutMs > 0 ? timeoutMs : 30_000);
+    expect(Date.now() - start).toBe(30_000);
     expect(fs.readFileSync(guardPath, 'utf8')).toBe(orphan);
     expect(fs.existsSync(lockPath)).toBe(false);
   },
 );
+
+it('does not label a short overall timeout during guard EEXIST as an orphan', async () => {
+  const orphan = JSON.stringify({ pid: 999999999, token: 'dead-guard', hostname: os.hostname() });
+  fs.writeFileSync(guardPath, orphan);
+  const start = Date.now();
+  const pending = acquireIndexLock(dir, { timeoutMs: 120, pollMs: 250 }).catch((e) => e);
+  await vi.runAllTimersAsync();
+  const error = await pending;
+  expect(error).toBeInstanceOf(IndexLockTimeoutError);
+  expect(error.guardPath).toBeUndefined();
+  expect(error.message).not.toContain('quiesced recovery');
+  expect(Date.now() - start).toBe(120);
+  expect(fs.readFileSync(guardPath, 'utf8')).toBe(orphan);
+  expect(fs.existsSync(lockPath)).toBe(false);
+});
 
 it.each(['', '{', '{"pid":0}', '{"pid":42,"hostname":"foreign","token":"x"}'])(
   'never takes over a guard based on its metadata: %s',
@@ -175,7 +192,11 @@ it('caps guard wait by the remaining acquisition budget after waiting on a workl
     },
   }).catch((e) => e);
   await vi.runAllTimersAsync();
-  expect(await pending).toBeInstanceOf(IndexLockTimeoutError);
+  const error = await pending;
+  expect(error).toBeInstanceOf(IndexLockTimeoutError);
+  expect(error.guardPath).toBeUndefined();
+  expect(error.holderKnown).toBe(true);
+  expect(error.holder.token).toBe(first.record.token);
   expect(Date.now() - start).toBe(200);
   first.release();
 });
@@ -401,20 +422,35 @@ it.each(['mismatched', 'malformed', 'read-error', 'unlink-error'])(
   },
 );
 
-it.each(['missing', 'malformed', 'mismatched'])(
+it.each(['missing', 'mismatched'])(
   'does not delete a %s guard during cleanup',
   async (mode) => {
     vi.mocked(fs.readFileSync).mockImplementation((...args) => {
       if (args[0] === guardPath) {
         if (mode === 'missing') throw Object.assign(new Error('gone'), { code: 'ENOENT' });
-        return mode === 'malformed' ? '{' : JSON.stringify({ pid: process.pid, token: 'other' });
+        return JSON.stringify({ pid: process.pid, token: 'other' });
       }
       return actual.readFileSync(...args);
     });
+    if (mode === 'missing') {
+      vi.mocked(fs.lstatSync).mockImplementation((p) => {
+        if (p === guardPath) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+        return actual.lstatSync(p);
+      });
+    }
     await expect(acquireIndexLock(dir)).rejects.toThrow('Cannot verify');
     expect(fs.unlinkSync).not.toHaveBeenCalledWith(guardPath);
   },
 );
+
+it('unlinks a self-created unreadable guard after metadata write failure', async () => {
+  vi.mocked(fs.readFileSync).mockImplementation((...args) => {
+    if (args[0] === guardPath) return '{';
+    return actual.readFileSync(...args);
+  });
+  await expect(acquireIndexLock(dir)).rejects.toThrow();
+  expect(fs.existsSync(guardPath)).toBe(false);
+});
 
 it.each(['guard-write', 'main-write', 'guard-close', 'main-close', 'main-read'])(
   'does not admit a workload after %s fails',
@@ -442,7 +478,7 @@ it.each(['guard-write', 'main-write', 'guard-close', 'main-close', 'main-read'])
       return actual.readFileSync(...args);
     });
     await expect(acquireIndexLock(dir)).rejects.toThrow();
-    if (failure === 'guard-write') expect(fs.existsSync(guardPath)).toBe(true);
+    if (failure === 'guard-write') expect(fs.existsSync(guardPath)).toBe(false);
     if (failure === 'main-close') expect(fs.existsSync(lockPath)).toBe(false);
   },
 );

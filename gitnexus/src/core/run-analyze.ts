@@ -25,7 +25,7 @@ import fs from 'fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
-import { acquireIndexLock } from '../storage/index-lock.js';
+import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
 import {
   logNameFallbackSummary,
@@ -1117,11 +1117,10 @@ export async function runFullAnalysis(
   let writeTarget = await resolveWriteTarget(repoPath, options);
   let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
   try {
-    if (lock.lockFree) {
-      throw new Error(
-        `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
-      );
-    }
+    requireExclusiveIndexLock(
+      lock,
+      `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
+    );
     // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
     // during which git HEAD/branch — and thus the resolved write slot — may
     // change (a commit lands, a branch is switched, or another writer adopts the
@@ -1148,11 +1147,10 @@ export async function runFullAnalysis(
       lock.release();
       writeTarget = fresh;
       lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
-      if (lock.lockFree) {
-        throw new Error(
-          `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
-        );
-      }
+      requireExclusiveIndexLock(
+        lock,
+        `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
+      );
       if (attempt === MAX_RELOCK - 1) {
         log('Index write target still moving after repeated re-acquire; proceeding on this lock.');
       }
