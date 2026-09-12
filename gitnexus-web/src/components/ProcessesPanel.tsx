@@ -364,7 +364,7 @@ export const ProcessesPanel = () => {
       </div>
 
       {/* Process list */}
-      <div className="flex-1 scrollbar-thin overflow-y-auto">
+      <div className="scrollbar-thin flex-1 overflow-y-auto">
         {/* View All Processes Card */}
         <div className="px-4 py-3">
           <button

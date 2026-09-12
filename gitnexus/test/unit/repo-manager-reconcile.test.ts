@@ -249,7 +249,7 @@ describe('reconcileMetadataFiles', () => {
     });
   });
 
-  it('uses analyze\'s validated storage path instead of resolving it again', async () => {
+  it("uses analyze's validated storage path instead of resolving it again", async () => {
     const externalRoot = path.join(tmpRepo.dbPath, 'external-storage');
     const externalStoragePath = storagePathFromRoot(externalRoot, tmpRepo.dbPath);
     const expected = metaAt('2026-06-01T00:00:00.000Z', 'validated-path');

@@ -3763,9 +3763,7 @@ describe('Hook registry resolver compatibility', () => {
           stats: {},
         }),
       );
-      writeHookRegistry(homeDir, [
-        { name: 'repo', path: repoDir, storagePath: registeredStorage },
-      ]);
+      writeHookRegistry(homeDir, [{ name: 'repo', path: repoDir, storagePath: registeredStorage }]);
       delete process.env.GITNEXUS_STORAGE_ROOT;
       process.env.GITNEXUS_STORAGE_PATH = overrideStorage;
 
