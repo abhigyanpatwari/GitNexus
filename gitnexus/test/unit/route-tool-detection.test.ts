@@ -7,6 +7,7 @@ import {
   normalizeFetchURL,
   routeMatches,
 } from '../../src/core/ingestion/route-extractors/nextjs.js';
+import { extractAxumRoutes } from '../../src/core/ingestion/route-extractors/axum.js';
 import { phpFileToRouteURL } from '../../src/core/ingestion/route-extractors/php.js';
 import {
   extractMiddlewareChain,
@@ -171,6 +172,21 @@ describe('routeMatches', () => {
     expect(routeMatches('/api/orgs/[param]/grants', '/api/orgs/[slug]/grants')).toBe(true);
   });
 
+  it('matches Axum colon dynamic segments against concrete and normalized fetches', () => {
+    expect(
+      routeMatches(
+        '/api/v1/provider/accounts/acct-1/licenses',
+        '/api/v1/provider/accounts/:id/licenses',
+      ),
+    ).toBe(true);
+    expect(
+      routeMatches(
+        '/api/v1/provider/accounts/[param]/licenses/quantity',
+        '/api/v1/provider/accounts/:id/licenses/quantity',
+      ),
+    ).toBe(true);
+  });
+
   it('matches catch-all routes against longer paths', () => {
     expect(routeMatches('/api/docs/a/b/c', '/api/[...slug]')).toBe(true);
     expect(routeMatches('/api/proxy/x', '/api/[...slug]')).toBe(true);
@@ -188,6 +204,41 @@ describe('routeMatches', () => {
   it('matches optional catch-all routes [[...slug]]', () => {
     expect(routeMatches('/api/docs/a/b', '/api/[[...slug]]')).toBe(true);
     expect(routeMatches('/api/proxy/x', '/api/[[...slug]]')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rust Axum route extractor
+// ---------------------------------------------------------------------------
+
+describe('extractAxumRoutes', () => {
+  it('extracts chained single-line and multiline Router::route declarations', () => {
+    const routes = extractAxumRoutes(`
+      pub fn routes() -> axum::Router<State> {
+        axum::Router::new()
+          .route("/api/v1/workspace/billing/usage", get(my_usage_handler))
+          .route(
+            "/api/v1/provider/accounts/:id/licenses/quantity",
+            put(update_account_license_quantity_handler),
+          )
+      }
+    `);
+
+    expect(routes.map((route) => route.routePath)).toEqual([
+      '/api/v1/workspace/billing/usage',
+      '/api/v1/provider/accounts/:id/licenses/quantity',
+    ]);
+  });
+
+  it('ignores non-absolute routes and deduplicates repeated paths', () => {
+    const routes = extractAxumRoutes(`
+      Router::new()
+        .route("relative", get(relative))
+        .route("/api/v1/workspace/billing/usage", get(a))
+        .route("/api/v1/workspace/billing/usage", post(b))
+    `);
+
+    expect(routes.map((route) => route.routePath)).toEqual(['/api/v1/workspace/billing/usage']);
   });
 });
 
