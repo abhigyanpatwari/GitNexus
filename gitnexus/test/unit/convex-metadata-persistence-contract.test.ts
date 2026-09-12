@@ -33,6 +33,7 @@ function makeConfigMock() {
       WAL_RECOVERY_SUGGESTION: 'run analyze --force',
       waitForWindowsHandleRelease: vi.fn(async () => true),
       isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
       STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     },
   };

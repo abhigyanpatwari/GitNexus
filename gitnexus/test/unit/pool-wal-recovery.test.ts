@@ -45,6 +45,8 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
     return /corrupt(ed)?\s+wal|invalid\s+wal\s+record/i.test(msg);
   }),
   isStorageVersionMismatchError: vi.fn(() => false),
+  throwIfStorageVersionMismatch: vi.fn(),
+  sleep: vi.fn(async () => {}),
   STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 

@@ -51,12 +51,12 @@ import {
   isOpenRetryExhausted,
   isStorageVersionMismatchError,
   isWalCorruptionError,
+  throwIfStorageVersionMismatch,
   bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
   resolveNativeSafeStorageDir,
-  STORAGE_VERSION_MISMATCH_SUGGESTION,
   WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
@@ -702,6 +702,11 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
             `  Original error: ${msg.slice(0, 200)}`,
         );
       }
+      if (isStorageVersionMismatchError(err)) {
+        await safeClose();
+        resetOpenConnectionState();
+        throwIfStorageVersionMismatch(err);
+      }
       if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
@@ -832,10 +837,7 @@ const doInitLbug = async (
       // downgrading the dependency). Mirrors the pool-adapter.ts check for
       // the same error, on the separate open path /api/graph and /api/query
       // actually use (withLbugDb, not the pool).
-      if (isStorageVersionMismatchError(err)) {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${msg})`);
-      }
+      throwIfStorageVersionMismatch(err);
       throw err;
     }
     db = usable.db;
@@ -946,10 +948,18 @@ const doInitLbug = async (
         allowQuarantine: true,
       });
 
-      const opened = await openLbugConnection(lbug, dbPath);
-      db = opened.db;
-      conn = opened.conn;
-      currentDbReadOnly = false;
+      try {
+        const opened = await openLbugConnection(lbug, dbPath);
+        db = opened.db;
+        conn = opened.conn;
+        currentDbReadOnly = false;
+      } catch (err) {
+        // Incremental analyze can hit a storage-version mismatch on construct
+        // or (more often) on the first schema query below. Fail immediately
+        // with the rebuild hint instead of warn-and-continue.
+        throwIfStorageVersionMismatch(err);
+        throw err;
+      }
     } finally {
       await releaseInitLock();
     }

@@ -142,6 +142,8 @@ vi.mock('../../../src/core/lbug/lbug-config.js', () => ({
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
   isStorageVersionMismatchError: vi.fn(() => false),
+  throwIfStorageVersionMismatch: vi.fn(),
+  sleep: vi.fn(async () => {}),
   STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 

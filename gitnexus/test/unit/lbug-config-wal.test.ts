@@ -4,8 +4,11 @@ import {
   createLbugDatabase,
   estimateBufferPool,
   isLbugCheckpointIoError,
+  isStorageVersionMismatchError,
   isWalCorruptionError,
   setBufferPoolSizeHint,
+  STORAGE_VERSION_MISMATCH_SUGGESTION,
+  throwIfStorageVersionMismatch,
   _setOsPageSizeForTests,
   bufferPoolExhaustionRemedy,
 } from '../../src/core/lbug/lbug-config.js';
@@ -43,6 +46,53 @@ describe('isWalCorruptionError', () => {
     expect(isWalCorruptionError(null)).toBe(false);
     expect(isWalCorruptionError(42)).toBe(false);
     expect(isWalCorruptionError(new Error('ok'))).toBe(false);
+  });
+});
+
+describe('isStorageVersionMismatchError / throwIfStorageVersionMismatch', () => {
+  const NATIVE =
+    'Runtime exception: Trying to read a database file with a different version. Database file version: 43, Current build storage version: 42';
+
+  it.each([
+    ['documented native message', NATIVE],
+    ['bare phrase', 'Trying to read a database file with a different version'],
+  ])('matches storage-version mismatch: %s', (_label, msg) => {
+    expect(isStorageVersionMismatchError(msg)).toBe(true);
+    expect(isStorageVersionMismatchError(new Error(msg))).toBe(true);
+  });
+
+  it.each([
+    ['lock error', 'Could not set lock on file : /path/to/db'],
+    ['WAL corruption', 'Runtime exception: Corrupted wal file. Read out invalid WAL record type.'],
+    ['generic', 'Query failed'],
+    ['schema version wording', 'schema version mismatch in WAL'],
+  ])('does not match non-version error: %s', (_label, msg) => {
+    expect(isStorageVersionMismatchError(msg)).toBe(false);
+    expect(isStorageVersionMismatchError(new Error(msg))).toBe(false);
+  });
+
+  it('handles non-string input', () => {
+    expect(isStorageVersionMismatchError(undefined)).toBe(false);
+    expect(isStorageVersionMismatchError(null)).toBe(false);
+    expect(isStorageVersionMismatchError(42)).toBe(false);
+    expect(isStorageVersionMismatchError(new Error('ok'))).toBe(false);
+  });
+
+  it('throwIfStorageVersionMismatch wraps the native message with the rebuild hint', () => {
+    expect(() => throwIfStorageVersionMismatch(new Error(NATIVE))).toThrow(
+      new RegExp(
+        `${STORAGE_VERSION_MISMATCH_SUGGESTION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*different version`,
+      ),
+    );
+  });
+
+  it('throwIfStorageVersionMismatch is a no-op for lock and WAL errors', () => {
+    expect(() =>
+      throwIfStorageVersionMismatch(new Error('Could not set lock on file : /path')),
+    ).not.toThrow();
+    expect(() =>
+      throwIfStorageVersionMismatch(new Error('Runtime exception: Corrupted wal file.')),
+    ).not.toThrow();
   });
 });
 

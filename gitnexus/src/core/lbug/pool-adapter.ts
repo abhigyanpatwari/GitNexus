@@ -22,9 +22,9 @@ import { closeQueryResults } from './query-result-utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import {
   createLbugDatabase,
-  isStorageVersionMismatchError,
   isWalCorruptionError,
-  STORAGE_VERSION_MISMATCH_SUGGESTION,
+  sleep,
+  throwIfStorageVersionMismatch,
   toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
@@ -697,29 +697,10 @@ async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<l
   return await openReadOnlyDatabase(dbPath);
 }
 
-/**
- * Initialize (or reuse) a Database + connection pool for a specific repo.
- * Retries on lock errors (e.g., when `gitnexus analyze` is running).
- *
- * Concurrent calls (for the same repoId or different ones) serialize on
- * poolLock below, so a second caller for a repo already being initialized
- * simply waits its turn and then hits the "existing" fast path once its turn
- * comes — no separate per-repoId dedup needed on top of that.
- */
-/**
- * Returns `true` when this call (re)opened a fresh handle onto the current
- * on-disk file, `false` when it reused/served the existing handle (unchanged,
- * or changed-but-a-query-is-in-flight). Callers that gate their own freshness
- * bookkeeping on "did the pool actually roll over" (LocalBackend) use the
- * return value; callers that only need the pool ready can ignore it.
- */
-// Serializes the whole initLbug body across concurrent callers. Awaiting
-// closeOne/evictLRU (above) closes the race within a single call, but two
-// concurrent initLbug() calls for two different repoIds can still each evict
-// their own LRU victim and open their own new connection at the same time,
-// racing each other's checkpoint on whatever global lock the native engine
-// holds. This mutex makes pool mutations (evict + reopen, for any repo)
-// mutually exclusive across all callers, closing that cross-request race too.
+// Serializes pool mutations (evict / close / native open / register) across
+// concurrent callers. Awaiting closeOne/evictLRU closes the race within a
+// single call; this mutex makes those mutations mutually exclusive across
+// repos so two inits cannot race each other's checkpoint.
 let poolLock: Promise<unknown> = Promise.resolve();
 function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = poolLock.then(fn, fn);
@@ -730,10 +711,45 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export const initLbug = (repoId: string, dbPath: string): Promise<boolean> =>
-  withPoolLock(() => initLbugInner(repoId, dbPath));
+type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
-const initLbugInner = async (repoId: string, dbPath: string): Promise<boolean> => {
+function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
+  return new Error(
+    `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+      `Retry later. (${err?.message || 'unknown error'})`,
+  );
+}
+
+/**
+ * Initialize (or reuse) a Database + connection pool for a specific repo.
+ * Retries on lock errors (e.g., when `gitnexus analyze` is running).
+ *
+ * Concurrent calls (for the same repoId or different ones) serialize on
+ * poolLock below for evict / close / native open / register, so a second
+ * caller for a repo already being initialized waits its turn and then hits
+ * the "existing" fast path — no separate per-repoId dedup needed. Lock-retry
+ * *sleeps* run outside the mutex so one analyze-locked repo does not block
+ * every other pool init for LOCK_RETRY_DELAY_MS * attempt.
+ *
+ * Returns `true` when this call (re)opened a fresh handle onto the current
+ * on-disk file, `false` when it reused/served the existing handle (unchanged,
+ * or changed-but-a-query-is-in-flight). Callers that gate their own freshness
+ * bookkeeping on "did the pool actually roll over" (LocalBackend) use the
+ * return value; callers that only need the pool ready can ignore it.
+ */
+export const initLbug = async (repoId: string, dbPath: string): Promise<boolean> => {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
+    const result = await withPoolLock(() => initLbugInner(repoId, dbPath));
+    if (result.status === 'done') return result.reopened;
+    lastError = result.error;
+    if (attempt === LOCK_RETRY_ATTEMPTS) break;
+    await sleep(LOCK_RETRY_DELAY_MS * attempt);
+  }
+  throw ladybugUnavailableError(repoId, lastError);
+};
+
+const initLbugInner = async (repoId: string, dbPath: string): Promise<InitLbugAttempt> => {
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -742,7 +758,9 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<boolean> =
     // unlinked-but-open) inode until LRU/idle eviction — a stale-read window
     // of up to IDLE_TIMEOUT_MS after analyze finishes.
     const current = await statDbIdentity(dbPath);
-    if (!dbIdentityChanged(existing.dbIdentity, current)) return false; // unchanged → reuse
+    if (!dbIdentityChanged(existing.dbIdentity, current)) {
+      return { status: 'done', reopened: false }; // unchanged → reuse
+    }
     // A query is in flight on this entry; closing its connection (and the
     // shared Database at refCount 0) mid-use is a native use-after-free. Serve
     // the current handle for this dispatch — the next initLbug that finds the
@@ -753,13 +771,12 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<boolean> =
     // (a complete older snapshot), just not the newest. Callers that route
     // freshness THROUGH initLbug (rather than calling closeLbug directly) get
     // this guard for free; that is why LocalBackend delegates here (#2614).
-    if (existing.checkedOut > 0) return false;
+    if (existing.checkedOut > 0) return { status: 'done', reopened: false };
     // Awaited: see the rationale on the evictLRU call site in doInitLbug below.
     await closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
 
-  await doInitLbug(repoId, dbPath);
-  return true;
+  return doInitLbug(repoId, dbPath);
 };
 
 /**
@@ -767,7 +784,7 @@ const initLbugInner = async (repoId: string, dbPath: string): Promise<boolean> =
  * Pool entry is registered LAST so concurrent executeQuery calls see either
  * "not initialized" (and throw) or a fully ready pool — never a half-built one.
  */
-async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
+async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttempt> {
   // Check if database exists
   try {
     await fs.stat(dbPath);
@@ -777,9 +794,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
 
   // Awaited: without this, the connection opened just below could race the
   // checkpoint from the LRU victim's still-in-flight close (see evictLRU /
-  // closeOne). initLbug's outer poolLock keeps this whole function exclusive
-  // across concurrent repos too, so this await only needs to cover this call's
-  // own evict-then-reopen — not other callers.
+  // closeOne). The caller holds withPoolLock for this attempt, so this await
+  // only covers this call's own evict-then-reopen — not other callers.
+  // Lock-retry re-enters this function after sleeping *outside* the mutex.
+  // evictLRU is a no-op unless the pool is full again (another repo may have
+  // taken the slot we freed on a prior attempt). Skipping it on retry would
+  // let a 6th native open race a still-resident victim's checkpoint.
   await evictLRU();
 
   // Reuse an existing native Database if another repoId already opened this path.
@@ -805,47 +825,38 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   if (!shared) {
     // Open in read-only mode — MCP server never writes to the database.
     // This allows multiple MCP server instances to read concurrently, and
-    // avoids lock conflicts when `gitnexus analyze` is writing.
-    let lastError: Error | null = null;
-    for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      try {
-        const db = await openReadOnlyDatabase(dbPath);
-        shared = { db, refCount: 0, ftsLoaded: false, dbIdentity: await statDbIdentity(dbPath) };
-        dbCache.set(dbPath, shared);
-        break;
-      } catch (err: any) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+    // avoids lock conflicts when `gitnexus analyze` is writing. This attempt
+    // is one native open; lock-retry backoff lives in initLbug.
+    try {
+      const db = await openReadOnlyDatabase(dbPath);
+      shared = { db, refCount: 0, ftsLoaded: false, dbIdentity: await statDbIdentity(dbPath) };
+      dbCache.set(dbPath, shared);
+    } catch (err: unknown) {
+      const lastError = err instanceof Error ? err : new Error(String(err));
 
-        // Not retryable: the on-disk file's storage version doesn't change
-        // on its own, so looping LOCK_RETRY_ATTEMPTS times here would just
-        // repeat the same native exception. Fail immediately with an
-        // actionable message instead of GitNexus's generic "unavailable,
-        // retry later" (review finding on PR #3189 — this became reachable
-        // once the pinned engine version can trail behind whatever version
-        // last wrote an index, e.g. after downgrading the dependency).
-        if (isStorageVersionMismatchError(lastError)) {
-          throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${lastError.message})`);
+      // Not retryable: the on-disk file's storage version doesn't change
+      // on its own. Fail immediately with an actionable message.
+      throwIfStorageVersionMismatch(lastError);
+
+      if (isWalCorruptionError(lastError)) {
+        try {
+          const db = await tryQuarantineAndReopen(dbPath, repoId);
+          shared = {
+            db,
+            refCount: 0,
+            ftsLoaded: false,
+            dbIdentity: await statDbIdentity(dbPath),
+          };
+          dbCache.set(dbPath, shared);
+        } catch (retryErr) {
+          throw new Error(
+            `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
+              `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
+          );
         }
+      }
 
-        if (isWalCorruptionError(lastError)) {
-          try {
-            const db = await tryQuarantineAndReopen(dbPath, repoId);
-            shared = {
-              db,
-              refCount: 0,
-              ftsLoaded: false,
-              dbIdentity: await statDbIdentity(dbPath),
-            };
-            dbCache.set(dbPath, shared);
-            break;
-          } catch (retryErr) {
-            throw new Error(
-              `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
-                `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
-            );
-          }
-        }
-
+      if (!shared) {
         if (
           lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
           lastError.message.startsWith('LadybugDB checkpoint sidecar is present but unreachable') ||
@@ -854,20 +865,14 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         ) {
           throw lastError;
         }
-
-        const isLockError =
+        if (
           lastError.message.includes('Could not set lock') ||
-          /\block(\b|ed|ing)/i.test(lastError.message);
-        if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
-        await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
+          /\block(\b|ed|ing)/i.test(lastError.message)
+        ) {
+          return { status: 'retry', error: lastError };
+        }
+        throw ladybugUnavailableError(repoId, lastError);
       }
-    }
-
-    if (!shared) {
-      throw new Error(
-        `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-          `Retry later. (${lastError?.message || 'unknown error'})`,
-      );
     }
   }
 
@@ -914,6 +919,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   });
   ensureIdleTimer();
   traceRss('init', repoId);
+  return { status: 'done', reopened: true };
 }
 
 /**

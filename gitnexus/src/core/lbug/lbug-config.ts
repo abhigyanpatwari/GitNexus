@@ -579,6 +579,13 @@ export function isStorageVersionMismatchError(err: unknown): boolean {
   return STORAGE_VERSION_MISMATCH_RE.test(msg);
 }
 
+/** Throws the rebuild-hint Error when `err` is a storage-version mismatch. */
+export function throwIfStorageVersionMismatch(err: unknown): void {
+  if (!isStorageVersionMismatchError(err)) return;
+  const msg = err instanceof Error ? err.message : String(err);
+  throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${msg})`);
+}
+
 // ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
 //
 // Matched against LadybugDB v0.18.0 (see `gitnexus/package.json`
