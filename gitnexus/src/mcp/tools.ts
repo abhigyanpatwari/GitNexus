@@ -28,6 +28,7 @@ export interface ToolDefinition {
       }
     >;
     required: string[];
+    additionalProperties?: false;
   };
 }
 
@@ -575,6 +576,13 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           minimum: 1,
           maximum: IMPACT_MAX_DEPTH,
         },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
+          minimum: 0,
+          maximum: IMPACT_MAX_DEPTH,
+        },
         crossDepth: {
           type: 'number',
           description:
@@ -931,6 +939,13 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
           minimum: 1,
           maximum: 30,
         },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
+          minimum: 0,
+          maximum: 30,
+        },
         includeTests: {
           type: 'boolean',
           description: 'Include test-file symbols in traversal (default: false)',
@@ -993,6 +1008,16 @@ export const REPO_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
+  // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
+  // The unpublished handler aliases in tool-arguments.ts stay off this schema on
+  // purpose (#2175), and closing it strands no caller: every alias has an
+  // advertised counterpart reaching the same handler — `query` → `search_query`
+  // on query, `query` → `statement` on cypher, and `target` → `name` on group
+  // context, which local-backend maps to the group target (the group name comes
+  // from `repo: "@group"`, not from `name`; see test/unit/mcp/group-repo-routing).
+  // A schema-validating client therefore has a valid call for every tool, and
+  // advertising the aliases instead would re-break Claude Code on `query`.
+  tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's

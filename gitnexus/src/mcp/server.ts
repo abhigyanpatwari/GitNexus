@@ -42,6 +42,7 @@ import {
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
 import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
+import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -220,6 +221,12 @@ export function createMCPServer(
     try {
       const typedArgs = args as Record<string, unknown> | undefined;
       assertMcpReadOnlyToolCall(name, typedArgs, readOnly);
+      const schemaSource = schemaSourceToolName(name);
+      const advertisedTool = GITNEXUS_TOOLS.find((tool) => tool.name === schemaSource);
+      if (advertisedTool) {
+        const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
+        assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
+      }
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
       const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
