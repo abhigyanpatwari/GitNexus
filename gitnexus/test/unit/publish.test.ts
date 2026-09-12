@@ -118,8 +118,9 @@ describe('publishCommand (no-token no-op)', () => {
   beforeEach(async () => {
     vi.resetModules();
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-publish-test-'));
-    // Simulate an existing index so hasIndex() returns true.
+    // Simulate an existing owned index with a LadybugDB directory.
     await fs.mkdir(path.join(tempDir, '.gitnexus'), { recursive: true });
+    await fs.mkdir(path.join(tempDir, '.gitnexus', 'lbug'), { recursive: true });
     await fs.writeFile(
       path.join(tempDir, '.gitnexus', 'meta.json'),
       JSON.stringify({ repoPath: tempDir, lastCommit: '', indexedAt: '' }),
@@ -186,6 +187,7 @@ describe('publishCommand response branches (MEDIUM 5)', () => {
     vi.resetModules();
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-publish-resp-'));
     await fs.mkdir(path.join(tempDir, '.gitnexus'), { recursive: true });
+    await fs.mkdir(path.join(tempDir, '.gitnexus', 'lbug'), { recursive: true });
     await fs.writeFile(
       path.join(tempDir, '.gitnexus', 'meta.json'),
       JSON.stringify({ repoPath: tempDir, lastCommit: '', indexedAt: '' }),

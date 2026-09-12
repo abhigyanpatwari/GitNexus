@@ -36,12 +36,11 @@ import { t } from './i18n/index.js';
 import {
   readRegistry,
   resolveRegistryEntry,
-  assertSafeStoragePath,
   unregisterRepo,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
-  UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
+import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
 
 export const removeCommand = async (target: string, options?: { force?: boolean }) => {
   // Read the registry snapshot once and pass it to the resolver — this
@@ -80,18 +79,13 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     return;
   }
 
-  // Safety guard (#1003 review — @magyargergo): refuse to proceed if
-  // the registry entry's `storagePath` isn't the canonical
-  // `<entry.path>/.gitnexus` subfolder. `~/.gitnexus/registry.json` is
-  // user-writable, so a corrupted or hand-edited entry could point
-  // storagePath at the repo root, an empty string (→ cwd), a parent
-  // dir, or anywhere else; `fs.rm(recursive: true, force: true)` on
-  // any of those would be a runtime disaster. Bail before touching
-  // disk, with an actionable hint for recovering a broken registry.
+  // Validate immediately before deletion. `--force` skips confirmation only;
+  // it does not bypass the ownership and dangerous-path checks.
+  let storagePath: string;
   try {
-    assertSafeStoragePath(entry);
+    storagePath = await requireDeletableStoragePath(entry);
   } catch (err) {
-    if (err instanceof UnsafeStoragePathError) {
+    if (err instanceof StorageDeletionError) {
       cliError(t('common.error', { message: err.message }));
       process.exit(1);
     }
@@ -104,7 +98,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // orphaned — `listRegisteredRepos({ validate: true })` prunes those on
   // next read, so the failure is self-healing.
   try {
-    await fs.rm(entry.storagePath, { recursive: true, force: true });
+    await fs.rm(storagePath, { recursive: true, force: true });
     await unregisterRepo(entry.path);
     console.log(t('remove.removed', { name: entry.name }));
     console.log(`   ${t('common.path')}:    ${entry.path}`);

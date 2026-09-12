@@ -3,8 +3,9 @@
  *
  * Holds the on-disk shape of a GitNexus index's metadata file
  * (`.gitnexus/gitnexus.json`, plus its legacy `meta.json` mirror) and the
- * read-side helpers that locate and parse it. Nothing here writes, and nothing
- * here knows about the global registry.
+ * read-side helpers that locate and parse it. Nothing here writes. Path
+ * lookup may consult configured or registered storage via `resolveStoragePath`;
+ * registry mutation stays in `repo-manager.ts`.
  *
  * Why it is its own module: `repo-manager.ts` owns the registry and the write
  * side, and `branch-index.ts` (#2106) owns the multi-branch slug/placement
@@ -30,14 +31,16 @@ import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
-/** The `.gitnexus` directory name, relative to a repo root. */
-export const GITNEXUS_DIR = '.gitnexus';
-export const INDEX_METADATA_FILE = 'gitnexus.json';
-// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
-// with consumers that only know the pre-rename filename (see MIGRATION.md).
-export const LEGACY_METADATA_FILE = 'meta.json';
+export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
+
+/** How much source text an index is allowed to persist. */
+export type ContentRetention = 'full' | 'symbol' | 'none';
+export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
+export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
 
 /**
  * Versioned receipt for the analyzer process that produced an index.
@@ -85,8 +88,14 @@ export interface AnalyzerRunnerIdentity {
 
 export interface RepoMeta {
   repoPath: string;
+  /** Complete index directory selected for this successful analysis. */
+  storagePath?: string;
   lastCommit: string;
   indexedAt: string;
+  /** Missing on legacy metadata means the upstream-compatible `full` profile. */
+  contentRetention?: ContentRetention;
+  contentRetentionSchemaVersion?: number;
+  ftsProfile?: FtsProfile;
   /**
    * Runtime enrichment mode plus redacted scan exclusions. Payload data and
    * absolute/external paths are deliberately excluded from metadata.
@@ -579,11 +588,12 @@ export interface RepoMeta {
 }
 
 /**
- * Get the .gitnexus storage path for a repository.
- * Used for local metadata and caches that are not committed.
+ * Resolve the configured storage path for a repository.
+ * This can be its repository-local `.gitnexus` directory, an external slot,
+ * or a previously registered storage path.
  */
 export const getStoragePath = (repoPath: string): string => {
-  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
+  return resolveStoragePath(repoPath);
 };
 
 /**

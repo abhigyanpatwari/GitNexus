@@ -181,7 +181,8 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         },
         include_content: {
           type: 'boolean',
-          description: 'Include full symbol source code (default: false)',
+          description:
+            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
         },
         maxTokens: {
@@ -328,7 +329,8 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         include_content: {
           type: 'boolean',
-          description: 'Include full symbol source code (default: false)',
+          description:
+            'Include source text retained for this symbol (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
         },
         maxTokens: {

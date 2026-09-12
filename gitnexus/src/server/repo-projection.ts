@@ -14,8 +14,14 @@ import {
   type StalenessInfo,
   type StalenessPayload,
 } from '../core/staleness-status.js';
+import type { ContentRetention, RepoMeta } from '../storage/repo-meta.js';
 import type { RegistryEntry } from '../storage/repo-manager.js';
-import type { RepoMeta } from '../storage/repo-meta.js';
+
+/** Retention + checkout facts computed by the route (see getSourceAvailability). */
+export interface RepoProjectionSource {
+  contentRetention: ContentRetention;
+  sourceAvailable: boolean;
+}
 
 /**
  * Staleness through the shared {@link stalenessPayload} builder, so this route
@@ -38,13 +44,20 @@ export const stalenessField = (info: StalenessInfo): { staleness?: StalenessPayl
 };
 
 /** One entry of `GET /api/repos`. */
-export const projectRepoListEntry = (entry: RegistryEntry, staleness: StalenessInfo) => ({
+export const projectRepoListEntry = (
+  entry: RegistryEntry,
+  staleness: StalenessInfo,
+  source: RepoProjectionSource,
+) => ({
   name: entry.name,
   path: entry.path,
   repoPath: entry.path,
+  storagePath: entry.storagePath,
   indexedAt: entry.indexedAt,
   lastCommit: entry.lastCommit,
   stats: entry.stats,
+  contentRetention: source.contentRetention,
+  sourceAvailable: source.sourceAvailable,
   // The registry has carried these since #2106; #3199 made them load-bearing
   // over HTTP, because a branch-pinned analyze now gets its own entry and the
   // only other way to tell two entries apart is to parse the clone-directory
@@ -63,13 +76,17 @@ export const projectRepoDetail = (
   entry: RegistryEntry,
   meta: RepoMeta | null | undefined,
   staleness: StalenessInfo,
+  source: RepoProjectionSource,
 ) => ({
   name: entry.name,
   repoPath: entry.path,
+  storagePath: entry.storagePath,
   indexedAt: meta?.indexedAt ?? entry.indexedAt,
   stats: meta?.stats ?? entry.stats ?? {},
   lastCommit: meta?.lastCommit ?? entry.lastCommit,
   branch: meta?.branch ?? entry.branch,
+  contentRetention: source.contentRetention,
+  sourceAvailable: source.sourceAvailable,
   ...stalenessField(staleness),
 });
 

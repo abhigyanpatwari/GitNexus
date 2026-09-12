@@ -119,6 +119,7 @@ export class BackendError extends Error {
       | 'server'
       | 'client'
       | 'not_found'
+      | 'source_unavailable'
       | 'timeout'
       | 'rate_limited'
       // The write-route same-host Origin guard rejected this request (HTTP 403
@@ -549,22 +550,22 @@ const assertOk = async (response: Response): Promise<void> => {
     // Response body was not JSON
   }
 
-  const code =
-    response.status === 404
-      ? 'not_found'
-      : response.status === 429
-        ? 'rate_limited'
-        : // The public edge's token gate returns 401 with this discriminator;
-          // surface it as a distinct code so the UI can prompt for the token.
-          bodyCode === 'unauthorized'
-          ? 'unauthorized'
-          : // The write-route Origin guard returns 403 with this discriminator;
-            // surface it as a distinct code so the UI can give actionable guidance.
-            bodyCode === 'origin_not_allowed'
-            ? 'origin_blocked'
-            : response.status >= 400 && response.status < 500
-              ? 'client'
-              : 'server';
+  let code: ConstructorParameters<typeof BackendError>[2] = 'server';
+  if (bodyCode === 'source-unavailable') {
+    code = 'source_unavailable';
+  } else if (response.status === 404) {
+    code = 'not_found';
+  } else if (response.status === 429) {
+    code = 'rate_limited';
+  } else if (bodyCode === 'unauthorized') {
+    // Public-edge token gate: HTTP 401 with this discriminator.
+    code = 'unauthorized';
+  } else if (bodyCode === 'origin_not_allowed') {
+    // Write-route Origin guard: HTTP 403 with this discriminator.
+    code = 'origin_blocked';
+  } else if (response.status >= 400 && response.status < 500) {
+    code = 'client';
+  }
 
   // Retry-After is the standard HTTP signal for when the client may try again.
   // express-rate-limit emits it on 429 with seconds (integer) or HTTP-date.

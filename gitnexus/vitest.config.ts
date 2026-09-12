@@ -14,7 +14,9 @@ export default defineConfig({
     // respawn every such child with a RAM-sized cap. Children inherit it via
     // the harnesses' `{ ...process.env }` spreads. Tests that exercise the
     // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
-    env: { GITNEXUS_MEMORY: 'off' },
+    // Tests assert the English CLI contract unless a case opts into another
+    // language explicitly. Do not inherit a developer shell's CLI locale.
+    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in

@@ -214,13 +214,11 @@ describe('readRegistryStrict', () => {
     await expect(readRegistryStrict()).rejects.toThrow('registry is corrupt');
   });
 
-  it('accepts a row whose unused `path` is blank, and syncs the repo it names', async () => {
-    // The counter-case that fixes the width of the rule. `path` is not what
-    // identifies a repo, so tightening it too would trade this fail-open for a
-    // fail-shut: one blank `path` anywhere in the MACHINE-WIDE registry would
-    // reject the whole file and break every group sync on the machine,
-    // including groups whose repos all resolve. Same principle as indexedAt /
-    // lastCommit — require only what the resolution path depends on.
+  it('accepts a legacy row whose `path` is blank but reports its group member unreadable', async () => {
+    // Strict registry parsing remains backward compatible with this legacy
+    // shape. Group loading now needs the source path for storage ownership,
+    // so only this member degrades to unreadable instead of invalidating the
+    // machine-wide registry for otherwise healthy consumers.
     const row = { ...resolvableRow(), path: '   ' };
     await fs.writeFile(registryPath, JSON.stringify([row]));
 
@@ -230,14 +228,10 @@ describe('readRegistryStrict', () => {
       skipWrite: true,
     });
 
-    // Resolved: not reported missing, and the snapshot carries THIS row's
-    // registry metadata, which only a successful name match could supply.
+    // The registry name still resolves, but ownership cannot be established.
     expect(result.missingRepos).toEqual([]);
-    expect(result.unreadableRepos).toEqual([]);
-    expect(result.repoSnapshots['app/backend']).toEqual({
-      indexedAt: '2026-01-01T00:00:00.000Z',
-      lastCommit: 'abc123',
-    });
+    expect(result.unreadableRepos).toEqual(['app/backend']);
+    expect(result.repoSnapshots['app/backend']).toBeUndefined();
   });
 
   /**

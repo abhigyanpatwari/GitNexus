@@ -1,3 +1,5 @@
+import type { FtsProfile } from '../../storage/repo-meta.js';
+
 export interface FTSIndexDefinition {
   readonly table: string;
   readonly indexName: string;
@@ -47,3 +49,16 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   { table: 'Static', indexName: 'static_fts', properties: FTS_PROPERTIES },
   { table: 'Variable', indexName: 'variable_fts', properties: FTS_PROPERTIES },
 ];
+
+const NAME_ONLY_PROPERTIES = ['name'] as const;
+
+/** Return the FTS definitions compatible with one persisted content profile. */
+export const getFtsIndexes = (profile: FtsProfile = 'full'): readonly FTSIndexDefinition[] => {
+  if (profile === 'full') return FTS_INDEXES;
+  if (profile === 'symbol-no-file-content') {
+    return FTS_INDEXES.map((index) =>
+      index.table === 'File' ? { ...index, properties: NAME_ONLY_PROPERTIES } : index,
+    );
+  }
+  return FTS_INDEXES.map((index) => ({ ...index, properties: NAME_ONLY_PROPERTIES }));
+};
