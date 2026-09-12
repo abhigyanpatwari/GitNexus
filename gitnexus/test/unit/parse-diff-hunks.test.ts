@@ -93,6 +93,20 @@ describe('parseDiffHunks', () => {
     expect(result[0].hunks).toEqual([{ startLine: 1, endLine: 1 }]);
   });
 
+  it('maps a whole-file deletion to the old-side range', () => {
+    const diff = [
+      'diff --git a/src/deleted.ts b/src/deleted.ts',
+      'deleted file mode 100644',
+      '--- a/src/deleted.ts',
+      '+++ /dev/null',
+      '@@ -1,9 +0,0 @@',
+      '-export function removed() {}',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'src/deleted.ts', hunks: [{ startLine: 1, endLine: 9 }] },
+    ]);
+  });
+
   it('returns empty array for empty diff output', () => {
     expect(parseDiffHunks('')).toEqual([]);
   });
