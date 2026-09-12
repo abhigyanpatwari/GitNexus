@@ -382,9 +382,8 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    // Cheap local owned `.gitnexus` first (up to 5 parents). Only scan the
-    // registry when that walk misses — Read/Grep/Shell with a short pattern
-    // must not pay for registry I/O.
+    // Registry row first (persisted external storagePath wins). Local owned
+    // `.gitnexus` is only the fallback when no matching registry row exists.
     const repo = resolveHookRepo(cwd);
     if (!repo) return;
     const storagePath = repo.storagePath;

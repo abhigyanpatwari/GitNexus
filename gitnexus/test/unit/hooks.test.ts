@@ -3471,6 +3471,8 @@ describe('Global registry lookup', () => {
 });
 
 describe('Hook registry resolver compatibility', () => {
+  const canonicalPath = (value: string) => fs.realpathSync.native(path.resolve(value));
+
   const withRegistryHome = (homeDir: string, action: () => void) => {
     const previous = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = homeDir;
@@ -3617,39 +3619,42 @@ describe('Hook registry resolver compatibility', () => {
     }
   });
 
-  it('maps a Windows-reserved branch name through the CLI slug rules', () => {
-    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
-    const repoDir = path.join(homeDir, 'reserved-branch-repo');
-    const storagePath = path.join(homeDir, 'indexes', 'reserved-branch-repo');
-    const branch = 'CON';
-    const branchSlug = `unknown-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
-    try {
-      fs.mkdirSync(repoDir, { recursive: true });
-      fs.mkdirSync(storagePath, { recursive: true });
-      initRepoWithCommit(repoDir);
-      runGit(repoDir, ['checkout', '-b', branch]);
-      fs.writeFileSync(
-        path.join(storagePath, 'gitnexus.json'),
-        JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
-      );
-      writeHookRegistry(homeDir, [
-        {
-          name: 'reserved-branch-repo',
-          path: repoDir,
-          storagePath,
-          branches: [{ branch }],
-        },
-      ]);
+  it.skipIf(process.platform === 'win32')(
+    'maps a Windows-reserved branch name through the CLI slug rules',
+    () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+      const repoDir = path.join(homeDir, 'reserved-branch-repo');
+      const storagePath = path.join(homeDir, 'indexes', 'reserved-branch-repo');
+      const branch = 'CON';
+      const branchSlug = `unknown-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
+      try {
+        fs.mkdirSync(repoDir, { recursive: true });
+        fs.mkdirSync(storagePath, { recursive: true });
+        initRepoWithCommit(repoDir);
+        runGit(repoDir, ['checkout', '-b', branch]);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
+        );
+        writeHookRegistry(homeDir, [
+          {
+            name: 'reserved-branch-repo',
+            path: repoDir,
+            storagePath,
+            branches: [{ branch }],
+          },
+        ]);
 
-      withRegistryHome(homeDir, () => {
-        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
-          lbugPath: path.join(storagePath, 'branches', branchSlug, 'lbug'),
+        withRegistryHome(homeDir, () => {
+          expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+            lbugPath: path.join(storagePath, 'branches', branchSlug, 'lbug'),
+          });
         });
-      });
-    } finally {
-      fs.rmSync(homeDir, { recursive: true, force: true });
-    }
-  });
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('selects the longest matching registered path for a nested checkout', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
@@ -3822,12 +3827,12 @@ describe('Hook registry resolver compatibility', () => {
       withRegistryHome(homeDir, () => {
         const query = loadRegistryQuery();
         expect(query.findLocalOwnedRepo(repoDir)).toMatchObject({
-          path: repoDir,
-          storagePath: localStorage,
+          path: canonicalPath(repoDir),
+          storagePath: canonicalPath(localStorage),
         });
         expect(query.resolveHookRepo(repoDir)).toMatchObject({
-          path: repoDir,
-          storagePath: registeredStorage,
+          path: canonicalPath(repoDir),
+          storagePath: canonicalPath(registeredStorage),
         });
       });
     } finally {
@@ -3872,11 +3877,58 @@ describe('Hook registry resolver compatibility', () => {
 
       withRegistryHome(homeDir, () => {
         expect(loadRegistryQuery().findLocalOwnedRepo(repoDir)).toMatchObject({
-          path: repoDir,
-          storagePath: localStorage,
-          lbugPath: path.join(branchDir, 'lbug'),
+          path: canonicalPath(repoDir),
+          storagePath: canonicalPath(localStorage),
+          lbugPath: path.join(canonicalPath(branchDir), 'lbug'),
           metadata: expect.objectContaining({ lastCommit: 'branch' }),
         });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not adopt a parent checkout .gitnexus from a nested git worktree', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const outerDir = path.join(homeDir, 'outer');
+    const nestedDir = path.join(outerDir, 'nested');
+    const outerStorage = path.join(outerDir, '.gitnexus');
+    try {
+      fs.mkdirSync(outerStorage, { recursive: true });
+      fs.mkdirSync(nestedDir, { recursive: true });
+      initRepoWithCommit(outerDir);
+      initRepoWithCommit(nestedDir);
+      fs.writeFileSync(
+        path.join(outerStorage, 'gitnexus.json'),
+        JSON.stringify({
+          repoPath: outerDir,
+          storagePath: outerStorage,
+          lastCommit: 'outer',
+          stats: {},
+        }),
+      );
+
+      withRegistryHome(homeDir, () => {
+        expect(loadRegistryQuery().findLocalOwnedRepo(nestedDir)).toBeNull();
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a registry row whose path contains a NUL', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'repo');
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      initRepoWithCommit(repoDir);
+      writeHookRegistry(homeDir, [
+        { name: 'poison', path: `${repoDir}\0evil`, storagePath: path.join(homeDir, 'idx') },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(() => findRegisteredRepoForTest(repoDir)).not.toThrow();
+        expect(findRegisteredRepoForTest(repoDir)).toBeNull();
       });
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });

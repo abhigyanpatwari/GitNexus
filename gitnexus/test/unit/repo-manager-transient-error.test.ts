@@ -280,17 +280,17 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
       const before = await listRegisteredRepos();
       expect(before).toHaveLength(2);
 
+      // Repo A is genuinely gone: drop both metadata files so inspection
+      // cannot treat a leftover `gitnexus.json` from `registerRepo` as owned.
+      await fs.rm(path.join(tmpRepo.dbPath, '.gitnexus', 'gitnexus.json'), { force: true });
+      await fs.rm(path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json'), { force: true });
+
       // Branch on each repo's distinct temp-dir segment — both meta.json paths
       // contain `.gitnexus`/`meta.json`, so matching those shared substrings
-      // alone would mis-route. repo A → ENOENT (prune), repo B → EIO (keep).
+      // alone would mis-route. repo B → EIO (keep).
       const originalAccess = fs.access;
       vi.spyOn(fs, 'access').mockImplementation(async (p, mode) => {
         const pStr = typeof p === 'string' ? p : p.toString();
-        if (pStr.includes('meta.json') && pStr.includes(tmpRepo.dbPath)) {
-          const err = new Error('no such file') as NodeJS.ErrnoException;
-          err.code = 'ENOENT';
-          throw err;
-        }
         if (pStr.includes('meta.json') && pStr.includes(tmpRepoB.dbPath)) {
           const err = new Error('input/output error') as NodeJS.ErrnoException;
           err.code = 'EIO';

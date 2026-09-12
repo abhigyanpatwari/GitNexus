@@ -99,11 +99,12 @@ describeBlock('repo routes expose branch and freshness (real server)', () => {
     // `storagePath` is gone, so a fixture without it is silently dropped and the
     // route legitimately returns nothing (found while writing this test).
     const storagePath = path.join(repoPath, '.gitnexus');
-    fs.mkdirSync(storagePath, { recursive: true });
+    fs.mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
     fs.writeFileSync(
       path.join(storagePath, 'gitnexus.json'),
       JSON.stringify({
         repoPath,
+        storagePath,
         indexedAt: INDEXED_AT,
         lastCommit: firstCommit,
         branch: 'main',

@@ -24,7 +24,8 @@ function stripWindowsLongPathPrefix(p) {
 }
 
 function canonicalize(value) {
-  if (typeof value !== 'string' || !value || !path.isAbsolute(value)) return null;
+  if (typeof value !== 'string' || !value || value.includes('\0') || !path.isAbsolute(value))
+    return null;
   const resolved = path.resolve(value);
   try {
     return stripWindowsLongPathPrefix(fs.realpathSync.native(resolved));
@@ -307,7 +308,7 @@ function findLocalOwnedRepo(cwd) {
   // Environment storage overrides win; a leftover repo-local .gitnexus must
   // not skip the registry scan that applies STORAGE_PATH / STORAGE_ROOT.
   if (envOverridesStorage()) return null;
-  const { branch } = registryPathsForCwd(cwd);
+  const { repoPaths, branch } = registryPathsForCwd(cwd);
   let current = canonicalize(cwd);
   for (let hops = 0; hops <= LOCAL_OWNED_PARENT_HOPS && current; hops++) {
     const storagePath = path.join(current, GITNEXUS_DIR);
@@ -316,8 +317,7 @@ function findLocalOwnedRepo(cwd) {
       if (isOwnedStorage(current, storagePath, true, metadata)) {
         const branchDir =
           branch != null ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch)) : null;
-        const indexDir =
-          branchDir && hasLocalIndexSignal(branchDir) ? branchDir : storagePath;
+        const indexDir = branchDir && hasLocalIndexSignal(branchDir) ? branchDir : storagePath;
         return {
           path: current,
           storagePath,
@@ -328,6 +328,12 @@ function findLocalOwnedRepo(cwd) {
     }
     const parent = path.dirname(current);
     if (parent === current) break;
+    // Stay inside this checkout. Registered lookup already stops at
+    // `--show-toplevel`; walking raw parents would adopt `/outer/.gitnexus`
+    // from `/outer/nested-repo`.
+    if (repoPaths.length > 0 && !repoPaths.some((repoPath) => samePath(repoPath, parent))) {
+      break;
+    }
     current = parent;
   }
   return null;
@@ -351,7 +357,7 @@ function findRegisteredRepo(cwd) {
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (typeof entry.path !== 'string') continue;
-    if (!path.isAbsolute(entry.path)) continue;
+    if (entry.path.includes('\0') || !path.isAbsolute(entry.path)) continue;
     const registeredPath = canonicalize(entry.path);
     if (!registeredPath || !repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
       continue;

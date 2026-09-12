@@ -545,7 +545,7 @@ export const inspectRegisteredStorage = async (entry: {
 }): Promise<StorageInspection> => inspectStoragePath(entry.storagePath, entry.path);
 
 const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
-  samePath(defaultStoragePath(repoPath), storagePath);
+  samePath(comparablePath(defaultStoragePath(repoPath)), comparablePath(storagePath));
 
 const requireInspectedStoragePath = (
   inspection: StorageInspection,

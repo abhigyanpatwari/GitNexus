@@ -287,6 +287,29 @@ describe('storage resolver', () => {
     );
   });
 
+  it('lets --force adopt a foreign repository-local slot reached through a symlink', async () => {
+    const root = await makeTempDir('gitnexus-storage-resolver-force-symlink-');
+    const repo = path.join(root, 'repo');
+    const linkedRepo = path.join(root, 'repo-link');
+    await fs.mkdir(repo);
+    await fs.symlink(repo, linkedRepo, process.platform === 'win32' ? 'junction' : 'dir');
+    const storagePath = defaultStoragePath(linkedRepo);
+    await fs.mkdir(path.join(storagePath, 'lbug'), { recursive: true });
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify({
+        repoPath: path.join(path.dirname(repo), 'other-repo'),
+        storagePath,
+      }),
+    );
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
+
+    await expect(
+      requireStoragePath(linkedRepo, ANALYZE_FORCE_STORAGE_REQUIREMENTS),
+    ).resolves.toMatch(/[\\/]\.gitnexus$/);
+  });
+
   it('requires matching metadata before deleting an external slot', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-delete-repo-');
     const storagePath = await makeTempDir('gitnexus-storage-resolver-delete-storage-');
