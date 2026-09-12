@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { promises as nodeFsPromises } from 'node:fs';
+import { promises as nodeFsPromises, existsSync } from 'node:fs';
 import v8 from 'node:v8';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -909,38 +909,51 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
-  it('keeps pruning and still writes the index when one chunk directory cannot be removed', async () => {
-    // #3204: the non-survivor delete targets the same directory whose reset
-    // may have failed, so the causes that break the reset (permissions, a
-    // locked file, a read-only mount) break this rm too. One undeletable
-    // directory must not cost every other chunk its index entry.
-    const dir = await mkdtemp(path.join(tmpdir(), 'pf-rm-fail-'));
-    const durableDir = getDurableParsedFileDir(dir);
-    const undeletable = '3'.repeat(64);
-    const keep = '4'.repeat(64);
-    try {
-      await prepareDurableParsedFileChunk(durableDir, undeletable);
-      persistDurableParsedFileShardSync(durableDir, undeletable, 1, 0, [makeParsedFile('gone.c')]);
-      await prepareDurableParsedFileChunk(durableDir, keep);
-      persistDurableParsedFileShardSync(durableDir, keep, 1, 0, [makeParsedFile('keep.c')]);
+  // chmod is the only lever that makes a real `fs.rm` reject here, and root
+  // ignores directory write permission while Windows treats the mode bits as a
+  // near no-op. Skipping is honest; a green vacuous run is not.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps pruning and still writes the index when one chunk directory cannot be removed',
+    async () => {
+      // #3204: the non-survivor delete targets the same directory whose reset
+      // may have failed, so the causes that break the reset (permissions, a
+      // locked file, a read-only mount) break this rm too. One undeletable
+      // directory must not cost every other chunk its index entry.
+      const dir = await mkdtemp(path.join(tmpdir(), 'pf-rm-fail-'));
+      const durableDir = getDurableParsedFileDir(dir);
+      const undeletable = '3'.repeat(64);
+      const keep = '4'.repeat(64);
+      try {
+        await prepareDurableParsedFileChunk(durableDir, undeletable);
+        persistDurableParsedFileShardSync(durableDir, undeletable, 1, 0, [
+          makeParsedFile('gone.c'),
+        ]);
+        await prepareDurableParsedFileChunk(durableDir, keep);
+        persistDurableParsedFileShardSync(durableDir, keep, 1, 0, [makeParsedFile('keep.c')]);
 
-      // Clearing write permission on the chunk directory makes its shards
-      // un-unlinkable, so the recursive rm of that directory rejects while the
-      // store root stays writable for the index rewrite.
-      const doomed = path.join(durableDir, undeletable);
-      await nodeFsPromises.chmod(doomed, 0o555);
-      await expect(
-        pruneAndSaveDurableParsedFileStore(durableDir, 'v-test', new Set([keep])),
-      ).resolves.toBeUndefined();
+        // Clearing write permission on the chunk directory makes its shards
+        // un-unlinkable, so the recursive rm of that directory rejects while the
+        // store root stays writable for the index rewrite.
+        const doomed = path.join(durableDir, undeletable);
+        await nodeFsPromises.chmod(doomed, 0o555);
+        await expect(
+          pruneAndSaveDurableParsedFileStore(durableDir, 'v-test', new Set([keep])),
+        ).resolves.toBeUndefined();
 
-      const index = await loadDurableParsedFileIndex(durableDir, 'v-test');
-      expect(index.has(keep)).toBe(true);
-      expect(index.has(undeletable)).toBe(false);
-    } finally {
-      await nodeFsPromises.chmod(path.join(durableDir, undeletable), 0o755).catch(() => {});
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
+        // Assert the premise: the directory SURVIVED, i.e. the rm really did
+        // reject. Without this the test passes wherever the delete succeeds and
+        // would stay green if the try/catch were reverted.
+        expect(existsSync(doomed)).toBe(true);
+
+        const index = await loadDurableParsedFileIndex(durableDir, 'v-test');
+        expect(index.has(keep)).toBe(true);
+        expect(index.has(undeletable)).toBe(false);
+      } finally {
+        await nodeFsPromises.chmod(path.join(durableDir, undeletable), 0o755).catch(() => {});
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('overlays staged durable chunks onto the live store without dropping live-only keys', async () => {
     const live = await mkdtemp(path.join(tmpdir(), 'pf-live-'));
