@@ -716,7 +716,8 @@ const stampMatchesStat = (
   stat: { size: number; mtimeMs: number },
   meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
 ): boolean =>
-  stat.size === meta.bridgeSize && persistMtimeMs(stat.mtimeMs) === persistMtimeMs(meta.bridgeMtimeMs as number);
+  stat.size === meta.bridgeSize &&
+  persistMtimeMs(stat.mtimeMs) === persistMtimeMs(meta.bridgeMtimeMs as number);
 
 /**
  * LadybugDB can still flush WAL/shadow into the main file after `close` and
