@@ -9,7 +9,7 @@
  */
 
 import path from 'path';
-import fsp from 'fs/promises';
+import fsp from 'node:fs/promises';
 import { UPLOAD_ROOT, STAGING_PREFIX } from './upload-paths.js';
 import {
   canonicalizePath,
@@ -25,6 +25,15 @@ export interface SweepOptions {
   /** Clock injection for tests. */
   now?: number;
 }
+
+const removeSweptDir = async (full: string, removed: string[]): Promise<void> => {
+  try {
+    await fsp.rm(full, { recursive: true, force: true });
+    removed.push(full);
+  } catch {
+    /* Permission or transient errors leave the path unlisted. */
+  }
+};
 
 export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ removed: string[] }> {
   const maxAgeMs = opts.maxAgeMs ?? 6 * 60 * 60 * 1000;
@@ -50,8 +59,7 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
 
       if (entry.name.startsWith(STAGING_PREFIX)) {
         // Transient staging dir orphaned by a crash — always removable.
-        await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
-        removed.push(full);
+        await removeSweptDir(full, removed);
       } else {
         stalePromotedDirs.push(full);
       }
@@ -78,8 +86,7 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
       registryPathEquals(registeredPath, canonicalizePath(full)),
     );
     if (!isRegistered) {
-      await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
-      removed.push(full);
+      await removeSweptDir(full, removed);
     }
   }
 

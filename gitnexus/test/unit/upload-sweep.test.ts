@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -95,6 +95,22 @@ describe('sweepStaleUploads', () => {
     expect(removed).toContain(staging);
     await expect(fs.access(staging)).rejects.toBeTruthy();
     await expect(fs.access(promoted)).resolves.toBeUndefined();
+  });
+
+  it('does not report a path as removed when deletion fails', async () => {
+    const now = 3_000_000_000_000;
+    const old = new Date(now - 10 * 60 * 60 * 1000);
+    const orphan = path.join(root, 'orphan');
+    await fs.mkdir(orphan);
+    await fs.utimes(orphan, old, old);
+    const spy = vi.spyOn(fs, 'rm').mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+    try {
+      const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });
+      expect(removed).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('tolerates a missing root', async () => {
