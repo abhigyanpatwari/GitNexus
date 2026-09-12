@@ -9,20 +9,15 @@
  * drops cross-directory same-module edges and can mis-resolve a
  * constructor call to a wrong same-simple-named type in another target.
  *
- * This module duplicates the legacy `groupSwiftFilesByTarget`
- * (`languages/swift.ts`) semantics **verbatim** so the registry-primary
- * path matches legacy SPM-subtree grouping without touching the legacy
- * pipeline (hard constraint: legacy stays byte-identical). The SPM target
- * map is threaded in via the `resolutionConfig` channel
+ * The SPM target map is threaded in via the `resolutionConfig` channel
  * (`loadSwiftPackageConfig` → `resolutionConfig` → these hooks); see
  * `scope-resolver.ts` and `scope-resolution/pipeline/run.ts`.
  *
  * NOTE: This intentionally differs from the import-config module's
  * leading-`startsWith` (`import-resolvers/configs/swift.ts`): that module
  * fans a file out to EVERY matching target (a nested file can belong to
- * multiple configured target dirs there), whereas legacy module grouping
- * assigns each file to the FIRST matching target only (legacy `break`s) —
- * one bucket per file. Do not copy the import-config behavior here.
+ * multiple configured target dirs there), whereas module grouping assigns
+ * each file to the FIRST matching target only — one bucket per file.
  */
 
 import type { SwiftPackageConfig } from '../../language-config.js';
@@ -30,15 +25,16 @@ import type { SwiftPackageConfig } from '../../language-config.js';
 const DEFAULT_TARGET = '__default__';
 
 /**
- * Group `items` by SPM target subtree, replicating legacy
- * `groupSwiftFilesByTarget` semantics exactly:
+ * Group `items` by SPM target subtree:
  *
  *   - `targets` null/empty (no scanned source dir found) → ALL items go to
  *     a single `__default__` bucket (single-Xcode-project assumption).
  *   - Otherwise: a file matches a target when its normalized path either
- *     starts with `<targetDir>/` (`indexOf === 0`) OR contains it at a `/`
- *     boundary (`norm[idx - 1] === '/'`). Each file is assigned to the
- *     FIRST matching target only (one bucket per file, no fan-out).
+ *     starts with `<targetDir>/` or contains `/<targetDir>/` at a segment
+ *     boundary. Using a segment-aware suffix search matters when an earlier,
+ *     non-boundary occurrence of the same text appears in the path (#2931).
+ *   - Each file is assigned to the FIRST matching target only (one bucket per
+ *     file, no fan-out).
  *   - Files matching no target fall into the `__default__` bucket.
  *
  * `targets` is `name → directory` (the `SwiftPackageConfig.targets` map).
@@ -67,8 +63,7 @@ export function groupSwiftFilesBySpmTarget<T>(
     const normalized = rawPath.includes('\\') ? rawPath.replace(/\\/g, '/') : rawPath;
     let assigned = false;
     for (const { name, prefix } of targetPrefixes) {
-      const idx = normalized.indexOf(prefix);
-      if (idx === 0 || (idx > 0 && normalized[idx - 1] === '/')) {
+      if (normalized.startsWith(prefix) || normalized.includes(`/${prefix}`)) {
         let group = groups.get(name);
         if (group === undefined) {
           group = [];

@@ -3,18 +3,20 @@
  * KTD2).
  *
  * `groupSwiftFilesBySpmTarget` (`languages/swift/target-grouping.ts`)
- * DUPLICATES the legacy `groupSwiftFilesByTarget` (`languages/swift.ts`)
- * SPM-subtree semantics so the registry-primary same-module hooks group by
- * the SPM target subtree without touching the legacy pipeline (hard
- * constraint: legacy stays byte-identical). Because the duplication can
- * silently drift if legacy is later changed, this test pins the exact
- * bucketing for representative inputs so a future divergence surfaces
- * loudly:
+ * preserves the legacy `groupSwiftFilesByTarget` (`languages/swift.ts`)
+ * bucketing contract for ordinary SPM layouts: one target bucket per file,
+ * first-target-wins ordering, and the same `__default__` fallback. It now
+ * intentionally differs for issue #2931's repeated-prefix edge case by
+ * accepting a later segment-boundary occurrence when an earlier textual
+ * occurrence is embedded inside a longer path segment. The legacy pipeline
+ * remains byte-identical; these tests pin the shared behavior that must not
+ * drift while allowing that documented correctness fix.
  *
  *   1. A multi-subdir single target buckets into ONE group.
  *   2. A file matching two overlapping same-named target prefixes is
  *      assigned to the FIRST target only (legacy `break`s — no fan-out).
- *   3. Unmatched files AND the no-targets case route to `__default__` = all.
+ *   3. Target dirs match only at path-segment boundaries.
+ *   4. Unmatched files AND the no-targets case route to `__default__` = all.
  *
  * `coerceSwiftTargets` is also covered: it duck-types `{ targets: Map }`
  * (no `instanceof` on the config object) and returns `null` otherwise.
@@ -27,7 +29,7 @@ import {
 
 const id = (s: string) => s;
 
-describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)', () => {
+describe('groupSwiftFilesBySpmTarget — shared SPM bucketing contract', () => {
   it('buckets a multi-subdir single target into ONE group', () => {
     const files = [
       'Sources/Alpha/Core/User.swift',
@@ -45,7 +47,7 @@ describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)
 
   it('assigns a file matching two overlapping same-named prefixes to the FIRST target only', () => {
     // Both targets are prefixes of the file's path (Beta dir nested under
-    // Alpha). Legacy `break`s on the first match → one bucket per file.
+    // Alpha). The first configured match wins → one bucket per file.
     const files = ['Sources/Alpha/Beta/User.swift'];
     const targets = new Map([
       ['Alpha', 'Sources/Alpha'],
@@ -59,8 +61,8 @@ describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)
   });
 
   it('matches a target dir only at a `/` boundary, not a substring', () => {
-    // "Sources/Alpha" must NOT match "Sources/AlphaBeta/..." — the legacy
-    // predicate requires idx===0 or a preceding `/`.
+    // "Sources/Alpha" must NOT match "Sources/AlphaBeta/...". The matcher
+    // accepts only a path-start or slash-delimited target occurrence.
     const files = ['Sources/AlphaBeta/User.swift'];
     const targets = new Map([['Alpha', 'Sources/Alpha']]);
 
