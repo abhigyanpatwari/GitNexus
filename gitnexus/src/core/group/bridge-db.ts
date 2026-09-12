@@ -704,6 +704,42 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
  * ACCEPTS. Reading the marker after that branch (or not at all) hands back
  * "verified" for a pair the same code path had just found broken.
  */
+/**
+ * Persist and compare mtimes as whole milliseconds. `stat.mtimeMs` is a
+ * float (ns-precision on Linux); JSON cannot round-trip every such value,
+ * and an exact `===` against a later `stat` flakes on CI (the control case
+ * in `bridge-meta-swap-window.test.ts`).
+ */
+const stampBridgeMtimeMs = (mtimeMs: number): number => Math.round(mtimeMs);
+
+const stampMatchesStat = (
+  stat: { size: number; mtimeMs: number },
+  meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
+): boolean =>
+  stat.size === meta.bridgeSize &&
+  stampBridgeMtimeMs(stat.mtimeMs) === stampBridgeMtimeMs(meta.bridgeMtimeMs as number);
+
+/**
+ * LadybugDB can still flush WAL/shadow into the main file after `close` and
+ * the atomic rename. Stamping the first `stat` then loses the exact-equality
+ * check the moment that flush lands. Wait until two consecutive stats agree.
+ */
+const statSettledBridgeFile = async (
+  filePath: string,
+): Promise<Awaited<ReturnType<typeof fsp.stat>>> => {
+  let current = await fsp.stat(filePath);
+  for (let i = 0; i < 10; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+    const next = await fsp.stat(filePath);
+    if (next.size === current.size && next.mtimeMs === current.mtimeMs) {
+      return next;
+    }
+    current = next;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return current;
+};
+
 export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
   if (meta.provenanceUnknown) return false;
   const stampedSize = meta.bridgeSize !== undefined;
@@ -712,7 +748,7 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
   if (!stampedSize || !stampedMtime) return false;
   try {
     const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
-    return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+    return stampMatchesStat(stat, meta);
   } catch {
     return false;
   }
@@ -953,7 +989,7 @@ export async function refreshPreservedBridgeMeta(
     const stat = await fsp.stat(dbPath).catch(() => null);
     if (stat) {
       refreshed.bridgeSize = stat.size;
-      refreshed.bridgeMtimeMs = stat.mtimeMs;
+      refreshed.bridgeMtimeMs = stampBridgeMtimeMs(stat.mtimeMs);
       await writeBridgeMeta(groupDir, refreshed);
       return 'restamped';
     }
@@ -1373,12 +1409,12 @@ export async function writeBridgeUnlocked(
     // still belongs together (`bridgeMetaMatchesFile`). A stale meta cannot match
     // a freshly renamed database, and a sync that fails before the swap leaves a
     // matching pair untouched.
-    const finalStat = await fsp.stat(finalPath);
+    const finalStat = await statSettledBridgeFile(finalPath);
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       bridgeSize: finalStat.size,
-      bridgeMtimeMs: finalStat.mtimeMs,
+      bridgeMtimeMs: stampBridgeMtimeMs(finalStat.mtimeMs),
       missingRepos: input.missingRepos,
       // Persisted whenever the caller supplied it, `[]` included: an empty list
       // is the measurement "this sync accounted for every repo", and it is a
