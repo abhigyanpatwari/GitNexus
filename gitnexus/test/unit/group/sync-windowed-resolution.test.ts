@@ -141,6 +141,10 @@ vi.mock('../../../src/core/lbug/lbug-config.js', () => ({
   toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
+  isStorageVersionMismatchError: vi.fn(() => false),
+  throwIfStorageVersionMismatch: vi.fn(),
+  sleep: vi.fn(async () => {}),
+  STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 
 vi.mock('../../../src/core/lbug/sidecar-recovery.js', () => ({
