@@ -4312,9 +4312,11 @@ async function runFullAnalysisInner(
       // Prune the durable ParsedFile store to EXACTLY the parse cache's
       // surviving keys (#2038 warm-cache coverage), so the two content-addressed
       // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A quarantined chunk (in usedKeys but with
-      // no parse-cache shard) drops its durable subdir here and re-dispatches
-      // next run. Same try/catch — a durable-store write failure must never
+      // and its durable shards exist. A retired chunk — worker-quarantined, or
+      // one whose failed durable reset left an uncleared generation behind
+      // (#3204) — is filtered out of `savedKeys`, so it drops out of the
+      // durable index here and re-dispatches next run. Same try/catch — a
+      // durable-store write must never
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
         storagePath,

@@ -897,6 +897,16 @@ export interface ParseCache {
    */
   usedKeys: Set<string>;
   /**
+   * Hashes this run decided it cannot vouch for — its durable generation could
+   * not be reset, or its chunk was worker-quarantined (#3204). `saveParseCache`
+   * refuses them, so neither a pre-existing `.v8` nor the chunk's durable
+   * directory survives into the next run. Kept separate from `usedKeys`
+   * because the orchestrator re-adds keys to that set after the parse phase
+   * (#2106 sibling fold), which would undo a deletion.
+   * Transient — never serialized to disk.
+   */
+  staleKeys?: Set<string>;
+  /**
    * When set, chunk payloads are loaded from / flushed to sharded files on
    * demand instead of retaining every chunk in `entries` for the whole run
    * (#1983 — Linux kernel OOM from duplicate in-memory cache + graph).
@@ -1125,6 +1135,24 @@ export const persistParseCacheChunk = async (
   cache.entries.set(chunkHash, slim);
 };
 
+/**
+ * Retire a chunk this run cannot vouch for — its durable ParsedFile generation
+ * could not be reset, or its chunk was worker-quarantined (#3204).
+ *
+ * `saveParseCache` refuses a stale key, so no pre-existing `.v8` is copied
+ * forward and the durable store — pruned to exactly the keys that save
+ * returns — drops the chunk in the same step. The two deletes matter because
+ * `loadParseCacheChunk` reads `entries` and `onDiskKeys` and does NOT consult
+ * `staleKeys`: without them a second lookup of the same hash inside this run
+ * would still serve the retired shard.
+ */
+export const markParseCacheChunkStale = (cache: ParseCache, chunkHash: string): void => {
+  cache.staleKeys ??= new Set<string>();
+  cache.staleKeys.add(chunkHash);
+  cache.entries.delete(chunkHash);
+  cache.onDiskKeys?.delete(chunkHash);
+};
+
 const loadLegacyParseCache = async (storagePath: string): Promise<ParseCache> => {
   const cachePath = getLegacyCachePath(storagePath);
   try {
@@ -1210,7 +1238,14 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   await fs.rm(tmpDir, { recursive: true, force: true });
   await fs.mkdir(tmpDir, { recursive: true });
 
-  const keys = [...cache.usedKeys].filter(isValidChunkCacheKey).sort();
+  // A stale key is dropped here rather than at the failure site: the
+  // orchestrator folds sibling-branch keys back into `usedKeys` after the parse
+  // phase (#2106), so this is the last point that sees the final key set. The
+  // exclusion also reaches the durable store, which prunes to the keys this
+  // function returns — both stores drop the chunk together (#3204).
+  const keys = [...cache.usedKeys]
+    .filter((key) => isValidChunkCacheKey(key) && !cache.staleKeys?.has(key))
+    .sort();
   // Track hashes whose shard was actually written/copied this save. A hash can
   // be in `usedKeys` without a backing shard — its in-memory serialize threw, or
   // its on-disk copy failed/was-absent (e.g. a worker-quarantined chunk added to

@@ -290,6 +290,11 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // The durable ParsedFile store's prune tolerates a chunk directory it cannot
+  // delete (#3204). The failures that motivate it — held handles, read-only
+  // mounts — are Windows- and macOS-flavored, and the permission-based case
+  // skips itself where chmod cannot block a delete, so run it everywhere.
+  'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
