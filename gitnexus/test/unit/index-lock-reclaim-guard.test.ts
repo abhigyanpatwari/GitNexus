@@ -132,21 +132,24 @@ it('keeps an incomplete creator excluded beyond the old malformed grace', async 
   expect(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token).toBe('A');
 });
 
-it.each([0, -1, 120])('never steals an orphan guard with timeoutMs=%s', async (timeoutMs) => {
-  const orphan = JSON.stringify({ pid: 999999999, token: 'dead-guard', hostname: os.hostname() });
-  fs.writeFileSync(guardPath, orphan);
-  const start = Date.now();
-  const pending = acquireIndexLock(dir, { timeoutMs, pollMs: 250 }).catch((e) => e);
-  await vi.runAllTimersAsync();
-  const error = await pending;
-  expect(error).toBeInstanceOf(IndexLockTimeoutError);
-  expect(error.holderKnown).toBe(false);
-  expect(error.message).toContain(guardPath);
-  expect(error.message).toContain('quiesced recovery');
-  expect(Date.now() - start).toBe(timeoutMs > 0 ? timeoutMs : 30_000);
-  expect(fs.readFileSync(guardPath, 'utf8')).toBe(orphan);
-  expect(fs.existsSync(lockPath)).toBe(false);
-});
+it.each([0, -1, 120, Number.NaN])(
+  'never steals an orphan guard with timeoutMs=%s',
+  async (timeoutMs) => {
+    const orphan = JSON.stringify({ pid: 999999999, token: 'dead-guard', hostname: os.hostname() });
+    fs.writeFileSync(guardPath, orphan);
+    const start = Date.now();
+    const pending = acquireIndexLock(dir, { timeoutMs, pollMs: 250 }).catch((e) => e);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error).toBeInstanceOf(IndexLockTimeoutError);
+    expect(error.holderKnown).toBe(false);
+    expect(error.message).toContain(guardPath);
+    expect(error.message).toContain('quiesced recovery');
+    expect(Date.now() - start).toBe(timeoutMs > 0 ? timeoutMs : 30_000);
+    expect(fs.readFileSync(guardPath, 'utf8')).toBe(orphan);
+    expect(fs.existsSync(lockPath)).toBe(false);
+  },
+);
 
 it.each(['', '{', '{"pid":0}', '{"pid":42,"hostname":"foreign","token":"x"}'])(
   'never takes over a guard based on its metadata: %s',

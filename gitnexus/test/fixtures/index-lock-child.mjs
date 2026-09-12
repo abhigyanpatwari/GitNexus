@@ -14,7 +14,7 @@
  *    exit 4 for other sentinel-create failures, with stderr diagnostics.
  *    Used by the multi-reclaimer test where ≥2 children reclaim one dead holder.
  */
-import { writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { writeFileSync, writeSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 // LOCK_MODULE is an absolute path. On Windows `import('C:\\…')` throws
@@ -31,8 +31,13 @@ if (process.env.MODE === 'EXCLUSIVE') {
     try {
       fd = openSync(process.env.SENTINEL, 'wx');
     } catch (error) {
-      console.error(`Sentinel create failed: pid=${process.pid} path=${process.env.SENTINEL} ` +
-        `code=${error.code ?? 'unknown'} message=${error.message}`);
+      // writeSync(2) flushes before process.exit; console.error on a piped
+      // stderr can be truncated when the child is spawned with stdio: pipe.
+      writeSync(
+        2,
+        `Sentinel create failed: pid=${process.pid} path=${process.env.SENTINEL} ` +
+          `code=${error.code ?? 'unknown'} message=${error.message}\n`,
+      );
       lock.release();
       process.exit(error.code === 'EEXIST' ? 3 : 4);
     }

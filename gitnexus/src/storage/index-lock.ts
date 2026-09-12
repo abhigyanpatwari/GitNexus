@@ -381,6 +381,9 @@ const resolveTimeoutMs = (opt?: number): number => {
           const n = Number(env);
           return Number.isFinite(n) ? n : DEFAULT_TIMEOUT_MS;
         })();
+  // Explicit NaN is a number, so it used to skip the env finite-check and
+  // poison every deadline (`startedAt + NaN`). Match the env fallback.
+  if (Number.isNaN(raw)) return DEFAULT_TIMEOUT_MS;
   return raw <= 0 ? Number.POSITIVE_INFINITY : raw;
 };
 
