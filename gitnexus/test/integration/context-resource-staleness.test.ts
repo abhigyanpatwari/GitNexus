@@ -4,7 +4,7 @@
  * End-to-end flow with real git and real registry/meta I/O.
  */
 import { execFileSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
@@ -41,6 +41,10 @@ async function seedIndexedRepo(
   meta: RepoMeta,
   repoName: string = 'test-repo',
 ): Promise<void> {
+  // Registry validation accepts only an owned storage directory that contains
+  // the index path. The context resource itself reads metadata only, so a
+  // minimal placeholder directory is sufficient for this fixture.
+  mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
   await saveMeta(storagePath, meta);
   await registerRepo(repoPath, meta, { name: repoName });
 }

@@ -31,6 +31,7 @@ function hostileResult(): AnalyzeResult {
   return {
     repoName: 'demo',
     repoPath: '/repos/demo',
+    storagePath: '/repos/demo/.gitnexus',
     stats: { files: 3, nodes: 1, edges: 0 },
     alreadyUpToDate: false,
     ftsSkipped: true,
@@ -85,6 +86,7 @@ describe('#2112: analyze-worker IPC projection', () => {
     const result: AnalyzeResult = {
       repoName: 'demo',
       repoPath: '/r',
+      storagePath: '/r/.gitnexus',
       stats: { nodes: 50, edges: 1 },
       pipelineResult: {
         graph,

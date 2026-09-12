@@ -45,11 +45,15 @@ vi.mock('child_process', async () => {
 });
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  canonicalizePath: (p: string) => p,
-  getStoragePath: () => H.STORAGE_PATH,
   INDEX_METADATA_FILE: H.METADATA_FILE,
-  listRegisteredRepos: async () => [{ path: H.REPO_PATH, storagePath: H.STORAGE_PATH }],
-  registryPathEquals: (a: string, b: string) => a === b,
+}));
+
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS: {
+    allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+  },
+  requireStoragePath: async () => H.STORAGE_PATH,
 }));
 
 vi.mock('node:fs', async () => {
@@ -115,12 +119,12 @@ describe('finalization gate follows the placement the run chose', () => {
   let backendInit: Mock<() => Promise<unknown>>;
   let closeDbHandle: Mock<() => Promise<void>>;
 
-  const launcher = () =>
+  const launcher = (extras?: { releaseRepoLock?: () => void }) =>
     createLaunchAnalysisWorker({
       jobManager,
       backend: { init: backendInit },
       acquireRepoLock: () => null,
-      releaseRepoLock: () => {},
+      releaseRepoLock: extras?.releaseRepoLock ?? (() => {}),
       closeDbHandle,
     });
 
@@ -134,6 +138,7 @@ describe('finalization gate follows the placement the run chose', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     jobManager.dispose();
     vi.restoreAllMocks();
     forkMock.mockReset();
@@ -145,7 +150,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = path.join(H.STORAGE_PATH, BRANCHES_DIR, branchSlug(BRANCH));
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(false));
 
@@ -159,7 +164,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher()(job, REPO_PATH, {});
 
     child.emit('message', completeMessage(true));
 
@@ -173,7 +178,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(true));
 
@@ -186,9 +191,10 @@ describe('finalization gate follows the placement the run chose', () => {
     // No directory looks freshly written. Without the alreadyUpToDate skip the
     // mtime gate would hold the analyze slot for the full 60s settle timeout.
     H.settledDir = '';
+    const releaseRepoLock = vi.fn();
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
 
     child.emit('message', completeMessage(true, { alreadyUpToDate: true }));
     child.emit('exit', 0);
@@ -200,6 +206,8 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(backendInit).toHaveBeenCalledTimes(1);
     expect(forkMock).toHaveBeenCalledTimes(1);
     expect(jobManager.getJob(job.id)?.retryCount).toBe(0);
+    // Short path: skip the mtime wait, then drop the lock once it finishes.
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
   });
 
   it('does not fork a retry when the worker exits 0 after reporting complete', async () => {
@@ -209,7 +217,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = path.join(H.STORAGE_PATH, BRANCHES_DIR, branchSlug(BRANCH));
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(false));
     child.emit('exit', 0);
@@ -221,12 +229,65 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(jobManager.getJob(job.id)?.retryCount).toBe(0);
   });
 
+  it('fails and does not publish when the settle gate times out', async () => {
+    vi.useFakeTimers();
+    H.settledDir = '';
+    const releaseRepoLock = vi.fn();
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+    child.emit('message', completeMessage(true));
+
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    // Must match FINALIZE_SETTLE_TIMEOUT_MS + one poll in analyze-launch.ts.
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toMatch(/finalization not visible after timeout/i);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(closeDbHandle).not.toHaveBeenCalled();
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the write lock until settle resolves, then releases once after publish', async () => {
+    vi.useFakeTimers();
+    H.settledDir = '';
+    const order: string[] = [];
+    const releaseRepoLock = vi.fn(() => {
+      order.push('releaseRepoLock');
+    });
+    backendInit = vi.fn(async () => {
+      order.push('backend.init');
+      return true;
+    });
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+    child.emit('message', completeMessage(true));
+
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+
+    H.settledDir = H.STORAGE_PATH;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(jobManager.getJob(job.id)?.status).toBe('complete');
+    expect(backendInit).toHaveBeenCalledTimes(1);
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['backend.init', 'releaseRepoLock']);
+  });
+
   it('still treats an exit with no terminal IPC as a crash worth retrying', async () => {
     // The guard must not swallow real crashes: no `complete`/`error` was sent.
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher()(job, REPO_PATH, {});
 
     child.emit('exit', 1);
 

@@ -20,20 +20,25 @@ type RepoManagerModule = typeof import('../../src/storage/repo-manager.js');
 const rmCtx = vi.hoisted(() => ({
   adoptMock: vi.fn(),
   saveMetaMock: vi.fn(),
+  writableMock: vi.fn(),
   realAdopt: null as RepoManagerModule['adoptFlatBranchLabel'] | null,
   realSaveMeta: null as RepoManagerModule['saveMeta'] | null,
+  realEnsureWritable: null as RepoManagerModule['ensureStoragePathWritable'] | null,
 }));
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<RepoManagerModule>();
   rmCtx.realAdopt = actual.adoptFlatBranchLabel;
   rmCtx.realSaveMeta = actual.saveMeta;
+  rmCtx.realEnsureWritable = actual.ensureStoragePathWritable;
   rmCtx.adoptMock.mockImplementation(actual.adoptFlatBranchLabel);
   rmCtx.saveMetaMock.mockImplementation(actual.saveMeta);
+  rmCtx.writableMock.mockImplementation(actual.ensureStoragePathWritable);
   return {
     ...actual,
     adoptFlatBranchLabel: rmCtx.adoptMock,
     saveMeta: rmCtx.saveMetaMock,
+    ensureStoragePathWritable: rmCtx.writableMock,
   };
 });
 
@@ -61,11 +66,16 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     rmCtx.adoptMock.mockReset();
     rmCtx.saveMetaMock.mockReset();
+    rmCtx.writableMock.mockReset();
     rmCtx.adoptMock.mockImplementation(
       (...args: Parameters<RepoManagerModule['adoptFlatBranchLabel']>) => rmCtx.realAdopt!(...args),
     );
     rmCtx.saveMetaMock.mockImplementation((...args: Parameters<RepoManagerModule['saveMeta']>) =>
       rmCtx.realSaveMeta!(...args),
+    );
+    rmCtx.writableMock.mockImplementation(
+      (...args: Parameters<RepoManagerModule['ensureStoragePathWritable']>) =>
+        rmCtx.realEnsureWritable!(...args),
     );
   });
 
@@ -170,4 +180,26 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       expect(meta?.branch).toBe('main');
     },
   );
+
+  it('does not require writable storage for an already-up-to-date run', async () => {
+    await seedFlippedWorkspace();
+    rmCtx.writableMock.mockRejectedValueOnce(
+      Object.assign(new Error('mock read-only storage'), { code: 'EROFS' }),
+    );
+
+    const result = await runFullAnalysis(tmpRepo.dbPath, {}, {});
+
+    expect(result.alreadyUpToDate).toBe(true);
+    expect(rmCtx.writableMock).not.toHaveBeenCalled();
+  });
+
+  it('still requires writable storage when an up-to-date checkout has content changes', async () => {
+    const { flatStorage } = await seedFlippedWorkspace();
+    await fs.writeFile(path.join(tmpRepo.dbPath, 'dirty.ts'), 'export const dirty = true;\n');
+    const readOnly = Object.assign(new Error('mock read-only storage'), { code: 'EROFS' });
+    rmCtx.writableMock.mockRejectedValueOnce(readOnly);
+
+    await expect(runFullAnalysis(tmpRepo.dbPath, {}, {})).rejects.toBe(readOnly);
+    expect(rmCtx.writableMock).toHaveBeenCalledWith(flatStorage);
+  });
 });

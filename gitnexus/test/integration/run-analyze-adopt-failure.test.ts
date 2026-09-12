@@ -77,7 +77,7 @@ describe('end-of-run adopt is best-effort (#2364 F5)', () => {
       // The run resolved (no throw), the adopt was attempted and its failure
       // surfaced as a warning…
       expect(result.alreadyUpToDate).toBeFalsy();
-      expect(rmCtx.adoptMock).toHaveBeenCalledWith(repo, 'main');
+      expect(rmCtx.adoptMock).toHaveBeenCalledWith(repo, 'main', path.join(repo, '.gitnexus'));
       expect(logs.some((m) => m.includes('could not sync the workspace branch label'))).toBe(true);
       // …and registration had already completed before the label sync.
       const entries = await listRegisteredRepos();

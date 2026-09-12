@@ -185,6 +185,7 @@ describe('bridgeMetaMatchesFile with a half-written stamp', () => {
 
   afterEach(async () => {
     renameMock.mode = 'none';
+    await closeAllCachedBridges();
     await fsp.rm(groupDir, { recursive: true, force: true });
   });
 
@@ -246,6 +247,14 @@ describe('bridgeMetaMatchesFile with a half-written stamp', () => {
     await seedStamped();
     const meta = await readBridgeMeta(groupDir);
     await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+    // Distinct filesystem mtimes must not collapse: rounding would treat
+    // T and T+0.25 as the same stamp and wave a same-size swap through.
+    await expect(
+      bridgeMetaMatchesFile(groupDir, {
+        ...meta,
+        bridgeMtimeMs: (meta.bridgeMtimeMs as number) + 0.25,
+      }),
+    ).resolves.toBe(false);
   });
 });
 

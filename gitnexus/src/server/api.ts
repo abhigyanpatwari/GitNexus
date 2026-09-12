@@ -18,10 +18,16 @@ import {
   loadMeta,
   saveMeta,
   listRegisteredRepos,
-  getStoragePath,
   registryPathEquals,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
+import {
+  requireDeletableStoragePath,
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageDeletionError,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 import {
   executeQuery,
   executePrepared,
@@ -37,6 +43,12 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
@@ -644,6 +656,65 @@ export const resolveRegisteredRepoEntry = (
   );
 };
 
+export interface SourceAvailability {
+  available: boolean;
+  reason?: 'content-retention' | 'checkout-missing';
+  contentRetention?: ReturnType<typeof contentRetentionFromMeta>;
+}
+
+/** Map a failed storage probe to a catalog status. Missing/empty slots are 404; anything else is 503. */
+export const storageRequirementToHttp = (
+  err: StorageRequirementError,
+): { status: 404 | 503; body: { error: string; code: 'index-unavailable'; state: string } } => {
+  const notPresent = err.inspection.state === 'missing' || err.inspection.state === 'empty';
+  return {
+    status: notPresent ? 404 : 503,
+    body: {
+      error: err.message,
+      code: 'index-unavailable',
+      state: err.inspection.state,
+    },
+  };
+};
+
+const sendStorageRequirementHttp = (
+  err: unknown,
+  res: { status: (code: number) => { json: (body: unknown) => void } },
+): boolean => {
+  if (!(err instanceof StorageRequirementError)) return false;
+  const mapped = storageRequirementToHttp(err);
+  res.status(mapped.status).json(mapped.body);
+  return true;
+};
+
+/** Full-file endpoints require a live checkout; normalized index text is not source-viewer data. */
+export const getSourceAvailability = async (
+  entry: Pick<RegistryEntry, 'path' | 'storagePath'>,
+  loadedMeta?: Awaited<ReturnType<typeof loadMeta>>,
+): Promise<SourceAvailability> => {
+  const meta = loadedMeta === undefined ? await loadMeta(entry.storagePath) : loadedMeta;
+  const contentRetention = contentRetentionFromMeta(meta);
+  if (contentRetention !== 'full') {
+    return { available: false, reason: 'content-retention', contentRetention };
+  }
+  return isFullSourceAvailable(contentRetention, await checkoutIsDirectory(entry.path))
+    ? { available: true, contentRetention }
+    : { available: false, reason: 'checkout-missing', contentRetention };
+};
+
+const sendSourceUnavailable = (
+  res: { status: (code: number) => { json: (body: any) => void } },
+  availability: SourceAvailability,
+): void => {
+  const reason =
+    availability.reason === 'content-retention' ? 'content retention' : 'source checkout';
+  res.status(410).json({
+    error: `Full source is unavailable because the ${reason} is unavailable.`,
+    code: 'source-unavailable',
+    reason: availability.reason,
+  });
+};
+
 /**
  * Handle a GET /api/file request body. Extracted from createServer's route
  * registration so it can be unit-tested without spinning up an HTTP server
@@ -663,6 +734,7 @@ export const handleFileRequest = async (
     json: (body: any) => void;
   },
   repoPath: string,
+  availability: SourceAvailability = { available: true },
 ): Promise<void> => {
   try {
     // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
@@ -675,6 +747,11 @@ export const handleFileRequest = async (
       return;
     }
     const filePath = assertString(rawFilePath, 'path');
+
+    if (!availability.available) {
+      sendSourceUnavailable(res, availability);
+      return;
+    }
 
     // Path-injection containment — inline at the sink with the canonical
     // path.relative idiom that CodeQL's js/path-injection sanitizer
@@ -780,6 +857,7 @@ export const handleQueryRequest = async (
     );
     res.json({ result });
   } catch (err: any) {
+    if (sendStorageRequirementHttp(err, res)) return;
     if (isReadOnlyDbError(err)) {
       res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
       return;
@@ -923,11 +1001,30 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
    */
   const HOLD_QUEUE_TIMEOUT_SECS = 300; // 5 minutes
 
+  const validateResolvedRepoEntry = async (
+    entry: RegistryEntry | null,
+  ): Promise<RegistryEntry | null> => {
+    if (!entry) return null;
+    await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+    return entry;
+  };
+
   // Helper: resolve a repo by name from the global registry, or default to first.
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
-  const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
-    const repos = await listRegisteredRepos();
+  // Deletion passes `validateStorage: false` because it has a separate policy that
+  // intentionally permits a missing/empty local slot to be removed.
+  const resolveRepo = async (
+    repoName?: string,
+    isRetry = false,
+    req?: any,
+    options: { validateStorage?: boolean } = {},
+  ): Promise<any> => {
+    const repos = await listRegisteredRepos({
+      validate: options.validateStorage !== false,
+    });
     const found = resolveRegisteredRepoEntry(repos, repoName);
+    const validate = (entry: RegistryEntry | null): Promise<RegistryEntry | null> =>
+      options.validateStorage === false ? Promise.resolve(entry) : validateResolvedRepoEntry(entry);
 
     const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
@@ -967,8 +1064,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (!currentJob || currentJob.status === 'failed') break;
             if (currentJob.status === 'complete') {
               await backend.init();
-              const freshRepos = await listRegisteredRepos();
-              return resolveRegisteredRepoEntry(freshRepos, repoName);
+              const freshRepos = await listRegisteredRepos({
+                validate: options.validateStorage !== false,
+              });
+              return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -989,10 +1088,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(repoName, true, req);
+      return await resolveRepo(repoName, true, req, options);
     }
 
-    return found;
+    return validate(found);
   };
 
   // Lightweight healthcheck for Docker/orchestrator probes (#1147).
@@ -1034,7 +1133,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // already carries. Web callers hit this on connect/switch, never in a loop.
   app.get('/api/repos', createRouteLimiter(), async (_req, res) => {
     try {
-      const repos = await listRegisteredRepos();
+      const repos = await listRegisteredRepos({ validate: true });
       // Checked in parallel, for the reason `list_repos` already does it that
       // way: each check spawns an async `git rev-list`, and the sequential
       // variant took ~50s across 200 repos (#1363). Projecting inside the map
@@ -1042,9 +1141,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // array is the shape that silently mispairs them if either is reordered.
       res.json(
         await Promise.all(
-          repos.map(async (r) =>
-            projectRepoListEntry(r, await checkStalenessAsync(r.path, r.lastCommit)),
-          ),
+          repos.map(async (r) => {
+            const [staleness, availability] = await Promise.all([
+              checkStalenessAsync(r.path, r.lastCommit),
+              getSourceAvailability(r),
+            ]);
+            return projectRepoListEntry(r, staleness, {
+              contentRetention: availability.contentRetention ?? 'full',
+              sourceAvailable: availability.available,
+            });
+          }),
         ),
       );
     } catch (err: any) {
@@ -1072,9 +1178,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const meta = await loadMeta(entry.storagePath);
-      const staleness = await checkStalenessAsync(entry.path, resolveLastCommit(entry, meta));
-      res.json(projectRepoDetail(entry, meta, staleness));
+      const [staleness, availability] = await Promise.all([
+        checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
+        getSourceAvailability(entry, meta),
+      ]);
+      res.json(
+        projectRepoDetail(entry, meta, staleness, {
+          contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
+          sourceAvailable: availability.available,
+        }),
+      );
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }
   });
@@ -1090,14 +1205,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(400).json({ error: 'Missing repo name' });
         return;
       }
-      const entry = await resolveRepo(repoName);
+      const entry = await resolveRepo(repoName, false, undefined, { validateStorage: false });
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      let storagePath: string;
+      try {
+        storagePath = await requireDeletableStoragePath(entry);
+      } catch (err: any) {
+        if (err instanceof StorageDeletionError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        res.status(400).json({ error: err.message || 'Unsafe index storage path' });
+        return;
+      }
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
-      const lockKey = getStoragePath(entry.path);
+      const lockKey = storagePath;
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
         res.status(409).json({ error: lockErr });
@@ -1111,7 +1237,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {}
 
         // 1. Delete the .gitnexus index/storage directory
-        const storagePath = getStoragePath(entry.path);
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
@@ -1229,6 +1354,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
       res.json(graph);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       if (err instanceof ClientDisconnectedError) {
         return;
       }
@@ -1425,6 +1551,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(response);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(500).json({ error: err.message || 'Search failed' });
     }
   });
@@ -1432,12 +1559,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Read file — with path traversal guard
   // Rate-limited (CodeQL js/missing-rate-limiting): per-request fs.readFile.
   app.get('/api/file', createRouteLimiter(), async (req, res) => {
-    const entry = await resolveRepo(requestedRepo(req));
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
+    } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
+      res.status(500).json({ error: err.message || 'Failed to read file' });
     }
-    await handleFileRequest(req, res, entry.path);
   });
 
   // Grep — regex search across file contents in the indexed repo
@@ -1450,6 +1582,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const sourceAvailability = await getSourceAvailability(entry);
+      if (!sourceAvailability.available) {
+        sendSourceUnavailable(res, sourceAvailability);
         return;
       }
       // Pattern parsing lives in grep-params.ts (unit-testable without
@@ -1485,6 +1622,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }
   });
@@ -1709,7 +1847,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               throw new Error('No target path resolved');
             }
 
-            launchAnalysisWorker(job, targetPath, {
+            await launchAnalysisWorker(job, targetPath, {
               force,
               embeddings,
               dropEmbeddings,
@@ -1731,7 +1869,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 : {}),
             });
           } catch (err: any) {
-            if (targetPath) releaseRepoLock(getStoragePath(targetPath));
             jobManager.updateJob(job.id, {
               status: 'failed',
               error: err.message || 'Analysis failed',
@@ -1821,15 +1958,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
+        // Re-check the exact registered slot immediately before taking the lock.
+        // The query resolver already validates it, but this closes the gap between
+        // lookup and a long-running metadata-writing job.
+        const storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
-        const repoLockPath = entry.storagePath;
+        const repoLockPath = storagePath;
         const lockErr = acquireRepoLock(repoLockPath);
         if (lockErr) {
           res.status(409).json({ error: lockErr });
           return;
         }
 
-        const job = embedJobManager.createJob({ repoPath: entry.storagePath });
+        const job = embedJobManager.createJob({ repoPath: storagePath });
         embedJobManager.updateJob(job.id, {
           repoName: entry.name,
           status: 'analyzing' as any,
@@ -1853,8 +1995,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
-            const lbugPath = path.join(entry.storagePath, 'lbug');
-            const ftsSession = await loadFtsSession(entry.storagePath);
+            const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
+            const ftsSession = await loadFtsSession(storagePath);
             let embeddingMeta = ftsSession.meta;
             await withLbugDb(
               lbugPath,
@@ -1903,7 +2045,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   // without a fresh read, a concurrent writer's update (e.g. a
                   // --repair-fts capability stamp) would be silently reverted on
                   // every checkpoint save for the job's whole lifetime.
-                  const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                  const latestMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
                   // `stats.embeddings` only moves when the caller MEASURED the
                   // live count (the post-flush `onCheckpoint`). The window-start
                   // callback measures nothing and passes nothing: restating the
@@ -1922,7 +2064,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     },
                     embeddings,
                   );
-                  await saveMeta(entry.storagePath, embeddingMeta);
+                  await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+                  await saveMeta(storagePath, embeddingMeta);
                 };
                 /**
                  * Count the persisted rows, or report the answer never arrived.
@@ -2021,7 +2164,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 // `embeddingCheckpoint` is the marker this run's own mid-run
                 // writer saved, which is the only record of the work when the
                 // count query could not answer.
-                const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                const finalMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
                 const finalizeContext: EmbedRunFinalizeContext = {
                   measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
                   onDisk: finalMeta,
@@ -2041,7 +2184,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
                   measuredEmbeddings,
                 );
-                await saveMeta(entry.storagePath, embeddingMeta);
+                await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+                await saveMeta(storagePath, embeddingMeta);
               },
               skipFtsOption(ftsSession.skipFts),
             );
@@ -2087,6 +2231,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         res.status(202).json({ jobId: job.id, status: 'analyzing' });
       } catch (err: any) {
+        if (sendStorageRequirementHttp(err, res)) return;
         if (err.message?.includes('already in progress')) {
           res.status(409).json({ error: err.message });
         } else {

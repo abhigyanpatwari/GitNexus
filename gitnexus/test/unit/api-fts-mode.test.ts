@@ -1,5 +1,7 @@
 import express from 'express';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +17,10 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
   loadMeta: mocks.loadMeta,
   listRegisteredRepos: mocks.listRegisteredRepos,
+}));
+vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/storage-resolver.js')>()),
+  requireRegisteredStoragePath: vi.fn(async (entry: { storagePath: string }) => entry.storagePath),
 }));
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   withLbugDb: mocks.withLbugDb,
@@ -68,11 +74,13 @@ vi.mock('../../src/server/analyze-job.js', () => ({
 import { createServer } from '../../src/server/api.js';
 import { FTS_DISABLED_MESSAGE } from '../../src/core/search/fts-policy.js';
 
+const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fts-mode-fixture-'));
 const entry = {
   name: 'fts-mode-fixture',
-  path: path.resolve('fts-mode-fixture'),
-  storagePath: path.resolve('fts-mode-fixture/.gitnexus'),
+  path: fixtureRoot,
+  storagePath: path.join(fixtureRoot, '.gitnexus'),
 };
+fs.mkdirSync(entry.storagePath, { recursive: true });
 let app: express.Express;
 const events = ['SIGINT', 'SIGTERM', 'uncaughtException', 'unhandledRejection'] as const;
 const originalListeners = new Map(events.map((event) => [event, process.listeners(event)]));
@@ -102,6 +110,7 @@ afterAll(() => {
     }
   }
   vi.unstubAllEnvs();
+  fs.rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
 beforeEach(() => {
@@ -199,7 +208,8 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
         }
       }
       expect(mocks.withLbugDb).toHaveBeenCalledTimes(sequence.length);
-      expect(mocks.loadMeta).toHaveBeenCalledTimes(sequence.length);
+      // Grep also loads metadata for getSourceAvailability before the FTS session.
+      expect(mocks.loadMeta).toHaveBeenCalledTimes(sequence.length + 1);
       for (const [dbPath, , options] of mocks.withLbugDb.mock.calls) {
         expect(dbPath).toBe(path.join(entry.storagePath, 'lbug'));
         expect(options).toEqual({ readOnly: true, ...(skip ? { skipFts: true } : {}) });
@@ -239,4 +249,13 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
       expect(mocks.loadMeta).toHaveBeenCalledExactlyOnceWith(entry.storagePath);
     },
   );
+});
+
+describe('GET /api/repos catalog validation', () => {
+  it('lists registered repos with validate: true', async () => {
+    mocks.loadMeta.mockResolvedValue({});
+    await invoke('/api/repos');
+    expect(mocks.listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+    expect(mocks.listRegisteredRepos).toHaveBeenCalledTimes(1);
+  });
 });

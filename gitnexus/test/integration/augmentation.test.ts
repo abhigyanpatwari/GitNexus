@@ -57,6 +57,16 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
 }));
 
+vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/storage-resolver.js')>();
+  return {
+    ...actual,
+    requireRegisteredStoragePath: vi.fn(
+      async (entry: { storagePath: string }) => entry.storagePath,
+    ),
+  };
+});
+
 let augment: (pattern: string, cwd?: string) => Promise<string>;
 let augmentNoFts: (pattern: string, cwd?: string) => Promise<string>;
 
@@ -107,6 +117,17 @@ withTestLbugDB(
       it('handles unicode pattern without throwing', async () => {
         const result = await augment('日本語テスト', handle.dbPath);
         expect(typeof result).toBe('string');
+      });
+
+      it('silently degrades when the registered storage path fails validation', async () => {
+        const { requireRegisteredStoragePath } =
+          await import('../../src/storage/storage-resolver.js');
+        const resolverMock = vi.mocked(requireRegisteredStoragePath);
+        resolverMock.mockRejectedValueOnce(new Error('foreign storage'));
+
+        const result = await augment('login', handle.dbPath);
+
+        expect(result).toBe('');
       });
 
       // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
@@ -164,7 +185,7 @@ withTestLbugDB(
           }
         });
 
-        it('matches CWD at root level and repo in sub-directory (repo at /src, CWD at /)', async () => {
+        it('does not attach a nested registered checkout from a parent cwd (repo at /src, CWD at /)', async () => {
           const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
           const rootPath = path.resolve('/');
           const subDir = path.join(rootPath, 'src');
@@ -181,8 +202,7 @@ withTestLbugDB(
 
           try {
             const result = await augment('login', rootPath);
-            expect(result.length).toBeGreaterThan(0);
-            expect(result).toContain('[GitNexus]');
+            expect(result).toBe('');
           } finally {
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
               {
@@ -226,7 +246,7 @@ withTestLbugDB(
             }
           });
 
-          it('matches Windows sub-directory repo and drive-root CWD (repo at C:\\src, CWD at C:\\)', async () => {
+          it('does not attach a nested Windows checkout from a drive-root cwd (repo at C:\\src, CWD at C:\\)', async () => {
             const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
 
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
@@ -241,7 +261,7 @@ withTestLbugDB(
 
             try {
               const result = await augment('login', 'C:\\');
-              expect(result.length).toBeGreaterThan(0);
+              expect(result).toBe('');
             } finally {
               (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
                 {

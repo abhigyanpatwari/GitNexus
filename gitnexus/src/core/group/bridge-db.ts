@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -16,6 +17,7 @@ import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import {
   closeLbugConnection,
   openLbugConnection,
+  sleep,
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
@@ -667,6 +669,47 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
   await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
+const sameFileStamp = (
+  left: { size: number; mtimeMs: number },
+  right: { size: number; mtimeMs: number },
+): boolean => left.size === right.size && left.mtimeMs === right.mtimeMs;
+
+const stampMatchesStat = (
+  stat: { size: number; mtimeMs: number },
+  meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
+): boolean =>
+  stat.size === meta.bridgeSize &&
+  // Do not `Math.round`: two same-size databases written in the same
+  // millisecond must still fail if their filesystem mtimes differ.
+  stat.mtimeMs === meta.bridgeMtimeMs;
+
+/**
+ * LadybugDB can still flush WAL/shadow into the main file after `close` and
+ * the atomic rename. Stamping the first `stat` then loses the exact-equality
+ * check the moment that flush lands.
+ *
+ * Wait a quiet interval before every sample — including the first — so an
+ * initially-stable pair is not stamped on the same tick as close/rename. Two
+ * consecutive agreeing stats after that interval are treated as settled. A
+ * flush that arrives later than the retry budget can still miss; this is a
+ * best-effort wait, not a lock on the file.
+ */
+const BRIDGE_SETTLE_MS = 10;
+const BRIDGE_SETTLE_ATTEMPTS = 10;
+
+const statSettledBridgeFile = async (filePath: string): Promise<Stats> => {
+  let current: Stats | undefined;
+  for (let i = 0; i < BRIDGE_SETTLE_ATTEMPTS; i++) {
+    await sleep(BRIDGE_SETTLE_MS);
+    const next = await fsp.stat(filePath);
+    if (current && sameFileStamp(next, current)) {
+      return next;
+    }
+    current = next;
+  }
+  return current ?? (await fsp.stat(filePath));
+};
+
 /**
  * Does `meta` still describe the `bridge.lbug` sitting next to it?
  *
@@ -712,7 +755,7 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
   if (!stampedSize || !stampedMtime) return false;
   try {
     const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
-    return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+    return stampMatchesStat(stat, meta);
   } catch {
     return false;
   }
@@ -1373,7 +1416,7 @@ export async function writeBridgeUnlocked(
     // still belongs together (`bridgeMetaMatchesFile`). A stale meta cannot match
     // a freshly renamed database, and a sync that fails before the swap leaves a
     // matching pair untouched.
-    const finalStat = await fsp.stat(finalPath);
+    const finalStat = await statSettledBridgeFile(finalPath);
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),

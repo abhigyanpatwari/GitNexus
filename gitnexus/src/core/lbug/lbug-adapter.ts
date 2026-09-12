@@ -12,6 +12,7 @@ import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
+import type { ContentRetention } from '../../storage/repo-meta.js';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -1146,6 +1147,8 @@ export const loadGraphToLbug = async (
    * which holds one CSV per pair and would silently drop one of them).
    */
   graphEmitManifest?: GraphEmitManifest,
+  /** Content profile for CSV emission; default preserves the historical full index. */
+  contentRetention: ContentRetention = 'full',
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1226,8 +1229,8 @@ export const loadGraphToLbug = async (
   let csvResult: StreamedCSVResult;
   try {
     csvResult = SERIAL
-      ? await streamAllCSVsToDisk(graph, repoPath, csvDir)
-      : await streamAllCSVsToDisk(graph, repoPath, csvDir, beginNodeCopy);
+      ? await streamAllCSVsToDisk(graph, repoPath, csvDir, undefined, contentRetention)
+      : await streamAllCSVsToDisk(graph, repoPath, csvDir, beginNodeCopy, contentRetention);
   } catch (emitErr) {
     // Relationship emit failed. In overlap mode a node COPY may be in flight —
     // settle it (the .catch above means this never rejects) before rethrowing so

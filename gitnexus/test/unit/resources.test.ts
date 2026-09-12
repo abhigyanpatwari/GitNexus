@@ -517,6 +517,9 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
     expect(result).toContain('index:');
     expect(result).toContain('commit: "0123456789abcdef0123456789abcdef01234567"');
+    expect(result).toContain('storage_path: "/tmp/test-repo/.gitnexus"');
+    expect(result).toContain('content_retention: "full"');
+    expect(result).toMatch(/source_available: (true|false)/);
     expect(result).toContain(`runner_identity: ${JSON.stringify(runnerIdentity)}`);
     expect(result).toContain('runner_identity_schema_status: "current"');
   });
