@@ -1009,6 +1009,10 @@ export const REPO_SCOPED_TOOLS = new Set([
 
 for (const tool of GITNEXUS_TOOLS) {
   // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
+  // The unpublished handler aliases in tool-arguments.ts stay off this schema on
+  // purpose (#2175), and closing it does not strand them: a client that reads
+  // inputSchema sends the advertised key, and one that sends an alias never read
+  // the schema. Publishing them instead would re-break Claude Code on `query`.
   tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
