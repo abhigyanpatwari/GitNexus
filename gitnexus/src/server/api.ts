@@ -43,7 +43,12 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
-import { checkoutIsDirectory, contentRetentionFromMeta } from '../core/content-retention.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
@@ -692,7 +697,7 @@ export const getSourceAvailability = async (
   if (contentRetention !== 'full') {
     return { available: false, reason: 'content-retention', contentRetention };
   }
-  return (await checkoutIsDirectory(entry.path))
+  return isFullSourceAvailable(contentRetention, await checkoutIsDirectory(entry.path))
     ? { available: true, contentRetention }
     : { available: false, reason: 'checkout-missing', contentRetention };
 };
@@ -1990,7 +1995,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
-            const lbugPath = path.join(storagePath, 'lbug');
+            const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
             const ftsSession = await loadFtsSession(storagePath);
             let embeddingMeta = ftsSession.meta;
             await withLbugDb(

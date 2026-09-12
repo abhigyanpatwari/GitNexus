@@ -49,6 +49,7 @@ import {
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from './repo-meta.js';
+import { LBUG_DIRECTORY } from './storage-constants.js';
 import {
   defaultStoragePath,
   ensureStoragePathWritable,
@@ -223,7 +224,7 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(baseDir, 'lbug'),
+    lbugPath: path.join(baseDir, LBUG_DIRECTORY),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };
@@ -1486,13 +1487,12 @@ export const assertAnalysisFinalized = async (
 };
 
 /**
- * Thrown by {@link assertSafeStoragePath} when a registry entry's
- * `storagePath` does NOT point at the expected `<entry.path>/.gitnexus`
- * subfolder. CLI destructive commands (`remove`, `clean --all`) should
- * catch this and exit non-zero without deleting anything — the usual
- * cause is a corrupted or hand-edited `~/.gitnexus/registry.json`, and
- * proceeding would mean `fs.rm(recursive: true)` on whatever odd path
- * the entry is pointing at.
+ * Thrown by {@link assertSafeStoragePath} when {@link requireDeletableStoragePath}
+ * rejects the registry entry. Repository-local `.gitnexus` may still be
+ * removed when it is missing, empty, unowned, or foreign; an external slot
+ * is removable only when metadata binds both the repository and that exact
+ * path. CLI destructive commands (`remove`, `clean --all`) should catch this
+ * and exit non-zero without deleting anything.
  */
 export class UnsafeStoragePathError extends Error {
   readonly kind = 'UnsafeStoragePathError' as const;

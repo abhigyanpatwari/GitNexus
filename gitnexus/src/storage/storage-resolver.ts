@@ -157,6 +157,9 @@ export const isUnusableIndexInspection = (
 const samePath = (left: string, right: string): boolean =>
   process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 
+const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
+  samePath(comparablePath(defaultStoragePath(repoPath)), comparablePath(storagePath));
+
 const isMissingFilesystemError = (error: unknown): boolean => {
   const code = (error as NodeJS.ErrnoException)?.code;
   return code === 'ENOENT' || code === 'ENOTDIR';
@@ -474,10 +477,7 @@ export const inspectStoragePath = async (
   }
   context = { ...context, storagePath: inspectedStorage };
 
-  const repositoryLocal = samePath(
-    comparablePath(defaultStoragePath(context.repoPath)),
-    comparablePath(inspectedStorage),
-  );
+  const repositoryLocal = isRepositoryLocalStoragePath(context.repoPath, inspectedStorage);
   let directoryEntries: string[];
   let codeIndex: Awaited<ReturnType<typeof inspectCodeIndexDB>>;
   let primary: MetadataReadResult;
@@ -605,9 +605,6 @@ export const inspectRegisteredStorage = async (entry: {
   storagePath: string;
 }): Promise<StorageInspection> => inspectStoragePath(entry.storagePath, entry.path);
 
-const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
-  samePath(comparablePath(defaultStoragePath(repoPath)), comparablePath(storagePath));
-
 const requireInspectedStoragePath = (
   inspection: StorageInspection,
   requirements: StorageRequirements,
@@ -692,10 +689,7 @@ export const requireDeletableStoragePath = async (entry: {
   }
 
   const expectedStoragePath = defaultStoragePath(repoPath);
-  const storageIsLocal = samePath(
-    comparablePath(expectedStoragePath),
-    comparablePath(actualStoragePath),
-  );
+  const storageIsLocal = isRepositoryLocalStoragePath(repoPath, actualStoragePath);
   const comparableStorage = comparablePath(actualStoragePath);
   const comparableRepo = comparablePath(repoPath);
   const comparableRoot = comparablePath(path.parse(actualStoragePath).root);
