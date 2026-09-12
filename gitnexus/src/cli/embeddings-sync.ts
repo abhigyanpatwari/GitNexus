@@ -2,7 +2,7 @@ import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
-import { acquireIndexLock } from '../storage/index-lock.js';
+import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../storage/repo-manager.js';
 import {
   closeLbug,
@@ -37,6 +37,10 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   const metaDir = path.dirname(metaPath);
   const lock = await acquireIndexLock(metaDir);
   try {
+    requireExclusiveIndexLock(
+      lock,
+      `Cannot acquire the index lock at ${metaDir}; refusing an unlocked embeddings sync.`,
+    );
     const meta = await loadMeta(metaDir);
     if (!meta)
       throw new Error(`No GitNexus index found for ${repoPath}. Run gitnexus analyze first.`);

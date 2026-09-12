@@ -22,7 +22,7 @@ import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 // Value import (instanceof): index-lock is a lightweight storage primitive
 // (node:fs/net/crypto only), so this does NOT pull in run-analyze/repo-manager.
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 
 export interface WorkerAnalysisDeps {
   runFullAnalysis: typeof import('../core/run-analyze.js').runFullAnalysis;
@@ -84,9 +84,15 @@ export async function runWorkerAnalysis(
     // #2658 review M2: a lock-wait timeout is transient contention (another
     // analyze held the single-writer lock), not a broken build — tag it so the
     // parent can surface a retry signal instead of an opaque hard failure.
+    // An orphan guard needs quiesced recovery, not automatic retries.
     terminal =
       err instanceof IndexLockTimeoutError
-        ? { type: 'error', message, code: 'index-lock-timeout', retryable: true }
+        ? {
+            type: 'error',
+            message,
+            code: 'index-lock-timeout',
+            retryable: !isIndexLockGuardTimeout(err),
+          }
         : { type: 'error', message };
   }
 
