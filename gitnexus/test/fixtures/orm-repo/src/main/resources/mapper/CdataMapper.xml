@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.CdataMapper">
+
+  <!-- CDATA-wrapped SQL with XML special chars -->
+  <select id="selectComplex" resultType="map">
+    <![CDATA[
+      SELECT id, name FROM cdata_table
+      WHERE amount > 100 AND status != 0
+    ]]>
+  </select>
+
+  <!-- XML comment containing SQL keywords should not be extracted -->
+  <!-- FROM ignored_in_comment WHERE 1=1 -->
+  <select id="selectSimple" resultType="map">
+    SELECT id FROM cdata_table WHERE id = #{id}
+  </select>
+
+</mapper>
