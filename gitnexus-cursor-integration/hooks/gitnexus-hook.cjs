@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
+const { findRegisteredRepo } = require('./registry-query.cjs');
 
 function readInput() {
   try {
@@ -27,62 +28,6 @@ function readInput() {
   } catch {
     return {};
   }
-}
-
-function isGlobalRegistryDir(candidate) {
-  if (
-    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
-    fs.existsSync(path.join(candidate, 'meta.json'))
-  ) {
-    return false;
-  }
-  return (
-    fs.existsSync(path.join(candidate, 'registry.json')) ||
-    fs.existsSync(path.join(candidate, 'repos'))
-  );
-}
-
-function walkForGitNexusDir(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.gitnexus');
-    if (fs.existsSync(candidate)) {
-      if (!isGlobalRegistryDir(candidate)) return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-function findCanonicalRepoRoot(cwd) {
-  try {
-    const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    if (result.error || result.status !== 0) return null;
-    const commonDir = (result.stdout || '').trim();
-    if (!commonDir || !path.isAbsolute(commonDir)) return null;
-    return path.dirname(commonDir);
-  } catch {
-    return null;
-  }
-}
-
-function findGitNexusDir(startDir) {
-  const cwd = startDir || process.cwd();
-  const fromCwd = walkForGitNexusDir(cwd);
-  if (fromCwd) return fromCwd;
-  const canonicalRoot = findCanonicalRepoRoot(cwd);
-  if (canonicalRoot && canonicalRoot !== cwd) {
-    return walkForGitNexusDir(canonicalRoot);
-  }
-  return null;
 }
 
 function tokenizeShellWords(command) {
@@ -431,8 +376,9 @@ function main() {
     }
     const cwd = input.cwd || process.cwd();
     if (!path.isAbsolute(cwd)) return;
-    const gitNexusDir = findGitNexusDir(cwd);
-    if (!gitNexusDir) return;
+    const repo = findRegisteredRepo(cwd);
+    if (!repo) return;
+    const storagePath = repo.storagePath;
 
     const toolName = input.tool_name || '';
     const toolInput = input.tool_input || {};
@@ -440,7 +386,7 @@ function main() {
     const pattern = extractPattern(toolName, toolInput);
     if (!pattern || pattern.length < 3) return;
 
-    const release = acquireHookSlot(gitNexusDir);
+    const release = acquireHookSlot(storagePath);
     if (!release) {
       // Normal skip path: all per-repo hook slots are held by concurrent
       // sessions. Stays silent by default; surfaced only under the cursor

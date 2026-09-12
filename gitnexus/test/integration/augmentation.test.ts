@@ -57,6 +57,16 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
 }));
 
+vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/storage-resolver.js')>();
+  return {
+    ...actual,
+    requireRegisteredStoragePath: vi.fn(
+      async (entry: { storagePath: string }) => entry.storagePath,
+    ),
+  };
+});
+
 let augment: (pattern: string, cwd?: string) => Promise<string>;
 let augmentNoFts: (pattern: string, cwd?: string) => Promise<string>;
 
@@ -107,6 +117,17 @@ withTestLbugDB(
       it('handles unicode pattern without throwing', async () => {
         const result = await augment('日本語テスト', handle.dbPath);
         expect(typeof result).toBe('string');
+      });
+
+      it('silently degrades when the registered storage path fails validation', async () => {
+        const { requireRegisteredStoragePath } =
+          await import('../../src/storage/storage-resolver.js');
+        const resolverMock = vi.mocked(requireRegisteredStoragePath);
+        resolverMock.mockRejectedValueOnce(new Error('foreign storage'));
+
+        const result = await augment('login', handle.dbPath);
+
+        expect(result).toBe('');
       });
 
       // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───

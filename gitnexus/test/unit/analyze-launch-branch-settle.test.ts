@@ -45,11 +45,12 @@ vi.mock('child_process', async () => {
 });
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  canonicalizePath: (p: string) => p,
-  getStoragePath: () => H.STORAGE_PATH,
   INDEX_METADATA_FILE: H.METADATA_FILE,
-  listRegisteredRepos: async () => [{ path: H.REPO_PATH, storagePath: H.STORAGE_PATH }],
-  registryPathEquals: (a: string, b: string) => a === b,
+}));
+
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
+  requireStoragePath: async () => H.STORAGE_PATH,
 }));
 
 vi.mock('node:fs', async () => {
@@ -145,7 +146,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = path.join(H.STORAGE_PATH, BRANCHES_DIR, branchSlug(BRANCH));
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(false));
 
@@ -159,7 +160,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher()(job, REPO_PATH, {});
 
     child.emit('message', completeMessage(true));
 
@@ -173,7 +174,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(true));
 
@@ -188,7 +189,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = '';
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher()(job, REPO_PATH, {});
 
     child.emit('message', completeMessage(true, { alreadyUpToDate: true }));
     child.emit('exit', 0);
@@ -209,7 +210,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = path.join(H.STORAGE_PATH, BRANCHES_DIR, branchSlug(BRANCH));
 
     const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
-    launcher()(job, REPO_PATH, { branch: BRANCH });
+    await launcher()(job, REPO_PATH, { branch: BRANCH });
 
     child.emit('message', completeMessage(false));
     child.emit('exit', 0);
@@ -226,7 +227,7 @@ describe('finalization gate follows the placement the run chose', () => {
     H.settledDir = H.STORAGE_PATH;
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launcher()(job, REPO_PATH, {});
+    await launcher()(job, REPO_PATH, {});
 
     child.emit('exit', 1);
 

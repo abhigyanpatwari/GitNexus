@@ -3,8 +3,8 @@
  *
  * The gitnexus.json / meta.json dual-file contract:
  * - saveMeta writes BOTH files (primary must succeed, mirror best-effort)
- * - reconcileMetadataFiles converges the two on every analyze: fresher
- *   `indexedAt` wins, written to both, nothing ever deleted
+ * - reconcileMetadataFiles converges the two on every analyze: a valid
+ *   gitnexus.json wins; legacy is used only when primary is absent
  * - loadMeta prefers gitnexus.json, falls back to the mirror only when the
  *   primary is provably absent (ENOENT/ENOTDIR)
  *
@@ -23,6 +23,11 @@ import {
   reconcileMetadataFiles,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import {
+  STORAGE_PATH_ENV,
+  STORAGE_ROOT_ENV,
+  storagePathFromRoot,
+} from '../../src/storage/storage-resolver.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const metaAt = (indexedAt: string, lastCommit: string, extra?: Partial<RepoMeta>): RepoMeta => ({
@@ -38,15 +43,25 @@ const readJson = async (dir: string, filename: string): Promise<RepoMeta> =>
 describe('reconcileMetadataFiles', () => {
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let storagePath: string;
+  let savedStoragePath: string | undefined;
+  let savedStorageRoot: string | undefined;
 
   beforeEach(async () => {
     tmpRepo = await createTempDir('gitnexus-reconcile-suite-');
+    savedStoragePath = process.env[STORAGE_PATH_ENV];
+    savedStorageRoot = process.env[STORAGE_ROOT_ENV];
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
     storagePath = getStoragePaths(tmpRepo.dbPath).storagePath;
     await fs.mkdir(storagePath, { recursive: true });
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    if (savedStoragePath === undefined) delete process.env[STORAGE_PATH_ENV];
+    else process.env[STORAGE_PATH_ENV] = savedStoragePath;
+    if (savedStorageRoot === undefined) delete process.env[STORAGE_ROOT_ENV];
+    else process.env[STORAGE_ROOT_ENV] = savedStorageRoot;
     await tmpRepo.cleanup();
   });
 
@@ -87,12 +102,12 @@ describe('reconcileMetadataFiles', () => {
     expect(primary).toMatchObject({ incrementalInProgress: true, lastCommit: 'crashed-run' });
   });
 
-  it('mixed branch states converge in one call (legacy-only / converged / stale-primary)', async () => {
+  it('mixed branch states converge in one call (legacy-only / converged / primary-authoritative)', async () => {
     const branches = path.join(storagePath, 'branches');
     const legacyOnly = path.join(branches, 'legacy-only');
     const converged = path.join(branches, 'converged');
-    const stalePrimary = path.join(branches, 'stale-primary');
-    for (const dir of [legacyOnly, converged, stalePrimary]) {
+    const primaryAuthoritative = path.join(branches, 'primary-authoritative');
+    for (const dir of [legacyOnly, converged, primaryAuthoritative]) {
       await fs.mkdir(dir, { recursive: true });
     }
 
@@ -105,12 +120,12 @@ describe('reconcileMetadataFiles', () => {
     await saveMeta(converged, convergedMeta); // writes both, already in sync
 
     await fs.writeFile(
-      path.join(stalePrimary, 'gitnexus.json'),
-      JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'sp-stale')),
+      path.join(primaryAuthoritative, 'gitnexus.json'),
+      JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'primary-commit')),
     );
     await fs.writeFile(
-      path.join(stalePrimary, 'meta.json'),
-      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'sp-fresh')),
+      path.join(primaryAuthoritative, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-newer-but-not-authoritative')),
     );
 
     // Flat slot: nothing — stays empty and untouched.
@@ -120,11 +135,11 @@ describe('reconcileMetadataFiles', () => {
       lastCommit: 'lo-commit',
     });
     await expect(readJson(converged, 'gitnexus.json')).resolves.toEqual(convergedMeta);
-    await expect(readJson(stalePrimary, 'gitnexus.json')).resolves.toMatchObject({
-      lastCommit: 'sp-fresh',
+    await expect(readJson(primaryAuthoritative, 'gitnexus.json')).resolves.toMatchObject({
+      lastCommit: 'primary-commit',
     });
-    await expect(readJson(stalePrimary, 'meta.json')).resolves.toMatchObject({
-      lastCommit: 'sp-fresh',
+    await expect(readJson(primaryAuthoritative, 'meta.json')).resolves.toMatchObject({
+      lastCommit: 'primary-commit',
     });
     // Flat slot stayed empty (reconcile fabricates nothing).
     await expect(fs.access(path.join(storagePath, 'gitnexus.json'))).rejects.toThrow();
@@ -149,7 +164,7 @@ describe('reconcileMetadataFiles', () => {
     );
   });
 
-  it('both files corrupt: no throw, no fabricated content, a warning per corrupt file', async () => {
+  it('both files corrupt: no throw, no fabricated content, one primary warning', async () => {
     await fs.writeFile(path.join(storagePath, 'gitnexus.json'), '{ nope');
     await fs.writeFile(path.join(storagePath, 'meta.json'), 'also nope {{{');
 
@@ -167,9 +182,7 @@ describe('reconcileMetadataFiles', () => {
     await expect(fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8')).resolves.toBe(
       'also nope {{{',
     );
-    expect(
-      cap.records().filter((r) => r.level === 40 && String(r.msg ?? '').includes('unreadable')),
-    ).toHaveLength(2);
+    expect(cap.records().filter((r) => r.level === 40)).toHaveLength(1);
   });
 
   it('fresh directory (neither file) is a silent no-op', async () => {
@@ -218,6 +231,46 @@ describe('reconcileMetadataFiles', () => {
     await reconcileMetadataFiles(tmpRepo.dbPath);
 
     await expect(loadMeta(storagePath)).resolves.toEqual(legacy);
+  });
+
+  it('does not overwrite a corrupt primary with otherwise valid legacy metadata', async () => {
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), '{ invalid primary');
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(false);
+    await expect(fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8')).resolves.toBe(
+      '{ invalid primary',
+    );
+    await expect(readJson(storagePath, 'meta.json')).resolves.toMatchObject({
+      lastCommit: 'legacy-commit',
+    });
+  });
+
+  it('uses analyze\'s validated storage path instead of resolving it again', async () => {
+    const externalRoot = path.join(tmpRepo.dbPath, 'external-storage');
+    const externalStoragePath = storagePathFromRoot(externalRoot, tmpRepo.dbPath);
+    const expected = metaAt('2026-06-01T00:00:00.000Z', 'validated-path');
+    const redirected = metaAt('2026-06-01T00:00:00.000Z', 'redirected-path');
+    const previous = process.env[STORAGE_ROOT_ENV];
+    await fs.mkdir(externalStoragePath, { recursive: true });
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(expected));
+    await fs.writeFile(path.join(externalStoragePath, 'meta.json'), JSON.stringify(redirected));
+    process.env[STORAGE_ROOT_ENV] = externalRoot;
+
+    try {
+      await expect(reconcileMetadataFiles(tmpRepo.dbPath, storagePath)).resolves.toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env[STORAGE_ROOT_ENV];
+      else process.env[STORAGE_ROOT_ENV] = previous;
+    }
+
+    await expect(readJson(storagePath, 'gitnexus.json')).resolves.toMatchObject({
+      lastCommit: 'validated-path',
+    });
+    await expect(fs.access(path.join(externalStoragePath, 'gitnexus.json'))).rejects.toThrow();
   });
 });
 
@@ -282,7 +335,12 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
       await fs.mkdir(storagePath, { recursive: true });
       await fs.writeFile(
         path.join(storagePath, 'meta.json'),
-        JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'pre-rename-commit')),
+        JSON.stringify(
+          metaAt('2026-01-01T00:00:00.000Z', 'pre-rename-commit', {
+            repoPath: tmpRepo.dbPath,
+            storagePath,
+          }),
+        ),
       );
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

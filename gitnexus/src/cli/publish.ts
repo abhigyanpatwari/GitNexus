@@ -30,7 +30,11 @@ import {
   parseOwnerRepoFromRemote,
 } from 'gitnexus-shared';
 import { getGitRoot, getRemoteOriginUrl, getCurrentCommit } from '../storage/git.js';
-import { hasIndex } from '../storage/repo-manager.js';
+import {
+  requireStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 import { cliInfo, cliError } from './cli-message.js';
 
 export interface PublishOptions {
@@ -95,9 +99,22 @@ export const publishCommand = async (
   // Publishing without an index is almost always a mistake — the
   // registry's nightly sync would fetch a stale or missing graph file
   // and mark the entry `missing`. Refuse loudly with a fix-it hint.
-  if (!(await hasIndex(repoPath))) {
+  try {
+    await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    if (!(error instanceof StorageRequirementError)) throw error;
+    const inspection = error.inspection;
+    const isMissingIndex =
+      inspection.state === 'missing' ||
+      inspection.state === 'empty' ||
+      (inspection.state === 'owned' && !inspection.hasCodeIndexDB);
+    if (!isMissingIndex) {
+      cliError(`[understand-quickly] ${error.message}`);
+      process.exitCode = 1;
+      return;
+    }
     cliError(
-      `[understand-quickly] no GitNexus index found at ${repoPath}/.gitnexus.\n` +
+      `[understand-quickly] no usable GitNexus index found for ${repoPath}.\n` +
         'Run `gitnexus analyze` first, then re-run `gitnexus publish`.',
     );
     process.exitCode = 1;

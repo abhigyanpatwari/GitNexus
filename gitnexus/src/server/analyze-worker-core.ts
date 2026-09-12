@@ -72,7 +72,7 @@ export async function runWorkerAnalysis(
     // registry) — must NOT be reported as a successful analysis. Mirror the CLI's
     // assertAnalysisFinalized guard so the worker surfaces it as an error instead
     // of a false `complete` that leaves the repo invisible to list_repos.
-    await deps.assertAnalysisFinalized(repoPath);
+    await deps.assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Send a JSON-safe projection, NOT the raw result: the IPC channel is
     // default-JSON serialization and `result.pipelineResult` carries the live

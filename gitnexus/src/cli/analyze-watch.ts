@@ -12,6 +12,7 @@ import {
 import { isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
+import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { GITNEXUS_DIR } from '../storage/repo-meta.js';
 import {
   loadAnalyzeConfigStrict,
@@ -414,6 +415,13 @@ export async function watchCommandWithRunnerIdentity(
     return;
   }
   const repoPath = await fs.realpath(requestedRepoPath);
+  try {
+    await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    cliError(`  ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
   const baselineEnvironment: WatchEnvironmentBaseline = {
     maxFileSize: process.env.GITNEXUS_MAX_FILE_SIZE,
     workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,

@@ -5,12 +5,21 @@ import os from 'node:os';
 import { sweepStaleUploads } from '../../src/server/upload-sweep.js';
 
 let root: string;
+let home: string;
+let previousHome: string | undefined;
 
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-sweep-test-'));
+  home = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-sweep-home-'));
+  await fs.writeFile(path.join(home, 'registry.json'), '[]');
+  previousHome = process.env.GITNEXUS_HOME;
+  process.env.GITNEXUS_HOME = home;
 });
 afterEach(async () => {
   await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  await fs.rm(home, { recursive: true, force: true }).catch(() => {});
+  if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
+  else process.env.GITNEXUS_HOME = previousHome;
 });
 
 describe('sweepStaleUploads', () => {
@@ -36,23 +45,56 @@ describe('sweepStaleUploads', () => {
     await expect(fs.access(path.join(root, 'myrepo'))).resolves.toBeUndefined();
   });
 
-  it('removes a stale promoted dir without a .gitnexus index, keeps one with it', async () => {
+  it('removes an unregistered stale promoted dir, keeps a registered one without local index', async () => {
     const now = 2_000_000_000_000;
     const old = new Date(now - 10 * 60 * 60 * 1000);
 
-    // Orphan: a failed analysis that never wrote an index.
+    // Orphan: a failed analysis that never registered its source directory.
     await fs.mkdir(path.join(root, 'orphan'));
     await fs.utimes(path.join(root, 'orphan'), old, old);
 
-    // Registered: stale but carries the .gitnexus index → must be kept.
-    await fs.mkdir(path.join(root, 'registered', '.gitnexus'), { recursive: true });
-    await fs.utimes(path.join(root, 'registered'), old, old);
+    // Registered: stale and its index is external, so it has no local
+    // `.gitnexus` directory at all. Registry membership is the persistence
+    // signal for promoted uploads.
+    const registered = path.join(root, 'registered');
+    await fs.mkdir(registered);
+    await fs.writeFile(
+      path.join(home, 'registry.json'),
+      JSON.stringify([
+        {
+          name: 'registered',
+          path: registered,
+          storagePath: path.join(home, 'storage', 'registered'),
+          indexedAt: '',
+          lastCommit: '',
+        },
+      ]),
+    );
+    await fs.utimes(registered, old, old);
 
     const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });
 
     expect(removed.some((r) => r.endsWith('orphan'))).toBe(true);
     await expect(fs.access(path.join(root, 'orphan'))).rejects.toBeTruthy();
     await expect(fs.access(path.join(root, 'registered'))).resolves.toBeUndefined();
+  });
+
+  it('still removes stale staging dirs but preserves promoted source dirs when the registry is corrupt', async () => {
+    const now = 2_000_000_000_000;
+    const old = new Date(now - 10 * 60 * 60 * 1000);
+    const staging = path.join(root, '.staging-old');
+    const promoted = path.join(root, 'promoted');
+    await fs.mkdir(staging);
+    await fs.mkdir(promoted);
+    await fs.utimes(staging, old, old);
+    await fs.utimes(promoted, old, old);
+    await fs.writeFile(path.join(home, 'registry.json'), '{"truncated":');
+
+    const { removed } = await sweepStaleUploads({ root, now, maxAgeMs: 6 * 60 * 60 * 1000 });
+
+    expect(removed).toContain(staging);
+    await expect(fs.access(staging)).rejects.toBeTruthy();
+    await expect(fs.access(promoted)).resolves.toBeUndefined();
   });
 
   it('tolerates a missing root', async () => {

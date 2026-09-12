@@ -16,6 +16,11 @@
 
 import path from 'path';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import {
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+} from '../../storage/storage-resolver.js';
+import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
 import { escapeCypherString } from '../lbug/cypher-escape.js';
 
 /**
@@ -68,10 +73,11 @@ async function findRepoForCwd(cwd: string): Promise<{
 
     if (!bestMatch) return null;
 
+    const storagePath = await requireRegisteredStoragePath(bestMatch, STATUS_STORAGE_REQUIREMENTS);
     return {
       name: bestMatch.name,
-      storagePath: bestMatch.storagePath,
-      lbugPath: path.join(bestMatch.storagePath, 'lbug'),
+      storagePath,
+      lbugPath: path.join(storagePath, LBUG_DIRECTORY),
     };
   } catch {
     return null;

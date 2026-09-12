@@ -26,11 +26,18 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import {
+  STORAGE_PATH_ENV,
+  STORAGE_ROOT_ENV,
+  storagePathFromRoot,
+} from '../../src/storage/storage-resolver.js';
 
 describe('assertAnalysisFinalized (#1169)', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let savedGitnexusHome: string | undefined;
+  let savedStoragePath: string | undefined;
+  let savedStorageRoot: string | undefined;
 
   const meta: RepoMeta = {
     repoPath: '',
@@ -43,12 +50,20 @@ describe('assertAnalysisFinalized (#1169)', () => {
     tmpHome = await createTempDir('gn-1169-home-');
     tmpRepo = await createTempDir('gn-1169-repo-');
     savedGitnexusHome = process.env.GITNEXUS_HOME;
+    savedStoragePath = process.env[STORAGE_PATH_ENV];
+    savedStorageRoot = process.env[STORAGE_ROOT_ENV];
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
   });
 
   afterEach(async () => {
     if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
     else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    if (savedStoragePath === undefined) delete process.env[STORAGE_PATH_ENV];
+    else process.env[STORAGE_PATH_ENV] = savedStoragePath;
+    if (savedStorageRoot === undefined) delete process.env[STORAGE_ROOT_ENV];
+    else process.env[STORAGE_ROOT_ENV] = savedStorageRoot;
     await tmpHome.cleanup();
     await tmpRepo.cleanup();
   });
@@ -115,6 +130,23 @@ describe('assertAnalysisFinalized (#1169)', () => {
     await registerRepo(tmpRepo.dbPath, meta);
 
     await expect(assertAnalysisFinalized(tmpRepo.dbPath)).resolves.toBeUndefined();
+  });
+
+  it('checks the analysis-selected external slot even when the environment changes afterward', async () => {
+    const storageRoot = path.join(tmpHome.dbPath, 'external-indexes');
+    const storagePath = storagePathFromRoot(storageRoot, tmpRepo.dbPath);
+    const externalMeta = { ...meta, repoPath: tmpRepo.dbPath, storagePath };
+    await saveMeta(storagePath, externalMeta);
+    await registerRepo(tmpRepo.dbPath, externalMeta, { storagePath });
+
+    // Simulate a parent process changing configuration after the worker has
+    // completed the analysis but before its finalization assertion runs.
+    process.env[STORAGE_ROOT_ENV] = path.join(tmpHome.dbPath, 'different-indexes');
+
+    await expect(assertAnalysisFinalized(tmpRepo.dbPath, storagePath)).resolves.toBeUndefined();
+    await expect(assertAnalysisFinalized(tmpRepo.dbPath)).rejects.toBeInstanceOf(
+      AnalysisNotFinalizedError,
+    );
   });
 
   it('matches registry entries case-insensitively on Windows so 8.3 short-name paths still finalize', async () => {

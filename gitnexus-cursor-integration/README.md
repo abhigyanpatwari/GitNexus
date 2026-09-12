@@ -6,11 +6,11 @@ Static config that adds GitNexus knowledge-graph augmentation and skill files to
 
 ## What you get
 
-| Layer                     | What it does                                                                                                                              | How it's installed                                                              |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| **MCP**                   | `gitnexus` MCP server with 17 tools (`query`, `context`, `impact`, `detect_changes`, `rename`, …)                                         | `npx gitnexus setup` writes `~/.cursor/mcp.json` automatically.                 |
-| **Skills**                | All bundled markdown skills (`/gitnexus-exploring`, `/gitnexus-debugging`, `/gitnexus-impact-analysis`, `/gitnexus-refactoring`, `/gitnexus-guide`, `/gitnexus-cli`, `/gitnexus-review`, `/gitnexus-plan`, `/gitnexus-work`, `/gitnexus-lfg`, `/gitnexus-pdg-query`, `/gitnexus-taint-analysis`) | `npx gitnexus setup` copies them to `~/.cursor/skills/gitnexus/`.               |
-| **Hooks** _(this README)_ | `postToolUse` hook that enriches `Shell` / `Read` / `Grep` tool calls with graph context — same augmentation Claude Code gets             | **Manual** — copy the files described below into your project's `.cursor/`. |
+| Layer                     | What it does                                                                                                                                                                                                                                                                                     | How it's installed                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| **MCP**                   | `gitnexus` MCP server with 17 tools (`query`, `context`, `impact`, `detect_changes`, `rename`, …)                                                                                                                                                                                                | `npx gitnexus setup` writes `~/.cursor/mcp.json` automatically.             |
+| **Skills**                | All bundled markdown skills (`/gitnexus-exploring`, `/gitnexus-debugging`, `/gitnexus-impact-analysis`, `/gitnexus-refactoring`, `/gitnexus-guide`, `/gitnexus-cli`, `/gitnexus-review`, `/gitnexus-plan`, `/gitnexus-work`, `/gitnexus-lfg`, `/gitnexus-pdg-query`, `/gitnexus-taint-analysis`) | `npx gitnexus setup` copies them to `~/.cursor/skills/gitnexus/`.           |
+| **Hooks** _(this README)_ | `postToolUse` hook that enriches `Shell` / `Read` / `Grep` tool calls with graph context — same augmentation Claude Code gets                                                                                                                                                                    | **Manual** — copy the files described below into your project's `.cursor/`. |
 
 ## Hook install
 
@@ -24,7 +24,8 @@ From this repo's `gitnexus-cursor-integration/hooks/`, copy the files below into
 │   └── hooks.json              ← from gitnexus-cursor-integration/hooks/hooks.json
 └── hooks/
     ├── gitnexus-hook.cjs       ← from gitnexus-cursor-integration/hooks/gitnexus-hook.cjs
-    └── hook-lock.cjs           ← from gitnexus-cursor-integration/hooks/hook-lock.cjs
+    ├── hook-lock.cjs           ← from gitnexus-cursor-integration/hooks/hook-lock.cjs
+    └── registry-query.cjs       ← from gitnexus-cursor-integration/hooks/registry-query.cjs
 ```
 
 Equivalent shell commands (run from your project root, with `$GITNEXUS_REPO` pointing at a clone of this repo):
@@ -34,6 +35,7 @@ mkdir -p .cursor hooks
 cp "$GITNEXUS_REPO/gitnexus-cursor-integration/hooks/hooks.json"        .cursor/hooks.json
 cp "$GITNEXUS_REPO/gitnexus-cursor-integration/hooks/gitnexus-hook.cjs" hooks/gitnexus-hook.cjs
 cp "$GITNEXUS_REPO/gitnexus-cursor-integration/hooks/hook-lock.cjs"     hooks/hook-lock.cjs
+cp "$GITNEXUS_REPO/gitnexus-cursor-integration/hooks/registry-query.cjs" hooks/registry-query.cjs
 ```
 
 If you already have a `.cursor/hooks.json`, merge the `hooks.postToolUse` array rather than overwriting.
@@ -47,11 +49,11 @@ If you already have a `.cursor/hooks.json`, merge the `hooks.postToolUse` array 
 
 ### What's installed manually vs. automated
 
-| Step                                                                 | Automated by `gitnexus setup`? |
-| -------------------------------------------------------------------- | ------------------------------ |
-| `~/.cursor/mcp.json`                                                 | ✅                             |
-| `~/.cursor/skills/gitnexus/*`                                        | ✅                             |
-| `<project>/.cursor/hooks.json` + `<project>/hooks/gitnexus-hook.cjs` + `<project>/hooks/hook-lock.cjs` | ❌ — copy manually (see above) |
+| Step                                                                                                                                          | Automated by `gitnexus setup`? |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `~/.cursor/mcp.json`                                                                                                                          | ✅                             |
+| `~/.cursor/skills/gitnexus/*`                                                                                                                 | ✅                             |
+| `<project>/.cursor/hooks.json` + `<project>/hooks/gitnexus-hook.cjs` + `<project>/hooks/hook-lock.cjs` + `<project>/hooks/registry-query.cjs` | ❌ — copy manually (see above) |
 
 Hook install is per-project (Cursor scopes hooks to a project root); skills and MCP config are global.
 
