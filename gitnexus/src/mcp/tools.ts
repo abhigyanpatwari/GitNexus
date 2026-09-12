@@ -1010,9 +1010,13 @@ export const REPO_SCOPED_TOOLS = new Set([
 for (const tool of GITNEXUS_TOOLS) {
   // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
   // The unpublished handler aliases in tool-arguments.ts stay off this schema on
-  // purpose (#2175), and closing it does not strand them: a client that reads
-  // inputSchema sends the advertised key, and one that sends an alias never read
-  // the schema. Publishing them instead would re-break Claude Code on `query`.
+  // purpose (#2175), and closing it strands no caller: every alias has an
+  // advertised counterpart reaching the same handler — `query` → `search_query`
+  // on query, `query` → `statement` on cypher, and `target` → `name` on group
+  // context, which local-backend maps to the group target (the group name comes
+  // from `repo: "@group"`, not from `name`; see test/unit/mcp/group-repo-routing).
+  // A schema-validating client therefore has a valid call for every tool, and
+  // advertising the aliases instead would re-break Claude Code on `query`.
   tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
