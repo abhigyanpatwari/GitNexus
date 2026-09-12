@@ -73,8 +73,9 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
   statIfExists: vi.fn().mockResolvedValue(null),
 }));
 
-const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } =
+const { initLbug, initLbugWithDb, closeLbug, isLbugReady, pinRepo, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
+const { createLbugDatabase } = await import('../../src/core/lbug/lbug-config.js');
 const { initWikiDb, closeWikiDb, pinWikiDb } = await import('../../src/core/wiki/graph-queries.js');
 
 describe('pool-adapter repo pinning (issue #2189)', () => {
@@ -250,5 +251,50 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     release2();
     await init('d-extra2');
     expect(isLbugReady('d-shared')).toBe(false);
+  });
+
+  it('a pin acquired while closeOne awaits db.close() does not survive teardown', async () => {
+    vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }),
+    }));
+
+    await init('late-pin');
+    const closing = closeLbug('late-pin');
+    await Promise.resolve();
+    pinRepo('late-pin');
+    await closing;
+    expect(isLbugReady('late-pin')).toBe(false);
+
+    await init('late-pin');
+    for (let i = 1; i <= 5; i++) await init(`late-fresh-${i}`);
+    expect(isLbugReady('late-pin')).toBe(false);
+  });
+
+  it('initLbugWithDb waits for an in-flight closeOne before registering', async () => {
+    vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
+      init: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }),
+    }));
+
+    await init('injected-overlap');
+    const closing = closeLbug('injected-overlap');
+    await Promise.resolve();
+    const injected = {
+      init: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const injecting = initLbugWithDb(
+      'injected-overlap',
+      injected as never,
+      dbPathFor('injected-overlap'),
+    );
+    await closing;
+    await injecting;
+    expect(isLbugReady('injected-overlap')).toBe(true);
   });
 });

@@ -444,6 +444,11 @@ async function closeOne(repoId: string): Promise<void> {
     }
   }
 
+  // Close yields on native db.close() above. A pinRepo during that await
+  // would otherwise survive teardown and apply to the next init, contradicting
+  // the documented lease contract (pins do not outlive closeOne).
+  pinnedRepos.delete(repoId);
+
   traceRss('close', repoId);
 }
 
@@ -934,6 +939,14 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttem
  * repoId already injected it), the existing entry is reused.
  */
 export async function initLbugWithDb(
+  repoId: string,
+  existingDb: lbug.Database,
+  dbPath: string,
+): Promise<void> {
+  return withPoolLock(() => initLbugWithDbInner(repoId, existingDb, dbPath));
+}
+
+async function initLbugWithDbInner(
   repoId: string,
   existingDb: lbug.Database,
   dbPath: string,
