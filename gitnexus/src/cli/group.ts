@@ -4,6 +4,7 @@ import type { Command } from 'commander';
 import type { RegistryWriteOutcome } from '../core/group/sync.js';
 import type { MatchType } from '../core/group/types.js';
 import { logger } from '../core/logger.js';
+import { formatIndexStatusCell } from './group-status-format.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
@@ -161,9 +162,7 @@ export function registerGroupCommands(program: Command): void {
             console.log(`  ${repoPath.padEnd(25)} MISSING   (no entry in the registry)`);
             continue;
           }
-          const idx = row.indexStale
-            ? `STALE     (${row.commitsBehind ?? '?'} commits behind)`
-            : 'OK        ';
+          const idx = formatIndexStatusCell(row);
           const ctr = row.contractsStale ? ' CONTRACTS_STALE' : '';
           console.log(`  ${repoPath.padEnd(25)} ${idx}${ctr}`);
         }

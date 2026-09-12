@@ -33,11 +33,18 @@ export interface BackendRepo {
   /** Non-primary branch indexes recorded for the same path. */
   branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
   /**
-   * Present only when the index is behind the repo's checked-out HEAD; absent
-   * means either up to date or not answerable (see the server's
-   * `repo-projection.ts`). Same shape MCP `list_repos` returns.
+   * Absent when the index is at the repo's checked-out HEAD. Otherwise `status`
+   * says what the server could establish: `behind` (with the counted
+   * `commitsBehind`), `diverged` (HEAD has moved off the indexed commit but the
+   * history needed to count the gap is gone, so there is no `commitsBehind`),
+   * or `unknown` (the repository could not be measured). Same shape MCP
+   * `list_repos` returns; see the server's `core/staleness-status.ts` (#3256).
    */
-  staleness?: { commitsBehind: number; hint?: string };
+  staleness?: {
+    status: 'behind' | 'diverged' | 'unknown';
+    commitsBehind?: number;
+    hint?: string;
+  };
   stats?: {
     files?: number;
     nodes?: number;

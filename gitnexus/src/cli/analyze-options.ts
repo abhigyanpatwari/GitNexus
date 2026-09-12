@@ -23,6 +23,7 @@ export interface AnalyzeOptions {
   /** Commander negated flag: false only when --no-parse-cache is passed. */
   parseCache?: boolean;
   repairFts?: boolean;
+  skipFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
    *   - `undefined` when the flag is omitted

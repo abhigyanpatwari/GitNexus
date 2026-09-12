@@ -518,7 +518,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
 ];
 
 /**
- * The 66 pairs NEITHER rule above generates — everything left after the two
+ * The pairs NEITHER rule above generates — everything left after the two
  * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
  * and DI: a container label crossed with a contained label. No predicate
  * describes that surface (any container can hold any definition).
@@ -531,6 +531,8 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * templates), the two `Route|Process` / `Tool|Process` entry points whose
  * emitter names both labels as literals, and `BasicBlock|BasicBlock`, the PDG
  * substrate.
+ * Spring dynamic lookup in a constructor also emits INJECTS to a synthetic
+ * @Bean CodeElement (#3238), so Constructor|CodeElement belongs here.
  *
  * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
  * any pair present in this block, so a redundant line does not merely duplicate
@@ -624,6 +626,7 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Constructor\` TO \`Impl\`,
   FROM \`Constructor\` TO \`Namespace\`,
   FROM \`Constructor\` TO \`Typedef\`,
+  FROM \`Constructor\` TO CodeElement,
   FROM Route TO Process,
   FROM Tool TO Process,
   FROM Destination TO \`Property\`,

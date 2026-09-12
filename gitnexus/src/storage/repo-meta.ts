@@ -28,6 +28,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
 
@@ -163,23 +164,28 @@ export interface RepoMeta {
        * `'unavailable'` (#2841). Mirrors `AnalysisResult.ftsSkipReason` in
        * core/run-analyze.ts — the same discriminator that surface already
        * reports to the CLI, persisted rather than re-derived because the two
-       * causes need OPPOSITE handling on the next run:
+       * causes need distinct diagnostics and recovery handling:
        *
        *  - `extension-unavailable` — the FTS extension could not load. Healable
-       *    from outside the repo (install it), so the up-to-date fast path
-       *    probes whether it loads now and re-analyzes when it does.
+       *    from outside the repo (install it), then rebuild with --repair-fts.
        *  - `build-failed` — the extension loaded fine and the index BUILD
        *    failed (e.g. one un-tokenizable pre-existing row, #2544/#2546).
        *    Deterministic: the same probe would "heal" it into a full
        *    re-analysis that degrades identically and restamps, forever. Only
        *    `--repair-fts` or a content change addresses it.
+       *  - `disabled-by-flag` / `disabled-by-env` — deliberate opt-out.
+       *    A later analyze without the opt-out rebuilds FTS at the same commit.
        *
        * Collapsing both into `status: 'unavailable'` is exactly what made that
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
        */
-      skipReason?: 'extension-unavailable' | 'build-failed';
+      skipReason?:
+        | 'extension-unavailable'
+        | 'build-failed'
+        | 'disabled-by-flag'
+        | 'disabled-by-env';
     };
     vectorSearch: {
       provider: string;
@@ -311,6 +317,15 @@ export interface RepoMeta {
    * reads as absent, and both correctly mean "no hedge available from here".
    */
   undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
+  /**
+   * Census of name-guessed call sites before edge coalescing, the impossible
+   * candidates the run refused, and the ambiguous
+   * `export *` names it declined to publish. Absent on indexes built before the
+   * census existed. The legacy key does not imply final edge counts: a precise
+   * site may prove a dependency shared with a guessed site.
+   * See `scope-resolution/name-fallback-summary.ts`.
+   */
+  nameFallbackEdges?: NameFallbackSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against

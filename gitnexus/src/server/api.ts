@@ -37,6 +37,7 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -724,6 +725,28 @@ export const handleFileRequest = async (
   }
 };
 
+async function loadFtsSession(storagePath: string): Promise<{
+  meta: Awaited<ReturnType<typeof loadMeta>>;
+  ftsDisabledReason: FtsDisabledReason | undefined;
+  skipFts?: true;
+}> {
+  const meta = await loadMeta(storagePath);
+  const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+  return {
+    meta,
+    ftsDisabledReason,
+    ...skipFtsOption(Boolean(ftsDisabledReason)),
+  };
+}
+
+function skipFtsOption(skipFts?: boolean): { skipFts?: true } {
+  return skipFts ? { skipFts: true } : {};
+}
+
+function readOnlyFtsOptions(skipFts?: true): { readOnly: true; skipFts?: true } {
+  return skipFts ? { readOnly: true, skipFts: true } : { readOnly: true };
+}
+
 export const handleQueryRequest = async (
   req: express.Request,
   res: express.Response,
@@ -749,9 +772,12 @@ export const handleQueryRequest = async (
       return;
     }
     const lbugPath = path.join(entry.storagePath, 'lbug');
-    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
-      readOnly: true,
-    });
+    const { skipFts } = await loadFtsSession(entry.storagePath);
+    const result = await withLbugDb(
+      lbugPath,
+      () => executePrepared(cypher, queryParams ?? {}),
+      readOnlyFtsOptions(skipFts),
+    );
     res.json({ result });
   } catch (err: any) {
     if (isReadOnlyDbError(err)) {
@@ -1151,6 +1177,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
       if (stream) {
         const abortController = new AbortController();
@@ -1182,7 +1209,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await withLbugDb(
             lbugPath,
             async () => streamGraphNdjson(res, includeContent, abortController.signal),
-            { readOnly: true },
+            readOnlyFtsOptions(skipFts),
           );
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
@@ -1195,9 +1222,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent), {
-        readOnly: true,
-      });
+      const graph = await withLbugDb(
+        lbugPath,
+        async () => buildGraph(includeContent),
+        readOnlyFtsOptions(skipFts),
+      );
       res.json(graph);
     } catch (err: any) {
       if (err instanceof ClientDisconnectedError) {
@@ -1238,6 +1267,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
+      const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
@@ -1266,7 +1296,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               sources: ['semantic'],
             }));
           } else if (mode === 'bm25') {
-            const ftsResponse = await searchFTSFromLbug(query, limit);
+            const ftsResponse = await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason);
             ftsAvailable = ftsResponse.ftsAvailable;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
@@ -1279,9 +1309,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (isEmbedderReady()) {
               const { semanticSearch: semSearch } =
                 await import('../core/embeddings/embedding-pipeline.js');
-              searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
+              searchResults = await hybridSearch(
+                query,
+                limit,
+                executeQuery,
+                semSearch,
+                ftsDisabledReason,
+              );
+              if (ftsDisabledReason) ftsAvailable = false;
             } else {
-              const ftsResponse = await searchFTSFromLbug(query, limit);
+              const ftsResponse = await searchFTSFromLbug(
+                query,
+                limit,
+                undefined,
+                ftsDisabledReason,
+              );
               ftsAvailable = ftsResponse.ftsAvailable;
               searchResults = ftsResponse.results;
             }
@@ -1375,11 +1417,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           return { searchResults: enriched, ftsAvailable };
         },
-        { readOnly: true },
+        readOnlyFtsOptions(skipFts),
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
-        response.warning = ftsDegradedWarning();
+        response.warning = ftsDegradedWarning(undefined, ftsDisabledReason);
       }
       res.json(response);
     } catch (err: any) {
@@ -1415,13 +1457,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // cut a stuck regex.test() when the wall-clock budget expires.
       const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const repoRoot = path.resolve(entry.path);
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(
         lbugPath,
         () =>
           executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
-        { readOnly: true },
+        readOnlyFtsOptions(skipFts),
       );
 
       const filePaths: string[] = [];
@@ -1811,187 +1854,197 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
             const lbugPath = path.join(entry.storagePath, 'lbug');
-            await withLbugDb(lbugPath, async () => {
-              const { runEmbeddingPipeline } =
-                await import('../core/embeddings/embedding-pipeline.js');
-              const { resolveEmbeddingIdentity } =
-                await import('../core/embeddings/embedding-identity.js');
-              const embeddingIdentity = resolveEmbeddingIdentity();
-              let embeddingMeta = await loadMeta(entry.storagePath);
-              if (!embeddingMeta) {
-                throw new Error('Repository metadata is missing; run gitnexus analyze first');
-              }
-              const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
-              // The SAME decision the CLI's resume gate makes
-              // (core/embedding-checkpoint.ts). This route used to hard-throw on
-              // any identity mismatch and ignore `attempts` entirely, so a
-              // `'partial'` marker written by `gitnexus analyze` and resumed
-              // here hit exactly the permanent wedge `kind` exists to remove:
-              // two readers of one record disagreeing about the rule it encodes.
-              // No `force`/`--drop-embeddings` equivalent exists on this route,
-              // so the flag options go unset and `'discard'` is unreachable —
-              // it is folded into the abandon arm rather than given an invented
-              // flag. `maxAttempts` is left to the shared default.
-              const resume = priorCheckpoint
-                ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
-                : undefined;
-              if (resume?.action === 'abort') throw new Error(resume.error);
-              if (resume?.action === 'abandon' || resume?.action === 'discard') {
-                logger.warn({ repo: entry.name }, resume.log);
-              }
-              const forceReembedNodeIds: ReadonlySet<string> =
-                resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
-              const saveEmbeddingCheckpoint = async (
-                checkpoint: {
-                  nodesProcessed: number;
-                  totalNodes: number;
-                  chunksProcessed: number;
-                },
-                pendingNodeIds: string[],
-                embeddings?: PersistedEmbeddingCount,
-              ): Promise<void> => {
-                // tri-review NEW-2: re-read immediately before writing (mirrors
-                // the pattern in run-analyze.ts's --repair-fts stamp) instead of
-                // spreading the stale `embeddingMeta` snapshot captured once at
-                // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
-                // without a fresh read, a concurrent writer's update (e.g. a
-                // --repair-fts capability stamp) would be silently reverted on
-                // every checkpoint save for the job's whole lifetime.
-                const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-                // `stats.embeddings` only moves when the caller MEASURED the
-                // live count (the post-flush `onCheckpoint`). The window-start
-                // callback measures nothing and passes nothing: restating the
-                // old count there would re-publish a stale number and clobber
-                // what a preceding `onCheckpoint` just wrote (same split as
-                // run-analyze.ts's checkpoint writer).
-                embeddingMeta = withMeasuredEmbeddingCount(
-                  {
-                    ...latestMeta,
-                    // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
-                    embeddingCheckpoint: mintInterruptedCheckpoint(
-                      embeddingIdentity,
-                      checkpoint,
-                      pendingNodeIds,
-                    ),
+            const ftsSession = await loadFtsSession(entry.storagePath);
+            let embeddingMeta = ftsSession.meta;
+            await withLbugDb(
+              lbugPath,
+              async () => {
+                const { runEmbeddingPipeline } =
+                  await import('../core/embeddings/embedding-pipeline.js');
+                const { resolveEmbeddingIdentity } =
+                  await import('../core/embeddings/embedding-identity.js');
+                const embeddingIdentity = resolveEmbeddingIdentity();
+                if (!embeddingMeta) {
+                  throw new Error('Repository metadata is missing; run gitnexus analyze first');
+                }
+                const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
+                // The SAME decision the CLI's resume gate makes
+                // (core/embedding-checkpoint.ts). This route used to hard-throw on
+                // any identity mismatch and ignore `attempts` entirely, so a
+                // `'partial'` marker written by `gitnexus analyze` and resumed
+                // here hit exactly the permanent wedge `kind` exists to remove:
+                // two readers of one record disagreeing about the rule it encodes.
+                // No `force`/`--drop-embeddings` equivalent exists on this route,
+                // so the flag options go unset and `'discard'` is unreachable —
+                // it is folded into the abandon arm rather than given an invented
+                // flag. `maxAttempts` is left to the shared default.
+                const resume = priorCheckpoint
+                  ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
+                  : undefined;
+                if (resume?.action === 'abort') throw new Error(resume.error);
+                if (resume?.action === 'abandon' || resume?.action === 'discard') {
+                  logger.warn({ repo: entry.name }, resume.log);
+                }
+                const forceReembedNodeIds: ReadonlySet<string> =
+                  resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
+                const saveEmbeddingCheckpoint = async (
+                  checkpoint: {
+                    nodesProcessed: number;
+                    totalNodes: number;
+                    chunksProcessed: number;
                   },
-                  embeddings,
-                );
-                await saveMeta(entry.storagePath, embeddingMeta);
-              };
-              /**
-               * Count the persisted rows, or report the answer never arrived.
-               * The TRI-STATE is carried to the fold rather than collapsed here:
-               * `unknown` is not 0, and only the fold knows what to carry
-               * forward instead (core/embedding-count.ts).
-               */
-              const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
-                const counted = await measurePersistedEmbeddingCount(executeQuery);
-                if (counted.kind === 'unknown') {
-                  logger.warn(
-                    { reason: counted.reason },
-                    '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+                  pendingNodeIds: string[],
+                  embeddings?: PersistedEmbeddingCount,
+                ): Promise<void> => {
+                  // tri-review NEW-2: re-read immediately before writing (mirrors
+                  // the pattern in run-analyze.ts's --repair-fts stamp) instead of
+                  // spreading the stale `embeddingMeta` snapshot captured once at
+                  // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
+                  // without a fresh read, a concurrent writer's update (e.g. a
+                  // --repair-fts capability stamp) would be silently reverted on
+                  // every checkpoint save for the job's whole lifetime.
+                  const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                  // `stats.embeddings` only moves when the caller MEASURED the
+                  // live count (the post-flush `onCheckpoint`). The window-start
+                  // callback measures nothing and passes nothing: restating the
+                  // old count there would re-publish a stale number and clobber
+                  // what a preceding `onCheckpoint` just wrote (same split as
+                  // run-analyze.ts's checkpoint writer).
+                  embeddingMeta = withMeasuredEmbeddingCount(
+                    {
+                      ...latestMeta,
+                      // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
+                      embeddingCheckpoint: mintInterruptedCheckpoint(
+                        embeddingIdentity,
+                        checkpoint,
+                        pendingNodeIds,
+                      ),
+                    },
+                    embeddings,
+                  );
+                  await saveMeta(entry.storagePath, embeddingMeta);
+                };
+                /**
+                 * Count the persisted rows, or report the answer never arrived.
+                 * The TRI-STATE is carried to the fold rather than collapsed here:
+                 * `unknown` is not 0, and only the fold knows what to carry
+                 * forward instead (core/embedding-count.ts).
+                 */
+                const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
+                  const counted = await measurePersistedEmbeddingCount(executeQuery);
+                  if (counted.kind === 'unknown') {
+                    logger.warn(
+                      { reason: counted.reason },
+                      '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+                    );
+                  }
+                  return counted;
+                };
+                // Fetch existing content hashes for incremental embedding.
+                // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
+                const { fetchExistingEmbeddingHashes } =
+                  await import('../core/lbug/lbug-adapter.js');
+                const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+                if (existingEmbeddings && existingEmbeddings.size > 0) {
+                  console.log(
+                    `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
                   );
                 }
-                return counted;
-              };
-              // Fetch existing content hashes for incremental embedding.
-              // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-              const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
-              const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-              if (existingEmbeddings && existingEmbeddings.size > 0) {
-                console.log(
-                  `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
-                );
-              }
-              const pipelineResult = await runEmbeddingPipeline(
-                executeQuery,
-                executeWithReusedStatement,
-                (p) => {
-                  embedJobManager.updateJob(job.id, {
-                    progress: {
-                      // `ready` maps to 'finalizing', NOT 'complete' (#2790).
-                      // The pipeline emits `ready`/100% unconditionally before
-                      // returning — including when it dropped nodes to endpoint
-                      // failures — and the route has not measured the index or
-                      // decided the outcome yet, so 'complete' here would make
-                      // the job record contradict itself (`status: 'analyzing'`,
-                      // `progress.phase: 'complete'`).
-                      phase:
-                        p.phase === 'ready'
-                          ? 'finalizing'
-                          : p.phase === 'error'
-                            ? 'failed'
-                            : p.phase,
-                      percent: p.percent,
-                      message:
-                        p.phase === 'loading-model'
-                          ? 'Loading embedding model...'
-                          : p.phase === 'embedding'
-                            ? `Embedding nodes (${p.percent}%)...`
-                            : p.phase === 'indexing'
-                              ? 'Creating vector index...'
-                              : p.phase === 'ready'
-                                ? 'Finalizing embeddings...'
-                                : `${p.phase} (${p.percent}%)`,
+                const pipelineResult = await runEmbeddingPipeline(
+                  executeQuery,
+                  executeWithReusedStatement,
+                  (p) => {
+                    embedJobManager.updateJob(job.id, {
+                      progress: {
+                        // `ready` maps to 'finalizing', NOT 'complete' (#2790).
+                        // The pipeline emits `ready`/100% unconditionally before
+                        // returning — including when it dropped nodes to endpoint
+                        // failures — and the route has not measured the index or
+                        // decided the outcome yet, so 'complete' here would make
+                        // the job record contradict itself (`status: 'analyzing'`,
+                        // `progress.phase: 'complete'`).
+                        phase:
+                          p.phase === 'ready'
+                            ? 'finalizing'
+                            : p.phase === 'error'
+                              ? 'failed'
+                              : p.phase,
+                        percent: p.percent,
+                        message:
+                          p.phase === 'loading-model'
+                            ? 'Loading embedding model...'
+                            : p.phase === 'embedding'
+                              ? `Embedding nodes (${p.percent}%)...`
+                              : p.phase === 'indexing'
+                                ? 'Creating vector index...'
+                                : p.phase === 'ready'
+                                  ? 'Finalizing embeddings...'
+                                  : `${p.phase} (${p.percent}%)`,
+                      },
+                    });
+                  },
+                  {}, // config: use defaults
+                  undefined, // skipNodeIds
+                  existingEmbeddings,
+                  {
+                    signal: embedController.signal,
+                    forceReembedNodeIds,
+                    onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+                      await saveEmbeddingCheckpoint(checkpoint, nodeIds);
                     },
-                  });
-                },
-                {}, // config: use defaults
-                undefined, // skipNodeIds
-                existingEmbeddings,
-                {
-                  signal: embedController.signal,
-                  forceReembedNodeIds,
-                  onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-                    await saveEmbeddingCheckpoint(checkpoint, nodeIds);
+                    onCheckpoint: async (checkpoint) => {
+                      // Count AFTER the flush, so the number describes rows that
+                      // are durable rather than rows still pending in the WAL.
+                      await flushWAL();
+                      await saveEmbeddingCheckpoint(
+                        checkpoint,
+                        [],
+                        await countPersistedEmbeddings(),
+                      );
+                    },
                   },
-                  onCheckpoint: async (checkpoint) => {
-                    // Count AFTER the flush, so the number describes rows that
-                    // are durable rather than rows still pending in the WAL.
-                    await flushWAL();
-                    await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());
-                  },
-                },
-              );
+                );
 
-              // Flush WAL so subsequent /api/search requests see the new
-              // embeddings immediately (#1149). In the CLI path closeLbug()
-              // handles this during process exit, but the server keeps the
-              // connection open for other routes — a CHECKPOINT is enough.
-              await flushWAL();
-              // Measure inside withLbugDb, after the flush and while the
-              // connection is still open — this is the route's only chance to
-              // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
-              // gets the same stamp: an honest count of a partial index is what
-              // makes it survivable.
-              const measuredEmbeddings = await countPersistedEmbeddings();
-              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
-              // above — and the outcome decision reads it too: its
-              // `embeddingCheckpoint` is the marker this run's own mid-run
-              // writer saved, which is the only record of the work when the
-              // count query could not answer.
-              const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-              const finalizeContext: EmbedRunFinalizeContext = {
-                measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
-                onDisk: finalMeta,
-                // The marker the job STARTED from — `finalMeta`'s has since been
-                // overwritten by the in-flight writer, so only this one carries
-                // the `'partial'` attempt chain.
-                resumedFrom: priorCheckpoint,
-              };
-              const outcome = resolveEmbedRunOutcome(
-                embeddingIdentity,
-                pipelineResult,
-                finalizeContext,
-              );
-              partialRunError = outcome.error;
-              partialRunDetail = outcome.partial;
-              embeddingMeta = withMeasuredEmbeddingCount(
-                { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
-                measuredEmbeddings,
-              );
-              await saveMeta(entry.storagePath, embeddingMeta);
-            });
+                // Flush WAL so subsequent /api/search requests see the new
+                // embeddings immediately (#1149). In the CLI path closeLbug()
+                // handles this during process exit, but the server keeps the
+                // connection open for other routes — a CHECKPOINT is enough.
+                await flushWAL();
+                // Measure inside withLbugDb, after the flush and while the
+                // connection is still open — this is the route's only chance to
+                // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
+                // gets the same stamp: an honest count of a partial index is what
+                // makes it survivable.
+                const measuredEmbeddings = await countPersistedEmbeddings();
+                // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
+                // above — and the outcome decision reads it too: its
+                // `embeddingCheckpoint` is the marker this run's own mid-run
+                // writer saved, which is the only record of the work when the
+                // count query could not answer.
+                const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                const finalizeContext: EmbedRunFinalizeContext = {
+                  measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
+                  onDisk: finalMeta,
+                  // The marker the job STARTED from — `finalMeta`'s has since been
+                  // overwritten by the in-flight writer, so only this one carries
+                  // the `'partial'` attempt chain.
+                  resumedFrom: priorCheckpoint,
+                };
+                const outcome = resolveEmbedRunOutcome(
+                  embeddingIdentity,
+                  pipelineResult,
+                  finalizeContext,
+                );
+                partialRunError = outcome.error;
+                partialRunDetail = outcome.partial;
+                embeddingMeta = withMeasuredEmbeddingCount(
+                  { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
+                  measuredEmbeddings,
+                );
+                await saveMeta(entry.storagePath, embeddingMeta);
+              },
+              skipFtsOption(ftsSession.skipFts),
+            );
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
             const current = embedJobManager.getJob(job.id);

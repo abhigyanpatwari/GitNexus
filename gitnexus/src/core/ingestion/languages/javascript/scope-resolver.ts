@@ -97,6 +97,12 @@ const javascriptScopeResolver: ScopeResolver = {
   // explicit imports at the call site. Workspace-wide unique-name fallback
   // recovers these edges.
   allowGlobalFreeCallFallback: true,
+
+  // Same ECMAScript `export *` exclusivity as TypeScript: a name declared by
+  // two wildcard sources is refused, not guessed.
+  exclusiveWildcardReexports: true,
+  // Same ECMAScript rule as TypeScript: named imports bind module-level declarations only.
+  namedImportsBindTopLevelOnly: true,
 };
 
 export { javascriptScopeResolver };
