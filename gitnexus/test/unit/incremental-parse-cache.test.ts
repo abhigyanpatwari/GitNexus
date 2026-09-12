@@ -266,12 +266,22 @@ describe('PARSE_CACHE_VERSION', () => {
   // recognizes form feed and vertical tab as C preprocessing whitespace.
   // Moved 96 -> 97 for #3179: comment-prefixed directives and invalid numeric
   // marker prefixes change the parse-time normalization result.
-  it('pins SCHEMA_BUMP to 97 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(97);
+  // Moved 97 -> 98 for #3219 (Zig callable-value references): `ZIG_SCOPE_QUERY`
+  // gained three `@reference.value-ref` rules, so a `.zig` file now yields
+  // `value-ref` entries in `ParsedFile.referenceSites` where it yielded none.
+  // A warm pre-v98 cache replays the old, empty site list for every unchanged
+  // file — `--force` included, since shards are content-addressed — so no USES
+  // edge is emitted, the boundary probe measures a real zero, and `impact` on a
+  // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
+  // silently un-fixed on exactly the incremental path most users are on.
+  // Moved 98 -> 99 for #3190: lexical import provenance and corrected export
+  // evidence. origin/main took 98 for #3219; 99 is the next free value.
+  it('pins SCHEMA_BUMP to 99 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(99);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

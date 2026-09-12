@@ -36,6 +36,18 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The tsconfig loader rebases `paths` targets through `path.resolve`, so the
+  // wildcard suffix it must recognise is `/*` on POSIX and `\*` on Windows. It
+  // only looked for `/*`, and every alias target came back as `src*` on
+  // Windows while the Ubuntu run stayed green — so this file has to run where
+  // the separator differs.
+  'test/unit/tsconfig-index.test.ts',
+  // The unit half of the same rebasing rule. Fixture-free and pathApi-injectable
+  // (every separator assertion passes an explicit `path.win32` / `path.posix`),
+  // so unlike the fixture suite above it fails on EVERY runner when the
+  // normalisation is removed rather than only on windows-latest. Registered
+  // beside its fixture sibling so the two halves stay discoverable as one group.
+  'test/unit/tsconfig-rebase-target.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)
@@ -130,6 +142,7 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
@@ -277,6 +290,11 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // The durable ParsedFile store's prune tolerates a chunk directory it cannot
+  // delete (#3204). The failures that motivate it — held handles, read-only
+  // mounts — are Windows- and macOS-flavored, and the permission-based case
+  // skips itself where chmod cannot block a delete, so run it everywhere.
+  'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',

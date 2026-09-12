@@ -8,6 +8,7 @@ import {
   type GroupRepoHandle,
 } from '../../../src/core/group/service.js';
 import { writeContractRegistry } from '../../../src/core/group/storage.js';
+import { formatIndexStatusCell } from '../../../src/cli/group-status-format.js';
 import type { ContractRegistry, StoredContract, CrossLink } from '../../../src/core/group/types.js';
 
 function makeTmpGroup(): { tmpDir: string; groupDir: string; cleanup: () => void } {
@@ -530,6 +531,50 @@ repos:
         expect(result.group).toBe('test-group');
         expect(result.repos['app/backend'].missing).toBe(true);
         expect(result.repos['app/frontend'].missing).toBe(true);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    // #3256: a resolvable repo with no recorded commit. The formatter tests
+    // hand-build this row; this one drives the real composition, so swapping
+    // the no-commit literal for the git-probe `unknown()` (indexStale: false,
+    // commitsBehind: 0) would print `OK` here and fail.
+    it('test_groupStatus_reports_no_recorded_commit_as_unknown_and_renders_it_as_?', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        // Resolves, but its storage holds no meta.json, so nothing was recorded.
+        const storagePath = path.join(tmpDir, 'no-meta', '.gitnexus');
+        fs.mkdirSync(storagePath, { recursive: true });
+        const port = makePort({
+          resolveRepo: vi.fn(
+            async (name?: string): Promise<GroupRepoHandle> => ({
+              id: name || 'test',
+              name: name || 'test',
+              repoPath: path.join(tmpDir, 'no-meta'),
+              storagePath,
+            }),
+          ),
+        });
+
+        const svc = new GroupService(port);
+        const result = (await svc.groupStatus({ name: 'test-group' })) as {
+          repos: Record<
+            string,
+            { indexStale: boolean; commitsBehind?: number; status?: string; missing: boolean }
+          >;
+        };
+
+        const row = result.repos['app/backend'];
+        expect(row).toMatchObject({
+          missing: false,
+          indexStale: true,
+          commitsBehind: -1,
+          status: 'unknown',
+        });
+        expect(formatIndexStatusCell(row)).toBe('STALE     (? commits behind)');
       } finally {
         vi.unstubAllEnvs();
         cleanup();

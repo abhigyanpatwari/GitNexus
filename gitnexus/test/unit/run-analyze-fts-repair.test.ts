@@ -827,6 +827,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // Select the atomic path on Windows too; the native adapter is mocked below.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     // The single-writer lock rules out a concurrent-writer race, so an
     // integrity-class FTS failure on the atomic-swap (--force) path is a real
     // broken build: run-analyze must throw BEFORE swapping the staging DB in,

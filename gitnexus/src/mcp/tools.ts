@@ -28,6 +28,7 @@ export interface ToolDefinition {
       }
     >;
     required: string[];
+    additionalProperties?: false;
   };
 }
 
@@ -291,14 +292,15 @@ Handles disambiguation: if multiple symbols share the same name, returns ranked 
 NOTE: ACCESSES edges (field read/write tracking) are included in context results with reason 'read' or 'write'. CALLS edges resolve through field access chains and method-call chains (e.g., user.address.getCity().save() produces CALLS edges at each step).
 
 COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
-- epistemic: 'exact' | 'lower-bound' — 'lower-bound' means callers exist that this view provably does not list.
+- epistemic: 'exact' | 'lower-bound' — 'lower-bound' means incoming is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run. Do not read it as proof that an omitted caller exists — read boundaries for which of the two it is.
 - boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
-- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
+- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
   - causes.scopeExtractionFiles (unit: files) > 0 — scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run \`gitnexus analyze --force\`; if the reason persists, inspect the extraction warnings.
   - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
   - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
   - causes.dispatchBoundary (unit: symbols) > 0 — DI or interface dispatch: that many symbols sit on or beyond a boundary static analysis cannot cross. Irreducible. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.
   - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 — the analyzer could not decide whether a type satisfies an interface, so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Usually fixable by making the missing dependency available to analysis.
+  - causes.callableValueReferences (unit: symbols) > 0 — that many symbols name this callable as a VALUE instead of calling it (a Zig registration table or const initialiser, a JS/TS object-literal property value). A bare callback argument in JS/TS is not captured today and is not counted, so a 0 does not rule that shape out; nor does it, on an index built before the language emitted these captures — re-analyze first. The reference is in the graph as a USES edge; the call made THROUGH the value is not, because it is dispatched later from wherever the value was stored. incoming.calls is therefore a floor. Follow the USES edges to find the registration, then the code that reads it. It is 0 when the analyzer DID synthesize the dispatch through a registered property key. That exclusion is per SYMBOL, not per registration: a target with BOTH a followed registration and an unfollowed escape reads 0 here, so a 0 means 'no unfollowed registration was proven', not 'this symbol escapes nowhere'. A 0 alongside epistemic 'lower-bound' can also mean the probe itself could not run — read boundaries for which.
 
 REQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from "nothing was dropped" unless the schema probe detects the stale index — re-run \`gitnexus analyze\` before trusting a zero or an apparently exact result.
 
@@ -488,15 +490,16 @@ Output includes:
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect; classification-unavailable when that secondary query fails)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list. An item carries staticGated:true only when the edge that reached it is provably unreachable at compile time from the indexed source (today: Zig calls inside an 'if (CONST_FALSE)' body or the else of 'if (CONST_TRUE)'); the field is absent when the edge is live or the language does not model it. Traversal and risk do NOT filter or rank on it: it is metadata for the caller to weigh.
-- epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the walk provably missed callers, so the count is a floor. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
+- epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the count is a FLOOR: either the walk provably missed callers, or a probe that would have established completeness could not run (a failed callable-value-reference query says so in boundaries). It is not itself proof that an omitted caller exists — branch on causes and read boundaries. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
 - boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
-- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
+- causes: { scopeExtractionFiles, receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction, callableValueReferences } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
   - causes.scopeExtractionFiles (unit: files) > 0 — scope extraction still failed after the fallback pass, so scope-resolution edges from those files are absent. A value of 0 does not prove completeness when epistemic is 'lower-bound' because an older or unverified index has no measured file count. Re-run \`gitnexus analyze --force\`; if the reason persists, inspect the extraction warnings.
   - causes.receiverTyping (unit: call sites) > 0 — the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.
   - causes.externalBoundary (unit: call sites) > 0 — those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.
   - causes.dispatchBoundary (unit: symbols) > 0 — DI or interface dispatch: that many symbols sit on or beyond a boundary a static walk cannot cross. Irreducible. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value. A framework runtime-proxy boundary can make epistemic lower-bound while this value remains 0 because endpoint metadata proves the gap but cannot count omitted symbols.
 
   - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 — the analyzer could not DECIDE whether a type satisfies an interface (a type in a required signature named a package it could not resolve), so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Distinct from every cause above, which count decided facts that could not be attributed; this one counts questions never answered. It is the only cause that shortens a result WITHOUT leaving a trace in the graph, so an unhedged zero on a symbol reached only through such an interface would otherwise read as 'nobody calls this'. Usually fixable: it most often means a dependency is missing from the analyzed tree.
+  - causes.callableValueReferences (unit: symbols) > 0 — that many symbols name this callable as a VALUE rather than calling it: 'bridge.accessor(Element.getNamespaceUri, ...)' and 'pub const h = onReset;' in Zig, '{ onClick: handler }' in JS/TS. Those are the shapes actually captured today — a bare callback argument in JS/TS ('qsort'-style, 'setTimeout(tick)') is NOT one of them and is not counted, so a 0 here does not rule that shape out. The registration IS modelled (a USES edge); the invocation through the stored value is NOT, because it happens later via a struct field, a registry lookup or comptime reflection. So impactedCount is a floor and a LOW risk verdict on such a symbol is a floor too. Unlike dispatchBoundary this is often reducible — it usually means the language provider does not yet follow that store/load — but until it is, do NOT read an empty or small caller set as 'safe to change'. It is an exact count, not a capped sample. It is 0 when the analyzer DID synthesize the dispatch through a registered property key, and epistemic stays 'exact' on that account. That exclusion is symbol-level, not edge-level — the graph does not record which registration produced which synthesized call — so a symbol with a mix of followed and unfollowed registrations also reads 0: treat a 0 as 'no unfollowed registration was proven', not as proof the value escapes nowhere. A 0 alongside epistemic 'lower-bound' can instead mean the probe could not run at all, so read boundaries to tell those apart. Read from the graph, so it needs no index-time metadata BEYOND the edges being there: an index built by an analyzer that did not yet emit this language's value-ref captures has none, and reports 0. Re-analyze before reading a 0 as measured.
 
 REQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.externalBoundary, causes.undecidedSatisfaction, and framework runtime-proxy boundary detection depend on index-time metadata that only a current analyzer writes. Against an older index the metadata can be absent, which is indistinguishable from "nothing was dropped" unless the schema probe detects the stale index — re-run \`gitnexus analyze\` before trusting a zero or an apparently exact result.
 
@@ -571,6 +574,13 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           description: 'Max relationship depth (default: 3, server clamps to 1–32)',
           default: 3,
           minimum: 1,
+          maximum: IMPACT_MAX_DEPTH,
+        },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
+          minimum: 0,
           maximum: IMPACT_MAX_DEPTH,
         },
         crossDepth: {
@@ -929,6 +939,13 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
           minimum: 1,
           maximum: 30,
         },
+        depth: {
+          type: 'number',
+          description:
+            'Compatibility alias for maxDepth (CLI --depth). Values must agree when both are present. Literal 0 is an omitted-value compatibility sentinel.',
+          minimum: 0,
+          maximum: 30,
+        },
         includeTests: {
           type: 'boolean',
           description: 'Include test-file symbols in traversal (default: false)',
@@ -991,6 +1008,16 @@ export const REPO_SCOPED_TOOLS = new Set([
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {
+  // Advertises a closed schema; tools/call still fail-closes on the scrubbed key list.
+  // The unpublished handler aliases in tool-arguments.ts stay off this schema on
+  // purpose (#2175), and closing it strands no caller: every alias has an
+  // advertised counterpart reaching the same handler — `query` → `search_query`
+  // on query, `query` → `statement` on cypher, and `target` → `name` on group
+  // context, which local-backend maps to the group target (the group name comes
+  // from `repo: "@group"`, not from `name`; see test/unit/mcp/group-repo-routing).
+  // A schema-validating client therefore has a valid call for every tool, and
+  // advertising the aliases instead would re-break Claude Code on `query`.
+  tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's

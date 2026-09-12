@@ -48,6 +48,7 @@ describe('LocalBackend @group repo routing', () => {
   let groupSpyQuery: ReturnType<typeof vi.spyOn>;
   let groupSpyImpact: ReturnType<typeof vi.spyOn>;
   let groupSpyContext: ReturnType<typeof vi.spyOn>;
+  let groupSpyTrace: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-atgrp-'));
@@ -73,6 +74,9 @@ repos:
       group: 'g1',
       results: [],
     });
+    groupSpyTrace = vi
+      .spyOn(GroupService.prototype, 'groupTrace')
+      .mockResolvedValue({ via: 'trace' });
   });
 
   afterEach(() => {
@@ -121,6 +125,46 @@ repos:
         direction: 'upstream',
       }),
     );
+  });
+
+  it('forwards folded depth as maxDepth on group impact (#3261)', async () => {
+    const backend = new LocalBackend();
+    await backend.callTool('impact', {
+      repo: '@g1',
+      target: 'Sym',
+      direction: 'upstream',
+      depth: 2,
+    });
+    expect(groupSpyImpact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'g1',
+        target: 'Sym',
+        direction: 'upstream',
+        maxDepth: 2,
+      }),
+    );
+    const arg = groupSpyImpact.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('depth');
+  });
+
+  it('forwards folded depth as maxDepth on group trace (#3261)', async () => {
+    const backend = new LocalBackend();
+    await backend.callTool('trace', {
+      repo: '@g1',
+      from: 'A',
+      to: 'B',
+      depth: 2,
+    });
+    expect(groupSpyTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'g1',
+        from: 'A',
+        to: 'B',
+        maxDepth: 2,
+      }),
+    );
+    const arg = groupSpyTrace.mock.calls[0][0] as Record<string, unknown>;
+    expect(arg).not.toHaveProperty('depth');
   });
 
   it('routes context to groupContext', async () => {

@@ -23,6 +23,28 @@ export interface BackendRepo {
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
   indexedAt: string;
   lastCommit?: string;
+  /**
+   * Branch this index was built from. Absent on legacy entries and non-git
+   * repos. Since #3199 a branch-pinned analyze registers its own entry, so this
+   * is what tells two entries for the same repository apart — the name is
+   * derived from the clone directory and is not a contract.
+   */
+  branch?: string;
+  /** Non-primary branch indexes recorded for the same path. */
+  branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
+  /**
+   * Absent when the index is at the repo's checked-out HEAD. Otherwise `status`
+   * says what the server could establish: `behind` (with the counted
+   * `commitsBehind`), `diverged` (HEAD has moved off the indexed commit but the
+   * history needed to count the gap is gone, so there is no `commitsBehind`),
+   * or `unknown` (the repository could not be measured). Same shape MCP
+   * `list_repos` returns; see the server's `core/staleness-status.ts` (#3256).
+   */
+  staleness?: {
+    status: 'behind' | 'diverged' | 'unknown';
+    commitsBehind?: number;
+    hint?: string;
+  };
   stats?: {
     files?: number;
     nodes?: number;
@@ -663,7 +685,14 @@ export type BackendProbeStatus = 'ok' | 'unauthorized' | 'unreachable';
  */
 export const probeBackendStatus = async (): Promise<BackendProbeStatus> => {
   try {
-    const response = await fetchWithTimeout(`${_backendUrl}/api/repos`, {}, PROBE_TIMEOUT_MS);
+    // `/api/health` rather than `/api/repos`: this is a liveness question on a
+    // 2s budget, and `/api/repos` now spawns a `git rev-list` per registered
+    // repo to answer freshness. Probing it made the cost of "is the server up?"
+    // scale with the number of indexed repos, and a failed probe re-polls,
+    // stacking more children on the way (#3232 review). `/api/health` is a
+    // constant, and still sits behind the same `/api/*` edge gate, so the 401
+    // branch below keeps distinguishing "gated" from "not there".
+    const response = await fetchWithTimeout(`${_backendUrl}/api/health`, {}, PROBE_TIMEOUT_MS);
     if (response.status === 200) return 'ok';
     return response.status === 401 ? 'unauthorized' : 'unreachable';
   } catch {

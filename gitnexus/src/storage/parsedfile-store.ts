@@ -620,6 +620,22 @@ export const prepareDurableParsedFileChunk = async (
 };
 
 /**
+ * Does this chunk still hold shards from a generation nobody cleared?
+ *
+ * Asked only after {@link prepareDurableParsedFileChunk} rejected, to tell its
+ * two failure modes apart (#3204). The `rm` failing leaves the previous
+ * generation in place, and a warm hit would union it with whatever this run's
+ * workers write — that chunk must be retired. The `rm` succeeding and the
+ * `mkdir` then failing leaves NO directory: the workers recreate it and write
+ * a clean generation, so retiring would throw away a good cache entry for
+ * nothing. Absent or empty ⇒ nothing to distrust.
+ */
+export const durableChunkHasStaleShards = async (
+  durableDir: string,
+  chunkHash: string,
+): Promise<boolean> => (await listV8Shards(durableChunkDir(durableDir, chunkHash))).length > 0;
+
+/**
  * Synchronous durable-shard writer for use INSIDE a parse worker, alongside
  * {@link persistParsedFileShardSync}. Writes the SAME bytes to a content-addressed
  * durable location keyed by the parse chunk hash so a future warm hit can reuse
@@ -728,8 +744,9 @@ export const loadDurableParsedFileIndex = async (
  * Prune the durable store to `keepKeys` and rewrite its index. `keepKeys` must
  * be the parse cache's surviving on-disk keys (so the two stores stay coherent:
  * a chunk is "cached" iff BOTH its parse-cache shard and its durable shards
- * exist; a quarantined chunk — no parse-cache shard — drops its durable subdir
- * here and re-dispatches next run). Only chunks whose envelopes all validate
+ * exist; a chunk retired by `markParseCacheChunkStale` — worker-quarantined, or
+ * holding a durable generation that could not be reset — is absent from
+ * `keepKeys`, so it drops its durable subdir here and re-dispatches next run). Only chunks whose envelopes all validate
  * are indexed, together with their exact persisted path coverage (never vouch
  * for a missing/corrupt shard). The index write is tmp+rename atomic.
  */
@@ -745,6 +762,8 @@ export const pruneAndSaveDurableParsedFileStore = async (
     return; // nothing written this run
   }
   const survivors: Record<string, string[]> = {};
+  const undeletable: string[] = [];
+  let firstRemoveError: unknown;
   for (const name of entries) {
     if (name === DURABLE_INDEX_FILENAME) continue;
     const full = path.join(durableDir, name);
@@ -771,7 +790,29 @@ export const pruneAndSaveDurableParsedFileStore = async (
         /* not a readable dir → drop below */
       }
     }
-    await fs.rm(full, { recursive: true, force: true });
+    // The causes that break `prepareDurableParsedFileChunk` — permissions, a
+    // locked file, a read-only mount — break this rm too (#3204). Dropping the
+    // entry from the index is what makes the chunk unreachable; losing the
+    // directory is a cleanup bonus. Never let one of them abort the loop and
+    // cost every remaining chunk its index entry.
+    try {
+      await fs.rm(full, { recursive: true, force: true });
+    } catch (err) {
+      // `name` reached the drop branch precisely because it is not a live
+      // chunk key, so it may be any stray directory — report it as an entry.
+      undeletable.push(name);
+      firstRemoveError ??= err;
+    }
+  }
+  if (undeletable.length > 0) {
+    // One line per RUN, not per directory: a store-wide cause (read-only mount,
+    // wrong ownership) hits every non-survivor, and thousands of warns would
+    // bury the message that matters.
+    logger.warn(
+      { err: firstRemoveError, count: undeletable.length, firstEntry: undeletable[0] },
+      'parsedfile-cache: could not remove pruned durable chunk directories; ' +
+        'they are excluded from the index and will be re-attempted next run',
+    );
   }
   const idx: DurableParsedFileIndex = { version, entries: survivors };
   const tmp = path.join(durableDir, `${DURABLE_INDEX_FILENAME}.tmp`);
@@ -810,7 +851,20 @@ export const mergeStagedDurableParsedFileStore = async (
     if (name === DURABLE_INDEX_FILENAME) continue;
     const from = path.join(stagedDir, name);
     const to = path.join(liveDir, name);
-    await replaceDurableChunkDir(from, to);
+    // Same reasoning as the prune's per-entry guard, on the loop that runs
+    // BEFORE it (#3204): this overlay targets the same live chunk directories,
+    // so the causes that break a reset break a replacement too. Letting one
+    // throw here would skip the prune entirely — the durable index would not be
+    // rewritten this run, and a retired chunk would keep its directory.
+    try {
+      await replaceDurableChunkDir(from, to);
+    } catch (err) {
+      logger.warn(
+        { err, entry: name },
+        'parsedfile-cache: could not publish a staged durable chunk; ' +
+          'it stays uncached and will re-dispatch next run',
+      );
+    }
   }
   await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
 };
@@ -824,6 +878,12 @@ const replaceDurableChunkDir = async (from: string, to: string): Promise<void> =
     /* dest exists, or the rename is cross-device */
   }
   const backup = `${to}.replacing`;
+  // Deliberately NOT best-effort. If a non-empty backup survives, the
+  // `fs.rename(to, backup)` below cannot overwrite it and is swallowed as
+  // "dest was missing", so the `fs.cp` fallback would merge the staged
+  // generation INTO the live directory — manufacturing exactly the old+new
+  // union this fix exists to prevent. Let it throw; the caller's per-entry
+  // guard keeps one such chunk from costing the others their prune.
   await fs.rm(backup, { recursive: true, force: true });
   let backedUp = false;
   try {
@@ -847,6 +907,8 @@ const replaceDurableChunkDir = async (from: string, to: string): Promise<void> =
     throw err;
   }
   if (backedUp) {
-    await fs.rm(backup, { recursive: true, force: true });
+    // The new generation is already in place; an undeletable backup is litter,
+    // not a failure. The next prune re-attempts it.
+    await fs.rm(backup, { recursive: true, force: true }).catch(() => {});
   }
 };

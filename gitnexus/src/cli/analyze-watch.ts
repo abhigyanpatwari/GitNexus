@@ -9,6 +9,7 @@ import {
   type AnalyzeOptions as CoreAnalyzeOptions,
   type AnalyzeResult,
 } from '../core/run-analyze.js';
+import { isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { GITNEXUS_DIR } from '../storage/repo-meta.js';
@@ -176,6 +177,7 @@ export async function resolveWatchOptions(
 
   return {
     pdg: merged.pdg,
+    skipFts: merged.skipFts,
     branch,
     registryName: merged.name,
     allowDuplicateName: merged.allowDuplicateName,
@@ -241,6 +243,9 @@ export function shouldStopAfterWatchRefreshFailure(
   error: unknown,
   paths: readonly string[],
 ): boolean {
+  if (isIndexLockGuardTimeout(error)) {
+    return true;
+  }
   return (
     paths.length > 0 &&
     !(error instanceof WatchControlReloadError) &&
@@ -516,9 +521,15 @@ export async function watchCommandWithRunnerIdentity(
             const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
+              const guardTimeout = isIndexLockGuardTimeout(error);
               cliError(
                 `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  'Watch mode is stopping because the live index may have been updated in place.',
+                  (guardTimeout
+                    ? 'Watch mode is stopping because the acquisition guard needs quiesced recovery; see RUNBOOK.md.'
+                    : 'Watch mode is stopping because the live index may have been updated in place.'),
+                guardTimeout
+                  ? { recoveryHint: 'index-lock-guard-recovery', guardPath: error.guardPath }
+                  : undefined,
               );
               stopWatching();
               return;

@@ -1346,7 +1346,13 @@ export const TYPESCRIPT_SCOPE_QUERY = `
  * (\`<Foo>...</Foo>\`) emit; the closing tag is intentionally NOT captured —
  * each JSX element should emit exactly one CALLS edge per use site.
  */
-const TSX_JSX_QUERY_SUFFIX = `
+/**
+ * Exported alongside `TYPESCRIPT_SCOPE_QUERY` so
+ * `value-ref-dispatchability.test.ts` checks the whole query a `.tsx` file is
+ * analyzed with. Checking the base alone would miss a `value-ref` rule added
+ * here. Not part of the provider surface — use `getTsScopeQuery`.
+ */
+export const TSX_JSX_QUERY_SUFFIX = `
 ;; <Foo />
 ((jsx_self_closing_element
   name: (identifier) @reference.name) @reference.call.free
