@@ -378,9 +378,6 @@ async function upsertGitNexusSection(
       // drop the parenthetical but still refresh the project name so renames
       // propagate.
       const newStatsInner = `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`;
-      const statsLine = noStats
-        ? `Indexed as **${projectName}**`
-        : `Indexed as **${projectName}** (${newStatsInner})`;
 
       // Match either canonical phrasing at line start (`^` with `m` flag) so we
       // cannot replace prose embedded mid-paragraph. Deliberately no `$`: text
@@ -388,10 +385,15 @@ async function upsertGitNexusSection(
       // The parenthetical is optional so a count-free line left by a prior
       // --no-stats run still matches — letting the name refresh, and letting
       // counts return if --no-stats is later dropped.
-      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
+      const statsPattern = /^(Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
+      const statsMatch = existingSection.match(statsPattern);
 
-      if (statsPattern.test(existingSection)) {
-        const updatedSection = existingSection.replace(statsPattern, statsLine);
+      if (statsMatch) {
+        const statsPrefix = statsMatch[1];
+        const statsLine = noStats
+          ? `${statsPrefix} **${projectName}**`
+          : `${statsPrefix} **${projectName}** (${newStatsInner})`;
+        const updatedSection = existingSection.replace(statsPattern, () => statsLine);
         // Count-only delta — leave the committed lean block alone (#2907). A
         // project rename, or --no-stats dropping the parenthetical, still writes.
         if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
