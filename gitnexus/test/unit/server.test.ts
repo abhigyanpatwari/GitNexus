@@ -342,8 +342,9 @@ describe('MCP output budgets', () => {
   });
 
   it('accepts CLI-style depth as a known impact alias (#3261)', async () => {
-    // The CLI flag is --depth; MCP advertises maxDepth. Before #3261, `depth`
-    // was silently dropped. After the fix it is a known alias and is forwarded.
+    // The CLI flag is --depth; since #3261 MCP advertises it alongside maxDepth
+    // as a compatibility alias. Before #3261, `depth` was silently dropped.
+    // After the fix it is a known alias and is forwarded.
     const backend = createMockBackend();
     const { isError } = await callToolThroughServer(backend, 'impact', {
       target: 'auth',
