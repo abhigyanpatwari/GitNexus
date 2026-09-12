@@ -145,13 +145,16 @@ export function foldNumericToolArgumentAliases(
       if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
       const value = normalized[key];
       if (value === undefined) continue;
-      if (typeof value !== 'number' || Number.isNaN(value)) {
+      if (typeof value !== 'number') {
         return { error: `MCP parameter ${toolName}.${key} must be a number.` };
       }
-      // #2279: some MCP adapters materialize an omitted optional number as 0.
-      // Treat that sentinel as absent so it cannot conflict with a real
-      // maxDepth or fold onto params.maxDepth || 3.
-      if (value === 0) continue;
+      // #2279: some MCP adapters materialize an omitted optional number as 0,
+      // and a coerced missing value arrives as NaN. Treat both sentinels as
+      // absent so they cannot conflict with a real maxDepth or fold onto
+      // `params.maxDepth || 3`. The handlers already map a non-positive or
+      // non-integer maxDepth to their default; erroring here turned that
+      // contract into an error payload instead.
+      if (value === 0 || Number.isNaN(value)) continue;
       supplied.push({ key, value });
     }
     const distinctValues = new Set(supplied.map(({ value }) => value));
@@ -162,8 +165,9 @@ export function foldNumericToolArgumentAliases(
           .join(', ')} must agree.`,
       };
     }
-    for (const key of aliases) delete normalized[key];
-    if (normalized[canonical] === 0) delete normalized[canonical];
+    // Drop every source key, then write back the single agreed value (if any),
+    // so a sentinel 0/NaN never survives on the canonical key.
+    for (const key of keys) delete normalized[key];
     if (supplied.length > 0) normalized[canonical] = supplied[0].value;
   }
   return { params: normalized };

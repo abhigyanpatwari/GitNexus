@@ -129,4 +129,19 @@ describe('foldNumericToolArgumentAliases', () => {
       params: { target: 'auth' },
     });
   });
+
+  it('treats NaN maxDepth as omitted so trace keeps its default-depth contract', () => {
+    expect(
+      foldNumericToolArgumentAliases('trace', { from: 'A', to: 'B', maxDepth: Number.NaN }),
+    ).toEqual({ params: { from: 'A', to: 'B' } });
+    expect(foldNumericToolArgumentAliases('trace', { maxDepth: Number.NaN, depth: 2 })).toEqual({
+      params: { maxDepth: 2 },
+    });
+  });
+
+  it('keeps a negative depth so the handler applies its own default', () => {
+    expect(foldNumericToolArgumentAliases('trace', { depth: -5 })).toEqual({
+      params: { maxDepth: -5 },
+    });
+  });
 });
