@@ -964,12 +964,16 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
   // `+++` after the first `@@` of a file is hunk body (`+` plus source text
   // that itself starts `++ …`), not another file header.
   let inHunk = false;
+  // A deleted file has no new-side coordinates. Its indexed symbols still use
+  // the pre-delete file, so map those hunks with the old-side range instead.
+  let currentFileDeleted = false;
   for (const line of diffOutput.split('\n')) {
     if (line.startsWith(DIFF_GIT_PREFIX)) {
       // Drop the previous file first: an unparsed header must not leave
       // `current` live for a later `@@` / quoted `+++` to steal.
       current = null;
       inHunk = false;
+      currentFileDeleted = false;
       const filePath = filePathFromGitHeader(line);
       if (filePath) {
         current = { filePath, hunks: [] };
@@ -985,6 +989,8 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
         current = { filePath, hunks: [] };
         files.push(current);
       }
+    } else if (!inHunk && line === '+++ /dev/null') {
+      currentFileDeleted = true;
     } else if (!inHunk && line.startsWith('+++ ')) {
       const filePath = pathFromPlusPlusPlus(line);
       if (!filePath) continue;
@@ -994,10 +1000,12 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
       }
     } else if (line.startsWith('@@') && current) {
       inHunk = true;
-      const match = line.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/);
+      const match = line.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
       if (match) {
-        const start = parseInt(match[1], 10);
-        const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+        const sideOffset = currentFileDeleted ? 1 : 3;
+        const start = parseInt(match[sideOffset], 10);
+        const rawCount = match[sideOffset + 1];
+        const count = rawCount !== undefined ? parseInt(rawCount, 10) : 1;
         if (count > 0) {
           current.hunks.push({ startLine: start, endLine: start + count - 1 });
         } else {
