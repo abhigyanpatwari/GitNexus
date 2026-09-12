@@ -515,9 +515,41 @@ describe('LocalBackend.callTool', () => {
     expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
   });
 
+  it('folds CLI-style depth onto maxDepth before impact (#3261)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      depth: 2,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
+  it('treats depth 0 as omitted when maxDepth is present (#2279)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      maxDepth: 2,
+      depth: 0,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
   it.each([
     ['impact', { target: 'validate', name: 'login', direction: 'upstream' }],
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
+    ['impact', { target: 'validate', direction: 'upstream', maxDepth: 3, depth: 1 }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
   ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
     const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
