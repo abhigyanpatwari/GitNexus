@@ -129,7 +129,6 @@ describe('doInitLbug WAL corruption guard — structural', () => {
     expect(mismatchIdx).toBeGreaterThan(-1);
     expect(mismatchIdx).toBeLessThan(warnIdx);
   });
-
 });
 
 // ─── Behavioural tests ────────────────────────────────────────────────────────

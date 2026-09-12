@@ -57,8 +57,7 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
 
 const { initLbug, closeLbug, isLbugReady, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
-const { STORAGE_VERSION_MISMATCH_SUGGESTION } =
-  await import('../../src/core/lbug/lbug-config.js');
+const { STORAGE_VERSION_MISMATCH_SUGGESTION } = await import('../../src/core/lbug/lbug-config.js');
 
 const NATIVE_STORAGE_VERSION_MISMATCH =
   'Runtime exception: Trying to read a database file with a different version. Database file version: 43, Current build storage version: 42';
@@ -120,7 +119,10 @@ describe('pool-adapter storage-version fail-fast and lock-retry backoff', () => 
     const otherPath = dbPathFor(otherId);
 
     createLbugDatabaseMock.mockImplementation((_mod: unknown, dbPath: string) => {
-      if (String(dbPath).includes(`${path.sep}locked.lbug`) || String(dbPath).endsWith('locked.lbug')) {
+      if (
+        String(dbPath).includes(`${path.sep}locked.lbug`) ||
+        String(dbPath).endsWith('locked.lbug')
+      ) {
         throw new Error('Could not set lock on file : /tmp/locked.lbug');
       }
       return goodDb();
