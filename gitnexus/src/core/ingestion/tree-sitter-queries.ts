@@ -2243,18 +2243,26 @@ export const DART_QUERIES = `
     (identifier) @name . (formal_parameter_list))) @definition.constructor
 
 ; ── Field declarations (String name = '', Address address = Address()) ──────
+; @name is ANCHORED to the first named child. An initialized_identifier whose
+; value is a constructor call parses the callee as a SECOND (identifier) sibling
+; of the name — \`final TextEditingController _t = TextEditingController();\` is
+; initialized_identifier[identifier "_t", identifier "TextEditingController",
+; selector]. Unanchored, \`(identifier) @name\` matched both and minted a phantom
+; Property named after the TYPE alongside the real field. The same shape applies
+; to static_final_declaration (class static and top-level final/const), so every
+; rule below anchors. languages/dart/query.ts already anchors its mirror rules.
 (declaration
   (type_identifier)
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── Nullable field declarations (String? name) ──────────────────────────────
 (declaration
   (nullable_type)
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── static const / static final / const class fields ────────────────────────
 ; A "static const a = 1;" / "static final String b = ..., c = ...;" field parses
@@ -2267,7 +2275,7 @@ export const DART_QUERIES = `
 (declaration
   (static_final_declaration_list
     (static_final_declaration
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
@@ -2290,7 +2298,7 @@ export const DART_QUERIES = `
 (program
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name)) @definition.variable)
+      . (identifier) @name)) @definition.variable)
 ; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
 ; rather than Variable, matching TS/JS. Overlap with the pattern above is
 ; collapsed by the parse-worker dedup (#2687). Since #2693 this node is also
@@ -2336,7 +2344,7 @@ export const DART_QUERIES = `
 (program
   (static_final_declaration_list
     (static_final_declaration
-      (identifier) @name)) @definition.variable)
+      . (identifier) @name)) @definition.variable)
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export

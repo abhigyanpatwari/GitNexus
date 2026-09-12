@@ -329,6 +329,88 @@ describe('MCP output budgets', () => {
     }
   });
 
+  it('rejects unknown tool arguments before backend execution (#3261)', async () => {
+    const backend = createMockBackend();
+    const { text, isError } = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'downstream',
+      notARealArg: 2,
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/Unknown argument "notARealArg" for tool "impact"/);
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('accepts CLI-style depth as a known impact alias (#3261)', async () => {
+    // The CLI flag is --depth; since #3261 MCP advertises it alongside maxDepth
+    // as a compatibility alias. Before #3261, `depth` was silently dropped.
+    // After the fix it is a known alias and is forwarded.
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'impact', {
+      target: 'auth',
+      direction: 'downstream',
+      depth: 2,
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('impact', {
+      target: 'auth',
+      direction: 'downstream',
+      depth: 2,
+    });
+  });
+
+  it('still accepts unpublished context target through tools/call', async () => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'context', {
+      repo: '@g1',
+      target: 'Sym',
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('context', { repo: '@g1', target: 'Sym' });
+  });
+
+  it('still accepts the unpublished query alias for query (#2175)', async () => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'query', {
+      query: 'auth',
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('query', { query: 'auth' });
+  });
+
+  it('still accepts the unpublished query alias for cypher (#2175)', async () => {
+    const backend = createMockBackend();
+    const { isError } = await callToolThroughServer(backend, 'cypher', {
+      query: 'MATCH (n) RETURN n',
+    });
+    expect(isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('cypher', { query: 'MATCH (n) RETURN n' });
+  });
+
+  it('maps legacy search/explore names through the advertised schema (#3261)', async () => {
+    const backend = createMockBackend();
+    const searchUnknown = await callToolThroughServer(backend, 'search', { notARealArg: 1 });
+    expect(searchUnknown.isError).toBe(true);
+    expect(searchUnknown.text).toMatch(/Unknown argument "notARealArg"/);
+    expect(backend.callTool).not.toHaveBeenCalled();
+
+    const searchOk = await callToolThroughServer(backend, 'search', { query: 'auth' });
+    expect(searchOk.isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('search', { query: 'auth' });
+
+    backend.callTool.mockClear();
+    const exploreUnknown = await callToolThroughServer(backend, 'explore', { notARealArg: 1 });
+    expect(exploreUnknown.isError).toBe(true);
+    expect(backend.callTool).not.toHaveBeenCalled();
+
+    const exploreOk = await callToolThroughServer(backend, 'explore', {
+      repo: '@g1',
+      target: 'Sym',
+    });
+    expect(exploreOk.isError).toBe(false);
+    expect(backend.callTool).toHaveBeenCalledWith('explore', { repo: '@g1', target: 'Sym' });
+  });
+
   it('rejects a non-positive explicit maxTokens before backend execution', async () => {
     const backend = createMockBackend();
     const { text, isError } = await callToolThroughServer(backend, 'query', {
