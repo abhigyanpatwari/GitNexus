@@ -178,8 +178,8 @@ describe('storage resolver', () => {
 
     await Promise.all([ensureStoragePathWritable(first), ensureStoragePathWritable(second)]);
 
-    await expect(fs.stat(first)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
-    await expect(fs.stat(second)).resolves.toMatchObject({ isDirectory: expect.any(Function) });
+    expect((await fs.stat(first)).isDirectory()).toBe(true);
+    expect((await fs.stat(second)).isDirectory()).toBe(true);
   });
 
   it('fails before analysis when the target names a file instead of a writable directory', async () => {
