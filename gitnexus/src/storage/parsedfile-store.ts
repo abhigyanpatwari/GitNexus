@@ -771,7 +771,20 @@ export const pruneAndSaveDurableParsedFileStore = async (
         /* not a readable dir → drop below */
       }
     }
-    await fs.rm(full, { recursive: true, force: true });
+    // The causes that break `prepareDurableParsedFileChunk` — permissions, a
+    // locked file, a read-only mount — break this rm too (#3204). Dropping the
+    // entry from the index is what makes the chunk unreachable; losing the
+    // directory is a cleanup bonus. Never let one of them abort the loop and
+    // cost every remaining chunk its index entry.
+    try {
+      await fs.rm(full, { recursive: true, force: true });
+    } catch (err) {
+      logger.warn(
+        { err, chunkHash: name },
+        'parsedfile-cache: could not remove a pruned durable chunk directory; ' +
+          'it is excluded from the index and will be re-attempted next run',
+      );
+    }
   }
   const idx: DurableParsedFileIndex = { version, entries: survivors };
   const tmp = path.join(durableDir, `${DURABLE_INDEX_FILENAME}.tmp`);

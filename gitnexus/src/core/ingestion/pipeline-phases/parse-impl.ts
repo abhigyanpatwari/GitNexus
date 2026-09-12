@@ -937,6 +937,22 @@ export async function runChunkedParseAndResolve(
      */
     const durablePrepareFailures = new Set<string>();
 
+    /**
+     * Retire a chunk hash this run cannot vouch for (#3204). Skipping the
+     * parse-cache write is not enough on its own: the hash is already in
+     * `usedKeys` from the lookup, so `saveParseCache` would copy a
+     * pre-existing `.v8` forward and the durable prune — which keeps exactly
+     * the saved keys — would retain the directory it belongs to.
+     */
+    const retireChunkHash = (chunkHash: string): void => {
+      if (!parseCache) return;
+      (parseCache.staleKeys ??= new Set<string>()).add(chunkHash);
+      // `loadParseCacheChunk` reads these two, so clear them as well: a second
+      // lookup of the same hash in this run must not serve the old shard.
+      parseCache.entries.delete(chunkHash);
+      parseCache.onDiskKeys?.delete(chunkHash);
+    };
+
     const roundByteBudget = resolveParseRoundByteBudget(options);
     let roundEntries: RoundEntry[] = [];
     /**
@@ -1073,7 +1089,11 @@ export async function runChunkedParseAndResolve(
       // Persist raw results for this chunk hash (skipping when any chunk file
       // was worker-quarantined, so the narrower rawResults isn't cached under
       // the full-chunk key — see the original inline note / U20.U2).
-      if (parseCache && p.chunkHash && rawResults.length > 0) {
+      // `rawResults.length > 0` guards the WRITE only. A quarantined chunk
+      // often returns nothing at all (the worker died on it), and that chunk
+      // still has to be retired — otherwise its pre-existing `.v8` is copied
+      // forward at save time (#3204).
+      if (parseCache && p.chunkHash) {
         const quarantineSet = new Set(workerPool?.getQuarantinedPaths?.() ?? []);
         const chunkHadQuarantine = p.chunkFiles.some((f) => quarantineSet.has(f.path));
         const durableGenerationStale = durablePrepareFailures.has(p.chunkHash);
@@ -1084,6 +1104,10 @@ export async function runChunkedParseAndResolve(
               'so its shards may be stale; next run will re-dispatch it',
           );
         } else if (chunkHadQuarantine) {
+          // Same retirement as a failed reset: skipping the write leaves any
+          // pre-existing `.v8` to be copied forward, and its durable directory
+          // now holds only this run's narrower shards (#3204).
+          retireChunkHash(p.chunkHash);
           if (isDev) {
             const quarantinedInChunk = p.chunkFiles.filter((f) => quarantineSet.has(f.path)).length;
             logger.info(
@@ -1092,7 +1116,7 @@ export async function runChunkedParseAndResolve(
                 `next run will rediscover (${p.chunkHash.slice(0, 8)})`,
             );
           }
-        } else {
+        } else if (rawResults.length > 0) {
           await persistParseCacheChunk(parseCache, p.chunkHash, rawResults);
           if (isDev) {
             logger.info(
@@ -1142,6 +1166,10 @@ export async function runChunkedParseAndResolve(
             // directory on write, so at worst the old generation lingers.
             // Caught per chunk so one failure cannot abort the others.
             durablePrepareFailures.add(miss.chunkHash);
+            // Retire here, not at finalize: that branch sits behind
+            // `rawResults.length > 0`, so a chunk whose worker round returns
+            // nothing would keep its stale entry.
+            retireChunkHash(miss.chunkHash);
             logger.warn(
               { err, chunkHash: miss.chunkHash.slice(0, 8) },
               'parsedfile-cache: could not reset durable chunk generation; ' +
