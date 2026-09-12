@@ -14,7 +14,6 @@ import {
   resolveTsImportTarget,
   type TsResolveContext,
 } from '../../../../src/core/ingestion/languages/typescript/import-target.js';
-import { buildSuffixIndex } from '../../../../src/core/ingestion/import-resolvers/utils.js';
 import * as importResolverUtils from '../../../../src/core/ingestion/import-resolvers/utils.js';
 import { typescriptScopeResolver } from '../../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
@@ -94,13 +93,14 @@ describe('interpretTsImport — static imports', () => {
     });
   });
 
-  it('type-only: `import type { X } from "./a"` folds into `named`', () => {
+  it('type-only: `import type { X } from "./a"` folds into `named`, flagged erased', () => {
     const [imp] = importsFor('import type { X } from "./a";');
     expect(imp).toEqual({
       kind: 'named',
       localName: 'X',
       importedName: 'X',
       targetRaw: './a',
+      typeOnly: true,
     });
   });
 
@@ -223,6 +223,7 @@ describe('interpretTsImport — re-exports', () => {
       localName: 'X',
       importedName: 'X',
       targetRaw: './a',
+      typeOnly: true,
     });
   });
 
@@ -273,6 +274,142 @@ describe('interpretTsImport — dynamic imports', () => {
     expect(imp).toEqual({
       kind: 'dynamic-resolved',
       targetRaw: './m',
+    });
+  });
+});
+
+/**
+ * `ParsedImport.typeOnly` — the erasure fact, across every spelling.
+ *
+ * `tsc` deletes a type-only import outright: nothing referencing the source
+ * module survives into the emitted JavaScript, so the pair cannot force a
+ * module-initialization order. `check --cycles` is the consumer (see
+ * `graph-bridge/imports-to-edges.ts`), and the fact is unrecoverable
+ * downstream — the emitted `kind` is the same `named` / `alias` / `reexport` a
+ * value import produces, and the statement sits at module top level like any
+ * other. Only the `type` keyword says it, and only here can it be read.
+ *
+ * The keyword sits in a different place in each spelling, hence a case per
+ * form rather than one representative: statement-level it is a token on the
+ * `import_statement` / `export_statement`, per-specifier it is a token on the
+ * `import_specifier` / `export_specifier`.
+ */
+describe('interpretTsImport — type-only erasure', () => {
+  /** Every ParsedImport for `src`, keyed by its local name. */
+  function byLocalName(src: string): Record<string, ParsedImport> {
+    const out: Record<string, ParsedImport> = {};
+    for (const imp of importsFor(src)) {
+      out[(imp as { localName?: string }).localName ?? ''] = imp;
+    }
+    return out;
+  }
+
+  it('statement-level marks EVERY specifier: `import type { X, Y } from "./a"`', () => {
+    const imps = byLocalName('import type { X, Y } from "./a";');
+    expect(imps.X).toMatchObject({ kind: 'named', typeOnly: true });
+    expect(imps.Y).toMatchObject({ kind: 'named', typeOnly: true });
+  });
+
+  it('per-specifier marks ONLY its own: `import { type X, Y } from "./a"`', () => {
+    // The mixed statement. `Y` is a real runtime import of `./a`, so the pair
+    // is a genuine initialization dependency — which is why the marker has to
+    // be per specifier rather than per statement.
+    const imps = byLocalName('import { type X, Y } from "./a";');
+    expect(imps.X).toMatchObject({ typeOnly: true });
+    expect(imps.Y).not.toHaveProperty('typeOnly');
+  });
+
+  it('per-specifier survives a rename: `import { type X as Y } from "./a"`', () => {
+    const [imp] = importsFor('import { type X as Y } from "./a";');
+    expect(imp).toEqual({
+      kind: 'alias',
+      localName: 'Y',
+      importedName: 'X',
+      alias: 'Y',
+      targetRaw: './a',
+      typeOnly: true,
+    });
+  });
+
+  it('default form: `import type D from "./a"`', () => {
+    const [imp] = importsFor('import type D from "./a";');
+    expect(imp).toEqual({
+      kind: 'alias',
+      localName: 'D',
+      importedName: 'default',
+      alias: 'D',
+      targetRaw: './a',
+      typeOnly: true,
+    });
+  });
+
+  it('namespace form: `import type * as N from "./a"`', () => {
+    const [imp] = importsFor('import type * as N from "./a";');
+    expect(imp).toEqual({
+      kind: 'namespace',
+      localName: 'N',
+      importedName: './a',
+      targetRaw: './a',
+      typeOnly: true,
+    });
+  });
+
+  it('re-export, statement-level: `export type { X, Y } from "./a"`', () => {
+    const imps = byLocalName('export type { X, Y } from "./a";');
+    expect(imps.X).toMatchObject({ kind: 'reexport', typeOnly: true });
+    expect(imps.Y).toMatchObject({ kind: 'reexport', typeOnly: true });
+  });
+
+  it('re-export, per-specifier: `export { type X, Y } from "./a"`', () => {
+    const imps = byLocalName('export { type X, Y } from "./a";');
+    expect(imps.X).toMatchObject({ typeOnly: true });
+    expect(imps.Y).not.toHaveProperty('typeOnly');
+  });
+
+  it('re-export rename: `export { type X as Y } from "./a"`', () => {
+    const [imp] = importsFor('export { type X as Y } from "./a";');
+    expect(imp).toEqual({
+      kind: 'reexport',
+      localName: 'Y',
+      importedName: 'X',
+      alias: 'Y',
+      targetRaw: './a',
+      typeOnly: true,
+    });
+  });
+
+  it('a value import carries NO `typeOnly` key at all', () => {
+    // Absent, not `false`: the property is spread in only when set, so every
+    // value import keeps the exact shape it had before this marker existed.
+    const forms = [
+      'import { X } from "./a";',
+      'import X from "./a";',
+      'import * as N from "./a";',
+      'export { X } from "./a";',
+      'export * as ns from "./a";',
+      'import "./a";',
+      'const p = import("./a");',
+    ];
+    const flagged = forms.flatMap((src) =>
+      importsFor(src)
+        .filter((imp) => 'typeOnly' in imp)
+        .map(() => src),
+    );
+    expect(flagged).toEqual([]);
+  });
+
+  it('an adjacent local `type` alias does not leak onto a value re-export', () => {
+    // `hasTypeKeyword` reads DIRECT children only. `export type Foo = Bar`
+    // holds its `type` token inside a child `type_alias_declaration`, and it
+    // is not an import at all — a subtree scan would still have to not
+    // mistake it for erasure on the statement beside it.
+    const imps = importsFor('export type Foo = Bar;\nexport { X } from "./a";');
+    expect(imps).toHaveLength(1);
+    expect(imps[0]).toEqual({
+      kind: 'reexport',
+      localName: 'X',
+      importedName: 'X',
+      targetRaw: './a',
     });
   });
 });
@@ -339,9 +476,8 @@ describe('resolveTsImportTarget — standard suffix + alias resolution', () => {
     const result = resolveTsImportTarget(
       parsed,
       ctx('src/main.ts', ['src/main.ts', 'src/services/user.ts'], {
-        tsconfigPaths: {
-          baseUrl: '.',
-          aliases: [['@/', 'src/']],
+        tsconfigs: {
+          scopes: [{ dir: '', baseUrl: '', paths: [{ pattern: '@/*', targets: ['src/*'] }] }],
         },
       }),
     );
@@ -403,27 +539,41 @@ describe('resolveTsImportTarget — standard suffix + alias resolution', () => {
     expect(result).toBe('src/a.js');
   });
 
-  it('uses a prebuilt suffix index for package-style imports', () => {
+  it('does not resolve a bare specifier that no config declares (#2953)', () => {
+    // `components/Button` is not relative, names no package, and this workspace
+    // declares no `baseUrl` to make it project-relative. The old resolver
+    // answered `src/components/Button.ts` anyway, by searching the file list for
+    // any path ending in the specifier — the defect in #2953. Nothing declares
+    // that edge, so there is none.
     const parsed: ParsedImport = {
       kind: 'named',
       localName: 'Button',
       importedName: 'Button',
       targetRaw: 'components/Button',
     };
-    const files = ['src/main.ts', 'src/components/Button.ts'];
-    const index = buildSuffixIndex(
-      files.map((f) => f.toLowerCase()),
-      files,
-    );
     const result = resolveTsImportTarget(
       parsed,
-      ctx('src/main.ts', files, {
-        allFileList: files,
-        normalizedFileList: files.map((f) => f.toLowerCase()),
-        index,
+      ctx('src/main.ts', ['src/main.ts', 'src/components/Button.ts']),
+    );
+    expect(result).toBeNull();
+  });
+
+  it('resolves that same specifier once a tsconfig `baseUrl` declares it (#2953)', () => {
+    // The other half of the arm above, and the reason it is not a regression:
+    // the specifier resolves when the project says it should, and to the same
+    // file. What changed is that the answer now has a declared basis.
+    const parsed: ParsedImport = {
+      kind: 'named',
+      localName: 'Button',
+      importedName: 'Button',
+      targetRaw: 'components/Button',
+    };
+    const result = resolveTsImportTarget(
+      parsed,
+      ctx('src/main.ts', ['src/main.ts', 'src/components/Button.ts'], {
+        tsconfigs: { scopes: [{ dir: '', baseUrl: 'src', paths: [] }] },
       }),
     );
-
     expect(result).toBe('src/components/Button.ts');
   });
 });
@@ -433,7 +583,12 @@ describe('typescriptScopeResolver.resolveImportTarget — real wiring', () => {
     vi.restoreAllMocks();
   });
 
-  it('builds suffix index and resolves package-style imports through the production path', () => {
+  it('builds no suffix index, and answers null for an undeclared bare specifier (#2953)', () => {
+    // Both halves matter. The index is not built because nothing asks the
+    // question it answered — "does any file's path end in this specifier?" —
+    // and the specifier does not resolve because nothing in this workspace
+    // declares it. The spy is what keeps the first half honest: an index built
+    // and then ignored would still be per-pass work over the whole file list.
     const spy = vi.spyOn(importResolverUtils, 'buildSuffixIndex');
     const files = new Set(['src/main.ts', 'src/components/Button.ts']);
 
@@ -443,8 +598,8 @@ describe('typescriptScopeResolver.resolveImportTarget — real wiring', () => {
       files,
     );
 
-    expect(result).toBe('src/components/Button.ts');
-    expect(spy).toHaveBeenCalled();
+    expect(result).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it('returns null for unresolvable package-style imports', () => {

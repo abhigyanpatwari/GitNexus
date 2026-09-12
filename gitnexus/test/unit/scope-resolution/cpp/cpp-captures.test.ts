@@ -560,3 +560,57 @@ describe('emitCppScopeCaptures — callable-flow passing modes (#2522 review, M5
     });
   });
 });
+
+/**
+ * `TypeRef.declaredSpelling` for a C++ pointer parameter.
+ *
+ * tree-sitter-cpp hangs the `*` on the DECLARATOR, so `@type-binding.type` is a
+ * bare `User` and the binding records `User` — indistinguishable from a class
+ * the source subscripted through `operator[]`. The receiver-chain fold declines
+ * an index step without container evidence, so `repos[0].save()` depends
+ * entirely on the spelling being reconstructed here.
+ */
+describe('C++ pointer parameter — declared spelling', () => {
+  function bindingsFor(src: string): Record<string, { raw: string; spelling: string | undefined }> {
+    const parsed = extractParsedFile(cppProvider, src, 'test.cpp');
+    const out: Record<string, { raw: string; spelling: string | undefined }> = {};
+    for (const scope of parsed?.scopes ?? []) {
+      for (const [name, ref] of scope.typeBindings) {
+        out[name] = { raw: ref.rawName, spelling: ref.declaredSpelling };
+      }
+    }
+    return out;
+  }
+
+  it('reconstructs `User*` for a pointer parameter and leaves a value parameter alone', () => {
+    expect(bindingsFor('struct User {};\nvoid f(User* repos, User one) {}\n')).toMatchObject({
+      repos: { raw: 'User', spelling: 'User*' },
+      // Nothing was normalized away, so there is no spelling to keep — and an
+      // index step on it correctly finds no container evidence.
+      one: { raw: 'User', spelling: undefined },
+    });
+  });
+
+  it('reconstructs the same spelling regardless of where the star is written', () => {
+    expect(bindingsFor('struct User {};\nvoid f(User *repos) {}\n')).toMatchObject({
+      repos: { raw: 'User', spelling: 'User*' },
+    });
+  });
+
+  it('reconstructs NOTHING for shapes the exact match rejects', () => {
+    // Each of these is a real pointer-ish declaration whose element type is NOT
+    // the captured type: a reference is not a container at all, and `const T*`
+    // is not the shape being matched. A loose match would claim container
+    // evidence and re-mint the wrong edge.
+    const bindings = bindingsFor(
+      'struct User {};\nvoid f(User** grid, User& one, const User* ro, User (*fn)(int)) {}\n',
+    );
+    expect(bindings).toMatchObject({
+      one: { spelling: undefined },
+      ro: { spelling: undefined },
+    });
+    // `User**` matches no type-binding pattern at all, so there is no binding to
+    // carry evidence — the same safe outcome by a different route.
+    expect(bindings).not.toHaveProperty('grid');
+  });
+});

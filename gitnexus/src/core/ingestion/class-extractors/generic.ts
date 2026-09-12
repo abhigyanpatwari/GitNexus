@@ -57,6 +57,7 @@ const CLASS_LIKE_LABELS = new Set<ClassLikeNodeLabel>([
   'Interface',
   'Enum',
   'Record',
+  'Union',
 ]);
 
 const extractScopeSegmentsFromNode = (
@@ -129,11 +130,15 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
     fallback?: {
       name?: string;
       type?: NodeLabel | null;
+      filePath?: string;
     },
   ): ExtractedClassSymbol | null => {
     if (!typeDeclarationSet.has(node.type)) return null;
 
-    const name = config.extractName?.(node) ?? extractTypeNameFromNode(node) ?? fallback?.name;
+    const name =
+      config.extractName?.(node, fallback?.filePath) ??
+      extractTypeNameFromNode(node) ??
+      fallback?.name;
     const type =
       config.extractType?.(node) ??
       DEFAULT_LABEL_BY_NODE_TYPE[node.type] ??

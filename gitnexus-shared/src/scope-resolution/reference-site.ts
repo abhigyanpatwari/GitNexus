@@ -82,6 +82,28 @@ export interface ReferenceSite {
    * otherwise, in which case resolution is unchanged.
    */
   readonly rawQualifiedName?: string;
+  /**
+   * Top-level generic/template arguments the source wrote ON this reference —
+   * `class UserValidator : IValidator<string>` yields `['string']` on the
+   * `inherits` site whose `name` is `IValidator`.
+   *
+   * `name` is the BASE name and stays that way: every lookup in resolution is
+   * keyed by it, and one declaration answers for every instantiation of itself.
+   * This records what the erasure threw away, so a consumer that needs the
+   * INSTANTIATION — receiver-bound interface dispatch, which must not fan a
+   * `IValidator<string>` receiver out to an `IValidator<int>` implementor
+   * (#2912) — can ask for it without re-parsing the source.
+   *
+   * Derived generically from the anchor capture's own text (see
+   * `collectReferenceSites`), so no language query change is needed: an emitter
+   * whose `@reference.inherits` anchor spans the whole base gets this for free,
+   * and one whose anchor is the bare name simply leaves it absent.
+   *
+   * ABSENT MEANS UNKNOWN, never "not generic" — the two are indistinguishable
+   * here, and only the first is safe to act on. Consumers must fail OPEN on
+   * absence (keep the target), matching `SymbolDefinition.typeParameters`.
+   */
+  readonly typeArguments?: readonly string[];
   /** Source-text range of this reference. */
   readonly atRange: Range;
   /**
@@ -138,6 +160,64 @@ export interface ReferenceSite {
    * majority of sites — the field costs nothing where it is not needed.
    */
   readonly receiverChain?: string;
+  /**
+   * This site sits in CALLEE position: it is the expression being invoked by an
+   * enclosing call, not a value the program otherwise consumes. Only ever set on
+   * `kind: 'read'` sites, and only by languages whose member-read capture also
+   * matches the callee of a member call (`obj.f()` yields both a `call` site on
+   * `f` and a `read` site on `obj.f`).
+   *
+   * It is a POSITION FACT, not a decision. Whether that read is redundant
+   * depends on what the tail resolves to, which the capture layer cannot know:
+   *
+   *   - tail is a METHOD  → the read duplicates the call's own edge and must be
+   *                         suppressed (an `ACCESSES → m` beside a `CALLS → m`
+   *                         at the same position is a phantom).
+   *   - tail is a FIELD   → the read is GENUINE. `h.dep.Work()` where
+   *                         `Work func() error` selects a func-typed field and
+   *                         then calls the value it holds; deleting the read
+   *                         erases the only evidence that the field was used
+   *                         (callback/hook structs, hand-rolled mocks).
+   *
+   * The suppression is therefore applied at edge emission, where the resolved
+   * target's kind is known — see `tryEmitEdge`. Absent on every site that is not
+   * in callee position, so nothing changes for languages that never set it.
+   */
+  readonly inCalleePosition?: boolean;
+  /**
+   * This `inherits` site describes an embedded field written as a POINTER
+   * (`struct S { *T }`) rather than as a value (`struct S { T }`).
+   *
+   * Go's method-set rules make the two forms genuinely different, so the
+   * distinction cannot be normalized away without producing wrong answers
+   * (go.dev/ref/spec#Struct_types):
+   *
+   *   - `S` embeds `T`  → `MS(S)` and `MS(*S)` get promoted methods with
+   *                       receiver `T`; only `MS(*S)` also gets those with
+   *                       receiver `*T`.
+   *   - `S` embeds `*T` → `MS(S)` AND `MS(*S)` get promoted methods with
+   *                       receiver `T` **or** `*T`.
+   *
+   * So with `func (t *T) Ping()`, `S{T}` does not implement a `Ping` interface
+   * by value while `S{*T}` does. Collapsing the forms makes both answers the
+   * same, and one of them is then wrong.
+   *
+   * A POSITION FACT, like `inCalleePosition`: the capture layer records how the
+   * field was spelled and resolution decides what it means. Set only by
+   * languages with pointer-embedding semantics (Go today); absent everywhere
+   * else, so every other language's sites stay byte-identical.
+   */
+  readonly embeddedAsPointer?: boolean;
+  /**
+   * The call sits inside a branch that is provably unreachable from the
+   * indexed source at compile time — a Zig `if (CONST_FALSE)` body, or the
+   * `else` of `if (CONST_TRUE)`,
+   * where the condition folds to a comptime-known boolean. Set only when
+   * `kind === 'call'` and only by languages that compute static gating (Zig
+   * today); absent everywhere else, so every other site stays byte-identical.
+   * Threaded to `Reference.staticGated` and then `GraphRelationship.staticGated`.
+   */
+  readonly staticGated?: boolean;
 }
 
 /**
@@ -153,4 +233,16 @@ export interface ReferenceSite {
  * (`extractMixedChain`) walks a tree-sitter AST and so must stay in the
  * analyzer, but the shape it yields crosses into resolution.
  */
-export type MixedChainStep = { kind: 'field' | 'call'; name: string };
+/**
+ * One hop in a receiver chain.
+ *
+ * `field` and `call` carry the member name they reach. `await` and `index` are
+ * NAME-FREE: the call step already holds the method name for an awaited call,
+ * and a subscript has no member name at all — an index expression's key is a
+ * value, not an identifier the resolver could look up. The codec encodes them
+ * as a bare sigil and rejects any trailing characters, so the encoder's
+ * non-empty-name guard stays live for exactly the two kinds it was written for.
+ */
+export type MixedChainStep =
+  | { kind: 'field' | 'call'; name: string }
+  | { kind: 'await' | 'index'; name?: undefined };

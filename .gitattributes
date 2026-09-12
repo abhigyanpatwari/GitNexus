@@ -15,3 +15,15 @@
 *.so binary
 *.dll binary
 *.dylib binary
+
+# TypeScript sources are always text for diff purposes. Git's binary
+# heuristic fires when EITHER blob in a pair carries a NUL, so a source
+# file that carried one on a base commit still renders as "Binary files
+# differ" — with no hunks and no inline comments — long after the byte
+# itself is gone from the working tree. A head-side guard cannot see
+# that, by construction. This does not mark the files binary or change
+# how they are stored; it only stops the heuristic from hiding a diff.
+*.ts diff
+*.tsx diff
+*.mts diff
+*.cts diff

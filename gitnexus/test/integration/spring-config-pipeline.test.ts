@@ -68,6 +68,19 @@ describe('Spring configuration binding pipeline', () => {
     expect(targetsFrom(timeout)).toEqual(['payment.timeout']);
     expect(targetsFrom(missing)).toEqual([]);
     expect(missing?.properties.description).toContain('Spring config unresolved: payment.missing');
+
+    const ktTimeout = nodeNamed('timeout', 'ConfigConsumers.kt');
+    const ktMissing = nodeNamed('missing', 'ConfigConsumers.kt');
+    expect(ktTimeout).toBeDefined();
+    expect(ktMissing).toBeDefined();
+    if (ktTimeout === undefined || ktMissing === undefined) {
+      throw new Error('kotlin fixture fields missing');
+    }
+    expect(targetsFrom(ktTimeout)).toEqual(['payment.timeout']);
+    expect(targetsFrom(ktMissing)).toEqual([]);
+    expect(ktMissing?.properties.description).toContain(
+      'Spring config unresolved: payment.missing',
+    );
   });
 
   it('links ConfigurationProperties classes and relaxed field names to their prefix', () => {
@@ -89,6 +102,25 @@ describe('Spring configuration binding pipeline', () => {
       'src/main/resources/application.properties',
     ]);
     expect(targetsFrom(retry)).toEqual(['service.retry.max-attempts']);
+
+    const ktOwner = nodeNamed('ServiceProperties', 'ConfigConsumers.kt');
+    const ktEndpoint = nodeNamed('endpoint', 'ConfigConsumers.kt');
+    const ktRetry = nodeNamed('retry', 'ConfigConsumers.kt');
+    expect(ktOwner).toBeDefined();
+    if (ktOwner === undefined || ktEndpoint === undefined || ktRetry === undefined) {
+      throw new Error('kotlin fixture ConfigurationProperties symbols missing');
+    }
+    expect(targetsFrom(ktOwner)).toEqual([
+      'service.endpoint',
+      'service.endpoint',
+      'service.retry.max-attempts',
+    ]);
+    expect(targetsFrom(ktEndpoint)).toEqual(['service.endpoint', 'service.endpoint']);
+    expect(targetFilesFrom(ktEndpoint, 'service.endpoint')).toEqual([
+      'src/main/resources/application-dev.yml',
+      'src/main/resources/application.properties',
+    ]);
+    expect(targetsFrom(ktRetry)).toEqual(['service.retry.max-attempts']);
   });
 
   it('keeps the class-level binding when no field relaxed-name matches', () => {
@@ -103,6 +135,18 @@ describe('Spring configuration binding pipeline', () => {
       'service.retry.max-attempts',
     ]);
     expect(targetsFrom(unrelated)).toEqual([]);
+
+    const ktOwner = nodeNamed('UnmatchedServiceProperties', 'ConfigConsumers.kt');
+    const ktUnrelated = nodeNamed('unrelated', 'ConfigConsumers.kt');
+    if (ktOwner === undefined || ktUnrelated === undefined) {
+      throw new Error('kotlin unmatched ConfigurationProperties symbols missing');
+    }
+    expect(targetsFrom(ktOwner)).toEqual([
+      'service.endpoint',
+      'service.endpoint',
+      'service.retry.max-attempts',
+    ]);
+    expect(targetsFrom(ktUnrelated)).toEqual([]);
   });
 });
 

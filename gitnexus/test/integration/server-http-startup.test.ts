@@ -86,7 +86,21 @@ describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
     }
   });
 
-  it('serve boots and GET /api/health returns ok', async () => {
+  /**
+   * Spawn the built CLI's `serve` on an ephemeral port with a throwaway
+   * GITNEXUS_HOME, registering both for afterEach cleanup. The streams are
+   * captured separately so a failure message can attribute output to the right
+   * one, and returned as getters because they fill in after this resolves.
+   */
+  const spawnServe = async (
+    host: string,
+    extraEnv: Record<string, string> = {},
+  ): Promise<{
+    child: ChildProcessWithoutNullStreams;
+    port: number;
+    stdout: () => string;
+    stderr: () => string;
+  }> => {
     if (!fs.existsSync(DIST_CLI)) {
       throw new Error(`Missing ${DIST_CLI} — run npm run build before integration tests`);
     }
@@ -94,34 +108,40 @@ describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
     const port = await allocateFreePort();
     homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-serve-home-'));
 
-    proc = spawn(
+    const child = spawn(
       process.execPath,
-      [DIST_CLI, 'serve', '--port', String(port), '--host', '127.0.0.1'],
+      [DIST_CLI, 'serve', '--port', String(port), '--host', host],
       {
         cwd: REPO_ROOT,
-        env: { ...process.env, GITNEXUS_HOME: homeDir, NODE_OPTIONS: '' },
+        env: { ...process.env, GITNEXUS_HOME: homeDir, NODE_OPTIONS: '', ...extraEnv },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     );
+    proc = child;
 
     let stdout = '';
     let stderr = '';
-
-    proc.stdout.on('data', (buf) => {
+    child.stdout.on('data', (buf) => {
       stdout += buf.toString();
     });
-    proc.stderr.on('data', (buf) => {
+    child.stderr.on('data', (buf) => {
       stderr += buf.toString();
     });
+
+    return { child, port, stdout: () => stdout, stderr: () => stderr };
+  };
+
+  it('serve boots and GET /api/health returns ok', async () => {
+    const { child, port, stdout, stderr } = await spawnServe('127.0.0.1');
 
     const startedAt = Date.now();
     let status = 0;
     let body = '';
 
     while (Date.now() - startedAt < STARTUP_BUDGET_MS) {
-      if (proc.exitCode !== null) {
+      if (child.exitCode !== null) {
         throw new Error(
-          `serve exited ${proc.exitCode} before ready.\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+          `serve exited ${child.exitCode} before ready.\nstdout:\n${stdout()}\nstderr:\n${stderr()}`,
         );
       }
       try {
@@ -137,5 +157,41 @@ describeServeStartup('gitnexus serve HTTP startup (Express 5)', () => {
 
     expect(status).toBe(200);
     expect(body).toContain('"status":"ok"');
+  }, 60_000);
+
+  // GITNEXUS_PUBLIC_ORIGIN is what makes a public bind usable, and `serve` has
+  // no authentication — so it must not boot at all. Asserted end-to-end rather
+  // than at the unit level, because what matters is the exit code the operator
+  // (or a platform health check) sees, not that a function threw.
+  it('serve refuses to start when GITNEXUS_PUBLIC_ORIGIN is set', async () => {
+    const { child, port, stdout, stderr } = await spawnServe('0.0.0.0', {
+      GITNEXUS_PUBLIC_ORIGIN: 'https://gitnexus.example.com',
+    });
+
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `serve did not exit within budget.\nstdout:\n${stdout()}\nstderr:\n${stderr()}`,
+            ),
+          ),
+        STARTUP_BUDGET_MS,
+      );
+      child.on('exit', (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+      child.on('error', reject);
+    });
+
+    expect(exitCode).toBe(1);
+    // The CLI prints the failure through cliError, so it lands on stderr; assert
+    // against both streams rather than pinning which one.
+    const output = stdout() + stderr();
+    expect(output).toContain('GITNEXUS_PUBLIC_ORIGIN');
+    expect(output).toContain('no authentication');
+    // And it never got as far as listening.
+    await expect(probeHealth(port)).rejects.toThrow();
   }, 60_000);
 });

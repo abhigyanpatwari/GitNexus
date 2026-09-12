@@ -1,0 +1,4 @@
+{
+  "name": "@repo/web",
+  "dependencies": { "@acme/telemetry": "0.5.0", "@repo/utils": "workspace:*" }
+}

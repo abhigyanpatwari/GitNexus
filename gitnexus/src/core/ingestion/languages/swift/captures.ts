@@ -43,14 +43,55 @@ import {
 import { splitSwiftImport } from './import-decomposer.js';
 import { swiftQualifiedBaseTail } from './base-type.js';
 import { computeSwiftArityMetadata } from './arity-metadata.js';
-import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
+import {
+  findEnclosingTypeDeclaration,
+  synthesizeSwiftReceiverBinding,
+} from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
+import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+
+/**
+ * Name of the type that lexically owns `node` — the nearest enclosing
+ * `class_declaration` (which in tree-sitter-swift is also how `struct` and
+ * `extension` parse) or `protocol_declaration`.
+ *
+ * Qualifies a method def as `<Type>.<method>` (#2807 follow-up). Swift's
+ * structure phase already keys the graph node that way (`A.run#1`), but the
+ * resolver-side def carried only `run`, and the bridge's every label-scoped key
+ * is built from the def's name — so two classes in one file each declaring
+ * `func run` fell through to the label-agnostic simple key, which is
+ * first-write-wins. The result: EVERY call in both bodies was attributed to
+ * whichever `run` registered first, which collected duplicate edges while its
+ * twin collected none. Renaming one method, or moving it to another file, made
+ * both resolve — which is what identified the collision as name-keyed and
+ * per-file rather than positional.
+ *
+ * An `extension Foo` wraps the extended type in a `user_type`, which may be
+ * qualified (`extension Outer.Inner`) or carry generic arguments
+ * (`extension Set<Int>`), so the trailing `type_identifier` is taken — the
+ * spelling has to match the owner the structure phase used to build the node id.
+ *
+ * Both halves delegate rather than re-derive: `findEnclosingTypeDeclaration`
+ * (receiver-binding.ts) decides what the enclosing type IS, so a method's owner
+ * qualifier and its `self` binding cannot disagree, and `swiftBaseTypeIdentifier`
+ * reads the name STRUCTURALLY. An earlier version split the node text on `<` and
+ * `.`, which only approximates the tree: generic arguments live in a sibling
+ * `type_arguments` node that the walk skips outright.
+ */
+function swiftEnclosingTypeName(node: SyntaxNode): string | null {
+  const typeNode = findEnclosingTypeDeclaration(node);
+  if (typeNode === null) return null;
+  const nameNode = typeNode.childForFieldName('name');
+  if (nameNode === null) return null;
+  const tail = swiftBaseTypeIdentifier(nameNode)?.text.trim() ?? '';
+  return tail.length > 0 ? tail : null;
+}
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -89,10 +130,16 @@ export function emitSwiftScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
+  // `extractParsedFile` already applies `preprocessSource` on this path, but
+  // this emitter is also called directly (benchmarks, capture goldens, the
+  // scope-capture tripwire), and those callers must see the same program the
+  // pipeline does. The transform is idempotent, so applying it twice is a
+  // no-op; it is length-preserving, so offsets still index `sourceText`.
   let tree = cachedTree as ReturnType<ReturnType<typeof getSwiftParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getSwiftParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    const parseText = preprocessSwiftConditionalDirectives(sourceText);
+    tree = parseSourceSafe(getSwiftParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   } else {
@@ -237,6 +284,25 @@ export function emitSwiftScopeCaptures(
       const initNode = nodeIfType(nodeMap['@declaration.constructor'], 'init_declaration');
       if (initNode !== null) {
         grouped['@declaration.name'] = syntheticCapture('@declaration.name', initNode, 'init');
+      }
+    }
+
+    // ── Qualify a method/constructor def with its owning type (#2807). ──
+    // Emitted before the `@scope.function` branch below, which pushes and
+    // `continue`s; a Swift `function_declaration` matches both patterns.
+    if (grouped['@declaration.qualified_name'] === undefined) {
+      const ownerTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
+      const declaredName = grouped['@declaration.name']?.text;
+      const declNode = ownerTag === undefined ? null : nodeMap[ownerTag];
+      if (ownerTag !== undefined && declaredName !== undefined && declNode != null) {
+        const owner = swiftEnclosingTypeName(declNode);
+        if (owner !== null) {
+          grouped['@declaration.qualified_name'] = syntheticCapture(
+            '@declaration.qualified_name',
+            declNode,
+            `${owner}.${declaredName}`,
+          );
+        }
       }
     }
 

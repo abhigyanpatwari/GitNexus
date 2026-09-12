@@ -13,8 +13,11 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { FTS_DISABLED_MESSAGE, isExplicitFtsDisablement } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
+import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
+import { causeChain } from '../lib/utils.js';
 import {
   getOsPageSize,
   isLbugCheckpointIoError,
@@ -40,7 +43,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -48,6 +51,7 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
+import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
@@ -101,15 +105,13 @@ const writeFatalToStderr = (label: string, err: unknown): void => {
   // #2068) is only reachable via `.cause`. Without this the user sees the
   // wrapper's main-thread stack and never the real frame. `cause.stack` already
   // begins with the cause's message, so we print the stack alone (not message +
-  // stack) to avoid repeating it. Depth-bounded so a cyclic `cause` can't loop
-  // (the phase runner wraps one level; the bound leaves headroom for future
-  // nesting); uses realStderrWrite so the redirected console.error's ANSI
-  // clear-line wrapping can't erase it (#1169).
-  const MAX_CAUSE_DEPTH = 5;
-  let cause: unknown = isErr ? (err as { cause?: unknown }).cause : undefined;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && cause instanceof Error; depth++) {
+  // stack) to avoid repeating it. `causeChain` owns the traversal and the depth
+  // bound that stops a cyclic `cause` looping — this used to be one of four
+  // hand-rolled copies that had already drifted apart on both. Uses
+  // realStderrWrite so the redirected console.error's ANSI clear-line wrapping
+  // can't erase it (#1169). The head is skipped: it was just printed above.
+  for (const cause of causeChain(isErr ? (err as { cause?: unknown }).cause : undefined)) {
     realStderrWrite(`\n  Caused by: ${cause.stack ?? cause.message}\n`);
-    cause = (cause as { cause?: unknown }).cause;
   }
 };
 
@@ -362,6 +364,7 @@ interface RespawnExit {
   stdout?: string;
   stderr?: string;
   message?: string;
+  forwardedSignal?: NodeJS.Signals;
 }
 
 const appendOutputTail = (tail: string, chunk: unknown): string => {
@@ -394,17 +397,28 @@ const runRespawnedAnalyze = (
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (exit: RespawnExit): void => {
-      if (settled) return;
-      settled = true;
-      resolve(exit);
-    };
-
+    let forwardedSignal: NodeJS.Signals | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
       windowsHide: true,
       env,
     });
+    const forwardSignal = (signal: NodeJS.Signals): void => {
+      forwardedSignal ??= signal;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    const forwardSigint = () => forwardSignal('SIGINT');
+    const forwardSigterm = () => forwardSignal('SIGTERM');
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', forwardSigint);
+      process.removeListener('SIGTERM', forwardSigterm);
+      resolve({ ...exit, forwardedSignal });
+    };
+
+    process.once('SIGINT', forwardSigint);
+    process.once('SIGTERM', forwardSigterm);
 
     child.stdout?.on('data', (chunk) => {
       stdout = appendOutputTail(stdout, chunk);
@@ -547,7 +561,16 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-async function ensureHeap(): Promise<boolean> {
+export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
+  if (cleanTermination) return 0;
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+export async function ensureHeap(
+  options: { cleanForwardedTermination?: boolean } = {},
+): Promise<boolean> {
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
@@ -589,6 +612,13 @@ async function ensureHeap(): Promise<boolean> {
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.forwardedSignal !== undefined) {
+    process.exitCode = forwardedSignalExitCode(
+      childExit.forwardedSignal,
+      options.cleanForwardedTermination === true,
+    );
+    return true;
+  }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(
@@ -639,6 +669,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS',
+  'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -661,121 +693,14 @@ const restoreAnalyzeEnv = (snap: AnalyzeEnvSnapshot): void => {
   }
 };
 
-export interface AnalyzeOptions {
-  force?: boolean;
-  repairFts?: boolean;
-  /**
-   * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
-   *   - `undefined` when the flag is omitted
-   *   - `true` when passed without an argument (use default 50K node cap)
-   *   - a string when passed with an argument (`--embeddings 0` disables the
-   *     cap, `--embeddings <n>` uses `<n>` as the cap)
-   */
-  embeddings?: boolean | string;
-  /**
-   * Explicitly drop existing embeddings on rebuild instead of preserving
-   * them. Without this flag, a routine `analyze` keeps any embeddings
-   * already present in the index even when `--embeddings` is omitted.
-   */
-  dropEmbeddings?: boolean;
-  skills?: boolean;
-  verbose?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
-  skipAgentsMd?: boolean;
-  /**
-   * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
-   * default. Threaded to both the worker (CFG build) and scope-resolution
-   * (BasicBlock/CFG emit).
-   */
-  pdg?: boolean;
-  /**
-   * Stats inclusion in AGENTS.md and CLAUDE.md.
-   *
-   * Commander.js represents `--no-stats` as `stats: boolean` (default
-   * `true`; `false` when the user passes `--no-stats`), NOT as
-   * `noStats: boolean`. Reading the negated form would always be
-   * `undefined` and the flag would silently no-op (#1477). Consumers
-   * that want "did the user request --no-stats?" should compare with
-   * `=== false` to distinguish the explicit-off case from the
-   * default-on case.
-   */
-  stats?: boolean;
-  /**
-   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
-   * makes. Scoped to only those two files (never `git add -A`); no-ops
-   * silently if neither exists, neither changed, or the commit step itself
-   * fails (e.g. no git identity configured). See #2639.
-   */
-  selfCommit?: boolean;
-  /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
-  skipSkills?: boolean;
-  /**
-   * Default branch for the generated regression-compare example (#243). From
-   * `--default-branch`; may also be supplied via `.gitnexusrc`. Resolved to a
-   * concrete branch (CLI > `.gitnexusrc` > auto-detected origin/HEAD > "main")
-   * before being threaded into the generated AGENTS.md / CLAUDE.md content.
-   */
-  defaultBranch?: string;
-  /**
-   * Index-branch selector (#2106). From `--branch`. Distinct from
-   * `defaultBranch` (cosmetic base_ref): this routes the index to a per-branch
-   * slot. NOT sourced from `.gitnexusrc` — the `.gitnexusrc` `branch` key is an
-   * alias for `defaultBranch` and must not change index placement. Defaults to
-   * the checked-out branch inside `runFullAnalysis` when omitted.
-   */
-  branch?: string;
-  /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
-  indexOnly?: boolean;
-  /** Index the folder even when no .git directory is present. */
-  skipGit?: boolean;
-  /**
-   * Override the default basename-derived registry `name` with a
-   * user-supplied alias (#829). Disambiguates repos whose paths share a
-   * basename. Persisted — subsequent re-analyses of the same path without
-   * `--name` preserve the alias.
-   */
-  name?: string;
-  /**
-   * Allow registration even when another path already uses the same
-   * `--name` alias (#829). Intentionally a distinct flag from `--force`
-   * because the user may want to coexist under the same name WITHOUT
-   * paying the cost of a pipeline re-index. Maps to registerRepo's
-   * `allowDuplicateName` option end-to-end.
-   */
-  allowDuplicateName?: boolean;
-  /**
-   * Override the walker's large-file skip threshold (#991). Value in KB;
-   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
-   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
-   */
-  maxFileSize?: string;
-  /** Override worker sub-batch idle timeout in seconds. */
-  workerTimeout?: string;
-  /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
-  walCheckpointThreshold?: string;
-  /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
-  workers?: string;
-  embeddingThreads?: string;
-  embeddingBatchSize?: string;
-  embeddingSubBatchSize?: string;
-  embeddingDevice?: string;
-  /**
-   * Extra fetch-wrapper function names to treat as HTTP consumers (#1589/#1852
-   * residual). Supplied via `.gitnexusrc` `fetchWrappers: [...]`. Threaded into
-   * the routes phase, where the cross-file consumer scan unions them with the
-   * auto-detected `fetch()` wrappers so a custom/axios-based wrapper named
-   * outside the built-in convention still produces `route_map` consumers.
-   */
-  fetchWrappers?: string[];
-  /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
-  embeddingBaseUrl?: string;
-  /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */
-  embeddingModel?: string;
-  /** Bearer token for the embeddings endpoint. Overrides GITNEXUS_EMBEDDING_API_KEY. Never logged. */
-  embeddingAuthToken?: string;
-  /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
-  embeddingDims?: string;
-}
+/**
+ * CLI `analyze` flag shape. Defined in `./analyze-options.js` so
+ * `analyze-config.ts` can reference it without importing this module back —
+ * that type import closed a cycle over `analyze` → `analyze-config` and
+ * `analyze` → `run-analyze` → `analyze-config`. Re-exported here because this
+ * is where callers have always imported it from.
+ */
+export type { AnalyzeOptions };
 
 /**
  * Whether the post-index skill step should run.
@@ -846,13 +771,24 @@ export const analyzeCommandWithRunnerIdentity = async (
   options?: AnalyzeOptions,
 ): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
 
+export async function analyzeOrWatchCommandWithRunnerIdentity(
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options: AnalyzeOptions = {},
+): Promise<void> {
+  if (options.watch) {
+    const { watchCommandWithRunnerIdentity } = await import('./analyze-watch.js');
+    await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+    return;
+  }
+  await analyzeCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+}
+
 const analyzeCommandImpl = async (
   inputPath?: string,
   cliOptions?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
-  console.log('\n  GitNexus Analyzer\n');
-
   // ── Resolve the target repo root ──────────────────────────────────
   // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
   // caller's cwd), and config can set defaults that the validation below
@@ -1069,6 +1005,17 @@ const analyzeCommandImpl = async (
     return;
   }
 
+  // An empty value resolves to the repository root, so `--asyncapi-spec ""`
+  // walks the whole tree — defeating the module's own rule that there is no
+  // glob-based auto-discovery, and spending the walk budget on `node_modules`.
+  // The HTTP entry point already rejects exactly this value; two doors onto one
+  // option must not hold different rules.
+  if (options.asyncapiSpec !== undefined && options.asyncapiSpec.trim() === '') {
+    cliError('  --asyncapi-spec must be a non-empty path.\n');
+    process.exitCode = 1;
+    return;
+  }
+
   if (options.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
@@ -1236,10 +1183,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && options.force) {
+  if (options.repairFts && (options.force || options.parseCache === false)) {
     cliError(
-      '  Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
     );
     process.exitCode = 1;
     return;
@@ -1397,11 +1344,13 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation
-      // needs a fresh pipelineResult. Has no bearing on the registry
-      // collision guard (see allowDuplicateName below).
-      force: options.force || options.skills,
+      // Pipeline re-index — OR'd with --skills because skill generation needs
+      // a fresh pipelineResult, and with --no-parse-cache because bypassing
+      // parser output is meaningful only when the pipeline runs.
+      force: options.force || options.skills || options.parseCache === false,
+      useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
+      skipFts: options.skipFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
       dropEmbeddings: options.dropEmbeddings,
@@ -1437,6 +1386,8 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      springActuatorPath: options.springActuator,
+      asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1501,6 +1452,11 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (isExplicitFtsDisablement(result.ftsSkipReason))
+        console.log(`  ${FTS_DISABLED_MESSAGE}\n`);
+      if (runOptions.registryName) {
+        console.log(`  Registry name: ${result.repoName}\n`);
+      }
       if (baseRefRefreshed.length > 0) {
         console.log(
           `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
@@ -1592,6 +1548,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }
@@ -1624,6 +1581,27 @@ const analyzeCommandImpl = async (
 
     // ── Summary ────────────────────────────────────────────────────
     const s = result.stats;
+    // A collapsed graph write is NOT a successful index. The other incomplete
+    // reasons (`incremental-in-progress`, `embedding-checkpoint-pending`)
+    // describe a run that did what it said and left work for next time; this
+    // one means most of your edges are gone, so every query answers a confident
+    // empty and the exit code is the only thing automation reads. Printing
+    // "indexed successfully" and exiting 0 here would be the same class of
+    // false certainty the check itself was written to remove.
+    if (result.graphWriteCollapsed) {
+      const { expected, persisted } = result.graphWriteCollapsed;
+      console.log(`\n  Repository indexed INCOMPLETELY (${totalTime}s)\n`);
+      console.log(
+        `  Graph write collapsed: the pipeline produced ${expected.toLocaleString()} relationships\n` +
+          `  but only ${persisted.toLocaleString()} are readable from the index. Queries will answer\n` +
+          `  with missing edges rather than an error.\n\n` +
+          `  The index is recorded INCOMPLETE (graph-write-collapsed). Re-run\n` +
+          `  \`gitnexus analyze --force\`; if it recurs, check disk space and run \`gitnexus doctor\`.`,
+      );
+      console.log(`  ${repoPath}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
     console.log(
       `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
@@ -1636,7 +1614,9 @@ const analyzeCommandImpl = async (
     if (result.ftsSkipped) {
       // #2658 review L2: a build/verify failure is NOT an extension-unavailable
       // problem — sending the user to install the extension is the wrong remedy.
-      if (result.ftsSkipReason === 'build-failed') {
+      if (isExplicitFtsDisablement(result.ftsSkipReason)) {
+        console.log(`\n  ${FTS_DISABLED_MESSAGE}`);
+      } else if (result.ftsSkipReason === 'build-failed') {
         console.log(
           `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
             `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
@@ -1644,9 +1624,14 @@ const analyzeCommandImpl = async (
         );
       } else {
         console.log(
+          // NOT "then rerun" (#2841 §5.C): this run stamped `lastCommit`, so a
+          // plain rerun on an unchanged tree takes the up-to-date fast path and
+          // returns before Phase 3 could rebuild anything — the advice would be
+          // ineffective exactly when the user follows it. `--repair-fts` is the
+          // verb that rebuilds the search indexes without re-parsing the repo.
           `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
-            `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
+            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto), then run\n` +
+            `  \`gitnexus analyze --repair-fts\` to build the search indexes. Run \`gitnexus doctor\` for details.`,
         );
       }
     }
@@ -1690,6 +1675,14 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
+      if (isIndexLockGuardTimeout(err)) {
+        cliError(err.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath: err.guardPath,
+        });
+        process.exitCode = 1;
+        return;
+      }
       cliError(
         `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
           `already refreshing this index and did not finish within the wait window.\n` +
@@ -1713,6 +1706,36 @@ const analyzeCommandImpl = async (
           `    3. If the failure persists, run with NODE_OPTIONS="--max-old-space-size=8192 --trace-exit"\n` +
           `       and attach the trace to the GitNexus issue tracker.\n\n`,
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // An extracted edge whose FROM→TO label pair is missing from GitNexus's own
+    // relation DDL (#2789). `assertDeclaredPair` aborts the run rather than let
+    // the bulk COPY fail late and silently drop the edge, so the user sees a
+    // mid-run crash inside GitNexus internals with nothing to act on. Name the
+    // pair, the relationship and the file that produced it, and say plainly that
+    // a re-run cannot help — this is deterministic for the same input.
+    // Checked by TYPE (repo norm, #2385) BEFORE the message-text heuristics
+    // below, and through the `cause` chain because the ingestion phase runner
+    // rewraps every phase failure as `Phase 'X' failed: …`.
+    const undeclaredPair = findUndeclaredRelationPairError(err);
+    if (undeclaredPair !== undefined) {
+      // Render the error's OWN message indented — same idiom as the
+      // `LbugWipeError` and page-size branches below. `UndeclaredRelationPairError`
+      // builds a fully self-contained message (pair, relationship type, both node
+      // ids, source file, issue URL, `.gitnexusignore` workaround) precisely
+      // because `gitnexus serve` forwards only `err.message` over worker IPC.
+      // Re-rendering those fields here would be a second copy of one string, free
+      // to drift from the first — and the actionable half would reach CLI users
+      // only. `undeclaredPair.message`, not the outer `msg`: the real error may be
+      // several `cause` levels below the phase wrapper `msg` came from.
+      cliError(`  ${undeclaredPair.message.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'undeclared-relation-pair',
+        labelPair: undeclaredPair.pairKey,
+        relationType: undeclaredPair.relationType,
+        sourceFile: undeclaredPair.sourceFile,
+      });
       process.exitCode = 1;
       return;
     }

@@ -98,8 +98,11 @@ excluded.
 
 ## Safe existing-plan read contract
 
-`read-plan` fails closed unless Linux `/proc/self/fd`, `O_DIRECTORY`, and
-`O_NOFOLLOW` are available. It resolves the exact Git top-level, opens the
+`read-plan` fails closed unless the host platform can resolve names against a
+held directory descriptor: Linux `/proc/self/fd` with `O_DIRECTORY` and
+`O_NOFOLLOW`, or macOS `O_DIRECTORY`/`O_NOFOLLOW`. Every other platform is
+refused outright — an unverified read is not a degraded read, it is a different,
+racy operation. It resolves the exact Git top-level, opens the
 repository root and every plan parent as held no-follow directory descriptors,
 rejects missing, symlink, non-directory, and escaping parents, and opens the
 leaf with `O_NOFOLLOW`. It reads at most 16 MiB from that held file descriptor,
@@ -109,13 +112,17 @@ Neither Deepen nor work may parse bytes obtained before or outside this receipt.
 
 ## Safe generated-plan write contract
 
-The writer fails closed unless Linux `/proc/self/fd`, `O_DIRECTORY`,
-`O_NOFOLLOW`, and Python 3 with libc `renameat2(RENAME_NOREPLACE)` support are
-available. Python may live in `/usr/local`, a Nix profile, or another absolute
-PATH directory, but the helper accepts only a resolved executable and
-containing directory owned by root or the current user and not writable by
-group/other. The resolved executable is opened without following links and
-invoked through that held descriptor. Relative PATH entries are ignored. The plan parent and the
+The writer fails closed unless the host platform offers `O_DIRECTORY` and
+`O_NOFOLLOW`, plus `/proc/self/fd` on Linux. It spawns no interpreter and loads
+no native code: publication is `link(2)`, which is atomic, fails `EEXIST` when
+the destination name is taken, and refuses a symlinked destination without
+following it — the same no-replace guarantee `renameat2(RENAME_NOREPLACE)` and
+`renameatx_np(RENAME_EXCL)` provide, available through `fs.linkSync` on every
+supported platform. The temporary name is unlinked once the link succeeds; the
+published file is the same inode the writer created and verified, so every
+identity check downstream holds by construction. A link that succeeds followed
+by an unlink that fails leaves the plan published and is reported as success,
+because it is one. The plan parent and the
 repository's Git-admin directory must also share a filesystem. It resolves
 the target repository's exact Git top-level, opens that root and every
 destination parent as held no-follow directory descriptors, creates missing
@@ -128,14 +135,44 @@ The writer creates a random exclusive temporary file relative to the held final
 parent descriptor and keeps its no-follow descriptor open. It writes and
 flushes the bytes, binds the temporary name to the opened inode, and hashes the
 open file before publication. Immediately before publication it revalidates
-the parent and the temporary path, inode, size, and digest. Publication uses an
-atomic no-replace move relative to the held directory descriptor. Initial mode
-therefore cannot overwrite a destination that appears after the absent check.
+the parent and the temporary path, inode, size, and digest. Publication links
+the temporary name to the destination relative to the held directory
+descriptor, which fails rather than replaces if the destination is taken.
+Initial mode therefore cannot overwrite a destination that appears after the
+absent check.
 The writer then flushes the directory and revalidates the committed path by
 opening it with `O_NOFOLLOW`, hashing both the original temporary fd and the
 path-bound fd, and performing a second descriptor-anchored path identity check
 after hashing. A detected mutation or replacement aborts instead of accepting
 mixed-era output.
+
+### Linux anchors, macOS verifies
+
+The two platforms reach the same destination by different proofs, and the
+difference is real enough to state rather than smooth over.
+
+On Linux every name resolves through `/proc/self/fd/<fd>/<child>`, a magic link
+the kernel resolves against the inode the descriptor already holds. The names
+above it are never re-walked, so an attacker who renames a parent between the
+check and the use cannot redirect the operation. The race is impossible, not
+merely detected.
+
+macOS has no such path. `/dev/fd/<fd>` is a devfs node, not a magic link: it can
+be opened, but nothing can be resolved through it. `open("/dev/fd/<fd>/child")`
+returns `ENOENT`, and `realpath` of it returns `/dev/fd/<fd>` rather than the
+directory's path — measured on macOS 26, not inferred. Node exposes no `openat`,
+no `dir_fd` parameter, and no FFI, so on macOS the writer resolves names
+lexically with `O_NOFOLLOW` at every component, holds an open descriptor on
+every directory in the chain for the whole operation, and proves before *and*
+after each step that the chain still names exactly the inodes it is holding.
+Holding the descriptors is what makes the recorded inode numbers trustworthy:
+an open descriptor pins its inode, so a freed number cannot be recycled beneath
+the walk.
+
+What that buys is detection rather than prevention. A parent swapped inside the
+window between a check and its use is caught by the check that follows, and the
+operation aborts having written nothing — but on Linux it could not have
+happened at all. No published byte escapes verification on either platform.
 
 `--replace` accepts only a pre-existing regular file and is reserved for
 Deepen; without it, accidental overwrite is rejected. It also requires the

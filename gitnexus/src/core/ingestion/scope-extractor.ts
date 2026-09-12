@@ -34,9 +34,24 @@
  *      as `ownedDefs` + a local `BindingRef { origin: 'local' }`.
  *   3. **Collect raw imports.** Walk `@import.*` matches. Call
  *      `provider.interpretImport` per match; attach the returned
- *      `ParsedImport` to the ParsedFile (not to any `Scope` — finalize
- *      reconstructs the owning scope via `provider.importOwningScope`
- *      during Phase 2).
+ *      `ParsedImport` to the ParsedFile — not to any `Scope`.
+ *      `provider.importOwningScope` is declared on `LanguageProvider` and
+ *      implemented by a dozen providers, but has no call site anywhere; this
+ *      step's output is a flat per-file list.
+ *
+ *      One scope fact is read before that list flattens it away:
+ *      `runsOnlyWhenCalled`, set when the statement sits anywhere inside a
+ *      `Function`. It is decided here because here is the last stage that can
+ *      — finalize receives the flat list, and its consumer receives a map
+ *      keyed by the file's Module scope only (see
+ *      `ParsedImport.runsOnlyWhenCalled`). This is a position fact, not a
+ *      syntax one, so it is decided centrally for every language rather than
+ *      per provider — with one capability a provider may declare to opt out
+ *      of it entirely, `importsExecuteWhereWritten: false`, because position
+ *      cannot defer an import that never executes (C/C++ `#include`, Rust
+ *      `use`, COBOL `COPY`). Providers still decide their own *syntactic* nesting
+ *      facts in their capture emitters, where the node is in hand (see
+ *      `languages/python/import-decomposer.ts`).
  *   4. **Collect type bindings.** Walk `@type-binding.*` matches. Call
  *      `provider.interpretTypeBinding` per match. Attach the resulting
  *      `TypeRef` to the innermost containing scope's `typeBindings`
@@ -65,6 +80,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  Capture,
   CaptureMatch,
   ImportEdge,
   ParameterTypeClass,
@@ -82,15 +98,20 @@ import type {
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
-import { extractTemplateArguments } from './utils/template-arguments.js';
+import {
+  extractTemplateArguments,
+  stripTrailingCallSuffix,
+  typeApplicationArguments,
+} from './utils/template-arguments.js';
+import { parseTypeParameterList } from './utils/type-parameters.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
 /**
- * The subset of `LanguageProvider` hooks that `extract()` reads. Declared
- * as its own type so:
+ * The subset of `LanguageProvider` members that `extract()` reads — the hooks
+ * it calls plus the capability flags it consults. Declared as its own type so:
  *
- *   - Tests can implement just these six hooks without faking the whole
+ *   - Tests can implement just these members without faking the whole
  *     `LanguageProvider` interface (which is ~40 fields including the
  *     legacy-DAG surface).
  *   - The extractor's dependency contract stays explicit — adding a new
@@ -105,6 +126,7 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
 >;
@@ -150,6 +172,7 @@ export function extract(
         d.range,
         d.filePath,
         d.ownsReceivers,
+        d.lexicalNames,
       );
     }
   }
@@ -181,7 +204,14 @@ export function extract(
 
   // ── Pass 3: collect raw imports ─────────────────────────────────────
   const parsedImports: ParsedImport[] = [];
-  pass3CollectImports(partitioned.import_, parsedImports, provider);
+  pass3CollectImports(
+    partitioned.import_,
+    positionIndex,
+    filePath,
+    parsedImports,
+    provider,
+    scopeTree,
+  );
 
   // ── Pass 4: collect type bindings ───────────────────────────────────
   pass4CollectTypeBindings(
@@ -314,6 +344,7 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly lexicalNames?: ReadonlySet<string>;
   /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
   readonly ownsReceivers?: ReadonlySet<string>;
 }
@@ -371,6 +402,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     ownedDefs: Object.freeze(draft.ownedDefs.slice()),
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
+    lexicalNames: draft.lexicalNames,
     ownsReceivers: draft.ownsReceivers,
   };
 }
@@ -448,6 +480,7 @@ function pass1BuildScopes(
         cand.range,
         filePath,
         provider.scopeOwnsReceivers?.(cand.match),
+        parseScopeLexicalNames(cand.match),
       ),
     );
     stack.push(cand);
@@ -494,6 +527,7 @@ function makeDraft(
   range: Range,
   filePath: string,
   ownsReceivers?: ReadonlySet<string>,
+  lexicalNames?: ReadonlySet<string>,
 ): ScopeDraft {
   return {
     id,
@@ -505,8 +539,24 @@ function makeDraft(
     ownedDefs: [],
     imports: [],
     typeBindings: new Map(),
+    lexicalNames,
     ownsReceivers,
   };
+}
+
+function parseScopeLexicalNames(match: CaptureMatch): ReadonlySet<string> | undefined {
+  const raw = match['@scope.lexical-names']?.text;
+  if (raw === undefined) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const names = parsed.filter(
+      (name): name is string => typeof name === 'string' && name.length > 0,
+    );
+    return names.length > 0 ? new Set(names) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // ─── Pass 2: attach declarations + local bindings ──────────────────────────
@@ -523,12 +573,43 @@ function pass2AttachDeclarations(
   const draftById = new Map<ScopeId, ScopeDraft>();
   for (const d of drafts) draftById.set(d.id, d);
 
+  // First def seen per `nodeId`, for the duplicate backfill below. Two query
+  // patterns can legitimately match ONE declaration — a C++ templated struct
+  // matches both the standalone `struct_specifier` rule and the
+  // `template_declaration` rule that wraps it — and both mint the same def id.
+  const firstDefByNodeId = new Map<string, SymbolDefinition>();
+
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@declaration.');
     if (anchor === undefined) continue;
 
     const def = buildDefFromDeclarationMatch(match, anchor, filePath);
     if (def === undefined) continue;
+
+    // ── Duplicate-declaration backfill ───────────────────────────────────────
+    // `buildDefIndex` is FIRST-WRITE-WINS, so when one declaration produces two
+    // defs under one id, whichever match tree-sitter reported first is the one
+    // resolution sees. That was harmless while the twins were byte-identical.
+    // It stops being harmless the moment one twin can carry a field the other
+    // structurally cannot: a C++ `template <class T> struct Vec` has its
+    // parameter list on the ENCLOSING `template_declaration`, so the standalone
+    // `struct_specifier` twin can never see it, and match order would silently
+    // decide whether `Vec` remembers `T`. Source order deciding a resolution
+    // fact is the failure mode this subsystem rejects everywhere else.
+    //
+    // Copying the field onto BOTH twins makes the outcome identical whichever
+    // one wins. Deliberately narrow — only `typeParameters`, the one field with
+    // an asymmetric twin today. Widening this to "merge all metadata" would
+    // change what every existing duplicate resolves to, which is a different
+    // change with a different blast radius and no evidence behind it yet.
+    const first = firstDefByNodeId.get(def.nodeId);
+    if (first === undefined) {
+      firstDefByNodeId.set(def.nodeId, def);
+    } else if (first.typeParameters === undefined && def.typeParameters !== undefined) {
+      first.typeParameters = def.typeParameters;
+    } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
+      def.typeParameters = first.typeParameters;
+    }
 
     // Find the innermost scope that contains the declaration's anchor range.
     const innermostId = positionIndex.atPosition(
@@ -617,8 +698,19 @@ function buildDefFromDeclarationMatch(
   const declaredType = match['@declaration.field-type']?.text;
   const returnType = match['@declaration.return-type']?.text;
   const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
+  // The DECLARED parameters, a different axis from `templateArguments` above:
+  // that reads the arguments written on the name, this reads the list the
+  // declaration was written in terms of. A declaration can carry both, and for a
+  // C++ partial specialization the pairing is the only thing that tells it apart
+  // from a full specialization with the identical arguments.
+  const typeParameters = parseTypeParameterList(match['@declaration.type-parameters']?.text ?? '');
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
+  const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -632,9 +724,12 @@ function buildDefFromDeclarationMatch(
     ...(declaredType !== undefined ? { declaredType } : {}),
     ...(returnType !== undefined ? { returnType } : {}),
     ...(templateArguments !== undefined ? { templateArguments } : {}),
+    ...(typeParameters !== undefined ? { typeParameters } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
+    ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 
@@ -757,6 +852,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
   switch (kindStr.toLowerCase()) {
     case 'class':
       return 'Class';
+    case 'protocol':
+      return 'Protocol';
+    case 'category':
+      return 'Category';
     case 'interface':
       return 'Interface';
     case 'enum':
@@ -873,22 +972,114 @@ function makeDefId(
 
 // ─── Pass 3: collect raw imports ───────────────────────────────────────────
 
+/**
+ * Does this import run only when something calls the function it sits in?
+ *
+ * Walks the scope chain to the file root rather than reading the immediate
+ * kind, because the immediate kind is not enough in either direction. A `Block`
+ * at the top of a module (`if (FLAG) { require('./x'); }`) runs during
+ * initialization; the same `Block` inside a function does not. `Class`,
+ * `Namespace`, `Expression` and `Object` bodies execute where they are defined,
+ * so they are initialization-time too. Only an enclosing `Function` — anywhere
+ * up the chain — defers execution.
+ *
+ * Language-agnostic on purpose: it is what catches Python's
+ * `def f(): from x import Y`, Ruby's `def f; require 'x'; end` and a CommonJS
+ * `require()` in a function body, none of which any `kind` marks as deferred —
+ * only their position says it.
+ *
+ * The rule is about EXECUTION, so it does not hold for a language whose
+ * imports are not executed statements at all — a C/C++ `#include` (spliced by
+ * the preprocessor before the program runs) or a Rust `use` (a compile-time
+ * path alias). Both are legal inside a function body and neither is deferred
+ * by sitting there, so a cycle they form is REAL. Marking one deferred would
+ * make `check --cycles` drop that cycle, and suppressing a true cycle is the
+ * failure direction that matters. Such a language opts out by declaring
+ * `LanguageProvider.importsExecuteWhereWritten: false`, checked by the caller
+ * — the capability is named on the provider rather than the language being
+ * named here, because shared ingestion code must not branch on language
+ * (AGENTS.md).
+ *
+ * Decided HERE and nowhere later because this is the last stage that knows the
+ * answer — see `ParsedImport.runsOnlyWhenCalled` for why finalize and the graph
+ * bridge cannot recover it.
+ */
+function runsOnlyWhenCalled(
+  scopeTree: ReturnType<typeof buildScopeTree>,
+  scopeId: ScopeId,
+): boolean {
+  // Inline rather than `utils/scope-tree-walk.ts`'s `walkToScope`, which is the
+  // shared primitive for exactly this climb and IS the right call everywhere it
+  // is used today — five `bindingScopeFor` hooks, all per-BINDING. This runs per
+  // IMPORT on every file of every analyze, and `walkToScope` takes `...kinds`
+  // and builds `new Set(kinds)` per call: measured on this host, 1.0 ns inline
+  // against 32.3 ns through the helper for the module-level case that is ~99% of
+  // imports, plus ~232 B of allocation each. Rewriting the helper's membership
+  // test as `kinds.includes` takes it to 8.8 ns — still 8x, because the rest
+  // array allocates regardless. Reuse loses to a two-field loop here; it would
+  // not on a colder path.
+  //
+  // No depth cap: the chain is acyclic by construction, since `buildScopeTree`
+  // only parents a scope to one that STRICTLY contains it.
+  let current: ScopeId | null = scopeId;
+  while (current !== null) {
+    const scope = scopeTree.getScope(current);
+    if (scope === undefined) return false;
+    if (scope.kind === 'Function') return true;
+    current = scope.parent;
+  }
+  return false;
+}
+
 function pass3CollectImports(
   matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
   parsedImports: ParsedImport[],
   provider: ScopeExtractorHooks,
+  scopeTree: ReturnType<typeof buildScopeTree>,
 ): void {
   if (provider.interpretImport === undefined) return;
+  // Hoisted: the capability is a property of the language, identical for every
+  // match in the file. A provider that declares its imports do not execute
+  // where they are written skips the execution-deferral walk — position cannot defer something that never
+  // runs, and marking one deferred would hide a real cycle. Absent reads as
+  // `true`, so an undeclared provider is unchanged. See
+  // `LanguageProvider.importsExecuteWhereWritten`.
+  const positionCanDefer = provider.importsExecuteWhereWritten !== false;
   for (const match of matches) {
     const anchor = anchorCaptureFor(match, '@import.');
     if (anchor === undefined) continue;
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
-    parsedImports.push(parsed);
+    // The statement's own position, resolved to the innermost scope holding
+    // it. Provenance is retained independently of execution timing. An
+    // unlocatable anchor leaves the import unmarked, which reads as
+    // "runs at initialization" — the fail-safe direction, since it can only
+    // make `check --cycles` over-report.
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred =
+      positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push({
+      ...parsed,
+      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      ...(deferred ? { runsOnlyWhenCalled: true } : {}),
+    });
   }
 }
 
 // ─── Pass 4: collect type bindings ─────────────────────────────────────────
+
+/** Cap on the retained as-written annotation. Real container spellings are a
+ *  handful of characters; a multi-line mapped/conditional type is neither a
+ *  container any `elementTypeOf` parses nor worth keeping one copy of per
+ *  binding on a kernel-scale repo. Over the cap the spelling is dropped, which
+ *  makes an index step decline — the safe direction. */
+const MAX_DECLARED_SPELLING_LENGTH = 256;
 
 function pass4CollectTypeBindings(
   matches: readonly CaptureMatch[],
@@ -932,11 +1123,41 @@ function pass4CollectTypeBindings(
       provider.bindingScopeFor?.(match, draftToScope(innermost), scopeTree) ?? autoHostedId;
     const host = draftById.get(hostId) ?? innermost;
 
-    const typeRef: TypeRef = {
-      rawName: parsed.rawTypeName,
-      declaredAtScope: host.id,
-      source: parsed.source,
-    };
+    // The annotation as the source wrote it, kept only when the provider's
+    // interpretation is not already it. `interpretTypeBinding` normalizes
+    // container spellings away (`User[]` → `User`, `List[User]` → `User`,
+    // `[]*User` → `User`), which makes a reduced container indistinguishable
+    // from a class of the same name — and an index step folding on that
+    // ambiguity typed `grid[0]` as `Grid`. Read at the one place the
+    // distinction matters; see `TypeRef.declaredSpelling`.
+    //
+    // Read from the capture rather than from `ParsedTypeBinding` deliberately:
+    // `@type-binding.type` is the shared anchor EVERY provider already reads to
+    // build `rawTypeName`, so nothing has to be threaded through fourteen
+    // interpreters (and none can forget to).
+    // A provider may override when its grammar keeps part of the written type
+    // outside `@type-binding.type` (C++ hangs `*` on the declarator).
+    const writtenType = (parsed.declaredSpelling ?? match['@type-binding.type']?.text)?.trim();
+    const declaredSpelling =
+      writtenType !== undefined &&
+      writtenType.length > 0 &&
+      writtenType.length <= MAX_DECLARED_SPELLING_LENGTH &&
+      writtenType !== parsed.rawTypeName
+        ? writtenType
+        : undefined;
+    const typeRef: TypeRef =
+      declaredSpelling === undefined
+        ? {
+            rawName: parsed.rawTypeName,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          }
+        : {
+            rawName: parsed.rawTypeName,
+            declaredSpelling,
+            declaredAtScope: host.id,
+            source: parsed.source,
+          };
     // Prefer stronger sources when multiple matches fire for the same
     // bound name in the same scope. Example: `u: User = find()` matches
     // both the annotation and constructor-inferred patterns; the explicit
@@ -1055,6 +1276,12 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
+    // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`);
+    // `inherits` only, because a call/read/write anchor spans the whole call
+    // expression, whose `<…>` would be an argument list, a comparison, or
+    // nothing at all — widening the kind would mint confident nonsense (#2912).
+    const typeArguments =
+      kind === 'inherits' ? heritageTypeArguments(match, anchor, nameCap) : undefined;
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -1084,6 +1311,25 @@ function pass5CollectReferences(
     // that logs nothing.
     const receiverChain = extractReceiverChain(match);
 
+    // Callee-position marker: a member-read capture that is actually the callee
+    // of an enclosing call (`obj.f` in `obj.f()`). Recorded, not acted on —
+    // whether the read is a phantom or a genuine func-typed-field read depends
+    // on the resolved tail's kind, which only edge emission knows. Emitted by
+    // languages whose read pattern has no call-position exclusion; absent
+    // everywhere else, so the site stays byte-identical for them.
+    const inCalleePosition = match['@reference.callee-position'] !== undefined;
+    // Pointer-embedding marker: `struct S { *T }` rather than `struct S { T }`.
+    // Recorded, not acted on — Go's method-set rules make the two forms differ
+    // (see `ReferenceSite.embeddedAsPointer`), and only structural interface
+    // detection knows what to do with that. Absent for every language without
+    // pointer embedding, so their sites stay byte-identical.
+    const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
+    // Static-gating marker: the call sits in a branch the language layer proved
+    // dead at index time (Zig `if (CONST_FALSE)`). Recorded on the site and
+    // copied to the CALLS edge; absent everywhere else (see
+    // `ReferenceSite.staticGated`).
+    const staticGated = kind === 'call' && match['@reference.static-gated'] !== undefined;
+
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
@@ -1092,6 +1338,7 @@ function pass5CollectReferences(
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
         : {}),
+      ...(typeArguments !== undefined ? { typeArguments } : {}),
       ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
         ? { propertyKey: propertyKeyCap.text }
         : {}),
@@ -1101,10 +1348,67 @@ function pass5CollectReferences(
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
       ...(receiverChain !== undefined ? { receiverChain } : {}),
+      ...(inCalleePosition ? { inCalleePosition: true } : {}),
+      ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
+      ...(staticGated ? { staticGated: true } : {}),
     };
     referenceSites.push(site);
   }
 }
+
+/**
+ * The generic arguments a heritage reference was written with, by whichever of
+ * the two routes this emitter uses (#2912).
+ *
+ * `@reference.type-arguments` is the explicit route, for an emitter whose anchor
+ * is the bare NAME node (Rust's `impl Trait for S` anchors on the trait
+ * identifier inside a `generic_type`). It wins where present: moving such an
+ * anchor to cover the arguments would change the site's range, and that range is
+ * part of every inheritance EDGE ID — a spelling detail must not renumber the
+ * graph. Every other emitter already anchors on the whole base, so its spelling
+ * is read directly and no query changed.
+ */
+function heritageTypeArguments(
+  match: CaptureMatch,
+  anchor: Capture,
+  nameCap: Capture,
+): readonly string[] | undefined {
+  const explicit = match['@reference.type-arguments']?.text;
+  return explicit !== undefined
+    ? typeApplicationArguments(explicit)
+    : referenceTypeArguments(anchor.text, nameCap.text);
+}
+
+/**
+ * Type arguments written on a heritage reference, read from the anchor's own
+ * spelling — `IValidator<string>` → `['string']` (#2912).
+ *
+ * Two shapes are handled before the spelling is read as an application:
+ *
+ *   - A trailing CONSTRUCTOR INVOCATION is dropped. `record R : Base<int>(x)`
+ *     and Kotlin `class C : Bar<Int>()` write a call in the heritage position;
+ *     the call is not part of the type, and leaving it attached would make the
+ *     list fail to close at the end and lose the arguments entirely.
+ *   - The application's base must BE the referenced name (`Other::Inner<T>`
+ *     ends with `Inner`). An anchor that spans more than the base type is not
+ *     read at all rather than read wrongly.
+ *
+ * `undefined` for a non-generic base and for every spelling that is not exactly
+ * one balanced argument list — absence is the "unknown" value that consumers
+ * fail open on, so declining is always safe here.
+ */
+function referenceTypeArguments(
+  anchorText: string,
+  baseName: string,
+): readonly string[] | undefined {
+  const text = stripTrailingCallSuffix(anchorText.trim());
+  const opener = text.search(OPENING_BRACKET);
+  if (opener === -1) return undefined;
+  if (!text.slice(0, opener).trimEnd().endsWith(baseName)) return undefined;
+  return typeApplicationArguments(text);
+}
+
+const OPENING_BRACKET = /[<[]/;
 
 function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
   const suffix = name.slice('@reference.'.length);
@@ -1490,16 +1794,29 @@ function rangesEqual(a: Range, b: Range): boolean {
  * change.
  */
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
+  '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.is-synthetic',
   '@import.name',
   '@import.source',
   '@import.alias',
+  // Provider-set marker, not a statement anchor. Listed for the same reason as
+  // its siblings: it is emitted on a sub-node of the import statement, and the
+  // anchor must stay `@import.statement` regardless of relative span.
+  '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',
   '@reference.qualified-name',
+  // The generic arguments a heritage base was written with, when the emitter's
+  // anchor is the bare name and cannot carry them (#2912). A sub-tag for the
+  // usual reason: it spans a sibling node of the anchor, never the site itself.
+  '@reference.type-arguments',
   '@reference.property-key',
+  '@reference.callee-position',
+  '@reference.embedded-pointer',
+  '@reference.static-gated',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',
@@ -1511,6 +1828,15 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.parameter-type-classes',
   '@declaration.return-type',
   '@declaration.template-constraints',
+  // MUST be listed, and the failure it prevents is silent def LOSS rather than
+  // a missing field. `anchorCaptureFor` picks the broadest-span `@declaration.*`
+  // capture that is not a known sub-tag; a type-parameter list is normally
+  // narrower than the declaration that owns it, but a C++ `template <class A,
+  // class B, …>` or a multi-line Java `<T extends A & B>` written above a short
+  // declaration can out-span it. The anchor would then be `type-parameters`,
+  // `normalizeNodeLabel` would return undefined for it, and the whole class def
+  // would be dropped rather than merely losing its parameters.
+  '@declaration.type-parameters',
   '@declaration.is-explicit',
   '@declaration.is-deleted',
 ]);

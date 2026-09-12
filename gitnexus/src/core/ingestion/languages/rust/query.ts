@@ -22,27 +22,31 @@ const RUST_SCOPE_QUERY = `
 
 ;; Declarations — struct
 (struct_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
 
 ;; Declarations — trait
 (trait_item
-  name: (type_identifier) @declaration.name) @declaration.trait
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.trait
 
 ;; Declarations — enum
 (enum_item
-  name: (type_identifier) @declaration.name) @declaration.enum
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.enum
 
 ;; Declarations — union
-;; Deliberately tagged @declaration.struct (→ Struct label), NOT a
-;; @declaration.union: every registry-primary resolution gate —
-;; isLinkableLabel (node-lookup.ts), CALLABLE_OR_TYPE_LIKE
-;; (finalize-algorithm.ts), ClassLikeNodeLabel (class-types.ts) — includes
-;; Struct but EXCLUDES Union, so a Union-labeled node would be an
-;; unresolvable orphan. A Rust union is a type whose literal is a real
-;; constructor, so Struct is both the resolvable and the semantically
-;; honest label here. #1934 F71.
+;; Tagged @declaration.struct (→ Struct label), NOT @declaration.union.
+;; Historically forced: the registry-primary gates (isLinkableLabel,
+;; CALLABLE_OR_TYPE_LIKE, ClassLikeNodeLabel) excluded Union, so a
+;; Union-labeled node was an unresolvable orphan (#1934 F71). Zig support
+;; widened all three for its union(enum) containers, so the label is now
+;; resolvable — Struct is kept here on the semantic argument alone (a Rust
+;; union is a type whose literal is a real constructor) and to leave the
+;; graph node ids of existing Rust indexes unchanged.
 (union_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
 
 ;; Declarations — module (mod foo { ... } / mod foo;)
 ;; A Rust mod is an ITEM, not just a lexical region: rustc resolves the first

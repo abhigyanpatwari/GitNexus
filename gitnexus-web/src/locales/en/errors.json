@@ -14,6 +14,7 @@
     "timeout": "The server took too long to respond. Try again in a moment.",
     "rateLimited": "Too many requests. Try again in {{seconds}}s.",
     "notFound": "The requested repository or resource was not found.",
+    "unauthorized": "This GitNexus deploy requires an access token. Find it in your Render dashboard under the gitnexus-web service's GITNEXUS_SERVE_AUTH_TOKEN environment variable, then paste it into Settings.",
     "originBlocked": "This action isn't available from the hosted UI. Open GitNexus from the server's own address (e.g. http://localhost:4747) to continue.",
     "client": "Request failed: {{message}}",
     "server": "Server error: {{message}}"

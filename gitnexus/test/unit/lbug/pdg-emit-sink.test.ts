@@ -78,6 +78,27 @@ describe('PdgEmitSink — routing', () => {
     sink.finalize();
   });
 
+  it('throws rather than silently dropping an undeclared endpoint-label pair (#2769)', () => {
+    // PDG edges are always BasicBlock|BasicBlock in production, but the sink
+    // applies no declared-pair gate of its own — this pins that the shared
+    // `assertDeclaredPair` guard (also wired into GraphEmitSink) still fires
+    // here rather than reaching COPY and silently dropping the edge.
+    const real = createKnowledgeGraph();
+    const sink = new PdgEmitSink(real, path.join(tmpRoot, 'pdg-csv'));
+
+    const undeclared: GraphRelationship = {
+      id: 'CFG:Static:a->Static:b',
+      sourceId: 'Static:src/a.ts:A',
+      targetId: 'Static:src/a.ts:B',
+      type: 'CFG',
+      confidence: 1,
+      reason: 'seq',
+    };
+    expect(() => sink.addRelationship(undeclared)).toThrow(
+      /Relationship label pair Static → Static is not declared/,
+    );
+  });
+
   it('delegates structural nodes, CALLS, and the whole-program TAINT_PATH edge to the real graph', () => {
     const real = createKnowledgeGraph();
     const sink = new PdgEmitSink(real, path.join(tmpRoot, 'pdg-csv'));

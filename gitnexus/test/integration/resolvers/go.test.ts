@@ -14,6 +14,16 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+/** The struct or interface that declares `methodId`, via its HAS_METHOD edge. */
+function owningTypeName(result: PipelineResult, methodId: string): string {
+  for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+    if (rel.targetId !== methodId) continue;
+    const owner = result.graph.getNode(rel.sourceId);
+    return (owner?.properties.name ?? rel.sourceId) as string;
+  }
+  return '';
+}
+
 // ---------------------------------------------------------------------------
 // Heritage: package imports + cross-package calls (exercises PackageMap)
 // ---------------------------------------------------------------------------
@@ -345,24 +355,21 @@ describe('Go structural interface dispatch', () => {
     );
   }, 60000);
 
-  function owningTypeName(methodId: string): string {
-    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
-      if (rel.targetId !== methodId) continue;
-      const owner = result.graph.getNode(rel.sourceId);
-      return (owner?.properties.name ?? rel.sourceId) as string;
-    }
-    return '';
-  }
-
   it('emits signature-checked structural IMPLEMENTS edges only for valid implementors', () => {
-    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
-      (edge) => edge.rel.reason === 'go-structural-implements',
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
     );
     expect(edgeSet(implementsEdges)).toEqual([
       'File → ReadCloser',
       'File → Reader',
       'FileBase → Reader',
       'MemoryRepository → Repository',
+      // ADDED in #2813, same deliberate reversal as the PointerOnlyThing pin
+      // below: `func (p *PointerOnlyThing) Touch()` puts Touch in the method
+      // set of *PointerOnlyThing, which is the type idiomatic Go stores in a
+      // PointerOnly-typed field. This exact-set assertion was the second place
+      // the #1966 value-only reading was encoded.
+      'PointerOnlyThing → PointerOnly',
       'SqlRepository → Repository',
     ]);
     expect(implementsEdges.every((edge) => edge.rel.confidence === 0.85)).toBe(true);
@@ -372,7 +379,9 @@ describe('Go structural interface dispatch', () => {
     const methodEdges = getRelationships(result, 'METHOD_IMPLEMENTS').filter(
       (edge) => edge.target === 'Save',
     );
-    const sourceOwners = methodEdges.map((edge) => owningTypeName(edge.rel.sourceId)).sort();
+    const sourceOwners = methodEdges
+      .map((edge) => owningTypeName(result, edge.rel.sourceId))
+      .sort();
     expect(sourceOwners).toEqual(['MemoryRepository', 'SqlRepository']);
   });
 
@@ -380,7 +389,7 @@ describe('Go structural interface dispatch', () => {
     const saveCalls = getRelationships(result, 'CALLS').filter(
       (edge) => edge.source === 'precise' && edge.target === 'Save',
     );
-    const targetOwners = saveCalls.map((edge) => owningTypeName(edge.rel.targetId));
+    const targetOwners = saveCalls.map((edge) => owningTypeName(result, edge.rel.targetId));
     expect(targetOwners).toEqual(['SqlRepository']);
   });
 
@@ -390,7 +399,7 @@ describe('Go structural interface dispatch', () => {
     );
     const dispatchTargets = saveCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['MemoryRepository', 'SqlRepository']);
   });
@@ -409,9 +418,36 @@ describe('Go structural interface dispatch', () => {
     expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → ReadCloser');
   });
 
-  it('does not emit value-type IMPLEMENTS for pointer-receiver-only methods', () => {
+  // POLARITY DELIBERATELY REVERSED in #2813 (was: `.not.toContain`).
+  //
+  // #1966 read Go's method-set rule for the VALUE type `T`, where pointer-
+  // receiver methods genuinely do not count. But GitNexus has one Struct node
+  // per type and no separate `*T` node, so that reading left `*T` — the shape
+  // idiomatic Go stores in an interface-typed field — unable to implement
+  // anything. The cost was silence, not caution: calls through such a field
+  // stopped at the interface declaration and `impact()` on the implementation
+  // reported zero callers. See the rationale block in interface-impls.ts.
+  it('emits IMPLEMENTS for a pointer-receiver-only implementor', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS');
-    expect(edgeSet(implementsEdges)).not.toContain('PointerOnlyThing → PointerOnly');
+    expect(edgeSet(implementsEdges)).toContain('PointerOnlyThing → PointerOnly');
+  });
+
+  // The FORM is the exact fact, not a confidence hedge. `func (p *PointerOnlyThing)
+  // Touch()` puts Touch in MS(*PointerOnlyThing) only, so `var x PointerOnly =
+  // PointerOnlyThing{}` is a Go compile error while `&PointerOnlyThing{}` is fine.
+  // Value-satisfying implementors keep the unsuffixed reason.
+  it('records WHICH method set satisfies the interface', () => {
+    const byPair = new Map(
+      getRelationships(result, 'IMPLEMENTS').map((e) => [
+        `${e.source} → ${e.target}`,
+        e.rel.reason,
+      ]),
+    );
+    expect(byPair.get('PointerOnlyThing → PointerOnly')).toBe('go-structural-implements-pointer');
+    // SqlRepository/MemoryRepository use VALUE receivers, so the value type
+    // itself implements and the reason stays unsuffixed.
+    expect(byPair.get('SqlRepository → Repository')).toBe('go-structural-implements');
+    expect(byPair.get('MemoryRepository → Repository')).toBe('go-structural-implements');
   });
 
   it('fans out embedded-interface receivers only to complete implementors', () => {
@@ -420,7 +456,7 @@ describe('Go structural interface dispatch', () => {
     );
     const dispatchTargets = closeCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['File']);
   });
@@ -436,18 +472,9 @@ describe('Go cross-package structural interface dispatch', () => {
     );
   }, 60000);
 
-  function owningTypeName(methodId: string): string {
-    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
-      if (rel.targetId !== methodId) continue;
-      const owner = result.graph.getNode(rel.sourceId);
-      return (owner?.properties.name ?? rel.sourceId) as string;
-    }
-    return '';
-  }
-
   it('matches local interface types against package-qualified implementation signatures', () => {
-    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
-      (edge) => edge.rel.reason === 'go-structural-implements',
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
     );
     expect(edgeSet(implementsEdges)).toEqual([
       'File → ReadCloser',
@@ -468,7 +495,7 @@ describe('Go cross-package structural interface dispatch', () => {
     );
     const dispatchTargets = saveCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['GoodStore']);
   });
@@ -479,7 +506,7 @@ describe('Go cross-package structural interface dispatch', () => {
     );
     const dispatchTargets = closeCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['File']);
   });
@@ -1653,5 +1680,546 @@ describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => 
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('Run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2766: pointer-receiver base resolution
+// ---------------------------------------------------------------------------
+
+describe('Go pointer-receiver field chains (#2766)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-pointer-receiver-field-chain'),
+      () => {},
+    );
+  }, 60000);
+
+  const calls = (): string[] => edgeSet(getRelationships(result, 'CALLS'));
+  /** ACCESSES rows with each target's KIND appended — `→ Work` alone cannot
+   *  tell a func-typed field apart from the method that shadowed it. */
+  const accesses = (): string[] =>
+    getRelationships(result, 'ACCESSES').map((e) => `${e.source} → ${e.target}:${e.targetLabel}`);
+
+  // The three rows that emitted nothing before the decoration fallback. All
+  // three have a POINTER receiver, which bound as the literal `*Holder` and
+  // matched no class, so receiver typing declined at the base.
+  it('resolves an interface-typed cross-package field through a pointer receiver', () => {
+    expect(calls()).toContain('RunInterface → DoWork');
+  });
+
+  it('resolves a concrete-typed cross-package field through a pointer receiver', () => {
+    expect(calls()).toContain('RunConcrete → DoWork');
+  });
+
+  it('resolves a concrete cross-package field returning a value', () => {
+    expect(calls()).toContain('RunCart → WithTx');
+  });
+
+  // Controls: these resolved BEFORE the fix. R11 requires they still resolve to
+  // the same target, so a regression here means the fallback moved an edge
+  // rather than adding one.
+  it('keeps resolving a local-variable receiver', () => {
+    expect(calls()).toContain('RunLocal → DoWork');
+  });
+
+  it('keeps resolving a value receiver', () => {
+    expect(calls()).toContain('RunFromValueReceiver → DoWork');
+  });
+
+  // U8: the same-package field receiver that previously produced an ACCESSES
+  // edge to the method and no CALLS edge. Typing the base is what emits CALLS;
+  // the ACCESSES now correctly targets the PROPERTY being read instead.
+  it('emits CALLS for a same-package field receiver, not ACCESSES alone', () => {
+    expect(calls()).toContain('RunSamePackage → Work');
+  });
+
+  it('retargets the field ACCESSES to the property, not the method', () => {
+    // Unlabeled on purpose: the negative must reject `→ Work` under ANY target
+    // kind, which the kind-qualified rows below cannot express.
+    const accessEdges = edgeSet(getRelationships(result, 'ACCESSES'));
+    expect(accessEdges).toContain('RunSamePackage → dep');
+    expect(accessEdges).not.toContain('RunSamePackage → Work');
+  });
+
+  // The assertion above used to pass by ACCIDENT: a pointer receiver's text
+  // cascade failed for an unrelated reason, so the phantom never resolved. The
+  // value-receiver twin proves the rule holds when the lookup SUCCEEDS — before
+  // the callee read-site was dropped, this emitted `RunFromValueReceiver →
+  // DoWork` as an ACCESSES edge duplicating its own CALLS edge.
+  it('emits no method-targeted ACCESSES for a value receiver either', () => {
+    const accessEdges = edgeSet(getRelationships(result, 'ACCESSES'));
+    expect(accessEdges).toContain('RunFromValueReceiver → impl');
+    expect(accessEdges).not.toContain('RunFromValueReceiver → DoWork');
+  });
+
+  // The invariant, stated once rather than per-fixture: a member call whose
+  // callee resolves to a METHOD must not also emit a field read for it.
+  // Asserted as the EXACT edge set INCLUDING each target's kind, so the two
+  // failure directions are both caught on rows nobody wrote a targeted
+  // assertion for: a new phantom (an ACCESSES to a Method at a call position)
+  // fails here, and so does a deleted genuine read (a missing ACCESSES to a
+  // Property). The kinds are load-bearing — `→ Work` alone cannot tell a
+  // func-typed field apart from the method that shadowed it.
+  it('emits exactly the expected ACCESSES set, target kinds included', () => {
+    expect(accesses().sort()).toEqual([
+      // #2782 review: callee position is a POSITION, not a verdict. Go
+      // dispatches `c.OnEvent()` through a func-typed struct field with exactly
+      // the same syntax as a method call, so the capture layer cannot decide
+      // which it is — `call_expression` looks identical and the tail may be
+      // declared in another package. Suppressing every callee-position read
+      // deleted the only ACCESSES evidence for callback structs, hook structs
+      // and hand-rolled mocks; this row is that evidence.
+      'CallFuncField → OnEvent:Property',
+      // A METHOD VALUE resolves to a Method just like the phantom does, and is
+      // the reason the suppression cannot key on target kind alone.
+      'MethodValue → DoWork:Method',
+      // A plain (non-func) field read, never in callee position.
+      'ReadPlainField → Label:Property',
+      'RunCart → cart:Property',
+      'RunConcrete → impl:Property',
+      'RunFromValueReceiver → impl:Property',
+      'RunInterface → thing:Property',
+      'RunSamePackage → dep:Property',
+    ]);
+  });
+
+  it('keeps CALLS for every field-receiver call', () => {
+    expect(calls()).toContain('RunSamePackage → Work');
+    expect(calls()).toContain('RunFromValueReceiver → DoWork');
+  });
+
+  // ---------------------------------------------------------------------
+  // #2782 review: callee position is a POSITION, not a verdict
+  // ---------------------------------------------------------------------
+  // That the READS survive is asserted by the exact-set test above, row by
+  // row. What that set cannot show is that keeping them did not cost the
+  // CALLS edge those same sites must still emit — which is what remains here.
+
+  it('still emits the call through the func-typed field', () => {
+    expect(calls()).toContain('CallFuncField → OnEvent');
+  });
+
+  // The original defect, on a bare-name receiver whose lookup definitely
+  // succeeds: CALLS only, and no ACCESSES duplicating it.
+  it('emits CALLS but no duplicate ACCESSES for a real method call', () => {
+    expect(calls()).toContain('RealMethodCall → DoWork');
+    // Unlabeled: the duplicate must be absent under any target kind.
+    expect(edgeSet(getRelationships(result, 'ACCESSES'))).not.toContain('RealMethodCall → DoWork');
+  });
+
+  // #2782 review finding 2: the fixture spans two packages and imports
+  // `fixture/repository`, but carried no `go.mod` — so `resolveGoImportTarget`
+  // matched NEITHER tier (tier 1 needs the module prefix; tier 2's ≥2-segment
+  // suffix rule cannot match `fixture/repository` against `repository/`) and the
+  // guard for this PR's headline fix exercised an import path no real Go repo
+  // takes. With `module fixture` the go.mod tier resolves.
+  it('resolves the cross-package import through the go.mod tier', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.map((e) => `${e.source} → ${e.target}`)).toContain('handler.go → repo.go');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2813: calls through an interface-typed struct field must reach the
+// IMPLEMENTATION, not stop at the interface declaration.
+// ---------------------------------------------------------------------------
+//
+// Two stacked defects produced the reported symptom, and either alone is
+// enough to reproduce it — which is why the pre-existing fixtures, uniformly
+// value-receiver, could not observe it:
+//
+//   D1  `buildDetectionIndexes` skipped every POINTER-receiver method, so a
+//       struct whose methods are all `func (r *T)` had an empty method set,
+//       structurally satisfied nothing, and got no IMPLEMENTS edge. Go's rule
+//       is that the method set of *T includes pointer-receiver methods, and
+//       idiomatic Go stores *T in an interface-typed field.
+//   D2  Case 0 (compound receiver) emitted its primary edge and short-circuited
+//       without the interface-dispatch fan-out Case 4 performs. A struct-field
+//       receiver `s.orderRepo` contains a dot, so it always takes Case 0; a
+//       local or parameter receiver is a bare name and reaches Case 4.
+//
+// The fixture is deliberately pointer-receiver throughout, cross-package, and
+// carries concrete-field controls in the same structs.
+describe('Go interface-typed struct field dispatch (#2813)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-interface-field-dispatch'),
+      () => {},
+    );
+  }, 120000);
+
+  const calls = (): string[] => edgeSet(getRelationships(result, 'CALLS'));
+  const implementsEdges = (): string[] => edgeSet(getRelationships(result, 'IMPLEMENTS'));
+  /** CALLS rows carrying the emitting reason, so a fan-out edge is
+   *  distinguishable from the primary edge to the interface declaration. */
+  const callsWithReason = (): string[] =>
+    getRelationships(result, 'CALLS').map((e) => `${e.source} → ${e.target}:${e.rel.reason}`);
+  /** CALLS rows qualified by the target's FILE — `→ DeleteItem` alone cannot
+   *  tell the interface declaration apart from the implementation, which is
+   *  the entire distinction under test. */
+  const callsToFile = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) => `${e.source} → ${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}`,
+    );
+  /** Both ENDS file-qualified. Required wherever two callers share a method
+   *  name — `callsToFile()` alone cannot tell them apart, so a row asserting
+   *  per-file behaviour must use this instead. */
+  const callsFromFileToFile = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) =>
+        `${e.sourceFilePath.split('/').slice(-1)[0]}:${e.source} → ` +
+        `${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}`,
+    );
+  /** CALLS rows carrying the emitted confidence, so a change to the literal
+   *  is caught rather than silently accepted. */
+  const callsWithConfidence = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) =>
+        `${e.source} → ${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}=${e.rel.confidence}`,
+    );
+
+  // D1: a pointer-receiver implementor must be discoverable at all.
+  it('detects a pointer-receiver struct as an interface implementor', () => {
+    expect(implementsEdges()).toContain('OrderRepo → OrderRepository');
+  });
+
+  it('detects every pointer-receiver implementor, not just the first', () => {
+    expect(implementsEdges()).toContain('MockOrderRepo → OrderRepository');
+  });
+
+  // D2: the headline defect. Before the fix these were absent entirely.
+  it('resolves an interface-typed field call to the implementation', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@order_repo.go');
+  });
+
+  it('resolves an interface-typed field call from a handler to the implementation', () => {
+    expect(callsToFile()).toContain('Delete → DeleteItem@order_repo.go');
+  });
+
+  it('fans out to every implementor, not only the first', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@mock_repo.go');
+  });
+
+  it('emits the implementation edge with reason interface-dispatch', () => {
+    expect(callsWithReason()).toContain('StartSession → DeleteItem:interface-dispatch');
+  });
+
+  // R11-style control: the fan-out must ADD edges, never MOVE them. If the
+  // primary edge disappears, the fix relocated resolution instead of widening
+  // it and every consumer of the interface node silently loses its callers.
+  it('keeps the primary edge to the interface declaration', () => {
+    expect(callsToFile()).toContain('StartSession → DeleteItem@interfaces.go');
+  });
+
+  // The epistemic half of #2813, pinned at its MECHANISM.
+  //
+  // The reporter's disqualifying complaint was that `impact()` returned
+  // `impactedCount 0, epistemic "exact"` for a method reached only through an
+  // interface field — byte-identical to a symbol that genuinely has no callers,
+  // so a zero could not be trusted defensively. That verdict is produced by
+  // `computeEpistemicBoundary`, which walks HERITAGE edges out of the queried
+  // symbol; with no IMPLEMENTS/METHOD_IMPLEMENTS edge it found no boundary, and
+  // the call sites were never *dropped* (they resolved, to the wrong node), so
+  // neither of its two producers fired.
+  //
+  // These are the edges that make the hedge fire. Measured on this fixture
+  // after the fix, `impact(OrderRepo.DeleteItem, upstream)` returns
+  // impactedCount 3 with epistemic "lower-bound" and an interface-boundary
+  // note, while the concrete `CartRepo.Get` still returns "exact" — so the
+  // signal discriminates rather than hedging on everything. Asserting the edges
+  // here keeps that mechanism from silently regressing without requiring the
+  // resolver suite to reach into the MCP layer.
+  it('emits METHOD_IMPLEMENTS from the implementation to the interface method', () => {
+    const methodImpls = getRelationships(result, 'METHOD_IMPLEMENTS').map(
+      (e) =>
+        `${e.sourceFilePath.split('/').slice(-1)[0]}:${e.source} → ` +
+        `${e.targetFilePath.split('/').slice(-1)[0]}:${e.target}`,
+    );
+    expect(methodImpls).toContain('order_repo.go:DeleteItem → interfaces.go:DeleteItem');
+    expect(methodImpls).toContain('mock_repo.go:DeleteItem → interfaces.go:DeleteItem');
+  });
+
+  // Concrete-field control: resolved before #2813 and must be untouched.
+  it('keeps resolving a concrete-typed field to its implementation', () => {
+    expect(callsToFile()).toContain('GetPickQueue → LogAuditEventAsync@audit_repo.go');
+  });
+
+  // `AuditRepo` implements nothing, so it is never a key in the implementor
+  // index — this row is satisfied by that map miss alone and would still pass
+  // with the `ownerDef.type !== 'Interface'` gate deleted. Kept as a regression
+  // test for the user-visible property, NOT as a control for the gate.
+  it('does not fan out a concrete-typed field receiver that implements nothing', () => {
+    expect(callsWithReason()).not.toContain('GetPickQueue → LogAuditEventAsync:interface-dispatch');
+  });
+
+  // The gate's real control. `OrderRepo` IS an implementor of `OrderRepository`,
+  // so it IS a live participant in the dispatch index; a call through a
+  // *concrete* `*OrderRepo` field must still resolve only to `OrderRepo` and
+  // must not fan out to its sibling implementor `MockOrderRepo`. This is the
+  // shape where the type gate does the work, so deleting the gate fails here.
+  it('does not fan out a concrete field whose own type is an implementor', () => {
+    expect(callsToFile()).toContain('Recount → UnsplitOrder@order_repo.go');
+    expect(callsWithReason()).not.toContain('Recount → UnsplitOrder:interface-dispatch');
+    expect(callsToFile()).not.toContain('Recount → UnsplitOrder@mock_repo.go');
+  });
+
+  // Negative control for structural detection: a partial match is not an
+  // implementation. Without this, "everything implements everything" passes.
+  it('does not treat a partial signature match as an implementation', () => {
+    expect(implementsEdges()).not.toContain('OrderRepo → PartialRepository');
+  });
+
+  // Signature comparison is the ONLY remaining guard now that pointer-receiver
+  // methods are admitted, so it needs a same-name/same-arity/different-type row
+  // and not just the missing-method negative above.
+  it('does not treat a same-name same-arity method with a different signature as an implementation', () => {
+    expect(implementsEdges()).not.toContain('WrongSigRepo → OrderRepository');
+  });
+
+  // The fan-out emits at the same confidence as the primary edge it hangs off.
+  // Without this row the 0.85 literal can be changed with nothing failing —
+  // the sibling IMPLEMENTS block already pins its own confidence.
+  it('emits dispatch edges at the same confidence as the primary edge', () => {
+    expect(callsWithConfidence()).toContain('StartSession → DeleteItem@order_repo.go=0.85');
+    expect(callsWithConfidence()).toContain('StartSession → DeleteItem@interfaces.go=0.85');
+  });
+
+  // Bounds the cross product. Two implementors x the call sites below is the
+  // whole fan-out for this interface, so a future cap, collapse or dedup change
+  // becomes visible here instead of silently multiplying or truncating edges.
+  it('emits exactly one dispatch edge per implementor per call site', () => {
+    const deleteItemDispatch = getRelationships(result, 'CALLS').filter(
+      (e) => e.target === 'DeleteItem' && e.rel.reason === 'interface-dispatch',
+    );
+    // 3 call sites on DeleteItem (pick_service StartSession, wave_service
+    // Release, handlers Delete) x 2 implementors (OrderRepo, MockOrderRepo).
+    expect(deleteItemDispatch.length).toBe(6);
+    const targets = [...new Set(deleteItemDispatch.map((e) => e.targetFilePath.split('/').pop()))];
+    expect(targets.sort()).toEqual(['mock_repo.go', 'order_repo.go']);
+  });
+
+  // The issue reported these two files behaving differently at scale despite
+  // declaring the same field shape; both must resolve here.
+  //
+  // The SOURCE is file-qualified on purpose. Two methods in this fixture are
+  // named `Queue` (services/wave_service.go and handlers/picking.go), and
+  // `callsToFile()` qualifies only the target — so a bare `'Queue → …'` row is
+  // satisfied by EITHER of them and cannot detect one file resolving while the
+  // other does not. That per-file divergence is the exact #2813 symptom this
+  // row exists to catch, so it has to name both sides.
+  it('resolves the same field shape identically across two service files', () => {
+    expect(callsFromFileToFile()).toContain('wave_service.go:Release → DeleteItem@order_repo.go');
+    expect(callsFromFileToFile()).toContain('wave_service.go:Queue → GetPickQueue@order_repo.go');
+    expect(callsFromFileToFile()).toContain(
+      'pick_service.go:StartSession → DeleteItem@order_repo.go',
+    );
+    expect(callsFromFileToFile()).toContain('picking.go:Queue → GetPickQueue@order_repo.go');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2837 — grouped `type (...)` declarations collapse N types into ONE Class
+// scope.
+//
+// `languages/go/query.ts` captures `@scope.class` on the `type_declaration`,
+// not on the `type_spec`. An idiomatic grouped declaration is therefore a
+// SINGLE capture owning every struct in the block, and
+// `buildWorkspaceResolutionIndex` keeps only the FIRST class-like def per Class
+// scope (`workspace-index.ts:156-164`). Every struct after the first has no
+// `classScopeByDefId` entry, so `typeOfMemberOnClass` cannot find its fields,
+// the Case 0 compound-receiver fold declines, and every field-receiver call
+// site in that file emits ZERO edges — silently, and independently of file
+// size. That is the per-file split #2837 reported and #2829 could not explain.
+//
+// Not caught before because ZERO of this repo's 115 Go fixture files used a
+// grouped `type (...)` block, including #2829's own fixture.
+describe('Go grouped type declaration scoping (#2837)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-grouped-type-decl'), () => {});
+  }, 120000);
+
+  /** Both ends file-qualified: three services declare a method named `Release`,
+   *  so a target-only row cannot tell which file resolved. */
+  const callsFromFileToFile = (): string[] =>
+    getRelationships(result, 'CALLS').map(
+      (e) =>
+        `${e.sourceFilePath.split('/').slice(-1)[0]}:${e.source} → ` +
+        `${e.target}@${e.targetFilePath.split('/').slice(-1)[0]}`,
+    );
+  const implementsEdges = (): string[] => edgeSet(getRelationships(result, 'IMPLEMENTS'));
+
+  // Control: the plain declaration resolves today and must keep resolving.
+  it('resolves a field receiver whose struct is declared plainly', () => {
+    expect(callsFromFileToFile()).toContain('wave_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // The headline defect: identical field shape, declared SECOND in a grouped
+  // block, currently emits nothing at all.
+  it('resolves a field receiver whose struct is declared second in a grouped block', () => {
+    expect(callsFromFileToFile()).toContain('pick_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // Order control. If only the first-declared struct resolves, the fix is
+  // order-luck rather than a fix.
+  it('resolves a field receiver whose struct is declared first in a grouped block', () => {
+    expect(callsFromFileToFile()).toContain('sort_service.go:Release → DeleteItem@order_repo.go');
+  });
+
+  // Equality, not mere presence: a one-sided fix fails here.
+  it('emits the same field-receiver edges for plain and grouped declarations', () => {
+    const rows = callsFromFileToFile();
+    const forFile = (f: string): string[] =>
+      rows
+        .filter((r) => r.startsWith(`${f}:`))
+        .map((r) => r.slice(f.length + 1))
+        .sort();
+    expect(forFile('pick_service.go')).toEqual(forFile('wave_service.go'));
+    expect(forFile('sort_service.go')).toEqual(forFile('wave_service.go'));
+  });
+
+  // The field-binding-collision half. While the grouped structs share ONE Class
+  // scope they also share one name-keyed `typeBindings` map, so `orderRepo`
+  // declared by `Decoy` as `*LocalThing` can type `PickService.orderRepo`.
+  // A fix that only made `workspace-index` map every class-like def would leave
+  // this map shared and would fail this row — which is why it is not the fix.
+  it('does not type a grouped struct field from a sibling struct of the same name', () => {
+    expect(callsFromFileToFile()).not.toContain(
+      'pick_service.go:Release → DeleteItem@pick_service.go',
+    );
+  });
+
+  // Grouped INTERFACE declarations collapse the same way. This row is also what
+  // discriminates the `tree-sitter-queries.ts` half of the fix: with only
+  // `languages/go/query.ts` re-anchored, MetricSink has a scope but still no
+  // graph NODE, so its implementor edge cannot exist.
+  it('detects implementors of both interfaces in a grouped interface block', () => {
+    expect(implementsEdges()).toContain('AuditWriter → AuditSink');
+    expect(implementsEdges()).toContain('MetricWriter → MetricSink');
+  });
+
+  // The node-level symptom, asserted directly for STRUCTS rather than only
+  // inferred from the interface row above. Before the fix the whole grouped
+  // block collapsed to one node and `PickService` was absent from the inventory
+  // entirely — `impact("PickService")` would have returned a clean, wrong zero.
+  it('emits a graph node for every struct in a grouped block', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('WaveService'); // plain — control
+    expect(structs).toContain('Decoy'); // grouped, first
+    expect(structs).toContain('PickService'); // grouped, second
+    expect(structs).toContain('SortService'); // grouped, first (reverse-order file)
+    expect(structs).toContain('SortDecoy'); // grouped, second (reverse-order file)
+  });
+
+  // Anchoring the captures on `type_spec` moved the node the class extractor and
+  // the doc-comment extractor are handed. Both had to be taught the new shape,
+  // and NEITHER is covered by the edge assertions above — the first pass of this
+  // change silently dropped both properties from every Go type while all seven
+  // rows above stayed green (#2843 review).
+  const typeProps = (label: 'Struct' | 'Interface', name: string): Record<string, unknown> =>
+    getNodesByLabelFull(result, label).find((n) => n.name === name)?.properties ?? {};
+
+  it('keeps the package-qualified name on every Go type', () => {
+    expect(typeProps('Struct', 'WaveService').qualifiedName).toBe('services.WaveService'); // plain
+    expect(typeProps('Struct', 'PickService').qualifiedName).toBe('services.PickService'); // grouped, 2nd
+    expect(typeProps('Interface', 'MetricSink').qualifiedName).toBe('repository.MetricSink'); // grouped iface, 2nd
+  });
+
+  it('keeps the godoc description on every Go type', () => {
+    expect(typeProps('Struct', 'WaveService').description).toBeTruthy(); // plain
+    expect(typeProps('Struct', 'PickService').description).toBeTruthy(); // grouped, 2nd
+    expect(typeProps('Interface', 'OrderRepository').description).toBeTruthy(); // plain interface
+  });
+
+  // Members must attribute to the struct that actually declares them. The owner
+  // walk took the FIRST `type_spec` of the declaration, so before the fix every
+  // field and method of a grouped block was filed under its first struct — and
+  // the two same-named `orderRepo` fields minted one id, dropping the second.
+  it('attributes grouped-block members to their own struct', () => {
+    const props = getRelationships(result, 'HAS_PROPERTY').map((e) => `${e.source}.${e.target}`);
+    expect(props).toContain('PickService.orderRepo');
+    expect(props).toContain('Decoy.orderRepo');
+    const methods = getRelationships(result, 'HAS_METHOD').map((e) => `${e.source}.${e.target}`);
+    expect(methods).toContain('MetricSink.Observe');
+    expect(methods).not.toContain('AuditSink.Observe');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-repo package qualifiers in signatures (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go signatures naming out-of-repo packages', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-extern-qualified-signatures'),
+      () => {},
+    );
+  }, 60000);
+
+  // `context.Context` resolves to no file in the repo, which used to collapse the
+  // whole signature to `undefined` on BOTH sides — so identical signatures
+  // compared unequal and no Go interface with a `ctx` parameter was ever
+  // implemented.
+  it('emits structural IMPLEMENTS across packages for stdlib-qualified signatures', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
+  });
+
+  // Two different out-of-repo packages sharing a last path segment must stay
+  // distinct: the qualifier is keyed on the import PATH, not the local name.
+  it('does not match same-named out-of-repo packages from different import paths', () => {
+    // Exact-set, not `not.toContain`: an empty edge list would satisfy the
+    // negative on its own, and the positive above is what proves it non-empty.
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
+  });
+
+  it('dispatches an interface-typed field call to the implementor', () => {
+    const dispatched = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'Remove' && edge.rel.reason === 'interface-dispatch')
+      .map((edge) => `${owningTypeName(result, edge.rel.targetId)}.${edge.target}`);
+    expect(dispatched).toEqual(['Mem.Delete']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Undecided satisfaction reaches the pipeline result (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go undecided interface satisfaction', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-undecided-satisfaction'), () => {});
+  }, 60000);
+
+  // The pair is unjudged, so it mints no edge — and saying so is the whole
+  // point: an empty implementor list here is a question, not an answer.
+  it('reports the interface it could not decide, and only that one', () => {
+    const undecided = result.undecidedSatisfaction.map((entry) => entry.interfaceName).sort();
+    expect(undecided).toEqual(['Drawer']);
+  });
+
+  it('names the candidate type, so a query on the implementation can be hedged', () => {
+    const drawer = result.undecidedSatisfaction.find((e) => e.interfaceName === 'Drawer');
+    expect(drawer?.candidateNames).toEqual(['Canvas']);
+  });
+
+  it('still emits the IMPLEMENTS edge it could decide', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Label → Named']);
   });
 });

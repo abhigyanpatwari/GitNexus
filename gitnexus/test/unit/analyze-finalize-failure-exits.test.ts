@@ -79,6 +79,8 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
 
 // Imported ONCE (not re-imported per test) — see the worker-safety note above.
 import { analyzeCommand } from '../../src/cli/analyze.js';
+import { cliError } from '../../src/cli/cli-message.js';
+import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-lock.js';
 
 describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1)', () => {
   // Snapshot the fatal-handler listeners present BEFORE this file ran (vitest's
@@ -143,6 +145,40 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
     // Don't leak a non-zero exit code to the forked worker's natural exit.
     process.exitCode = 0;
   });
+
+  it.each([undefined, '/repo/.gitnexus/analyze.lock.guard'])(
+    'renders the correct lock recovery instructions for guard=%s',
+    async (guardPath) => {
+      vi.mocked(cliError).mockClear();
+      const holder: LockRecord = {
+        v: 1,
+        pid: 123,
+        hostname: 'host',
+        startTime: null,
+        token: 'owner',
+        invocationId: 'owner',
+        acquiredAt: '',
+      };
+      const error = new IndexLockTimeoutError(holder, 30000, guardPath === undefined, guardPath);
+      runFullAnalysisMock.mockRejectedValue(error);
+      await analyzeCommand(undefined, {});
+      expect(process.exitCode).toBe(1);
+      if (guardPath) {
+        expect(cliError).toHaveBeenCalledWith(error.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath,
+        });
+        expect(error.message).not.toContain('GITNEXUS_INDEX_LOCK_TIMEOUT_MS');
+        expect(error.message).toContain('quiesced recovery');
+      } else {
+        expect(cliError).toHaveBeenCalledWith(
+          expect.stringContaining('GITNEXUS_INDEX_LOCK_TIMEOUT_MS'),
+          { recoveryHint: 'index-lock-timeout', holderPid: 123 },
+        );
+      }
+      expect(assertAnalysisFinalizedMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('force-exits when native handles are still open (isLbugReady true)', async () => {
     isLbugReadyMock.mockReturnValue(true);

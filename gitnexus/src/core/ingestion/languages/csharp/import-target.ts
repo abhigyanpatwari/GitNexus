@@ -22,7 +22,16 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import type { CSharpProjectConfig, CSharpNamespaceEvidence } from '../../language-config.js';
 import { resolveCSharpImportInternal } from '../../import-resolvers/csharp.js';
-import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
+import {
+  getWorkspaceFileIndex,
+  type WorkspaceFileIndex,
+} from '../../import-resolvers/workspace-file-index.js';
+import {
+  buildPackageDirIndex,
+  firstFileDirectlyInPkgDir,
+  type PackageDirIndex,
+} from '../../import-resolvers/package-dir-index.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { csharpSuffixFallbackAllowed } from '../../csharp-namespace-gate.js';
 
 export interface CsharpResolveContext {
@@ -32,27 +41,16 @@ export interface CsharpResolveContext {
   readonly namespaces?: CSharpNamespaceEvidence;
 }
 
-/** Normalized file list + suffix index, built once per workspace `allFilePaths`. */
-interface WorkspaceFileIndex {
-  readonly normalized: string[];
-  readonly all: string[];
-  readonly index: SuffixIndex;
-}
-
-// Memoize on Set identity: the orchestrator passes the SAME `allFilePaths`
-// Set through every `resolveImportTarget` call in a pass, so this rebuilds
-// the normalized list + suffix index once instead of once per import (#1881 #2).
-const workspaceFileIndexCache = new WeakMap<ReadonlySet<string>, WorkspaceFileIndex>();
-
-function getWorkspaceFileIndex(allFilePaths: ReadonlySet<string>): WorkspaceFileIndex {
-  const cached = workspaceFileIndexCache.get(allFilePaths);
-  if (cached) return cached;
-  const all = [...allFilePaths];
-  const normalized = all.map((f) => f.replace(/\\/g, '/'));
-  const built: WorkspaceFileIndex = { normalized, all, index: buildSuffixIndex(normalized, all) };
-  workspaceFileIndexCache.set(allFilePaths, built);
-  return built;
-}
+/**
+ * Namespace-directory index over the `.cs` files, memoized on the Set's
+ * identity. Feeds `firstFileDirectlyInPkgDir` (in
+ * `import-resolvers/package-dir-index.ts`), which the no-csproj path calls once
+ * for the direct match and then up to once per stripped namespace prefix.
+ */
+const getCsharpDirIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): PackageDirIndex =>
+    buildPackageDirIndex(allFilePaths, (normalized) => normalized.endsWith('.cs')),
+);
 
 export function resolveCsharpImportTarget(
   parsedImport: ParsedImport,
@@ -67,12 +65,11 @@ export function resolveCsharpImportTarget(
 
   const csharpConfigs = ctx.csharpConfigs ?? [];
   if (csharpConfigs.length > 0) {
-    const { normalized, all, index } = getWorkspaceFileIndex(ctx.allFilePaths);
+    const { index } = getWorkspaceFileIndex(ctx.allFilePaths);
     const fromCsproj = resolveCSharpImportInternal(
       targetRaw,
       [...csharpConfigs],
-      normalized,
-      all,
+      ctx.allFilePaths,
       index,
       evidence,
     );
@@ -101,12 +98,19 @@ export function resolveCsharpImportTarget(
   }
 
   // Exact file / nested-suffix / namespace-dir direct-child match.
-  const direct = resolveDirectMatch(ctx.allFilePaths, pathLike);
+  //
+  // The no-csproj path used to take the raw Set and re-scan it — up to eight
+  // full workspace passes for a four-segment `using` — past the memoized index
+  // sitting right there for the csproj branch (#2878). Both legs now read the
+  // same per-run indexes.
+  const ws = getWorkspaceFileIndex(ctx.allFilePaths);
+  const dirs = getCsharpDirIndex(ctx.allFilePaths);
+  const direct = resolveDirectMatch(ws, dirs, pathLike);
   if (direct !== null) return direct;
 
   // Progressive prefix stripping — mirrors csproj's root-namespace mapping
   // without the csproj.
-  return resolveByProgressiveStripping(ctx.allFilePaths, pathLike);
+  return resolveByProgressiveStripping(ws, dirs, pathLike);
 }
 
 /**
@@ -131,40 +135,28 @@ function narrowContext(workspaceIndex: WorkspaceIndex): CsharpResolveContext | n
  * exact whole-path file > nested suffix file > first `.cs` directly inside
  * the namespace directory.
  */
-function resolveDirectMatch(allFilePaths: ReadonlySet<string>, pathLike: string): string | null {
+function resolveDirectMatch(
+  ws: WorkspaceFileIndex,
+  dirs: PackageDirIndex,
+  pathLike: string,
+): string | null {
   const exactName = `${pathLike}.cs`;
-  const nestedSuffix = `/${exactName}`;
-  let suffixFile: string | null = null;
-  for (const raw of allFilePaths) {
-    const f = raw.replace(/\\/g, '/');
-    if (!f.endsWith('.cs')) continue;
-    if (f === exactName) return raw; // exact whole-path match wins
-    if (suffixFile === null && f.endsWith(nestedSuffix)) suffixFile = raw;
-  }
-  if (suffixFile !== null) return suffixFile;
-  return findDirectChild(allFilePaths, pathLike);
-}
-
-/**
- * First `.cs` file that lives directly inside the namespace directory
- * `dirSegment` (at repo root or nested under a project prefix), not deeper.
- * The legacy resolver emits all of them; the scope-resolver contract is
- * single-target so we take one.
- */
-function findDirectChild(allFilePaths: ReadonlySet<string>, dirSegment: string): string | null {
-  const dirPrefix = `${dirSegment}/`;
-  const nestedDirPrefix = `/${dirPrefix}`;
-  for (const raw of allFilePaths) {
-    const f = raw.replace(/\\/g, '/');
-    if (!f.endsWith('.cs')) continue;
-    const atRoot = f.startsWith(dirPrefix);
-    const atNested = f.includes(nestedDirPrefix);
-    if (!atRoot && !atNested) continue;
-    const idx = atRoot ? 0 : f.indexOf(nestedDirPrefix) + 1;
-    const after = f.slice(idx + dirPrefix.length);
-    if (after.length > 0 && !after.includes('/')) return raw;
-  }
-  return null;
+  // An exact whole-path match wins even when a `…/<exactName>` suffix match
+  // appeared EARLIER in iteration order, so the two lookups stay separate:
+  // `index.get` conflates them and would return the earlier suffix hit.
+  const exact = ws.normToRaw.get(exactName);
+  if (exact !== undefined) return exact;
+  // No whole-path file exists, so every segment-suffix hit is a `/<exactName>`
+  // match and `index.get` yields the first one in iteration order — exactly the
+  // `suffixFile` the scan kept. Only a `.cs` file can carry a `.cs` suffix key,
+  // so the old `endsWith('.cs')` filter is implied.
+  const suffixFile = ws.index.get(exactName);
+  if (suffixFile !== undefined) return suffixFile;
+  // First `.cs` file living directly inside the namespace directory `pathLike`
+  // (at repo root or nested under a project prefix), not deeper. The legacy
+  // resolver emits all of them; the scope-resolver contract is single-target so
+  // we take one.
+  return firstFileDirectlyInPkgDir(dirs, pathLike);
 }
 
 /**
@@ -174,26 +166,20 @@ function findDirectChild(allFilePaths: ReadonlySet<string>, dirSegment: string):
  * prefix (the scope-resolver layer has no csproj to consult).
  */
 function resolveByProgressiveStripping(
-  allFilePaths: ReadonlySet<string>,
+  ws: WorkspaceFileIndex,
+  dirs: PackageDirIndex,
   pathLike: string,
 ): string | null {
   const segments = pathLike.split('/').filter(Boolean);
   for (let skip = 1; skip < segments.length; skip++) {
     const tail = segments.slice(skip).join('/');
     if (tail === '') continue;
-    const tailFile = `${tail}.cs`;
-    const tailSuffix = `/${tailFile}`;
-    let tailFileMatch: string | null = null;
-    for (const raw of allFilePaths) {
-      const f = raw.replace(/\\/g, '/');
-      if (!f.endsWith('.cs')) continue;
-      if (f === tailFile || f.endsWith(tailSuffix)) {
-        tailFileMatch = raw;
-        break;
-      }
-    }
-    if (tailFileMatch !== null) return tailFileMatch;
-    const child = findDirectChild(allFilePaths, tail);
+    // `f === tailFile || f.endsWith('/' + tailFile)`, first in iteration order —
+    // no exact-wins rule here, unlike `resolveDirectMatch`, so the conflated
+    // suffix lookup is the right one.
+    const tailFileMatch = ws.index.get(`${tail}.cs`);
+    if (tailFileMatch !== undefined) return tailFileMatch;
+    const child = firstFileDirectlyInPkgDir(dirs, tail);
     if (child !== null) return child;
   }
   return null;

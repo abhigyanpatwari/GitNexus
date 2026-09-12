@@ -13,8 +13,12 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { NODE_TABLES, REL_TYPES } from 'gitnexus-shared';
-import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
+import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
+import type {
+  EnrichedSearchResult,
+  GrepOptions,
+  GrepResponse,
+} from '../../services/backend-client';
 
 /**
  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
@@ -44,7 +48,7 @@ export interface GraphRAGBackend {
     query: string,
     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
   ) => Promise<EnrichedSearchResult[]>;
-  grep: (pattern: string, limit?: number) => Promise<GrepResult[]>;
+  grep: (pattern: string, limit?: number, opts?: GrepOptions) => Promise<GrepResponse>;
   readFile: (filePath: string) => Promise<string>;
 }
 
@@ -375,20 +379,22 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         }
 
         const limit = maxResults ?? 100;
-        const fullPattern = fileFilter
-          ? `(?=.*${fileFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}).*${pattern}`
-          : pattern;
-
-        const results = await backendGrep(fullPattern, limit);
+        const { results, timedOut } = await backendGrep(pattern, limit, {
+          fileFilter,
+          caseSensitive,
+        });
+        const timeoutMsg = timedOut
+          ? '\n\n(Scan timed out after a few seconds — results may be incomplete)'
+          : '';
 
         if (results.length === 0) {
-          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
+          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}${timeoutMsg}`;
         }
 
         const formatted = results.map((r) => `${r.filePath}:${r.line}: ${r.text}`).join('\n');
         const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
 
-        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
+        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}${timeoutMsg}`;
       } catch (error) {
         return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -396,16 +402,20 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'grep',
       description:
-        'Search for exact text patterns across all files using regex. Use for finding specific strings, error messages, TODOs, variable names, etc.',
+        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds (the tool will say so if the scan was incomplete), so prefer precise patterns over catch-alls.',
       schema: z.object({
         pattern: z
           .string()
-          .describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
+          .describe(
+            'Regex pattern to search for (e.g., "TODO|FIXME", "console\\.log", "signOrder")',
+          ),
         fileFilter: z
           .string()
           .optional()
           .nullable()
-          .describe('Only search files containing this string (e.g., ".ts", "src/api")'),
+          .describe(
+            'Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")',
+          ),
         caseSensitive: z
           .boolean()
           .optional()
@@ -1219,7 +1229,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
           const baseName = targetFileName.replace(/\.[^/.]+$/, '');
           try {
-            const hints = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
+            const { results: hints } = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
             const filtered = hints.filter((h) => h.filePath !== targetFilePath);
 
             if (filtered.length > 0) {
@@ -1233,7 +1243,20 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           }
         }
 
-        return `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be ${direction === 'upstream' ? 'unused (not called by anything)' : 'self-contained (no outgoing dependencies)'}.${multipleMatchWarning}`;
+        // An empty UPSTREAM walk is not evidence of disuse — it is the absence
+        // of evidence. The symbol may be reached only through a reference class
+        // the index does not record (a property access on a plain object, a
+        // dynamic dispatch, a call from a language whose resolver is weaker
+        // here). The Node/MCP path reports `risk: UNKNOWN` with a `riskNote`
+        // for exactly this case; this surface answers in prose rather than an
+        // enum, so it carries the same MEANING rather than the same field —
+        // saying "appears to be unused" here is the identical false certainty.
+        //
+        // Downstream keeps its wording: no outgoing dependencies really does
+        // describe the symbol itself, not a claim about the rest of the repo.
+        return direction === 'upstream'
+          ? `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This does NOT establish the symbol is unused — an empty caller set can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). Confirm with a text search before treating it as dead code.${multipleMatchWarning}`
+          : `No ${direction} dependencies found for "${target}" (types: ${activeRelTypes.join(', ')}). This code appears to be self-contained (no outgoing dependencies).${multipleMatchWarning}`;
       }
 
       const depth1 = byDepth.get(1) || [];
@@ -1262,6 +1285,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         stepCount: number | null;
       }> = [];
       let affectedClusters: Array<{ label: string; hits: number; impact: string }> = [];
+      let processQueryFailed = false;
+      let clusterQueryFailed = false;
+      let clusterClassificationFailed = false;
 
       if (trimmedIds.length > 0) {
         const processQuery = `
@@ -1289,9 +1315,23 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             : '';
 
         const [processRes, clusterRes, directClusterRes] = await Promise.all([
-          executeQuery(processQuery),
-          executeQuery(clusterQuery),
-          directClusterQuery ? executeQuery(directClusterQuery) : Promise.resolve([]),
+          executeQuery(processQuery).catch((err) => {
+            processQueryFailed = true;
+            if (import.meta.env.DEV) console.warn('Impact process enrichment failed:', err);
+            return [];
+          }),
+          executeQuery(clusterQuery).catch((err) => {
+            clusterQueryFailed = true;
+            if (import.meta.env.DEV) console.warn('Impact cluster enrichment failed:', err);
+            return [];
+          }),
+          directClusterQuery
+            ? executeQuery(directClusterQuery).catch((err) => {
+                clusterClassificationFailed = true;
+                if (import.meta.env.DEV) console.warn('Impact cluster enrichment failed:', err);
+                return [];
+              })
+            : Promise.resolve([]),
         ]);
 
         const directClusterSet = new Set<string>();
@@ -1310,7 +1350,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         affectedClusters = clusterRes.map((row: any) => {
           const label = Array.isArray(row) ? row[0] : row.label;
           const hits = Array.isArray(row) ? row[1] : row.hits;
-          const impact = directClusterSet.has(label) ? 'direct' : 'indirect';
+          const impact = clusterClassificationFailed
+            ? 'classification-unavailable'
+            : directClusterSet.has(label)
+              ? 'direct'
+              : 'indirect';
           return { label, hits, impact };
         });
       }
@@ -1318,19 +1362,25 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const directCount = depth1.length;
       const processCount = affectedProcesses.length;
       const clusterCount = affectedClusters.length;
-      let risk = 'LOW';
-      if (directCount >= 30 || processCount >= 5 || clusterCount >= 5 || totalAffected >= 200) {
-        risk = 'CRITICAL';
-      } else if (
-        directCount >= 15 ||
-        processCount >= 3 ||
-        clusterCount >= 3 ||
-        totalAffected >= 100
-      ) {
-        risk = 'HIGH';
-      } else if (directCount >= 5 || totalAffected >= 30) {
-        risk = 'MEDIUM';
-      }
+      const enrichmentCapped = allNodeIds.length > maxIdsForContext;
+      const unusedAxes = unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: false,
+        maxChunks: 10,
+        processQueryFailed,
+        moduleQueryFailed: clusterQueryFailed,
+        impactedCount: totalAffected,
+        enrichmentTruncated: enrichmentCapped,
+      });
+      const scored = scoreImpactRisk({
+        direction,
+        directCount,
+        processCount,
+        moduleCount: clusterCount,
+        impactedCount: totalAffected,
+        unusedAxes,
+      });
+      const { risk, riskSharedAxes, riskScale } = scored;
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
@@ -1338,22 +1388,42 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         `Confidence: High ${confidenceBuckets.high} | Medium ${confidenceBuckets.medium} | Low ${confidenceBuckets.low}`,
         ``,
         `AFFECTED PROCESSES:`,
-        ...(affectedProcesses.length > 0
-          ? affectedProcesses.map(
-              (p) =>
-                `- ${p.label} - BROKEN at step ${p.minStep ?? '?'} (${p.hits} symbols, ${p.stepCount ?? '?'} steps)`,
-            )
-          : ['- None found']),
+        ...(processQueryFailed
+          ? ['- Unavailable (enrichment query failed)']
+          : affectedProcesses.length > 0
+            ? affectedProcesses.map(
+                (p) =>
+                  `- ${p.label} - BROKEN at step ${p.minStep ?? '?'} (${p.hits} symbols, ${p.stepCount ?? '?'} steps)`,
+              )
+            : ['- None found']),
         ``,
         `AFFECTED CLUSTERS:`,
-        ...(affectedClusters.length > 0
-          ? affectedClusters.map((c) => `- ${c.label} (${c.impact}, ${c.hits} symbols)`)
-          : ['- None found']),
+        ...(clusterQueryFailed
+          ? ['- Unavailable (enrichment query failed)']
+          : affectedClusters.length > 0
+            ? affectedClusters.map((c) => `- ${c.label} (${c.impact}, ${c.hits} symbols)`)
+            : ['- None found']),
         ``,
-        `RISK: ${risk}`,
+        `RISK: ${risk} (edit gate — warn on HIGH/CRITICAL)`,
+        `Shared-axes: ${riskSharedAxes} (File vs symbol compare only; do not waive a HIGH risk warning)`,
+        `Note: this Graph-RAG surface expands File targets to in-file symbols before enrichment, so process/cluster axes are comparable here when enrichment succeeds. MCP File impact does not.`,
+        ...(riskScale.comparableAcrossKinds
+          ? []
+          : [
+              `Note: process/module axes were unused (${riskScale.unusedAxes.map((a) => a.reason).join(', ')}).`,
+            ]),
+        ...(risk === 'UNKNOWN' && (processQueryFailed || clusterQueryFailed)
+          ? ['Note: risk is unresolved because enrichment failed; retry before editing.']
+          : []),
+        ...(enrichmentCapped
+          ? [`Note: process/cluster enrichment is partial (first ${maxIdsForContext} symbols).`]
+          : []),
+        ...(clusterClassificationFailed
+          ? ['Note: direct/indirect cluster classification is unavailable.']
+          : []),
         `- Direct callers: ${directCount}`,
-        `- Processes affected: ${processCount}`,
-        `- Clusters affected: ${clusterCount}`,
+        `- Processes affected: ${processQueryFailed ? 'unavailable' : processCount}`,
+        `- Clusters affected: ${clusterQueryFailed ? 'unavailable' : clusterCount}`,
         ``,
       ];
 
@@ -1459,7 +1529,9 @@ relationTypes filter (optional):
 Additional output sections:
 - Affected processes (with step impact)
 - Affected clusters (direct/indirect)
-- Risk summary (based on direct callers, processes, clusters)`,
+- RISK is the edit gate: warn before edits on HIGH/CRITICAL; UNKNOWN requires retry or corroboration
+- Shared-axes risk compares File and symbol targets using direct/total counts only; it never waives the RISK gate
+- riskScale notes unavailable process/module axes. This Graph-RAG tool expands File targets to in-file symbols; MCP File impact does not`,
       schema: z.object({
         target: z.string().describe('Name of the function, class, or file to analyze'),
         direction: z

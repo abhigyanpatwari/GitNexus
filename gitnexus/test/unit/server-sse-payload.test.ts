@@ -9,56 +9,31 @@
  * Clients reconnect by this identity after "Analyze new" — with duplicate
  * basenames, a name-only payload makes the web UI connect to the first
  * same-named sibling instead of the repo just analyzed (PR #2420 review R2).
+ *
+ * Imported from `src/server/sse-progress.ts`, NOT from `src/server/api.ts`:
+ * that module pulls Express, cors, the LadybugDB native adapter and the whole
+ * MCP wiring, which is what made this file cost ~25s to import (#2790 review).
  */
-import express from 'express';
-import http from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mountSSEProgress } from '../../src/server/api.js';
-import { JobManager } from '../../src/server/analyze-job.js';
+import type { JobManager } from '../../src/server/analyze-job.js';
+import { startSSEHarness, terminalFrame, type SSEHarness } from '../helpers/sse-harness.js';
 
 const REPO_PATH = '/ws/b/reels';
 const REPO_NAME = 'reels';
 
-/** Extract the parsed JSON payload of the `event: complete` SSE frame. */
-const parseCompletePayload = (body: string): unknown => {
-  const frame = body.split('\n\n').find((f) => f.includes('event: complete'));
-  expect(frame).toBeDefined();
-  const dataLine = frame?.split('\n').find((line) => line.startsWith('data: '));
-  expect(dataLine).toBeDefined();
-  return JSON.parse(dataLine?.slice('data: '.length) ?? '{}') as unknown;
-};
-
 describe('mountSSEProgress terminal payload', () => {
+  let harness: SSEHarness;
   let manager: JobManager;
-  let server: http.Server | undefined;
   let baseUrl = '';
 
-  beforeEach(() => {
-    manager = new JobManager();
-    const app = express();
+  beforeEach(async () => {
     // Mirrors the production mount in createServer().
-    mountSSEProgress(app, '/api/analyze/:jobId/progress', manager);
-    return new Promise<void>((resolve) => {
-      server = app.listen(0, '127.0.0.1', () => {
-        const addr = server?.address();
-        const port = typeof addr === 'object' && addr ? addr.port : 0;
-        baseUrl = `http://127.0.0.1:${port}`;
-        resolve();
-      });
-    });
+    harness = await startSSEHarness('/api/analyze/:jobId/progress');
+    manager = harness.manager;
+    baseUrl = harness.baseUrl;
   });
 
-  afterEach(() => {
-    manager.dispose();
-    return new Promise<void>((resolve, reject) => {
-      if (!server) {
-        resolve();
-        return;
-      }
-      server.close((err) => (err ? reject(err) : resolve()));
-      server = undefined;
-    });
-  });
+  afterEach(() => harness.close());
 
   it('already-terminal replay includes repoName AND repoPath', async () => {
     const job = manager.createJob({ repoPath: REPO_PATH });
@@ -69,7 +44,7 @@ describe('mountSSEProgress terminal payload', () => {
 
     expect(body).toContain('event: complete');
     // Exact match locks the wire shape (error is undefined → omitted by JSON).
-    expect(parseCompletePayload(body)).toEqual({
+    expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
       repoPath: REPO_PATH,
     });
@@ -90,7 +65,7 @@ describe('mountSSEProgress terminal payload', () => {
     const body = await response.text();
 
     expect(body).toContain('event: complete');
-    expect(parseCompletePayload(body)).toEqual({
+    expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
       repoPath: REPO_PATH,
     });

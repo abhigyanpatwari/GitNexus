@@ -39,8 +39,12 @@ const FUNCTION_NODE_TYPES = new Set([
 
 /** Walk up to the enclosing type declaration (class/struct/extension/
  *  protocol). Nested local functions still see `self` from the enclosing
- *  type, so don't stop at function-like nodes. */
-function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
+ *  type, so don't stop at function-like nodes.
+ *
+ *  Exported so `swiftEnclosingTypeName` (captures.ts) asks the same question
+ *  the same way — the two must agree on what "the enclosing type" is or a
+ *  method's owner qualifier and its `self` binding name different types. */
+export function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
   let cur: SyntaxNode | null = node.parent;
   while (cur !== null) {
     if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;

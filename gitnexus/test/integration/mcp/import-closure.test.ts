@@ -10,99 +10,69 @@
  * level. The native binding's init can write to raw stdout in that pre-sentinel
  * window and corrupt the JSON-RPC frame stream.
  *
- * This test locks in the fix: spawn a child Node process, import the built
- * `dist/cli/mcp.js` (without invoking `mcpCommand`), and assert that
- * `@ladybugdb/core` is NOT in the loaded-module set. The assertion is
- * evidence-based — it checks Node's CJS module cache, which is global per
- * process and tracks every native/CJS module loaded by either ESM or CJS
- * importers.
+ * This test locks in the fix: import the built `dist/cli/mcp.js` in a child
+ * process (without invoking `mcpCommand`) and assert that `@ladybugdb/core` is
+ * NOT in the loaded-module set.
+ *
+ * The probe is `test/helpers/module-load-probe.ts`. This file used to carry its
+ * own copy that diffed Node's CJS module cache and nothing else. That was
+ * enough for the `@ladybugdb/core` headline — a native CJS module always
+ * surfaces in `require.cache` — but it was structurally BLIND to the ESM
+ * `dist/**` graph it was walking, which is where the static imports it is
+ * policing actually live, and it had no non-vacuity guard at all: a `cli/mcp.js`
+ * severed from its own imports produced an empty cache diff and passed green.
+ * The shared probe adds the ESM channel and REQUIRES an anchor, so "nothing
+ * forbidden loaded" now means something. It also spawns ONCE for the two
+ * assertions below, which used to pay for two separate probes of one target.
+ *
+ * `dist/mcp/stdio-context.js` is the anchor because it is the entry's only
+ * remaining first-party static import — the whole point of the fix — so its
+ * disappearance is exactly the refactor that would make both assertions vacuous.
  *
  * Characterization-first: this test was written before the fix landed and
  * MUST fail against the pre-fix code. Run against the parent of the U1
  * commit to verify the regression signal works.
  */
 
-import { describe, it, expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
-import path from 'node:path';
-import fs from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-const DIST_MCP = path.join(REPO_ROOT, 'dist', 'cli', 'mcp.js');
-const DIST_MCP_URL = pathToFileURL(DIST_MCP).href;
-
-const PROBE = `
-  import { createRequire } from 'node:module';
-  const req = createRequire(import.meta.url);
-  const before = new Set(Object.keys(req.cache));
-  await import(process.env.PROBE_TARGET);
-  const after = new Set(Object.keys(req.cache));
-  const newlyLoaded = [...after].filter((k) => !before.has(k));
-  process.stdout.write(JSON.stringify(newlyLoaded));
-`;
+import { describe, it, expect, beforeAll } from 'vitest';
+import { probeModuleLoad, type ModuleLoadProbe } from '../../helpers/module-load-probe.js';
 
 describe('MCP CLI static-import closure', () => {
-  it('does not load @ladybugdb/core when cli/mcp.js is imported (without invoking mcpCommand)', () => {
-    if (!fs.existsSync(DIST_MCP)) {
-      throw new Error(
-        `dist/cli/mcp.js missing — run \`npm run build\` first (or \`npm run test:integration\` which builds via pretest:integration).`,
-      );
-    }
+  let probe: ModuleLoadProbe;
 
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], {
-      cwd: REPO_ROOT,
-      env: { ...process.env, PROBE_TARGET: DIST_MCP_URL, NODE_OPTIONS: '' },
-      timeout: 30_000,
-      encoding: 'utf8',
+  beforeAll(async () => {
+    probe = await probeModuleLoad({
+      entry: 'cli/mcp.js',
+      anchor: 'dist/mcp/stdio-context.js',
+      // Observed on Node 22.18 against a clean build: 4 modules. This closure is
+      // deliberately leaf-only, so the floor is necessarily tight — the anchor
+      // above is the load-bearing non-vacuity guard here.
+      minModules: 3,
     });
+  }, 90_000);
 
-    if (result.status !== 0) {
-      throw new Error(
-        `probe failed (status ${result.status}):\nstderr:\n${result.stderr}\nstdout:\n${result.stdout}`,
-      );
-    }
-
-    const newlyLoaded = JSON.parse(result.stdout) as string[];
-
+  it('does not load @ladybugdb/core when cli/mcp.js is imported (without invoking mcpCommand)', () => {
     // The headline assertion: @ladybugdb/core (a native CJS module) must not
     // be loaded by the static-import closure of cli/mcp.js. If it is, the
     // pre-sentinel stdout window the prior fix tried to close is still open.
-    const ladybugLoaded = newlyLoaded.filter((p) => /@ladybugdb[\\/]core/.test(p));
+    const ladybugLoaded = probe.matching(/@ladybugdb[\\/]core/);
     expect(
       ladybugLoaded,
       `@ladybugdb/core was loaded at cli/mcp.js static-import time. ` +
         `mcpCommand cannot install the stdout sentinel before native init runs. ` +
         `Offending paths:\n${ladybugLoaded.join('\n')}\n\n` +
-        `Full newly-loaded set (${newlyLoaded.length} entries):\n${newlyLoaded.join('\n')}`,
+        `Full loaded set (${probe.modules.length} entries):\n${probe.modules.join('\n')}`,
     ).toEqual([]);
   });
 
   it('does not load any tree-sitter native binding (sanity check on grammar imports)', () => {
-    if (!fs.existsSync(DIST_MCP)) {
-      throw new Error(`dist/cli/mcp.js missing — run \`npm run build\` first.`);
-    }
-
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', PROBE], {
-      cwd: REPO_ROOT,
-      env: { ...process.env, PROBE_TARGET: DIST_MCP_URL, NODE_OPTIONS: '' },
-      timeout: 30_000,
-      encoding: 'utf8',
-    });
-
-    if (result.status !== 0) {
-      throw new Error(`probe failed: ${result.stderr}`);
-    }
-
-    const newlyLoaded = JSON.parse(result.stdout) as string[];
     // No tree-sitter parser should load at cli/mcp.js static-import time.
     // The analyze path is the only caller of warnMissingOptionalGrammars
     // (which require()s each grammar); cli/mcp.ts itself does not invoke
     // it, and its static-import closure is leaf-only — so importing
     // dist/cli/mcp.js without invoking mcpCommand must not trigger any
     // native grammar binding load.
-    const treeSitterNative = newlyLoaded.filter((p) => /tree-sitter-[a-z]+[\\/]build/.test(p));
+    const treeSitterNative = probe.matching(/tree-sitter-[a-z]+[\\/]build/);
     expect(
       treeSitterNative,
       `tree-sitter native bindings loaded at cli/mcp.js static-import time:\n${treeSitterNative.join('\n')}`,

@@ -58,8 +58,8 @@
  *   - `noAdlSites` — call sites with parenthesized function (capture-time)
  *   - `classToNamespaceQualifiedName` — class def → its enclosing namespace
  *     qualified name (`populateCppAssociatedNamespaces` time)
- *   - `adlIndex` / `adlIndexSource` — the lazily-built candidate index and the
- *     `parsedFiles` reference it was built from (first-`pickCppAdlCandidates`
+ *   - `adlIndexByPass` — the lazily-built candidate index, memoized weakly on
+ *     the `parsedFiles` array it was built from (first-`pickCppAdlCandidates`
  *     time; see `ensureAdlIndex`)
  *
  * The class→namespace map uses qualified names (not scope IDs) because
@@ -176,8 +176,21 @@ export interface AdlCandidateIndex {
   readonly seqByNodeId: Map<string, number>;
 }
 
-let adlIndex: AdlCandidateIndex | undefined;
-let adlIndexSource: readonly ParsedFile[] | undefined;
+/**
+ * Per-pass memo: `parsedFiles` array identity → the built index. `WeakMap`-keyed
+ * so the entry lives only as long as the caller's `parsedFiles` array does, and
+ * is reclaimed with the pass — mirrors `qualifiedNsIndexByPass` in
+ * `inline-namespaces.ts` and `moduleScopeIndexByPass` in `file-local-linkage.ts`.
+ *
+ * Weak keying is load-bearing, not stylistic: the index holds
+ * `SymbolDefinition` references reaching into every ParsedFile's scopes, so the
+ * previous module-level strong `let` pair (index + source array) kept the whole
+ * C/C++ ParsedFile set alive past the point `scope-resolution/pipeline/phase.ts`
+ * evicts `files`/`contents`/`preExtractedByPath` and calls `forceGc()` to
+ * reclaim it — C++ is 7th of 16 `SCOPE_RESOLVERS` entries, so the retention
+ * survived nine later language passes plus emit.
+ */
+let adlIndexByPass = new WeakMap<readonly ParsedFile[], AdlCandidateIndex>();
 
 function siteKey(filePath: string, line: number, col: number): string {
   return `${filePath}:${line}:${col}`;
@@ -373,25 +386,39 @@ export function validateAdlSeqCoverage(idx: AdlCandidateIndex): string[] {
 }
 
 /** Build the ADL index on first use of a given `parsedFiles` set; reuse it for
- *  all subsequent call sites in the same pipeline run. Reset by
+ *  every subsequent call site in the same pipeline run. Reset by
  *  `clearCppAdlState`.
+ *
+ *  Lifetime: the memoized entry is reachable only while the caller still holds
+ *  the `parsedFiles` array. Once the pipeline drops it, the entry — and the
+ *  `SymbolDefinition` references it holds into those files' scopes — becomes
+ *  collectable; nothing here pins it (see {@link adlIndexByPass}).
  *
  *  Staleness is keyed on `parsedFiles` reference identity ONLY, but the index
  *  is a function of THREE inputs: `parsedFiles` (namespace/friend candidates),
  *  `scopes` (`classDefsBySimple`, read from `scopes.defs.byId`), and the
- *  module-level `classToNamespaceQualifiedName` (friend-candidate keys). This
- *  is sound for the current pipeline because all three are built together once
- *  per `runScopeResolution` pass and `clearCppAdlState` runs in
- *  `loadResolutionConfig` at the start of every pass. Callers MUST call
- *  `clearCppAdlState` between any two passes that change `scopes` or
- *  `classToNamespaceQualifiedName` while reusing the same `parsedFiles` array
- *  reference — otherwise a stale index would be served. (No such caller exists
- *  today; widening the guard to also key on `scopes` is deferred until one
- *  does.) */
-function ensureAdlIndex(scopes: ScopeResolutionIndexes, parsedFiles: readonly ParsedFile[]): void {
-  if (adlIndex !== undefined && adlIndexSource === parsedFiles) return;
-  adlIndex = buildAdlIndex(scopes, parsedFiles);
-  adlIndexSource = parsedFiles;
+ *  module-level `classToNamespaceQualifiedName` (friend-candidate keys). The
+ *  WeakMap key covers only the first, so the explicit clear is still REQUIRED
+ *  for the other two: a later pass may hand back the same `parsedFiles`
+ *  reference with different `scopes` / class→namespace state, and identity
+ *  alone would serve the stale index. This is sound for the current pipeline
+ *  because all three are built together once per `runScopeResolution` pass and
+ *  `clearCppAdlState` runs in `loadResolutionConfig` at the start of every
+ *  pass. Callers MUST call `clearCppAdlState` between any two passes that
+ *  change `scopes` or `classToNamespaceQualifiedName` while reusing the same
+ *  `parsedFiles` array reference — otherwise a stale index would be served.
+ *  (No such caller exists today; widening the key to also cover `scopes` is
+ *  deferred until one does.) */
+function ensureAdlIndex(
+  scopes: ScopeResolutionIndexes,
+  parsedFiles: readonly ParsedFile[],
+): AdlCandidateIndex {
+  let index = adlIndexByPass.get(parsedFiles);
+  if (index === undefined) {
+    index = buildAdlIndex(scopes, parsedFiles);
+    adlIndexByPass.set(parsedFiles, index);
+  }
+  return index;
 }
 
 /** Record per-call-site argument info. Called once per call site from
@@ -504,8 +531,14 @@ export function clearCppAdlState(): void {
   argInfoSiteKeysByFile.clear();
   noAdlSiteKeysByFile.clear();
   classToNamespaceQualifiedName.clear();
-  adlIndex = undefined;
-  adlIndexSource = undefined;
+  // The candidate index is dropped by REASSIGNING a fresh `WeakMap`: `WeakMap`
+  // has no `.clear()`, and swapping the instance discards every memoized entry
+  // at once — the exact invalidation the previous `adlIndex = undefined` pair
+  // provided. Required even though the map is keyed on `parsedFiles` identity,
+  // because the index also depends on `scopes` and
+  // `classToNamespaceQualifiedName`, which the key cannot observe (see
+  // {@link ensureAdlIndex}).
+  adlIndexByPass = new WeakMap();
 }
 
 /**
@@ -572,15 +605,20 @@ export function pickCppAdlCandidates(
   if (args === undefined || args.length === 0) return undefined;
 
   // Build the workspace-wide ADL candidate index once; reuse for every site.
-  ensureAdlIndex(scopes, parsedFiles);
+  const idx = ensureAdlIndex(scopes, parsedFiles);
 
   // Collect associated namespace QNames from every participating class-typed arg
   // and from function-reference args.
   const associatedNamespaces = new Set<string>();
   for (const arg of args) {
-    collectAssociatedNamespacesForAdlArg(arg, scopes, associatedNamespaces);
+    collectAssociatedNamespacesForAdlArg(arg, scopes, idx, associatedNamespaces);
     if (arg.functionRefText !== undefined) {
-      collectFunctionTypeAssociatedNamespaces(arg.functionRefText, scopes, associatedNamespaces);
+      collectFunctionTypeAssociatedNamespaces(
+        arg.functionRefText,
+        scopes,
+        idx,
+        associatedNamespaces,
+      );
     }
   }
   if (associatedNamespaces.size === 0) return undefined;
@@ -593,8 +631,6 @@ export function pickCppAdlCandidates(
   //     (`friendCandidates`, ISO C++ `[basic.lookup.argdep]` §2).
   // Dedup by nodeId and sort by visitation sequence so the candidate list is
   // byte-for-byte identical to the legacy file-major scan order.
-  const idx = adlIndex;
-  if (idx === undefined) return undefined;
   const bySeq = new Map<number, SymbolDefinition>();
   const seenKey = new Set<string>();
   const collectFrom = (buckets: Map<string, Map<string, SymbolDefinition[]>>): void => {
@@ -621,12 +657,13 @@ export function pickCppAdlCandidates(
 function collectAssociatedNamespacesForAdlArg(
   arg: CppAdlArgInfo,
   scopes: ScopeResolutionIndexes,
+  idx: AdlCandidateIndex,
   associatedNamespaces: Set<string>,
 ): void {
   // For template args this may be the template name itself (e.g. `vector`);
   // simple-name lookup can match project classes with the same name (known
   // V1/V2 simplification).
-  addAssociatedNamespaceForClassName(arg.simpleClassName, scopes, associatedNamespaces);
+  addAssociatedNamespaceForClassName(arg.simpleClassName, scopes, idx, associatedNamespaces);
 
   // Includes template-owner namespaces (e.g. `std` in std::vector<T>). If
   // that surfaces extra candidates, merged-candidate overload narrowing in
@@ -637,17 +674,18 @@ function collectAssociatedNamespacesForAdlArg(
     if (ns.length > 0) associatedNamespaces.add(ns);
   }
   for (const className of arg.templateArgClassNames) {
-    addAssociatedNamespaceForClassName(className, scopes, associatedNamespaces);
+    addAssociatedNamespaceForClassName(className, scopes, idx, associatedNamespaces);
   }
 }
 
 function addAssociatedNamespaceForClassName(
   simpleClassName: string,
   scopes: ScopeResolutionIndexes,
+  idx: AdlCandidateIndex,
   associatedNamespaces: Set<string>,
 ): void {
   if (simpleClassName.length === 0) return;
-  const classLookup = findCppClassDefBySimpleName(simpleClassName);
+  const classLookup = findCppClassDefBySimpleName(idx, simpleClassName);
   if (classLookup === undefined) return;
   const { classDef, ambiguous } = classLookup;
   const nsQName = classToNamespaceQualifiedName.get(classDef.nodeId);
@@ -762,11 +800,12 @@ function findNamespaceDefInScope(scope: {
  *  ISO C++ `[basic.lookup.argdep]` §2: enumerations contribute their
  *  enclosing namespace to the associated set, just like class types. */
 function findCppClassDefBySimpleName(
+  idx: AdlCandidateIndex,
   simpleName: string,
 ): { classDef: SymbolDefinition; ambiguous: boolean } | undefined {
   // `classDefsBySimple` preserves `scopes.defs.byId` order, so `[0]` is the
   // legacy first-match and `length > 1` is the legacy `ambiguous` flag.
-  const matches = adlIndex?.classDefsBySimple.get(simpleName);
+  const matches = idx.classDefsBySimple.get(simpleName);
   if (matches === undefined) return undefined;
   const first = matches[0];
   if (first === undefined) return undefined;
@@ -780,10 +819,9 @@ function findCppClassDefBySimpleName(
 function collectFunctionTypeAssociatedNamespaces(
   refText: string,
   scopes: ScopeResolutionIndexes,
+  idx: AdlCandidateIndex,
   out: Set<string>,
 ): void {
-  const idx = adlIndex;
-  if (idx === undefined) return;
   const colonIdx = refText.lastIndexOf('::');
   if (colonIdx !== -1) {
     // Qualified ref: extract namespace prefix and normalise :: → dot notation.
@@ -796,7 +834,7 @@ function collectFunctionTypeAssociatedNamespaces(
     // contributing `a` to the associated set (false-positive CALLS edge).
     const matches = idx.nsFunctionsByQName.get(nsText)?.get(simpleName);
     if (matches !== undefined) {
-      for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
+      for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, idx, out);
     }
     return;
   }
@@ -807,32 +845,34 @@ function collectFunctionTypeAssociatedNamespaces(
   // the function's own enclosing namespace.
   const matches = idx.nsFunctionsBySimple.get(refText);
   if (matches !== undefined) {
-    for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, out);
+    for (const def of matches) collectAssociatedNamespacesForFunctionDef(def, scopes, idx, out);
   }
 }
 
 function collectAssociatedNamespacesForFunctionDef(
   def: SymbolDefinition,
   scopes: ScopeResolutionIndexes,
+  idx: AdlCandidateIndex,
   out: Set<string>,
 ): void {
   const parameterTypes = def.parameterTypeClasses?.map((typeClass) => typeClass.base);
   for (const paramType of parameterTypes ?? def.parameterTypes ?? []) {
-    collectAssociatedNamespacesForFunctionTypeText(paramType, scopes, out);
+    collectAssociatedNamespacesForFunctionTypeText(paramType, scopes, idx, out);
   }
   if (def.returnType !== undefined) {
-    collectAssociatedNamespacesForFunctionTypeText(def.returnType, scopes, out);
+    collectAssociatedNamespacesForFunctionTypeText(def.returnType, scopes, idx, out);
   }
 }
 
 function collectAssociatedNamespacesForFunctionTypeText(
   typeText: string,
   scopes: ScopeResolutionIndexes,
+  idx: AdlCandidateIndex,
   out: Set<string>,
 ): void {
   for (const token of extractCppTypeNameTokens(typeText)) {
     if (isIgnoredCppAdlNamespace(token.namespaceName)) continue;
-    addAssociatedNamespaceForClassName(token.simpleName, scopes, out);
+    addAssociatedNamespaceForClassName(token.simpleName, scopes, idx, out);
     if (token.namespaceName !== '') out.add(token.namespaceName);
   }
 }

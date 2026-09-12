@@ -29,7 +29,17 @@ import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
 
-export const MAX_CALLABLE_VALUE_TARGETS = 32;
+/**
+ * Per-site dispatch-target cap. Above it the site is treated as overflowed and
+ * its edges are dropped — a cliff, so a repo with a legitimately wide dispatch
+ * table (33+ candidates on one callable site) loses the whole call chain.
+ *
+ * Override via `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` for such repos.
+ */
+export const MAX_CALLABLE_VALUE_TARGETS = (() => {
+  const env = Number(process.env.GITNEXUS_MAX_CALLABLE_VALUE_TARGETS);
+  return Number.isInteger(env) && env >= 1 ? env : 32;
+})();
 
 interface Target {
   readonly id: string;
@@ -72,6 +82,15 @@ export interface EmitCallableValueFlowInput {
   readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
   readonly hasFileLocalCallableLinkage?: (def: SymbolDefinition) => boolean;
   readonly onWarn?: (warning: CallableValueFlowWarning) => void;
+  /** When set, skip a second `collectDeferredIndirectSites` walk. */
+  readonly deferredIndirectSites?: ReadonlySet<string>;
+  /** When set, skip a second `referenceSites` signature walk. */
+  readonly callSignaturesBySite?: ReadonlyMap<string, CallableFlowExpectedSignature>;
+}
+
+export interface DeferredIndirectCollection {
+  readonly sites: ReadonlySet<string>;
+  readonly callSignaturesBySite: ReadonlyMap<string, CallableFlowExpectedSignature>;
 }
 
 /** Position key shared with the existing free/reference skip-set contract. */
@@ -90,7 +109,16 @@ export function collectDeferredIndirectSites(
   parsedFiles: readonly ParsedFile[],
   scopes?: ScopeResolutionIndexes,
 ): ReadonlySet<string> {
+  return collectDeferredIndirectCollection(parsedFiles, scopes).sites;
+}
+
+/** One `referenceSites` walk for deferred keys and call-signature evidence. */
+export function collectDeferredIndirectCollection(
+  parsedFiles: readonly ParsedFile[],
+  scopes?: ScopeResolutionIndexes,
+): DeferredIndirectCollection {
   const out = new Set<string>();
+  const callSignaturesBySite = new Map<string, CallableFlowExpectedSignature>();
   const flowCells = new Set<string>();
   if (scopes !== undefined) {
     for (const parsed of parsedFiles) {
@@ -103,11 +131,23 @@ export function collectDeferredIndirectSites(
     }
   }
   for (const parsed of parsedFiles) {
-    const canonical = new Set(
-      parsed.referenceSites
-        .filter((site) => site.kind === 'call')
-        .map((site) => callableFlowSiteKey(parsed.filePath, site.atRange)),
-    );
+    const canonical = new Set<string>();
+    for (const site of parsed.referenceSites) {
+      if (site.kind !== 'call') continue;
+      const key = callableFlowSiteKey(parsed.filePath, site.atRange);
+      canonical.add(key);
+      const signature: CallableFlowExpectedSignature = {
+        ...(site.arity !== undefined ? { parameterCount: site.arity } : {}),
+        ...(site.argumentTypes !== undefined ? { parameterTypes: site.argumentTypes } : {}),
+        ...(site.argumentTypeClasses !== undefined
+          ? { parameterTypeClasses: site.argumentTypeClasses }
+          : {}),
+      };
+      const previous = callSignaturesBySite.get(key);
+      if (previous === undefined || signatureEvidence(signature) > signatureEvidence(previous)) {
+        callSignaturesBySite.set(key, signature);
+      }
+    }
     for (const site of parsed.callableFlowSites ?? []) {
       if (site.kind !== 'invoke') continue;
       const key = callableFlowSiteKey(parsed.filePath, site.callSite);
@@ -122,7 +162,7 @@ export function collectDeferredIndirectSites(
       }
     }
   }
-  return out;
+  return { sites: out, callSignaturesBySite };
 }
 
 function flowCellOperand(site: CallableFlowSite): CallableFlowOperand | undefined {
@@ -146,7 +186,8 @@ function flowCellOperand(site: CallableFlowSite): CallableFlowOperand | undefine
 export function emitCallableValueFlow(input: EmitCallableValueFlowInput): CallableValueFlowResult {
   const facts: FileFact[] = [];
   const invokes: FileInvoke[] = [];
-  const canonicalInvokeKeys = collectDeferredIndirectSites(input.parsedFiles, input.scopes);
+  const canonicalInvokeKeys =
+    input.deferredIndirectSites ?? collectDeferredIndirectSites(input.parsedFiles, input.scopes);
   let unmatchedInvokes = 0;
   for (const parsed of input.parsedFiles) {
     for (const site of parsed.callableFlowSites ?? []) {
@@ -475,7 +516,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     targetIndexes,
     aliasesByTargetId,
   );
-  const callSignaturesBySite = indexCallSignatures(input.parsedFiles);
+  const callSignaturesBySite = input.callSignaturesBySite ?? indexCallSignatures(input.parsedFiles);
   const dynamicCallees = new Map<string, Map<string, Target>>();
   const dynamicOverflow = new Set<string>();
   const dynamicTargetHistory = new Map<string, Set<string>>();

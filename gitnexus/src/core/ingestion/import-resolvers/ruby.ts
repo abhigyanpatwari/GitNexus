@@ -16,8 +16,8 @@ import { suffixResolve } from './utils.js';
  */
 export function resolveRubyImportInternal(
   importPath: string,
-  normalizedFileList: string[],
-  allFileList: string[],
+  normalizedFileList: readonly string[],
+  allFileList: readonly string[],
   index?: SuffixIndex,
 ): string | null {
   const pathParts = importPath.replace(/^\.\//, '').split('/').filter(Boolean);

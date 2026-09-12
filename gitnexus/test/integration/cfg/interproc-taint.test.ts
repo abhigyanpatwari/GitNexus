@@ -12,33 +12,23 @@
  * the parse worker, and a stale dist is a spurious red.
  */
 
-import { describe, it, expect, afterAll } from 'vitest';
-import fs from 'fs';
-import os from 'os';
+import { describe, it, expect } from 'vitest';
 import path from 'path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
+import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'interproc-repo');
 
-const tmpDirs: string[] = [];
-function freshRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-interproc-'));
-  fs.cpSync(FIXTURE, dir, { recursive: true });
-  tmpDirs.push(dir);
-  return dir;
-}
+const repos = createTempDirPool('gn-interproc-');
+const freshRepo = (): string => repos.fromFixture(FIXTURE);
 
 function taintPaths(result: PipelineResult) {
   return [...result.graph.iterRelationships()].filter((r) => r.type === 'TAINT_PATH');
 }
 
 describe('U9 — end-to-end interprocedural taint (--pdg)', () => {
-  afterAll(() => {
-    for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
-  });
-
   it('with --pdg: composes a cross-file source→sink into a TAINT_PATH edge', async () => {
     const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
     const paths = taintPaths(result);

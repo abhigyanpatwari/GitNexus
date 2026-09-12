@@ -59,7 +59,7 @@
  */
 
 import type { GraphNode } from 'gitnexus-shared';
-import type { DiInjectionMatch, DiProviderMatch, DiResolver } from './index.js';
+import type { DiInjectionMatch, DiProviderMatch, DiResolver } from './types.js';
 import { isDev } from '../utils/env.js';
 import { logger } from '../../logger.js';
 

@@ -15,6 +15,7 @@ import {
   MAX_BODY_SIZE,
   validateHost,
 } from '../../src/cli/eval-server.js';
+import { formatSymbolLine } from '../../src/cli/format-symbol.js';
 
 // ─── validateHost ────────────────────────────────────────────────────
 
@@ -408,6 +409,35 @@ describe('formatImpactResult', () => {
     expect(result).toContain('caller2');
   });
 
+  it('prints the shared-axes comparison when a target has unavailable risk axes', () => {
+    const result = formatImpactResult({
+      target: { kind: 'File', name: 'crypto.ts' },
+      direction: 'upstream',
+      impactedCount: 13,
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale: {
+        comparableAcrossKinds: false,
+        unusedAxes: [
+          {
+            axis: 'processes',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+          {
+            axis: 'modules',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+        ],
+      },
+      byDepthCounts: { 1: 13 },
+    });
+
+    expect(result).toContain('Risk: MEDIUM');
+    expect(result).toContain('Shared-axes risk: MEDIUM');
+    expect(result).toContain('process/module axes are unavailable');
+    expect(result).toContain('do not use this to waive a HIGH/CRITICAL risk warning');
+  });
+
   it('handles zero impact', () => {
     const result = formatImpactResult({
       target: { name: 'foo' },
@@ -415,7 +445,22 @@ describe('formatImpactResult', () => {
       impactedCount: 0,
       byDepth: {},
     });
-    expect(result).toContain('No upstream dependencies');
+    expect(result).toContain('No upstream callers resolved');
+    expect(result).not.toContain('appears isolated');
+  });
+
+  it('prints UNKNOWN and riskNote for an empty upstream walk', () => {
+    const result = formatImpactResult({
+      target: { name: 'foo' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      riskNote: 'safe to change is a claim about callers and there were none to reason about',
+      byDepth: {},
+    });
+    expect(result).toContain('Risk: UNKNOWN');
+    expect(result).toContain('safe to change is a claim about callers');
+    expect(result).not.toContain('appears isolated');
   });
 
   it('formats impact by depth', () => {
@@ -508,6 +553,40 @@ describe('formatCypherResult', () => {
   });
 });
 
+// ─── formatSymbolLine ────────────────────────────────────────────────
+
+describe('formatSymbolLine', () => {
+  // `||`, not `??`, on every field: a node whose label came back as an EMPTY
+  // STRING (several node types do) still needs the placeholder — a `??` here
+  // would render "  login → src/auth.ts" instead of "  Symbol login → ...".
+  it.each<[string | undefined, string | undefined, string | undefined, string]>([
+    ['Function', 'login', 'src/auth.ts', '  Function login → src/auth.ts'],
+    ['', 'login', 'src/auth.ts', '  Symbol login → src/auth.ts'],
+    [undefined, 'login', 'src/auth.ts', '  Symbol login → src/auth.ts'],
+    ['Function', '', 'src/auth.ts', '  Function ? → src/auth.ts'],
+    ['Function', undefined, 'src/auth.ts', '  Function ? → src/auth.ts'],
+    ['Function', 'login', '', '  Function login → ?'],
+    ['Function', 'login', undefined, '  Function login → ?'],
+    [undefined, undefined, undefined, '  Symbol ? → ?'],
+  ])('renders type=%s name=%s path=%s as "%s"', (type, name, filePath, expected) => {
+    expect(formatSymbolLine(type, name, filePath)).toBe(expected);
+  });
+
+  it('is the line both consumers render (detect_changes + query definitions)', () => {
+    const detectChanges = formatDetectChangesResult({
+      summary: { changed_files: 1, changed_count: 1, affected_count: 0, risk_level: 'LOW' },
+      changed_symbols: [{ type: '', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(detectChanges).toContain(formatSymbolLine('', 'foo', 'src/a.ts'));
+
+    const query = formatQueryResult({
+      processes: [],
+      definitions: [{ type: '', name: '', filePath: '' }],
+    });
+    expect(query).toContain(formatSymbolLine('', '', ''));
+  });
+});
+
 // ─── formatDetectChangesResult ───────────────────────────────────────
 
 describe('formatDetectChangesResult', () => {
@@ -518,6 +597,79 @@ describe('formatDetectChangesResult', () => {
   it('handles no changes', () => {
     const result = formatDetectChangesResult({ summary: { changed_count: 0 } });
     expect(result).toBe('No changes detected.');
+  });
+
+  it('flags a degraded run instead of printing a clean bill of health (#2283)', () => {
+    // The backend sets `partial` when a graph query is swallowed, and leaves the
+    // counts at zero. Without the note the pre-commit gate reads as "clean".
+    const result = formatDetectChangesResult({ partial: true, summary: { changed_count: 0 } });
+    expect(result).toContain('PARTIAL RESULT');
+    expect(result).toContain('a graph query failed');
+    expect(result).not.toContain('No changes detected.');
+  });
+
+  it('flags a degraded run that still found symbols', () => {
+    const result = formatDetectChangesResult({
+      partial: true,
+      summary: { changed_files: 1, changed_count: 1, affected_count: 0, risk_level: 'LOW' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(result).toContain('PARTIAL RESULT');
+    expect(result).toContain('foo');
+  });
+
+  it('flags a capped listing, so a short list is not read as a short diff', () => {
+    // `truncated` is `partial`'s sibling and NOT the same claim: the counts and
+    // risk level still cover every changed symbol, only the names were capped.
+    const result = formatDetectChangesResult({
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    expect(result).toContain('LISTING CAPPED');
+    expect(result).not.toContain('PARTIAL RESULT');
+    expect(result).toContain('foo');
+  });
+
+  it('leads with both notes when a run was degraded AND capped', () => {
+    const result = formatDetectChangesResult({
+      partial: true,
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: [{ type: 'Function', name: 'foo', filePath: 'src/a.ts' }],
+    });
+    // A caveat printed after the summary is read too late, so both notes lead.
+    expect(result.indexOf('PARTIAL RESULT')).toBe(0);
+    expect(result.indexOf('LISTING CAPPED')).toBeGreaterThan(0);
+    expect(result.indexOf('LISTING CAPPED')).toBeLessThan(result.indexOf('Changes: 40 files'));
+    // And it must NOT keep the truncated-only reassurance that the counts are
+    // whole: `changed_count` was summed from the batches that succeeded, so with
+    // `partial` it is a floor. Claiming otherwise here contradicts the note above
+    // it and the tool description.
+    expect(result).toContain('lower bound');
+    expect(result).not.toContain('still cover all of them');
+  });
+
+  it('flags a capped listing that found nothing, alongside the no-changes line', () => {
+    const result = formatDetectChangesResult({ truncated: true, summary: { changed_count: 0 } });
+    expect(result).toContain('LISTING CAPPED');
+    expect(result).toContain('No changes detected.');
+  });
+
+  it('reports the overflow count once — the capped note carries no number of its own', () => {
+    const result = formatDetectChangesResult({
+      truncated: true,
+      summary: { changed_files: 40, changed_count: 500, affected_count: 0, risk_level: 'HIGH' },
+      changed_symbols: Array.from({ length: 15 }, (_, i) => ({
+        type: 'Function',
+        name: `fn${i}`,
+        filePath: 'src/test.ts',
+      })),
+    });
+    // Splitting on a needle yields (occurrences + 1) pieces.
+    expect(result.split('... and 485 more')).toHaveLength(2);
+    expect(result.split('LISTING CAPPED')).toHaveLength(2);
+    expect(result.match(/485/g)).toEqual(['485']);
   });
 
   it('formats changes with affected processes', () => {

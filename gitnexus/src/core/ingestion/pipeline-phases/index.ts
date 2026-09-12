@@ -21,10 +21,17 @@ export {
   type ScopeResolutionOutput,
 } from '../scope-resolution/pipeline/phase.js';
 export { springConfigPhase, type SpringConfigOutput } from './spring-config.js';
+export { springDestinationsPhase, type SpringDestinationsOutput } from './spring-destinations.js';
 export {
   springAutoConfigurationPhase,
   type SpringAutoConfigurationOutput,
 } from './spring-auto-configuration.js';
+export {
+  springAopPhase,
+  springAopInheritancePhase,
+  type SpringAopOutput,
+  type SpringAopInheritanceOutput,
+} from './spring-aop.js';
 export { pruneLocalSymbolsPhase, type PruneLocalSymbolsOutput } from './prune-local-symbols.js';
 export { taintSummariesPhase, type TaintSummariesOutput } from './taint-summaries.js';
 export { callSummariesPhase, type CallSummariesOutput } from './call-summaries.js';

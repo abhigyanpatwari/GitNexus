@@ -53,6 +53,10 @@ type Snapshot = Record<string, FixtureSnapshot>;
 function canonicalizeMatch(match: CaptureMatch): string {
   const parts: string[] = [];
   for (const tag of Object.keys(match)) {
+    // Scope-only lexical shadow metadata has dedicated extraction/resolution
+    // tests. Exclude it from the historical capture fingerprint so adding
+    // untyped parameter barriers does not rebaseline every Python fixture.
+    if (tag === '@scope.lexical-names') continue;
     const cap = match[tag]!;
     const r = cap.range;
     parts.push(`${tag}|${cap.text}|${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`);

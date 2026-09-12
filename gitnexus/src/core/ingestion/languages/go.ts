@@ -144,6 +144,15 @@ export const goProvider = defineLanguage({
   descriptionExtractor: createLeadingDocDescriptionExtractor({
     lineCommentPrefixes: ['//'],
     lineDirectivePrefixes: ['//go:', '// +build', '//nolint', '//line'],
+    // #2837: Go type declarations anchor on the `type_spec`, whose
+    // `previousNamedSibling` is null for the ordinary `type T struct{…}` form —
+    // the godoc comment is a sibling of the enclosing `type_declaration`, one
+    // level up. Without this the doc silently vanished for EVERY Go struct and
+    // interface (measured: pre-#2837 `desc=YES`, post `none`), taking #2270's
+    // description out of both the embedding header and the FTS column.
+    // Functions/methods are unaffected — they anchor on their own declaration
+    // node, which does carry the comment as a previous sibling.
+    wrapperNodeTypes: ['type_declaration'],
   }),
   builtInNames: GO_BUILT_INS,
 

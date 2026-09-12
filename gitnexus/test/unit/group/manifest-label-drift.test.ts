@@ -9,6 +9,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import { CUSTOM_CONTRACT_RESOLVE_QUERY } from '../../../src/core/group/extractors/manifest-extractor.js';
+import {
+  RESOLVE_GENERATED_SYMBOL_QUERY,
+  RESOLVE_METHOD_QUERY,
+} from '../../../src/core/group/extractors/graphql-extractor.js';
 import { SYMBOL_NODE_LABELS } from '../../../src/core/ingestion/utils/symbol-labels.js';
 
 describe('manifest contract-resolve label list vs SYMBOL_NODE_LABELS (#2380)', () => {
@@ -30,5 +34,19 @@ describe('manifest contract-resolve label list vs SYMBOL_NODE_LABELS (#2380)', (
   it('the difference is exactly {Namespace, Variable, Module}', () => {
     const diff = [...symbolLabels].filter((l) => !manifestLabels.has(l)).sort();
     expect(diff).toEqual(['Module', 'Namespace', 'Variable']);
+  });
+});
+
+describe.each([
+  ['GraphQL provider', RESOLVE_METHOD_QUERY],
+  ['GraphQL generated symbol', RESOLVE_GENERATED_SYMBOL_QUERY],
+])('%s query label list vs SYMBOL_NODE_LABELS', (_name, query) => {
+  const match = query.match(/labels\(n\) IN \[([^\]]+)\]/);
+  const queryLabels = (match?.[1]?.match(/'([^']+)'/g) ?? []).map((label) => label.slice(1, -1));
+  const symbolLabels = new Set<string>(SYMBOL_NODE_LABELS);
+
+  it('keeps every hand-listed label in the shared symbol label set', () => {
+    expect(queryLabels.length).toBeGreaterThan(0);
+    for (const label of queryLabels) expect(symbolLabels.has(label)).toBe(true);
   });
 });

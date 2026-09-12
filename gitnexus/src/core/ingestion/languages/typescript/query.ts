@@ -150,30 +150,45 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   value: (object_type)) @scope.class
 
 ;; Declarations — types
+;; The type-parameter list is captured with \`?\` rather than as a second
+;; pattern: a separate rule would make a GENERIC declaration match twice, and
+;; both matches mint the same def id (filePath+range+type+name), so which one
+;; survived — the one carrying the parameters or the one without — would be
+;; decided by match order. An optional child keeps it at one match either way.
 (class_declaration
-  name: (type_identifier) @declaration.name) @declaration.class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (abstract_class_declaration
-  name: (type_identifier) @declaration.name) @declaration.class
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (interface_declaration
-  name: (type_identifier) @declaration.name) @declaration.interface
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.interface
 
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum
 
+;; Tagged @declaration.type_alias, NOT @declaration.type: normalizeNodeLabel
+;; accepts typealias / type_alias and has no "type" case, so the old tag mapped
+;; to no label and TypeScript aliases produced NO scope-resolution def at all.
+;; Kotlin and Dart already spell it this way.
 (type_alias_declaration
-  name: (type_identifier) @declaration.name) @declaration.type
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.type_alias
 
 (internal_module
   name: (identifier) @declaration.name) @declaration.namespace
 
 ;; Declarations — methods / functions / constructors
 (function_declaration
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
 
 (generator_function_declaration
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
 
 ;; Function overload signatures (declaration-only; body in a separate
 ;; function_declaration). Extractors dedup by (name, parameterTypes).
@@ -497,6 +512,48 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; Interface method signatures.
 (method_signature
   name: (property_identifier) @declaration.name) @declaration.method
+
+;; Members of a declared SHAPE — interface bodies and object-type aliases both
+;; spell them as property_signature (A4). The sibling method_signature rule
+;; above declared interface METHODS, so only properties were missing: a typed
+;; receiver resolved to the shape's scope and then found no member there, and
+;; the field's consumers were unreachable. TypeScript sets
+;; fieldFallbackOnMethodLookup:false, so there is no name-based safety net
+;; here — the precise path is the only one, and it needs the declaration.
+;; ANCHORED to declared shapes — see the matching rule in TYPESCRIPT_QUERIES
+;; for why. Unanchored this matched inline parameter and return types and
+;; nested object types, whose members then collided onto the enclosing
+;; class/interface/alias.
+(interface_body
+  (property_signature
+    name: (property_identifier) @declaration.name) @declaration.property)
+
+;; Object-literal keys of a NAMED object — the scope-resolution half of the
+;; matching rule in TYPESCRIPT_QUERIES. The parse query mints the Property NODE;
+;; this mints the DEF a precise read can resolve to.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @declaration.name) @declaration.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @declaration.name) @declaration.property))
 
 ;; Declarations — class fields
 (public_field_definition
@@ -882,6 +939,40 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   type: (type_annotation
     (type_identifier) @type-binding.type)) @type-binding.annotation
 
+;; Type bindings — class field constructor-inferred: \`private p = new Outer()\`.
+;; The annotation patterns above cover a field that DECLARES its type; a field
+;; whose type must be inferred from its initializer matched nothing, so it had
+;; no typeBinding, so \`this.p\` could not be typed and the receiver fold declined
+;; the whole chain — losing even the first, ordinary named link (#2807).
+;;
+;; Anchored on \`public_field_definition\` exactly like the annotation patterns,
+;; so the binding lands in the same (class body) scope with no bindingScopeFor
+;; override. \`annotation\` outranks \`constructor-inferred\` in
+;; typeBindingStrength, so \`private p: Outer = new Outer()\` still resolves
+;; through its annotation regardless of which pattern matches first.
+;;
+;; Kotlin and Swift express both a local and a stored property with ONE grammar
+;; node (property_declaration) and so needed no separate field pattern; the
+;; TypeScript grammar splits them (variable_declarator vs
+;; public_field_definition), which is why only the local form was ever covered.
+(public_field_definition
+  name: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; Qualified: \`private p = new models.Outer()\` — mirrors the local form above;
+;; the member_expression's text is resolved via QualifiedNameIndex.
+(public_field_definition
+  name: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
+
+;; Private-name field: \`#p = new Outer()\`.
+(public_field_definition
+  name: (private_property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
 ;; Type bindings — method return type: \`save(): User { … }\` / \`function f(): User { … }\`.
 ;; Function/method return-type is the type_annotation that is a direct
 ;; child of the function node (not the parameter's annotation). Anchor on
@@ -1010,6 +1101,78 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   right: (new_expression
     constructor: (identifier) @type-binding.type)) @type-binding.constructor
 
+;; Type bindings — field assigned through \`this\`: \`this.p = new Outer()\` on a
+;; field that declares no type (#2807). The rebind pattern above only matches a
+;; bare identifier LHS, so an unannotated field assigned in the constructor had
+;; no typeBinding at all. (An ANNOTATED field does not need this — its
+;; annotation already types it, which is why \`private p: Outer;\` + the same
+;; assignment always resolved.)
+;;
+;; The nesting is the whole safety property. \`this.x = new Y()\` is a legal
+;; statement ANYWHERE, and the binding it produces is hoisted onto the nearest
+;; enclosing Class — so a context-free version of this pattern typed a class's
+;; field from an assignment whose \`this\` was some OTHER object, overwriting the
+;; field's real type (pass4CollectTypeBindings resolves a same-source tie in
+;; favour of the LATER match). Requiring the chain
+;; \`class_body → method_definition → statement_block → expression_statement\`
+;; makes the marker fire only where \`this\` provably IS an instance of the class
+;; the binding lands on. It rejects, in order of how easily each was hit:
+;; a non-arrow callback inside a method (\`function () { this.x = new Y(); }\` —
+;; \`this\` is the call's receiver), an object-literal method (also a
+;; \`method_definition\`, but under \`object\`, not \`class_body\`), and module top
+;; level (no enclosing Class at all, where the hoist used to fall back to the
+;; innermost scope and could overwrite a module local of the same name).
+;;
+;; This mirrors \`synthesizeConstructorFieldBindings\` in
+;; \`languages/javascript/captures.ts\`, which walks only \`method_definition\`
+;; bodies and only their DIRECT \`expression_statement\` children — the two
+;; languages must not read the same source differently. TypeScript accepts any
+;; method rather than only \`constructor\` (a later \`setUp()\` assignment types
+;; the field just as well), which is the one intended divergence.
+;;
+;; Two shapes are deliberately NOT matched, both erring toward no binding:
+;; an assignment nested in a block (\`if (…) { this.p = new Outer(); }\`) and one
+;; inside an arrow (\`() => { this.p = new Outer(); }\`, where \`this\` IS the
+;; instance). Both are only ever a MISSING binding, never a wrong one, and JS
+;; declines them too.
+;;
+;; \`@type-binding.this-field\` is a MARKER, not the anchor: it sits on the narrow
+;; \`(this)\` node, so anchorCaptureFor's broadest-range rule keeps the whole
+;; assignment_expression (@type-binding.constructor) as the anchor and the
+;; source stays \`constructor-inferred\`. tsBindingScopeFor reads the marker to
+;; hoist the binding onto the enclosing Class scope — without that hoist the
+;; binding would land on the method's own Function scope, where
+;; typeOfMemberOnClass never looks. The marker must stay specific to THIS
+;; pattern: hoisting every constructor-inferred binding would move method-local
+;; \`const o = new Outer()\` out of its own scope.
+;;
+;; One constraint the grammar cannot carry: \`static\` is an ANONYMOUS token on
+;; \`method_definition\` with no field name, and tree-sitter patterns cannot
+;; negate one. \`this\` in a static method is the class object, so that last
+;; wrong receiver is dropped by \`emitTsScopeCaptures\` instead.
+(class_body
+  (method_definition
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this) @type-binding.this-field
+            property: (property_identifier) @type-binding.name)
+          right: (new_expression
+            constructor: (identifier) @type-binding.type)) @type-binding.constructor))))
+
+;; Qualified form: \`this.p = new models.Outer()\`.
+(class_body
+  (method_definition
+    body: (statement_block
+      (expression_statement
+        (assignment_expression
+          left: (member_expression
+            object: (this) @type-binding.this-field
+            property: (property_identifier) @type-binding.name)
+          right: (new_expression
+            constructor: (member_expression) @type-binding.type)) @type-binding.constructor))))
+
 (assignment_expression
   left: (identifier) @type-binding.name
   right: (call_expression
@@ -1098,6 +1261,65 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; Bare-identifier reads (A2), VALUE POSITIONS ONLY — a blanket \`(identifier)\`
+;; rule would mint a site for every token in the file.
+;;
+;; These existed only in the JavaScript query, so A2 did not work for
+;; TypeScript AT ALL: a \`.ts\` module reading its own \`const\` by bare name
+;; produced no reference site, and "who uses this constant?" answered a
+;; confident zero for an entire language. Found by writing the namespace
+;; fixture below and watching it fail for the wrong reason.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
+;; References — TYPE POSITION (R2-2). An annotation naming a declared type is
+;; the only thing that makes that type's declaration reachable from the code
+;; that depends on it, and TypeScript captured none: only cpp and csharp emitted
+;; type references at all. So an exported API-contract type owned its members
+;; (round 1) but had \`incoming: {}\`, and "what breaks if I remove this field?"
+;; — the question a contract type exists to answer — had no edge to walk.
+;;
+;; The resolution path was already complete on the other side:
+;; \`type-reference\` routes to the ClassRegistry, whose CLASS_KINDS already
+;; lists TypeAlias, Interface and Enum, and \`edges.ts\` already maps the kind to
+;; USES. Only the capture was missing.
+;;
+;; Anchored to the CONTEXTS a type is used in — annotations, type arguments,
+;; and heritage \`implements\` — never a bare \`(type_identifier)\`. A blanket rule
+;; would also match the identifier in \`type X = …\` and \`interface X\`, making
+;; every declaration a consumer of itself.
+(type_annotation
+  (type_identifier) @reference.name @reference.type_reference)
+
+(type_annotation
+  (generic_type
+    name: (type_identifier) @reference.name @reference.type_reference))
+
+(type_arguments
+  (type_identifier) @reference.name @reference.type_reference)
+
+;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
+;; declared type, so the code making it depends on that declaration.
+(as_expression
+  (type_identifier) @reference.name @reference.type_reference)
 `;
 
 /**
@@ -1124,7 +1346,13 @@ export const TYPESCRIPT_SCOPE_QUERY = `
  * (\`<Foo>...</Foo>\`) emit; the closing tag is intentionally NOT captured —
  * each JSX element should emit exactly one CALLS edge per use site.
  */
-const TSX_JSX_QUERY_SUFFIX = `
+/**
+ * Exported alongside `TYPESCRIPT_SCOPE_QUERY` so
+ * `value-ref-dispatchability.test.ts` checks the whole query a `.tsx` file is
+ * analyzed with. Checking the base alone would miss a `value-ref` rule added
+ * here. Not part of the provider surface — use `getTsScopeQuery`.
+ */
+export const TSX_JSX_QUERY_SUFFIX = `
 ;; <Foo />
 ((jsx_self_closing_element
   name: (identifier) @reference.name) @reference.call.free

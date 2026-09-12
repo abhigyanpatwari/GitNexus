@@ -148,13 +148,19 @@ finding is NOT proof of safety.
 
 ## Adding a source / sink / sanitizer
 
-Edit the language model in `taint/typescript-model.ts` (registered via the
-explicit `registerBuiltinTaintModels` seam, keyed by `SupportedLanguages`). The
-spec is hashable data (no functions). A sanitizer's `neutralizes` lists the
-EXACT sink kinds it defends — never a blanket kill. Add a fixture + assert the
-finding (or its absence) in `test/unit/taint/` (real-source harness:
-`test/helpers/ts-cfg-harness.ts`); the end-to-end proof is
-`test/integration/cfg/`.
+Taint models cover four `SupportedLanguages` ids across three files:
+TypeScript and JavaScript use `taint/typescript-model.ts`, Python uses
+`taint/python-model.ts`, and Java uses `taint/java-model.ts`. Edit the model
+for the language you are targeting. The explicit
+`registerBuiltinTaintModels` seam in `typescript-model.ts` registers all four;
+it is not an import side effect.
+
+The spec is hashable data (no functions). A sanitizer's `neutralizes` lists
+the EXACT sink kinds it defends — never a blanket kill. Add a fixture + assert
+the finding (or its absence) in `test/unit/taint/`. TypeScript and JavaScript
+use the real-source harness `test/helpers/ts-cfg-harness.ts`; Python and Java
+model matches are covered by `python-model-match.test.ts` and
+`java-model-match.test.ts`. The end-to-end proof is `test/integration/cfg/`.
 
 ## Validation checklist for any `--pdg` change
 

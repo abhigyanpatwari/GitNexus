@@ -133,7 +133,7 @@
   },
   "php-constructor-promotion-fields/Service.php": {
     "captureGroups": 9,
-    "digest": "1b75dbc0f3123399ba9fd8be0ccac4c145fd1d36baceb62e0d0cc18d4f0a1240"
+    "digest": "f0f326d5b73b7d34e5ff0aacb1cef79389e22402bc9b6590a154a961ea758b6a"
   },
   "php-constructor-type-inference/app/Models/Repo.php": {
     "captureGroups": 7,
@@ -161,7 +161,7 @@
   },
   "php-deep-field-chain/Service.php": {
     "captureGroups": 10,
-    "digest": "fa5a413c11f99286cbc16ad337f7f2a6c3f399bd39c25fea1775c97c4b3c707f"
+    "digest": "c9944b2f72a722048a39332c77aa9661c7302413d5d13673a529fabe518a25e8"
   },
   "php-default-params/app.php": {
     "captureGroups": 11,
@@ -185,7 +185,7 @@
   },
   "php-field-types/Service.php": {
     "captureGroups": 9,
-    "digest": "1b75dbc0f3123399ba9fd8be0ccac4c145fd1d36baceb62e0d0cc18d4f0a1240"
+    "digest": "f0f326d5b73b7d34e5ff0aacb1cef79389e22402bc9b6590a154a961ea758b6a"
   },
   "php-foreach-call-expr/Repo.php": {
     "captureGroups": 19,
@@ -265,7 +265,7 @@
   },
   "php-grandparent-resolution/app/Services/App.php": {
     "captureGroups": 12,
-    "digest": "2b4b12fae10aeeb2e4c0987cce02171237b68976731d1b34ac0d74b8d005de53"
+    "digest": "27cc7ce04ef5628a918e968bd51319888294592c2567093601d8bb6e7f7d4822"
   },
   "php-grouped-imports/app/Models/Repo.php": {
     "captureGroups": 7,

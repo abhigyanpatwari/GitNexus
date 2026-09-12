@@ -10,10 +10,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { execFile, execFileSync } from 'child_process';
-import { createRequire } from 'module';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
+import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import {
   getEditorTargets,
@@ -37,9 +37,8 @@ const execFileAsync = promisify(execFile);
 // re-stamped every release by scripts/sync-plugin-manifests.mjs (#2445),
 // since they too execute `gitnexus@<version>` on connect. Only the READMEs
 // stay on `gitnexus@latest` — they're quickstart docs, not executed state.
-const _require = createRequire(import.meta.url);
-const _pkg = _require('../../package.json') as { version?: unknown };
-if (typeof _pkg.version !== 'string' || !_pkg.version) {
+const PKG_VERSION = packageVersion();
+if (!PKG_VERSION) {
   throw new Error(
     'gitnexus/package.json#version is missing or not a string — cannot generate MCP fallback config.',
   );
@@ -47,7 +46,7 @@ if (typeof _pkg.version !== 'string' || !_pkg.version) {
 // Version-pinned ref for the persisted MCP entry — deliberately distinct from
 // the cjs's exported `gitnexus@latest` hint ref (resolve-analyze-cmd.cjs); the
 // two are not unified (see the comment above and that file's MCP_PINNED_REF).
-const MCP_PINNED_REF = `gitnexus@${_pkg.version}`;
+const MCP_PINNED_REF = `gitnexus@${PKG_VERSION}`;
 
 /**
  * Build the `command` string written into an editor's hook settings, which the
@@ -1090,14 +1089,30 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     const skillDir = path.join(targetDir, skillName);
 
     try {
-      if (source.isDirectory) {
-        const dirSource = path.join(skillsRoot, skillName);
-        await copyDirRecursive(dirSource, skillDir);
-      } else {
-        const flatSource = path.join(skillsRoot, `${skillName}.md`);
-        const content = await fs.readFile(flatSource, 'utf-8');
+      const sourceSkillPath = source.isDirectory
+        ? path.join(skillsRoot, skillName, 'SKILL.md')
+        : path.join(skillsRoot, `${skillName}.md`);
+      const destinationSkillPath = path.join(skillDir, 'SKILL.md');
+      const [sourceSkillContent, destinationSkillContent] = await Promise.all([
+        fs.readFile(sourceSkillPath, 'utf-8'),
+        fs.readFile(destinationSkillPath, 'utf-8').catch((err) => {
+          if (!isEnoent(err)) throw err;
+          return null;
+        }),
+      ]);
+
+      const preserved =
+        destinationSkillContent !== null && destinationSkillContent !== sourceSkillContent;
+      if (preserved && !source.isDirectory) {
+        console.log(
+          `[gitnexus] preserved customized skill ${destinationSkillPath}; ` +
+            'delete the file and rerun setup to refresh it.',
+        );
+      } else if (source.isDirectory) {
+        await copyDirRecursive(path.join(skillsRoot, skillName), skillDir);
+      } else if (!preserved) {
         await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+        await fs.writeFile(destinationSkillPath, sourceSkillContent, 'utf-8');
       }
 
       // A directory superseded by a shipped rename is warned about, never
@@ -1113,7 +1128,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
           );
         }
       }
-      installed.push(skillName);
+      if (!preserved) installed.push(skillName);
     } catch {
       // Source skill not found — skip
     }
@@ -1133,9 +1148,23 @@ async function copyDirRecursive(src: string, dest: string): Promise<void> {
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       await copyDirRecursive(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
+      continue;
     }
+    const [srcBuf, destBuf] = await Promise.all([
+      fs.readFile(srcPath),
+      fs.readFile(destPath).catch((err) => {
+        if (!isEnoent(err)) throw err;
+        return null;
+      }),
+    ]);
+    if (destBuf !== null && !destBuf.equals(srcBuf)) {
+      console.log(
+        `[gitnexus] preserved customized skill ${destPath}; ` +
+          'delete the file and rerun setup to refresh it.',
+      );
+      continue;
+    }
+    await fs.writeFile(destPath, srcBuf);
   }
 }
 

@@ -27,6 +27,7 @@ import type { ContractRegistry, BridgeMeta } from '../../../src/core/group/types
 describe('insecure tempfile — structural guards (#1318 U6)', () => {
   let bridgeSource: string;
   let storageSource: string;
+  let fsAtomicSource: string;
 
   beforeAll(async () => {
     bridgeSource = await fsp.readFile(
@@ -37,10 +38,17 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
       path.join(__dirname, '..', '..', '..', 'src', 'core', 'group', 'storage.ts'),
       'utf-8',
     );
+    // The single-file writers below delegate their tmp-path handling to the
+    // shared primitive (#2888), so the randomBytes/'wx'/0o600 guards now
+    // belong to it.
+    fsAtomicSource = await fsp.readFile(
+      path.join(__dirname, '..', '..', '..', 'src', 'storage', 'fs-atomic.ts'),
+      'utf-8',
+    );
   });
 
-  it('bridge-db.ts imports randomBytes from node:crypto', () => {
-    expect(bridgeSource).toMatch(/import\s*\{[^}]*randomBytes[^}]*\}\s*from\s*'node:crypto'/);
+  it('fs-atomic.ts imports randomBytes from crypto', () => {
+    expect(fsAtomicSource).toMatch(/import\s*\{[^}]*randomBytes[^}]*\}\s*from\s*'crypto'/);
   });
 
   it('bridge-db.ts uses mkdtemp staging directory for bridge.lbug', () => {
@@ -53,18 +61,26 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     expect(bridgeSource).toMatch(/path\.join\(stagingDir,\s*['"]bridge\.lbug['"]\)/);
   });
 
-  it('bridge-db.ts uses randomBytes for meta.json temp path', () => {
-    expect(bridgeSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
+  it('fs-atomic.ts uses randomBytes for every atomic-write temp path', () => {
+    expect(fsAtomicSource).toMatch(/\.tmp\.\$\{randomBytes\(8\)\.toString\('hex'\)\}/);
   });
 
-  it('bridge-db.ts opens meta.json tmp file via fsp.open(..., "wx", 0o600)', () => {
+  it('fs-atomic.ts opens the tmp file via fsp.open(..., "wx", 0o600)', () => {
     // O_EXCL via `'wx'` flag closes the symlink-race; explicit `0o600`
     // mode closes the permissions exposure CodeQL's
     // `isSecureMode` predicate inspects (low 6 bits must be zero).
     // Both arguments are required to fully clear the
     // `js/insecure-temporary-file` alert — flags alone are ignored by
-    // the analyzer, mode alone leaves the symlink window open.
-    expect(bridgeSource).toMatch(/fsp\.open\(tmp,\s*['"]wx['"],\s*0o600\)/);
+    // the analyzer, mode alone leaves the symlink window open. The
+    // resulting file mode and the tmp cleanup are asserted for real in
+    // test/unit/storage/fs-atomic.test.ts.
+    expect(fsAtomicSource).toMatch(/fsp\.open\(tmpPath,\s*['"]wx['"],\s*0o600\)/);
+  });
+
+  it('bridge-db.ts publishes meta.json through the shared primitive', () => {
+    expect(bridgeSource).toMatch(/writeFileAtomic\(path\.join\(groupDir,\s*['"]meta\.json['"]\),/);
+    // No private tmp path left in this module's meta.json writer.
+    expect(bridgeSource).not.toMatch(/const tmp = `\$\{target\}\.tmp/);
   });
 
   it('bridge-db.ts does not use Date.now() in any active temp path', () => {
@@ -86,23 +102,14 @@ describe('insecure tempfile — structural guards (#1318 U6)', () => {
     );
   });
 
-  it('storage.ts imports randomBytes from node:crypto', () => {
-    expect(storageSource).toMatch(/import\s*\{[^}]*randomBytes[^}]*\}\s*from\s*'node:crypto'/);
-  });
-
-  it('storage.ts uses tmpSuffix() helper backed by randomBytes', () => {
-    // The helper is a thin wrapper that DRYs the randomBytes call across
-    // multiple temp-path sites in this module. Its definition must use
-    // randomBytes, and the temp path must call it.
-    expect(storageSource).toMatch(/const\s+tmpSuffix\s*=.*randomBytes\(8\)\.toString\('hex'\)/);
-    expect(storageSource).toMatch(/\.tmp\.\$\{tmpSuffix\(\)\}/);
-  });
-
-  it('storage.ts does not use Date.now() in any active temp path', () => {
-    // Same comment-strip trick as bridge-db.ts above (block + line).
+  it('storage.ts publishes contracts.json through the shared primitive', () => {
+    // Was a local `tmpSuffix()` helper duplicating the same randomBytes +
+    // 'wx' + 0o600 + retryRename sequence; the sequence now lives once in
+    // fs-atomic.ts, guarded above (#2888). The Date.now() guard this module
+    // used to carry is gone with its temp path — it has none to get wrong.
+    expect(storageSource).toMatch(/writeFileAtomic\(path\.join\(groupDir,\s*CONTRACTS_FILE\),/);
     const codeOnly = storageSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    const tmpDateNow = codeOnly.match(/\.tmp\.\$\{Date\.now\(\)\}/g) ?? [];
-    expect(tmpDateNow.length).toBe(0);
+    expect(codeOnly).not.toMatch(/\.tmp/);
   });
 });
 

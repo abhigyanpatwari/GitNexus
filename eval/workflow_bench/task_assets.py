@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import runtime_mounts
 from .proposer_sandbox import (
     DEPENDENCY_MOUNT_BASENAME,
     SANDBOX_WORKSPACE,
@@ -63,6 +64,10 @@ _REFLINK_UNAVAILABLE = {
 
 DEPENDENCY_CONTENT_BINDING_FIELD = "sandbox_dependency_content_digest"
 DEPENDENCY_MANIFEST_BINDING_FIELD = "sandbox_dependency_manifest_digest"
+# Review corpus patches are harness-owned. The task repo (`~/GitNexus`) is the
+# subject checkout and often a different worktree or branch, so these paths
+# must be read from the package that defined the benchmark.
+HARNESS_SANDBOX_COPY_PREFIXES = (PurePosixPath("eval/workflow_bench/review_cases"),)
 
 
 @dataclass(frozen=True)
@@ -191,7 +196,7 @@ class TaskAssetCache:
         self.root = root.expanduser().absolute()
         self.root.mkdir(mode=0o700, parents=True, exist_ok=False)
         self._by_definition: dict[
-            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...]],
+            tuple[str, str, tuple[str, ...], tuple[tuple[str, str], ...], str],
             TaskAssetSnapshot,
         ] = {}
         self._closed = False
@@ -218,7 +223,14 @@ class TaskAssetCache:
         declarations, relative_paths = _sandbox_copy_declarations(task)
         dependency_declarations = _sandbox_dependency_declarations(task)
         dependency_identity = tuple((declaration.source, declaration.target) for declaration in dependency_declarations)
-        definition = (str(repo_identity), resolved_sha, declarations, dependency_identity)
+        harness_identity = _harness_sandbox_copy_identity(relative_paths)
+        definition = (
+            str(repo_identity),
+            resolved_sha,
+            declarations,
+            dependency_identity,
+            harness_identity,
+        )
         existing = self._by_definition.get(definition)
         if existing is not None:
             if expected_dependency_binding is not None:
@@ -238,9 +250,22 @@ class TaskAssetCache:
                 repo_identity,
                 os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
+            harness_fd: int | None = None
             try:
                 for relative in relative_paths:
-                    descriptor = _open_relative(repo_fd, relative)
+                    if _is_harness_sandbox_copy(relative):
+                        if harness_fd is None:
+                            harness_root = _harness_sandbox_copy_root()
+                            harness_fd = os.open(
+                                harness_root,
+                                os.O_RDONLY
+                                | os.O_DIRECTORY
+                                | getattr(os, "O_CLOEXEC", 0)
+                                | getattr(os, "O_NOFOLLOW", 0),
+                            )
+                        descriptor = _open_relative(harness_fd, relative)
+                    else:
+                        descriptor = _open_relative(repo_fd, relative)
                     try:
                         builder.copy_descriptor(descriptor, relative)
                     finally:
@@ -299,6 +324,8 @@ class TaskAssetCache:
                     )
             finally:
                 os.close(repo_fd)
+                if harness_fd is not None:
+                    os.close(harness_fd)
 
             entries = builder.finished_entries()
             manifest_digest = _manifest_digest(entries)
@@ -317,6 +344,7 @@ class TaskAssetCache:
                 manifest_digest=manifest_digest,
                 dependency_content_digest=dependency_content_digest,
                 dependency_manifest_digest=dependency_manifest_digest,
+                harness_identity=harness_identity,
             )
             destination = self.root / digest
             if destination.exists():
@@ -535,6 +563,22 @@ class _SnapshotBuilder:
 
     def finished_entries(self) -> tuple[AssetManifestEntry, ...]:
         return tuple(sorted(self.entries.values(), key=lambda entry: entry.path.as_posix()))
+
+
+def _is_harness_sandbox_copy(relative: PurePosixPath) -> bool:
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        return False
+    return any(relative == prefix or prefix in relative.parents for prefix in HARNESS_SANDBOX_COPY_PREFIXES)
+
+
+def _harness_sandbox_copy_root() -> Path:
+    return _real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
+
+
+def _harness_sandbox_copy_identity(relative_paths: tuple[PurePosixPath, ...]) -> str:
+    if not any(_is_harness_sandbox_copy(relative) for relative in relative_paths):
+        return ""
+    return str(_harness_sandbox_copy_root())
 
 
 def _sandbox_copy_declarations(
@@ -969,15 +1013,17 @@ def _snapshot_digest(
     manifest_digest: str,
     dependency_content_digest: str,
     dependency_manifest_digest: str,
+    harness_identity: str = "",
 ) -> str:
     payload = {
         "declarations": declarations,
         "dependency_content_digest": dependency_content_digest,
         "dependency_manifest_digest": dependency_manifest_digest,
+        "harness_identity": harness_identity,
         "manifest_digest": manifest_digest,
         "repo_identity": str(repo_identity),
         "resolved_sha": resolved_sha,
-        "schema_version": 2,
+        "schema_version": 3,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 

@@ -20,6 +20,7 @@ import { ChatOllama } from '@langchain/ollama';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { createGraphRAGTools, type GraphRAGBackend } from './tools';
 import type {
+  AgentUserContent,
   ProviderConfig,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -32,7 +33,9 @@ import type {
   DeepSeekConfig,
   AgentStreamChunk,
   AgentHistoryMessage,
+  MiniMaxThinkingMode,
 } from './types';
+import { getMiniMaxModelCapabilities, MINIMAX_ANTHROPIC_BASE_URLS } from './types';
 import {
   type CodebaseContext,
   buildDynamicSystemPrompt,
@@ -275,14 +278,28 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         throw new Error('MiniMax API key is required but was not provided');
       }
 
+      const capabilities = getMiniMaxModelCapabilities(minimaxConfig.model);
+      const requestedThinkingMode = minimaxConfig.thinkingMode;
+      const thinkingMode: MiniMaxThinkingMode | undefined =
+        requestedThinkingMode && capabilities?.thinkingModes.includes(requestedThinkingMode)
+          ? requestedThinkingMode
+          : (capabilities?.thinkingModes[0] ?? requestedThinkingMode);
+      const thinking =
+        thinkingMode && thinkingMode !== 'always_on' ? { type: thinkingMode } : undefined;
+      const temperature =
+        thinkingMode === 'adaptive' || thinkingMode === 'always_on'
+          ? undefined
+          : (minimaxConfig.temperature ?? 0.1);
+
       return new ChatAnthropic({
         anthropicApiKey: minimaxConfig.apiKey,
         model: minimaxConfig.model,
-        temperature: minimaxConfig.temperature ?? 0.1,
+        ...(temperature !== undefined ? { temperature } : {}),
         maxTokens: minimaxConfig.maxTokens ?? 8192,
         streaming: true,
+        ...(thinking ? { thinking } : {}),
         clientOptions: {
-          baseURL: 'https://api.minimax.io/anthropic',
+          baseURL: minimaxConfig.baseUrl ?? MINIMAX_ANTHROPIC_BASE_URLS.global_en,
         },
       });
     }
@@ -393,7 +410,7 @@ export const createGraphRAGAgent = (
 /**
  * Message type for agent conversation
  */
-export type AgentMessage = { role: 'user'; content: string } | AgentHistoryMessage;
+export type AgentMessage = { role: 'user'; content: AgentUserContent } | AgentHistoryMessage;
 
 export interface AgentRuntimeOptions {
   /** Capture assistant/tool messages for providers that require exact transcript replay. */
@@ -412,7 +429,9 @@ const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
 export const buildLangChainMessages = (messages: AgentMessage[]): BaseMessage[] =>
   messages.map((message) => {
     if (message.role === 'user') {
-      return new HumanMessage(message.content);
+      return typeof message.content === 'string'
+        ? new HumanMessage(message.content)
+        : new HumanMessage({ content: message.content as any });
     }
     if (message.role === 'tool') {
       return new ToolMessage({
@@ -542,6 +561,7 @@ export async function* streamAgentResponse(
 
           // Handle content that can be string or array of content blocks
           let content: string = '';
+          let thinkingContent: string = '';
           if (typeof rawContent === 'string') {
             content = rawContent;
           } else if (Array.isArray(rawContent)) {
@@ -550,6 +570,14 @@ export async function* streamAgentResponse(
               .filter((block: any) => block.type === 'text' || typeof block === 'string')
               .map((block: any) => (typeof block === 'string' ? block : block.text || ''))
               .join('');
+            thinkingContent = rawContent
+              .filter((block: any) => block?.type === 'thinking')
+              .map((block: any) => block.thinking || '')
+              .join('');
+          }
+
+          if (thinkingContent) {
+            yield { type: 'reasoning', reasoning: thinkingContent };
           }
 
           // If chunk has content, stream it
