@@ -16,6 +16,8 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import type { KnowledgeGraph } from '../graph/types.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -34,6 +36,9 @@ import {
   scopeResolutionPhase,
   springConfigPhase,
   springAutoConfigurationPhase,
+  springAopPhase,
+  springDestinationsPhase,
+  springAopInheritancePhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
   callSummariesPhase,
@@ -44,6 +49,7 @@ import {
   PhaseRegistry,
   type ScopeResolutionOutput,
   type PipelinePhase,
+  type PipelineContext,
   type CommunitiesOutput,
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
@@ -56,6 +62,42 @@ export interface PipelineOptions {
    * to retain those nodes under `skipGraphPhases`.
    */
   skipGraphPhases?: boolean;
+  /**
+   * Skip only Leiden community detection and process/flow extraction (#3016).
+   * MRO/DI still run. Used on warm incremental analyze so persisted
+   * Community/Process rows can be kept instead of wipe+rewrite.
+   */
+  skipDerivedGraphPhases?: boolean;
+  /**
+   * Explicit local Spring Boot Actuator snapshot input. Accepts a directory
+   * containing endpoint-named JSON files or a JSON bundle keyed by endpoint.
+   * Undefined keeps runtime enrichment completely disabled.
+   */
+  springActuatorPath?: string;
+  /** Repo-relative Actuator inputs retained only for a cleanup scan. */
+  springActuatorScanExclusions?: readonly string[];
+  /**
+   * Explicit local AsyncAPI 3.x document input, read by the `springDestinations`
+   * phase. Accepts a directory of documents or a single document; the path is
+   * resolved against the repository root, so a committed `docs/asyncapi` and an
+   * absolute cache populated out of band are equally natural. Undefined keeps
+   * specification reading completely disabled.
+   *
+   * There is deliberately no glob-based auto-discovery to go with it. Scanning
+   * a repository for anything that parses as a document would make every
+   * existing index grow destination nodes on its next run without an operator
+   * having decided anything — the same reason new contract extractors ship
+   * opt-in rather than on.
+   */
+  asyncApiSpecPath?: string;
+  /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
+  springAopMaxCandidateInspectionsPerAdvice?: number;
+  /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */
+  springAopMaxCandidateInspections?: number;
+  /** Per-advice Spring AOP `ADVISED_BY` edge cap. `0` disables this cap. */
+  springAopMaxAdvisedEdgesPerAdvice?: number;
+  /** Aggregate Spring AOP advice-edge cap for one analysis. `0` disables this cap. */
+  springAopMaxAdvisedEdges?: number;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1, opt-in via `--pdg`).
    * Off by default: workers skip all CFG work and emit no `cfgSideChannel`, and
@@ -262,8 +304,9 @@ export interface PipelineOptions {
  * Phase dependency graph:
  *
  *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → scopeResolution → springAutoConfiguration → pruneLocalSymbols
- *     → mro → di → communities → processes
+ *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
+ *       springDestinations] → pruneLocalSymbols
+ *     → mro → springAopInheritance → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
  * object, and `.register()` it at the appropriate position below. Opt-in
@@ -290,6 +333,12 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(crossFilePhase)
       .register(scopeResolutionPhase)
       .register(springAutoConfigurationPhase)
+      .register(springAopPhase)
+      // Async messaging overlay. Must follow scopeResolution twice over: the
+      // owner Method/Function nodes have to exist, and each provider's
+      // `applyCaptureSideChannel` has to have restored the messaging facts onto
+      // the main thread. It also reads the Property nodes springConfig emits.
+      .register(springDestinationsPhase)
       .register(pruneLocalSymbolsPhase)
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
@@ -297,9 +346,14 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(springAopInheritancePhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.skipDerivedGraphPhases !== true,
+      })
+      .register(processesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.skipDerivedGraphPhases !== true,
+      })
       // Normalize a missing options object once here so phase predicates above
       // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
       .build(options ?? {})
@@ -339,36 +393,54 @@ export const runPipelineFromRepo = async (
   }
 
   const phases = buildPhaseList(options);
+  const ctx: PipelineContext = {
+    repoPath,
+    graph: graphEmitSink ?? graph,
+    onProgress,
+    options,
+    pipelineStart,
+    graphEmit: graphEmitSink,
+  };
 
   let graphEmitManifest: GraphEmitManifest | undefined;
   let results;
   try {
-    results = await runPipeline(phases, {
-      repoPath,
-      graph: graphEmitSink ?? graph,
-      onProgress,
-      options,
-      pipelineStart,
-      graphEmit: graphEmitSink,
-    });
+    results = await runPipeline(phases, ctx);
     graphEmitManifest = graphEmitSink?.finalize();
   } finally {
     // Release per-pair fds when the pipeline threw before finalize ran.
     graphEmitSink?.close();
   }
 
+  // Resolved-call index for the name-fallback census: read through the SINK,
+  // whose field-wise scan includes every streamed edge, not through `graph`,
+  // which under streaming holds none of them.
+  const resolvedCalleeNamesByCaller = collectResolvedCalleeNames(graphEmitSink ?? graph, graph);
+
   // Extract final results for the PipelineResult contract
-  const { totalFiles, usedWorkerPool } = getPhaseOutput<{
+  const {
+    totalFiles,
+    usedWorkerPool,
+    reparsedFileCount,
+    parseCacheHitFileCount,
+    unavailableScopeLanguageFiles,
+  } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
+    reparsedFileCount: number;
+    parseCacheHitFileCount: number;
+    unavailableScopeLanguageFiles: number;
   }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
   const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
+  const scopeExtractionFailures = scopeResolutionOutput.scopeExtractionFailures;
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+  const undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
   const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
+  const propertyInference = scopeResolutionOutput.propertyInference;
 
   // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
   // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
@@ -394,7 +466,7 @@ export const runPipelineFromRepo = async (
     },
   });
 
-  return {
+  const result: PipelineResult = {
     // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
     // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
     // `streamAllCSVsToDisk`, and the sink's complete iterator would then emit
@@ -408,7 +480,75 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     resolutionOutcomes,
+    resolvedCalleeNamesByCaller,
+    undecidedSatisfaction,
     usedWorkerPool,
+    reparsedFileCount,
+    parseCacheHitFileCount,
+    scopeExtractionFailures,
+    unavailableScopeLanguageFiles,
     pdgEmitManifest,
+    propertyInference,
   };
+
+  // #3016: hand back a way to run the derived phases `skipDerivedGraphPhases`
+  // held back. Which phases those are is answered by re-asking the registry
+  // with only that flag cleared — the one form of the question that stays
+  // correct when a different predicate (`skipGraphPhases`) also disables them,
+  // since then they are absent for a reason a deferred run cannot fix and the
+  // filter yields nothing. The sink guard mirrors the `graph` note above: a
+  // streaming run is a full rebuild, which never sets the skip flag, so an
+  // active sink here means the two got combined by mistake — and deferred
+  // phases writing into a finalized sink would emit past its manifest.
+  const deferredDerivedPhases =
+    options?.skipDerivedGraphPhases === true && graphEmitSink === undefined
+      ? buildPhaseList({ ...options, skipDerivedGraphPhases: false }).filter(
+          (p) => (p.name === 'communities' || p.name === 'processes') && !results.has(p.name),
+        )
+      : [];
+
+  if (deferredDerivedPhases.length > 0) {
+    result.runDeferredDerivedPhases = async () => {
+      const derived = await runPipeline(deferredDerivedPhases, ctx, results);
+      // Presence-checked for the same reason as the block above: a phase the
+      // registry filtered out is absent, and `getPhaseOutput` throws on absent.
+      if (derived.has('communities')) {
+        result.communityResult = getPhaseOutput<CommunitiesOutput>(
+          derived,
+          'communities',
+        ).communityResult;
+      }
+      if (derived.has('processes')) {
+        result.processResult = getPhaseOutput<ProcessesOutput>(derived, 'processes').processResult;
+      }
+    };
+  }
+
+  return result;
 };
+
+/**
+ * Caller node id → the simple names of every callee it has a CALLS edge to.
+ *
+ * `edges` may be the streaming sink or the raw graph; `nodes` is always the raw
+ * graph, which holds every node in both modes (only relationships stream). One
+ * O(E) field-wise pass, allocation-free per edge except for the per-caller set.
+ */
+export function collectResolvedCalleeNames(
+  edges: Pick<KnowledgeGraph, 'forEachRelationshipFields'>,
+  nodes: Pick<KnowledgeGraph, 'getNode'>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, Set<string>>();
+  edges.forEachRelationshipFields((sourceId, targetId, type, _confidence, reason) => {
+    if (type !== 'CALLS' || reason === GLOBAL_NAME_FALLBACK_REASON) return;
+    const name = nodes.getNode(targetId)?.properties.name;
+    if (typeof name !== 'string' || name === '') return;
+    let names = out.get(sourceId);
+    if (names === undefined) {
+      names = new Set<string>();
+      out.set(sourceId, names);
+    }
+    names.add(name);
+  });
+  return out;
+}

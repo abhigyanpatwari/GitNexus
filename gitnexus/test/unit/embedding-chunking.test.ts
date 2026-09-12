@@ -22,7 +22,10 @@ const { getLanguageFromFilename } = vi.hoisted(() => ({
   getLanguageFromFilename: vi.fn().mockReturnValue('typescript'),
 }));
 
-vi.mock('gitnexus-shared', () => ({
+// Partial mock: `ast-utils` now resolves the LanguageProvider registry to apply
+// `preprocessSource`, and that graph needs the real shared exports (#2771).
+vi.mock('gitnexus-shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('gitnexus-shared')>()),
   getLanguageFromFilename,
 }));
 

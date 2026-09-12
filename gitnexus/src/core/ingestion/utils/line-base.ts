@@ -18,3 +18,18 @@
  * must not shift. The clamp guards degenerate inputs (line 0 / empty files).
  */
 export const toZeroBasedLine = (oneBasedLine: number): number => Math.max(0, oneBasedLine - 1);
+
+/**
+ * Convert a 0-based GraphNode `startLine`/`endLine` into the 1-based line space
+ * the CFG/PDG layer uses (`BasicBlock` ids and `functionStartLine` are built
+ * from `startPosition.row + 1`).
+ *
+ * This is the INTERNAL inverse of {@link toZeroBasedLine}, for joining graph
+ * rows against that layer. It is NOT the display converter: line numbers on
+ * their way out to a human or an LLM go through `mcp/local/line-display.ts`,
+ * which is documented as a response-boundary concern and passes `undefined`
+ * through. Here the arithmetic is the point, so the input must already be a
+ * number — a caller holding a possibly-absent value checks it first, exactly as
+ * the `typeof sym.startLine === 'number'` guards in `pdg-impact.ts` do.
+ */
+export const toOneBasedLine = (zeroBasedLine: number): number => zeroBasedLine + 1;

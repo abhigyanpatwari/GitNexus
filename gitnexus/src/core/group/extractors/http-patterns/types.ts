@@ -56,6 +56,14 @@ export interface HttpDetection {
    * locally-defined or anonymous handlers.
    */
   handlerImport?: { name: string; module: string };
+  /** Resolve only from the registration file or exact import target; never guess repo-wide. */
+  strictHandlerResolution?: boolean;
+  /**
+   * The plugin saw a provider handler designator but could not prove its owner.
+   * Prevents the orchestrator from treating it as an anonymous inline handler
+   * and attributing it to the containing registrar function.
+   */
+  unresolvedHandler?: boolean;
   /** Confidence in (0, 1]. Source-scan plugins typically use 0.7–0.8. */
   confidence: number;
 }

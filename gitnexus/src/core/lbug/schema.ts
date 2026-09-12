@@ -9,8 +9,13 @@
  *   MATCH (f:Function)-[r:CodeRelation {type: 'CALLS'}]->(g:Function) RETURN f, g
  */
 
+import { createHash } from 'crypto';
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
+import type { NodeLabel, NodeTableName } from 'gitnexus-shared';
+import { parseRelationSchemaPairs } from './rel-pair-routing.js';
+import { LINKABLE_LABELS } from '../ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { CALL_TARGET_TYPES } from '../ingestion/model/symbol-table.js';
 // Re-export so downstream consumers keep the same import path
 export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
 export type { NodeTableName, RelType } from 'gitnexus-shared';
@@ -46,6 +51,7 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  convexEndpointFactory STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -60,6 +66,30 @@ CREATE NODE TABLE Class (
   content STRING,
   description STRING,
   frameworkAnnotations STRING[],
+  PRIMARY KEY (id)
+)`;
+
+export const PROTOCOL_SCHEMA = `
+CREATE NODE TABLE Protocol (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const CATEGORY_SCHEMA = `
+CREATE NODE TABLE Category (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -165,7 +195,18 @@ export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
 export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
 export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
-export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
+export const CONST_SCHEMA = `
+CREATE NODE TABLE \`Const\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  convexEndpointFactory STRING,
+  PRIMARY KEY (id)
+)`;
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
 export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
 export const PROPERTY_SCHEMA = `
@@ -178,6 +219,25 @@ CREATE NODE TABLE \`Property\` (
   content STRING,
   description STRING,
   declaredType STRING,
+  /*
+   * DETAIL SYMBOL — true when this property is a member of a shape that has no
+   * independent identity: the keys of an anonymous literal returned from a
+   * function (R3-4).
+   *
+   * It exists because indexing those keys is right for the GRAPH and wrong for
+   * TEXT SEARCH. They are ordinary words (message, value, timestamp) and
+   * there are many of them, so letting them into the FTS result set pushes the
+   * CALLABLES named after the same concept past the row cap the search applies
+   * — measured: query('message') went from two processes to none on the
+   * mini-repo fixture. A ranking tweak cannot fix that, because the rows never
+   * come back from the FTS call in the first place.
+   *
+   * So the search layer gained a notion it did not have — a symbol that is
+   * queryable, walkable and impact-analysable, but not a concept a text search
+   * should surface on its own. buildFtsQueryCypher excludes these for the
+   * Property table only; every other consumer sees them normally.
+   */
+  isDetail BOOLEAN,
   PRIMARY KEY (id)
 )`;
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
@@ -197,6 +257,9 @@ CREATE NODE TABLE Route (
   middleware STRING[],
   method STRING,
   handlerSymbolId STRING,
+  runtimeConfirmed BOOLEAN,
+  runtimeSource STRING,
+  runtimeStatus STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -206,6 +269,42 @@ CREATE NODE TABLE Tool (
   id STRING,
   name STRING,
   filePath STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
+// Message-broker destinations (Kafka topics, Rabbit exchanges, JMS queues,
+// Spring Cloud Stream bindings) — the async counterpart of ROUTE_SCHEMA.
+//
+// `address` is the JOIN KEY and is deliberately NULLABLE. A destination whose
+// address the resolution cascade could not determine is stored with NO address,
+// so that two services which each merely wrote `${app.topic}` cannot be joined
+// on it. `name` carries the placeholder text for display and must never be used
+// as a join key — it is exactly the value that would produce the false match.
+// See `pipeline-phases/spring-destinations.ts`.
+//
+// `configKey` / `configDefault` record what a `${key:default}` said WITHOUT
+// resolving it: the default is written in the source, but configuration can
+// override it and this graph does not read configuration values, so the default
+// is provenance rather than identity.
+//
+// `broker` is part of the node's IDENTITY, not a label on it — `id` is minted
+// from `(broker, address)` — so two rows can share an `address` and differ by
+// broker, exactly as two Route rows share a URL and differ by method. Join on
+// `address` alone only when the brokers are known to be irrelevant; the id, or
+// `(address, broker)`, is the exact key.
+export const DESTINATION_SCHEMA = `
+CREATE NODE TABLE Destination (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  address STRING,
+  broker STRING,
+  resolution STRING,
+  configKey STRING,
+  configDefault STRING,
   description STRING,
   PRIMARY KEY (id)
 )`;
@@ -248,90 +347,251 @@ CREATE NODE TABLE BasicBlock (
 // Single table with 'type' property - connects all node tables
 // ============================================================================
 
-export const RELATION_SCHEMA = `
-CREATE REL TABLE ${REL_TABLE_NAME} (
-  FROM File TO File,
-  FROM File TO Folder,
-  FROM File TO Function,
-  FROM File TO Class,
-  FROM File TO Interface,
-  FROM File TO Method,
+/**
+ * Labels the scope-resolution graph bridge can put on the SOURCE side of a
+ * CALLS / ACCESSES / USES / EXTENDS edge: everything `buildGraphNodeLookup`
+ * registers (`LINKABLE_LABELS`), plus the `File` node `resolveCallerGraphId`
+ * falls back to for a module-level call site.
+ *
+ * Imported from the ingestion layer, NOT re-listed here: a hand-copied twin is
+ * pure drift risk, since a label added to it (or dropped from the original) is
+ * invisible to every guard. `csv-generator.ts` and `lbug-adapter.ts`, both
+ * siblings in this directory, already import from `../ingestion/`.
+ *
+ * The cost is that importing this module pulls five ingestion modules into the
+ * runtime closure. `gitnexus-web` does not depend on this package at all (only
+ * on `gitnexus-shared`), so nothing here reaches a browser bundle. The MCP
+ * server still pays it, though: `local-backend.ts` no longer imports this
+ * module directly (its two embedding constants come from `gitnexus-shared`),
+ * but pool-adapter -> lbug-adapter -> csv-generator reaches it anyway.
+ */
+const SCOPE_BRIDGE_SOURCE_LABELS: readonly NodeLabel[] = ['File', ...LINKABLE_LABELS];
+
+/**
+ * Labels the bridge can put on the TARGET side: `LINKABLE_LABELS` again (every
+ * `resolveDefGraphId` hit), plus `CALL_TARGET_TYPES` —
+ * `tryEmitEdgeWithExplicitTargetId` bypasses the lookup and emits such a def's
+ * own node id, and C# `Delegate` is in that set without being linkable.
+ *
+ * Both sets are `NodeLabel`-typed rather than `NodeTableName`-typed because
+ * that is what the originals carry, and `NodeLabel` is the wider union — it
+ * admits five labels with no node table (`Project`, `Package`, `Decorator`,
+ * `Import`, `Type`). A label from that gap would emit DDL naming a table that
+ * does not exist, so `test/unit/schema-pair-coverage.test.ts` asserts every
+ * declared endpoint against `NODE_TABLES`. The hand-written sets below take the
+ * narrower `NodeTableName` constraint, where a typo is the actual risk.
+ */
+const SCOPE_BRIDGE_TARGET_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  ...LINKABLE_LABELS,
+  ...CALL_TARGET_TYPES,
+]);
+
+/**
+ * Node tables that are NOT definitions.
+ *
+ *  - `Community` / `Process` are analysis overlays synthesized after ingestion;
+ *    nothing is ever attached to one, they are only attached TO.
+ *  - `Route` / `Tool` are framework overlays. They do source exactly two edges
+ *    — `ENTRY_POINT_OF` to a `Process` (`pipeline-phases/processes.ts`) — but
+ *    that emitter hard-codes both labels as literals in one file rather than
+ *    resolving an anchor through a lookup, so those two pairs stay in
+ *    {@link STRUCTURAL_PAIR_DDL}. Admitting them as anchors would mint twelve
+ *    further pairs (`Route→Annotation`, `Tool→Record`, …) no emitter can reach.
+ *  - `Destination` is the async framework overlay and follows `Route` exactly.
+ *    It sources ONE edge — `USES` to the `Property` node of the configuration
+ *    key a `${...}` placeholder named — and `pipeline-phases/spring-destinations.ts`
+ *    hard-codes `Property` as the target label there, so that single pair stays
+ *    hand-declared in {@link STRUCTURAL_PAIR_DDL} for the same reason.
+ *  - `Folder` is a filesystem container (`Folder→Folder` / `Folder→File` only).
+ *  - `BasicBlock` is the PDG substrate (`BasicBlock→BasicBlock` only; measured
+ *    over 300k PDG edges, no other pair is emitted).
+ */
+const NON_DEFINITION_LABELS: readonly NodeTableName[] = [
+  'Community',
+  'Process',
+  'Route',
+  'Tool',
+  'Destination',
+  'Folder',
+  'BasicBlock',
+];
+
+/**
+ * Every label a DEFINITION node can carry — derived from `NODE_TABLES` by
+ * subtraction so a new node table joins this set automatically and only an
+ * explicit entry above can keep it out.
+ */
+const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
+  (label) => !NON_DEFINITION_LABELS.includes(label),
+);
+
+/**
+ * Labels whose nodes are minted OUTSIDE the scope-resolution bridge, by a
+ * phase or framework emitter, and then hung off whichever definition node that
+ * emitter happened to resolve. For most of them the anchor is a LOOKUP RESULT,
+ * so its label is not constrained by the emitter — which is exactly why
+ * hand-listing these pairs has crashed `analyze` four separate times:
+ *
+ *  | target       | emitter                                        | anchor comes from                     |
+ *  |--------------|------------------------------------------------|---------------------------------------|
+ *  | `Annotation` | `frameworks/spring/conditionals.ts` CONDITIONAL_ON | `resolveDefGraphId` / `resolveCallerGraphId` |
+ *  | `Community`  | `pipeline-phases/communities.ts` MEMBER_OF     | Leiden membership, `isCommunitySymbol`-gated |
+ *  | `Process`    | `pipeline-phases/processes.ts` STEP_IN_PROCESS | trace step node                       |
+ *  | `Route`      | `pipeline-phases/routes.ts` HANDLES_ROUTE      | `generateId('File', handlerPath)` — a literal — plus, when the route's handler resolves, that definition |
+ *  | `Tool`       | `pipeline-phases/tools.ts` HANDLES_TOOL        | `handlerNodeId` — whatever definition the decorator sat on |
+ *  | `File`       | `languages/vue/scope-resolver.ts` BINDS_EVENT_HANDLER | handler node                    |
+ *  | `Record`     | `cobol-processor.ts` × 8 external-resource sites | `scopedCallerLookup`                |
+ *
+ * The four reproduced hard-aborts are one cell of this table each:
+ * `Method→Annotation` (Spring `@Bean` + `@ConditionalOnMissingBean`),
+ * `Method→File` (Vue Options-API handler), `Namespace→Record` (COBOL
+ * `DECLARATIVES`), `Class→Tool` (`@mcp.tool()` on a class). Declaring
+ * {@link DEFINITION_ANCHOR_LABELS} × this set covers all four plus every
+ * sibling the same emitters can reach.
+ *
+ * TWO TARGETS USE ONLY PART OF THEIR CROSS PRODUCT TODAY, and it over-declares
+ * for them ON PURPOSE (~45 of the 182 attachment pairs have no emitter that can
+ * reach them right now):
+ *  - `Community` — `isCommunitySymbol` (`community-processor.ts`) admits only
+ *    `Function` / `Class` / `Method` / `Interface` as members, so the other 22
+ *    anchors cannot source a MEMBER_OF edge until that predicate widens.
+ *  - `Route` — HANDLES_ROUTE always sources the literal
+ *    `generateId('File', handlerPath)`, and additionally the route's HANDLER
+ *    DEFINITION whenever `routeHandlerSymbols` produced an id that
+ *    `ctx.graph.getNode` confirms is in the graph. That second anchor is a
+ *    lookup result the emitter never label-checks; handler resolution returns
+ *    `Function` / `Method` definitions today, so `Route` is no longer a
+ *    `File`-only target and the remaining anchors are headroom.
+ *
+ * Those pairs stay declared because the two sides of the error are not
+ * symmetric: an UNDECLARED pair makes LadybugDB reject the edge and aborts
+ * `analyze` outright on a user's repo, while an unused DECLARED pair costs
+ * almost nothing — `bench/schema-pairs` measured the pre-#2801 332→450 growth
+ * (118 pairs, of which these ~45 are a part) at 0.93–1.05×, i.e. inside
+ * run-to-run noise. #2801's 11 generated `Record` pairs bring the total to 461.
+ * Its Windows measurements and noise caveats live in the benchmark README; the
+ * operational production ceiling is the checked 1.5× budget.
+ * Every one of the four aborts above came from re-narrowing a set to what one
+ * predicate looked like it allowed — so a reading of `isCommunitySymbol` is not
+ * grounds to shrink this. `Route` is the worked example in the other direction:
+ * the definition-level HANDLES_ROUTE edge started emitting `Function|Route` /
+ * `Method|Route` with no DDL change, because those pairs were already declared.
+ * Widening `isCommunitySymbol`, or handler resolution returning a further
+ * label, is likewise a no-op here.
+ *
+ * `Route` / `Tool` being excluded as ANCHORS (see {@link NON_DEFINITION_LABELS})
+ * is likewise a SIZE choice, not something derived from a rule: they do source
+ * `ENTRY_POINT_OF`, and admitting them would mint twelve further pairs no
+ * emitter can currently reach.
+ *
+ * Sized deliberately. `bench/schema-pairs` measures real `@ladybugdb/core` with
+ * identical data — untyped-endpoint anchored queries
+ * (`MATCH (a {id: $id})-[r:CodeRelation]->(b)`, the shape `impact` / `context` /
+ * `detect_changes` issue), relative to the 332-pair hand-list it replaced.
+ * Keep the historical reference-box and current Windows measurements separate:
+ *
+ *   reference box: 450 → 0.93–1.05×   641 → 1.22–1.43×   1024 → 2.03–2.34×
+ *   Windows:       461 → 1.20–1.42× across three comparable runs
+ *
+ * Those rows are not a cross-machine ordering, and none of them was re-measured
+ * for the sizes the DDL has actually reached since: adding `Destination` to this
+ * list took it from 482 to 509 pairs (26 generated by this rule plus the one
+ * hand-declared `Destination→Property`). The 461 the rows above were quoted for
+ * is a HISTORICAL size, not the current one — read them as the shape of the
+ * cost curve, not as a measurement of today's table. The operational claim is
+ * unchanged in kind: 509 is still far below the 1024 row where the curve turns,
+ * and the 1.5× production budget has not been re-checked at this size. The
+ * historical same-box 450→641 comparison still shows the cost of the deferred
+ * third cross product, so the containment half below stays hand-declared.
+ * Re-run all candidate sizes on one box and quote the range before proposing
+ * that rule — or before adding a further attachment target.
+ */
+const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
+  'Annotation',
+  'Community',
+  'Process',
+  'Route',
+  'Tool',
+  'Destination',
+  'File',
+  'Record',
+];
+
+/**
+ * The pairs NEITHER rule above generates — everything left after the two
+ * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
+ * and DI: a container label crossed with a contained label. No predicate
+ * describes that surface (any container can hold any definition).
+ *
+ * What survives here is characteristic, not arbitrary. Almost all of it is a
+ * TARGET no rule reaches — `CodeElement`, `Impl`, `Namespace`, `Template`,
+ * `Typedef`, `Static`, `Section`, `Folder` are in neither
+ * `SCOPE_BRIDGE_TARGET_LABELS` nor {@link ATTACHMENT_TARGET_LABELS} — plus the
+ * `Impl|*` and `Template|*` member rows (Rust `impl`/`trait` bodies, C++
+ * templates), the two `Route|Process` / `Tool|Process` entry points whose
+ * emitter names both labels as literals, and `BasicBlock|BasicBlock`, the PDG
+ * substrate.
+ * Spring dynamic lookup in a constructor also emits INJECTS to a synthetic
+ * @Bean CodeElement (#3238), so Constructor|CodeElement belongs here.
+ *
+ * NOTHING A RULE ALREADY COVERS BELONGS HERE. `generatedRelationPairs` skips
+ * any pair present in this block, so a redundant line does not merely duplicate
+ * — it SUPPRESSES generation, and later narrowing a rule would silently keep
+ * that pair alive with no test failing. 166 such lines now live in the generated
+ * half (161 from #2793, the three `Record` member pairs moved by #2801/#2871,
+ * and the two `TypeAlias` pairs moved by R2-2 here);
+ * `test/unit/schema-pair-coverage.test.ts` now fails if one comes back.
+ *
+ * Those last two arrived by MERGE, and the shape is worth recording because it
+ * is the one this block's warning cannot catch by itself. #2871 and this branch
+ * each deleted their OWN label's hand-written pairs — `Record` there,
+ * `TypeAlias` here — for the identical reason, in the identical region. Git
+ * presents that as one conflict in which each side appears to be deleting the
+ * other's lines, and "keep ours" or "keep theirs" both resolve cleanly, compile,
+ * and silently re-suppress the other label's generation. The correct resolution
+ * is neither: take the UNION of the deletions. Verified by asserting all five
+ * pairs are still present in the emitted DDL — a check that does not read
+ * `LINKABLE_LABELS`, unlike the pair-coverage test, which derives both sides
+ * from it and so moves with any change to it.
+ *
+ * Folding this remainder into a third cross product
+ * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef,
+ * Namespace, Impl, TypeAlias, Static, Template}`) would take the table to 641
+ * pairs and leave only ~29 lines here. `bench/schema-pairs` measures 641 at
+ * 1.22–1.43× on the historical reference box; current production's 461 pairs
+ * remain below their 1.5× Windows budget. Those cross-machine values are not an
+ * ordering, so any proposal must remeasure both sizes on one box. Until then,
+ * the rule stays deferred rather than trading ~40 lines for unmeasured query cost.
+ *
+ * Exported so `test/unit/schema-pair-coverage.test.ts` can subtract it and
+ * assert the GENERATED region of the DDL for exact equality against the two
+ * rules, rather than one-directional containment.
+ * `test/integration/structural-pair-coverage.test.ts` guards this half from a
+ * corpus — that is the guard, not this comment.
+ */
+export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM File TO CodeElement,
-  FROM File TO \`Struct\`,
-  FROM File TO \`Enum\`,
-  FROM File TO \`Macro\`,
   FROM File TO \`Typedef\`,
-  FROM File TO \`Union\`,
   FROM File TO \`Namespace\`,
-  FROM File TO \`Trait\`,
   FROM File TO \`Impl\`,
-  FROM File TO \`TypeAlias\`,
-  FROM File TO \`Const\`,
   FROM File TO \`Static\`,
-  FROM File TO \`Variable\`,
-  FROM File TO \`Property\`,
-  FROM File TO \`Record\`,
-  FROM File TO \`Delegate\`,
-  FROM File TO \`Annotation\`,
-  FROM File TO \`Constructor\`,
   FROM File TO \`Template\`,
-  FROM File TO \`Module\`,
   FROM File TO Section,
   FROM Folder TO Folder,
   FROM Folder TO File,
-  FROM Function TO Function,
-  FROM Function TO Method,
-  FROM Function TO Class,
-  FROM Function TO Community,
-  FROM Function TO \`Macro\`,
-  FROM Function TO \`Struct\`,
   FROM Function TO \`Template\`,
-  FROM Function TO \`Enum\`,
   FROM Function TO \`Namespace\`,
-  FROM Function TO \`TypeAlias\`,
-  FROM Function TO \`Module\`,
   FROM Function TO \`Impl\`,
-  FROM Function TO Interface,
-  FROM Function TO \`Constructor\`,
-  FROM Function TO \`Const\`,
   FROM Function TO \`Typedef\`,
-  FROM Function TO \`Union\`,
-  FROM Function TO \`Property\`,
   FROM Function TO CodeElement,
-  FROM Class TO Method,
-  FROM Class TO Function,
-  FROM Class TO Class,
-  FROM Class TO Interface,
-  FROM Class TO Community,
   FROM Class TO \`Template\`,
-  FROM Class TO \`TypeAlias\`,
-  FROM Class TO \`Struct\`,
-  FROM Class TO \`Enum\`,
-  FROM Class TO \`Annotation\`,
-  FROM Class TO \`Constructor\`,
-  FROM Class TO \`Trait\`,
-  FROM Class TO \`Macro\`,
   FROM Class TO \`Impl\`,
-  FROM Class TO \`Union\`,
   FROM Class TO \`Namespace\`,
   FROM Class TO \`Typedef\`,
-  FROM Class TO \`Property\`,
   FROM Class TO CodeElement,
-  FROM Method TO Function,
-  FROM Method TO Method,
-  FROM Method TO Class,
-  FROM Method TO Community,
   FROM Method TO \`Template\`,
-  FROM Method TO \`Struct\`,
-  FROM Method TO \`TypeAlias\`,
-  FROM Method TO \`Enum\`,
-  FROM Method TO \`Macro\`,
   FROM Method TO \`Namespace\`,
-  FROM Method TO \`Module\`,
   FROM Method TO \`Impl\`,
-  FROM Method TO Interface,
-  FROM Method TO \`Constructor\`,
-  FROM Method TO \`Property\`,
   FROM Method TO CodeElement,
   FROM \`Template\` TO \`Template\`,
   FROM \`Template\` TO Function,
@@ -343,123 +603,92 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Template\` TO \`Macro\`,
   FROM \`Template\` TO Interface,
   FROM \`Template\` TO \`Constructor\`,
-  FROM \`Module\` TO \`Module\`,
+  FROM \`Module\` TO CodeElement,
+  FROM \`Module\` TO \`Namespace\`,
+  FROM \`Namespace\` TO Function,
+  FROM CodeElement TO CodeElement,
+  FROM CodeElement TO Class,
+  FROM CodeElement TO Category,
+  FROM CodeElement TO Method,
+  FROM CodeElement TO \`Module\`,
+  FROM CodeElement TO \`Property\`,
   FROM Section TO Section,
-  FROM Section TO File,
-  FROM File TO Route,
-  FROM Function TO Route,
-  FROM Method TO Route,
-  FROM File TO Tool,
-  FROM Function TO Tool,
-  FROM Method TO Tool,
-  FROM CodeElement TO Community,
-  FROM Interface TO Community,
-  FROM Interface TO Function,
-  FROM Interface TO Method,
-  FROM Interface TO Class,
-  FROM Interface TO Interface,
-  FROM Interface TO \`TypeAlias\`,
-  FROM Interface TO \`Struct\`,
-  FROM Interface TO \`Constructor\`,
-  FROM Interface TO \`Property\`,
-  FROM \`Struct\` TO Community,
-  FROM \`Struct\` TO \`Trait\`,
-  FROM \`Struct\` TO \`Struct\`,
-  FROM \`Struct\` TO Class,
-  FROM \`Struct\` TO \`Enum\`,
-  FROM \`Struct\` TO Function,
-  FROM \`Struct\` TO Method,
-  FROM \`Struct\` TO Interface,
-  FROM \`Struct\` TO \`Constructor\`,
-  FROM \`Struct\` TO \`Property\`,
-  FROM \`Enum\` TO \`Enum\`,
-  FROM \`Enum\` TO Community,
-  FROM \`Enum\` TO Class,
-  FROM \`Enum\` TO Interface,
-  FROM \`Macro\` TO Community,
-  FROM \`Macro\` TO Function,
-  FROM \`Macro\` TO Method,
-  FROM \`Module\` TO Function,
-  FROM \`Module\` TO Method,
-  FROM \`Typedef\` TO Community,
-  FROM \`Union\` TO Community,
-  FROM \`Namespace\` TO Community,
+  FROM Interface TO CodeElement,
   FROM \`Namespace\` TO \`Struct\`,
-  FROM \`Trait\` TO Method,
-  FROM \`Trait\` TO \`Constructor\`,
-  FROM \`Trait\` TO \`Property\`,
-  FROM \`Trait\` TO Community,
   FROM \`Impl\` TO Method,
+  FROM \`Impl\` TO Function,
   FROM \`Impl\` TO \`Constructor\`,
   FROM \`Impl\` TO \`Property\`,
-  FROM \`Impl\` TO Community,
   FROM \`Impl\` TO \`Trait\`,
   FROM \`Impl\` TO \`Struct\`,
   FROM \`Impl\` TO \`Impl\`,
-  FROM \`TypeAlias\` TO Community,
-  FROM \`TypeAlias\` TO \`Trait\`,
-  FROM \`TypeAlias\` TO Class,
-  FROM \`Const\` TO Community,
-  FROM \`Static\` TO Community,
-  FROM \`Variable\` TO Community,
-  FROM \`Property\` TO Community,
-  FROM \`Property\` TO \`Property\`,
-  FROM \`Record\` TO Method,
-  FROM \`Record\` TO \`Constructor\`,
-  FROM \`Record\` TO \`Property\`,
-  FROM \`Record\` TO Community,
-  FROM \`Delegate\` TO Community,
-  FROM \`Annotation\` TO Community,
-  FROM \`Constructor\` TO Community,
-  FROM \`Constructor\` TO Interface,
-  FROM \`Constructor\` TO Class,
-  FROM \`Constructor\` TO Method,
-  FROM \`Constructor\` TO Function,
-  FROM \`Constructor\` TO \`Constructor\`,
-  FROM \`Constructor\` TO \`Struct\`,
-  FROM \`Constructor\` TO \`Macro\`,
   FROM \`Constructor\` TO \`Template\`,
-  FROM \`Constructor\` TO \`TypeAlias\`,
-  FROM \`Constructor\` TO \`Enum\`,
-  FROM \`Constructor\` TO \`Annotation\`,
   FROM \`Constructor\` TO \`Impl\`,
   FROM \`Constructor\` TO \`Namespace\`,
-  FROM \`Constructor\` TO \`Module\`,
-  FROM \`Constructor\` TO \`Property\`,
   FROM \`Constructor\` TO \`Typedef\`,
-  FROM \`Template\` TO Community,
-  FROM \`Module\` TO Community,
-  FROM Function TO Process,
-  FROM Method TO Process,
-  FROM Class TO Process,
-  FROM Interface TO Process,
-  FROM \`Struct\` TO Process,
-  FROM \`Constructor\` TO Process,
-  FROM \`Module\` TO Process,
-  FROM \`Macro\` TO Process,
-  FROM \`Impl\` TO Process,
-  FROM \`Typedef\` TO Process,
-  FROM \`TypeAlias\` TO Process,
-  FROM \`Enum\` TO Process,
-  FROM \`Union\` TO Process,
-  FROM \`Namespace\` TO Process,
-  FROM \`Trait\` TO Process,
-  FROM \`Const\` TO Process,
-  FROM \`Static\` TO Process,
-  FROM \`Variable\` TO Process,
-  FROM \`Property\` TO Process,
-  FROM \`Record\` TO Process,
-  FROM \`Delegate\` TO Process,
-  FROM \`Annotation\` TO Process,
-  FROM \`Template\` TO Process,
-  FROM CodeElement TO Process,
+  FROM \`Constructor\` TO CodeElement,
   FROM Route TO Process,
   FROM Tool TO Process,
-  FROM BasicBlock TO BasicBlock,
+  FROM Destination TO \`Property\`,
+  FROM BasicBlock TO BasicBlock`;
+
+/**
+ * The generated half of the DDL — one `  FROM \`x\` TO \`y\`` line per pair of
+ * the two cross products below.
+ *
+ * 1. SCOPE BRIDGE — `SCOPE_BRIDGE_SOURCE_LABELS × SCOPE_BRIDGE_TARGET_LABELS`.
+ *    Those sets ARE the bridge's emit surface: `buildGraphNodeLookup` holds
+ *    only `LINKABLE_LABELS`, so every id `resolveDefGraphId` returns wears one
+ *    of those labels (#2792).
+ * 2. ATTACHMENT — `DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS`, the
+ *    phase/framework overlays hung off a resolved anchor (#2793).
+ *
+ * Generated rather than hand-listed because in both families the endpoint
+ * labels are LOOKUP RESULTS, not literals at the emit site — so any pair drawn
+ * from the sets can reach `assertDeclaredPair`, and an undeclared one aborts
+ * `analyze` outright on whichever codebase happens to produce it. Every
+ * hand-listed fix so far declared only the pair in the stack trace and left the
+ * rest of its family missing: `Const→Method` (#2781), `Class→Variable` (#2792),
+ * `Interface→CodeElement` (#2416), then `Method→Annotation` / `Method→File` /
+ * `Namespace→Record` / `Class→Tool` (#2793) — four more from three different
+ * emitters, all live at once.
+ *
+ * A `Set` guards the emit against a DUPLICATED pair — the asymmetric failure
+ * mode `rel-pair-routing.ts` documents at length: a duplicate makes LadybugDB
+ * reject `CREATE REL TABLE` and kills EVERY `analyze`, where a missing pair only
+ * kills the codebases that emit it. The two target sets are disjoint TODAY, so
+ * nothing is deduped in practice; the Set is here so that moving one label
+ * between the rules can never cause it. Pairs already in
+ * {@link STRUCTURAL_PAIR_DDL} are skipped for the same reason.
+ */
+const generatedPairDdl = (): string => {
+  const structural = parseRelationSchemaPairs(STRUCTURAL_PAIR_DDL);
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  const add = (from: NodeLabel, to: NodeLabel): void => {
+    const pairKey = `${from}|${to}`;
+    if (structural.has(pairKey) || seen.has(pairKey)) return;
+    seen.add(pairKey);
+    lines.push(`  FROM \`${from}\` TO \`${to}\``);
+  };
+  for (const from of SCOPE_BRIDGE_SOURCE_LABELS) {
+    for (const to of SCOPE_BRIDGE_TARGET_LABELS) add(from, to);
+  }
+  for (const from of DEFINITION_ANCHOR_LABELS) {
+    for (const to of ATTACHMENT_TARGET_LABELS) add(from, to);
+  }
+  return lines.join(',\n');
+};
+
+export const RELATION_SCHEMA = `
+CREATE REL TABLE ${REL_TABLE_NAME} (
+${STRUCTURAL_PAIR_DDL},
+${generatedPairDdl()},
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32
+  step INT32,
+  staticGated BOOLEAN
 )`;
 
 // ============================================================================
@@ -515,6 +744,8 @@ export const NODE_SCHEMA_QUERIES = [
   FOLDER_SCHEMA,
   FUNCTION_SCHEMA,
   CLASS_SCHEMA,
+  PROTOCOL_SCHEMA,
+  CATEGORY_SCHEMA,
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,
@@ -546,6 +777,8 @@ export const NODE_SCHEMA_QUERIES = [
   ROUTE_SCHEMA,
   // MCP tools
   TOOL_SCHEMA,
+  // Async messaging destinations
+  DESTINATION_SCHEMA,
   // Taint/PDG substrate (issue #2080) — must be appended here, not just
   // declared above: SCHEMA_QUERIES (the list initLbug actually runs) is built
   // from NODE_SCHEMA_QUERIES. Omitting this leaves the BasicBlock table
@@ -556,3 +789,123 @@ export const NODE_SCHEMA_QUERIES = [
 export const REL_SCHEMA_QUERIES = [RELATION_SCHEMA];
 
 export const SCHEMA_QUERIES = [...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES, EMBEDDING_SCHEMA];
+
+/**
+ * Digest of the graph DDL this build creates — the exact statements
+ * {@link runSchemaCreationQueries} (lbug-adapter.ts) executes for the node and
+ * relation tables.
+ *
+ * This REPLACED `INCREMENTAL_SCHEMA_VERSION` (#2798), a hand-incremented
+ * integer in repo-manager.ts that had to PREDICT whether an on-disk database
+ * was created from this build's DDL. It could not: the number collided with
+ * `main` eight times, twice EXACTLY, and an exact clash was the quiet failure —
+ * two builds stamp the same number over different DDL, the strict `===` gate
+ * reads the index as current, every `CREATE … TABLE` is skipped as "already
+ * exists" (suppressed in `runSchemaCreationQueries`), and the edges whose
+ * endpoint pair the live DB cannot persist are dropped by
+ * `fallbackRelationshipInserts`' bare `catch`. A wrong graph, not an error.
+ *
+ * A digest cannot collide BY ACCIDENT at this scale: 12 hex chars is 48 bits,
+ * so even 1,000 distinct DDL variants over the project's whole life put the
+ * birthday probability of any pair matching at ≈1.8e-9. Two builds agree
+ * exactly when their DDL agrees, so concurrent branches never need renumbering.
+ * Do not shorten the slice: the odds double per bit dropped. On mismatch —
+ * including the ABSENT stamp every pre-#2798 index carries — run-analyze warns
+ * and forces a full re-analyze, which wipes the database and recreates the
+ * tables from the DDL below.
+ *
+ * {@link EMBEDDING_SCHEMA} is deliberately EXCLUDED. Its `FLOAT[N]` width comes
+ * from `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it in would make
+ * this a function of the ENVIRONMENT rather than of code: two runs of the same
+ * build under different env would disagree and force alternating full rebuilds.
+ * Vector-column drift is therefore a SEPARATE gate, not an ungated hazard:
+ * {@link embeddingDimsMismatch} compares the width stamped in
+ * `RepoMeta.embeddingDims` against {@link EMBEDDING_DIMS} and run-analyze
+ * forces a rebuild on drift. Do not merge the two — an env-derived value in a
+ * code digest makes the same build disagree with itself. (The older reaction in
+ * run-analyze remains, and is to the CACHE, not the schema: when the cached
+ * vectors' length differs from `EMBEDDING_DIMS` it discards the cache and
+ * re-embeds.)
+ */
+export const SCHEMA_FINGERPRINT: string = createHash('sha256')
+  .update([...NODE_SCHEMA_QUERIES, ...REL_SCHEMA_QUERIES].join('\n'))
+  .digest('hex')
+  .slice(0, 12);
+
+/**
+ * Whether an index built under `recorded` can be reused by this build.
+ *
+ * Lives here rather than in run-analyze so the query side can ask the same
+ * question without importing the analyze pipeline — the reason
+ * `cjkSegmentationModeMismatch` sits in `core/search/` rather than beside its
+ * caller. ABSENT counts as a mismatch: that is the backward-compatibility path
+ * for every index written before the field existed, and grandfathering it would
+ * stamp a fresh fingerprint onto a database whose DDL was never verified.
+ */
+export const schemaFingerprintMismatch = (recorded: string | undefined): boolean =>
+  recorded !== SCHEMA_FINGERPRINT;
+
+/**
+ * Whether a stamped value has the shape {@link SCHEMA_FINGERPRINT} produces —
+ * the lowercase-hex prefix of a sha256 digest. The width is read from the live
+ * constant, so changing the slice above needs no edit here.
+ *
+ * Used to decide whether a stamp is worth NAMING in a diagnostic: an index with
+ * no fingerprint and one carrying a malformed value are both "not this build",
+ * but only the first has an explanation worth printing. Not a comparison gate —
+ * {@link schemaFingerprintMismatch} already rejects every value that is not
+ * exactly this build's.
+ */
+export const isSchemaFingerprintShaped = (value: unknown): value is string =>
+  typeof value === 'string' &&
+  value.length === SCHEMA_FINGERPRINT.length &&
+  /^[0-9a-f]+$/.test(value);
+
+/**
+ * Whether the vector-column width an index's `CodeEmbedding` table was created
+ * at (as persisted in `RepoMeta.embeddingDims`) differs from the width this
+ * process would embed at ({@link EMBEDDING_DIMS}). The gate
+ * {@link SCHEMA_FINGERPRINT} deliberately cannot be: `FLOAT[N]` comes from
+ * `GITNEXUS_EMBEDDING_DIMS` at module load, so folding it into a digest of the
+ * DDL would make that digest a function of the ENVIRONMENT. Splitting it out
+ * here keeps the fingerprint purely code-derived and still gates the width —
+ * before this, flipping `GITNEXUS_EMBEDDING_DIMS` on a same-commit clean tree
+ * fired no guard at all: `alreadyUpToDate` returned over a `FLOAT[384]` table
+ * while the process embedded at 768. (The one pre-existing reaction, in
+ * run-analyze, discards the embedding CACHE and re-embeds — into a column whose
+ * width was never revisited.) A single scalar, so plain equality suffices.
+ *
+ * ABSENT does NOT count as a mismatch — the opposite of
+ * {@link schemaFingerprintMismatch}, and deliberately:
+ *
+ *  - Absence carries no signal about the width. A missing fingerprint means
+ *    "DDL this build cannot vouch for", and the field ships WITH a DDL change,
+ *    so absence is itself evidence of drift. A missing dims stamp means only
+ *    "written before the field existed"; the width was whatever that run's env
+ *    resolved, almost always the 384 default, and it was consistent with the
+ *    table it wrote. Drift needs the env to CHANGE, which absence says nothing
+ *    about.
+ *  - Forcing on absence would buy no safety anyway. Every index that lacks this
+ *    stamp also lacks `schemaFingerprint` (both landed together in #2798), and
+ *    that guard already forces a rebuild for exactly those indexes — after
+ *    which the width is stamped and the hazard is closed for good. A second
+ *    trigger for the same one rebuild is dead weight that would keep firing
+ *    forever on any future path that legitimately omits the stamp.
+ *  - The cost of guessing wrong is asymmetric: a fleet-wide full re-analyze
+ *    (minutes to hours per repo) for a hazard that requires a rare, deliberate
+ *    env change.
+ *
+ * Absence is precisely `undefined`. Any other recorded value that is not this
+ * build's width — including a malformed one, since `meta.json` is a schema-less
+ * `JSON.parse` of on-disk state — reads as a mismatch and errs toward a
+ * rebuild, which is the safe direction.
+ *
+ * Pure + exported for testing, and takes `current` explicitly rather than
+ * closing over {@link EMBEDDING_DIMS}: that constant is frozen at module load,
+ * so a parameter is the only way to exercise both sides of the comparison.
+ * Lives here rather than in run-analyze for the reason
+ * `cjkSegmentationModeMismatch` lives in `core/search/` — a caller that only
+ * needs the comparator should not have to pull in the analyze pipeline.
+ */
+export const embeddingDimsMismatch = (recorded: number | undefined, current: number): boolean =>
+  recorded !== undefined && recorded !== current;

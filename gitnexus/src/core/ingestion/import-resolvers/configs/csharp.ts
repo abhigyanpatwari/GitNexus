@@ -31,8 +31,10 @@ export const csharpNamespaceStrategy: ImportResolverStrategy = (rawImportPath, _
   const resolvedFiles = resolveCSharpImportInternal(
     rawImportPath,
     csharpConfigs,
-    ctx.normalizedFileList,
-    ctx.allFileList,
+    // The Set, not `ctx.normalizedFileList`/`ctx.allFileList`: the resolver
+    // derives both from it through the same per-pass memo the ctx's own arrays
+    // come from, so this is the identical pair by a shorter route.
+    ctx.allFilePaths,
     ctx.index,
     evidence,
   );

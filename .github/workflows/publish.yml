@@ -396,13 +396,16 @@ jobs:
           # cache-poisoning audit). ~30s slower per release; runs rarely.
           package-manager-cache: false
 
-      - name: Build gitnexus-shared
-        run: npm ci && npm run build
-        working-directory: gitnexus-shared
-
       - name: Install gitnexus dependencies
         run: npm ci
         working-directory: gitnexus
+
+      # The published tarball ships the web UI (`files: [... "web"]`), built
+      # by prepack during `npm publish`. Install its deps in their own step
+      # so a slow install is visible here instead of dying inside build.js.
+      - name: Install gitnexus-web dependencies
+        run: npm ci
+        working-directory: gitnexus-web
 
       # ── Stable-only: verify the tag and package.json agree ───────────────
       - name: Verify version consistency (stable)
@@ -828,7 +831,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
         with:
           tag_name: ${{ steps.vtag-gate.outputs.vtag }}
           name: >-

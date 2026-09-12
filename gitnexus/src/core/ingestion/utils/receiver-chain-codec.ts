@@ -16,10 +16,10 @@
  * and every chain array as a distinct allocation on every warm load, while a
  * string collapses to one interned instance per distinct chain.
  *
- * ## Wire format (version `1`)
+ * ## Wire format (version `2`)
  *
  * ```
- * 1|<base>|<step>|<step>…[|~]
+ * 2|<base>|<step>|<step>…[|~]
  * ```
  *
  * - One-character version prefix, then the BASE receiver name, then ordered
@@ -29,6 +29,12 @@
  *   character of the segment and the name follows immediately, so a member
  *   whose name begins with `c` or `f` needs no escaping (`ccount` decodes as a
  *   call to `count`).
+ * - `a` = await and `i` = index are NAME-FREE and encode as a BARE sigil: an
+ *   awaited call's name already lives on its `c` step, and a subscript's key is
+ *   a value rather than an identifier the resolver could look up. The decoder
+ *   rejects any trailing characters after `a` or `i`, which is what keeps an
+ *   accidentally empty-name `c` or `f` segment refusing instead of decoding as
+ *   one of these.
  * - A trailing `|~` segment is the TRUNCATION MARKER. NOTE: no current producer
  *   mints one. `extractMixedChain` signals "stopped early" by returning
  *   `baseReceiverName: undefined`, and the encoder requires a base, so a
@@ -46,16 +52,43 @@
  * different valid chain.
  *
  * For `svc.getUser().address.save()`, the receiver of `save` encodes as
- * `1|svc|cgetUser|faddress` — 23 bytes.
+ * `2|svc|cgetUser|faddress` — 23 bytes. For `(await svc.getUserAsync()).save()`
+ * it is `2|svc|cgetUserAsync|a`.
  */
 
 import type { MixedChainStep } from 'gitnexus-shared';
 
 import { MAX_CHAIN_DEPTH } from './call-analysis.js';
 
-const VERSION = '1';
+/** Wire version. Bumped 1 → 2 when the name-free `await` and `index` step kinds
+ *  were added: a v1 decoder reading a v2 payload must REFUSE, not decode the
+ *  prefix it happens to understand, because a chain missing its await or index
+ *  hop decodes cleanly as a different, shorter chain and would type the receiver
+ *  against the wrong member. */
+const VERSION = '2';
 const SEPARATOR = '|';
 const TRUNCATED = '~';
+
+/** Sigil per step kind. ONE table, and both directions derive from it — the
+ *  decoder used to hand-write `sigil === 'c' ? 'call' : 'field'` and its own
+ *  await/index comparison, which meant the decoder was exactly the side that
+ *  could drift from the table claiming to prevent drift. */
+const SIGIL_BY_KIND = {
+  call: 'c',
+  field: 'f',
+  await: 'a',
+  index: 'i',
+} as const;
+
+type StepKind = keyof typeof SIGIL_BY_KIND;
+
+/** Kinds that encode as a BARE sigil, because they have no member name to
+ *  carry. Derived from the step union rather than listed twice. */
+const NAME_FREE_KINDS = new Set<StepKind>(['await', 'index']);
+
+const KIND_BY_SIGIL: ReadonlyMap<string, StepKind> = new Map(
+  Object.entries(SIGIL_BY_KIND).map(([kind, sigil]) => [sigil, kind as StepKind]),
+);
 
 /** Hard cap on the encoded payload. `MAX_CHAIN_DEPTH` already bounds the step
  *  COUNT; this bounds the total bytes so a pathological identifier cannot grow
@@ -103,8 +136,15 @@ export function encodeReceiverChain(
 
   const parts = [VERSION, baseReceiverName];
   for (const step of steps) {
+    // Name-free kinds encode as a bare sigil. They are exempt from the
+    // non-empty-name guard because they HAVE no name to check — not because the
+    // guard is relaxed: an empty-name `call` or `field` is still refused below.
+    if (NAME_FREE_KINDS.has(step.kind)) {
+      parts.push(SIGIL_BY_KIND[step.kind]);
+      continue;
+    }
     if (!isEncodableSegment(step.name)) return undefined;
-    parts.push(`${step.kind === 'call' ? 'c' : 'f'}${step.name}`);
+    parts.push(`${SIGIL_BY_KIND[step.kind]}${step.name}`);
   }
   if (options?.truncated === true) parts.push(TRUNCATED);
 
@@ -139,9 +179,20 @@ export function decodeReceiverChain(value: unknown): DecodedReceiverChain | unde
   for (const part of stepParts) {
     const sigil = part[0];
     const name = part.slice(1);
-    if (sigil !== 'c' && sigil !== 'f') return undefined;
+    // Name-free kinds must be EXACTLY their sigil. Rejecting a trailing tail is
+    // what keeps an accidentally empty-name call or field from decoding as one
+    // of these: `c` alone stays malformed, it does not become an await.
+    const kind = sigil === undefined ? undefined : KIND_BY_SIGIL.get(sigil);
+    if (kind === undefined) return undefined;
+    if (NAME_FREE_KINDS.has(kind)) {
+      // Must be EXACTLY the sigil. Rejecting a trailing tail is what keeps an
+      // accidentally empty-name call or field from decoding as one of these.
+      if (name.length > 0) return undefined;
+      steps.push({ kind: kind as 'await' | 'index' });
+      continue;
+    }
     if (!isEncodableSegment(name)) return undefined;
-    steps.push({ kind: sigil === 'c' ? 'call' : 'field', name });
+    steps.push({ kind: kind as 'call' | 'field', name });
   }
 
   return { baseReceiverName, steps, truncated };

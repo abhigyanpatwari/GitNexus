@@ -1,7 +1,9 @@
 import ignore, { type Ignore } from 'ignore';
+import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
+import { readRepoControlFile } from './repo-control-file.js';
 import { logger } from '../core/logger.js';
 import { getCoreExcludesFilePath, getGitInfoExcludePath } from '../storage/git.js';
 
@@ -31,12 +33,15 @@ const DEFAULT_IGNORE_LIST = new Set([
   // 'packages' removed - commonly used for monorepo source code (lerna, pnpm, yarn workspaces)
   'venv',
   '.venv',
-  'env',
   '.env',
+  // Bare `env/` can be application source or a Python virtual environment.
+  // Path-aware rules below prune it at the root and wherever pyvenv.cfg marks
+  // a virtual environment, while preserving ordinary nested source folders.
   '__pycache__',
   '.pytest_cache',
   '.mypy_cache',
   'site-packages',
+  'dist-packages',
   '.tox',
   'eggs',
   '.eggs',
@@ -54,13 +59,33 @@ const DEFAULT_IGNORE_LIST = new Set([
   'obj',
   'target', // Java/Rust
   '.next',
+  // `.next` is Next.js's build CACHE; `_next` is the EMITTED output, and the two
+  // are different directories. A Capacitor/Cordova shell copies the emitted
+  // bundle to `<platform>/app/src/main/assets/public/_next/static/…`, where none
+  // of the path segments hit this list — so a mobile-wrapped Next.js app had its
+  // shipped bundle indexed as source, and every Route node it produced pointed at
+  // a webpack chunk rather than code anyone wrote (#3007).
+  //
+  // The name is deliberately unanchored. No `<web-root>/_next` form matches a
+  // root-level `_next/static/…`, which is the shape the reported repo has, so
+  // anchoring it would miss the case it was added for. The accepted cost is a
+  // hand-written directory literally named `_next`; recover one with a bare
+  // `!_next/` line in `.gitnexusignore`.
+  '_next',
   '.nuxt',
   '.output',
   '.vercel',
   '.netlify',
   '.serverless',
   '_build',
-  'public/build',
+  // `'public/build'` used to sit here. This set is tested one path SEGMENT at a
+  // time, and `isHardcodedIgnoredDirectory(name)` takes a bare directory name,
+  // so a slash-containing member could never match either — it was inert. Its
+  // paths were never unignored though: bare `'build'` above already prunes
+  // `public/build/**`, so removing the entry changes no behavior (#3007).
+  // `test/unit/ignore-build-output.test.ts` keeps the next slash-bearing entry
+  // in this set — or in IGNORED_FILES, ROOT_ARTIFACT_DIRECTORIES or
+  // IGNORED_EXTENSIONS — from dying the same way.
   '.parcel-cache',
   '.turbo',
   '.svelte-kit',
@@ -86,11 +111,11 @@ const DEFAULT_IGNORE_LIST = new Set([
 
   // Generated/Compiled
   '.generated',
-  'generated',
   'auto-generated',
+  // Bare `generated/` can contain tracked source-of-truth code. Build output
+  // remains covered by .gitignore/.gitnexusignore and the unambiguous names.
   'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
-  '.serverless',
 
   // Documentation (optional - might want to keep)
   // 'docs',
@@ -105,6 +130,14 @@ const DEFAULT_IGNORE_LIST = new Set([
   'snapshots', // Jest snapshots
   '__snapshots__',
 ]);
+
+// Ambiguous names that conventionally denote generated artifacts only at the
+// repository root. Nested directories with these names are frequently source
+// modules (for example apps/web/src/env or packages/api/generated).
+const ROOT_ARTIFACT_DIRECTORIES = new Set(['env', 'generated']);
+
+const isRootArtifactDirectory = (relativePath: string, name: string): boolean =>
+  !relativePath.includes('/') && ROOT_ARTIFACT_DIRECTORIES.has(name);
 
 const IGNORED_EXTENSIONS = new Set([
   // Images
@@ -290,6 +323,10 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
 
+  if (parts.length > 0 && isRootArtifactDirectory(parts[0], parts[0])) {
+    return true;
+  }
+
   // Laravel compiles Blade templates into generated PHP cache files under
   // storage/framework/views.  Source templates live in resources/views and are
   // handled separately; compiled cache should not become source-of-truth. Keep
@@ -329,10 +366,8 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   if (
     fileNameLower.includes('.bundle.') ||
     fileNameLower.includes('.chunk.') ||
-    fileNameLower.includes('.generated.') ||
-    fileNameLower.endsWith('.d.ts')
+    fileNameLower.includes('.generated.')
   ) {
-    // TypeScript declaration files
     return true;
   }
 
@@ -344,6 +379,20 @@ export const isHardcodedIgnoredDirectory = (name: string): boolean => {
   return DEFAULT_IGNORE_LIST.has(name);
 };
 
+/** Apply directory ignore rules that depend on repository-relative depth. */
+export const isHardcodedIgnoredDirectoryAtPath = (
+  repoRoot: string,
+  directoryPath: string,
+): boolean => {
+  const name = nodePath.basename(directoryPath);
+  if (isHardcodedIgnoredDirectory(name)) return true;
+
+  const relative = nodePath.relative(repoRoot, directoryPath).replace(/\\/g, '/');
+  if (isRootArtifactDirectory(relative, name)) return true;
+
+  return name === 'env' && existsSync(nodePath.join(directoryPath, 'pyvenv.cfg'));
+};
+
 /**
  * Load .gitignore and .gitnexusignore rules from the repo root.
  * Returns an `ignore` instance with all patterns, or null if no files found.
@@ -353,6 +402,8 @@ export interface IgnoreOptions {
   noGitignore?: boolean;
   /** Skip core.excludesFile and $GIT_COMMON_DIR/info/exclude. Defaults to GITNEXUS_NO_GLOBAL_IGNORE env var. */
   noGlobalIgnore?: boolean;
+  /** Fail repository-control reloads closed so long-lived watchers keep their prior predicate. */
+  strictRepoControlFiles?: boolean;
 }
 
 export const loadIgnoreRules = async (
@@ -394,18 +445,54 @@ export const loadIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const content = options?.strictRepoControlFiles
+        ? await readRepoControlFile(repoPath, filename)
+        : await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      if (content === null) continue;
       ig.add(content);
       hasRules = true;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
-      }
+      if (!options?.strictRepoControlFiles && code === 'ENOENT') continue;
+      if (options?.strictRepoControlFiles) throw err;
+      logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
     }
   }
 
   return hasRules ? ig : null;
+};
+
+/**
+ * Build a synchronous predicate for long-lived filesystem watchers.
+ *
+ * Unlike {@link createIgnoreFilter}, callers pass ordinary absolute or
+ * repository-relative paths instead of path-scurry `Path` objects. The rule
+ * precedence deliberately mirrors the scanner: explicit negations win over
+ * hardcoded defaults unless a more-specific rule re-ignores the path.
+ */
+export const createWatchIgnorePredicate = async (
+  repoPath: string,
+  options?: IgnoreOptions,
+): Promise<(candidatePath: string, isDirectory?: boolean) => boolean> => {
+  const ig = await loadIgnoreRules(repoPath, { ...options, strictRepoControlFiles: true });
+  const repoRoot = nodePath.resolve(repoPath);
+
+  return (candidatePath: string, isDirectory = false): boolean => {
+    const absolute = nodePath.isAbsolute(candidatePath)
+      ? nodePath.resolve(candidatePath)
+      : nodePath.resolve(repoRoot, candidatePath);
+    const rel = nodePath.relative(repoRoot, absolute).replace(/\\/g, '/');
+    if (!rel) return false;
+    if (rel === '..' || rel.startsWith('../') || nodePath.isAbsolute(rel)) return true;
+
+    if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(isDirectory ? `${rel}/` : rel)) {
+      return false;
+    }
+
+    if (ig && ig.ignores(isDirectory ? `${rel}/` : rel)) return true;
+    if (isDirectory && isHardcodedIgnoredDirectoryAtPath(repoRoot, absolute)) return true;
+    return shouldIgnorePath(rel);
+  };
 };
 
 /**
@@ -496,8 +583,10 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // last-match-wins: `!__tests__/` + `__tests__/generated/` still
       // blocks descent into `__tests__/generated/`.
       if (ig && rel && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
-      // Hardcoded list: block descent into well-known noise directories.
-      if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
+      // Hardcoded and path-aware rules prune whole trees before glob walks them.
+      if (rel && isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel))) {
+        return true;
+      }
       // Check against .gitignore / .gitnexusignore patterns.
       // Since childrenIgnored is only called for directories, always test with
       // a trailing slash. This ensures directory-only negation patterns (e.g.

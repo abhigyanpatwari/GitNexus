@@ -1,0 +1,273 @@
+/**
+ * Corpus-derived coverage for the HAND-DECLARED half of `RELATION_SCHEMA`.
+ *
+ * `test/unit/schema-pair-coverage.test.ts` derives its requirement from
+ * schema.ts's two rules — the scope-resolution bridge cross product, and
+ * `DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS` for the framework and
+ * pipeline-phase overlays — so both generated halves are covered there. What
+ * neither rule can reach is `STRUCTURAL_PAIR_DDL`: the containment, inheritance
+ * and import pairs BETWEEN TWO DEFINITION LABELS. Ten node tables are absent
+ * from every rule's target side (`CodeElement`, `Impl`, `Namespace`,
+ * `Template`, `TypeAlias`, `Typedef`, `Static`, `Section`, `Folder`, and the
+ * PDG-only `BasicBlock` — `Union` left this set when Zig made it a linkable
+ * member container), so a pair pointing at one is hand-declared or
+ * it does not exist. No predicate describes that surface — any container can
+ * hold any definition — so this asks the emitters directly: run the real
+ * pipeline and require every FROM/TO pair it produces to be declared.
+ *
+ * Each entry also pins the pair it exists to guard. Without that the suite is
+ * vacuous: `undeclared` is derived from what the pipeline emitted, so a fixture
+ * that stopped emitting — renamed directory, grammar that failed to load,
+ * swallowed parse error — yields an empty set and passes green while guarding
+ * nothing. `sentinels` turns each case from "nothing undeclared" into "this
+ * emitter still fires, and everything it emits is declared".
+ *
+ * Coverage is bounded by `NON_BRIDGE_CORPUS`: a sample, not a proof. A
+ * language whose fixture is absent is unguarded, so a new structural emitter
+ * should land with an entry here.
+ *
+ * Deliberately isolated from the resolver suites that already build three of
+ * these graphs (`resolvers/cobol.test.ts`, `resolvers/vue.test.ts`,
+ * `resolvers/php.test.ts`) — see NOTE below the corpus before re-raising that.
+ */
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import path from 'path';
+import { NODE_TABLES } from 'gitnexus-shared';
+import { FIXTURES, runPipelineFromRepo } from './resolvers/helpers.js';
+import { RELATION_SCHEMA } from '../../src/core/lbug/schema.js';
+import { parseRelationSchemaPairs, relPairKeyFor } from '../../src/core/lbug/rel-pair-routing.js';
+import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
+
+vi.setConfig({ testTimeout: 180_000 });
+
+const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
+
+type CorpusEntry = {
+  /** Fixture directory under `test/fixtures/lang-resolution`. */
+  readonly fixture: string;
+  /**
+   * The emitter this fixture exists to exercise, short enough that vitest does
+   * not truncate it out of the case title (~36 chars).
+   */
+  readonly emitter: string;
+  /**
+   * FROM|TO pairs the fixture MUST still emit. These are the anti-vacuity
+   * check: they fail loudly when the fixture stops reaching the emitter,
+   * which is the failure mode "no undeclared pairs" cannot see.
+   */
+  readonly sentinels: readonly string[];
+};
+
+/**
+ * Fixtures chosen to reach a structural emitter that no other suite drives.
+ *
+ * The sentinels are the anti-vacuity anchor: each names an emitter that must
+ * still fire. Two of them (`CodeElement|Property`, `Module|Namespace`) are also
+ * the only pairs here that no generated rule can reach; the other nine are
+ * rule-derived, and stay because a rule DECLARING a pair says nothing about
+ * whether any emitter still PRODUCES it — which is the failure this corpus
+ * exists to catch.
+ */
+const NON_BRIDGE_CORPUS = [
+  {
+    // Dynamic Spring lookup inside a constructor targets a synthetic @Bean
+    // CodeElement, not the bean's declared return-type Class/Interface (#3238).
+    fixture: 'spring-constructor-bean-lookup',
+    emitter: 'spring constructor INJECTS',
+    sentinels: ['Constructor|CodeElement'],
+  },
+  {
+    // `cobol-processor.ts`: CONTAINS/CALLS/ACCESSES over Module / Namespace /
+    // Record / Property / CodeElement.
+    fixture: 'cobol-app',
+    emitter: 'cobol-processor containment',
+    sentinels: ['CodeElement|Property', 'Module|Namespace', 'Module|Record', 'Record|Record'],
+  },
+  {
+    // Same processor, DECLARATIVES section: the USE-procedure Namespace
+    // ACCESSES a file Record.
+    fixture: 'cobol-declaratives',
+    emitter: 'cobol-processor DECLARATIVES',
+    sentinels: ['Namespace|Record'],
+  },
+  {
+    // `languages/vue/scope-resolver.ts`: the only edge whose target is a
+    // `File`. Function→File from `<script setup>` (App.vue), Method→File from
+    // the Options-API `methods:` host (OptionsHost.vue).
+    fixture: 'vue-basic',
+    emitter: 'vue BINDS_EVENT_HANDLER',
+    sentinels: ['Function|File', 'Method|File'],
+  },
+  {
+    // The inheritance pass, including trait-to-trait IMPLEMENTS.
+    fixture: 'php-transitive-traits',
+    emitter: 'inheritance-pass IMPLEMENTS',
+    sentinels: ['Class|Trait', 'Trait|Trait'],
+  },
+  {
+    // `frameworks/spring/conditionals.ts`: @ConditionalOn* on a @Bean method,
+    // in both Java and Kotlin.
+    fixture: 'spring-conditional-app',
+    emitter: 'spring CONDITIONAL_ON',
+    sentinels: ['Method|Annotation'],
+  },
+  {
+    // `pipeline-phases/tools.ts`: a class-based MCP tool handler.
+    fixture: 'mcp-tool-class',
+    emitter: 'tools-phase HANDLES_TOOL',
+    sentinels: ['Class|Tool'],
+  },
+  {
+    // A TypeScript object-type alias owns its members, so it emits
+    // HAS_PROPERTY from a `TypeAlias` — a label on the ELEVEN-table list this
+    // suite exists for, and one no rule reaches. Shipped once without the pair
+    // declared: emit threw `UndeclaredRelationPairError` and the whole analyze
+    // died on any repo containing `type X = { ... }`. Every resolver test still
+    // passed, because they build an in-memory graph and never write to the DB —
+    // this suite is the only place that difference shows up.
+    // `TypeAlias` USED to be off the generated grid, which is why round 1 hand-
+    // declared its pairs. It is now in `LINKABLE_LABELS` (the def→graph-node
+    // bridge needs it), which makes it a SCOPE_BRIDGE source and target, so the
+    // cross-product generates these pairs and the hand declarations were
+    // removed as redundant.
+    //
+    // The sentinel is still load-bearing, for a different reason than before:
+    // it now depends on `TypeAlias` being in `LINKABLE_LABELS`. Take it out and
+    // the pair stops being generated AND the hand declaration is gone, so this
+    // fails — which is exactly the state that also silently breaks alias
+    // consumer edges. `Interface|Property` was dropped from this entry because
+    // it is tautological in the ordinary way: both labels were always in the
+    // cross-product, so nothing about it could ever fail.
+    fixture: 'typescript-alias-fields',
+    emitter: 'object-type alias HAS_PROPERTY',
+    sentinels: ['TypeAlias|Property'],
+  },
+  {
+    // Nothing in the corpus contained a method-shaped alias member, so nothing
+    // proved `TypeAlias|Method` was the right pair for what is actually
+    // emitted — a pair no emitter exercises is indistinguishable from a missing
+    // one until an analyze aborts on a real repo.
+    fixture: 'typescript-alias-methods',
+    emitter: 'object-type alias HAS_METHOD',
+    sentinels: ['TypeAlias|Method'],
+  },
+  {
+    // The other direction on the same fixture (R2-2): an annotation naming a
+    // declared type emits USES INTO a `TypeAlias`, so the pair is
+    // `Function|TypeAlias` rather than the `TypeAlias|Property` above. Same
+    // eleven-table label, a different table, and a separate way for the same
+    // class of failure to reach a released build — the entry above would stay
+    // green with this one undeclared.
+    fixture: 'typescript-alias-fields',
+    emitter: 'type-annotation USES',
+    sentinels: ['Function|TypeAlias', 'Function|Interface'],
+  },
+] as const satisfies readonly CorpusEntry[];
+
+/**
+ * Same contract, for fixtures whose grammar is optional (vendored prebuild
+ * may be absent on the runner). Gated per language rather than per case so a
+ * missing grammar SKIPS (the pipeline drops the files by contract, and an
+ * empty emit would otherwise fail every sentinel for a reason that has
+ * nothing to do with the schema).
+ */
+const OPTIONAL_GRAMMAR_CORPUS = [
+  {
+    // Zig `union(enum)` is a member container: `union_declaration` sits in
+    // MEMBER_OWNER_NODE_TYPES, so the definition phase emits HAS_PROPERTY /
+    // HAS_METHOD FROM a `Union` node. Shipped once with `Union` off the
+    // generated grid — every resolver test passed on the in-memory graph while
+    // a real `analyze` of THIS fixture aborted at `assertDeclaredPair`
+    // (`Union|Property`). `Union` is now in `LINKABLE_LABELS`; take it out and
+    // both sentinels vanish from the DDL and this fails.
+    fixture: 'zig-basic',
+    language: SupportedLanguages.Zig,
+    emitter: 'zig union HAS_PROPERTY / HAS_METHOD',
+    sentinels: ['Union|Property', 'Union|Method'],
+  },
+] as const satisfies readonly (CorpusEntry & { readonly language: SupportedLanguages })[];
+
+/*
+ * NOTE — why this suite runs its own pipelines instead of reusing the resolver
+ * suites' graphs (measured, not assumed):
+ *
+ *   1. Vitest runs with `pool: 'forks'` and default isolation, so every test
+ *      FILE gets its own child process. A fixture-keyed result cache in
+ *      `resolvers/helpers.ts` would be per-file module state and would share
+ *      nothing across files — zero saving.
+ *   2. The graphs are not interchangeable. `resolvers/cobol.test.ts` builds
+ *      cobol-app with `{ skipGraphPhases: true }`, which drops the phase-emitted
+ *      edges (`Function|Process`, `Function|Community`, and the whole class of
+ *      pair `mcp-tool-class` exists to guard: HANDLES_TOOL is a pipeline phase).
+ *      Asserting there would silently cover LESS surface than here.
+ *   3. Half the corpus has no existing home anyway, and the cases run
+ *      concurrently, so they overlap into roughly one fixture's wall time: all
+ *      6 measured ~6s of test time against the ~16s this file spends on
+ *      transform+import before the first case starts. Hosting only the 3
+ *      homeless ones measured ~5s — a ~1s saving that still cannot remove a
+ *      file, so it cannot remove that ~16s.
+ */
+
+const DECLARED = parseRelationSchemaPairs(RELATION_SCHEMA);
+const VALID_TABLES = new Set<string>(NODE_TABLES);
+
+// Cold worker-pool startups otherwise flake against the 5s default ready budget
+// on a loaded runner, failing for reasons unrelated to the schema (#1741).
+// Safe under `it.concurrent`: env stubs are process-global, but `pool: 'forks'`
+// gives this file its own process and every case wants the same value.
+beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
+afterAll(() => vi.unstubAllEnvs());
+
+/**
+ * The FROM/TO pairs a fixture emits, deduped.
+ *
+ * Classifies through `relPairKeyFor` — the same call the emit path routes with
+ * — so this guard and the router cannot disagree about which edges are skipped.
+ * It keys off the node IDS, which is what `assertDeclaredPair` actually sees,
+ * not the node's `label` field.
+ */
+const pairsEmittedBy = async (fixture: string): Promise<Set<string>> => {
+  const result = await runPipelineFromRepo(path.join(FIXTURES, fixture), () => {}, {
+    workerPoolSize: 1,
+    workerUrlForTest: DIST_WORKER_URL,
+  });
+  const emitted = new Set<string>();
+  for (const rel of result.graph.iterRelationships()) {
+    const pair = relPairKeyFor(rel.sourceId, rel.targetId, VALID_TABLES);
+    if (pair !== undefined) emitted.add(pair);
+  }
+  return emitted;
+};
+
+describeIfWorkerBuilt('RELATION_SCHEMA covers the non-bridge emitters', () => {
+  // Concurrent because the cases share nothing but cost ~5s each serially,
+  // almost all of it worker spawn and grammar load, which overlaps well.
+  it.concurrent.each(NON_BRIDGE_CORPUS)(
+    '$fixture emits only declared FROM/TO pairs, and still reaches $emitter',
+    async ({ fixture, sentinels }) => {
+      const emitted = await pairsEmittedBy(fixture);
+      // Sorted so a failure is stable and names the pair to declare.
+      expect({
+        undeclaredPairs: [...emitted].filter((pair) => !DECLARED.has(pair)).sort(),
+        missingSentinelPairs: sentinels.filter((pair) => !emitted.has(pair)),
+      }).toEqual({ undeclaredPairs: [], missingSentinelPairs: [] });
+    },
+  );
+
+  // `.for`, not `.each`: only `for` passes the test context as a second
+  // argument (`each`'s callback is `(...args: T[])`), and the context is what
+  // carries the dynamic `skip()` this per-language gate needs.
+  it.concurrent.for(OPTIONAL_GRAMMAR_CORPUS)(
+    '$fixture emits only declared FROM/TO pairs, and still reaches $emitter',
+    async ({ fixture, language, sentinels }, ctx) => {
+      if (!isLanguageAvailable(language)) ctx.skip();
+      const emitted = await pairsEmittedBy(fixture);
+      expect({
+        undeclaredPairs: [...emitted].filter((pair) => !DECLARED.has(pair)).sort(),
+        missingSentinelPairs: sentinels.filter((pair) => !emitted.has(pair)),
+      }).toEqual({ undeclaredPairs: [], missingSentinelPairs: [] });
+    },
+  );
+});

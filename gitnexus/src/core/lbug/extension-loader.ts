@@ -363,5 +363,26 @@ export const extensionManager = new ExtensionManager();
 export const getExtensionCapabilities = (): ExtensionCapability[] =>
   extensionManager.getCapabilities();
 
+/**
+ * One optional extension's capability record, or `undefined` when nothing in
+ * this process has resolved it yet.
+ *
+ * `getExtensionCapabilities().find((c) => c.name === …)` was spelled out at five
+ * call sites across four modules (#2841 review), each re-deriving the same
+ * lookup — and each free to drift on the extension NAME, which is the one string
+ * the lookup is keyed on. Keep the name in one place.
+ */
+export const getExtensionCapability = (name: string): ExtensionCapability | undefined =>
+  getExtensionCapabilities().find((c) => c.name === name);
+
+/**
+ * {@link getExtensionCapability} for the FTS extension — the only extension
+ * whose capability record is read outside this module (degrade warnings, the
+ * `--repair-fts` reporting path, and `dropFTSIndex`'s remedy lookup), so the
+ * `'fts'` spelling itself lives here rather than at each of them.
+ */
+export const getFtsCapability = (): ExtensionCapability | undefined =>
+  getExtensionCapability('fts');
+
 /** Test-only: clear the singleton's cached capability and install state. */
 export const resetExtensionState = (): void => extensionManager.reset();

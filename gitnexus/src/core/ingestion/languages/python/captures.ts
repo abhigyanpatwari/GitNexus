@@ -146,6 +146,14 @@ export function emitPythonScopeCaptures(
       const scopeNode = nodeMap['@scope.function']!;
       const fnNode = scopeNode.type === 'function_definition' ? scopeNode : null;
       if (fnNode !== null) {
+        const parameterNames = computePythonArityMetadata(fnNode).parameterNames;
+        if (parameterNames.length > 0) {
+          grouped['@scope.lexical-names'] = syntheticCapture(
+            '@scope.lexical-names',
+            fnNode,
+            JSON.stringify(parameterNames),
+          );
+        }
         const synth = synthesizeReceiverTypeBinding(fnNode);
         if (synth !== null) out.push(synth);
         out.push(...synthesizeConstructorFieldTypeBindings(fnNode));

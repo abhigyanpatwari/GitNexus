@@ -258,7 +258,7 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({

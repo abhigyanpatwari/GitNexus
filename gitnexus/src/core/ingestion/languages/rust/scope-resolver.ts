@@ -2,6 +2,7 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { rustProvider } from '../rust.js';
 import { rustArityCompatibility, rustMergeBindings, resolveRustImportTarget } from './index.js';
 import { populateRustOwners } from './method-owners.js';
@@ -15,8 +16,10 @@ import {
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
+import { rustIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 /**
  * Emit Rust `S IMPLEMENTS T` edges from `impl T for S` trait implementations.
@@ -53,6 +56,7 @@ function emitRustTraitImplEdges(
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
   scopes: ScopeResolutionIndexes | undefined,
+  recordTypeArguments?: HeritageTypeArgumentSink,
 ): void {
   if (scopes === undefined) return;
 
@@ -81,6 +85,14 @@ function emitRustTraitImplEdges(
       const structGraphId = resolveDefGraphId(structDef.filePath, structDef, nodeLookup);
       const traitGraphId = resolveDefGraphId(traitDef.filePath, traitDef, nodeLookup);
       if (structGraphId === undefined || traitGraphId === undefined) continue;
+
+      // The instantiation the impl was written with — `impl Validator<String>
+      // for V` (#2912). Recorded against THIS edge's ids, not the pre-pass's:
+      // the pre-pass sources its edge from the enclosing def, and interface
+      // dispatch crosses the corrected one emitted here.
+      if (site.typeArguments !== undefined) {
+        recordTypeArguments?.(structGraphId, traitGraphId, site.typeArguments);
+      }
 
       const edgeKey = `${structGraphId}->${traitGraphId}`;
       if (emitted.has(edgeKey)) continue;
@@ -158,12 +170,22 @@ export const rustScopeResolver: ScopeResolver = {
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 
-  emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
-    emitRustTraitImplEdges(graph, parsedFiles, nodeLookup, scopes),
+  emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes, recordTypeArguments) =>
+    emitRustTraitImplEdges(graph, parsedFiles, nodeLookup, scopes, recordTypeArguments),
 
   populateOwners: (parsed: ParsedFile) => populateRustOwners(parsed),
 
   isSuperReceiver: () => false,
+
+  // Subscript route only — Rust has no property-style collection view; `.iter()`
+  // / `.values()` are method calls the compound resolver's call branch handles.
+  //
+  // Fed the annotation AS WRITTEN (`&Vec<User>`, `HashMap<String, User>`), which
+  // `normalizeRustTypeName` had already collapsed to `User` by the time the fold
+  // saw it. Returning `undefined` is the answer "not a container" and makes the
+  // index step decline rather than fold onto the receiver's own class — an
+  // `Index`-impl type would otherwise take its own members as the element's.
+  elementTypeOf: indexOnlyElementType,
 
   populateRangeBindings: populateRustRangeBindings,
 
@@ -171,4 +193,6 @@ export const rustScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
+  importsBindAtLexicalScope: true,
+  isGlobalNameFallbackPlausible: rustIsGlobalNameFallbackPlausible,
 };

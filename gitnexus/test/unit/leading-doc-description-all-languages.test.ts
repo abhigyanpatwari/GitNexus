@@ -104,6 +104,61 @@ describe('leading-doc descriptionExtractor — behavior per comment family', () 
     expect(d).toContain('GOMARK');
   });
 
+  // Go TYPE declarations, not just functions (#2837). Every Go row above uses
+  // `function_declaration`/`definition.function`, which anchors on its own
+  // declaration node and therefore carries the doc comment as a previous
+  // sibling. Types do not: #2837 re-anchored their captures onto the `type_spec`,
+  // whose `previousNamedSibling` is null because the comment belongs to the
+  // enclosing `type_declaration`. That silently removed the description from
+  // every Go struct and interface, and this file — the one place that checks doc
+  // extraction across all languages — was structurally incapable of noticing.
+  it('Go godoc on a struct declaration', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n// Wave carries orders, marker GOSTRUCT.\ntype Wave struct { n int }`,
+      'type_spec',
+      'definition.struct',
+      'Struct',
+      'Wave',
+    );
+    expect(d).toContain('GOSTRUCT');
+  });
+
+  it('Go godoc on an interface declaration', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n// Sink accepts events, marker GOIFACE.\ntype Sink interface { Emit() }`,
+      'type_spec',
+      'definition.interface',
+      'Interface',
+      'Sink',
+    );
+    expect(d).toContain('GOIFACE');
+  });
+
+  // A type declared inside a grouped `type (...)` block with its OWN doc comment
+  // must get that comment. Here the doc IS a previous sibling of the `type_spec`
+  // (verified against the real grammar), so this exercises the direct path while
+  // the two rows above exercise the `wrapperNodeTypes` fallback.
+  //
+  // The documented type is deliberately the FIRST spec in the block: the helper
+  // resolves `descendantsOfType(nodeType)[0]`, so a doc on a later spec would be
+  // read off the wrong node and the row would assert nothing.
+  it('Go godoc on a type inside a grouped declaration', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\ntype (\n\t// First holds state, marker GOGROUPED.\n\tFirst struct { a int }\n\n\tSecond struct { b int }\n)`,
+      'type_spec',
+      'definition.struct',
+      'Struct',
+      'First',
+    );
+    expect(d).toContain('GOGROUPED');
+  });
+
   it('Rust /// doc comment', () => {
     const d = describeFromProvider(
       SupportedLanguages.Rust,

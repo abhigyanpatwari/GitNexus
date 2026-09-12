@@ -57,10 +57,11 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
       // `import static com.example.Utils.*;`
       // The source is the class path (e.g. `com.example.Utils`).
       // Resolution should target the class file, not a wildcard directory
-      // scan — `Utils.java` is the file that contains the static members.
+      // scan — keeping the type path unstarred also distinguishes it from a
+      // package wildcard when a same-named package exists.
       return {
         kind: 'wildcard',
-        targetRaw: sourceCap.text + '.*',
+        targetRaw: sourceCap.text,
       };
     }
     default:

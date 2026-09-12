@@ -142,10 +142,30 @@ describe('emitTsScopeCaptures — declarations', () => {
     expect(m!['@declaration.name'].text).toBe('Status');
   });
 
-  it('captures type-alias declarations under @declaration.type', () => {
-    const m = findMatch('type ID = string;', (t) => t.includes('@declaration.type'));
+  // The tag is `@declaration.type_alias`, matching Kotlin and Dart. It was
+  // `@declaration.type`, which `normalizeNodeLabel` does not recognize — it
+  // accepts `typealias` / `type_alias` and has no `type` case — so the capture
+  // fired but mapped to NO label and TypeScript aliases produced no
+  // scope-resolution def at all. This test passed the whole time because it
+  // asserted only that the capture existed, never that it resolved to
+  // anything; the label assertion below is what stops a dead tag being pinned
+  // again.
+  it('captures type-alias declarations under @declaration.type_alias', () => {
+    const m = findMatch('type ID = string;', (t) => t.includes('@declaration.type_alias'));
     expect(m).toBeDefined();
     expect(m!['@declaration.name'].text).toBe('ID');
+  });
+
+  it('maps the type-alias capture to a real NodeLabel', () => {
+    const m = findMatch('type ID = string;', (t) => t.includes('@declaration.type_alias'));
+    const anchor = Object.keys(m!).find(
+      (k) => k.startsWith('@declaration.') && k !== '@declaration.name',
+    );
+    expect(anchor).toBeDefined();
+    // The kind string the extractor derives from the anchor must be one
+    // `normalizeNodeLabel` accepts, or the declaration silently vanishes.
+    const kind = anchor!.slice('@declaration.'.length);
+    expect(['typealias', 'type_alias']).toContain(kind);
   });
 
   it('captures namespace declarations under @declaration.namespace', () => {
@@ -725,5 +745,50 @@ describe('emitTsScopeCaptures — value-position references (#2437)', () => {
         (t) => t.includes('@reference.value-ref'),
       ),
     ).toBe(0);
+  });
+});
+
+describe('emitTsScopeCaptures — callable-flow direct-callee-name under `await f<T>(...)` (#1432)', () => {
+  // tree-sitter-typescript parses `await f<T>(x)` as
+  // `call_expression(function: await_expression(f), type_arguments, arguments)`
+  // — the await wraps the CALLEE, not the call. Since #1432 the shared reader
+  // names a callee only for a direct designator; without unwrapping the await
+  // that gate dropped `f`, so a callback passed to an awaited generic call
+  // could no longer be joined to `f`'s formal by name (the un-awaited
+  // spelling `f<T>(x)` kept it). A member callee (`svc.verify<T>(x)`) must
+  // stay nameless either way: naming it fanned the argument out to every
+  // same-named callable in the repo.
+  const src = `
+async function verifyToken<T>(token: string, onDone: () => void): Promise<T> { onDone(); return {} as T; }
+const svc = { verify<T>(token: string, onDone: () => void): Promise<T> { onDone(); return Promise.resolve({} as T); } };
+export async function run(token: string) {
+  const a = await verifyToken<string>(token, () => {});
+  const b = await svc.verify<string>(token, () => {});
+  return [a, b];
+}
+`;
+  const argumentFacts = () =>
+    emitTsScopeCaptures(src, 'test.ts')
+      .filter((m) => m['@callable-flow.argument'] !== undefined)
+      .map((m) => ({
+        call: m['@callable-flow.argument']!.text,
+        source: m['@callable-flow.source']!.text,
+        directCallee: m['@callable-flow.direct-callee-name']?.text,
+      }));
+
+  it('an awaited generic DIRECT call keeps its direct-callee-name', () => {
+    expect(argumentFacts()).toContainEqual({
+      call: 'await verifyToken<string>(token, () => {})',
+      source: '<anonymous>',
+      directCallee: 'verifyToken',
+    });
+  });
+
+  it('an awaited generic MEMBER call has no direct-callee-name', () => {
+    expect(argumentFacts()).toContainEqual({
+      call: 'await svc.verify<string>(token, () => {})',
+      source: '<anonymous>',
+      directCallee: undefined,
+    });
   });
 });

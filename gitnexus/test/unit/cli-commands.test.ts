@@ -100,6 +100,8 @@ describe('CLI commands', () => {
       expect(optional['tree-sitter-dart']).toBeUndefined();
       expect(optional['tree-sitter-proto']).toBeUndefined();
       expect(optional['tree-sitter-swift']).toBeUndefined();
+      expect(optional['tree-sitter-zig']).toBeUndefined();
+      expect(optional['@tree-sitter-grammars/tree-sitter-zig']).toBeUndefined();
       // #2111: the grammars MUST NOT be copied into node_modules at install — an
       // undeclared node_modules package is "extraneous" to every subsequent
       // npm/npx reify, which prunes/relocates it (Windows EPERM symlink + silent
@@ -172,6 +174,23 @@ describe('CLI commands', () => {
       expect(kotlinPkg.default.scripts?.install).toBeUndefined();
       expect(kotlinPkg.default.dependencies).toBeUndefined();
       expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
+    });
+
+    it('vendors tree-sitter-zig instead of an npm optionalDependency', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const zigPkg = await import('../../vendor/tree-sitter-zig/package.json', {
+        with: { type: 'json' },
+      });
+      const optional = pkg.default.optionalDependencies ?? {};
+      expect(optional['@tree-sitter-grammars/tree-sitter-zig']).toBeUndefined();
+      expect(Object.keys(pkg.default.overrides ?? {})).not.toContain(
+        '@tree-sitter-grammars/tree-sitter-zig',
+      );
+      expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
+      expect(zigPkg.default.version).toBe('1.1.2');
+      expect(zigPkg.default.scripts?.install).toBeUndefined();
+      expect(zigPkg.default.dependencies).toBeUndefined();
+      expect(zigPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
     });
 
     it('vendors tree-sitter-c prebuild-only at the 0.21.4 ABI pin instead of an npm dependency (#2116/#1242)', async () => {

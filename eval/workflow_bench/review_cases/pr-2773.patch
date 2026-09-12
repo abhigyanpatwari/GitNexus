@@ -1,0 +1,1725 @@
+diff --git a/gitnexus/src/core/lbug/lbug-adapter.ts b/gitnexus/src/core/lbug/lbug-adapter.ts
+index 86f763ffa..d107f5e79 100644
+--- a/gitnexus/src/core/lbug/lbug-adapter.ts
++++ b/gitnexus/src/core/lbug/lbug-adapter.ts
+@@ -3077,6 +3077,55 @@ export const ensureFTSIndex = async (
+   }
+ };
+ 
++export type FtsQueryFailureClass = 'missing-index' | 'missing-table' | 'other';
++
++/**
++ * Classify a `QUERY_FTS_INDEX` failure so a genuinely-missing index (normal —
++ * this table's FTS index hasn't been built yet) is distinguished from a real
++ * query-time error that would otherwise look identical (#2767), and from the
++ * table itself being missing (schema drift / a corrupted or partial DB — a
++ * much more serious condition than an unbuilt index).
++ *
++ * tri-review Residual-1: this used to be a second, independently-maintained
++ * classifier living in `core/search/bm25-index.ts` (re-exported from there
++ * for backward compatibility), duplicating this function's job for the
++ * IDENTICAL `QUERY_FTS_INDEX` cypher call. `queryFTS` below now uses this
++ * same classifier for its own catch instead of a bare, unanchored
++ * `.includes('does not exist')` check that could not tell "index missing"
++ * from "table missing" apart, and silently swallowed both alike.
++ *
++ * Three real message shapes were confirmed empirically against a live
++ * `CALL QUERY_FTS_INDEX(...)`:
++ * `"Prepare failed: Binder exception: Table <T> doesn't have an index with
++ * name <name>."` — the table exists, only its FTS index is missing (normal,
++ * benign — `missing-index`) — `"Prepare failed: Binder exception: Table <T>
++ * does not exist."` — the TABLE ITSELF is missing (`missing-table`) — and a
++ * `Catalog exception: function QUERY_FTS_INDEX is not defined...` when the
++ * FTS extension isn't loaded at all (`other`; mirrors the confirmed
++ * `DROP_FTS_INDEX` shape in {@link isBenignDropFtsIndexError}'s doc comment).
++ *
++ * Anchored to the exception class (after stripping the optional "Prepare
++ * failed: " wrapper LadybugDB adds for statement-preparation failures),
++ * mirroring `isBenignDropFtsIndexError`'s START-of-message anchor: a bare
++ * substring search would misclassify a genuine, differently-classed error
++ * (e.g. a `Runtime exception` from the FTS parser that echoes the user's
++ * own search text back into its message) as benign whenever that echoed
++ * text happened to contain "does not exist" — silently dropping a real
++ * error, the exact #2767 failure mode this function exists to prevent.
++ */
++export const classifyFtsQueryError = (message: string): FtsQueryFailureClass => {
++  const PREPARE_FAILED_PREFIX = 'Prepare failed: ';
++  const body = message.startsWith(PREPARE_FAILED_PREFIX)
++    ? message.slice(PREPARE_FAILED_PREFIX.length)
++    : message;
++  if (!body.startsWith('Binder exception:') && !body.startsWith('Catalog exception:')) {
++    return 'other';
++  }
++  if (body.includes("doesn't have an index")) return 'missing-index';
++  if (body.includes('does not exist')) return 'missing-table';
++  return 'other';
++};
++
+ /**
+  * Query a full-text search index
+  * @param tableName - The node table name
+@@ -3121,8 +3170,13 @@ export const queryFTS = async (
+       };
+     });
+   } catch (e: any) {
+-    // Return empty if index doesn't exist yet
+-    if (e.message?.includes('does not exist')) {
++    // Return empty only for a genuinely-missing index — the ordinary,
++    // expected case. A missing TABLE (schema drift) or any other real error
++    // rethrows instead of being silently swallowed (tri-review Residual-1 /
++    // NEW-6 — this used to be a bare `.includes('does not exist')` check
++    // that could not tell the two apart).
++    const message = e instanceof Error ? e.message : String(e);
++    if (classifyFtsQueryError(message) === 'missing-index') {
+       return [];
+     }
+     throw e;
+diff --git a/gitnexus/src/core/run-analyze.ts b/gitnexus/src/core/run-analyze.ts
+index 0908175d8..754c1e6b7 100644
+--- a/gitnexus/src/core/run-analyze.ts
++++ b/gitnexus/src/core/run-analyze.ts
+@@ -1031,6 +1031,47 @@ async function runFullAnalysisInner(
+         );
+       }
+       await ensureGitNexusIgnored(repoPath);
++      // #2767: stamp ONLY capabilities.fts so a long-lived MCP session's
++      // ensureInitialized() has an explicit, correctly-scoped signal that FTS
++      // changed — indexedAt/lastCommit/runnerIdentity/stats are copied through
++      // untouched (see the "must not claim a new analyzer identity" comment
++      // below). capabilities is forensic/no-programmatic-readers-until-now, so
++      // graph/vectorSearch are backfilled with conservative, honest defaults
++      // when a legacy meta.json predates this field entirely — repair-fts
++      // never touched them and cannot claim a capability it did not verify.
++      // Best-effort: a write failure must not turn an already-successful FTS
++      // rebuild into a reported repair failure.
++      try {
++        // Re-read the on-disk meta immediately before writing, rather than
++        // reusing `existingMeta` (captured before the FTS rebuild ran, which
++        // can span real wall-clock time). Another writer to this same
++        // gitnexus.json in the interim — e.g. the HTTP server's background
++        // embedding-checkpoint job — must not have its update silently
++        // reverted by this stamp overwriting a stale snapshot. Falls back to
++        // `existingMeta` only if the file became unreadable in that window.
++        const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
++        await saveMeta(metaDir, {
++          ...latestMeta,
++          capabilities: {
++            graph: latestMeta.capabilities?.graph ?? {
++              provider: 'ladybugdb',
++              status: 'available',
++            },
++            fts: { provider: 'ladybugdb-fts', status: 'available' },
++            vectorSearch: latestMeta.capabilities?.vectorSearch ?? {
++              provider: 'exact-scan',
++              status: 'unavailable',
++              exactScanLimit: 0,
++            },
++          },
++        });
++      } catch (err) {
++        log(
++          `FTS capability stamp write failed (non-critical, repair itself succeeded${
++            err instanceof Error ? `: ${err.message}` : ''
++          }); continuing.`,
++        );
++      }
+       progress('fts', 90, 'Search indexes ready');
+       progress('done', 100, 'Done');
+       return {
+diff --git a/gitnexus/src/core/search/bm25-index.ts b/gitnexus/src/core/search/bm25-index.ts
+index 19196b11b..44cfe4ce2 100644
+--- a/gitnexus/src/core/search/bm25-index.ts
++++ b/gitnexus/src/core/search/bm25-index.ts
+@@ -5,8 +5,14 @@
+  * Always reads from the database (no cached state to drift).
+  */
+ 
+-import { queryFTS } from '../lbug/lbug-adapter.js';
++// tri-review Residual-1: `classifyFtsQueryError` now lives in lbug-adapter.ts
++// (see its doc comment) so `queryFTS`'s own catch can share the SAME
++// classifier instead of maintaining a second, independently-drifting copy
++// for the identical `QUERY_FTS_INDEX` cypher call.
++import { queryFTS, classifyFtsQueryError } from '../lbug/lbug-adapter.js';
+ import { normalizeFtsText } from '../lbug/csv-generator.js';
++import { getExtensionCapabilities } from '../lbug/extension-loader.js';
++import { redactPaths } from './fts-indexes.js';
+ import { FTS_INDEXES } from './fts-schema.js';
+ import {
+   applyCjkSegmentationIfEnabled,
+@@ -24,12 +30,40 @@ export interface FTSSearchResponse {
+   results: BM25SearchResult[];
+   /** True when at least one FTS index query succeeded (index exists). */
+   ftsAvailable: boolean;
++  /**
++   * Redacted (via {@link redactPaths}) message(s) from per-table
++   * `QUERY_FTS_INDEX` calls that failed for a reason OTHER than "index
++   * doesn't exist" (#2767) — a real query/connection error was previously
++   * indistinguishable from a genuinely-missing index. Populated whenever ANY
++   * table hit a non-benign error, regardless of whether other tables
++   * succeeded, so a caller can always log it; whether to also surface it in
++   * a client-facing warning is a caller decision (see `LocalBackend.query()`,
++   * which only does so when every table failed).
++   */
++  nonBenignErrors?: string[];
++}
++
++/**
++ * Optional-field shape rather than a discriminated union: this project builds
++ * with `strict: false` (no `strictNullChecks`), under which TypeScript's
++ * control-flow narrowing across an `if/else` on a boolean discriminant is
++ * unreliable (verified empirically — narrows correctly under `strict: true`,
++ * fails under `strict: false`). `rows` present means success; `rows` absent
++ * means failure, with `benign`/`message` describing why.
++ */
++interface FTSQueryOutcome {
++  rows?: Array<{ filePath: string; score: number; nodeId: string }>;
++  benign?: boolean;
++  message?: string;
+ }
+ 
+ /**
+  * Execute a single FTS query via a custom executor (for MCP connection pool).
+- * Returns `null` when the query fails (e.g. FTS index does not exist) so the
+- * caller can distinguish "zero matches" from "index missing".
++ * Returns a benign failure when the query fails because the index doesn't
++ * exist (the normal, expected case), and a non-benign failure with the
++ * captured message for any other error, so the caller can distinguish "zero
++ * matches", "index missing", and "a real error occurred" instead of
++ * collapsing the latter two into the same silent `null`.
+  */
+ async function queryFTSViaExecutor(
+   executor: (cypher: string, params: Record<string, any>) => Promise<any[]>,
+@@ -37,7 +71,7 @@ async function queryFTSViaExecutor(
+   indexName: string,
+   query: string,
+   limit: number,
+-): Promise<Array<{ filePath: string; score: number; nodeId: string }> | null> {
++): Promise<FTSQueryOutcome> {
+   const cypher = `
+     CALL QUERY_FTS_INDEX('${tableName}', '${indexName}', $query, conjunctive := false)
+     RETURN node, score
+@@ -46,17 +80,20 @@ async function queryFTSViaExecutor(
+   `;
+   try {
+     const rows = await executor(cypher, { query });
+-    return rows.map((row: any) => {
+-      const node = row.node || row[0] || {};
+-      const score = row.score ?? row[1] ?? 0;
+-      return {
+-        filePath: node.filePath || '',
+-        score: typeof score === 'number' ? score : parseFloat(score) || 0,
+-        nodeId: node.nodeId || node.id || '',
+-      };
+-    });
+-  } catch {
+-    return null;
++    return {
++      rows: rows.map((row: any) => {
++        const node = row.node || row[0] || {};
++        const score = row.score ?? row[1] ?? 0;
++        return {
++          filePath: node.filePath || '',
++          score: typeof score === 'number' ? score : parseFloat(score) || 0,
++          nodeId: node.nodeId || node.id || '',
++        };
++      }),
++    };
++  } catch (e) {
++    const message = e instanceof Error ? e.message : String(e);
++    return { benign: classifyFtsQueryError(message) === 'missing-index', message };
+   }
+ }
+ 
+@@ -95,8 +132,23 @@ export const searchFTSFromLbug = async (
+   );
+   const resultsByIndex: any[][] = [];
+   let queriesSucceeded = 0;
++  const nonBenignErrors: string[] = [];
+ 
+-  if (repoId) {
++  const ftsExtension = getExtensionCapabilities().find((c) => c.name === 'fts');
++  if (ftsExtension && !ftsExtension.loaded) {
++    // tri-review NEW-4 (applies to BOTH the MCP pool path and the CLI/pipeline
++    // path — a /simplify altitude pass caught the original repoId-only guard
++    // letting the CLI branch surface spurious "non-benign" errors for this
++    // exact expected state, which the pool branch correctly stayed silent on):
++    // extension-unavailable is an expected, already-diagnosed degraded-capability
++    // state (#2374/#2658), not a per-table query error — every configured table
++    // would throw the identical "function not defined" shape, which
++    // classifyFtsQueryError correctly refuses to call benign "missing-index"
++    // (it's a different, more serious condition). Skip the N redundant
++    // QUERY_FTS_INDEX round-trips and N nonBenignErrors entries; ftsAvailable
++    // stays false and ftsDegradedWarning() already reports this state
++    // accurately from the same extension-capabilities registry.
++  } else if (repoId) {
+     // Use MCP connection pool via dynamic import
+     // IMPORTANT: FTS queries run sequentially to avoid connection contention.
+     // The MCP pool supports multiple connections, but FTS is best run serially.
+@@ -106,21 +158,28 @@ export const searchFTSFromLbug = async (
+       executeParameterized(repoId, cypher, params);
+ 
+     for (const { table, indexName } of FTS_INDEXES) {
+-      const result = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
+-      if (result !== null) {
++      const outcome = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
++      if (outcome.rows) {
+         queriesSucceeded++;
+-        resultsByIndex.push(result);
++        resultsByIndex.push(outcome.rows);
++      } else if (!outcome.benign) {
++        nonBenignErrors.push(redactPaths(outcome.message ?? 'Unknown FTS query error'));
+       }
+     }
+   } else {
+     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
++    // tri-review Residual-1: `queryFTS` itself only swallows a genuinely-missing
++    // index (via the SAME classifyFtsQueryError this module re-exports); a
++    // missing-table or real query error rethrows here — track it the same way
++    // the MCP pool path does instead of a bare `catch {}` that dropped it.
+     for (const { table, indexName } of FTS_INDEXES) {
+       try {
+         const result = await queryFTS(table, indexName, searchQuery, limit, false);
+         queriesSucceeded++;
+         resultsByIndex.push(result);
+-      } catch {
+-        // FTS index may not exist — count as failed
++      } catch (e) {
++        const message = e instanceof Error ? e.message : String(e);
++        nonBenignErrors.push(redactPaths(message));
+       }
+     }
+   }
+@@ -165,5 +224,6 @@ export const searchFTSFromLbug = async (
+       nodeIds: r.nodeIds,
+     })),
+     ftsAvailable,
++    ...(nonBenignErrors.length > 0 && { nonBenignErrors }),
+   };
+ };
+diff --git a/gitnexus/src/core/search/fts-indexes.ts b/gitnexus/src/core/search/fts-indexes.ts
+index ab098a68c..dfc55286c 100644
+--- a/gitnexus/src/core/search/fts-indexes.ts
++++ b/gitnexus/src/core/search/fts-indexes.ts
+@@ -11,17 +11,62 @@ import { FTS_INDEXES } from './fts-schema.js';
+  * ELF header", "has not been installed") have no leading path separator and
+  * survive. CLI/doctor/log surfaces keep the full path (they read the reason
+  * directly, not through this function).
++ *
++ * tri-review Residual-3: every real message shape observed from LadybugDB
++ * wraps the path in single quotes (`Failed to load library '<path>': ...`),
++ * so a QUOTED path is redacted first, consuming through its closing quote —
++ * spaces included (e.g. a Windows username like `alice smith`). The original
++ * unquoted-stop-at-first-whitespace pattern still runs afterward as a
++ * fallback for the rare case of a path appearing without quotes; that path's
++ * own known limitation (partial redaction if it itself contains a space) is
++ * unchanged, but is no longer the ONLY path this function knows how to redact.
++ */
++export const redactPaths = (reason: string): string =>
++  reason
++    .replace(/'((?:[A-Za-z]:\\|\/)[^']*)'/g, "'<path>'")
++    .replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
++
++/**
++ * Resolved-repo/index identity a caller can attach to a degraded-FTS warning
++ * (#2767) so a reader can tell whether *this* session even resolved the index
++ * they expect, instead of guessing between a stale connection, a different
++ * repo/branch, or a genuine build failure. MCP-`query`-only today — never
++ * forwarded into the HTTP `/api/search` response (see that call site).
+  */
+-const redactPaths = (reason: string): string =>
+-  reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
++export interface FtsWarningContext {
++  repoName: string;
++  branch?: string;
++  indexedAt?: string;
++  /** Already redacted by the caller (e.g. via {@link redactPaths} on a captured query error). */
++  lastErrorRedacted?: string;
++}
++
++/** The repo/branch/indexed-at portion shared by both warning-context formatters below. */
++const formatResolvedSuffix = (context: FtsWarningContext): string => {
++  const branchSuffix = context.branch ? `/branch:${context.branch}` : '';
++  const indexedSuffix = context.indexedAt ? `, indexed ${context.indexedAt}` : '';
++  return `${context.repoName}${branchSuffix}${indexedSuffix}`;
++};
++
++const formatWarningContext = (context: FtsWarningContext): string => {
++  const errorSuffix = context.lastErrorRedacted ? `; last error: ${context.lastErrorRedacted}` : '';
++  return ` (resolved: ${formatResolvedSuffix(context)}${errorSuffix})`;
++};
+ 
+ /**
+  * Warning attached to search responses when BM25/FTS is degraded. Prefers the
+  * live extension-load failure (with LadybugDB's real reason, #2374) over the
+  * generic indexes-missing message, so "indexes exist but the extension broke"
+  * is not misreported as missing indexes.
++ *
++ * `context`, when supplied, appends the resolved repo/branch/indexed-at (and
++ * redacted query-error detail, if captured) so a CLI/MCP mismatch — or a real
++ * query error masquerading as "indexes missing" — is visible in the warning
++ * text itself (#2767). Optional and additive: omitting it reproduces today's
++ * exact message.
+  */
+-export const ftsDegradedWarning = (): string => {
++export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
++  const suffix = context ? formatWarningContext(context) : '';
+   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
+   if (fts && !fts.loaded) {
+     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
+@@ -38,12 +83,33 @@ export const ftsDegradedWarning = (): string => {
+     return (
+       'FTS extension failed to load — keyword search degraded' +
+       (reason ? ` (${reason})` : '') +
+-      tail
++      tail +
++      suffix
+     );
+   }
+-  return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
++  return (
++    'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts ' +
++    '(or gitnexus analyze --force) to rebuild indexes.' +
++    suffix
++  );
+ };
+ 
++/**
++ * Warning for when the FTS extension is loaded and indexes exist, but every
++ * configured table's query failed for a real, non-benign reason (timeout,
++ * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
++ * missing-index case. `--repair-fts` will not fix a query/connection error,
++ * so this deliberately does NOT suggest it: reusing the missing-index
++ * message here would reproduce, for this cause, the exact misleading
++ * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
++ */
++export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
++  'FTS keyword search failed — every configured index query returned an error' +
++  (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
++  '; results do not include keyword matches. This is not a missing-index ' +
++  'condition — see server logs for details.' +
++  ` (resolved: ${formatResolvedSuffix(context)})`;
++
+ // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
+ // set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).
+ // Keep in sync on a LadybugDB minor bump — a value here that the installed
+diff --git a/gitnexus/src/mcp/local/local-backend.ts b/gitnexus/src/mcp/local/local-backend.ts
+index 694483a6d..c4e9d12a9 100644
+--- a/gitnexus/src/mcp/local/local-backend.ts
++++ b/gitnexus/src/mcp/local/local-backend.ts
+@@ -63,7 +63,7 @@ import {
+ import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
+ import { getExactScanLimit } from '../../core/platform/capabilities.js';
+ import { PhaseTimer } from '../../core/search/phase-timer.js';
+-import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
++import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
+ import {
+   cjkSegmentationModeMismatch,
+   containsSegmentableCjkRun,
+@@ -779,6 +779,13 @@ export function attachToolStaleness(
+   };
+ }
+ 
++/** tri-review Residual-2: see `LocalBackend.lastObservedPoolState`'s doc comment. */
++interface PoolObservedState {
++  indexedAt?: string;
++  dbIdentity: Awaited<ReturnType<typeof statDbIdentity>>;
++  ftsStatus?: string;
++}
++
+ export class LocalBackend {
+   private static readonly TOOL_STALENESS_TTL_MS = 5000;
+   private repos: Map<string, RepoHandle> = new Map();
+@@ -796,18 +803,30 @@ export class LocalBackend {
+   // the other; lbugPath is unique per flat/branch index.
+   private toolStalenessCache: Map<string, { at: number; value: Promise<StalenessInfo> }> =
+     new Map();
+-  // Last meta.indexedAt observed for an open pool, keyed by lbugPath. Keyed by
+-  // pool (not stored on the handle) because branch handles are produced fresh
+-  // by applyBranchScope on every resolveRepo call, so mutating the handle would
+-  // not persist across calls and the staleness check would reinit forever
+-  // (#2106).
+-  private lastObservedIndexedAt: Map<string, string> = new Map();
+-  // #2614 F1: file identity of the lbug the pool last opened. An atomic swap or
+-  // an in-place incremental changes the inode; reiniting on that reinit-covers
+-  // the window where meta.indexedAt hasn't caught up (and the incremental case),
+-  // so a rebuilt index is never served stale even when the stamp looks current.
+-  private lastObservedDbIdentity: Map<string, Awaited<ReturnType<typeof statDbIdentity>>> =
+-    new Map();
++  // tri-review Residual-2: consolidates what were three parallel per-poolKey
++  // Maps (lastObservedIndexedAt / lastObservedDbIdentity / lastObservedFtsStatus)
++  // touched in lockstep at every call site below — one Map, one delete, one
++  // shape. Keyed by lbugPath (not stored on the repo handle) because branch
++  // handles are produced fresh by applyBranchScope on every resolveRepo call,
++  // so mutating the handle would not persist across calls and the staleness
++  // check would reinit forever (#2106).
++  //   - `indexedAt`: last meta.indexedAt observed for an open pool.
++  //   - `dbIdentity`: file identity of the lbug the pool last opened (#2614 F1)
++  //     — an atomic swap or in-place incremental changes the inode; reiniting
++  //     on that covers the window where meta.indexedAt hasn't caught up (and
++  //     the incremental case), so a rebuilt index is never served stale even
++  //     when the stamp looks current.
++  //   - `ftsStatus`: last meta.capabilities.fts.status observed (#2767).
++  //     `--repair-fts` intentionally never restamps `indexedAt` (it doesn't
++  //     regenerate the graph), so this is the dedicated signal a warm session
++  //     uses to notice a repair — independent of the file-identity heuristic,
++  //     which the repair path also triggers but only incidentally.
++  private lastObservedPoolState: Map<string, PoolObservedState> = new Map();
++  /** Merge-patch one poolKey's observed state, preserving fields not passed. */
++  private setObservedState(poolKey: string, patch: Partial<PoolObservedState>): void {
++    const current = this.lastObservedPoolState.get(poolKey) ?? { dbIdentity: null };
++    this.lastObservedPoolState.set(poolKey, { ...current, ...patch });
++  }
+   private groupToolSvc: GroupService | null = null;
+   /**
+    * One-shot stderr warnings for sibling-clone drift, keyed by
+@@ -1143,8 +1162,7 @@ export class LocalBackend {
+       this.initializedRepos.delete(key);
+       this.lastStalenessCheck.delete(key);
+       this.toolStalenessCache.delete(key);
+-      this.lastObservedIndexedAt.delete(key);
+-      this.lastObservedDbIdentity.delete(key);
++      this.lastObservedPoolState.delete(key);
+       this.reinitPromises.delete(key);
+       closeLbug(key).catch(() => {});
+     }
+@@ -1548,10 +1566,11 @@ export class LocalBackend {
+         // Reading the flat meta for a branch handle would compare the branch
+         // index's indexedAt against the primary's and thrash the pool (#2106).
+         const meta = await loadMeta(path.dirname(repo.lbugPath));
++        const observedState = this.lastObservedPoolState.get(poolKey);
+         // Compare against the last indexedAt OBSERVED for this pool (keyed by
+         // lbugPath), not the handle's — branch handles are fresh spreads so a
+         // handle mutation would not persist and would reinit on every check.
+-        const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
++        const observed = observedState?.indexedAt ?? repo.indexedAt;
+         const stampChanged = !!meta?.indexedAt && meta.indexedAt !== observed;
+         // #2614 F1: also reinit on a file-identity change. An atomic swap (or an
+         // in-place incremental) changes the lbug inode; keying only on
+@@ -1559,10 +1578,19 @@ export class LocalBackend {
+         // latch on the old inode forever (its stamp already == meta.indexedAt).
+         const currentIdentity = await statDbIdentity(repo.lbugPath);
+         const identityChanged = dbIdentityChanged(
+-          this.lastObservedDbIdentity.get(poolKey) ?? null,
++          observedState?.dbIdentity ?? null,
+           currentIdentity,
+         );
+-        if (stampChanged || identityChanged) {
++        // #2767: `--repair-fts` intentionally never restamps `indexedAt` (it
++        // doesn't regenerate the graph), so `stampChanged` alone can't notice
++        // a repair. `capabilities.fts.status` is the field repair-fts DOES
++        // write, so a change there is a third, independent reinit trigger —
++        // sibling to stampChanged/identityChanged, not a replacement for them
++        // (identityChanged still catches an in-place mutation even if the
++        // caps stamp were somehow missed).
++        const ftsStatus = meta?.capabilities?.fts?.status;
++        const ftsCapsChanged = observedState?.ftsStatus !== ftsStatus;
++        if (stampChanged || identityChanged || ftsCapsChanged) {
+           // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
+           // initLbug, which refuses to evict (and close the shared Database)
+           // while a query is in flight (its checkedOut>0 guard). Calling
+@@ -1571,17 +1599,22 @@ export class LocalBackend {
+           // reinitPromises to serialize concurrent detectors.
+           const reinit = (async () => {
+             try {
+-              // Advance the observed stamp regardless: a stamp change with an
+-              // unchanged file must not re-trigger on every check.
+-              if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
+               const reopened = await initLbug(poolKey, repo.lbugPath);
++              // tri-review NEW-7: advance the observed stamp/caps watermarks
++              // only AFTER initLbug completes, not before calling it — still
++              // regardless of `reopened` true/false (a stamp/caps change with
++              // an unchanged file must not re-trigger on every check), but if
++              // initLbug THROWS the watermark must stay at its old value so
++              // the next staleness check retries, instead of a failed reinit
++              // silently latching as "already applied" and never trying again.
++              const patch: Partial<PoolObservedState> = { ftsStatus };
++              if (meta?.indexedAt) patch.indexedAt = meta.indexedAt;
+               // Advance the observed IDENTITY only when the pool actually rolled
+               // over. If a query was in flight, initLbug served the current
+               // handle and returned false; leaving the identity divergent
+               // re-triggers the reopen on a later idle check instead of latching.
+-              if (reopened) {
+-                this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
+-              }
++              if (reopened) patch.dbIdentity = await statDbIdentity(repo.lbugPath);
++              this.setObservedState(poolKey, patch);
+             } finally {
+               this.reinitPromises.delete(poolKey);
+             }
+@@ -1599,8 +1632,18 @@ export class LocalBackend {
+     try {
+       await initLbug(poolKey, repo.lbugPath);
+       this.initializedRepos.add(poolKey);
+-      this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
+-      this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
++      // #2767: ftsStatus is deliberately left unset (undefined) here rather
++      // than issuing an extra loadMeta read — every tool call already routes
++      // through ensureInitialized, so an extra per-cold-init read adds up,
++      // and the cost of skipping it is negligible: at most one redundant
++      // initLbug call on the first warm check (initLbug itself no-ops
++      // cheaply via a single fs.stat when the file identity is actually
++      // unchanged, per pool-adapter.ts's own "unchanged → reuse" guard), not
++      // a real reopen.
++      this.setObservedState(poolKey, {
++        indexedAt: repo.indexedAt,
++        dbIdentity: await statDbIdentity(repo.lbugPath),
++      });
+     } catch (err: any) {
+       // If lock error, mark as not initialized so next call retries
+       this.initializedRepos.delete(poolKey);
+@@ -2047,6 +2090,21 @@ export class LocalBackend {
+     // unavailable the search helper may return an unexpected shape.
+     const bm25Results = bm25SearchResult?.results ?? [];
+     const ftsUsed = bm25SearchResult?.ftsUsed ?? false;
++    // #2767: log every non-benign per-table FTS query error server-side,
++    // regardless of whether OTHER tables succeeded — previously a real error
++    // on N-1 of N tables while one succeeded left zero diagnostic trail.
++    const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
++    if (ftsQueryErrors) {
++      // tri-review NEW-5: these strings are already classified non-benign by
++      // classifyFtsQueryError — do NOT route them through logQueryError,
++      // whose own broader, unanchored isBenignMissingTableError regex (any
++      // "does not exist" substring, anywhere) could disagree and silently
++      // demote an already-flagged real error to debug, undercutting the
++      // severity signal this classification exists to preserve.
++      for (const err of ftsQueryErrors) {
++        logger.warn({ context: 'query:fts-search', err }, 'GitNexus query failed (degraded)');
++      }
++    }
+ 
+     // Merge via reciprocal rank fusion
+     timer.start('merge');
+@@ -2326,7 +2384,37 @@ export class LocalBackend {
+     // path, leaving the success-path response shape byte-identical.
+     const warnings: string[] = [];
+     if (!ftsUsed) {
+-      warnings.push(ftsDegradedWarning());
++      // #2767: attach what THIS session resolved (repo/branch/indexed-at) so a
++      // CLI/MCP mismatch is visible in the warning itself rather than requiring
++      // a separate debugging round-trip. tri-review NEW-3: `indexedAt` reads
++      // from `lastObservedPoolState` (kept current by ensureInitialized's
++      // staleness check, including a same-call reinit) rather than the `repo`
++      // handle resolved before that check ran — a warm backend that just
++      // reopened against a newer on-disk index must not warn with stale
++      // metadata. No extra I/O: the map is already maintained per-request.
++      const warningContext = {
++        repoName: repo.name,
++        branch: repo.branch,
++        indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
++      };
++      // tri-review NEW-1: every table failing for a REAL error (timeout,
++      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
++      // "run --repair-fts" headline won't fix it. Route to a dedicated message
++      // instead of burying the real cause as a trailing suffix on bad advice.
++      warnings.push(
++        ftsQueryErrors
++          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
++          : ftsDegradedWarning(warningContext),
++      );
++    } else if (ftsQueryErrors) {
++      // #2767: at least one FTS table succeeded (ftsUsed=true) but another
++      // hit a real, non-benign error — results may be silently missing
++      // matches from that table with no signal, the same "partial success"
++      // shape the enrichmentDegraded branch below already surfaces. Mirror
++      // that convention instead of only logging server-side.
++      warnings.push(
++        `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
++      );
+     }
+     // #2331: a CJK query against a server process resolving
+     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
+@@ -2403,6 +2491,10 @@ export class LocalBackend {
+         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
+       );
+     }
++    // #2767: a partial FTS failure (some tables ok, one or more real errors)
++    // is as much a "results may be incomplete" signal as enrichmentDegraded —
++    // flag it the same way rather than only via the warning string.
++    const ftsPartial = ftsUsed && !!ftsQueryErrors;
+ 
+     return {
+       processes,
+@@ -2410,7 +2502,7 @@ export class LocalBackend {
+       definitions: definitions.slice(0, 20), // cap standalone definitions
+       timing,
+       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
+-      ...(enrichmentDegraded && { partial: true }),
++      ...((enrichmentDegraded || ftsPartial) && { partial: true }),
+     };
+   }
+ 
+@@ -2421,7 +2513,7 @@ export class LocalBackend {
+     repo: RepoHandle,
+     query: string,
+     limit: number,
+-  ): Promise<{ results: any[]; ftsUsed: boolean }> {
++  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+     let searchFTSFromLbug;
+     try {
+       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
+@@ -2453,6 +2545,7 @@ export class LocalBackend {
+     // could be undefined when the FTS extension is unavailable in the MCP process.
+     const bm25Results = ftsResponse?.results ?? [];
+     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
++    const nonBenignErrors = ftsResponse?.nonBenignErrors;
+ 
+     const results: any[] = [];
+ 
+@@ -2524,7 +2617,7 @@ export class LocalBackend {
+       }
+     }
+ 
+-    return { results, ftsUsed };
++    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
+   }
+ 
+   /**
+diff --git a/gitnexus/src/server/api.ts b/gitnexus/src/server/api.ts
+index 8d3d0aeda..031f148c4 100644
+--- a/gitnexus/src/server/api.ts
++++ b/gitnexus/src/server/api.ts
+@@ -1833,8 +1833,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') =>
+                 },
+                 pendingNodeIds: string[],
+               ): Promise<void> => {
++                // tri-review NEW-2: re-read immediately before writing (mirrors
++                // the pattern in run-analyze.ts's --repair-fts stamp) instead of
++                // spreading the stale `embeddingMeta` snapshot captured once at
++                // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
++                // without a fresh read, a concurrent writer's update (e.g. a
++                // --repair-fts capability stamp) would be silently reverted on
++                // every checkpoint save for the job's whole lifetime.
++                const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                 embeddingMeta = {
+-                  ...embeddingMeta,
++                  ...latestMeta,
+                   embeddingCheckpoint: {
+                     at: new Date().toISOString(),
+                     ...checkpoint,
+@@ -1896,7 +1904,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') =>
+               // handles this during process exit, but the server keeps the
+               // connection open for other routes — a CHECKPOINT is enough.
+               await flushWAL();
+-              embeddingMeta = { ...embeddingMeta, embeddingCheckpoint: undefined };
++              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint above.
++              const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
++              embeddingMeta = { ...finalMeta, embeddingCheckpoint: undefined };
+               await saveMeta(entry.storagePath, embeddingMeta);
+             });
+ 
+diff --git a/gitnexus/src/storage/repo-manager.ts b/gitnexus/src/storage/repo-manager.ts
+index 6b8b6f19b..7ddc84bb1 100644
+--- a/gitnexus/src/storage/repo-manager.ts
++++ b/gitnexus/src/storage/repo-manager.ts
+@@ -187,9 +187,12 @@ export interface RepoMeta {
+    * the meta literal in run-analyze.ts — typed here so the stamp site is
+    * compile-checked; tri-review 4669518496 P1/U3: `vectorSearch.status`
+    * must never claim 'vector-index' unless the run verified or recreated
+-   * the HNSW index). Forensic today — no programmatic readers (`doctor`
+-   * prints platform-derived capabilities, query routing never consults
+-   * meta). The status unions mirror `CapabilityStatus` /
++   * the HNSW index). `fts.status` gained its first programmatic reader in
++   * #2767: `LocalBackend.ensureInitialized()` compares it against the
++   * warm connection pool's last-observed value as the dedicated signal
++   * that `--repair-fts` changed FTS availability (`doctor` still prints
++   * platform-derived capabilities separately; `graph`/`vectorSearch` remain
++   * forensic-only). The status unions mirror `CapabilityStatus` /
+    * `SemanticSearchMode` in core/platform/capabilities.ts; inlined to keep
+    * storage/ free of a core/ type dependency.
+    */
+diff --git a/gitnexus/test/integration/fts-repair-warm-session.test.ts b/gitnexus/test/integration/fts-repair-warm-session.test.ts
+new file mode 100644
+index 000000000..2550ba874
+--- /dev/null
++++ b/gitnexus/test/integration/fts-repair-warm-session.test.ts
+@@ -0,0 +1,169 @@
++/**
++ * Integration test for issue #2767: the MCP `query` tool reported "FTS
++ * indexes missing" against an index the CLI could search successfully,
++ * because a long-lived MCP session's pooled read-only connection had no
++ * reliable signal that `gitnexus analyze --repair-fts` changed FTS
++ * availability (repair-fts intentionally never restamps `indexedAt`).
++ *
++ * Everything real: a real writable LadybugDB session builds the initial
++ * index WITHOUT FTS (the exact shape implied by the original report — FTS
++ * built later), a real `LocalBackend` resolves it via the real registry and
++ * issues a real `query` tool call through the real connection pool, then a
++ * SEPARATE real writable session performs the repair (real
++ * `createSearchFTSIndexes`, real `saveMeta` capability stamp — the same
++ * production functions `--repair-fts` calls), and the SAME still-warm
++ * `LocalBackend` instance re-queries without any restart.
++ */
++import { describe, it, expect, beforeEach, afterEach } from 'vitest';
++import path from 'node:path';
++import { createTempDir } from '../helpers/test-db.js';
++import { resolveAnalyzeInstallPolicy } from '../../src/core/lbug/extension-loader.js';
++import {
++  getStoragePaths,
++  registerRepo,
++  saveMeta,
++  type RepoMeta,
++} from '../../src/storage/repo-manager.js';
++import { closeLbug as poolClose } from '../../src/core/lbug/pool-adapter.js';
++import { LocalBackend } from '../../src/mcp/local/local-backend.js';
++
++const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
++
++type QueryResult = {
++  error?: unknown;
++  warning?: string;
++  definitions?: Array<{ id: string }>;
++  process_symbols?: Array<{ id: string }>;
++};
++
++const matchedIds = (r: QueryResult): string[] =>
++  [...(r.process_symbols ?? []), ...(r.definitions ?? [])].map((s) => s.id);
++
++const ftsMissing = (r: QueryResult): boolean =>
++  typeof r.warning === 'string' && /FTS indexes missing/i.test(r.warning);
++
++/**
++ * Poll the SAME warm `LocalBackend` until it stops reporting FTS-missing, or
++ * the deadline passes. Exercises the real 5s staleness-check throttle
++ * (`ensureInitialized`) rather than sleeping-and-hoping or reaching into
++ * backend internals to bypass it — proves the fix holds within the actual
++ * production timing window.
++ */
++async function waitForFtsRecognized(
++  backend: LocalBackend,
++  query: string,
++  // Production throttle is 5s (`lastStalenessCheck`); this deadline leaves a
++  // generous margin beyond it for a loaded CI runner, per review feedback
++  // that the original 7s deadline left only ~2s of slack (#2767).
++  timeoutMs = 15000,
++  intervalMs = 300,
++): Promise<QueryResult> {
++  const deadline = Date.now() + timeoutMs;
++  let last: QueryResult;
++  do {
++    last = await backend.callTool('query', { query });
++    if (!ftsMissing(last)) return last;
++    await new Promise((resolve) => setTimeout(resolve, intervalMs));
++  } while (Date.now() < deadline);
++  return last!;
++}
++
++describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', () => {
++  let tmpHandle: Awaited<ReturnType<typeof createTempDir>>;
++  let repoPath: string;
++  let storagePath: string;
++  let lbugPath: string;
++  let savedHome: string | undefined;
++
++  beforeEach(async () => {
++    tmpHandle = await createTempDir('gnx-fts-repair-warm-');
++    repoPath = tmpHandle.dbPath;
++    savedHome = process.env.GITNEXUS_HOME;
++    process.env.GITNEXUS_HOME = path.join(repoPath, '.gitnexus-home');
++    ({ storagePath, lbugPath } = getStoragePaths(repoPath));
++  });
++
++  afterEach(async () => {
++    await poolClose(lbugPath).catch(() => {});
++    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
++    else process.env.GITNEXUS_HOME = savedHome;
++    await tmpHandle.cleanup();
++  });
++
++  it(
++    'a warm session transitions from FTS-unavailable to FTS-available without restarting, after an out-of-band --repair-fts',
++    { timeout: 60_000 },
++    async (ctx) => {
++      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
++      const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
++
++      // ── Step 1: build the index WITHOUT FTS (analyzed before repair) ────
++      await adapter.initLbug(lbugPath);
++
++      const ftsAvailable = await adapter.loadFTSExtension(undefined, {
++        policy: resolveAnalyzeInstallPolicy(),
++      });
++      if (!ftsAvailable) {
++        if (REQUIRE_FTS) {
++          throw new Error(
++            'FTS extension is required (GITNEXUS_REQUIRE_FTS=1) but could not be loaded — ' +
++              'this FTS-dependent integration test must not be silently skipped in CI.',
++          );
++        }
++        await adapter.closeLbug();
++        ctx.skip();
++        return;
++      }
++
++      await adapter.executeQuery(
++        `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 3, content: 'function login() { return true; }'})`,
++      );
++      await adapter.flushWAL();
++      await adapter.closeLbug();
++
++      const indexedAt = new Date().toISOString();
++      const baseMeta: RepoMeta = {
++        repoPath,
++        lastCommit: 'c1',
++        indexedAt,
++        stats: { files: 1, nodes: 1 },
++        capabilities: {
++          graph: { provider: 'ladybugdb', status: 'available' },
++          fts: { provider: 'ladybugdb-fts', status: 'unavailable' },
++          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
++        },
++      };
++      await saveMeta(storagePath, baseMeta);
++      await registerRepo(repoPath, baseMeta, { name: 'test-repo' });
++
++      // ── Step 2: a real warm LocalBackend observes "FTS unavailable" ─────
++      const backend = new LocalBackend();
++      await backend.init();
++      const before = await backend.callTool('query', { query: 'login' });
++      expect(before.error).toBeUndefined();
++      expect(ftsMissing(before)).toBe(true);
++
++      // ── Step 3: out-of-band --repair-fts (separate writable session) ────
++      // Same production functions the repair-fts branch of runFullAnalysis
++      // calls — real FTS build, then the #2767 capability-only meta stamp
++      // (indexedAt/lastCommit deliberately unchanged, R4).
++      await adapter.initLbug(lbugPath);
++      await createSearchFTSIndexes();
++      await adapter.flushWAL();
++      await adapter.closeLbug();
++      await saveMeta(storagePath, {
++        ...baseMeta,
++        capabilities: {
++          ...baseMeta.capabilities!,
++          fts: { provider: 'ladybugdb-fts', status: 'available' },
++        },
++      });
++
++      // ── Step 4: the SAME still-warm backend re-queries — no restart ─────
++      const after = await waitForFtsRecognized(backend, 'login');
++      expect(after.error).toBeUndefined();
++      expect(ftsMissing(after)).toBe(false);
++      expect(matchedIds(after)).toContain('func:login');
++    },
++  );
++});
+diff --git a/gitnexus/test/unit/bm25-search.test.ts b/gitnexus/test/unit/bm25-search.test.ts
+index f6105918b..793cf7aae 100644
+--- a/gitnexus/test/unit/bm25-search.test.ts
++++ b/gitnexus/test/unit/bm25-search.test.ts
+@@ -1,5 +1,7 @@
+ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+ import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
++import { classifyFtsQueryError } from '../../src/core/lbug/lbug-adapter.js';
++import { extensionManager, resetExtensionState } from '../../src/core/lbug/extension-loader.js';
+ import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
+ 
+ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
+@@ -315,6 +317,183 @@ describe('BM25 search', () => {
+     });
+   });
+ 
++  describe('classifyFtsQueryError (#2767)', () => {
++    it('classifies the real "doesn\'t have an index" message (confirmed against a live QUERY_FTS_INDEX call) as missing-index', () => {
++      expect(
++        classifyFtsQueryError(
++          "Prepare failed: Binder exception: Table File doesn't have an index with name file_fts.",
++        ),
++      ).toBe('missing-index');
++    });
++
++    it('classifies the real "table does not exist" message (confirmed against a live QUERY_FTS_INDEX call on a nonexistent table) as missing-table, distinct from missing-index (tri-review NEW-6)', () => {
++      // Empirically confirmed: the table-missing message uses "does not
++      // exist", NOT "doesn't have an index with name" — a genuinely different
++      // phrasing from missing-index, not the same condition under two names.
++      // Conflating them was the exact bug: a corrupted/partial DB (table
++      // itself gone) would have been silently treated as the ordinary
++      // "index not built yet" case.
++      expect(
++        classifyFtsQueryError(
++          'Prepare failed: Binder exception: Table TotallyNonexistentTable does not exist.',
++        ),
++      ).toBe('missing-table');
++    });
++
++    it('classifies a Catalog-exception "does not exist" message as missing-table too (both exception classes covered)', () => {
++      expect(classifyFtsQueryError('Catalog exception: Table SomeTable does not exist.')).toBe(
++        'missing-table',
++      );
++    });
++
++    it('classifies the extension-unavailable Catalog exception as other, not benign (mirrors the confirmed DROP_FTS_INDEX shape for QUERY_FTS_INDEX)', () => {
++      // Message shape confirmed for DROP_FTS_INDEX in
++      // drop-fts-index-error-classification.test.ts; QUERY_FTS_INDEX would
++      // fail identically when the extension isn't loaded (same catalog).
++      expect(
++        classifyFtsQueryError(
++          "Catalog exception: function QUERY_FTS_INDEX is not defined. This function exists in the FTS extension. You can install and load the extension by running 'INSTALL FTS; LOAD EXTENSION FTS;'.",
++        ),
++      ).toBe('other');
++    });
++
++    it('does not misclassify a real, differently-classed error that echoes the benign phrase in its body', () => {
++      // Adversarial case: a Runtime exception (not Binder/Catalog) that
++      // happens to echo the user's own search text — which could itself
++      // contain "does not exist" — must not be anchored away as benign.
++      expect(
++        classifyFtsQueryError(
++          'Runtime exception: FTS query syntax error near "the config file does not exist here"',
++        ),
++      ).toBe('other');
++    });
++
++    it('does not misclassify a real Binder-class error unrelated to a missing FTS index', () => {
++      expect(classifyFtsQueryError('Binder exception: column X does not match expected type')).toBe(
++        'other',
++      );
++    });
++
++    it('classifies any other message as other', () => {
++      expect(classifyFtsQueryError('Query execution timed out after 30000ms')).toBe('other');
++      expect(classifyFtsQueryError('Connection pool exhausted')).toBe('other');
++    });
++  });
++
++  describe('MCP pool path — real vs benign FTS query errors (#2767)', () => {
++    const REPO = 'test-repo-error-classification';
++
++    beforeEach(() => {
++      mockExecuteParameterized.mockReset();
++    });
++
++    it('a benign missing-index error on every table leaves nonBenignErrors unset (unchanged behavior)', async () => {
++      mockExecuteParameterized.mockRejectedValue(
++        new Error("Binder exception: Table Function doesn't have an index with name function_fts."),
++      );
++
++      const response = await searchFTSFromLbug('login', 5, REPO);
++
++      expect(response.ftsAvailable).toBe(false);
++      expect(response.nonBenignErrors).toBeUndefined();
++    });
++
++    it('a missing-table error (table itself gone, not just its FTS index) surfaces as non-benign — schema drift is not the ordinary degraded state (tri-review NEW-6)', async () => {
++      mockExecuteParameterized.mockRejectedValue(
++        new Error('Binder exception: Table Function does not exist.'),
++      );
++
++      const response = await searchFTSFromLbug('login', 5, REPO);
++
++      expect(response.ftsAvailable).toBe(false);
++      expect(response.nonBenignErrors!.length).toBeGreaterThan(0);
++    });
++
++    it('a real error on every table surfaces it in nonBenignErrors, redacted', async () => {
++      mockExecuteParameterized.mockRejectedValue(
++        new Error(
++          'Query execution failed: connection reset at /home/alice/.gitnexus/lbug/main.lbug',
++        ),
++      );
++
++      const response = await searchFTSFromLbug('login', 5, REPO);
++
++      expect(response.ftsAvailable).toBe(false);
++      expect(response.nonBenignErrors).toBeDefined();
++      expect(response.nonBenignErrors!.length).toBeGreaterThan(0);
++      expect(response.nonBenignErrors![0]).toContain('connection reset');
++      expect(response.nonBenignErrors![0]).not.toMatch(/\/home\/alice/);
++    });
++
++    it('a real error on one table while another succeeds is still reported (partial-failure gap closed)', async () => {
++      let call = 0;
++      mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
++        call++;
++        if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
++          throw new Error('Query execution timed out after 30000ms');
++        }
++        if (cypher.includes("QUERY_FTS_INDEX('File'")) {
++          return [{ node: { filePath: 'src/index.ts', id: 'file:index' }, score: 3 }];
++        }
++        return [];
++      });
++
++      const response = await searchFTSFromLbug('login', 5, REPO);
++
++      // At least one table succeeded, so the client-visible availability
++      // signal and result set are unaffected (regression guard).
++      expect(response.ftsAvailable).toBe(true);
++      expect(response.results.length).toBeGreaterThan(0);
++      // But the real error on the OTHER table is not silently dropped.
++      expect(response.nonBenignErrors).toBeDefined();
++      expect(response.nonBenignErrors![0]).toContain('timed out');
++      expect(call).toBe(FTS_INDEXES.length);
++    });
++  });
++
++  describe('short-circuits when the FTS extension is unavailable (tri-review NEW-4)', () => {
++    const REPO = 'test-repo-extension-unavailable';
++
++    afterEach(() => {
++      resetExtensionState();
++    });
++
++    it('MCP pool path: skips per-table QUERY_FTS_INDEX calls and reports no nonBenignErrors when the extension failed to load', async () => {
++      await extensionManager.ensure(
++        vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
++        'fts',
++        'FTS',
++        { policy: 'load-only' },
++      );
++      mockExecuteParameterized.mockReset();
++
++      const response = await searchFTSFromLbug('login', 5, REPO);
++
++      // The expected degraded-capability state — not per-table query errors.
++      expect(response.ftsAvailable).toBe(false);
++      expect(response.nonBenignErrors).toBeUndefined();
++      // No redundant round-trips to a pool that can't have FTS loaded.
++      expect(mockExecuteParameterized).not.toHaveBeenCalled();
++    });
++
++    it('CLI/pipeline path (no repoId): also skips per-table calls and reports no nonBenignErrors — same expected state, same silence (fixes the pool-only guard a /simplify altitude pass caught)', async () => {
++      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
++      await extensionManager.ensure(
++        vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
++        'fts',
++        'FTS',
++        { policy: 'load-only' },
++      );
++      vi.mocked(queryFTS).mockClear();
++
++      const response = await searchFTSFromLbug('login', 5); // no repoId → CLI/pipeline branch
++
++      expect(response.ftsAvailable).toBe(false);
++      expect(response.nonBenignErrors).toBeUndefined();
++      expect(vi.mocked(queryFTS)).not.toHaveBeenCalled();
++    });
++  });
++
+   describe('GITNEXUS_FTS_CJK_SEGMENTATION query-side transform (#2331)', () => {
+     const CJK_REPO = 'test-repo-cjk-query';
+ 
+diff --git a/gitnexus/test/unit/ensure-initialized-reinit-watermark.test.ts b/gitnexus/test/unit/ensure-initialized-reinit-watermark.test.ts
+new file mode 100644
+index 000000000..5dc089e56
+--- /dev/null
++++ b/gitnexus/test/unit/ensure-initialized-reinit-watermark.test.ts
+@@ -0,0 +1,139 @@
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++// tri-review NEW-7: `lastObservedIndexedAt`/`lastObservedFtsStatus` used to be
++// advanced BEFORE `initLbug` was awaited, unlike `lastObservedDbIdentity`
++// (which is only advanced once `initLbug` confirms the pool rolled over). If
++// `initLbug` threw, the watermark had already been latched to the new value —
++// permanently hiding a failed reinit from every later staleness check, since
++// a subsequent comparison against that same watermark would see no change.
++// This isolates the fix: a poolKey with `identityChanged` always false (a
++// nonexistent lbugPath — no backstop from the file-identity signal) must
++// still retry after a transient `initLbug` failure.
++
++const initLbugMock = vi.fn();
++vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
++  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
++  return {
++    ...actual,
++    initLbug: (...args: any[]) => initLbugMock(...args),
++    isLbugReady: vi.fn().mockReturnValue(true),
++  };
++});
++
++const loadMetaMock = vi.fn();
++vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
++  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
++  return {
++    ...actual,
++    loadMeta: (...args: any[]) => loadMetaMock(...args),
++  };
++});
++
++import { LocalBackend } from '../../src/mcp/local/local-backend';
++
++describe('ensureInitialized reinit watermark (tri-review NEW-7)', () => {
++  const poolKey = '/tmp/nonexistent-repo/.gitnexus/lbug';
++  const repoHandle = { id: 'r1', name: 'r1', lbugPath: poolKey, indexedAt: 'v0' } as any;
++  let backend: any;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    backend = new LocalBackend() as any;
++    // Seed the "warm, already initialized" precondition ensureInitialized
++    // requires to reach the staleness-check branch at all.
++    backend.initializedRepos.add(poolKey);
++    backend.lastStalenessCheck.set(poolKey, 0); // force past the 5s throttle
++  });
++
++  it('does not latch the fts-status watermark when initLbug throws, so the next staleness check retries', async () => {
++    loadMetaMock.mockResolvedValue({
++      indexedAt: 'v1',
++      capabilities: { fts: { status: 'available' } },
++    });
++    initLbugMock.mockRejectedValueOnce(new Error('lock timeout'));
++
++    await expect(backend.ensureInitialized(repoHandle)).rejects.toThrow('lock timeout');
++
++    // The failed reinit must NOT have advanced either watermark — a nonexistent
++    // lbugPath means dbIdentity never changes, so there is no other signal to
++    // fall back on for a retry.
++    expect(backend.lastObservedPoolState.get(poolKey)?.ftsStatus).toBeUndefined();
++    expect(backend.lastObservedPoolState.get(poolKey)?.indexedAt).toBeUndefined();
++
++    // Second staleness check (throttle reset again) with initLbug now succeeding.
++    backend.lastStalenessCheck.set(poolKey, 0);
++    initLbugMock.mockResolvedValueOnce(false); // "no real reopen needed" — still a completed call
++
++    await expect(backend.ensureInitialized(repoHandle)).resolves.toBeUndefined();
++
++    // The retry succeeded and the watermark is now current — proving the
++    // failed first attempt did not permanently suppress detection.
++    expect(backend.lastObservedPoolState.get(poolKey)?.ftsStatus).toBe('available');
++    expect(backend.lastObservedPoolState.get(poolKey)?.indexedAt).toBe('v1');
++    expect(initLbugMock).toHaveBeenCalledTimes(2);
++  });
++});
++
++describe('ensureInitialized ftsCapsChanged trigger, isolated from identityChanged (tri-review Residual-4)', () => {
++  // The only existing coverage for this reinit trigger is the integration
++  // test in fts-repair-warm-session.test.ts, where a REAL --repair-fts run
++  // also mutates the lbug file — so identityChanged is confounded with
++  // ftsCapsChanged there, and it's impossible to tell from that test alone
++  // whether ftsCapsChanged is actually load-bearing. This isolates it: a
++  // nonexistent lbugPath means statDbIdentity always resolves null, so
++  // identityChanged is provably false on every check — the ONLY way a reinit
++  // can fire here is via ftsCapsChanged (indexedAt is held constant too, so
++  // stampChanged is also false).
++  const poolKey = '/tmp/nonexistent-repo-caps-only/.gitnexus/lbug';
++  const repoHandle = { id: 'r2', name: 'r2', lbugPath: poolKey, indexedAt: 'same' } as any;
++  let backend: any;
++
++  beforeEach(() => {
++    vi.clearAllMocks();
++    backend = new LocalBackend() as any;
++    backend.initializedRepos.add(poolKey);
++    backend.lastStalenessCheck.set(poolKey, 0);
++  });
++
++  it('fires a reinit on a capabilities.fts.status change alone, with indexedAt and dbIdentity both unchanged', async () => {
++    // Seed a baseline observed state: same indexedAt the next loadMeta will
++    // report, a DIFFERENT ftsStatus, and dbIdentity null (matches what
++    // statDbIdentity will keep returning for this nonexistent path).
++    backend.lastObservedPoolState.set(poolKey, {
++      indexedAt: 'same',
++      ftsStatus: 'unavailable',
++      dbIdentity: null,
++    });
++
++    loadMetaMock.mockResolvedValue({
++      indexedAt: 'same', // unchanged — stampChanged must be false
++      capabilities: { fts: { status: 'available' } }, // changed — the only live signal
++    });
++    initLbugMock.mockResolvedValueOnce(true);
++
++    await backend.ensureInitialized(repoHandle);
++
++    // A reinit only happens inside the `if (stampChanged || identityChanged
++    // || ftsCapsChanged)` branch — initLbug being called at all here proves
++    // ftsCapsChanged fired, since the other two provably could not have.
++    expect(initLbugMock).toHaveBeenCalledTimes(1);
++    expect(backend.lastObservedPoolState.get(poolKey)?.ftsStatus).toBe('available');
++  });
++
++  it('does NOT fire a reinit when nothing observable changed (negative control)', async () => {
++    backend.lastObservedPoolState.set(poolKey, {
++      indexedAt: 'same',
++      ftsStatus: 'available',
++      dbIdentity: null,
++    });
++
++    loadMetaMock.mockResolvedValue({
++      indexedAt: 'same',
++      capabilities: { fts: { status: 'available' } }, // same as observed
++    });
++
++    await backend.ensureInitialized(repoHandle);
++
++    expect(initLbugMock).not.toHaveBeenCalled();
++  });
++});
+diff --git a/gitnexus/test/unit/fts-degraded-warning.test.ts b/gitnexus/test/unit/fts-degraded-warning.test.ts
+index fe5cc0554..42425be99 100644
+--- a/gitnexus/test/unit/fts-degraded-warning.test.ts
++++ b/gitnexus/test/unit/fts-degraded-warning.test.ts
+@@ -79,6 +79,28 @@ describe('ftsDegradedWarning (#2374)', () => {
+     expect(warning).toContain('not a valid Win32 application');
+   });
+ 
++  it('fully redacts a Windows path containing a space in the username (tri-review Residual-3, was only partially redacted)', async () => {
++    await extensionManager.ensure(
++      vi
++        .fn()
++        .mockRejectedValue(
++          new Error(
++            "Failed to load library 'C:\\Users\\alice smith\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension': not a valid Win32 application",
++          ),
++        ),
++      'fts',
++      'FTS',
++      { policy: 'load-only' },
++    );
++
++    const warning = ftsDegradedWarning();
++    // Neither the drive-letter prefix NOR the tail after the space may leak.
++    expect(warning).not.toMatch(/C:\\Users\\/);
++    expect(warning).not.toContain('smith');
++    expect(warning).not.toContain('alice');
++    expect(warning).toContain('not a valid Win32 application');
++  });
++
+   it('surfaces the runtime-install remedy, not reinstall, for a Windows missing-dependency error', async () => {
+     await extensionManager.ensure(
+       vi
+@@ -139,3 +161,68 @@ describe('ftsDegradedWarning (#2374)', () => {
+     expect(ftsDegradedWarning()).toMatch(/Visual C\+\+/);
+   });
+ });
++
++describe('ftsDegradedWarning resolved-repo context (#2767)', () => {
++  it('omits the context suffix entirely when no context is passed (unchanged message)', async () => {
++    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
++      policy: 'load-only',
++    });
++
++    expect(ftsDegradedWarning()).toBe(
++      'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
++    );
++  });
++
++  it('appends the resolved repo name and indexed-at on the indexes-missing branch', async () => {
++    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
++      policy: 'load-only',
++    });
++
++    const warning = ftsDegradedWarning({
++      repoName: 'myrepo',
++      indexedAt: '2026-07-30T12:00:00.000Z',
++    });
++    expect(warning).toContain('FTS indexes missing');
++    expect(warning).toContain('resolved: myrepo');
++    expect(warning).toContain('indexed 2026-07-30T12:00:00.000Z');
++  });
++
++  it('includes the branch label when the resolved handle is branch-scoped', async () => {
++    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
++      policy: 'load-only',
++    });
++
++    const warning = ftsDegradedWarning({ repoName: 'myrepo', branch: 'feature/x' });
++    expect(warning).toContain('branch:feature/x');
++  });
++
++  it('never leaks an absolute path via the context suffix', async () => {
++    await extensionManager.ensure(vi.fn().mockResolvedValue({}), 'fts', 'FTS', {
++      policy: 'load-only',
++    });
++
++    const warning = ftsDegradedWarning({
++      repoName: 'myrepo',
++      lastErrorRedacted: 'connection reset',
++    });
++    expect(warning).not.toMatch(/\/home\/|\/Users\/|C:\\Users\\/);
++    expect(warning).toContain('last error: connection reset');
++  });
++
++  it('also renders the context suffix on the extension-failed-to-load branch', async () => {
++    await extensionManager.ensure(
++      vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
++      'fts',
++      'FTS',
++      { policy: 'load-only' },
++    );
++
++    const warning = ftsDegradedWarning({
++      repoName: 'myrepo',
++      indexedAt: '2026-07-30T12:00:00.000Z',
++    });
++    expect(warning).toContain('FTS extension failed to load');
++    expect(warning).toContain('resolved: myrepo');
++    expect(warning).toContain('indexed 2026-07-30T12:00:00.000Z');
++  });
++});
+diff --git a/gitnexus/test/unit/query-degraded-signal.test.ts b/gitnexus/test/unit/query-degraded-signal.test.ts
+index e72b9a7ce..a7ed807e8 100644
+--- a/gitnexus/test/unit/query-degraded-signal.test.ts
++++ b/gitnexus/test/unit/query-degraded-signal.test.ts
+@@ -46,7 +46,7 @@ import { LocalBackend } from '../../src/mcp/local/local-backend';
+ // A backend whose hybrid search yields exactly one matched symbol, so the
+ // enrichment chunk loop runs and can be made to fail. `ftsUsed` is parameterized
+ // so we can exercise the FTS-missing + enrichment-degraded composition.
+-function makeBackend(ftsUsed = true): LocalBackend {
++function makeBackend(ftsUsed = true, nonBenignErrors?: string[]): LocalBackend {
+   const backend = new LocalBackend();
+   const repoHandle = {
+     id: 'repo1',
+@@ -68,7 +68,9 @@ function makeBackend(ftsUsed = true): LocalBackend {
+     startLine: 1,
+     endLine: 2,
+   };
+-  (backend as any).bm25Search = vi.fn().mockResolvedValue({ results: [sym], ftsUsed });
++  (backend as any).bm25Search = vi
++    .fn()
++    .mockResolvedValue({ results: [sym], ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) });
+   (backend as any).semanticSearch = vi.fn().mockResolvedValue([]);
+   return { backend, repoHandle } as any;
+ }
+@@ -133,6 +135,102 @@ describe('query: degraded-enrichment signal', () => {
+     expect(result.warning.toLowerCase()).toContain('enrichment');
+   });
+ 
++  it('a non-benign FTS query error is logged AND surfaced as a partial-result warning even when FTS overall succeeded (#2767)', async () => {
++    const cap: LoggerCapture = _captureLogger();
++    try {
++      const b = makeBackend(true, ['Query execution timed out after 30000ms']);
++      executeParameterizedMock.mockResolvedValue([]);
++
++      const result = await runQuery(b);
++
++      // Real error must reach the server log (previously silent)...
++      expect(result).not.toHaveProperty('error');
++      const record = cap.records().find((r) => r.context === 'query:fts-search');
++      expect(record).toBeDefined();
++      // ...AND the client sees it: mirrors the enrichmentDegraded convention
++      // for "some succeeded, one genuinely failed" (#2767).
++      expect(result.partial).toBe(true);
++      expect(result.warning).toMatch(/FTS keyword search partially failed/);
++    } finally {
++      cap.restore();
++    }
++  });
++
++  it('logs an already-classified non-benign FTS error at warn even when it echoes "does not exist" (tri-review NEW-5)', async () => {
++    const cap: LoggerCapture = _captureLogger(); // default 'info' level — a debug-level record would be invisible here
++    try {
++      // Adversarial shape from classifyFtsQueryError's own doc comment: a real
++      // error whose body happens to contain the benign phrase. It's already in
++      // nonBenignErrors (classifyFtsQueryError correctly refused to call it
++      // benign), so it must not be silently re-demoted to debug by a second,
++      // broader classifier on the logging path.
++      const b = makeBackend(true, [
++        'Runtime exception: FTS query syntax error near "the config file does not exist here"',
++      ]);
++      executeParameterizedMock.mockResolvedValue([]);
++
++      await runQuery(b);
++
++      const record = cap.records().find((r) => r.context === 'query:fts-search');
++      expect(record).toBeDefined();
++      expect(record!.level).toBeGreaterThanOrEqual(40); // pino 'warn', not 'debug' (20)
++    } finally {
++      cap.restore();
++    }
++  });
++
++  it('does not flag partial when FTS fully succeeds with no query errors', async () => {
++    const b = makeBackend(true);
++    executeParameterizedMock.mockResolvedValue([]);
++
++    const result = await runQuery(b);
++
++    expect(result.partial).toBeUndefined();
++    expect(result.warning).toBeUndefined();
++  });
++
++  it('surfaces a dedicated query-failed warning (not missing-index advice) when every table failed for a real error (tri-review NEW-1)', async () => {
++    const b = makeBackend(false, ['connection reset']);
++    executeParameterizedMock.mockResolvedValue([]);
++
++    const result = await runQuery(b);
++
++    // The indexes are NOT missing here — --repair-fts would not help, so the
++    // misleading missing-index advice must not be the headline.
++    expect(result.warning).not.toContain('FTS indexes missing');
++    expect(result.warning).not.toContain('repair-fts');
++    expect(result.warning).toContain('FTS keyword search failed');
++    expect(result.warning).toContain('connection reset');
++  });
++
++  it('the FTS-missing warning uses the freshly-observed indexedAt, not a stale cached repo handle (tri-review NEW-3)', async () => {
++    const b = makeBackend(false); // FTS unavailable
++    executeParameterizedMock.mockResolvedValue([]);
++    // Simulate ensureInitialized having just reinit'd against a newer index —
++    // it keeps lastObservedPoolState current but never mutates the caller's
++    // `repo` handle (a fresh spread per call), which still reads the old value.
++    (b.backend as any).lastObservedPoolState.set('/tmp/repo/.gitnexus/lbug', {
++      indexedAt: 'fresher-than-repo-handle',
++      dbIdentity: null,
++    });
++
++    const result = await runQuery(b);
++
++    expect(result.warning).toContain('indexed fresher-than-repo-handle');
++    expect(result.warning).not.toContain('indexed now'); // the stale repo.indexedAt value
++  });
++
++  it('the FTS-missing warning includes the resolved repo name and indexed-at (#2767)', async () => {
++    const b = makeBackend(false); // FTS unavailable
++    executeParameterizedMock.mockResolvedValue([]);
++
++    const result = await runQuery(b);
++
++    expect(result.warning).toContain('FTS indexes missing');
++    expect(result.warning).toContain('resolved: repo1');
++    expect(result.warning).toContain('indexed now');
++  });
++
+   it('warns when a CJK query hits a server resolving segmentation to none (#2331)', async () => {
+     const b = makeBackend(true);
+     executeParameterizedMock.mockResolvedValue([]);
+diff --git a/gitnexus/test/unit/run-analyze-fts-repair.test.ts b/gitnexus/test/unit/run-analyze-fts-repair.test.ts
+index 3dc0be797..67b35fcbc 100644
+--- a/gitnexus/test/unit/run-analyze-fts-repair.test.ts
++++ b/gitnexus/test/unit/run-analyze-fts-repair.test.ts
+@@ -259,6 +259,246 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
+     }
+   });
+ 
++  const mockRepairSuccessLbugAdapter = (overrides: Record<string, unknown> = {}) => ({
++    initLbug: vi.fn(async () => undefined),
++    loadGraphToLbug: vi.fn(async () => undefined),
++    getLbugStats: vi.fn(async () => ({})),
++    executeQuery: vi.fn(async () => []),
++    executeWithReusedStatement: vi.fn(async () => []),
++    closeLbug: vi.fn(async () => undefined),
++    wipeLbugDbFiles: vi.fn(async () => undefined),
++    loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
++    deleteNodesForFile: vi.fn(async () => undefined),
++    deleteNodesForFiles: vi.fn(async () => undefined),
++    deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
++    queryImporters: vi.fn(async () => []),
++    queryImportersBatch: vi.fn(async () => []),
++    loadFTSExtension: vi.fn(async () => true),
++    ...overrides,
++  });
++
++  it('--repair-fts stamps capabilities.fts.status while leaving indexedAt/lastCommit/runnerIdentity/stats byte-identical (#2767)', async () => {
++    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
++    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
++      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
++      createSearchFTSIndexes: vi.fn(async () => undefined),
++      verifySearchFTSIndexes: vi.fn(async () => []),
++    }));
++    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
++      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
++      ensureGitNexusIgnored: vi.fn(async () => undefined),
++    }));
++
++    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-stamp-');
++    try {
++      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
++      await fs.mkdir(storagePath, { recursive: true });
++      const seededIndexedAt = new Date('2026-01-01T00:00:00.000Z').toISOString();
++      const seeded: RepoMeta = {
++        repoPath: tmpRepo.dbPath,
++        lastCommit: 'abc123',
++        indexedAt: seededIndexedAt,
++        stats: { files: 7, nodes: 42, edges: 10 },
++        runnerIdentity: {
++          source: { kind: 'source' as const, digest: 'src-digest' },
++          build: {
++            kind: 'source' as const,
++            rootPath: '/x',
++            canonicalization: 'gitnexus-analyzer-build-v2',
++            digest: 'build-digest',
++          },
++          dependencyRuntime: {
++            manifestPath: '/x/package.json',
++            lockfilePath: null,
++            canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
++            packageCount: 1,
++            artifactCount: 1,
++            digest: 'dep-digest',
++          },
++        },
++        capabilities: {
++          graph: { provider: 'ladybugdb', status: 'available' },
++          fts: { provider: 'ladybugdb-fts', status: 'degraded' },
++          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 500 },
++        },
++      };
++      await saveMeta(storagePath, seeded);
++      await createPlaceholderGraphStore(lbugPath);
++
++      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
++      const result = await runFullAnalysis(
++        tmpRepo.dbPath,
++        { repairFts: true },
++        { onProgress: () => {} },
++      );
++      expect(result.ftsRepairedOnly).toBe(true);
++
++      const meta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
++      expect(meta.capabilities.fts.status).toBe('available');
++      // Everything repair-fts must NOT touch stays byte-identical (R4).
++      expect(meta.indexedAt).toBe(seededIndexedAt);
++      expect(meta.lastCommit).toBe('abc123');
++      expect(meta.runnerIdentity).toEqual(seeded.runnerIdentity);
++      expect(meta.stats).toEqual(seeded.stats);
++      // graph/vectorSearch, which repair-fts also never touches, pass through.
++      expect(meta.capabilities.graph).toEqual(seeded.capabilities!.graph);
++      expect(meta.capabilities.vectorSearch).toEqual(seeded.capabilities!.vectorSearch);
++    } finally {
++      await tmpRepo.cleanup();
++    }
++  });
++
++  it('--repair-fts backfills a full capabilities object when the existing meta predates the field entirely (#2767)', async () => {
++    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
++    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
++      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
++      createSearchFTSIndexes: vi.fn(async () => undefined),
++      verifySearchFTSIndexes: vi.fn(async () => []),
++    }));
++    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
++      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
++      ensureGitNexusIgnored: vi.fn(async () => undefined),
++    }));
++
++    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-legacy-meta-');
++    try {
++      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
++      await fs.mkdir(storagePath, { recursive: true });
++      // Legacy shape: no `capabilities` key at all (pre-#2658 meta.json).
++      await saveMeta(storagePath, {
++        repoPath: tmpRepo.dbPath,
++        lastCommit: '',
++        indexedAt: new Date().toISOString(),
++        stats: {},
++      });
++      await createPlaceholderGraphStore(lbugPath);
++
++      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
++      // Must not throw — a partial-capabilities spread over `undefined` would
++      // otherwise violate RepoMeta.capabilities' required sub-fields.
++      const result = await runFullAnalysis(
++        tmpRepo.dbPath,
++        { repairFts: true },
++        { onProgress: () => {} },
++      );
++      expect(result.ftsRepairedOnly).toBe(true);
++
++      const meta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
++      expect(meta.capabilities.fts.status).toBe('available');
++      expect(meta.capabilities.graph).toBeDefined();
++      expect(meta.capabilities.graph.status).toBe('available');
++      expect(meta.capabilities.vectorSearch).toBeDefined();
++      expect(meta.capabilities.vectorSearch.status).toBe('unavailable');
++      expect(typeof meta.capabilities.vectorSearch.exactScanLimit).toBe('number');
++    } finally {
++      await tmpRepo.cleanup();
++    }
++  });
++
++  it('--repair-fts still reports success when the capability-stamp write fails (#2767)', async () => {
++    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
++    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
++      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
++      createSearchFTSIndexes: vi.fn(async () => undefined),
++      verifySearchFTSIndexes: vi.fn(async () => []),
++    }));
++    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
++      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
++      ensureGitNexusIgnored: vi.fn(async () => undefined),
++      // Repair itself (createSearchFTSIndexes/verify) already succeeded by the
++      // time this fires — a write failure here must degrade, not fail the run.
++      saveMeta: vi.fn(async () => {
++        throw new Error('EACCES: permission denied');
++      }),
++    }));
++
++    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-stamp-write-fail-');
++    try {
++      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
++      await fs.mkdir(storagePath, { recursive: true });
++      await saveMeta(storagePath, {
++        repoPath: tmpRepo.dbPath,
++        lastCommit: '',
++        indexedAt: new Date().toISOString(),
++        stats: {},
++      });
++      await createPlaceholderGraphStore(lbugPath);
++
++      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
++      const logs: string[] = [];
++      const result = await runFullAnalysis(
++        tmpRepo.dbPath,
++        { repairFts: true },
++        { onProgress: () => {}, onLog: (msg: string) => logs.push(msg) },
++      );
++
++      expect(result.ftsRepairedOnly).toBe(true);
++      expect(logs.join('\n')).toMatch(/capability stamp write failed/i);
++    } finally {
++      await tmpRepo.cleanup();
++    }
++  });
++
++  it('--repair-fts stamps onto the LATEST on-disk meta, not a snapshot from before the rebuild ran (#2767)', async () => {
++    // A concurrent writer (e.g. the HTTP server's background embedding
++    // checkpoint job) lands its own saveMeta while the FTS rebuild is in
++    // flight. The repair-fts stamp must not silently revert that write by
++    // basing itself on the `existingMeta` captured before the rebuild started.
++    const CONCURRENT_LAST_COMMIT = 'concurrent-writer-commit';
++    let storagePathForConcurrentWrite = '';
++    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
++    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
++      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
++      createSearchFTSIndexes: vi.fn(async () => {
++        // Simulate the concurrent writer landing mid-repair, via the test
++        // file's own top-level `saveMeta` import (bound before any
++        // vi.doMock call in this file, so it is always the real function).
++        await saveMeta(storagePathForConcurrentWrite, {
++          repoPath: '',
++          lastCommit: CONCURRENT_LAST_COMMIT,
++          indexedAt: new Date().toISOString(),
++          stats: { files: 999 },
++        });
++      }),
++      verifySearchFTSIndexes: vi.fn(async () => []),
++    }));
++    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
++      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
++      ensureGitNexusIgnored: vi.fn(async () => undefined),
++    }));
++
++    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-race-');
++    try {
++      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
++      storagePathForConcurrentWrite = storagePath;
++      await fs.mkdir(storagePath, { recursive: true });
++      await saveMeta(storagePath, {
++        repoPath: tmpRepo.dbPath,
++        lastCommit: 'original-commit',
++        indexedAt: new Date().toISOString(),
++        stats: { files: 1 },
++      });
++      await createPlaceholderGraphStore(lbugPath);
++
++      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
++      const result = await runFullAnalysis(
++        tmpRepo.dbPath,
++        { repairFts: true },
++        { onProgress: () => {} },
++      );
++      expect(result.ftsRepairedOnly).toBe(true);
++
++      const meta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
++      // The concurrent writer's update survives — the stamp did not revert it.
++      expect(meta.lastCommit).toBe(CONCURRENT_LAST_COMMIT);
++      expect(meta.stats).toEqual({ files: 999 });
++      // The FTS stamp still landed on top of that latest state.
++      expect(meta.capabilities.fts.status).toBe('available');
++    } finally {
++      await tmpRepo.cleanup();
++    }
++  });
++
+   it('surfaces extension-unavailable errors from FTS index creation in repair mode', async () => {
+     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+       initLbug: vi.fn(async () => undefined),

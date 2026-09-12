@@ -256,21 +256,37 @@ jobs:
             fi
           }
 
+          # ── Helper: first matching file, tolerating an absent root ──
+          # `coverage-merge` (ci-tests.yml) is `needs: tests` with no
+          # `if: always()`, so a failing shard skips it and the `test-reports`
+          # artifact is never uploaded.  A bare `find` on the missing directory
+          # exits 1; `-o pipefail` carries that through `| head -1` and `-e`
+          # then killed this step — silently, because stderr is discarded and
+          # stdout is redirected to $GITHUB_OUTPUT.  That skipped "Comment on
+          # PR" and failed the run precisely when a PR had failing tests, which
+          # is when the report matters most.  Degrade to "" instead so the
+          # coverage-unavailable fallback below can do its job.
+          find_first() {
+            local root=$1 name=$2
+            [ -d "$root" ] || return 0
+            find "$root" -name "$name" -type f 2>/dev/null | head -1 || true
+          }
+
           # ── Read coverage reports ──
-          UNIT_SUMMARY=$(find "$DIR/test-reports" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+          UNIT_SUMMARY=$(find_first "$DIR/test-reports" "coverage-summary.json")
 
           read_cov "U" "$UNIT_SUMMARY"
 
           # ── Read base branch coverage (main) ──
           BASE_SUMMARY=""
           if [ "$BASE_FOUND" = "true" ] && [ -n "$BASE_DIR" ]; then
-            BASE_SUMMARY=$(find "$BASE_DIR/base" -name "coverage-summary.json" -type f 2>/dev/null | head -1)
+            BASE_SUMMARY=$(find_first "$BASE_DIR/base" "coverage-summary.json")
           fi
           read_cov "B" "$BASE_SUMMARY"
 
           # ── Locate test results ──
-          RESULTS_FILE=$(find "$DIR/test-reports" -name "test-results.json" -type f 2>/dev/null | head -1)
-          WEB_RESULTS_FILE=$(find "$DIR/test-reports" -name "web-test-results.json" -type f 2>/dev/null | head -1)
+          RESULTS_FILE=$(find_first "$DIR/test-reports" "test-results.json")
+          WEB_RESULTS_FILE=$(find_first "$DIR/test-reports" "web-test-results.json")
 
           sum_results() {
             local file=$1

@@ -33,6 +33,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { lookupBindingsAt } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -53,16 +54,9 @@ import {
  * The hook is invoked per call site; rebuilding the index each time would make
  * qualified-call resolution O(sites x files).
  */
-const MODULE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, RustModuleIndex>();
-
-function moduleIndexFor(allFilePaths: ReadonlySet<string>): RustModuleIndex {
-  let index = MODULE_INDEX_CACHE.get(allFilePaths);
-  if (index === undefined) {
-    index = buildRustModuleIndex(allFilePaths);
-    MODULE_INDEX_CACHE.set(allFilePaths, index);
-  }
-  return index;
-}
+const moduleIndexFor = perFileSet(
+  (allFilePaths: ReadonlySet<string>): RustModuleIndex => buildRustModuleIndex(allFilePaths),
+);
 
 export function resolveRustQualifiedFreeCall(
   site: { readonly name: string; readonly rawQualifiedName?: string; readonly inScope: ScopeId },
@@ -488,6 +482,15 @@ interface PassModuleIndex {
   readonly inlineModuleKeys: ReadonlySet<string>;
 }
 
+/**
+ * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep), unlike
+ * {@link moduleIndexFor} above. {@link passIndexFor} takes THREE inputs —
+ * `workspaceIndex`, `index` and `scopes` — and keys on the first alone; the
+ * builder reads `scopes.defs.byId` and `index`, neither of which is derivable
+ * from the key, and `perFileSet`'s `build: (key) => T` hands the builder
+ * nothing but the key. Sound here only because all three share the resolution
+ * pass's lifetime, which is an invariant the primitive cannot express.
+ */
 const MODULE_SCOPE_CACHE = new WeakMap<WorkspaceResolutionIndex, PassModuleIndex>();
 
 function moduleKey(module: RustModule): string {

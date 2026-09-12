@@ -19,10 +19,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { runHook } from '../utils/hook-test-helpers.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 // ─── Path to the Cursor hook + manifest ─────────────────────────────
 
@@ -54,6 +56,12 @@ const CURSOR_HOOKS_JSON = path.resolve(
   'hooks.json',
 );
 
+const require = createRequire(import.meta.url);
+const { parseRgGrepPattern, tokenizeShellWords } = require(CURSOR_HOOK) as {
+  parseRgGrepPattern: (command: string) => string | null;
+  tokenizeShellWords: (command: string) => string[];
+};
+
 // ─── Cursor-specific output parser ──────────────────────────────────
 // Cursor postToolUse output shape: { "additional_context": "..." }
 
@@ -77,22 +85,14 @@ let guardGitNexusDir: string;
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-test-'));
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  initGitRepo(tmpDir, { name: 'Test', email: 'test@test.com' });
 
   guardTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-guard-'));
   guardGitNexusDir = path.join(guardTmpDir, '.gitnexus');
   fs.mkdirSync(guardGitNexusDir, { recursive: true });
-  spawnSync('git', ['init'], { cwd: guardTmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], {
-    cwd: guardTmpDir,
-    stdio: 'pipe',
-  });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: guardTmpDir, stdio: 'pipe' });
+  initGitRepo(guardTmpDir, { name: 'Test', email: 'test@test.com' });
   fs.writeFileSync(path.join(guardTmpDir, 'dummy.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: guardTmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: guardTmpDir, stdio: 'pipe' });
+  commitAll(guardTmpDir, 'init');
 });
 
 afterAll(() => {
@@ -556,37 +556,77 @@ describe('Cursor hook concurrency guard (integration)', () => {
   });
 });
 
-// ─── Documented contract behavior (extractPattern via the live hook) ─
+// ─── Shell pattern parsing ──────────────────────────────────────────
 
-describe('Shell quoted-pattern parser limitations (documented)', () => {
-  // The Shell parser cannot reconstruct shell quoting. These tests pin the
-  // current behavior so a future "fix" doesn't silently change extraction
-  // — and so users diagnosing a noisy/missed pattern can find the behavior
-  // documented in tests.
-  //
-  // We can't observe the extracted pattern directly without an indexed
-  // repo, but we *can* confirm the hook reaches the augment-call path
-  // (vs. early-exiting) by checking exit status + clean stdout for cases
-  // where parseRgGrepPattern would yield a >=3-char token.
-
-  it('quoted multi-word `rg "User Service"` extracts the first word only', () => {
-    const result = runHook(CURSOR_HOOK, {
-      tool_name: 'Shell',
-      tool_input: { command: 'rg "User Service" src/' },
-      cwd: tmpDir, // no .gitnexus → exits early after extract
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
+describe('Shell quoted-pattern parser', () => {
+  it.each([
+    ['rg "User Service" src/', 'User Service'],
+    ["grep 'error boundary' -- src/", 'error boundary'],
+    ['rg User\\ Service src/', 'User Service'],
+    [String.raw`rg "C:\Users" src/`, String.raw`C:\Users`],
+    ['rg -e "User Service" src/', 'User Service'],
+    ['rg --regexp=UserService src/', 'UserService'],
+    ['grep -eUserService src/', 'UserService'],
+    ['rg -e x -e LongPattern src/', 'LongPattern'],
+    ['rg -ex -eLongPattern src/', 'LongPattern'],
+    ['rg --regexp=x --regexp=LongPattern src/', 'LongPattern'],
+    ['/usr/bin/rg -- "User Service" src/', 'User Service'],
+    ['rg -- -error src/', '-error'],
+    [String.raw`C:\Users\me\bin\rg.exe UserService src/`, 'UserService'],
+    ['rg.exe "validateUser" src/', 'validateUser'],
+    ['grep.cmd -e LongPattern src/', 'LongPattern'],
+    ['cd grep && rg LongPattern src/', 'LongPattern'],
+    ['npx rg "User Service" src/', 'User Service'],
+    ['npx --yes rg UserService src/', 'UserService'],
+    ['npx --package rg grep LongPattern src/', 'LongPattern'],
+    ['rg UserService; echo done', 'UserService'],
+    ['rg UserService&& echo done', 'UserService'],
+    ['rg --max-count 100 UserService src/', 'UserService'],
+    ['grep -r UserService src/', 'UserService'],
+    ['rg --replace x UserService src/', 'UserService'],
+    ['git grep UserService src/', 'UserService'],
+  ])('extracts %j from %j', (command, expected) => {
+    expect(parseRgGrepPattern(command)).toBe(expected);
   });
 
-  it('single-token quoted `rg "validateUser"` works as expected', () => {
-    const result = runHook(CURSOR_HOOK, {
-      tool_name: 'Shell',
-      tool_input: { command: 'rg "validateUser"' },
-      cwd: tmpDir,
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('');
+  it.each([
+    ['rg --regexp= src/'],
+    ['rg --regexp="" src/'],
+    ['rg -e x -- LongPattern src/'],
+    ['rg -f patterns.txt src/'],
+    ['rg --file=patterns.txt src/'],
+    ['rg -eab src/'],
+    ['sudo echo rg UserService src/'],
+  ])('extracts no pattern from %j', (command) => {
+    expect(parseRgGrepPattern(command)).toBeNull();
+  });
+
+  it('does not treat a path after a short explicit pattern as the pattern', () => {
+    expect(parseRgGrepPattern('rg -e x src/')).toBeNull();
+  });
+
+  it('keeps single-token quoted patterns intact', () => {
+    expect(parseRgGrepPattern('rg "validateUser"')).toBe('validateUser');
+  });
+
+  it('keeps backslashes in unquoted Windows paths but honours escaped spaces', () => {
+    expect(tokenizeShellWords(String.raw`C:\foo\bar`)).toEqual([String.raw`C:\foo\bar`]);
+    expect(tokenizeShellWords('User\\ Service')).toEqual(['User Service']);
+    expect(tokenizeShellWords('trailing\\')).toEqual(['trailing\\']);
+  });
+
+  it('splits unquoted shell operators from adjacent arguments', () => {
+    expect(tokenizeShellWords('rg UserService; echo done')).toEqual([
+      'rg',
+      'UserService',
+      ';',
+      'echo',
+      'done',
+    ]);
+    expect(tokenizeShellWords("rg 'UserService; echo done'")).toEqual([
+      'rg',
+      'UserService; echo done',
+    ]);
   });
 });
 

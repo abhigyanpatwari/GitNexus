@@ -1,4 +1,5 @@
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { isCppInlineNamespaceScope } from './inline-namespaces.js';
 
 /**
@@ -283,24 +284,20 @@ export function isCppDefGloballyVisible(filePath: string, nodeId: string): boole
  * `parsedFiles` reference; the old `parsedFiles.find(...)` was therefore O(F)
  * per edge → O(R·F) overall (at kernel scale the ~25–30k `.h` headers are
  * classified C++, so this fires hard — the C twin in `c/static-linkage.ts`).
- * Building the lookup once collapses it to O(R+F). `WeakMap`-keyed so it is
- * reclaimed with the pass (no cross-pass staleness; mirrors
- * {@link clearFileLocalNames}).
+ * Building the lookup once collapses it to O(R+F). `perFileSet` keys on the
+ * array identity so it is reclaimed with the pass (no cross-pass staleness;
+ * mirrors {@link clearFileLocalNames}).
  */
-const moduleScopeIndexByPass = new WeakMap<readonly ParsedFile[], Map<ScopeId, ParsedFile>>();
-
-function moduleScopeIndex(parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> {
-  let index = moduleScopeIndexByPass.get(parsedFiles);
-  if (index === undefined) {
-    index = new Map<ScopeId, ParsedFile>();
+const moduleScopeIndex = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> => {
+    const index = new Map<ScopeId, ParsedFile>();
     // First-wins to preserve `Array.find` semantics (returns the first match).
     for (const p of parsedFiles) {
       if (!index.has(p.moduleScope)) index.set(p.moduleScope, p);
     }
-    moduleScopeIndexByPass.set(parsedFiles, index);
-  }
-  return index;
-}
+    return index;
+  },
+);
 
 export function expandCppWildcardNames(
   targetModuleScope: ScopeId,

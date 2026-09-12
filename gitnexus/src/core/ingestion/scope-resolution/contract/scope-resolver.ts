@@ -15,7 +15,7 @@
  *        - propagatesReturnTypesAcrossImports (default true)
  *        - fieldFallbackOnMethodLookup (default true — turn OFF for
  *          statically-typed languages; the heuristic over-connects)
- *        - unwrapCollectionAccessor — property-style collection views
+ *        - elementTypeOf — container element type, by subscript or accessor
  *        - collapseMemberCallsByCallerTarget — one edge per caller/target
  *        - populateNamespaceSiblings — cross-file implicit visibility
  *        - hoistTypeBindingsToModule — enable ONLY when method return
@@ -82,13 +82,14 @@
  *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
  *     Sites a pass touched but couldn't resolve do NOT get marked —
  *     they still get a chance from the shared resolver. Exception:
- *     the free-call fallback marks the site unconditionally after
- *     attempting emission (even on dedup-collapse), because the
- *     per-(caller, target) collapse semantics require multiple call
- *     sites in the same caller body not produce multiple edges.
- *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
- *     the generic bridge cannot remap class heritage into method-owned
- *     EXTENDS edges via `resolveCallerGraphId`.
+ *     the free-call fallback marks the site after it decides the site,
+ *     including when it emits no edge — dedup-collapse, a visibility
+ *     veto (`fallback-refused`), or a selected callable that is deleted
+ *     / invisible. The later generic pass must not recreate an edge
+ *     that pass just refused. `preEmitInheritanceEdges` also pre-marks
+ *     every `inherits` site so the generic bridge cannot remap class
+ *     heritage into method-owned EXTENDS edges via
+ *     `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
@@ -113,13 +114,24 @@
  *       3. Case 0.5 implicit-`this` chain walk — GATED: fires only for
  *          languages that set `resolveThisViaEnclosingClass === true`;
  *          it intercepts every bare-`this` call/read/write site ahead of
- *          Case 4 and does NOT emit Case 4's interface-dispatch fan-out,
- *          so enabling the toggle for a language changes that language's
- *          `this` dispatch semantics (see the toggle's doc below)
+ *          Case 4 and does NOT emit the interface-dispatch fan-out that
+ *          Cases 0, 3b and 4 all perform (Case 0 gained it in #2829 and
+ *          Case 3b in #2832, leaving 0.5 the only INSTANCE-receiver case
+ *          that folds or walks to a receiver type without fanning out.
+ *          Read that narrowly: Case 2 also walks an MRO and its binding
+ *          admits `Interface`, but its receiver IS the type name, so the
+ *          site is static dispatch and a fan-out would be wrong; Cases 3
+ *          and 5 resolve by direct lookup rather than a fold or MRO walk,
+ *          and no language is known to reach Case 3 with an Interface —
+ *          every one that could strips the namespace qualifier first,
+ *          sending it to Case 4), so enabling the toggle
+ *          for a language changes that language's `this` dispatch
+ *          semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver
  *       5. Case 2 class-name receiver
  *       6. Case 3 dotted typeBinding for namespace prefix
- *       7. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
+ *          fan-out on an Interface fold, #2832)
  *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
@@ -237,8 +249,8 @@
  * ## Semantic-model source of truth
  *
  * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
- * is the single semantic model consumed by both the legacy DAG and the
- * scope-resolution pipeline. Scope-resolution passes MUST NOT build a
+ * is the single semantic model consumed by the scope-resolution pipeline.
+ * Scope-resolution passes MUST NOT build a
  * parallel parse representation; if a pass needs AST-level facts that
  * `ParsedFile` doesn't expose, it should reuse the orchestrator's
  * `treeCache` (see `RunScopeResolutionInput.treeCache`) rather than
@@ -246,28 +258,26 @@
  *
  * ## Same-graph guarantee
  *
- * Edges emitted by `runScopeResolution` and edges emitted by the legacy
- * DAG are indistinguishable to downstream consumers:
+ * All language resolvers emit edges through `runScopeResolution` using the
+ * shared graph contract:
  *   - Node identity: same `generateId(...)` helper, same qualified-name
  *     keyspace, same File/Folder/Method/Class node labels.
  *   - Edge vocabulary: `'import-resolved' | 'global' | 'local-call' |
- *     'same-file' | 'interface-dispatch' | 'read' | 'write'` — both
- *     paths emit the same reasons (see
- *     `gitnexus/src/core/ingestion/call-processor.ts` for the legacy
- *     emitter and `passes/receiver-bound-calls.ts` /
+ *     'same-file' | 'interface-dispatch' | 'read' | 'write' |
+ *     'global-name-fallback'` (see `passes/receiver-bound-calls.ts` /
  *     `passes/free-call-fallback.ts` for the scope-resolution emitters).
- *   - Overload disambiguation: both paths use
+ *   - Overload disambiguation: resolvers use
  *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
  *     method has overloads — see `graph-bridge/ids.ts`.
  *
- * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
- * runs both paths on every migrated language's fixture corpus and
- * fails if the graph outputs diverge.
+ * Resolver fixture coverage lives in `ci-tests.yml` (the separate
+ * `ci-scope-parity.yml` gate was removed in RING4-1 #942).
  *
  * Plan that introduced most of these invariants:
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
+import type { DecorationStripper } from '../scope/walkers.js';
 import type {
   BindingRef,
   Callsite,
@@ -285,6 +295,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { HeritageTypeArgumentSink } from '../utils/generic-instantiation.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
@@ -312,6 +323,53 @@ export interface ImportResolutionContext {
 /** Re-exported for ScopeResolver consumers — same shape as
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
 export type { ConstraintContext } from 'gitnexus-shared';
+
+/** How a container's element was reached in the source. */
+export type ElementAccessRoute =
+  | { readonly kind: 'index' }
+  | { readonly kind: 'accessor'; readonly name: string };
+
+/** One structurally-detected implementor plus the receiver form in which it
+ *  satisfies the interface (see `detectInterfaceImplementations`). */
+export interface StructuralImplementor {
+  readonly structDefId: string;
+  readonly receiverForm: 'value' | 'pointer';
+}
+
+/**
+ * One interface whose satisfaction check could not be COMPLETED for at least
+ * one candidate type — not one that was checked and came out negative.
+ *
+ * The distinction is the whole point (#2873): a detector that reports only
+ * positives makes "nobody implements this" and "we could not tell whether
+ * anybody implements this" byte-identical, and the second one silently becomes
+ * a confident zero in `impact`. Consumers must not turn these into edges; they
+ * exist so a query can say it is answering with a lower bound.
+ */
+export interface UndecidedSatisfaction {
+  readonly interfaceDefId: string;
+  readonly interfaceName: string;
+  readonly filePath: string;
+  /** How many candidate types went unjudged for this interface. */
+  readonly undecidedCandidates: number;
+  /**
+   * The candidate types themselves, by name.
+   *
+   * Both sides are recorded because a query arrives from either one. Asking
+   * `impact` about the IMPLEMENTATION — the case #2873 reports — never touches
+   * the interface node at all: the walk starts at a method whose owner has no
+   * heritage edge precisely because the check was undecided, so an
+   * interface-keyed record alone would leave that query unhedged.
+   */
+  readonly candidateNames: readonly string[];
+}
+
+/** What `detectInterfaceImplementations` answers: the positives, plus the
+ *  questions it could not answer. */
+export interface StructuralImplementationResult {
+  readonly implementations: Map<string, readonly StructuralImplementor[]>;
+  readonly undecided: readonly UndecidedSatisfaction[];
+}
 
 export interface ScopeResolver {
   /** Identity for telemetry + per-language flag check. */
@@ -360,6 +418,17 @@ export interface ScopeResolver {
     resolutionConfig?: unknown,
     context?: ImportResolutionContext,
   ): string | readonly string[] | null;
+
+  /**
+   * Optionally reclassify an import as a namespace handle after target
+   * resolution proves the imported name is itself a module. Returning false
+   * retains ordinary named-binding behavior.
+   */
+  readonly isNamespaceImport?: (
+    parsedImport: ParsedImport,
+    targetFile: string,
+    fromFile: string,
+  ) => boolean;
 
   /**
    * Enumerate names visible through a wildcard import after the target
@@ -516,6 +585,16 @@ export interface ScopeResolver {
    * shape. Must be idempotent (the orchestrator may call it more than once
    * during re-resolution).
    *
+   * `recordTypeArguments` is the same sink `preEmitInheritanceEdges` writes to:
+   * the generic INSTANTIATION a heritage clause was written with, so
+   * interface-dispatch fan-out can refuse an implementor of an incompatible one
+   * (#2912). An implementation that emits an edge for a generic base
+   * (`impl Validator<String> for V`, `class V implements Validator<String>`)
+   * should call it with the same (source, target) graph ids it just used;
+   * anything not recorded reads as "unknown" and keeps the pre-#2912 fan-out.
+   * Ignoring it entirely is correct for a language whose heritage carries no
+   * type arguments (Ruby `include`).
+   *
    * Default: undefined (no extra heritage edges needed).
    */
   readonly emitHeritageEdges?: (
@@ -523,6 +602,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
     scopes?: ScopeResolutionIndexes,
+    recordTypeArguments?: HeritageTypeArgumentSink,
   ) => void;
 
   /**
@@ -616,6 +696,21 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * after all files have been extracted and before reference finalization.
+   * Use this when a per-file capture needs conservative facts from an
+   * imported sibling (for example a compile-time branch constant).
+   */
+  readonly populateWorkspaceReferences?: (
+    parsedFiles: ParsedFile[],
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly treeCache?: { get(filePath: string): unknown };
+      readonly resolutionConfig?: unknown;
+    },
+  ) => void;
+
+  /**
    * Recognize a `super(...)`-style receiver text. Python returns
    * `/^super\s*\(/.test(t)`. Java returns `t === 'super'`. C++ may
    * also need `this` capture. Languages without inheritance return
@@ -697,22 +792,56 @@ export interface ScopeResolver {
   readonly fieldFallbackOnMethodLookup?: boolean;
 
   /**
-   * Unwrap a property-style collection accessor on a typed receiver
-   * to its element type. Called by `resolveCompoundReceiverClass`
-   * when walking dotted member-access chains of the form
-   * `receiver.Accessor`. The provider returns the element type's
-   * simple name, or `undefined` when the accessor doesn't unwrap —
-   * in which case the regular field-walk resumes.
+   * Element type of a container, reached either by a subscript (`repos[0]`) or
+   * by a property-style collection view (`dict.Values`). Returns the element
+   * type's simple name, or `undefined` when the container does not unwrap by
+   * that route — in which case the caller resumes its normal walk.
    *
-   * Use this only for languages that expose collection views as
-   * properties rather than method calls; languages whose collection
-   * views are `.values()` / `.keys()` method calls leave this
-   * undefined and let the normal call-expression branch handle them.
+   * ONE hook for both routes, deliberately. They were previously two
+   * (`unwrapCollectionAccessor` for the property route, `unwrapCollectionElement`
+   * for the subscript route), which meant a language implementing one silently
+   * got nothing for the other: C# parsed `Dictionary<K,V>` for `.Values` but
+   * returned nothing for `list[0]`, and TypeScript did the reverse. Two entries
+   * answering one question, each accreting an implementation per language.
+   *
+   * `via` carries the route so a provider can distinguish them where it matters
+   * (a `Dictionary` yields its VALUE type by subscript but either type by
+   * accessor name); a provider that does not care can ignore it.
+   *
+   * Consulted ONLY where the source actually performed the access. It is NOT a
+   * general type-name normalizer: unwrapping a container at a bare class lookup
+   * would let `repos.find(x)` fold to `Repo.find`, because a container's member
+   * set is not its element's. For the same reason it is deliberately separate
+   * from `stripTypePreservingDecoration`: a pointer or a nullable leaves the
+   * member set unchanged and is safe to strip at the lookup; a container is not.
+   *
+   * ## The `index` route is REQUIRED, and `undefined` means "not a container"
+   *
+   * A language that leaves the `index` route unanswered gets NO index folding —
+   * the structural fold declines the step rather than passing the position
+   * through. That is not a default worth softening. `undefined` used to mean
+   * "fall back to identity", on the theory that a capture layer which already
+   * reduced the container (Go's `normalizeGoTypeName`, C#/TypeScript's
+   * `stripGeneric`) leaves nothing to unwrap. The theory holds for a container;
+   * it is false for an ordinary class the source happened to subscript, and
+   * `rawName` cannot tell those apart — `repos: User[]` and `grid: Grid` both
+   * arrive as a bare resolvable class name. Identity there typed `grid[0].run()`
+   * as `Grid.run` and `t[0].Render()` as `Table.Render`: a wrong owner, which
+   * this pipeline ranks strictly below a missing edge.
+   *
+   * The hook is therefore handed `TypeRef.declaredSpelling` — the annotation AS
+   * WRITTEN, retained by the scope extractor precisely because capture-time
+   * normalization destroys it — falling back to `rawName` only when nothing was
+   * normalized away. So a provider sees `User[]`, `List[User]`, `[]*User` or
+   * `Dictionary<string, User>`, never the post-reduction `User`, and answering
+   * `undefined` for a spelling it does not recognize as a container is an
+   * ANSWER, not an absence.
+   *
+   * Implementations may return a still-DECORATED element name (Go's `[]*User`
+   * yields `*User`): the index step looks the element up through
+   * `stripTypePreservingDecoration`, so the pointer resolves.
    */
-  readonly unwrapCollectionAccessor?: (
-    receiverType: string,
-    accessor: string,
-  ) => string | undefined;
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
@@ -733,6 +862,88 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /** Opt in to binding imports at their extracted lexical scope, rather than
+   * publishing every file's imports at module scope. */
+  readonly importsBindAtLexicalScope?: boolean;
+
+  /**
+   * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
+   * this language — ECMAScript `export *` semantics, where the module simply
+   * does not export the name and any binding is a guess. Opt-in: for a
+   * language whose wildcard import is `#include`, `require` or a package
+   * fan-out, the same name in two files is an overload set or a redeclaration,
+   * and refusing it would delete real edges (C++ arity-narrowed overloads
+   * across two headers). Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   */
+  readonly exclusiveWildcardReexports?: boolean;
+
+  /**
+   * A named import or named re-export can only bind to a MODULE-LEVEL
+   * declaration of the target file — ECMAScript semantics, where
+   * `import { x }` never reaches a class member. Opt-in: languages that bind
+   * module-level members by bare name (static members, module functions)
+   * leave it off. Forwarded to `FinalizeHooks.namedImportsBindTopLevelOnly`.
+   */
+  readonly namedImportsBindTopLevelOnly?: boolean;
+
+  /**
+   * Veto for a single `allowGlobalFreeCallFallback` guess.
+   *
+   * The fallback picks a callable because its SIMPLE NAME is unique in the
+   * workspace — it consults no import and no scope chain. For most languages a
+   * large share of those guesses are not merely unlikely but IMPOSSIBLE: Go
+   * cannot call an unexported identifier from another package, ESM cannot see a
+   * name it did not import, Rust cannot reach an item with no `use` path. This
+   * hook is where a language states those rules, so the shared pass can drop
+   * the edge instead of publishing a guess that the language forbids.
+   *
+   * Return `false` to REFUSE (no edge, recorded as `fallback-refused`). Return
+   * `true`, or leave the hook undefined, to emit the labeled
+   * `global-name-fallback` edge. **Only answer `false` when the call is
+   * impossible, not when it is merely unproven** — a wrongly-refused candidate
+   * is a lost real edge, whereas a wrongly-allowed one is at least labeled and
+   * excluded from flows.
+   *
+   * Deliberately NOT folded into `isCallableVisibleFromCaller`: that hook also
+   * gates precise dispatch paths (implicit-this, member calls), so a rule
+   * written for the name-guess tier would silently suppress resolved edges too.
+   *
+   * `parsedFileOf` reaches the CANDIDATE's parse result — a language whose rule
+   * depends on declaration-side facts not carried by `SymbolDefinition` (for
+   * example Rust's `pub` form) needs it. `isExported` is the tri-state export
+   * marker when the language supplies one; this hook still needs the parse for
+   * visibility facts that marker does not represent. It returns `undefined`
+   * for a path outside this pass's file set; treat that as "cannot decide"
+   * and allow.
+   */
+  readonly isGlobalNameFallbackPlausible?: (ctx: {
+    readonly callerParsed: ParsedFile;
+    readonly candidate: SymbolDefinition;
+    readonly parsedFileOf: (filePath: string) => ParsedFile | undefined;
+    /**
+     * Raw source of any parsed file, for languages whose visibility rule needs
+     * a declaration the parse does not carry (Go's package clause: a test file's
+     * `package foo_test` is a different package from its directory's `foo`).
+     * Absent when the pipeline has no contents at hand; hooks must then answer
+     * from paths alone and, when undecidable, allow.
+     */
+    readonly sourceTextOf?: (filePath: string) => string | undefined;
+    /**
+     * The call site, so a language can tell a BARE name from a PATH-QUALIFIED
+     * one. Both reach this tier — a qualified call whose qualifier the resolver
+     * could not follow falls through to the bare-name search with only its tail
+     * name — but they are not the same claim. Rust's `User::new(...)` named its
+     * type in source, so refusing it for lacking a `use` of the module would
+     * delete an edge the source spells out.
+     */
+    readonly site: {
+      readonly name: string;
+      readonly rawQualifiedName?: string;
+      /** Lexical call-site scope; absent only for legacy/synthetic hook callers. */
+      readonly inScope?: ScopeId;
+    };
+  }) => boolean;
 
   /**
    * In this language every `Method` belongs to a class instance, so a
@@ -761,6 +972,71 @@ export interface ScopeResolver {
    * Swift — opt in.
    */
   readonly constructorCallTargetsClass?: boolean;
+
+  /**
+   * When true, the CALLS edge emitted for a constructor-form site
+   * (`callForm === 'constructor'`) carries ` (constructor)` appended to its
+   * `reason` — `local-call (constructor)`, `import-resolved (constructor)`,
+   * `scope-resolution: call (constructor)` — so a consumer can tell
+   * "constructs an instance of" apart from "invokes" on the edge alone.
+   *
+   * Opt-in because the unsuffixed strings are a pinned contract: the legacy
+   * DAG vocabulary (`'import-resolved' | 'local-call' | …`, see the
+   * same-graph guarantee above) is asserted verbatim by consumers and by the
+   * per-language resolver suites, constructor sites included. A language
+   * that links a construction site to the TYPE node itself — a struct
+   * literal `T{…}` in Zig, where nothing but the marker distinguishes the
+   * edge from an invocation in the schema (PR #1432 review) — opts in; the
+   * default leaves every existing edge byte-identical.
+   *
+   * The marker rides in `reason` because relationships carry no arbitrary
+   * properties (adding one moves SCHEMA_FINGERPRINT — the IMPLEMENTS
+   * `-pointer` precedent in `pipeline/run.ts`). Applies to the free-call
+   * fallback, the reference bridge and the receiver-bound paths — a
+   * namespace-qualified literal (`mod.T{…}`, Case 1), a type nested in the
+   * receiver's class (`A.Item{}`, Case 2) and a dotted type binding (Case 3)
+   * all go through `constructionSiteReason` — so an opted-in provider sees
+   * one vocabulary whichever path resolved the site.
+   */
+  readonly markConstructionSites?: boolean;
+
+  /**
+   * When true, a namespace's exported member may also be a name the target
+   * module IMPORTED and publishes as its own — the hub-module shape, a file
+   * made only of re-exports (`pub const Terminal = @import("Terminal.zig");`,
+   * `pub const Thing = @import("thing.zig").Thing;`). Such a file owns no
+   * local binding, so the default local-only export lookup
+   * (`findExportedDef`) finds nothing for `terminal.Terminal.init()`,
+   * `t: stdx.Thing`, `var p = stdx.PRNG.from_seed()` or `var a:
+   * stdx.BoundedArrayType(u8, 4)`, and the receiver-bound namespace paths
+   * (Case 1, Case 3, the compound resolver's namespace branch) fall through.
+   * With the flag those paths use `findExportedDefIncludingImportedNames`,
+   * which reads the finalized channel where the published names live.
+   *
+   * Off by default: in most languages a module's imports are not its exports
+   * (TypeScript `import { X }` publishes nothing), and the finalized edge does
+   * not record whether the import was written `pub`. Zig opts in — a hub
+   * member a consumer can name through the hub is public by construction.
+   */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
+
+  /**
+   * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
+   * verified namespace root instead of being split once at the last dot:
+   * `hub.sub.Thing{}` (a namespace republished by a hub — `pub const sub =
+   * @import("sub.zig");`), `mod.Outer.Inner{}` (a type nested in a type),
+   * `opmod.Op.lookup` (an enum variant reached through the module), and the
+   * typed forms `x: mod.Outer.Inner`. Each hop is either a class-like member
+   * of the current module(s) / the current class, or a namespace import
+   * edge the current module's scope binds under that name; a hop that is
+   * ambiguous — two files behind one handle disagree, or a name is both a
+   * type and a republished module — resolves nothing rather than picking a
+   * first match. Off, the receiver-bound paths (Case 1, Case 2's
+   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
+   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
+   * 8.10), whose module system is nothing but nested `const` handles.
+   */
+  readonly resolveNamespaceChains?: boolean;
 
   /**
    * How this language spells a construction expression, so the compound
@@ -903,6 +1179,25 @@ export interface ScopeResolver {
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional canonicalizer for a written GENERIC TYPE ARGUMENT, so two
+   * spellings of one type compare equal during interface-dispatch
+   * instantiation matching (#2912).
+   *
+   * The case it exists for is a language with predefined ALIASES: C# `string`
+   * and `String` are the same type, so `IValidator<string>` must still fan out
+   * to `class V : IValidator<String>`. Without the hook the two spellings look
+   * like two instantiations and the implementor is pruned — a missing edge,
+   * which is the failure direction #2912 is most concerned to avoid.
+   *
+   * Called ONLY on the two sides of one argument comparison, never on a name
+   * used for lookup, so it may map to whatever canonical form the language
+   * prefers (`string` → `String`, or the reverse) as long as it is consistent.
+   * Languages whose types have one spelling each leave it undefined and the
+   * comparison stays exact.
+   */
+  readonly normalizeTypeArgument?: (name: string) => string;
+
+  /**
    * Optional predicate to gate free-call fallback emission by caller-side
    * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
    * the caller cannot legally reach — e.g., a PHP function in a different
@@ -1026,6 +1321,44 @@ export interface ScopeResolver {
   ) => SymbolDefinition | 'ambiguous' | undefined;
 
   /**
+   * Every receiver spelling under which a namespace import's target is
+   * reachable, and the file each spelling names (#2826). Returning
+   * `undefined` keeps the shared default: the local binding name alone,
+   * mapped to the edge's own target file.
+   *
+   * Python needs this because one `import a.b.c` statement binds THREE
+   * spellings at once — `a`, `a.b` and `a.b.c` — each naming a DIFFERENT
+   * file (`a/__init__.py`, `a/b/__init__.py`, `a/b/c.py`), while
+   * `ImportEdge` carries only the leaf. The default keyed `a` (its
+   * `localName`) to the LEAF, so `a.helper()` resolved into `a/b/c.py`
+   * whenever that module happened to export `helper` — a wrong edge — and
+   * `a.b.mid()` resolved to nothing at all.
+   *
+   * Shared code cannot derive this. Swift's `import Foo.Bar` produces an
+   * edge shape identical to Python's (`localName: 'Foo'`,
+   * `targetExportedName: 'Foo.Bar'`), yet there the FIRST segment is the
+   * resolved target and `Foo.Bar` names a nested TYPE; keying it would hand
+   * `resolveConstructionExpressionClass` an authoritative namespace — that
+   * branch deliberately does not fall through on a miss — and break
+   * `Foo.Bar(x)` construction that resolves correctly today. And the
+   * `__init__.py` convention that turns a dotted prefix into a file is
+   * Python's alone.
+   *
+   * `moduleFileExists` reports whether a path is a module the workspace
+   * actually parsed, so a provider can propose a prefix file and have it
+   * dropped when absent (a PEP-420 namespace package has no `__init__.py`)
+   * rather than minting a key to a file that is not there.
+   */
+  readonly namespaceReceiverPaths?: (
+    edge: {
+      readonly localName: string;
+      readonly importPath: string;
+      readonly targetFile: string;
+    },
+    moduleFileExists: (filePath: string) => boolean,
+  ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
+
+  /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages
    * with lookup-set semantics that cannot be represented by one linear MRO
@@ -1104,6 +1437,39 @@ export interface ScopeResolver {
   readonly hoistTypeBindingsToModule?: boolean;
 
   /**
+   * Strip ONE layer of type-preserving decoration off a declared type name,
+   * or return `undefined` when there is nothing left to strip.
+   *
+   * Exists because a declared type is stored as written. Go's
+   * `synthesizeGoReceiverBinding` keeps `typeNode.text`, so a pointer-receiver
+   * method binds its receiver to the literal `*Host` — which matches no class
+   * binding, so receiver-chain resolution declines at the base and every
+   * `h.field.method()` in the dominant Go idiom loses its `CALLS` edge (#2766).
+   * The stored binding is deliberately left decorated (`method-owners.ts`
+   * consumes `*T` vs `T` to model Go's value and pointer method sets), so the
+   * normalization belongs at LOOKUP, never as a rewrite of the binding.
+   *
+   * TYPE-PRESERVING ONLY. Pointer, reference, `const`, nullable, borrow,
+   * deref-transparent smart pointer and sigil all leave the member set
+   * unchanged. A CONTAINER — array, slice, map, `Option` — does not: stripping
+   * one here would type `repos: Repo[]` as `Repo` and let `repos.find(x)` fold
+   * to `Repo.find`, a confident wrong edge the ambiguity gate cannot catch
+   * because `Repo` binds uniquely. Containers are unwrapped only by an index
+   * step that consumed a subscript.
+   *
+   * Consulted ONLY after every undecorated lookup has failed, and only by
+   * receiver-chain base and step resolution — the shared class lookup keeps
+   * exact-name behaviour for its other ~two dozen callers, several of which are
+   * shaped `findClassBindingInScope(...) ?? otherResolver(...)` and would have
+   * their fallback suppressed by a global widening.
+   *
+   * Leave undefined for languages whose declared types carry no type-preserving
+   * decoration. Measured: only Go needs it for a receiver base; Rust, C#, Swift,
+   * TypeScript and C++ need it for field types.
+   */
+  readonly stripTypePreservingDecoration?: DecorationStripper;
+
+  /**
    * Whether the compound-receiver resolver should strip C-style cast
    * expressions from receiver-position text before resolving it —
    * `((Target)((Object)expr)).method()` peels to receiver `expr` with
@@ -1129,7 +1495,7 @@ export interface ScopeResolver {
    *
    * A second opting language must extend the classifier grammar or
    * convert this toggle into a per-language classifier hook (the
-   * `unwrapCollectionAccessor` pattern) — do not flip this flag for
+   * `elementTypeOf` pattern) — do not flip this flag for
    * another language as-is.
    *
    * Known non-goal: the compound-receiver options built from this
@@ -1146,14 +1512,23 @@ export interface ScopeResolver {
    * Languages like Go use structural typing — a struct satisfies an
    * interface if its method set is a superset, without an explicit
    * `implements` keyword. Runs after finalize, before resolution passes.
-   * Returns: Map<interface_DefId, implementing_struct_DefId[]>.
+   * Returns: Map<interface_DefId, StructuralImplementor[]>, where each entry
+   * names the implementing type AND the form in which it implements.
+   *
+   * `receiverForm` is not a confidence signal — it is the language's own
+   * distinction. In Go the method set of `T` and of `*T` differ (a
+   * pointer-receiver method belongs only to `*T`), so `receiverForm: 'pointer'`
+   * means the VALUE type does not implement the interface and only `*T` does.
+   * `'value'` means both do. Consumers that only want blast radius can ignore
+   * it; consumers reasoning about assignability must not.
+   *
    * Default: undefined (no structural interface detection).
    */
   readonly detectInterfaceImplementations?: (
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => Map<string, string[]>;
+  ) => StructuralImplementationResult;
 
   /**
    * Optional: mirror typeBindings from namespace-import target modules

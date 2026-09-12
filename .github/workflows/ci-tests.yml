@@ -24,8 +24,14 @@ jobs:
         shard: ${{ fromJSON(needs.shard-plan.outputs.cov_shards) }}
     # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
     # FTS-dependent lbug integration suites are guaranteed to run in CI.
+    # Same contract for Zig's vendored grammar: this runner is linux-x64,
+    # which vendor/tree-sitter-zig ships a prebuild for, so an absent grammar
+    # here is a packaging regression and not an unsupported platform. Without
+    # it every Zig suite skips and the job is green having never executed the
+    # native Zig parser once.
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_REQUIRE_ZIG: '1'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
@@ -278,8 +284,16 @@ jobs:
         shell: bash
         run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
 
+      # GITNEXUS_REQUIRE_ZIG=1: every OS in this matrix has a committed
+      # vendored tree-sitter-zig prebuild (linux-arm64 is rebuilt by the
+      # prebuild workflow; ubuntu/windows/macos latest are x64/arm64 with
+      # shipped binaries), so the smoke's "optional grammar may be absent"
+      # exemption is revoked here and an ABI-broken Zig binding fails the
+      # job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
         run: npx vitest run test/unit/parser-loader-abi.test.ts
+        env:
+          GITNEXUS_REQUIRE_ZIG: '1'
         working-directory: gitnexus
 
   # End-to-end smoke test for the #1728 packaging fix: pack the published
@@ -295,7 +309,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows pack + web install regularly exceeds 15 minutes when setup also
+    # runs prepare/postinstall/build before prepack compiles the same tree again.
+    timeout-minutes: 20
     steps:
       # persist-credentials: false — this job runs npm pack + npm install -g
       # from a tarball and never pushes back; the token in .git/config would
@@ -304,9 +320,20 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      # Skip prepare/postinstall/build here. `npm pack` runs prepack, which
+      # compiles CLI + web into the tarball this job actually installs.
       - uses: ./.github/actions/setup-gitnexus
         with:
-          build: 'true'
+          lifecycle-scripts: 'false'
+
+      # `npm pack` runs prepack, which builds the web UI into gitnexus/web/
+      # so the tarball matches what `npm publish` ships. Install those deps
+      # here, in their own visible step, rather than letting build.js do it
+      # from inside an execSync.
+      - name: Install gitnexus-web dependencies
+        shell: bash
+        run: npm ci
+        working-directory: gitnexus-web
 
       - name: Pack gitnexus tarball
         shell: bash
@@ -347,6 +374,10 @@ jobs:
             exit 1
           fi
           echo "Installed package at: $INSTALLED"
+
+          # The npm package contract includes the built web UI. Validate the
+          # installed artifact, not just the source workflow that produced it.
+          node "$INSTALLED/scripts/assert-web-assets.mjs" "$INSTALLED/web"
 
           # #836 invariant: no node_modules/ or build/ under any vendor/*.
           BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)
@@ -407,9 +438,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: gitnexus/package-lock.json
-      - name: Build gitnexus-shared
-        run: npm ci && npm run build
-        working-directory: gitnexus-shared
       - name: Install and build gitnexus
         shell: bash
         run: |
@@ -481,7 +509,29 @@ jobs:
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
 
+      - name: Java wildcard-static route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: named-import control vs wildcard materialization;
+        # fingerprints bindings and guards scaling + absolute wall time.
+        run: node --import tsx bench/java-wildcard-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin package-star route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs package-star folding;
+        # fingerprints route facts and guards scaling + widening overhead.
+        run: node --import tsx bench/kotlin-star-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language scope-capture fingerprint + scaling guards
+        # Runs even after an earlier guard fails (#2895). Every step here was
+        # fail-fast, so the FIRST failing --check aborted the job and every guard
+        # after it reported `skipped` — which reads identically to "nothing to do".
+        # Audited across 13 benchmark runs on #2856: the job succeeded zero times
+        # and the last two guards executed zero times for the life of the PR, while
+        # two reviews read the checks summary and saw nothing wrong. `!cancelled()`
+        # rather than `always()` so an explicit cancel still stops the job.
+        if: ${{ !cancelled() }}
         # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
@@ -489,6 +539,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Callable-value-flow target-index guards (#2693)
+        if: ${{ !cancelled() }}
         # Build-free: asserts buildGraphTargetIndex resolves an unchanged target
         # set (fingerprint), stays linear in def count, and that the #2693
         # widened gate — which now considers VALUE bindings, a population that
@@ -500,7 +551,202 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Java Lombok accessor synthesis guards (#2885)
+        if: ${{ !cancelled() }}
+        # Build-free: no-Lombok vs Lombok-heavy corpora; fingerprint over
+        # synthetic Method ids; scaling + widening overhead budgets.
+        run: node --import tsx bench/java-lombok-synthesis/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin JVM accessor synthesis guards (#2885)
+        if: ${{ !cancelled() }}
+        # Build-free: no-property vs data-class corpora; fingerprint over
+        # synthetic Method ids; scaling + widening overhead budgets.
+        run: node --import tsx bench/kotlin-jvm-accessors/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin Spring config-consumer capture guards (#2412)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs wildcard-import feature path;
+        # fingerprints @Value / @ConfigurationProperties facts and guards scaling
+        # + widening overhead. The parity check is the regression gate: each file
+        # declares a sibling nested type named `Value`, which must not suppress
+        # the imported Spring annotation (file-wide shadowing dropped 2 of every
+        # 3 facts on this corpus).
+        run: node --import tsx bench/spring-config-bindings/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Re-export closure scaling guards (#2864)
+        # Build-free: asserts buildReexportClosures stays linear in chain depth
+        # and within an absolute ceiling on a wide package corpus. #2864 changed
+        # this pass's input class from TypeScript barrels (a handful of shallow
+        # edges) to every module-level Python `from m import x`, which is where
+        # its two quadratic corners became reachable. The depth arm specifically
+        # guards MAX_VIA_LENGTH — the bound that was removed once already, in
+        # fc919ad6, and stayed invisible for as long as the input was shallow.
+        run: node --import tsx bench/finalize-reexport/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Parse dispatch-round cadence guards (#3194, #3196)
+        if: ${{ !cancelled() }}
+        # Build-free: asserts parse-cache pack membership is unchanged
+        # (fingerprint — every cache key derives from it), that a fixed corpus
+        # still batches into a fixed number of dispatch rounds, and that the
+        # round budget counts UTF-8 bytes rather than UTF-16 code units. Round
+        # boundaries are deliberately invisible to graph output, so no test can
+        # see these regress. Rationale and history: see the header of
+        # bench/parse-dispatch-rounds/measure.mjs.
+        run: node --import tsx bench/parse-dispatch-rounds/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Python workspace import-scan guards (#3254)
+        if: ${{ !cancelled() }}
+        # Build-free: same baseline approach as parse-dispatch-rounds —
+        # exact link/lookalike floors plus a fingerprint, then ratio timing
+        # only (scan scaling and from-token prefilter advantage). See
+        # bench/python-workspace-import-scan/measure.mjs.
+        run: node --import tsx bench/python-workspace-import-scan/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: MCP tools/list countRepos vs listRepos guards (#3259, #3184)
+        if: ${{ !cancelled() }}
+        # Build-free: exact registry cardinality + tool-roster + schema-flag
+        # floors, then ratio timing only (countRepos/listRepos and
+        # listTools/listRepos). No millisecond ceiling — this repo has
+        # already been bitten by a fixed ms budget. Isolated GITNEXUS_HOME;
+        # fixture is N real git repos so listRepos pays rev-list. See
+        # bench/mcp-tools-list/measure.mjs.
+        run: node --import tsx bench/mcp-tools-list/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: C++ qualified-namespace resolution guards (#2788)
+        if: ${{ !cancelled() }}
+        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
+        # unchanged symbol set (fingerprint) and that per-call-site cost stays
+        # independent of corpus size. Rationale and history: see the header of
+        # bench/cpp-qualified-ns/measure.mjs.
+        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Import-target resolution guards (every registered language, #2877–#2909, PR #2911)
+        if: ${{ !cancelled() }}
+        # Build-free: runs EVERY import-target resolver registered in
+        # SCOPE_RESOLVERS — plus C# a second time WITH csproj configs, over the
+        # identical corpus, because the no-csproj arm returns before it can
+        # reach the leg #2902 indexed. One arm per registered language over ONE
+        # shared corpus, and no registered language ungated. That is enforced,
+        # not enumerated: measure.mjs derives its list from a LANG_REGISTRY
+        # table and its --check inventory arm reconciles that table against
+        # SCOPE_RESOLVERS in both directions, so a language roster typed out
+        # here would only be a second copy that can go stale — this one did.
+        # A C/C++ #include is an import site for this purpose and is gated like
+        # every other registered language (its headers arrive through
+        # resolutionConfig rather than allFilePaths, which is the one structural
+        # difference — see `newPass`).
+        #
+        # Asserts each returns an unchanged target set (a fingerprint per
+        # language AND per arm), that per-import cost stays independent of
+        # corpus size AND of path depth, that the absolute small-arm cost holds
+        # — a constant-factor regression that grows both scale arms equally
+        # passes every ratio — and that the per-pass index eight of them retain
+        # stays within an absolute byte ceiling. The corpus SHAPE is asserted
+        # too: a fingerprint alone cannot tell a legitimate resolution change
+        # from a corpus quietly shrunk below the size the timing arms need.
+        #
+        # Several arms exist because an arm that stops MEASURING otherwise
+        # passes. The heap arms drive real resolvers and carry a FLOOR as well
+        # as a ceiling: when buildSuffixIndex's suffix maps went lazy, four arms
+        # that called the builder directly read 0 B, and 0 B is under every
+        # ceiling. EVERY budget is checked for PRESENCE first, timing and heap
+        # alike, because `got > undefined` is false and `got < ceiling *
+        # undefined` is false too, so deleting a budget key deleted its gate —
+        # and the two heap scalars gate all eight heap arms at once. The heap
+        # arm's own corpus shape (its two file counts, its path depth and the
+        # probe it resolves) is asserted by the same loop as the timing arms,
+        # because those four decide WHAT it measures. And an inventory arm
+        # reconciles the bench's language table against SCOPE_RESOLVERS itself,
+        # so a newly registered resolver cannot ship ungated the way JavaScript
+        # did.
+        #
+        # The resolvers gated first were added as their own O(imports × files)
+        # scans were indexed away (Ruby rebuilt a suffix index per `require`;
+        # COBOL scanned twice per `COPY`), and the same corpus shape scores >3.3
+        # against those pre-fix implementations. The rest were ungated until
+        # this PR, which is not a theoretical gap: PR #2911 found JavaScript
+        # reaching suffixResolve with no index at all — 25 972 µs per import at
+        # 8000 files, protected only by unit tests. This step is what stops the
+        # next one shipping.
+        #
+        # SCOPE: "independent of corpus size" holds for UNIQUE-LEAF layouts,
+        # where no two directories share a last segment and no two files share a
+        # basename — which is what the small/large/deep arms are, and where
+        # every index bucket holds exactly one entry. The `collide` arm runs the
+        # identical workload on the layout these languages are actually written
+        # in (svcN/internal, SrcN/Models, a repeated basename per package, four
+        # SPM modules instead of fifty); there the bucket grows with the file
+        # count by construction and go, csharp, dart, java, swift and c/cpp
+        # legitimately score 2.1–3.9, so that arm carries its own per-language
+        # budget. It is a scope limit, not a regression — the indexed code is
+        # still faster on that shape than the pre-change scan. Rust is the one
+        # language whose collide arm is NOT a shared-leaf layout: it probes
+        # candidate paths and is provably flat in the file count, so its arm is
+        # a deep module tree that varies `::` segment count instead — the axis
+        # its cost actually has.
+        #
+        # --expose-gc enables the retained-heap arm; --check REFUSES to run
+        # without it rather than passing with the memory gate silently skipped.
+        # ~44–45 s, which is essentially unchanged from the ~46 s it cost
+        # before: the timing phase did fall from 39.8 s to 28.7 s when the
+        # min-of-N estimator became per-language, but the inventory arm's one
+        # dynamic import (pipeline/registry.ts pulls in every registered
+        # provider) costs 6–10 s depending on the box and consumes almost all of
+        # that. Report mode, which does not load the registry, is the mode that
+        # got faster: ~33–35 s. Kept as-is because this job runs minutes clear
+        # of the sharded coverage job that gates the merge, so the seconds buy
+        # no merge latency — see COST in the bench header. The ts
+        # family (javascript/typescript/vue) is still the largest block, 8.8 s,
+        # because suffixResolve probes ~39 extensions per path part on a miss.
+        # If this ever has to shrink, drop collide/collide_large for typescript
+        # and vue (−3.9 s) — the only cut that removes near-duplicate work
+        # rather than coverage. N is 15 (matching bench/cfg) for every language
+        # whose cheapest arm is under 5 ms, because depth_ratio divides two
+        # sub-3 ms numbers and at 5 or 7 it tripped its own budget roughly 1 run
+        # in 20; the six languages whose cheapest arm is 20-28 ms drop to 7-8,
+        # where the measured overshoot is at most 6.3%. The estimator was fixed
+        # rather than the budget widened; distributions in _arms_note.
+        # The Kotlin arm here is a second corpus, not a replacement for the
+        # kotlin-import-target bench below, which carries declared-package
+        # correctness probes this shared corpus does not.
+        # It sits with the other resolver-index guards rather than at the end of
+        # the job: parking a new gate last is not safety, it is the slot least
+        # likely to execute (#2895 measured the last two guards running zero
+        # times in 13 runs). #2899 landed the `if: ${{ !cancelled() }}` below,
+        # which is what makes position irrelevant — a failing step no longer
+        # aborts the ones after it.
+        # Rationale, budgets and the measured blind spot: see the header of
+        # measure.mjs and _blind_spot in baselines.json.
+        run: node --expose-gc --import tsx bench/import-target/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin declared-package import correctness + scaling guards
+        if: ${{ !cancelled() }}
+        # Build-free: fingerprints declared-package evidence, external decoy
+        # rejection, top-level/member/wildcard imports, overload sets and root
+        # packages, then guards one package-index build per workspace against
+        # file-count and path-depth scaling. Rationale and history: see the
+        # header of bench/kotlin-import-target/measure.mjs.
+        run: node --import tsx bench/kotlin-import-target/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Ruby gem-boundary correctness + scaling guards (#3096)
+        if: ${{ !cancelled() }}
+        # Includes real manifest loading; checks scoped resolution and scaling
+        # as sibling projects or declared gem counts grow independently.
+        run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Receiver-resolution drop guards
+        if: ${{ !cancelled() }}
         # NOT build-free: this one runs the real pipeline, so it needs dist/
         # (the setup action above builds). ~2m15s.
         #
@@ -509,13 +755,24 @@ jobs:
         # recorder gates on the receiver's punctuation, not on what the
         # reference is, so property reads would inflate it by ~20%. The shape
         # arm asserts the state of each receiver spelling by EDGE PRESENCE,
-        # which is the only arm that can see the shapes the recorder is blind
-        # to (`?.`, explicit type args, `repos[0]`): those emit no edge AND no
-        # drop, so fixing them moves the count by zero.
+        # which is the only arm that can see shapes the recorder is blind to:
+        # they emit no edge AND no drop, so fixing them moves the count by zero.
+        #
+        # `repos[0]` is no longer among them (#2766): Case 0's gate now accepts
+        # a minted receiver chain instead of testing the receiver's punctuation,
+        # so subscript receivers record a drop and ARE countable. 13 shapes moved
+        # INVISIBLE -> VISIBLE that way. `?.` and explicit type args remain
+        # invisible on some languages, so the shape arm still earns its keep.
+        #
+        # The check is EXACT-MATCH, which is strictly stronger than a ratchet:
+        # the count cannot rise without a deliberate rebaseline, and the
+        # rebaseline path demands the movement be explained. No separate
+        # drop-ratchet gate is needed on top of this.
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the JS/TS scope set is unchanged. Block scopes are
         # what make `let`/`const` in sibling blocks distinct bindings, but a
         # scope per `statement_block` triples the count and deepens every
@@ -527,7 +784,37 @@ jobs:
         run: node --import tsx bench/scope-emission/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Zig cross-file static-gating guards (#3162)
+        if: ${{ !cancelled() }}
+        # Build-free: fingerprints cross-file dead-call classification and
+        # guards the workspace enrichment pass across file-count scaling.
+        run: node --import tsx bench/zig-cross-file-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Objective-C workspace resolution guards (#3179)
+        if: ${{ !cancelled() }}
+        # Build-free: fingerprints spread (typed self/super/sibling) and
+        # protocol-candidate evidence, and gates linear file-count scaling
+        # of emitPostResolutionEdges. Import lookup is the shared
+        # import-target `objc` arm; this is the C#/Zig analog for the
+        # workspace message-send pass.
+        run: node --import tsx bench/objective-c-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Callable-value reference resolution guards (#3399)
+        if: ${{ !cancelled() }}
+        # Build-free: pins the resolved-target SET of `resolveValueRefTarget`
+        # (exact site/resolved/declined counts plus an order-independent
+        # fingerprint) and asserts its per-site cost stays independent of
+        # workspace size across a 4x file-count step. The pass resolves a
+        # qualified receiver through `scopes.qualifiedNames`, a workspace-wide
+        # index: keyed it is O(1) per site, scanned it is O(files) — a
+        # regression a fixture cannot see and a 257-file binding table can.
+        run: node --import tsx bench/value-ref-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
+        if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
         # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
         # retained heap all stay sub-quadratic for the straight-line /
@@ -538,6 +825,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Emit-persistence throughput / byte-identity guards (#2203)
+        if: ${{ !cancelled() }}
         # Build-free: asserts streamAllCSVsToDisk output is byte-identical
         # (order-independent CSV-line fingerprint — the #2203 U2/U3 emit
         # optimisations must not change graph content) and that emit wall-time
@@ -547,6 +835,7 @@ jobs:
         working-directory: gitnexus
 
       - name: Streaming PDG-emit byte-identity / bounded-RSS guards (#2202)
+        if: ${{ !cancelled() }}
         # Build-free: asserts the streaming PdgEmitSink emits a CSV row SET
         # byte-identical to the whole-graph streamAllCSVsToDisk emit, AND that
         # the in-memory graph retains zero BasicBlock nodes (the O(chunk) peak-RSS
@@ -556,14 +845,25 @@ jobs:
         working-directory: gitnexus
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        if: ${{ !cancelled() }}
+        # cpp-adl-benchmark.test.ts and csharp-razor-view-components-benchmark.test.ts
+        # are not `*-pipeline-benchmark.test.ts` files but belong here for the
+        # same reason: they are skipIf-gated on GITNEXUS_BENCH, so the scaling
+        # guards they hold never run in the main coverage job.
         env:
           GITNEXUS_BENCH: '1'
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/csharp-razor-view-components-benchmark.test.ts
+          test/integration/objective-c-pipeline-benchmark.test.ts
+          test/integration/cpp-adl-benchmark.test.ts
+          test/integration/data-route-table-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
+          test/integration/spring-dynamic-lookup-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts
@@ -597,6 +897,11 @@ jobs:
     timeout-minutes: 20
     env:
       GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+      # This job installs bubblewrap, the pinned runtime and a built GitNexus,
+      # so the offline sweep runs here with nothing provisioning-stubbed: real
+      # containment, real mounts, real graph. A missing piece fails the job
+      # rather than silently falling back to the stubbed path.
+      GITNEXUS_REQUIRE_FULL_SWEEP: '1'
       GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -619,7 +924,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -642,11 +947,6 @@ jobs:
             "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
-      - name: Build pinned shared runtime
-        run: |
-          npm ci
-          npm run build
-        working-directory: gitnexus-shared
       - name: Install and build pinned GitNexus runtime
         run: |
           npm ci
@@ -660,7 +960,9 @@ jobs:
           tests/test_process_control.py
           tests/test_proposer_sandbox.py
           tests/test_workflow_bench_sessions.py
-          tests/test_ce_plugin_runtime.py -q
+          tests/test_ce_plugin_runtime.py
+          tests/test_offline_sweep_integration.py
+          tests/test_mock_provider.py -q
         working-directory: eval
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
@@ -682,5 +984,6 @@ jobs:
       - name: Prove Windows process-tree ownership
         run: >-
           uv run --locked --extra dev python -m pytest
-          tests/test_process_control.py -q
+          tests/test_process_control.py tests/test_model_gateway.py
+          -k "not locked_litellm" -q
         working-directory: eval

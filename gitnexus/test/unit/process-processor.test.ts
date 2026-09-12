@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   processProcesses,
+  traceFromEntryPoint,
+  buildSinkFunctionSet,
+  deduplicateTraces,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
@@ -558,5 +561,853 @@ describe('processProcesses', () => {
       expect(largeRepo).toBe(1000);
       expect(largeRepo).toBeGreaterThan(300);
     });
+  });
+});
+
+/**
+ * D1/D2 — the trace walk must reach DEEP flows, not just shallow ones.
+ *
+ * The walk stops after a fixed NUMBER of traces, so traversal order decides
+ * which traces those are. Breadth-first reached every shallow terminal before
+ * any deep one, so the quota filled with the shortest paths in the graph and
+ * the walk stopped — `maxTraceDepth` was never approached.
+ *
+ * Measured on a 75k-node repo before the fix: of 300 processes NONE exceeded 7
+ * steps and 90% were 3-4, so a multi-hop business flow had no process that
+ * could represent it and `query` could only rank the mechanical pairs that did
+ * exist. What looked like a ranking problem was a construction problem.
+ *
+ * This fixture is that shape in miniature: one deep chain competing with enough
+ * shallow branches to exhaust the trace budget before the chain is reached.
+ */
+describe('process depth (D1/D2)', () => {
+  // Drives the walk DIRECTLY. Through `processProcesses` this is unobservable:
+  // `findEntryPoints` returns several starting points, so the deep chain is
+  // traced from inside it whatever the traversal order does — a test there
+  // passes under BOTH traversals and guards nothing.
+  const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
+
+  const deepAndShallow = (order: readonly string[]): Map<string, string[]> => {
+    // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
+    // the entry: three shallow branches carrying four immediate terminals each
+    // = 12 traces, exactly the walk budget (maxBranching * 3). Breadth-first
+    // records all twelve and stops before descending the deep branch at all.
+    const calls = new Map<string, string[]>();
+    calls.set('entry', [...order]);
+    for (const b of ['s1', 's2', 's3']) {
+      calls.set(b, [`${b}_l1`, `${b}_l2`, `${b}_l3`, `${b}_l4`]);
+    }
+    for (let i = 1; i <= 7; i++) calls.set(`d${i}`, [`d${i + 1}`]);
+    return calls;
+  };
+
+  it('descends a deep chain instead of spending the budget on shallow branches', () => {
+    const traces = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
+    const deepest = Math.max(0, ...traces.map((t) => t.length));
+    // Shallow terminals are 3 nodes. Anything longer proves it descended.
+    expect(deepest).toBeGreaterThan(3);
+  });
+
+  // Sibling ORDER, which the walk previously got backwards: `slice` selected
+  // the first N callees while `pop()` explored them last-first, so the budget
+  // went to the LAST-declared branch. For `main() { init(); …; shutdown(); }`
+  // that spends the walk on `shutdown` and can drop `init` — the earliest steps
+  // of a flow, which is the opposite of what a process describes.
+  //
+  // The consequence is honest and worth pinning: with a fixed trace budget, a
+  // deep branch declared AFTER enough shallow ones is not reached. That is a
+  // budget limitation, not a traversal one, and it must not be silent.
+  it('follows source order, so an early deep branch wins and a late one may not', () => {
+    const early = traceFromEntryPoint('entry', deepAndShallow(['d1', 's1', 's2', 's3']), cfg);
+    const late = traceFromEntryPoint('entry', deepAndShallow(['s1', 's2', 's3', 'd1']), cfg);
+    expect(Math.max(0, ...early.map((t) => t.length))).toBeGreaterThan(3);
+    // Not asserted as a desirable outcome — asserted so a change to the budget
+    // shows up here rather than silently altering which flows exist.
+    expect(Math.max(0, ...late.map((t) => t.length))).toBe(3);
+  });
+  // The `processProcesses`-level depth test that used to sit here was VACUOUS,
+  // and the note at the top of this describe says exactly why: `findEntryPoints`
+  // returns several starting points, so the deep chain gets traced from inside
+  // it whatever the traversal does. Measured: under breadth-first the same
+  // fixture still yielded a deepest stepCount of 8, so the assertion passed
+  // with the production change reverted and guarded nothing.
+  //
+  // What IS observable at this level is which traces survive SELECTION, and
+  // that is asserted in the diversity describe below. Traversal order is
+  // asserted against `traceFromEntryPoint` directly, above.
+});
+
+describe('sink-terminated flows (R3-6)', () => {
+  const addFn = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    id: string,
+    line: number,
+  ): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: {
+        name: id.split(':')[1],
+        filePath: 'src/flow.ts',
+        startLine: line,
+        endLine: line + 2,
+      },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /**
+   * The shape the whole item is about: a business flow whose meaningful
+   * endpoint CALLS ONWARD into helpers. `placeOrder` is where the program does
+   * something; `formatDate` is merely where control stops.
+   */
+  const flowGraph = (): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:scan', 1);
+    addFn(graph, 'func:score', 10);
+    addFn(graph, 'func:placeOrder', 20);
+    addFn(graph, 'func:formatDate', 30);
+    addFn(graph, 'func:pad', 40);
+    addCall(graph, 'func:scan', 'func:score');
+    addCall(graph, 'func:score', 'func:placeOrder');
+    addCall(graph, 'func:placeOrder', 'func:formatDate');
+    addCall(graph, 'func:formatDate', 'func:pad');
+    return graph;
+  };
+
+  // `placeOrder` spans lines 20-22, so an outward action on line 21 belongs to
+  // it — the attribution the file-level FETCHES edge could not express.
+  const ORDER_SITE = [{ filePath: 'src/flow.ts', lineNumber: 21 }];
+
+  it('ends a trace where the program reaches outward', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:placeOrder');
+  });
+
+  // The half a naive implementation gets wrong: emitting the sink trace at the
+  // walk and then letting subset-removal delete it one step later is a no-op,
+  // because a sink-terminated flow is BY DEFINITION a prefix of the longer
+  // chain that runs on past it.
+  it('keeps the sink flow even though it is a prefix of a longer chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const terminals = result.processes.map((p) => p.terminalId);
+    expect(terminals).toContain('func:placeOrder');
+    // The longer chain still exists — the two answer different questions.
+    expect(terminals).toContain('func:pad');
+  });
+
+  it('ranks the sink flow above the leaf chain', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, ORDER_SITE);
+    const first = result.processes[0]?.terminalId;
+    expect(first).toBe('func:placeOrder');
+  });
+
+  // Without sites, behaviour must be exactly what it was.
+  it('changes nothing when no outward action is known', async () => {
+    const result = await processProcesses(flowGraph(), [], undefined, {}, []);
+    expect(result.processes.map((p) => p.terminalId)).not.toContain('func:placeOrder');
+  });
+
+  it('attributes a site to the INNERMOST enclosing function', () => {
+    const graph = createKnowledgeGraph();
+    // An outer function spanning the inner one; the inner performs the call.
+    graph.addNode({
+      id: 'func:outer',
+      label: 'Function',
+      properties: { name: 'outer', filePath: 'src/a.ts', startLine: 1, endLine: 50 },
+    });
+    graph.addNode({
+      id: 'func:inner',
+      label: 'Function',
+      properties: { name: 'inner', filePath: 'src/a.ts', startLine: 10, endLine: 20 },
+    });
+    const sinks = buildSinkFunctionSet(graph, [{ filePath: 'src/a.ts', lineNumber: 15 }]);
+    expect(sinks.has('func:inner')).toBe(true);
+    expect(sinks.has('func:outer')).toBe(false);
+  });
+});
+
+describe('process selection diversity (R2-3)', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  // The shape that crowded the reporting repo's list: many entry points whose
+  // deepest chains all bottom out in the SAME utility, plus a shorter flow
+  // ending somewhere of its own. Ranking on depth alone hands every slot to
+  // the first group and the reader learns one thing many times.
+  it('does not let one terminal take every slot', async () => {
+    const graph = createKnowledgeGraph();
+
+    // Six entry points, each with a 5-node chain into one shared utility.
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+
+    // One shorter, distinct flow — the "business flow" analogue.
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    const terminals = result.processes.map((p) => p.terminalId);
+    const sharedCount = terminals.filter((t) => t === 'func:sharedUtil').length;
+
+    // Under depth-only ranking every one of the four slots goes to a
+    // five-node chain ending in sharedUtil.
+    expect(sharedCount).toBeLessThan(terminals.length);
+    expect(new Set(terminals).size).toBeGreaterThan(1);
+  });
+
+  it('keeps a shorter flow with its own terminal rather than a fifth duplicate', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:sharedUtil');
+    for (let e = 1; e <= 6; e++) {
+      let prev = `func:entry${e}`;
+      addFn(graph, prev);
+      for (let i = 1; i <= 3; i++) {
+        const mid = `func:e${e}_m${i}`;
+        addFn(graph, mid);
+        addCall(graph, prev, mid);
+        prev = mid;
+      }
+      addCall(graph, prev, 'func:sharedUtil');
+    }
+    addFn(graph, 'func:ownEntry');
+    addFn(graph, 'func:ownMid');
+    addFn(graph, 'func:ownTerminal');
+    addCall(graph, 'func:ownEntry', 'func:ownMid');
+    addCall(graph, 'func:ownMid', 'func:ownTerminal');
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 4 });
+    expect(result.processes.map((p) => p.terminalId)).toContain('func:ownTerminal');
+  });
+});
+
+// ============================================================================
+// DETERMINISM (W2-5)
+// ============================================================================
+//
+// The persisted graph must not depend on the order nodes and edges happened to
+// be inserted. Four sorts in this file ranked by score or length alone and
+// returned 0 on a tie; `Array.prototype.sort` is stable, so a 0 preserves INPUT
+// order, which traces back to `graph.iterNodes()` — i.e. to the order the
+// filesystem enumerated files. Under `maxProcesses` capping that decided which
+// `Process` and `STEP_IN_PROCESS` nodes were persisted at all.
+//
+// Reproduced before the fix: two equal three-step flows with `maxProcesses: 1`
+// selected `handleAlpha`; inserting the identical nodes and CALLS edges in
+// reverse selected `handleBeta`. Same repository, same commit, different graph.
+//
+// This asserts the INVARIANT rather than any one sort, so it covers all four
+// sites — and any future one — without needing to know where they are.
+describe('process detection is insertion-order invariant (W2-5)', () => {
+  const buildGraph = (reverse: boolean) => {
+    const graph = createKnowledgeGraph();
+    const memberships: CommunityMembership[] = [];
+    const chains = [
+      ['handleAlpha', 'midAlpha', 'endAlpha'],
+      ['handleBeta', 'midBeta', 'endBeta'],
+      ['handleGamma', 'midGamma', 'endGamma'],
+    ];
+    const ordered = reverse ? [...chains].reverse() : chains;
+    for (const chain of ordered) {
+      for (const name of chain) {
+        graph.addNode({
+          id: `func:${name}`,
+          label: 'Function',
+          properties: {
+            name,
+            filePath: `src/${name}.ts`,
+            startLine: 1,
+            endLine: 10,
+            isExported: true,
+          },
+        });
+        memberships.push({ nodeId: `func:${name}`, communityId: 'community:0' });
+      }
+    }
+    for (const chain of ordered) {
+      for (let i = 0; i < chain.length - 1; i++) {
+        graph.addRelationship({
+          id: `call:${chain[i]}`,
+          sourceId: `func:${chain[i]}`,
+          targetId: `func:${chain[i + 1]}`,
+          type: 'CALLS',
+          confidence: 0.9,
+          reason: 'import-resolved',
+        });
+      }
+    }
+    return { graph, memberships };
+  };
+
+  it('selects the same process under a cap regardless of insertion order', async () => {
+    // The capped case is the one that mattered: with room for everything the
+    // set is equal either way and only the ORDER differs, so a cap is what turns
+    // an ordering difference into a persistence difference.
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    const b = await processProcesses(reversed.graph, reversed.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.entryPointId).toBe(b.processes[0]?.entryPointId);
+  });
+
+  it('produces an identical process set uncapped', async () => {
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships);
+    const b = await processProcesses(reversed.graph, reversed.memberships);
+    const shape = (r: Awaited<ReturnType<typeof processProcesses>>): string[] =>
+      r.processes.map((p) => `${p.entryPointId}->${p.terminalId}`).sort();
+    expect(shape(a).length).toBeGreaterThan(0);
+    expect(shape(a)).toEqual(shape(b));
+  });
+
+  // The TRACE-RANK tie specifically. The chains above differ by entry point, so
+  // they are separated by the entry-point sort before trace ranking is reached —
+  // which means they do NOT exercise `rankedByInterest`'s tiebreak, verified by
+  // mutation. This fixture gives ONE entry point two equal-length branches to
+  // different terminals, so the only thing that can order them is the trace
+  // comparator itself.
+  const buildBranchedGraph = (reverse: boolean) => {
+    const graph = createKnowledgeGraph();
+    const memberships: CommunityMembership[] = [];
+    const branches = [
+      ['midAlpha', 'endAlpha'],
+      ['midBeta', 'endBeta'],
+    ];
+    const ordered = reverse ? [...branches].reverse() : branches;
+    const add = (name: string, isExported: boolean) => {
+      graph.addNode({
+        id: `func:${name}`,
+        label: 'Function',
+        properties: { name, filePath: `src/${name}.ts`, startLine: 1, endLine: 10, isExported },
+      });
+      memberships.push({ nodeId: `func:${name}`, communityId: 'community:0' });
+    };
+    add('handleShared', true);
+    for (const branch of ordered) for (const name of branch) add(name, true);
+    for (const branch of ordered) {
+      graph.addRelationship({
+        id: `call:root:${branch[0]}`,
+        sourceId: 'func:handleShared',
+        targetId: `func:${branch[0]}`,
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'import-resolved',
+      });
+      graph.addRelationship({
+        id: `call:${branch[0]}`,
+        sourceId: `func:${branch[0]}`,
+        targetId: `func:${branch[1]}`,
+        type: 'CALLS',
+        confidence: 0.9,
+        reason: 'import-resolved',
+      });
+    }
+    return { graph, memberships };
+  };
+
+  it('orders two equal-length traces from ONE entry point deterministically', async () => {
+    const forward = buildBranchedGraph(false);
+    const reversed = buildBranchedGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    const b = await processProcesses(reversed.graph, reversed.memberships, undefined, {
+      maxProcesses: 1,
+    });
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.terminalId).toBe(b.processes[0]?.terminalId);
+  });
+
+  it('emits the traces in the same ORDER, not merely the same set', async () => {
+    // Order is what the cap consumes, so a set-only assertion would pass while
+    // the defect persisted.
+    const forward = buildGraph(false);
+    const reversed = buildGraph(true);
+    const a = await processProcesses(forward.graph, forward.memberships);
+    const b = await processProcesses(reversed.graph, reversed.memberships);
+    expect(a.processes.map((p) => p.entryPointId)).toEqual(b.processes.map((p) => p.entryPointId));
+  });
+});
+
+// W2-3. Every ceiling in this file used to fire silently: the result came back
+// looking whole and no consumer could tell it was partial. The code's own
+// comment said as much ("a silently truncating cap reads as 'this is
+// everything'") and then only logged at debug — a log nobody has enabled is not
+// a disclosure. Each counter below is asserted against a graph built to trip
+// exactly one ceiling.
+describe('truncation is reported, not swallowed (W2-3)', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /** A chain of `len` functions, prefixed so several can coexist in one graph. */
+  const addChain = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    prefix: string,
+    len: number,
+  ): void => {
+    for (let i = 0; i < len; i++) addFn(graph, `func:${prefix}${i}`);
+    for (let i = 0; i < len - 1; i++)
+      addCall(graph, `func:${prefix}${i}`, `func:${prefix}${i + 1}`);
+  };
+
+  it('reports nothing truncated when every flow fits', async () => {
+    // Asserted FIRST: every positive assertion below is meaningless if the flag
+    // is simply always true.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'a', 3);
+    const result = await processProcesses(graph, [], undefined, {
+      maxTraceDepth: 10,
+      maxBranching: 4,
+      maxProcesses: 50,
+    });
+    expect(result.processes.length).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(false);
+    expect(result.stats.truncation).toMatchObject({
+      entryPointsUnexplored: 0,
+      walksCutByBudget: 0,
+      tracesDepthCapped: 0,
+      calleesDropped: 0,
+      processesDropped: 0,
+    });
+  });
+
+  it('counts entry points that were never traced at all', async () => {
+    // The trace loop stops on the TRACE quota (maxProcesses * 2), so the
+    // remaining entry points are not "no flows found" — nothing looked at them.
+    const graph = createKnowledgeGraph();
+    for (let e = 0; e < 8; e++) addChain(graph, `e${e}_`, 3);
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 1 });
+    const { entryPointsFound } = result.stats;
+    const { entryPointsUnexplored } = result.stats.truncation;
+    expect(entryPointsFound).toBeGreaterThan(0);
+    // Strictly between: some WERE traced, so this is a real early exit rather
+    // than "the loop never ran", and strictly less than the total, so the
+    // counter is not just echoing `entryPointsFound` back.
+    expect(entryPointsUnexplored).toBeGreaterThan(0);
+    expect(entryPointsUnexplored).toBeLessThan(entryPointsFound);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts traces that stop at maxTraceDepth rather than at a terminal', async () => {
+    // The trace is KEPT, but it is a prefix of a longer flow, and only this
+    // counter tells the two apart downstream.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'deep', 12);
+    const result = await processProcesses(graph, [], undefined, { maxTraceDepth: 4 });
+    expect(result.stats.truncation.tracesDepthCapped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts callees never followed because of maxBranching', async () => {
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:fanout');
+    for (let c = 0; c < 9; c++) {
+      addChain(graph, `leaf${c}_`, 2);
+      addCall(graph, 'func:fanout', `func:leaf${c}_0`);
+    }
+    const result = await processProcesses(graph, [], undefined, { maxBranching: 2 });
+    expect(result.stats.truncation.calleesDropped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts entry-point walks abandoned with branches still on the stack', async () => {
+    // Per-entry-point trace budget is `maxBranching * 3`, so a tree that is
+    // wide enough exhausts it with unexplored branches left. Every node here
+    // has EXACTLY `maxBranching` callees, which keeps `calleesDropped` at zero
+    // so this asserts its own counter and not a neighbour's.
+    const graph = createKnowledgeGraph();
+    addFn(graph, 'func:root');
+    for (let a = 0; a < 4; a++) {
+      addFn(graph, `func:mid${a}`);
+      addCall(graph, 'func:root', `func:mid${a}`);
+      for (let b = 0; b < 4; b++) {
+        addFn(graph, `func:leaf${a}_${b}`);
+        addCall(graph, `func:mid${a}`, `func:leaf${a}_${b}`);
+      }
+    }
+    const result = await processProcesses(graph, [], undefined, { maxBranching: 4 });
+    expect(result.stats.truncation.walksCutByBudget).toBeGreaterThan(0);
+    expect(result.stats.truncation.calleesDropped).toBe(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('counts deduplicated traces dropped by the maxProcesses cap', async () => {
+    // Counted against the DEDUPED population: the gap between raw traces and
+    // deduped ones is deduplication working, which is not truncation.
+    const graph = createKnowledgeGraph();
+    for (let e = 0; e < 6; e++) addChain(graph, `p${e}_`, 3);
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 2 });
+    expect(result.processes.length).toBeLessThanOrEqual(2);
+    expect(result.stats.truncation.processesDropped).toBeGreaterThan(0);
+    expect(result.stats.truncation.truncated).toBe(true);
+  });
+
+  it('leaves the four pre-existing stats untouched', async () => {
+    // The field is ADDITIVE. A consumer reading totalProcesses must not have to
+    // learn about truncation to keep working.
+    const graph = createKnowledgeGraph();
+    addChain(graph, 'x', 3);
+    const result = await processProcesses(graph, []);
+    expect(result.stats).toMatchObject({
+      totalProcesses: expect.any(Number),
+      crossCommunityCount: expect.any(Number),
+      avgStepCount: expect.any(Number),
+      entryPointsFound: expect.any(Number),
+    });
+  });
+});
+
+// The ceiling the first pass of W2-3 MISSED. `findEntryPoints` ranks every
+// scoring candidate and then keeps the top 200, so `entryPointsUnexplored` —
+// computed over the list it RETURNS — can only ever see the survivors, and the
+// cap that decides how much of a repository is looked at at all reported
+// nothing. On anything above 200 candidates it is the DOMINANT ceiling.
+describe('the entry-point candidate cap is disclosed too', () => {
+  const addFn = (graph: ReturnType<typeof createKnowledgeGraph>, id: string): void => {
+    graph.addNode({
+      id,
+      label: 'Function',
+      properties: { name: id.split(':')[1], filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+    });
+  };
+  const addCall = (
+    graph: ReturnType<typeof createKnowledgeGraph>,
+    from: string,
+    to: string,
+  ): void => {
+    graph.addRelationship({
+      id: `rel:${from}->${to}`,
+      sourceId: from,
+      targetId: to,
+      type: 'CALLS',
+      confidence: 1,
+      reason: 'test',
+    });
+  };
+
+  /**
+   * 205 three-node chains. Every node with at least one callee scores above
+   * zero, so this is 410 candidates for 200 slots — and NOTHING else is
+   * truncated: the chains are three long (under `maxTraceDepth`), single-callee
+   * (under `maxBranching`), one trace each (under the per-entry budget), and
+   * `maxProcesses` is set high enough that none are dropped.
+   */
+  const manyCandidates = (): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 205; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:c${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCall(graph, `func:c${c}_${i}`, `func:c${c}_${i + 1}`);
+    }
+    return graph;
+  };
+
+  it('counts the candidates that never made the ranked list', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+    });
+
+    // 410 candidates, 200 kept: the counter reports what `entryPointsFound`
+    // structurally cannot.
+    expect(result.stats.entryPointsFound).toBe(200);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(210);
+  });
+
+  it('folds the new ceiling into `truncated`, and fires ALONE', async () => {
+    // Asserted exhaustively rather than as `truncated === true`: if any other
+    // counter were also non-zero the first assertion would prove nothing about
+    // which ceiling was detected.
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+    });
+
+    expect(result.stats.truncation).toEqual({
+      truncated: true,
+      entryPointCandidatesDropped: 210,
+      entryPointsUnexplored: 0,
+      walksCutByBudget: 0,
+      tracesDepthCapped: 0,
+      calleesDropped: 0,
+      processesDropped: 0,
+    });
+  });
+
+  it('reports nothing dropped when every candidate fits', async () => {
+    // The control for the two above — the counter must not simply always fire.
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 5; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:s${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCall(graph, `func:s${c}_${i}`, `func:s${c}_${i + 1}`);
+    }
+
+    const result = await processProcesses(graph, [], undefined, { maxProcesses: 1000 });
+
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
+    expect(result.stats.truncation.truncated).toBe(false);
+  });
+});
+
+// The three trace sorts in this file each joined the path inside the COMPARATOR
+// — up to four joins per comparison — and two of the three joined on a SPACE.
+// Both are now one shared helper keyed on NUL.
+//
+// The separator is not cosmetic. Node ids embed file paths and a path may
+// contain a space, so `['A B', 'C']` and `['A', 'B C']` produce the same
+// space-joined key, the comparator returns 0, and a stable sort falls back to
+// the input order the tiebreak exists to remove — the exact defect W2-5 fixed,
+// reintroduced by the key. `traceKey` two functions away already pads with `->`
+// because an unanchored join is ambiguous (#2894); this is the same lesson.
+describe('trace ordering is total and allocation-free (#2899 follow-up)', () => {
+  const noSink = (): boolean => false;
+
+  /**
+   * A deterministic 200-trace corpus with NO space in any id — i.e. the corpus
+   * on which the old space-joined key and the new NUL-joined key must agree.
+   *
+   * Lehmer LCG rather than `Math.random`: the assertion below is an ORDER
+   * IDENTITY claim, and evidence for it has to be reproducible. Every trace ends
+   * in an id unique to it, which is what keeps subsumption out of the way so the
+   * function returns exactly its sorted input.
+   */
+  const seededCorpus = (): string[][] => {
+    let seed = 20260809;
+    const next = (): number => (seed = (seed * 48271) % 2147483647);
+    const traces: string[][] = [];
+    for (let i = 0; i < 200; i++) {
+      const depth = 3 + (next() % 3);
+      const trace: string[] = [];
+      for (let j = 0; j < depth - 1; j++) trace.push(`n${next() % 6}`);
+      trace.push(`term${i}`);
+      traces.push(trace);
+    }
+    return traces;
+  };
+
+  it('produces exactly the order the space-joined comparator produced', () => {
+    // ORDER IDENTITY. The refactor is only allowed to change WHEN keys are
+    // built, never the resulting order, because the order is what the
+    // `maxProcesses` cap consumes. Both separators sort below every character a
+    // node id can contain, so joining on either is order-equivalent to comparing
+    // the arrays element by element — this pins that equivalence instead of
+    // asserting it in a comment.
+    const corpus = seededCorpus();
+    const legacy = [...corpus].sort(
+      (a, b) =>
+        b.length - a.length || (a.join(' ') < b.join(' ') ? -1 : a.join(' ') > b.join(' ') ? 1 : 0),
+    );
+
+    expect(deduplicateTraces(corpus, noSink)).toEqual(legacy);
+  });
+
+  it('orders a pair that COLLIDES under a space separator', () => {
+    // `['r', 'a b', 'c']` and `['r', 'a', 'b c']` both join to "r a b c", so the
+    // space comparator returns 0 and `Array.prototype.sort`, being stable, hands
+    // the decision back to input order. Under NUL they differ at the third
+    // character and the order is fixed.
+    const first: string[][] = [
+      ['r', 'a b', 'c'],
+      ['r', 'a', 'b c'],
+    ];
+    const second: string[][] = [
+      ['r', 'a', 'b c'],
+      ['r', 'a b', 'c'],
+    ];
+
+    expect(deduplicateTraces(first, noSink)).toEqual(deduplicateTraces(second, noSink));
+  });
+});
+
+// The same collision, reached through the WHOLE processor rather than one
+// helper — because a space in a node id is not hypothetical (ids embed file
+// paths, and directories with spaces are ordinary), and because W2-5 states its
+// guarantee over `processProcesses`, not over its internals.
+//
+// The observable defect was narrower than the collision itself: `rankedByInterest`
+// already keyed on NUL, so the FINAL rank was safe. It was `deduplicateByEndpoints`
+// — which keeps ONE representative per entry->terminal pair — that still joined on
+// a space, so when two equal-length paths between the SAME two endpoints collided,
+// which one survived was decided by insertion order. The surviving path is what
+// the `Process` node records, so the persisted graph differed.
+describe('insertion-order invariance survives ids containing spaces', () => {
+  /**
+   * Two four-step paths from `func:r` to `func:z`, via `func:a b -> func:c` and
+   * via `func:a -> b func:c`. Both join to "func:r func:a b func:c func:z" under
+   * a space, so the endpoint-dedup comparator returned 0 and kept whichever the
+   * DFS happened to reach first. Under NUL they differ at the separator after
+   * `func:a` and the representative is fixed.
+   */
+  const collidingGraph = (reverse: boolean): ReturnType<typeof createKnowledgeGraph> => {
+    const graph = createKnowledgeGraph();
+    const add = (id: string, name: string): void => {
+      graph.addNode({
+        id,
+        label: 'Function',
+        properties: { name, filePath: 'src/a.ts', startLine: 1, endLine: 2 },
+      });
+    };
+    const call = (from: string, to: string): void => {
+      graph.addRelationship({
+        id: `rel:${from}=>${to}`,
+        sourceId: from,
+        targetId: to,
+        type: 'CALLS',
+        confidence: 1,
+        reason: 'test',
+      });
+    };
+    const branches: [string, string][] = [
+      ['func:a b', 'func:c'],
+      ['func:a', 'b func:c'],
+    ];
+    const ordered = reverse ? [...branches].reverse() : branches;
+    add('func:r', 'r');
+    add('func:z', 'z');
+    for (const [mid, next] of ordered) {
+      add(mid, 'mid');
+      add(next, 'next');
+    }
+    for (const [mid, next] of ordered) {
+      call('func:r', mid);
+      call(mid, next);
+      call(next, 'func:z');
+    }
+    return graph;
+  };
+
+  it('keeps the same representative path whichever branch is inserted first', async () => {
+    const a = await processProcesses(collidingGraph(false), []);
+    const b = await processProcesses(collidingGraph(true), []);
+
+    // One entry->terminal pair, so endpoint dedup keeps exactly one path — and
+    // that path is what the Process node records.
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.trace).toEqual(b.processes[0]?.trace);
+  });
+
+  it('selects the same flow under a cap whichever branch is inserted first', async () => {
+    const a = await processProcesses(collidingGraph(false), [], undefined, { maxProcesses: 1 });
+    const b = await processProcesses(collidingGraph(true), [], undefined, { maxProcesses: 1 });
+
+    expect(a.processes.length).toBe(1);
+    expect(a.processes[0]?.trace).toEqual(b.processes[0]?.trace);
+  });
+});
+
+// #2894. `deduplicateTraces` decided subsumption with an UNANCHORED
+// `String.includes`, so a match could begin in the middle of a node id and a
+// trace was discarded against a chain it does not appear in.
+//
+// Reported as measured-inert — the collision needs one node id to be a strict
+// suffix of another at a `->` boundary, and real ids (`Function:<path>:<name>`)
+// do not produce that. These use bare ids to exercise the predicate directly,
+// which is the only way to reach it: the shape cannot be built from realistic
+// ids, and that is precisely why nothing caught it.
+describe('trace subsumption matches whole steps only (#2894)', () => {
+  const noSink = (): boolean => false;
+
+  it('keeps a trace whose key appears mid-identifier in a longer trace', () => {
+    // 'X->AA->B'.includes('A->B') is true, but `A` is not a step of that chain.
+    const kept = deduplicateTraces(
+      [
+        ['X', 'AA', 'B'],
+        ['A', 'B'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toContain('A->B');
+  });
+
+  it('still discards a GENUINE sub-path', () => {
+    // The behaviour the predicate exists for, pinned so the fix cannot be
+    // "stop subsuming anything", which would pass the test above trivially.
+    const kept = deduplicateTraces(
+      [
+        ['A', 'B', 'C'],
+        ['A', 'B'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toEqual(['A->B->C']);
+  });
+
+  it('discards a sub-path that is a SUFFIX of a longer trace', () => {
+    // Padding both ends must not break suffix or prefix subsumption.
+    const kept = deduplicateTraces(
+      [
+        ['A', 'B', 'C'],
+        ['B', 'C'],
+      ],
+      noSink,
+    );
+    expect(kept.map((t) => t.join('->'))).toEqual(['A->B->C']);
   });
 });

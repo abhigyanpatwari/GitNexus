@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
+import { describe, it, expect, vi } from 'vitest';
+import { promises as nodeFsPromises, existsSync } from 'node:fs';
+import v8 from 'node:v8';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ParsedFile } from 'gitnexus-shared';
@@ -7,8 +9,16 @@ import {
   clearParsedFileStore,
   persistParsedFileChunk,
   persistParsedFileShardSync,
+  persistDurableParsedFileShardSync,
+  durableChunkHasShards,
   loadParsedFilesForPaths,
   getParsedFileStoreDir,
+  getDurableParsedFileDir,
+  parsedFileLoadGc,
+  prepareDurableParsedFileChunk,
+  pruneAndSaveDurableParsedFileStore,
+  mergeStagedDurableParsedFileStore,
+  loadDurableParsedFileIndex,
 } from '../../src/storage/parsedfile-store.js';
 
 /**
@@ -72,6 +82,64 @@ describe('parsedfile-store', () => {
       expect(scope.bindings.get('fn')?.[0]?.defId).toBe('Function:a.c:fn');
       expect(scope.typeBindings).toBeInstanceOf(Map);
       expect((scope.typeBindings.get('x') as { name: string }).name).toBe('int');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('repeated loads with different wantPaths each see their own files (shard-listing memo)', async () => {
+    // Scope resolution calls loadParsedFilesForPaths once per LANGUAGE over the
+    // same store, so the second and later passes reuse the shard path listings
+    // the first pass authenticated instead of re-reading every shard. The
+    // failure mode that memo introduces is a FALSE SKIP: pass 2 concludes a
+    // shard holds nothing it wants, and those files silently never reach the
+    // graph — an exit-0 wrong answer, not a crash. Each pass below wants files
+    // the previous pass did not, so a listing carried over from the wrong shard
+    // shows up as a missing file here.
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c'), makeParsedFile('b.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('c.c')]);
+      await persistParsedFileChunk(dir, 'chunk-2', [makeParsedFile('d.c')]);
+
+      const first = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect([...first.keys()]).toEqual(['a.c']);
+
+      // Key-set asserts alone still pass if the memo never skipped: the
+      // envelope listing would open the shard and skip deserialize. Spy
+      // open+deserialize on a later miss so a no-memo path fails.
+      const deserialize = vi.spyOn(v8, 'deserialize');
+      const open = vi.spyOn(nodeFsPromises, 'open');
+      try {
+        const second = await loadParsedFilesForPaths(dir, new Set(['c.c', 'd.c']));
+        expect([...second.keys()].sort()).toEqual(['c.c', 'd.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file))).sort()).toEqual([
+          'chunk-1.v8',
+          'chunk-2.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(2);
+
+        open.mockClear();
+        deserialize.mockClear();
+        const third = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+        expect([...third.keys()]).toEqual(['b.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+          'chunk-0.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(1);
+
+        const fourth = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c', 'c.c', 'd.c']));
+        expect([...fourth.keys()].sort()).toEqual(['a.c', 'b.c', 'c.c', 'd.c']);
+      } finally {
+        deserialize.mockRestore();
+        open.mockRestore();
+      }
+
+      // A shard written AFTER the memo was populated is still found: the memo
+      // holds listings, not the shard roster, and the roster is re-read per call.
+      await persistParsedFileChunk(dir, 'chunk-3', [makeParsedFile('e.c')]);
+      const fifth = await loadParsedFilesForPaths(dir, new Set(['e.c', 'a.c']));
+      expect([...fifth.keys()].sort()).toEqual(['a.c', 'e.c']);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -241,15 +309,9 @@ describe('parsedfile-store', () => {
       const files = [makeParsedFile('a.c'), makeParsedFile('b.c')];
       await persistParsedFileChunk(asyncDir, 'shard', files);
       persistParsedFileShardSync(syncDir, 'shard', files);
-      const asyncBytes = await readFile(
-        path.join(getParsedFileStoreDir(asyncDir), 'shard.json'),
-        'utf-8',
-      );
-      const syncBytes = await readFile(
-        path.join(getParsedFileStoreDir(syncDir), 'shard.json'),
-        'utf-8',
-      );
-      expect(syncBytes).toBe(asyncBytes);
+      const asyncBytes = await readFile(path.join(getParsedFileStoreDir(asyncDir), 'shard.v8'));
+      const syncBytes = await readFile(path.join(getParsedFileStoreDir(syncDir), 'shard.v8'));
+      expect(syncBytes.equals(asyncBytes)).toBe(true);
     } finally {
       await rm(asyncDir, { recursive: true, force: true });
       await rm(syncDir, { recursive: true, force: true });
@@ -406,6 +468,7 @@ describe('parsedfile-store', () => {
         filePath: 'a.c',
         type: 'Function',
         qualifiedName: 'fn',
+        isSynthetic: true,
       };
       const pf = {
         filePath: 'a.c',
@@ -445,6 +508,7 @@ describe('parsedfile-store', () => {
         filePath: 'a.c',
         type: 'Function',
         qualifiedName: 'fn',
+        isSynthetic: true,
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -523,12 +587,12 @@ describe('parsedfile-store receiverChain sanitation', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-chain-'));
     try {
       await persistParsedFileChunk(dir, 'chunk-0', [
-        makeStoreEntry('x.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+        makeStoreEntry('x.ts', { referenceSites: [siteWith('2|svc|cgetUser')] }),
       ]);
       const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
       expect(loaded.referenceSites[0]).toMatchObject({
         name: 'save',
-        receiverChain: '1|svc|cgetUser',
+        receiverChain: '2|svc|cgetUser',
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -551,8 +615,9 @@ describe('parsedfile-store receiverChain sanitation', () => {
 
   it.each([
     ['malformed', 'not-a-chain'],
-    ['wrong version', '2|svc|cgetUser'],
-    ['over depth', '1|svc|ca|cb|cc|cd'],
+    ['unknown future version', '3|svc|cgetUser'],
+    ['superseded v1 payload', '1|svc|cgetUser'],
+    ['over depth', '2|svc|ca|cb|cc|cd'],
     ['non-string', 42],
   ])(
     'strips a %s chain but KEEPS the site — it still resolves via the text cascade',
@@ -577,7 +642,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       await persistParsedFileChunk(dir, 'chunk-0', [
         makeStoreEntry('garbage.ts', { referenceSites: 'nonsense' }),
-        makeStoreEntry('ok.ts', { referenceSites: [siteWith('1|svc|cgetUser')] }),
+        makeStoreEntry('ok.ts', { referenceSites: [siteWith('2|svc|cgetUser')] }),
       ]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['garbage.ts', 'ok.ts']));
       expect(loaded.has('garbage.ts')).toBe(false);
@@ -596,19 +661,338 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await persistParsedFileChunk(dir, 'chunk-0', [
         makeStoreEntry('x.ts', {
           referenceSites: [
-            siteWith('1|svc|cgetUser'),
+            siteWith('2|svc|cgetUser'),
             siteWith('not-a-chain'),
-            siteWith('1|other|ffield'),
+            siteWith('2|other|ffield'),
           ],
         }),
       ]);
       const loaded = (await loadParsedFilesForPaths(dir, new Set(['x.ts']))).get('x.ts')!;
       expect(loaded.referenceSites).toHaveLength(3);
-      expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '1|svc|cgetUser' });
+      expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '2|svc|cgetUser' });
       expect(loaded.referenceSites[1]).not.toHaveProperty('receiverChain');
-      expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '1|other|ffield' });
+      expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '2|other|ffield' });
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes one .v8 shard per chunk and skips deserialize for non-intersecting listings (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-skip-'));
+    const deserialize = vi.spyOn(v8, 'deserialize');
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('b.c')]);
+      expect((await readdir(getParsedFileStoreDir(dir))).sort()).toEqual([
+        'chunk-0.v8',
+        'chunk-1.v8',
+      ]);
+      deserialize.mockClear();
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+      expect([...loaded.keys()]).toEqual(['b.c']);
+      expect(deserialize).toHaveBeenCalledTimes(1);
+    } finally {
+      deserialize.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('misses when the embedded path listing is corrupted', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-listing-fb-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      const dest = path.join(getParsedFileStoreDir(dir), 'ok.v8');
+      const buf = await readFile(dest);
+      const v8len = buf.readUInt16LE(14);
+      const pathsOff = 16 + v8len + 12;
+      buf[pathsOff] = 0;
+      await writeFile(dest, buf);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits a path listing when a filePath contains a newline and still loads', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-listing-nl-'));
+    const weird = 'weird\nname.c';
+    const deserialize = vi.spyOn(v8, 'deserialize');
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual(['ok.v8']);
+      deserialize.mockClear();
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['unrelated.c']));
+      expect(loaded.size).toBe(0);
+      expect(deserialize).toHaveBeenCalledTimes(1);
+      expect((await loadParsedFilesForPaths(dir, new Set([weird]))).has(weird)).toBe(true);
+    } finally {
+      deserialize.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites a shard in place when the path listing is no longer safe', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-listing-rewrite-'));
+    const weird = 'weird\nname.c';
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('safe.c')]);
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual(['ok.v8']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set([weird, 'safe.c']));
+      expect(loaded.has(weird)).toBe(true);
+      expect(loaded.has('safe.c')).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not forceGc on a small store (byte budget, not every 8 shards) (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-'));
+    const gc = vi.fn();
+    const prev = parsedFileLoadGc.run;
+    parsedFileLoadGc.run = gc;
+    try {
+      for (let i = 0; i < 16; i++) {
+        await persistParsedFileChunk(dir, `s${i}`, [makeParsedFile(`f${i}.c`)]);
+      }
+      await loadParsedFilesForPaths(dir, new Set(Array.from({ length: 16 }, (_, i) => `f${i}.c`)));
+      expect(gc).not.toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prev;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('forceGc when accumulated raw JSON bytes reach parsedFileLoadGc.byteBudget (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-pos-'));
+    const gc = vi.fn();
+    const prevRun = parsedFileLoadGc.run;
+    const prevBudget = parsedFileLoadGc.byteBudget;
+    parsedFileLoadGc.run = gc;
+    parsedFileLoadGc.byteBudget = 8;
+    try {
+      await persistParsedFileChunk(dir, 's0', [makeParsedFile('f0.c')]);
+      await loadParsedFilesForPaths(dir, new Set(['f0.c']));
+      expect(gc).toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prevRun;
+      parsedFileLoadGc.byteBudget = prevBudget;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores a complete durable chunk into a stable run-store snapshot', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-load-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
+      await rm(path.join(durable, 'abc'), { recursive: true, force: true });
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual(['abc-w1-0.v8']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a durable chunk with corrupt or incomplete shard coverage', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-partial-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      persistDurableParsedFileShardSync(durable, 'abc', 2, 0, [makeParsedFile('b.c')]);
+      await writeFile(path.join(durable, 'abc', 'abc-w2-0.v8'), Buffer.from([0, 1, 2]));
+
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects valid durable shards that do not cover every indexed path', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-missing-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('run-store shards overlay durable hits for the same path', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-overlay-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
+      persistParsedFileShardSync(dir, 'w1-0', [makeParsedFile('other.c')]);
+      persistParsedFileShardSync(dir, 'w1-1', [makeStoreEntry('a.c', { moduleScope: 'from-run' })]);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'other.c']));
+      expect(loaded.get('a.c')?.moduleScope).toBe('from-run');
+      expect(loaded.has('other.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clearParsedFileStore leaves the durable cache intact', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-keep-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const src = path.join(durable, 'abc', 'abc-w1-0.v8');
+      const before = await readFile(src);
+      persistParsedFileShardSync(dir, 'w1-0', [makeParsedFile('run.c')]);
+      await clearParsedFileStore(dir);
+      expect(await readFile(src)).toEqual(before);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
+      expect((await loadParsedFilesForPaths(dir, new Set(['a.c']))).has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips Maps and shared def identity through V8 (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-id-'));
+    try {
+      const def = {
+        nodeId: 'Function:a.c:fn',
+        filePath: 'a.c',
+        type: 'Function' as const,
+        qualifiedName: 'fn',
+      };
+      const pf = makeParsedFile('a.c');
+      (pf.localDefs as unknown as object[])[0] = def;
+      (pf.scopes[0] as { ownedDefs: object[] }).ownedDefs = [def];
+      await persistParsedFileChunk(dir, 'ok', [pf]);
+      const loadedFile = (await loadParsedFilesForPaths(dir, new Set(['a.c']))).get('a.c');
+      expect(loadedFile).toBeDefined();
+      if (!loadedFile) return;
+      expect(loadedFile.scopes[0].bindings).toBeInstanceOf(Map);
+      expect(loadedFile.localDefs[0]).toBe(loadedFile.scopes[0].ownedDefs[0]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a missing or corrupt V8 shard as a miss with no JSON fallback', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-miss-'));
+    try {
+      await persistParsedFileChunk(dir, 'gone', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'junk', [makeParsedFile('b.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await rm(path.join(storeDir, 'gone.v8'));
+      await writeFile(path.join(storeDir, 'junk.v8'), Buffer.from([0, 1, 2, 3, 4]));
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c']));
+      expect(loaded.size).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when the atomic V8 publish cannot replace the dest', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-blocked-'));
+    try {
+      const dest = path.join(getParsedFileStoreDir(dir), 'ok.v8');
+      await nodeFsPromises.mkdir(dest, { recursive: true });
+      await writeFile(path.join(dest, 'occupied'), 'x', 'utf-8');
+      expect(await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')])).toBe(false);
+      expect((await loadParsedFilesForPaths(dir, new Set(['a.c']))).size).toBe(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // chmod is the only lever that makes a real `fs.rm` reject here, and root
+  // ignores directory write permission while Windows treats the mode bits as a
+  // near no-op. Skipping is honest; a green vacuous run is not.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps pruning and still writes the index when one chunk directory cannot be removed',
+    async () => {
+      // #3204: the non-survivor delete targets the same directory whose reset
+      // may have failed, so the causes that break the reset (permissions, a
+      // locked file, a read-only mount) break this rm too. One undeletable
+      // directory must not cost every other chunk its index entry.
+      const dir = await mkdtemp(path.join(tmpdir(), 'pf-rm-fail-'));
+      const durableDir = getDurableParsedFileDir(dir);
+      const undeletable = '3'.repeat(64);
+      const keep = '4'.repeat(64);
+      try {
+        await prepareDurableParsedFileChunk(durableDir, undeletable);
+        persistDurableParsedFileShardSync(durableDir, undeletable, 1, 0, [
+          makeParsedFile('gone.c'),
+        ]);
+        await prepareDurableParsedFileChunk(durableDir, keep);
+        persistDurableParsedFileShardSync(durableDir, keep, 1, 0, [makeParsedFile('keep.c')]);
+
+        // Clearing write permission on the chunk directory makes its shards
+        // un-unlinkable, so the recursive rm of that directory rejects while the
+        // store root stays writable for the index rewrite.
+        const doomed = path.join(durableDir, undeletable);
+        await nodeFsPromises.chmod(doomed, 0o555);
+        await expect(
+          pruneAndSaveDurableParsedFileStore(durableDir, 'v-test', new Set([keep])),
+        ).resolves.toBeUndefined();
+
+        // Assert the premise: the directory SURVIVED, i.e. the rm really did
+        // reject. Without this the test passes wherever the delete succeeds and
+        // would stay green if the try/catch were reverted.
+        expect(existsSync(doomed)).toBe(true);
+
+        const index = await loadDurableParsedFileIndex(durableDir, 'v-test');
+        expect(index.has(keep)).toBe(true);
+        expect(index.has(undeletable)).toBe(false);
+      } finally {
+        await nodeFsPromises.chmod(path.join(durableDir, undeletable), 0o755).catch(() => {});
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('overlays staged durable chunks onto the live store without dropping live-only keys', async () => {
+    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-'));
+    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stg-'));
+    try {
+      const liveOnly = '1'.repeat(64);
+      const rewritten = '2'.repeat(64);
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), liveOnly);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), liveOnly, 1, 0, [
+        makeParsedFile('keep.c'),
+      ]);
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), rewritten);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), rewritten, 1, 0, [
+        makeParsedFile('old.c'),
+      ]);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(live),
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(staged), rewritten);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(staged), rewritten, 1, 0, [
+        makeParsedFile('new.c'),
+      ]);
+
+      await mergeStagedDurableParsedFileStore(
+        live,
+        staged,
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      expect(await durableChunkHasShards(live, liveOnly, new Set(['keep.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['new.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['old.c']))).toBe(false);
+    } finally {
+      await rm(live, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
     }
   });
 });

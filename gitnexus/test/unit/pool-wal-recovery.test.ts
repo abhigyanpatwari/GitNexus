@@ -44,6 +44,10 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
     const msg = err instanceof Error ? err.message : String(err ?? '');
     return /corrupt(ed)?\s+wal|invalid\s+wal\s+record/i.test(msg);
   }),
+  isStorageVersionMismatchError: vi.fn(() => false),
+  throwIfStorageVersionMismatch: vi.fn(),
+  sleep: vi.fn(async () => {}),
+  STORAGE_VERSION_MISMATCH_SUGGESTION: '',
 }));
 
 vi.mock('../../src/mcp/stdio-capture.js', () => ({

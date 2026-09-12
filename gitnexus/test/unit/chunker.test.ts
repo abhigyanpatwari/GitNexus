@@ -4,25 +4,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { characterChunk } from '../../src/core/embeddings/character-chunk.js';
 
-const { createParserForLanguage } = vi.hoisted(() => ({
+const { createParserForLanguage, resolveLanguageKey } = vi.hoisted(() => ({
   createParserForLanguage: vi.fn(),
-}));
-
-const { getLanguageFromFilename } = vi.hoisted(() => ({
-  getLanguageFromFilename: vi.fn((filePath: string) =>
-    filePath.endsWith('.rs') ? 'rust' : 'typescript',
-  ),
-}));
-
-vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
-  createParserForLanguage,
-  isLanguageAvailable: vi.fn().mockReturnValue(true),
   resolveLanguageKey: vi.fn((language: string, filePath?: string) =>
     language === 'typescript' && filePath?.endsWith('.tsx') ? 'typescript:tsx' : language,
   ),
 }));
 
-vi.mock('gitnexus-shared', () => ({
+const { getLanguageFromFilename } = vi.hoisted(() => ({
+  getLanguageFromFilename: vi.fn((filePath: string) => {
+    if (filePath.endsWith('.m') || filePath.endsWith('.mm')) return 'objective-c';
+    return filePath.endsWith('.rs') ? 'rust' : 'typescript';
+  }),
+}));
+
+vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
+  createParserForLanguage,
+  isLanguageAvailable: vi.fn().mockReturnValue(true),
+  resolveLanguageKey,
+}));
+
+// Partial mock: `ast-utils` now resolves the LanguageProvider registry to apply
+// `preprocessSource`, and that graph needs the real shared exports (#2771).
+vi.mock('gitnexus-shared', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('gitnexus-shared')>()),
   getLanguageFromFilename,
 }));
 
@@ -93,7 +98,7 @@ const makeDeclarationTree = (
   memberTexts: string[],
 ) => {
   let searchFrom = 0;
-  const memberNodes = memberTexts.map((text, index) => {
+  const memberNodes = memberTexts.map((text) => {
     const startIndex = content.indexOf(text, searchFrom);
     if (startIndex < 0) {
       throw new Error(`Unable to locate member text: ${text}`);
@@ -115,6 +120,28 @@ const makeDeclarationTree = (
   return {
     rootNode: root,
   };
+};
+
+const makeObjectiveCDeclarationTree = (
+  nodeType: 'protocol_declaration' | 'class_interface',
+  content: string,
+  memberTexts: string[],
+) => {
+  const headerName = nodeType === 'protocol_declaration' ? 'Worker' : 'Worker (Tracing)';
+  const headerNode = makeFakeNode(
+    'identifier',
+    content.indexOf(headerName),
+    content.indexOf(headerName) + headerName.length,
+  );
+  let searchFrom = 0;
+  const memberNodes = memberTexts.map((text) => {
+    const startIndex = content.indexOf(text, searchFrom);
+    if (startIndex < 0) throw new Error(`Unable to locate member text: ${text}`);
+    searchFrom = startIndex + text.length;
+    return makeFakeNode('method_declaration', startIndex, startIndex + text.length);
+  });
+  const declNode = makeFakeNode(nodeType, 0, content.length, [headerNode, ...memberNodes]);
+  return { rootNode: makeFakeNode('program', 0, content.length, [declNode]) };
 };
 
 describe('characterChunk', () => {
@@ -174,9 +201,14 @@ describe('characterChunk', () => {
 describe('chunkNode', () => {
   beforeEach(() => {
     createParserForLanguage.mockReset();
-    getLanguageFromFilename.mockImplementation((filePath: string) =>
-      filePath.endsWith('.rs') ? 'rust' : 'typescript',
+    resolveLanguageKey.mockReset();
+    resolveLanguageKey.mockImplementation(
+      (language: string, filePath?: string) => `${language}:${filePath ?? ''}`,
     );
+    getLanguageFromFilename.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('.m') || filePath.endsWith('.mm')) return 'objective-c';
+      return filePath.endsWith('.rs') ? 'rust' : 'typescript';
+    });
   });
 
   it('returns single chunk for short content', async () => {
@@ -274,6 +306,442 @@ describe('chunkNode', () => {
     expect(combinedText).toContain('age: u32');
     expect(combinedText).toContain('address: String');
     expect(result[0].startLine).toBe(40);
+  });
+
+  it.each([
+    {
+      label: 'Protocol',
+      nodeType: 'protocol_declaration' as const,
+      filePath: 'Worker.m',
+      content: [
+        '@protocol Worker',
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+        '@end',
+      ].join('\n'),
+    },
+    {
+      label: 'Category',
+      nodeType: 'class_interface' as const,
+      filePath: 'Worker.mm',
+      content: [
+        '@interface Worker (Tracing)',
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+        '@end',
+      ].join('\n'),
+    },
+  ])(
+    'chunks Objective-C $label declarations at member boundaries',
+    async ({ label, nodeType, filePath, content }) => {
+      const members = [
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+      ];
+      createParserForLanguage.mockResolvedValue({
+        parse: vi.fn().mockReturnValue(makeObjectiveCDeclarationTree(nodeType, content, members)),
+      });
+
+      const result = await chunkNode(label, content, filePath, 1, 5, 90, 0);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].text).toContain(members[0]);
+      expect(result.slice(1).every((chunk) => chunk.text.startsWith('- (void)'))).toBe(true);
+      expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', filePath);
+    },
+  );
+
+  it('skips Objective-C parameterized interface arguments as declaration members', async () => {
+    const content = ['@interface Worker <Runnable>', '- (void)run;', '@end'].join('\n');
+    const nameStart = content.indexOf('Worker');
+    const argumentsStart = content.indexOf('<Runnable>');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('identifier', nameStart, nameStart + 'Worker'.length),
+      makeFakeNode('parameterized_arguments', argumentsStart, argumentsStart + '<Runnable>'.length),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'ParameterizedWorker.m', 1, 3, 40, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ParameterizedWorker.m');
+    expect(result[0].text).toContain('- (void)run');
+  });
+
+  it('skips Objective-C generic argument lists as declaration members', async () => {
+    const content = ['@interface Worker(Tracing)', '- (void)run;', '@end'].join('\n');
+    const nameStart = content.indexOf('Worker');
+    const argumentsStart = content.indexOf('(Tracing)');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('identifier', nameStart, nameStart + 'Worker'.length),
+      makeFakeNode('generic_arguments', argumentsStart, argumentsStart + '(Tracing)'.length),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'GenericCategoryWorker.m', 1, 3, 40, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'GenericCategoryWorker.m');
+    expect(result[0].text).toContain('- (void)run');
+    expect(result.some((chunk) => chunk.text === '(Tracing)')).toBe(false);
+  });
+
+  it('chunks an Objective-C implementation at method boundaries', async () => {
+    const content = [
+      '@implementation Worker',
+      '- (void)first {}',
+      '- (void)second {}',
+      '@end',
+    ].join('\n');
+    const firstMethod = '- (void)first {}';
+    const secondMethod = '- (void)second {}';
+    const firstImplementation = makeFakeNode(
+      'implementation_definition',
+      content.indexOf(firstMethod),
+      content.indexOf(firstMethod) + firstMethod.length,
+      [
+        makeFakeNode(
+          'method_definition',
+          content.indexOf(firstMethod),
+          content.indexOf(firstMethod) + firstMethod.length,
+        ),
+      ],
+    );
+    const secondImplementation = makeFakeNode(
+      'implementation_definition',
+      content.indexOf(secondMethod),
+      content.indexOf(secondMethod) + secondMethod.length,
+      [
+        makeFakeNode(
+          'method_definition',
+          content.indexOf(secondMethod),
+          content.indexOf(secondMethod) + secondMethod.length,
+        ),
+      ],
+    );
+    const declaration = makeFakeNode('class_implementation', 0, content.indexOf('@end') + 4, [
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      firstImplementation,
+      secondImplementation,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'ImplementationWorker.m', 1, 4, 48, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ImplementationWorker.m');
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toContain(firstMethod);
+    expect(result[1].text).toContain(secondMethod);
+    expect(result[1].text).not.toContain(firstMethod);
+  });
+
+  it('parses distinct Objective-C sources correctly through one cached parser', async () => {
+    const protocolMethods = [
+      '- (void)startWithConfiguration:(id)configuration;',
+      '- (void)stopWithCompletion:(id)completion;',
+      '- (void)reloadWithOptions:(id)options;',
+    ];
+    const categoryMethods = [
+      '- (void)traceStartWithConfiguration:(id)configuration;',
+      '- (void)traceStopWithCompletion:(id)completion;',
+      '- (void)traceReloadWithOptions:(id)options;',
+    ];
+    const protocolContent = ['@protocol Worker', ...protocolMethods, '@end'].join('\n');
+    const categoryContent = ['@interface Worker (Tracing)', ...categoryMethods, '@end'].join('\n');
+    const parser = {
+      parse: vi.fn((source: string) => {
+        if (source === protocolContent) {
+          return makeObjectiveCDeclarationTree(
+            'protocol_declaration',
+            protocolContent,
+            protocolMethods,
+          );
+        }
+        if (source === categoryContent) {
+          return makeObjectiveCDeclarationTree('class_interface', categoryContent, categoryMethods);
+        }
+        throw new Error(`Unexpected Objective-C source: ${source}`);
+      }),
+    };
+    createParserForLanguage.mockResolvedValue(parser);
+
+    const protocol = await chunkNode(
+      'Protocol',
+      protocolContent,
+      'CachedObjectiveC.m',
+      1,
+      5,
+      90,
+      0,
+    );
+    const category = await chunkNode(
+      'Category',
+      categoryContent,
+      'CachedObjectiveC.m',
+      1,
+      5,
+      90,
+      0,
+    );
+
+    expect(createParserForLanguage).toHaveBeenCalledTimes(1);
+    expect(protocol.map((chunk) => chunk.text).join('\n')).toContain(protocolMethods[2]);
+    expect(category.map((chunk) => chunk.text).join('\n')).toContain(categoryMethods[2]);
+    expect(parser.parse.mock.calls.map(([source]) => source)).toEqual([
+      protocolContent,
+      categoryContent,
+    ]);
+  });
+
+  it('expands Objective-C protocol optional and required sections', async () => {
+    const content = [
+      '@protocol P',
+      '@optional',
+      '- (void)first;',
+      '- (void)second;',
+      '@required',
+      '- (void)third;',
+      '- (void)fourth;',
+      '@end',
+    ].join('\n');
+    const members = ['- (void)first;', '- (void)second;', '- (void)third;', '- (void)fourth;'];
+    let searchFrom = 0;
+    const methodNodes = members.map((text) => {
+      const startIndex = content.indexOf(text, searchFrom);
+      searchFrom = startIndex + text.length;
+      return makeFakeNode('method_declaration', startIndex, startIndex + text.length);
+    });
+    const optionalStart = content.indexOf('@optional');
+    const requiredStart = content.indexOf('@required');
+    const optional = makeFakeNode(
+      'qualified_protocol_interface_declaration',
+      optionalStart,
+      methodNodes[1].endIndex,
+      methodNodes.slice(0, 2),
+    );
+    const required = makeFakeNode(
+      'qualified_protocol_interface_declaration',
+      requiredStart,
+      methodNodes[3].endIndex,
+      methodNodes.slice(2),
+    );
+    const header = makeFakeNode('identifier', content.indexOf('P'), content.indexOf('P') + 1);
+    const declaration = makeFakeNode('protocol_declaration', 0, content.length, [
+      header,
+      optional,
+      required,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Protocol', content, 'ProtocolSections.m', 1, 8, 36, 0);
+    const combined = result.map((chunk) => chunk.text).join('\n');
+    const requiredChunk = result.find((chunk) => chunk.text.includes(members[2]));
+
+    expect(result.length).toBeGreaterThan(1);
+    for (const member of members) expect(combined).toContain(member);
+    expect(
+      result.some((chunk) => chunk.text.includes(members[0]) && chunk.text.includes(members[1])),
+    ).toBe(false);
+    expect(requiredChunk?.text).toContain('@required');
+    expect(requiredChunk?.text).not.toContain(members[1]);
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ProtocolSections.m');
+  });
+
+  it('expands Objective-C instance variables before chunking a class declaration', async () => {
+    const content = [
+      '@interface Worker {',
+      '  id _first;',
+      '  id _second;',
+      '}',
+      '- (void)run;',
+      '@end',
+    ].join('\n');
+    const firstIvar = 'id _first;';
+    const secondIvar = 'id _second;';
+    const method = '- (void)run;';
+    const firstIvarStart = content.indexOf(firstIvar);
+    const secondIvarStart = content.indexOf(secondIvar);
+    const methodStart = content.indexOf(method);
+    const instanceVariables = makeFakeNode(
+      'instance_variables',
+      content.indexOf('{'),
+      content.indexOf('}') + 1,
+      [
+        makeFakeNode('instance_variable', firstIvarStart, firstIvarStart + firstIvar.length),
+        makeFakeNode('instance_variable', secondIvarStart, secondIvarStart + secondIvar.length),
+      ],
+    );
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      instanceVariables,
+      makeFakeNode('method_declaration', methodStart, methodStart + method.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'Worker.m', 1, 6, 48, 0);
+    const combined = result.map((chunk) => chunk.text).join('\n');
+
+    expect(result.length).toBeGreaterThan(1);
+    expect(combined).toContain(firstIvar);
+    expect(combined).toContain(secondIvar);
+    expect(combined).toContain(method);
+    expect(combined).toContain('}');
+    expect(
+      result.some((chunk) => chunk.text.includes(firstIvar) && chunk.text.includes(secondIvar)),
+    ).toBe(true);
+    expect(
+      result.some((chunk) => chunk.text.includes(secondIvar) && chunk.text.includes('}')),
+    ).toBe(true);
+  });
+
+  it('keeps ivar attributes attached to the following instance variable', async () => {
+    const extraMethods = ['- (void)alpha;', '- (void)bravo;', '- (void)charlie;'];
+    const content = [
+      '@interface Worker {',
+      '  __attribute__((unused)) id _first;',
+      '}',
+      ...extraMethods,
+      '@end',
+    ].join('\n');
+    const attribute = '__attribute__((unused))';
+    const firstIvar = 'id _first;';
+    const attrStart = content.indexOf(attribute);
+    const firstIvarStart = content.indexOf(firstIvar);
+    const instanceVariables = makeFakeNode(
+      'instance_variables',
+      content.indexOf('{'),
+      content.indexOf('}') + 1,
+      [
+        makeFakeNode('attribute_specifier', attrStart, attrStart + attribute.length),
+        makeFakeNode('instance_variable', firstIvarStart, firstIvarStart + firstIvar.length),
+      ],
+    );
+    const methodNodes = extraMethods.map((method) => {
+      const methodStart = content.indexOf(method);
+      return makeFakeNode('method_declaration', methodStart, methodStart + method.length);
+    });
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      instanceVariables,
+      ...methodNodes,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    // First-chunk prefix starts at `@interface`, so size must cover that
+    // prefix plus the ivar unit. Smaller sizes fall into characterChunk and
+    // can split the attribute token itself.
+    const chunkSize = content.indexOf('}') + 2;
+    const result = await chunkNode(
+      'Class',
+      content,
+      'WorkerAttr.m',
+      1,
+      extraMethods.length + 4,
+      chunkSize,
+      0,
+    );
+
+    expect(content.length).toBeGreaterThan(chunkSize);
+    expect(
+      result.some((chunk) => chunk.text.includes(attribute) && !chunk.text.includes(firstIvar)),
+    ).toBe(false);
+    expect(
+      result.some((chunk) => chunk.text.includes(attribute) && chunk.text.includes(firstIvar)),
+    ).toBe(true);
+  });
+
+  it('keeps Objective-C declaration modifiers in the class prefix', async () => {
+    const content = ['NS_ROOT_CLASS @interface Worker', '- (void)run;', '@end'].join('\n');
+    const modifier = 'NS_ROOT_CLASS';
+    const method = '- (void)run;';
+    const methodStart = content.indexOf(method);
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('storage_class_specifier', 0, modifier.length),
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      makeFakeNode('method_declaration', methodStart, methodStart + method.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'RootClass.m', 1, 3, 80, 0);
+
+    expect(result[0].text).toContain(method);
+    expect(result.some((chunk) => chunk.text.trim() === modifier)).toBe(false);
+  });
+
+  it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
+    const content = ['@protocol Worker <Runnable, Observable>', '- (void)run;', '@end'].join('\n');
+    const protocolNameStart = content.indexOf('Worker');
+    const inheritanceStart = content.indexOf('<Runnable, Observable>');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('protocol_declaration', 0, content.length, [
+      makeFakeNode('identifier', protocolNameStart, protocolNameStart + 'Worker'.length),
+      makeFakeNode(
+        'protocol_reference_list',
+        inheritanceStart,
+        inheritanceStart + '<Runnable, Observable>'.length,
+      ),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Protocol', content, 'ProtocolInheritance.m', 1, 3, 50, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ProtocolInheritance.m');
+    expect(result[0].text).toContain('- (void)');
+    expect(result[0].text).not.toBe('@protocol Worker <Runnable, Observable>');
   });
 
   it('splits a function into multiple AST-aware chunks using snippet offsets', async () => {

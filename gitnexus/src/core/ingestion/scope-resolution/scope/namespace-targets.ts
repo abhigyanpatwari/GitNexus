@@ -15,8 +15,19 @@
  *
  * Next-consumer contract: any language with namespace-style imports
  * (TypeScript `import * as X`, Java static import, Ruby `require`)
- * uses this directly. `ParsedImport.kind === 'namespace'` is the
- * cross-language hook.
+ * uses this directly. The finalized `ImportEdge.kind === 'namespace'`
+ * classification is authoritative; providers may produce it directly from
+ * syntax or reclassify a named import after target resolution proves it names
+ * a module.
+ *
+ * A namespace edge may be reachable under TWO receiver spellings: the name it
+ * binds locally, and — for a language that opts in via
+ * `ScopeResolver.namespaceReceiverIncludesImportPath` — the dotted module path
+ * it was imported under (#2826). Python's `import a.b` binds only `a` while
+ * the call site writes `a.b`, so both keys are needed. The opt-in exists
+ * because the edge shape alone cannot tell that case from Swift's
+ * `import Foo.Bar`, where the same pair means the opposite thing — see the
+ * hook's contract note.
  *
  * Scope-chain concern (verified 2026-04-21): `pythonImportOwningScope`
  * documents that function-local and class-body imports bind to the
@@ -34,29 +45,58 @@
 
 import type { ParsedFile } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
+
+export interface NamespaceTargetOptions {
+  /** `ScopeResolver.namespaceReceiverPaths` for the file's language. Absent
+   *  (or returning `undefined` per edge) keeps the local-name-only default:
+   *  the extra spellings are opt-in, never inferred from the edge shape. */
+  readonly receiverPaths?: ScopeResolver['namespaceReceiverPaths'];
+  /** Whether a path is a module the workspace parsed. Lets a provider propose
+   *  a prefix file and have it dropped when absent, instead of minting a key
+   *  to a file that does not exist. Defaults to "nothing exists". */
+  readonly moduleFileExists?: (filePath: string) => boolean;
+}
 
 export function collectNamespaceTargets(
   parsed: ParsedFile,
   scopes: ScopeResolutionIndexes,
+  options?: NamespaceTargetOptions,
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const moduleEdges = scopes.imports.get(parsed.moduleScope);
   if (moduleEdges === undefined) return out;
 
-  const namespaceLocals = new Set<string>();
-  for (const imp of parsed.parsedImports) {
-    if (imp.kind === 'namespace') namespaceLocals.add(imp.localName);
-  }
-
-  for (const edge of moduleEdges) {
-    if (edge.targetFile === null) continue;
-    if (!namespaceLocals.has(edge.localName)) continue;
-    let targets = out.get(edge.localName);
+  const addTarget = (key: string, targetFile: string): void => {
+    let targets = out.get(key);
     if (targets === undefined) {
       targets = [];
-      out.set(edge.localName, targets);
+      out.set(key, targets);
     }
-    if (!targets.includes(edge.targetFile)) targets.push(edge.targetFile);
+    if (!targets.includes(targetFile)) targets.push(targetFile);
+  };
+
+  const moduleFileExists = options?.moduleFileExists ?? ((): boolean => false);
+
+  for (const edge of moduleEdges) {
+    if (edge.targetFile === null || edge.kind !== 'namespace') continue;
+
+    const spellings = options?.receiverPaths?.(
+      {
+        localName: edge.localName,
+        importPath: edge.targetExportedName,
+        targetFile: edge.targetFile,
+      },
+      moduleFileExists,
+    );
+
+    // A provider that declines this edge — or has no hook — gets the default:
+    // the bound name alone, pointing at this edge's own target.
+    if (spellings === undefined) {
+      addTarget(edge.localName, edge.targetFile);
+      continue;
+    }
+    for (const [spelling, targetFile] of spellings) addTarget(spelling, targetFile);
   }
   return out;
 }

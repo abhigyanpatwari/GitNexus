@@ -76,15 +76,23 @@ const FULL_ORDER = [
   'crossFile',
   'scopeResolution',
   'springAutoConfiguration',
+  'springAop',
+  'springDestinations',
   'pruneLocalSymbols',
   'mro',
+  'springAopInheritance',
   'di',
   'communities',
   'processes',
 ];
 
 const WITHOUT_GRAPH_PHASES = FULL_ORDER.filter(
-  (n) => n !== 'mro' && n !== 'di' && n !== 'communities' && n !== 'processes',
+  (n) =>
+    n !== 'mro' &&
+    n !== 'springAopInheritance' &&
+    n !== 'di' &&
+    n !== 'communities' &&
+    n !== 'processes',
 );
 
 describe('buildPhaseList parity (registry refactor, #2080)', () => {
@@ -101,6 +109,30 @@ describe('buildPhaseList parity (registry refactor, #2080)', () => {
     expect(buildPhaseList({ skipGraphPhases: true }).map((p) => p.name)).toEqual(
       WITHOUT_GRAPH_PHASES,
     );
+  });
+
+  it('skipDerivedGraphPhases:true → omits communities/processes but keeps mro/di (#3016)', () => {
+    const names = buildPhaseList({ skipDerivedGraphPhases: true }).map((p) => p.name);
+    expect(names).toContain('mro');
+    expect(names).toContain('di');
+    expect(names).not.toContain('communities');
+    expect(names).not.toContain('processes');
+  });
+
+  it('skipDerivedGraphPhases holds back exactly the two derived phases (#3016)', () => {
+    // runPipelineFromRepo recovers the deferred set by diffing these two lists,
+    // so anything else the flag removed would be silently un-deferrable.
+    const skipped = buildPhaseList({ skipDerivedGraphPhases: true }).map((p) => p.name);
+    const full = buildPhaseList({ skipDerivedGraphPhases: false }).map((p) => p.name);
+    expect(full.filter((n) => !skipped.includes(n))).toEqual(['communities', 'processes']);
+  });
+
+  it('skipDerivedGraphPhases defers nothing that skipGraphPhases already removed (#3016)', () => {
+    const both = buildPhaseList({ skipGraphPhases: true, skipDerivedGraphPhases: true }).map(
+      (p) => p.name,
+    );
+    const graphPhasesOnly = buildPhaseList({ skipGraphPhases: true }).map((p) => p.name);
+    expect(both).toEqual(graphPhasesOnly);
   });
 });
 

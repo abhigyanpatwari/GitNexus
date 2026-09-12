@@ -1,0 +1,1096 @@
+diff --git a/eval/workflow_bench/learnings.jsonl b/eval/workflow_bench/learnings.jsonl
+index 7d25e3359..5fab5746a 100644
+--- a/eval/workflow_bench/learnings.jsonl
++++ b/eval/workflow_bench/learnings.jsonl
+@@ -1,2 +1,6 @@
+ {"skill": "gitnexus-work", "date": "2026-07-25", "task": "#2687 const-arrow Const/Function twin fix in parse-worker + MCP impact envelope", "friction": "Phase 2's Build-current/index-current procedure indexes the repo-under-test, which makes CLI-spawning suites (skip-git-cli, cli/tool-no-index-stderr) time out because repo resolution then opens the 237k-node index from that cwd; they pass at the same commit in an unindexed worktree, so the procedure manufactures false regressions in its own final verification.", "suggestion": "Phase 4 should note that CLI-spawn suites can fail solely because the worktree became an indexed repo, and prescribe the A/B check (same commit, unindexed worktree) instead of leaving the executor to conclude a regression."}
+ {"skill": "gitnexus-work", "date": "2026-07-25", "task": "#2687 same run", "friction": "Phase 2 requires top-level `status: up-to-date` before graph queries, but any uncommitted staged edit makes status report `stale` by design, so the gate is unsatisfiable in the stage -> detect_changes -> commit sequence Phase 3 mandates.", "suggestion": "Scope the up-to-date requirement to index.commit == HEAD + empty incompleteReasons + runnerIdentityStatus current, and state that a `stale` top-level status caused solely by uncommitted working-tree edits is expected at the detect_changes gate."}
++{"skill": "gitnexus-plan", "date": "2026-07-28", "task": "#2699 part B — closure binding as a call SOURCE across PHP/Rust/Kotlin/Ruby/Dart", "friction": "The safe plan writer fails closed on a v9fs (9p) worktree because renameat2(RENAME_NOREPLACE) is unsupported, returning EINVAL, so no plan can ever be published there and Phase 2's 'commit the plan document' step is unreachable.", "suggestion": "Detect the EINVAL-on-renameat2 case explicitly and fall back to open(O_EXCL)+write+fsync, which preserves the no-clobber guarantee the flag exists for; failing that, say v9fs is unsupported instead of surfacing a generic write failure."}
++{"skill": "gitnexus-work", "date": "2026-07-28", "task": "#2699 part B same run", "friction": "Every language query lives in a TypeScript template literal, so a backtick inside a `;;` comment silently terminates it and produces confusing TS1005/TS1128 parse errors far from the real edit. Hit this three separate times in one session.", "suggestion": "Phase 3 should warn that *.query.ts bodies are template literals and backticks in comments are a syntax error, or the repo should add a lint rule; the build catches it but the error location does not point at the comment."}
++{"skill": "gitnexus-work", "date": "2026-07-28", "task": "#2699 part B same run", "friction": "A module-level `const` derived from another const declared LOWER in the same file passes tsc and builds a clean dist, then throws ReferenceError (temporal dead zone) at import. It presents as N test FILES failing with ZERO failing assertions, which reads like host/infra flake rather than a code defect.", "suggestion": "Phase 3's verification note should call out that file-level failures with zero test failures usually mean a module-load error, and to grep the run output for ReferenceError before blaming the host."}
++{"skill": "gitnexus-work", "date": "2026-07-28", "task": "#2699 part B same run", "friction": "Two concurrent `vitest run` invocations on this host starve worker-pool startup: every test in both runs fails at ~5001ms against the default GITNEXUS_WORKER_READY_TIMEOUT_MS, which looks exactly like a real regression across the whole suite.", "suggestion": "Phase 3 should state that verification runs must be serial, and that a whole-suite failure at ~5001ms is worker-startup starvation, not signal."}
+diff --git a/gitnexus-shared/src/scope-resolution/registries/lookup-core.ts b/gitnexus-shared/src/scope-resolution/registries/lookup-core.ts
+index b98423ca6..4c0e360a8 100644
+--- a/gitnexus-shared/src/scope-resolution/registries/lookup-core.ts
++++ b/gitnexus-shared/src/scope-resolution/registries/lookup-core.ts
+@@ -343,7 +343,9 @@ function resolveReceiverOwner(
+  * That twin also lists `Me`, deliberately NOT mirrored here: no entry in
+  * `SupportedLanguages` uses it, so it can only ever exempt a variable that
+  * happens to be called `Me`. The two lists are otherwise the same set, and
+- * nothing enforces that — see the drift guard noted in #2714.
++ * that equality — plus the `Me` exemption in both directions — is now ENFORCED
++ * by `gitnexus/test/unit/receiver-twin-list-drift.test.ts`. Editing either list
++ * without the other fails there.
+  */
+ const IMPLICIT_RECEIVERS: readonly string[] = Object.freeze(['self', 'this', '$this']);
+ 
+diff --git a/gitnexus/src/core/ingestion/languages/dart/captures.ts b/gitnexus/src/core/ingestion/languages/dart/captures.ts
+index 0c6fc9e0c..6587a7302 100644
+--- a/gitnexus/src/core/ingestion/languages/dart/captures.ts
++++ b/gitnexus/src/core/ingestion/languages/dart/captures.ts
+@@ -249,6 +249,15 @@ function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
+  * nodes are unaffected.
+  */
+ function findFunctionBody(declNode: SyntaxNode): SyntaxNode | null {
++  // A closure literal carries its body as a CHILD (function_expression_body),
++  // unlike a Dart declaration whose body is the next named SIBLING. Without
++  // this branch the caller synthesizes no @scope.function for a closure at all,
++  // so a closure binding has no scope to own its callable def and can never be
++  // a call SOURCE (#2699 S4 — this is why Dart alone showed zero child scopes).
++  if (declNode.type === 'function_expression') {
++    const body = declNode.namedChildren.find((c) => c.type === 'function_expression_body');
++    return body ?? null;
++  }
+   const node =
+     declNode.parent !== null && declNode.parent.type === 'method_signature'
+       ? declNode.parent
+diff --git a/gitnexus/src/core/ingestion/languages/dart/query.ts b/gitnexus/src/core/ingestion/languages/dart/query.ts
+index 06cb3496f..954ff71e8 100644
+--- a/gitnexus/src/core/ingestion/languages/dart/query.ts
++++ b/gitnexus/src/core/ingestion/languages/dart/query.ts
+@@ -92,6 +92,24 @@ const DART_SCOPE_QUERY = `
+   (function_signature
+     name: (identifier) @declaration.name) @declaration.function)
+ 
++; ── Declarations — closure bound to a local ──────────────────────────────────
++;
++; var handler = (int x) => target(x);   /   var blk = (int y) { ... };
++;
++; Anchor discipline (same contract as javascript/query.ts): @declaration.function
++; sits on the INNER function_expression, NOT on the local_variable_declaration
++; wrapper. Dart is the one language that declares NO @scope.function in this
++; file — its function scopes are SYNTHESIZED in captures.ts from
++; declNode + findFunctionBody(declNode). So this rule deliberately does not add
++; a @scope.function of its own: doing that would collide with the synthesized
++; one at identical range, and duplicate scope ids make buildScopeTree throw,
++; which drops the whole file. Instead findFunctionBody now understands a
++; closure's child function_expression_body, so the existing synthesis produces
++; exactly one scope, anchored on the same node as the declaration (#2699 S4).
++(initialized_variable_definition
++  (identifier) @declaration.name
++  (function_expression) @declaration.function)
++
+ ; ── Declarations — methods (inside class/mixin/extension bodies) ─────────────
+ (method_signature
+   (function_signature
+diff --git a/gitnexus/src/core/ingestion/languages/kotlin/query.ts b/gitnexus/src/core/ingestion/languages/kotlin/query.ts
+index c9d532cc9..7ec7cecc8 100644
+--- a/gitnexus/src/core/ingestion/languages/kotlin/query.ts
++++ b/gitnexus/src/core/ingestion/languages/kotlin/query.ts
+@@ -115,6 +115,17 @@ const KOTLIN_SCOPE_QUERY = `
+ (function_declaration
+   (simple_identifier) @declaration.name) @declaration.function
+ 
++;; Lambda bound to a val/var: val handler = { x: Int -> target(x) }
++;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
++;; sits on the INNER lambda_literal, NOT on the property_declaration wrapper, so
++;; anchor.range aligns with the (lambda_literal) @scope.block range. That
++;; alignment is what lets pickCallerCallableDef accept a Block-kind scope as a
++;; callable boundary: the scope IS the callable's body. The lambda stays
++;; @scope.block deliberately (#1757 smart casts) — do NOT re-kind it.
++(property_declaration
++  (variable_declaration (simple_identifier) @declaration.name)
++  (lambda_literal) @declaration.function)
++
+ (property_declaration
+   (variable_declaration
+     (simple_identifier) @declaration.name)) @declaration.property
+diff --git a/gitnexus/src/core/ingestion/languages/php/query.ts b/gitnexus/src/core/ingestion/languages/php/query.ts
+index e24919e02..47bc65a26 100644
+--- a/gitnexus/src/core/ingestion/languages/php/query.ts
++++ b/gitnexus/src/core/ingestion/languages/php/query.ts
+@@ -87,6 +87,23 @@ const PHP_SCOPE_QUERY = `
+ (function_definition
+   name: (name) @declaration.name) @declaration.function
+ 
++;; Closure assigned to a variable: $handler = function () {...}; or fn() => ...;
++;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
++;; sits on the INNER anonymous_function / arrow_function, NOT on the
++;; assignment_expression wrapper. That aligns anchor.range with the
++;; @scope.function range above, so pass2AttachDeclarations attaches the
++;; declaration to the CLOSURE's own scope rather than the enclosing function's.
++;; Without this the closure scope owns no callable def and
++;; pickCallerCallableDef falls through to the enclosing callable, making the
++;; closure a call TARGET but never a call SOURCE (#2699).
++(assignment_expression
++  left: (variable_name) @declaration.name
++  right: (anonymous_function) @declaration.function)
++
++(assignment_expression
++  left: (variable_name) @declaration.name
++  right: (arrow_function) @declaration.function)
++
+ ;; ── Declarations — properties ─────────────────────────────────────────────
+ 
+ ;; PHP 7.4+ typed property: private UserRepo $repo;
+diff --git a/gitnexus/src/core/ingestion/languages/ruby/query.ts b/gitnexus/src/core/ingestion/languages/ruby/query.ts
+index 853361f2d..2e09941c4 100644
+--- a/gitnexus/src/core/ingestion/languages/ruby/query.ts
++++ b/gitnexus/src/core/ingestion/languages/ruby/query.ts
+@@ -79,6 +79,40 @@ const RUBY_SCOPE_QUERY = `
+ (singleton_method
+   name: (identifier) @declaration.name) @declaration.function
+ 
++;; ── Declarations — closure bound to a local ──────────────────────────────
++;;
++;; handler = ->(x) { target(x) } / lambda { |x| ... } / proc { |x| ... }
++;;
++;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
++;; sits on the INNER (block), NOT on the assignment wrapper and NOT on the
++;; (lambda) node — the block is what carries @scope.block above, so anchoring
++;; there aligns anchor.range with the scope range. That alignment is what lets
++;; pickCallerCallableDef accept a Block-kind scope as a callable boundary.
++;; do_block/block stay @scope.block deliberately — do NOT re-kind them.
++;;
++;; The call forms are restricted to lambda/proc by name. An unrestricted
++;; (call block: (block)) would match ANY method call with a block, so
++;; mapped = items.map { |i| ... } would wrongly declare mapped a callable.
++;; Separate #eq? patterns rather than one #match? alternation: alternation
++;; predicates are a known hazard on this tree-sitter line.
++(assignment
++  left: (identifier) @declaration.name
++  right: (lambda body: (block) @declaration.function))
++
++(assignment
++  left: (identifier) @declaration.name
++  right: (call
++    method: (identifier) @_lambda-kw
++    block: (block) @declaration.function)
++  (#eq? @_lambda-kw "lambda"))
++
++(assignment
++  left: (identifier) @declaration.name
++  right: (call
++    method: (identifier) @_proc-kw
++    block: (block) @declaration.function)
++  (#eq? @_proc-kw "proc"))
++
+ ;; ── Declarations — variable assignment ───────────────────────────────────
+ 
+ (assignment
+diff --git a/gitnexus/src/core/ingestion/languages/rust/query.ts b/gitnexus/src/core/ingestion/languages/rust/query.ts
+index bef3f1bd7..2e92a0ca1 100644
+--- a/gitnexus/src/core/ingestion/languages/rust/query.ts
++++ b/gitnexus/src/core/ingestion/languages/rust/query.ts
+@@ -64,6 +64,19 @@ const RUST_SCOPE_QUERY = `
+ (function_signature_item
+   name: (identifier) @declaration.name) @declaration.function
+ 
++;; Declarations — closure bound to a let: let handler = || target(1);
++;; Anchor discipline (same contract as javascript/query.ts): @declaration.function
++;; sits on the INNER closure_expression, NOT on the let_declaration wrapper, so
++;; anchor.range aligns with the (closure_expression) @scope.function range above.
++;; pass2AttachDeclarations then attaches the declaration to the CLOSURE's own
++;; scope instead of the enclosing block, which is what lets pickCallerCallableDef
++;; treat the closure as a call SOURCE rather than falling through to the
++;; enclosing fn (#2699). Also covers move closures — the closure_expression
++;; node spans the move keyword.
++(let_declaration
++  pattern: (identifier) @declaration.name
++  value: (closure_expression) @declaration.function)
++
+ ;; Declarations — struct fields
+ (field_declaration
+   name: (field_identifier) @declaration.name
+diff --git a/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts b/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
+index 40632966f..caca1bee3 100644
+--- a/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
++++ b/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
+@@ -28,7 +28,10 @@ import {
+   simpleKey,
+   type GraphNodeLookup,
+ } from '../graph-bridge/node-lookup.js';
+-import { isOverloadableCallable } from '../../utils/callable-labels.js';
++import {
++  isOverloadableCallable,
++  isPositionQualifiedLocalLabel,
++} from '../../utils/callable-labels.js';
+ import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
+ import { parameterShapeIdTag } from '../../utils/method-props.js';
+ /**
+@@ -73,6 +76,29 @@ function rangeContainsPoint(
+   return true;
+ }
+ 
++const isCallableDef = (d: SymbolDefinition): boolean =>
++  d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor';
++
++/**
++ * True when `range` is the body of `def` itself — the scope's start position
++ * equals the def's declaration position.
++ *
++ * Safe to compare directly: `scope-extractor.ts` builds a def id as
++ * `def:<filePath>#<startLine>:<startCol>:<type>:<name>` from the same `Range`
++ * a scope carries, so both sides share one coordinate base and need no
++ * conversion. (Do not "fix" this against the 1-based reading in
++ * `defStartLine`'s docblock — what matters here is that the two sides agree
++ * with each other, not which base they use.)
++ */
++function scopeIsCallableBody(
++  range: { startLine: number; startCol: number },
++  def: SymbolDefinition,
++): boolean {
++  const m = def.nodeId.match(/#(\d+):(\d+):/);
++  if (m === null) return false;
++  return Number(m[1]) === range.startLine && Number(m[2]) === range.startCol;
++}
++
+ /** Pick the callable that owns `atRange` when multiple overloads share a class scope. */
+ function pickCallerCallableDef(
+   scope: {
+@@ -86,17 +112,30 @@ function pickCallerCallableDef(
+   if (atRange !== undefined) {
+     for (const childId of scopes.scopeTree.getChildren(scope.id)) {
+       const child = scopes.scopeTree.getScope(childId);
+-      if (child === undefined || child.kind !== 'Function') continue;
++      if (child === undefined) continue;
+       if (!rangeContainsPoint(child.range, atRange)) continue;
+-      const childCallable = child.ownedDefs.find(
+-        (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
+-      );
+-      if (childCallable !== undefined) return childCallable;
++      const childCallable = child.ownedDefs.find(isCallableDef);
++      if (childCallable === undefined) continue;
++      if (child.kind === 'Function') return childCallable;
++      // A Block-kind scope is a callable boundary ONLY when the scope IS that
++      // callable's own body. Kotlin `lambda_literal` and Ruby `do_block`/`block`
++      // are @scope.block deliberately (#1757 smart casts), so the kind gate
++      // alone would never let a closure there become a call SOURCE (#2699).
++      //
++      // But relaxing the gate to accept ANY Block owning a callable is wrong:
++      // a nested `fun foo()` declared inside a block is owned by that block, so
++      // a call made at BLOCK level — outside foo — would be misattributed to
++      // foo. The alignment test discriminates them. For a closure the
++      // declaration and the scope sit on the SAME node (the anchor discipline
++      // documented in javascript/query.ts), so their start positions match; for
++      // a nested function the block starts at `{` and the def starts at the
++      // declaration, so they do not.
++      if (child.kind === 'Block' && scopeIsCallableBody(child.range, childCallable)) {
++        return childCallable;
++      }
+     }
+   }
+-  return scope.ownedDefs.find(
+-    (d) => d.type === 'Function' || d.type === 'Method' || d.type === 'Constructor',
+-  );
++  return scope.ownedDefs.find(isCallableDef);
+ }
+ 
+ /**
+@@ -170,7 +209,7 @@ export function resolveDefGraphId(
+     // 0-based, def ids 1-based. An `AMBIGUOUS_POSITION` tombstone (two
+     // callables on one line) falls through to the name-based keys below.
+     const line = defStartLine(def.nodeId);
+-    if (line !== undefined && isOverloadableCallable(def.type)) {
++    if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
+       const simple = simpleNameOf(qn);
+       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
+       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
+diff --git a/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts b/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts
+index 5e2789a87..1c6b94410 100644
+--- a/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts
++++ b/gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts
+@@ -20,7 +20,10 @@
+ 
+ import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
+ import type { KnowledgeGraph } from '../../../graph/types.js';
+-import { isOverloadableCallable } from '../../utils/callable-labels.js';
++import {
++  isOverloadableCallable,
++  isPositionQualifiedLocalLabel,
++} from '../../utils/callable-labels.js';
+ import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
+ import { parameterShapeIdTag } from '../../utils/method-props.js';
+ 
+@@ -135,7 +138,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
+     // Position key (#2699) — see `positionKey`. Second write on a key marks it
+     // ambiguous rather than letting source order decide.
+     const startLine = (props as { startLine?: number }).startLine;
+-    if (startLine !== undefined && isOverloadableCallable(node.label)) {
++    if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
+       const posK = positionKey(props.filePath, node.label, startLine, props.name);
+       lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
+       // A local-identity node carries `@<row>:<col>` on its last name segment. Record
+diff --git a/gitnexus/src/core/ingestion/tree-sitter-queries.ts b/gitnexus/src/core/ingestion/tree-sitter-queries.ts
+index 8eb1d8c3d..de84c23e4 100644
+--- a/gitnexus/src/core/ingestion/tree-sitter-queries.ts
++++ b/gitnexus/src/core/ingestion/tree-sitter-queries.ts
+@@ -1332,6 +1332,20 @@ export const RUST_QUERIES = `
+ ; Functions & Items
+ (function_item name: (identifier) @name) @definition.function
+ (function_signature_item name: (identifier) @name) @definition.function
++
++; Closure bound to a let: let handler = || target(1);
++; Emits the Function NODE. Without it a Rust closure binding had no graph node
++; at all, so it could be neither a call target nor a call source (#2699), which
++; made Rust the one exception to "a closure bound to a name is a Function node
++; in every language" (#2687).
++; Anchor note: this channel puts @definition.function on the OUTER
++; let_declaration, which is the OPPOSITE of the scope-resolution channel in
++; languages/rust/query.ts (inner closure_expression, to align with
++; @scope.function). Both match their own channel's convention -- compare the
++; (lexical_declaration (variable_declarator ... (arrow_function))) rule above.
++(let_declaration
++  pattern: (identifier) @name
++  value: (closure_expression)) @definition.function
+ (struct_item name: (type_identifier) @name) @definition.struct
+ ; A union is materialized as a Struct node (same rationale as the
+ ; scope-resolution @declaration.struct in languages/rust/query.ts: every
+diff --git a/gitnexus/src/core/ingestion/utils/ast-helpers.ts b/gitnexus/src/core/ingestion/utils/ast-helpers.ts
+index 157549366..fc0d6c087 100644
+--- a/gitnexus/src/core/ingestion/utils/ast-helpers.ts
++++ b/gitnexus/src/core/ingestion/utils/ast-helpers.ts
+@@ -409,6 +409,56 @@ export function findAncestorBeforeBoundary(
+   return null;
+ }
+ 
++/**
++ * Enclosing callable for grammars that split a callable into a SIGNATURE node
++ * and a SIBLING body, where the callable is therefore never an ancestor of the
++ * code inside it.
++ *
++ * Dart is the case that forced this: `int outer() { … }` parses as
++ * `function_signature` followed by `function_body` as SIBLINGS, so an ancestor
++ * walk from a closure inside the body can never reach `outer`. No membership
++ * set fixes that — the walk is looking in the wrong direction (#2699).
++ *
++ * Deliberately a FALLBACK, used only when the ancestor walk found nothing.
++ *
++ * The sibling must be a BARE SIGNATURE, and that restriction is load-bearing —
++ * "any preceding callable sibling" is WRONG and was caught regressing PHP. In
++ * `<?php function target($x) {…} $handler = function ($x) {…};` the closure is
++ * at FILE level, so the primary ancestor walk correctly finds nothing and this
++ * fallback runs; an unrestricted version then grabs the preceding
++ * `function_definition` and mis-qualifies the file-level `$handler` as
++ * `target.$handler`. A preceding sibling is only an ENCLOSING callable when it
++ * cannot hold its own body — i.e. when the grammar split the body off.
++ *
++ * `SPLIT_SIGNATURE_NODE_TYPES` is exactly that set, and it is derived rather
++ * than listed: `LOCAL_SCOPE_BODY_NODE_TYPES` already filters the bare-signature
++ * types out of `FUNCTION_NODE_TYPES`, so the difference between them IS the
++ * split-signature set. PHP's `function_definition` carries a body and is in
++ * both, so it is excluded; Dart's `function_signature` is in only the former,
++ * so it qualifies.
++ *
++ * Language-neutral by construction — it names no grammar, and any future
++ * signature/body-split language is covered for free.
++ */
++export function findSplitBodyCallableAncestor(
++  node: SyntaxNode,
++  signatureOnlyTypes: ReadonlySet<string>,
++  boundaryTypes: ReadonlySet<string>,
++): SyntaxNode | null {
++  let current = node.parent;
++  while (current !== null) {
++    if (boundaryTypes.has(current.type)) return null;
++    const prev = current.previousNamedSibling;
++    if (prev !== null && signatureOnlyTypes.has(prev.type)) return prev;
++    current = current.parent;
++  }
++  return null;
++}
++
++// SPLIT_SIGNATURE_NODE_TYPES is defined next to LOCAL_SCOPE_BODY_NODE_TYPES,
++// which it derives from — declaring it here would read it in its temporal dead
++// zone and throw at module load (tsc does NOT catch that; only running does).
++
+ /**
+  * Determine the graph node label from a tree-sitter capture map.
+  * Handles language-specific reclassification via the provider's labelOverride hook
+@@ -1218,6 +1268,22 @@ export const LOCAL_SCOPE_BODY_NODE_TYPES: ReadonlySet<string> = new Set(
+     ]),
+ );
+ 
++/**
++ * Callable node types whose grammar splits the body off into a SIBLING node, so
++ * the callable is never an ancestor of the code inside it (Dart
++ * `function_signature` / `method_signature`).
++ *
++ * Derived, not listed, so it cannot drift from the two sets that define it:
++ * `LOCAL_SCOPE_BODY_NODE_TYPES` is `FUNCTION_NODE_TYPES` minus exactly the bare
++ * signature types, so the difference IS the split-signature set.
++ *
++ * Must stay BELOW `LOCAL_SCOPE_BODY_NODE_TYPES` — reading it earlier hits the
++ * temporal dead zone and throws at module load.
++ */
++export const SPLIT_SIGNATURE_NODE_TYPES: ReadonlySet<string> = new Set(
++  [...FUNCTION_NODE_TYPES].filter((t) => !LOCAL_SCOPE_BODY_NODE_TYPES.has(t)),
++);
++
+ // ============================================================================
+ // Generic AST traversal helpers (shared by parse-worker + php-helpers)
+ // ============================================================================
+diff --git a/gitnexus/src/core/ingestion/utils/callable-labels.ts b/gitnexus/src/core/ingestion/utils/callable-labels.ts
+index a4b994f43..d9f051517 100644
+--- a/gitnexus/src/core/ingestion/utils/callable-labels.ts
++++ b/gitnexus/src/core/ingestion/utils/callable-labels.ts
+@@ -14,3 +14,37 @@ import type { NodeLabel } from 'gitnexus-shared';
+ export function isOverloadableCallable(label: NodeLabel | undefined): boolean {
+   return label === 'Function' || label === 'Method' || label === 'Constructor';
+ }
++
++/**
++ * Labels whose FUNCTION-LOCAL declarations carry the enclosing-callable +
++ * position identity of #2699 (`Function:x.ts:run.save@3:2`).
++ *
++ * Wider than {@link isOverloadableCallable} on purpose. #2695 restricted the
++ * rule to callables because the collision that produced wrong CALLS edges was
++ * between callables, and widening churned ids for symbols the local-symbol
++ * pruner mostly deletes. But the issue's ORIGINAL complaint was about values:
++ * a top-level `const handler` and a function-local `const handler` collapsed
++ * onto one `Const:v.ts:handler`, and no callable gate ever reaches that. The
++ * limitation is closed here rather than carried.
++ *
++ * Only LOCALS are affected either way: the prefix comes from
++ * `enclosingCallablePrefix`, which returns `undefined` when nothing encloses
++ * the declaration, so top-level and class-member ids are untouched — that is
++ * what keeps this off the symbols other files and stored references address.
++ * A class field stays unqualified even inside a function, because the prefix
++ * walk boundaries on class-likes.
++ *
++ * ONE definition, deliberately: the id-building phase and the resolution phase
++ * must agree on this set or the caller attaches to a node that does not exist
++ * and the edge is silently dropped — the failure mode #2714 fixed, invisible
++ * from outside because "zero dangling edges" is what it looks like.
++ */
++export function isPositionQualifiedLocalLabel(label: NodeLabel | undefined): boolean {
++  return (
++    isOverloadableCallable(label) ||
++    label === 'Variable' ||
++    label === 'Const' ||
++    label === 'Property' ||
++    label === 'Static'
++  );
++}
+diff --git a/gitnexus/src/core/ingestion/workers/parse-worker.ts b/gitnexus/src/core/ingestion/workers/parse-worker.ts
+index 18bdd5bc0..c8c891fb6 100644
+--- a/gitnexus/src/core/ingestion/workers/parse-worker.ts
++++ b/gitnexus/src/core/ingestion/workers/parse-worker.ts
+@@ -82,6 +82,8 @@ import {
+   buildDefinitionPreScan,
+   FUNCTION_NODE_TYPES,
+   findAncestorBeforeBoundary,
++  findSplitBodyCallableAncestor,
++  SPLIT_SIGNATURE_NODE_TYPES,
+   getDefinitionNodeFromCaptures,
+   findEnclosingClassInfo,
+   findObjectLiteralBindingInfo,
+@@ -98,6 +100,7 @@ import {
+   LOCAL_SCOPE_BODY_NODE_TYPES,
+   type SyntaxNode,
+ } from '../utils/ast-helpers.js';
++import { isPositionQualifiedLocalLabel } from '../utils/callable-labels.js';
+ import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
+ import { buildTypeEnv } from '../type-env.js';
+ import type { ConstructorBinding } from '../type-env.js';
+@@ -821,11 +824,20 @@ const enclosingCallablePrefix = (
+   //
+   // Over-inclusion here is the SAFE direction: an extra boundary only suppresses
+   // the nesting prefix, which falls back to the pre-#2699 class qualification.
+-  const fnNode = findAncestorBeforeBoundary(
+-    node,
+-    LOCAL_SCOPE_BODY_NODE_TYPES,
+-    CALLABLE_PREFIX_BOUNDARY_TYPES,
+-  );
++  const fnNode =
++    findAncestorBeforeBoundary(node, LOCAL_SCOPE_BODY_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES) ??
++    // Signature/body-split grammars: the enclosing callable is a SIBLING of the
++    // body, not an ancestor, so the walk above returns null for every local
++    // inside it. Dart is the case in hand (`function_signature` +
++    // `function_body` as siblings) — without this a Dart closure gets no
++    // prefix, so two same-named closures in one file collapse onto ONE node and
++    // the graph asserts a CALLS edge that does not exist in the source (#2699).
++    //
++    // SPLIT_SIGNATURE_NODE_TYPES, NOT FUNCTION_NODE_TYPES: only a callable that
++    // cannot hold its own body can be an enclosing callable of a SIBLING. Using
++    // the wider set mis-qualified a file-level PHP `$handler = function …` as
++    // `target.$handler` by grabbing the preceding `function target() {…}`.
++    findSplitBodyCallableAncestor(node, SPLIT_SIGNATURE_NODE_TYPES, CALLABLE_PREFIX_BOUNDARY_TYPES);
+   if (fnNode === null) return undefined;
+   return callableOwnQualifiedName(fnNode, filePath, provider);
+ };
+@@ -2286,13 +2298,16 @@ const processFileGroup = (
+       // #2699: a callable nested inside another callable is qualified by the
+       // enclosing callable, so a function-local closure stops colliding with a
+       // same-named file-level function. Restricted to CALLABLE labels: the
+-      // collision that produced wrong CALLS edges is between callables, and
+-      // widening it to every function-local Variable/Property would churn ids
+-      // for symbols the local-symbol pruner mostly deletes anyway.
++      // Applies to VALUES as well as callables since #2699 closed A1: a
++      // top-level `const handler` and a function-local `const handler`
++      // otherwise collapse onto one `Const:v.ts:handler`, which was the
++      // issue's original complaint and is unreachable from a callable-only
++      // gate. `isPositionQualifiedLocalLabel` is the single definition of that
++      // set, shared with resolution in `ids.ts` — the two phases disagreeing
++      // silently drops edges rather than failing (#2714).
+       // Same helper as the caller-attribution phase — see `enclosingCallablePrefix`.
+       const nestedCallablePrefix =
+-        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') &&
+-        definitionNode
++        isPositionQualifiedLocalLabel(nodeLabel) && definitionNode
+           ? enclosingCallablePrefix(definitionNode, file.path, provider)
+           : undefined;
+ 
+diff --git a/gitnexus/src/storage/parse-cache.ts b/gitnexus/src/storage/parse-cache.ts
+index 5f8584fd9..263b4aa24 100644
+--- a/gitnexus/src/storage/parse-cache.ts
++++ b/gitnexus/src/storage/parse-cache.ts
+@@ -55,6 +55,18 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
+ // the main thread (the #1983 OOM). Because the two stores share this version,
+ // any future change to the `ParsedFile` serialization shape MUST bump
+ // SCHEMA_BUMP so both invalidate in lockstep.
++// v29: closure-binding declaration rules for PHP/Rust/Kotlin/Ruby/Dart, a Rust
++// graph node for `let f = || …`, a Dart closure scope, and function-local VALUES
++// (Variable/Const/Property/Static) qualified by their enclosing callable plus
++// position (#2699 parts A1 + B). All parse-time, so a warm cache would replay
++// the old captures and the pre-qualification ids verbatim.
++//
++// This is 29 and not 28 because of the exact collision the v21 note below warns
++// about: this branch cut at 27 and bumped to 28, while #2415 bumped 27 -> 28 and
++// merged FIRST. Re-checking against origin/main at merge time — not at branch
++// time — is what caught it; leaving it at 28 would have shipped this change with
++// NO parse-cache invalidation, so every warm cache keeps serving the pre-fix
++// captures and ids.
+ // v28: Java/Kotlin capture side-channels persist Spring condition facts and
+ // annotation-source line numbers (#2415).
+ // v26: the enclosing-callable walk stops at class bodies and anonymous-class
+@@ -103,7 +115,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
+ // JLS 13.1 immediate-host chains (#2555).
+ // v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
+ // v16: direct callee identity.
+-const SCHEMA_BUMP = 28;
++const SCHEMA_BUMP = 29;
+ const GITNEXUS_PKG_VERSION = (() => {
+   try {
+     // package.json sits at gitnexus/package.json — two levels up from
+diff --git a/gitnexus/src/storage/repo-manager.ts b/gitnexus/src/storage/repo-manager.ts
+index eb46bfd82..e3abb9967 100644
+--- a/gitnexus/src/storage/repo-manager.ts
++++ b/gitnexus/src/storage/repo-manager.ts
+@@ -525,8 +525,16 @@ export interface RepoMeta {
+  * reads it also covered are kept. A v19 index holds those false CALLS/ACCESSES on
+  * every unchanged file and would keep serving them through the reuse gate; force a
+  * full re-analyze instead.
++ * v21: a closure bound to a name is a call SOURCE in every language, not only a
++ * TARGET (#2699 part B). PHP/Rust/Kotlin/Ruby/Dart closure bindings gained the
++ * declaration rule, Rust gained the graph NODE it never emitted, and Dart locals
++ * gained the enclosing-callable + position identity that made two same-named
++ * closures collapse onto one node — which had them asserting a CALLS edge
++ * present nowhere in the source. All of that changes emitted node ids AND edges
++ * on files that did not themselves change, so a v20 index topped up
++ * incrementally keeps serving the old attribution; force a full re-analyze.
+  */
+-export const INCREMENTAL_SCHEMA_VERSION = 20;
++export const INCREMENTAL_SCHEMA_VERSION = 21;
+ 
+ export interface IndexedRepo {
+   repoPath: string;
+diff --git a/gitnexus/test/integration/closure-binding-labels.test.ts b/gitnexus/test/integration/closure-binding-labels.test.ts
+index c0cafaa6e..4592efd2b 100644
+--- a/gitnexus/test/integration/closure-binding-labels.test.ts
++++ b/gitnexus/test/integration/closure-binding-labels.test.ts
+@@ -247,7 +247,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
+       'int caller() {\n  var handler = (int x) => x;\n  return handler(1);\n}\n',
+     );
+ 
+-    expect(targets).toEqual(['Function:local.dart:handler']);
++    // Qualified by #2699: Dart's enclosing callable is a SIBLING of the body
++    // (function_signature + function_body), so the ancestor walk that builds
++    // this prefix found nothing and every Dart local stayed bare. Two
++    // same-named closures in one file therefore collapsed onto ONE node. Now
++    // carries the same enclosing-callable + position identity as every other
++    // language.
++    expect(targets).toEqual(['Function:local.dart:caller.handler@1:2']);
+   });
+ 
+   it('Dart: a top-level `final` closure binding resolves', async () => {
+@@ -272,7 +278,13 @@ describeIfWorkerBuilt('calls to a closure binding resolve to its Function node',
+       'int caller() {\n  var f = (int x) => x, g = (int y) => y;\n  return f(1) + g(2);\n}\n',
+     );
+ 
+-    expect(targets).toEqual(['Function:multi.dart:f', 'Function:multi.dart:g']);
++    // Both declarators are function-local, so both carry the enclosing-callable
++    // + position identity (#2699). The distinct columns are the point: `g` is a
++    // nested initialized_identifier on the SAME line as `f`.
++    expect(targets).toEqual([
++      'Function:multi.dart:caller.f@1:2',
++      'Function:multi.dart:caller.g@1:24',
++    ]);
+   });
+ 
+   it('Kotlin: a class-body closure property resolves to its Method node', async () => {
+@@ -517,7 +529,7 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
+   });
+ });
+ 
+-describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE', () => {
++describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () => {
+   // Known limit, pinned deliberately so it is visible rather than surprising.
+   //
+   // A call made INSIDE a closure binding is attributed to the ENCLOSING scope,
+@@ -541,31 +553,100 @@ describeIfWorkerBuilt('a closure binding is a call TARGET, not yet a call SOURCE
+   //     scope for the walk to consider.
+   //
+   // So a fix needs per-language work, not one switch: a callable-boundary
+-  // signal independent of scope `kind` (Kotlin/Ruby), an association from a
+-  // closure scope to its binding's def (PHP), and a scope that does not exist
+-  // yet (Dart). See #2699.
++  // signal independent of scope `kind` (Kotlin/Ruby — DONE, S2), an
++  // association from a closure scope to its binding's def (PHP — DONE, S1;
++  // Rust — DONE, S3), and a scope that does not exist yet (Dart — STILL OPEN).
++  // See #2699.
++  //
++  // Probe-measured root cause (#2699): EVERY still-failing language has an
++  // EMPTY ownedDefs on the closure's own scope, because the closure-binding
++  // declaration rule (binding name + @declaration.function on the INNER
++  // closure node) existed only in javascript/query.ts. Kotlin and Ruby need
++  // BOTH that rule AND a relaxed kind gate — their lambda_literal / do_block
++  // is @scope.block deliberately (#1757), so the rule alone leaves them
++  // rejected. Dart has no closure scope at all: dart/query.ts declares no
++  // @scope.function, and dart/captures.ts synthesizes one only from a
++  // declaration WITH a body node, which an expression-bodied closure lacks.
+   //
+   // TS/JS free bindings are the exception: their arrow has a `@scope.function`
+   // with a matching range, so the closure IS the anchor there. These tests exist
+   // to catch that asymmetry changing in EITHER direction.
+ 
+-  it('Kotlin: a call inside the closure is attributed to the file, not the binding', async () => {
++  it('Kotlin: a call inside the closure IS attributed to the binding (#2699 S2)', async () => {
++    // FLIPPED by #2699 S2, which took BOTH halves:
++    //   1. kotlin/query.ts gained the closure-binding declaration rule, with
++    //      @declaration.function on the INNER lambda_literal so its range
++    //      aligns with the (lambda_literal) @scope.block range;
++    //   2. pickCallerCallableDef now accepts a Block-kind scope as a callable
++    //      boundary when the scope IS the callable's body (def start position
++    //      == scope start position).
++    // Half 1 alone changes nothing here — the lambda stays @scope.block
++    // deliberately (#1757 smart casts), so the kind gate would still reject it.
+     const targets = await callEdgeIdsFor(
+       'A.kt',
+       'fun target(x: Int): Int = x\n\nval handler = { x: Int -> target(x) }\n',
+     );
+ 
+-    expect(targets).toEqual(['rel:CALLS:File:A.kt->Function:A.kt:target']);
++    expect(targets).toEqual(['rel:CALLS:Function:A.kt:handler->Function:A.kt:target']);
+   });
+ 
+-  it('PHP: a call inside the closure is attributed to the file, not the binding', async () => {
++  it('PHP: a call inside the closure IS attributed to the binding (#2699 S1)', async () => {
++    // FLIPPED by #2699 S1. php/query.ts now carries the closure-binding
++    // declaration rule with javascript/query.ts's anchor discipline
++    // (@declaration.function on the INNER anonymous_function, so its range
++    // aligns with the (anonymous_function) @scope.function above). The closure
++    // scope therefore owns the callable def and pickCallerCallableDef stops
++    // falling through to the enclosing scope — the closure is now a call
++    // SOURCE, not only a TARGET.
+     const targets = await callEdgeIdsFor(
+       'a.php',
+       '<?php\nfunction target($x) { return $x; }\n' +
+         '$handler = function ($x) { return target($x); };\n',
+     );
+ 
+-    expect(targets).toEqual(['rel:CALLS:File:a.php->Function:a.php:target']);
++    expect(targets).toEqual(['rel:CALLS:Function:a.php:$handler->Function:a.php:target']);
++  });
++
++  it('Dart: two same-named closures in one file stay DISTINCT nodes (#2699 S4)', async () => {
++    // The defect this pins is worse than a missing edge. Before #2699 S4 gave
++    // Dart locals an enclosing-callable prefix, both closures keyed to the bare
++    // `Function:collide.dart:handler`, so ONE node appeared to call BOTH
++    // `target` and `other` — a CALLS edge that exists nowhere in the source.
++    //
++    // Dart is the only grammar here that splits a callable into a signature and
++    // a SIBLING body, so its enclosing callable was unreachable by ancestor
++    // walk and every Dart local stayed unqualified. Distinct positions in the
++    // two ids are the whole property.
++    const targets = await callEdgeIdsFor(
++      'collide.dart',
++      'int target(int x) => x;\nint other(int x) => x;\n' +
++        'int outer() {\n  var handler = (int x) => target(x);\n  return handler(1);\n}\n' +
++        'int second() {\n  var handler = (int x) => other(x);\n  return handler(2);\n}\n',
++    );
++
++    // The trailing `:5:9` / `:9:9` on the first and third edges is the CALL
++    // SITE, not part of the node id: invoking a closure binding is an indirect
++    // call emitted by the callable-value-flow pass, which keys its edge by the
++    // invocation position. The direct `handler -> target` calls carry no such
++    // suffix. Do not "normalize" these away — they are different edge kinds.
++    expect(targets).toEqual([
++      'rel:CALLS:Function:collide.dart:outer->Function:collide.dart:outer.handler@3:2:5:9',
++      'rel:CALLS:Function:collide.dart:outer.handler@3:2->Function:collide.dart:target',
++      'rel:CALLS:Function:collide.dart:second->Function:collide.dart:second.handler@7:2:9:9',
++      'rel:CALLS:Function:collide.dart:second.handler@7:2->Function:collide.dart:other',
++    ]);
++  });
++
++  it('Ruby: a call inside a lambda binding IS attributed to the binding (#2699 S2)', async () => {
++    // Ruby had no pinned case before #2699 S2, so this is new coverage rather
++    // than an inverted assertion. do_block/block stay @scope.block (matching
++    // Kotlin), so this exercises the same Block-scope alignment path.
++    const targets = await callEdgeIdsFor(
++      'a.rb',
++      'def target(x)\n  x\nend\n\nhandler = ->(x) { target(x) }\n',
++    );
++
++    expect(targets).toEqual(['rel:CALLS:Function:a.rb:handler->Method:a.rb:target#1']);
+   });
+ 
+   it('JavaScript: a free arrow binding IS the caller anchor', async () => {
+@@ -653,7 +734,11 @@ describeIfWorkerBuilt('a value binding is never aliased onto a same-named callab
+         'int run() {\n  var save = (int x) => x * 2;\n  return save(1);\n}\n',
+     );
+ 
+-    expect(targets).toEqual(['Function:svc.dart:save']);
++    // The target is the LOCAL closure, never `Svc.save`. Since #2699 the local
++    // also carries its enclosing callable and position, so the two are now
++    // distinct by id and not merely by which node the edge happened to reach —
++    // `run.save@5:2` cannot collide with the method however the lookup is keyed.
++    expect(targets).toEqual(['Function:svc.dart:run.save@5:2']);
+   });
+ 
+   it('Kotlin: a genuine constant mints no CALLS', async () => {
+diff --git a/gitnexus/test/integration/function-local-identity.test.ts b/gitnexus/test/integration/function-local-identity.test.ts
+index e5c1d488d..e8050718e 100644
+--- a/gitnexus/test/integration/function-local-identity.test.ts
++++ b/gitnexus/test/integration/function-local-identity.test.ts
+@@ -281,3 +281,74 @@ describeIfWorkerBuilt('a function-local callable does not collide with a file-le
+     ]);
+   });
+ });
++
++/** Node ids for `name`, with local value symbols kept so the pruner can't hide them. */
++const valueNodeIdsFor = async (
++  filename: string,
++  source: string,
++  name: string,
++): Promise<string[]> => {
++  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-local-value-identity-'));
++  try {
++    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
++    const result = await runPipelineFromRepo(dir, () => {}, {
++      workerPoolSize: 1,
++      workerUrlForTest: DIST_WORKER_URL,
++      // `pruneLocalSymbols` deletes ~94% of inert function-local value symbols,
++      // which would make the collapse below invisible rather than absent.
++      keepLocalValueSymbols: true,
++    });
++    return result.graph.nodes
++      .filter((node) => node.properties.name === name)
++      .map((node) => node.id)
++      .sort();
++  } finally {
++    fs.rmSync(dir, { recursive: true, force: true });
++  }
++};
++
++describeIfWorkerBuilt('function-local VALUES carry their own identity (#2699 A1)', () => {
++  it('a function-local VALUE does not collapse onto the file-level node', async () => {
++    // FLIPPED, per this test's own former instruction. It previously pinned the
++    // collapse as a KNOWN LIMIT: #2695 gave function-local CALLABLES a
++    // position-bearing id and deliberately excluded VALUES, so a top-level
++    // `const handler` and a function-local `const handler` shared ONE node.
++    // That was the residual half of #2699's ORIGINAL complaint — the issue is
++    // about values first, and no callable-only gate could ever reach it.
++    //
++    // Widened here via `isPositionQualifiedLocalLabel`, the single definition
++    // shared by all THREE phases that must agree: id-building
++    // (`parse-worker.ts`), resolution (`ids.ts` position key) and registration
++    // (`node-lookup.ts`). Two of them disagreeing does not fail loudly — the
++    // caller attaches to a node that does not exist and the edge is silently
++    // dropped, which is the #2714 failure mode.
++    //
++    // The churn this was deferred for is real and was accepted deliberately:
++    // it re-keys ~14,700 build-time nodes to change ~800 persisted ones,
++    // because `pruneLocalSymbols` deletes most locals. Hence the paired
++    // INCREMENTAL_SCHEMA_VERSION / parse-cache SCHEMA_BUMP bumps — without them
++    // a warm cache or an incremental top-up replays the old un-suffixed ids.
++    //
++    // Only LOCALS move. The prefix comes from `enclosingCallablePrefix`, which
++    // returns undefined when nothing encloses the declaration, so the
++    // file-level `handler` below keeps its bare id — that is what keeps this
++    // off the symbols other files and stored references address.
++    const ids = await valueNodeIdsFor(
++      'v.ts',
++      [
++        "export const handler = 'top-level value';",
++        '',
++        'export function run(): string {',
++        "  const handler = 'function-local value';",
++        '  return handler;',
++        '}',
++        '',
++      ].join('\n'),
++      'handler',
++    );
++
++    // Two distinct nodes: the file-level one keeps its bare id, the local
++    // carries its enclosing callable AND declaration position.
++    expect(ids).toEqual(['Const:v.ts:handler', 'Const:v.ts:run.handler@3:2']);
++  });
++});
+diff --git a/gitnexus/test/integration/this-boundary.test.ts b/gitnexus/test/integration/this-boundary.test.ts
+index 8aec71641..09a3e7be0 100644
+--- a/gitnexus/test/integration/this-boundary.test.ts
++++ b/gitnexus/test/integration/this-boundary.test.ts
+@@ -188,10 +188,14 @@ describeIfWorkerBuilt('an arrow inherits `this`; every other function form binds
+           '\n',
+         ),
+       ),
+-      // Attributed to `run`, not to `f`: Kotlin scopes `lambda_literal` as a
+-      // BLOCK (#1757), so the lambda is not its own caller anchor. What matters
+-      // here is only that the `this.m()` edge still exists at all.
+-    ).toContain('Method:K.kt:K.run#0 -> Method:K.kt:K.m#0');
++      // Attributed to `f` since #2699 S2. Kotlin still scopes `lambda_literal`
++      // as a BLOCK (#1757 — that has NOT changed), but a Block-kind scope is now
++      // accepted as a caller anchor when the scope IS the callable's body, so
++      // the lambda is its own anchor. The property this test exists for is
++      // unchanged and is what the assertion still checks: `this` inside a Kotlin
++      // lambda resolves to the enclosing receiver, so the `this.m()` edge exists.
++      // Only its SOURCE moved, from `run` to `run.f`.
++    ).toContain('Method:K.kt:K.run.f@2:16 -> Method:K.kt:K.m#0');
+   });
+ });
+ 
+diff --git a/gitnexus/test/unit/call-summary-schema-version.test.ts b/gitnexus/test/unit/call-summary-schema-version.test.ts
+index 6838c99eb..5141c8147 100644
+--- a/gitnexus/test/unit/call-summary-schema-version.test.ts
++++ b/gitnexus/test/unit/call-summary-schema-version.test.ts
+@@ -73,8 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
+ });
+ 
+ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
+-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 20 (named-receiver lexical fallback, #2699)', () => {
+-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(20);
++  it('INCREMENTAL_SCHEMA_VERSION is bumped to 21 (closure bindings are call SOURCES, #2699 part B)', () => {
++    // Moves with every bump BY DESIGN — that is the point of pinning it. A
++    // change that alters emitted ids or edges without bumping would otherwise
++    // ship silently, and an existing index would keep serving the old graph
++    // through the reuse gate below.
++    expect(INCREMENTAL_SCHEMA_VERSION).toBe(21);
+   });
+ 
+   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
+@@ -155,7 +159,16 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
+     // `const baseUrl`) — 709 of them on a 762-file corpus. Reusing it would keep
+     // every one on unchanged files.
+     expect(passesReuseGate(19)).toBe(false);
++    // A pre-v21 (v20) index predates closure bindings becoming call SOURCES in
++    // PHP/Rust/Kotlin/Ruby/Dart, the Rust graph node for `let f = || …`, the Dart
++    // closure scope + enclosing-callable identity, and position-qualified
++    // function-local VALUES. All of those change emitted ids and edges on files
++    // that did not themselves change, so reusing a v20 index keeps serving the
++    // old attribution — including the Dart case where two same-named closures
++    // collapsed onto one node and asserted a CALLS edge present nowhere in the
++    // source.
++    expect(passesReuseGate(20)).toBe(false);
+     // A current-version stamp passes the gate (incremental top-up eligible).
+-    expect(passesReuseGate(20)).toBe(true);
++    expect(passesReuseGate(21)).toBe(true);
+   });
+ });
+diff --git a/gitnexus/test/unit/callable-id-lockstep.test.ts b/gitnexus/test/unit/callable-id-lockstep.test.ts
+index d22266418..cf7726f6b 100644
+--- a/gitnexus/test/unit/callable-id-lockstep.test.ts
++++ b/gitnexus/test/unit/callable-id-lockstep.test.ts
+@@ -64,8 +64,13 @@ describe('no call site re-inlines the rule', () => {
+   it('parse-worker.ts contains no inlined `<prefix>.${localIdentity(...)}` template', () => {
+     // The structural half. The unit assertions above would still pass if a
+     // fourth phase appeared and spelled the rule out by hand — which is
+-    // exactly how the divergence #2714 fixed came to exist. This fails if any
+-    // site reconstructs the id instead of calling the shared function.
++    // exactly how the divergence #2714 fixed came to exist.
++    //
++    // Scope, stated honestly: this matches ONE template spelling — the
++    // `${prefix}.${localIdentity(...)}` form the divergence actually took. A
++    // hand-rolled id built by string concatenation, or with the interpolation
++    // spelled differently, still slips past. It is a tripwire for the known
++    // shape, not a proof that no site reconstructs the id.
+     const source = readFileSync(
+       fileURLToPath(new URL('../../src/core/ingestion/workers/parse-worker.ts', import.meta.url)),
+       'utf8',
+diff --git a/gitnexus/test/unit/detect-changes-local-id-stability.test.ts b/gitnexus/test/unit/detect-changes-local-id-stability.test.ts
+new file mode 100644
+index 000000000..708292bd1
+--- /dev/null
++++ b/gitnexus/test/unit/detect-changes-local-id-stability.test.ts
+@@ -0,0 +1,75 @@
++/**
++ * #2699 consumer audit — `detect_changes` must not key on node ids.
++ *
++ * #2695/#2714 gave function-local CALLABLES position-bearing ids
++ * (`Function:x.ts:run.save@3:2`). That raised a specific worry for this
++ * consumer: an id containing `@row:col` changes whenever the declaration
++ * MOVES, even when the code is byte-identical, so an id-keyed
++ * `detect_changes` would report churn for every edit above a local.
++ *
++ * The worry is unfounded, and this file pins why. `detect_changes` maps diff
++ * hunks to symbols by LINE-RANGE OVERLAP — it matches `n.startLine`/`n.endLine`
++ * against the hunk bounds and merely REPORTS `n.id`. Node identity never
++ * participates in the match, so a position-bearing id cannot inflate
++ * `changed_count`.
++ *
++ * These are structural (source-grep) assertions, in the same idiom as
++ * `detect-changes-worktree.test.ts`: they prove the query still has the shape
++ * the audit verified, and would fail loudly if someone switched the mapping to
++ * id equality. They do NOT execute the query — the behavioural coverage for
++ * detect_changes lives in the MCP integration suites.
++ */
++import { describe, expect, it } from 'vitest';
++import { readFileSync } from 'fs';
++import path from 'path';
++import { fileURLToPath } from 'url';
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++const backendSrc = readFileSync(
++  path.join(__dirname, '../../src/mcp/local/local-backend.ts'),
++  'utf-8',
++);
++
++/** The hunk→symbol query, isolated so the assertions below can't match text elsewhere. */
++const symbolQuery = (): string => {
++  const start = backendSrc.indexOf('const symbolQuery = `');
++  expect(start, 'symbolQuery template not found — update this test').toBeGreaterThan(-1);
++  const from = backendSrc.indexOf('`', start) + 1;
++  const to = backendSrc.indexOf('`', from);
++  return backendSrc.slice(from, to);
++};
++
++describe('#2699 audit — detect_changes maps hunks to symbols by position, not id', () => {
++  it('matches on startLine/endLine, so a moved local cannot register as churn', () => {
++    const q = symbolQuery();
++
++    expect(q).toContain('n.startLine IS NOT NULL');
++    expect(q).toContain('n.endLine IS NOT NULL');
++  });
++
++  it('never matches a symbol by node id', () => {
++    // The guard that matters. `n.id` may be SELECTED (it is reported back to
++    // the caller) but must not appear in a WHERE-side equality against a
++    // parameter — that would reintroduce the id-churn failure mode.
++    const q = symbolQuery();
++    const whereClause = q.slice(q.indexOf('WHERE'), q.indexOf('RETURN'));
++
++    expect(whereClause).not.toMatch(/n\.id\s*=/);
++    expect(whereClause).not.toMatch(/n\.id\s+IN\b/);
++  });
++
++  it('still excludes BasicBlock rows by id prefix (#2082 U7)', () => {
++    // The one legitimate id-shaped predicate: a PREFIX filter that drops
++    // nameless PDG substrate. Pinned so the assertion above cannot be
++    // satisfied by deleting this exclusion.
++    const q = symbolQuery();
++
++    expect(q).toContain("NOT n.id STARTS WITH 'BasicBlock:'");
++  });
++
++  it('reports the id rather than matching on it', () => {
++    const q = symbolQuery();
++
++    expect(q.slice(q.indexOf('RETURN'))).toContain('n.id AS id');
++  });
++});
+diff --git a/gitnexus/test/unit/receiver-twin-list-drift.test.ts b/gitnexus/test/unit/receiver-twin-list-drift.test.ts
+new file mode 100644
+index 000000000..24e23987a
+--- /dev/null
++++ b/gitnexus/test/unit/receiver-twin-list-drift.test.ts
+@@ -0,0 +1,99 @@
++/**
++ * The drift guard for the implicit-receiver twin lists (#2699 follow-up).
++ *
++ * TWO lists spell "this is an implicit receiver", in two packages:
++ *
++ *   - `IMPLICIT_RECEIVERS` — gitnexus-shared `lookup-core.ts`. Two consumers:
++ *     the Step-1 lexical skip (a NAMED receiver must not resolve its member
++ *     through the lexical chain) and `resolveReceiverOwner`.
++ *   - `THIS_RECEIVERS` — gitnexus `type-env.ts`. Decides whether a receiver
++ *     rewrites to the enclosing type.
++ *
++ * They are the SIXTH twin-list instance found in this family of work, and the
++ * previous five each shipped a bug when one side moved. `$this` was added to
++ * the shared list in #2714 precisely because it was already in the other one;
++ * nothing but this test stops the next divergence.
++ *
++ * `Me` is the one deliberate asymmetry: `THIS_RECEIVERS` carries it (Visual
++ * Basic spelling) and the shared list does not, because no entry in
++ * `SupportedLanguages` uses it — mirroring it there could only ever exempt a
++ * variable that happens to be named `Me`. That exemption is asserted
++ * explicitly rather than tolerated, so RE-adding `Me` to the shared list, or
++ * dropping it from the local one, both fail loudly.
++ *
++ * Structural (source-parsed) rather than value-imported: both constants are
++ * module-private, and exporting them purely to be testable would widen two
++ * public surfaces to satisfy a test. Same idiom as
++ * `detect-changes-local-id-stability.test.ts`.
++ */
++import { describe, expect, it } from 'vitest';
++import { readFileSync } from 'fs';
++import path from 'path';
++import { fileURLToPath } from 'url';
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++
++/**
++ * String literals inside the first `[...]` following `marker` that actually
++ * CONTAINS a string literal.
++ *
++ * "First `[`" is not good enough: `IMPLICIT_RECEIVERS` is declared
++ * `: readonly string[] = Object.freeze([...])`, so the first bracket belongs to
++ * the TYPE annotation and yields an empty list — which would make every
++ * assertion below vacuously pass. That is exactly what the non-empty check in
++ * the first test exists to catch, and it did.
++ */
++const literalsAfter = (source: string, marker: string): string[] => {
++  const at = source.indexOf(marker);
++  expect(at, `${marker} not found — update this test`).toBeGreaterThan(-1);
++  for (let open = source.indexOf('[', at); open !== -1; open = source.indexOf('[', open + 1)) {
++    const close = source.indexOf(']', open);
++    if (close === -1) break;
++    const names = [...source.slice(open + 1, close).matchAll(/'([^']*)'|"([^"]*)"/g)]
++      .map((m) => m[1] ?? m[2] ?? '')
++      .filter((s) => s.length > 0);
++    if (names.length > 0) return names.sort();
++  }
++  return [];
++};
++
++const sharedList = (): string[] =>
++  literalsAfter(
++    readFileSync(
++      path.join(
++        __dirname,
++        '../../../gitnexus-shared/src/scope-resolution/registries/lookup-core.ts',
++      ),
++      'utf-8',
++    ),
++    'const IMPLICIT_RECEIVERS',
++  );
++
++const typeEnvList = (): string[] =>
++  literalsAfter(
++    readFileSync(path.join(__dirname, '../../src/core/ingestion/type-env.ts'), 'utf-8'),
++    'const THIS_RECEIVERS',
++  );
++
++describe('#2699 — implicit-receiver twin lists do not drift', () => {
++  it('both lists are non-empty and were actually parsed', () => {
++    // Guards the guard: a regex that silently matched nothing would make every
++    // assertion below vacuously true.
++    expect(sharedList().length).toBeGreaterThan(0);
++    expect(typeEnvList().length).toBeGreaterThan(0);
++  });
++
++  it('the shared list is exactly the type-env list minus the deliberate `Me`', () => {
++    expect(sharedList()).toEqual(typeEnvList().filter((name) => name !== 'Me'));
++  });
++
++  it('`Me` stays OUT of the shared list', () => {
++    // Stated separately so the intent survives even if the set comparison above
++    // is ever relaxed: this asymmetry is a decision, not an oversight.
++    expect(sharedList()).not.toContain('Me');
++  });
++
++  it('`Me` stays IN the type-env list', () => {
++    expect(typeEnvList()).toContain('Me');
++  });
++});

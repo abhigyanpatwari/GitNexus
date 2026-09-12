@@ -37,7 +37,13 @@ function buildNoisyContractFilter(
     : new Set<string>();
   const excludeParamOnly = matchingConfig?.exclude_links_param_only_paths === true;
 
-  return function isNoisyHttpContract(contractId: string): boolean {
+  return function isNoisyContract(contractId: string): boolean {
+    if (contractId.startsWith('graphql::')) {
+      const parts = contractId.split('::');
+      if (parts.length < 3) return false;
+      const field = parts.slice(2).join('::');
+      return excludePaths.has(field) || excludePaths.has(`/${field}`);
+    }
     if (!contractId.startsWith('http::')) return false;
     const parts = contractId.split('::');
     if (parts.length < 3) return false;

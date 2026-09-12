@@ -1,0 +1,817 @@
+diff --git a/.github/workflows/ci-tests.yml b/.github/workflows/ci-tests.yml
+index b4fbb3d56..6d03b4c73 100644
+--- a/.github/workflows/ci-tests.yml
++++ b/.github/workflows/ci-tests.yml
+@@ -500,6 +500,17 @@ jobs:
+         run: node --import tsx bench/callable-value-flow/measure.mjs --check
+         working-directory: gitnexus
+ 
++      - name: C++ qualified-namespace resolution guards (#2788)
++        # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
++        # unchanged symbol set (fingerprint) and that per-call-site cost stays
++        # independent of corpus size. It rescanned every parsed file per
++        # qualified `ns::member()` call site until #2788 — 25 of 33 analyze
++        # minutes on a 1.5k-file C++ repo. #1990 had already fixed the exact
++        # same bug in the sibling ADL path and shipped without a scaling gate,
++        # which is how the bug class came back; this step is that gate.
++        run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
++        working-directory: gitnexus
++
+       - name: Receiver-resolution drop guards
+         # NOT build-free: this one runs the real pipeline, so it needs dist/
+         # (the setup action above builds). ~2m15s.
+diff --git a/gitnexus/bench/cpp-qualified-ns/baselines.json b/gitnexus/bench/cpp-qualified-ns/baselines.json
+new file mode 100644
+index 000000000..01d1cad17
+--- /dev/null
++++ b/gitnexus/bench/cpp-qualified-ns/baselines.json
+@@ -0,0 +1,6 @@
++{
++  "_comment": "Baselines for bench/cpp-qualified-ns/measure.mjs --check (#2788). `fingerprint` is a sha256 over every `receiver::member -> outcome` the synthetic corpus resolves at the LARGE scale (hit nodeId, `<ambiguous>` per #1564, or `<none>`); it is a CORRECTNESS gate, so drift means C++ qualified `ns::member()` lookup started resolving a different symbol set and must be explained, never re-baselined to make CI green. `scaling_budget` is a timing gate and carries deliberate headroom for shared CI runners.",
++  "fingerprint": "30122b086b90fe1d56edc5acfd39ab7f26c00350f0e672123aaf607c7702e1e2",
++  "scaling_budget": 1.8,
++  "_scaling_note": "(t_large/t_small)/(1600/400). ~1.0 is linear; measured 0.93-1.21 on the indexed implementation. The pre-#2788 per-call-site workspace rescan measured 3.45 on the same corpus shape (at a reduced 100/400 scale, since 1600 files x 32k call sites of quadratic work does not finish in a CI step) — so the budget sits between the two bands and cannot be met by reintroducing the scan. Resolution is timed alone; the fingerprint's outcome strings are built in a separate untimed pass because their allocation cost grows with the corpus and would otherwise show up as scaling."
++}
+diff --git a/gitnexus/bench/cpp-qualified-ns/measure.mjs b/gitnexus/bench/cpp-qualified-ns/measure.mjs
+new file mode 100644
+index 000000000..36da04b7a
+--- /dev/null
++++ b/gitnexus/bench/cpp-qualified-ns/measure.mjs
+@@ -0,0 +1,258 @@
++/**
++ * Build-free scaling + identity bench for `resolveCppQualifiedNamespaceMember`,
++ * the C++ qualified `ns::member()` receiver resolver (issue #2788).
++ *
++ * Before #2788 this function re-scanned EVERY parsed file — rebuilding a
++ * per-file `scopesById` map each time — once per qualified call site, so the
++ * scope-resolution emit phase cost O(callsites × scopes). On a 1,473-file C++
++ * repo that was 25.3 min of a 33-min analyze, with 75% of total self-time in
++ * this one function. It is the same bug #1990 had already fixed in the sibling
++ * ADL path (`pickCppAdlCandidates` → `AdlCandidateIndex`) — the sibling shipped
++ * without a scaling gate, and the bug class came straight back here. Hence this
++ * bench: a per-call-site workspace scan must not be reintroduced silently.
++ *
++ * For a synthetic corpus at two scales it reports:
++ *   - `elapsed_ms` per scale (fastest of REPS, see `fastest`) for resolving
++ *     every call site once, INCLUDING the one-time index build — that build is
++ *     the work the per-site scan was traded for, so hiding it would let an
++ *     index that is itself quadratic pass;
++ *   - a scaling ratio `(t_large/t_small)/(LARGE/SMALL)`: ~1.0 linear,
++ *     ~4.x quadratic at this scale gap;
++ *   - a sha256 fingerprint over every `receiver::member → outcome` the corpus
++ *     resolves, as the correctness gate. A fingerprint change means qualified
++ *     lookup started resolving different symbols — a behaviour change, never a
++ *     performance one.
++ *
++ * Build-free: imports the `.ts` hotpath through tsx
++ * (`node --import tsx bench/cpp-qualified-ns/measure.mjs`).
++ *
++ * Without args: prints the JSON report.
++ * With `--check`: asserts the fingerprint == the committed baseline AND the
++ * scaling ratio is within budget; exits non-zero on drift/regression.
++ */
++import fs from 'node:fs';
++import path from 'node:path';
++import crypto from 'node:crypto';
++import { fileURLToPath } from 'node:url';
++
++import {
++  clearCppInlineNamespaces,
++  markCppInlineNamespaceRange,
++  populateCppInlineNamespaceScopes,
++  resolveCppQualifiedNamespaceMember,
++} from '../../src/core/ingestion/languages/cpp/inline-namespaces.ts';
++
++const __dirname = path.dirname(fileURLToPath(import.meta.url));
++const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
++
++const SMALL = 400;
++const LARGE = 1600;
++const CALLS_PER_FILE = 20;
++const REPS = 7;
++const WARMUP = 3;
++
++const NO_SCOPES = {};
++
++/**
++ * Deterministic synthetic corpus — no randomness, so the fingerprint is stable.
++ *
++ * Per file, one `ns_f` namespace shaped like the ABI-versioning idiom the
++ * reporter's repo uses (`namespace x { inline namespace v { … } }`):
++ *
++ *   namespace ns_f {
++ *     void own0(); void own1();          // direct members
++ *     inline namespace v1 { void inl0(); void dup(); }   // transitively visible
++ *     inline namespace v2 { void dup(); }                // → dup is ambiguous
++ *     namespace detail { void hidden0(); }               // NOT inline → invisible
++ *   }
++ *
++ * The three outcome classes all appear, because each takes a different exit
++ * from the resolver and only exercising the hit path would let a regression in
++ * the miss path (the most common outcome in real source) go unmeasured:
++ * resolved hit, `'ambiguous'` (#1564), and `undefined` (miss — both a wrong
++ * member name and a non-inline nested member).
++ */
++function buildCorpus(fileCount) {
++  const parsedFiles = [];
++  for (let f = 0; f < fileCount; f++) {
++    const filePath = `src/file${f}.cpp`;
++    const scopes = [];
++    let line = 1;
++    const scope = (id, kind, parent, defs) => {
++      const entry = {
++        id,
++        kind,
++        parent,
++        ownedDefs: defs,
++        range: { startLine: line, startCol: 0, endLine: line + 1, endCol: 0 },
++      };
++      line += 2;
++      scopes.push(entry);
++      return entry;
++    };
++    const def = (type, qualifiedName) => ({
++      nodeId: `def:${filePath}#${qualifiedName}`,
++      type,
++      qualifiedName,
++    });
++
++    const nsId = `sc:${f}:ns`;
++    scope(nsId, 'Namespace', null, [
++      def('Namespace', `ns_${f}`),
++      def('Function', `ns_${f}.own0`),
++      def('Function', `ns_${f}.own1`),
++    ]);
++    const v1 = scope(`sc:${f}:v1`, 'Namespace', nsId, [
++      def('Namespace', `ns_${f}.v1`),
++      def('Function', `ns_${f}.v1.inl0`),
++      def('Function', `ns_${f}.v1.dup`),
++    ]);
++    const v2 = scope(`sc:${f}:v2`, 'Namespace', nsId, [
++      def('Namespace', `ns_${f}.v2`),
++      def('Function', `ns_${f}.v2.dup`),
++    ]);
++    scope(`sc:${f}:detail`, 'Namespace', nsId, [
++      def('Namespace', `ns_${f}.detail`),
++      def('Function', `ns_${f}.detail.hidden0`),
++    ]);
++
++    parsedFiles.push({ filePath, scopes, inlineRanges: [v1.range, v2.range] });
++  }
++  return parsedFiles;
++}
++
++/** Capture-time inline marking + `populateOwners`-time scope-id resolution, in
++ *  the same order the pipeline runs them. Must re-run after every
++ *  `clearCppInlineNamespaces`, which drops both the marks and the index. */
++function populateInlineState(parsedFiles) {
++  clearCppInlineNamespaces();
++  for (const parsed of parsedFiles) {
++    for (const range of parsed.inlineRanges) markCppInlineNamespaceRange(parsed.filePath, range);
++    populateCppInlineNamespaceScopes(parsed);
++  }
++}
++
++/** The call sites: a deterministic spread over receivers and member names so
++ *  each rep resolves the same set, with hits, misses and ambiguities mixed. */
++const MEMBERS = ['own0', 'inl0', 'dup', 'hidden0', 'nosuch'];
++function callSites(fileCount) {
++  const sites = [];
++  for (let f = 0; f < fileCount; f++) {
++    for (let c = 0; c < CALLS_PER_FILE; c++) {
++      sites.push([`ns_${(f * 7 + c * 13) % fileCount}`, MEMBERS[c % MEMBERS.length]]);
++    }
++  }
++  return sites;
++}
++
++/** The timed loop: resolution only. The outcome strings the fingerprint needs
++ *  are built in a separate untimed pass (`outcomesOf`), so their allocation
++ *  cost — which grows with the corpus and would inflate the scaling ratio on
++ *  its own — never lands in the measurement. `sink` keeps the calls live. */
++function resolveAll(parsedFiles, sites) {
++  let sink = 0;
++  for (const [receiver, member] of sites) {
++    const hit = resolveCppQualifiedNamespaceMember(receiver, member, parsedFiles, NO_SCOPES);
++    if (hit !== undefined) sink++;
++  }
++  return sink;
++}
++
++function outcomesOf(parsedFiles, sites) {
++  const outcomes = [];
++  for (const [receiver, member] of sites) {
++    const hit = resolveCppQualifiedNamespaceMember(receiver, member, parsedFiles, NO_SCOPES);
++    outcomes.push(
++      `${receiver}::${member}\u0000${hit === undefined ? '<none>' : hit === 'ambiguous' ? '<ambiguous>' : hit.nodeId}`,
++    );
++  }
++  return outcomes;
++}
++
++/**
++ * MIN, not median — same rationale as bench/callable-value-flow: both scales
++ * are timed in one process and every error source (scheduler preemption, GC, a
++ * noisy neighbour on a shared CI runner) is additive, so the fastest observed
++ * run is the closest estimate of the uncontended cost and keeps the derived
++ * ratio comparable across machines.
++ */
++function fastest(values) {
++  return Math.min(...values);
++}
++
++/** Time one full pass: index build (lazy, on the first call) + every call
++ *  site. The corpus state is reset OUTSIDE the timer so the reset's own
++ *  O(files) cost never lands in the measurement. */
++function timeResolution(parsedFiles, sites) {
++  for (let w = 0; w < WARMUP; w++) {
++    populateInlineState(parsedFiles);
++    resolveAll(parsedFiles, sites);
++  }
++  const samples = [];
++  for (let r = 0; r < REPS; r++) {
++    populateInlineState(parsedFiles);
++    const t0 = performance.now();
++    resolveAll(parsedFiles, sites);
++    samples.push(performance.now() - t0);
++  }
++  return { ms: fastest(samples), outcomes: outcomesOf(parsedFiles, sites) };
++}
++
++function fingerprint(outcomes) {
++  return crypto
++    .createHash('sha256')
++    .update([...outcomes].sort().join('\n'))
++    .digest('hex');
++}
++
++const scales = {};
++for (const [name, fileCount] of [
++  ['small', SMALL],
++  ['large', LARGE],
++]) {
++  const parsedFiles = buildCorpus(fileCount);
++  const sites = callSites(fileCount);
++  const { ms, outcomes } = timeResolution(parsedFiles, sites);
++  scales[name] = {
++    files: fileCount,
++    call_sites: sites.length,
++    ms: Number(ms.toFixed(3)),
++    fingerprint: fingerprint(outcomes),
++  };
++}
++
++const scalingRatio = scales.large.ms / scales.small.ms / (LARGE / SMALL);
++
++const report = {
++  small: scales.small,
++  large: scales.large,
++  scaling_ratio: Number(scalingRatio.toFixed(3)),
++  fingerprint: scales.large.fingerprint,
++};
++
++if (!process.argv.includes('--check')) {
++  console.log(JSON.stringify(report, null, 2));
++  process.exit(0);
++}
++
++const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
++const failures = [];
++if (report.fingerprint !== baseline.fingerprint) {
++  failures.push(
++    `fingerprint drift: ${report.fingerprint} != ${baseline.fingerprint} — qualified ` +
++      `namespace lookup resolved a DIFFERENT symbol set. This is a behaviour change, not a perf one.`,
++  );
++}
++if (report.scaling_ratio > baseline.scaling_budget) {
++  failures.push(
++    `scaling ${report.scaling_ratio} > budget ${baseline.scaling_budget} — per-call-site cost ` +
++      `now grows with corpus size again (#2788).`,
++  );
++}
++
++console.log(JSON.stringify(report, null, 2));
++if (failures.length > 0) {
++  console.error(`[cpp-qualified-ns --check] FAIL\n  - ${failures.join('\n  - ')}`);
++  process.exit(1);
++}
++console.log('[cpp-qualified-ns --check] PASS');
+diff --git a/gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts b/gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts
+index 134738dfd..ad2749928 100644
+--- a/gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts
++++ b/gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts
+@@ -14,12 +14,14 @@
+  *   2. **Transitive qualified visibility.** `outer::foo()` resolves to
+  *      `outer::v1::foo()` when `v1` is inline. The qualified-namespace
+  *      receiver resolver (`resolveCppQualifiedNamespaceMember`) walks
+- *      inline-namespace children transitively when collecting candidates.
++ *      inline-namespace children transitively when collecting candidates —
++ *      once per pipeline run, into {@link QualifiedNsMemberIndex} (#2788).
+  *
+  * State lifecycle: capture-time `markCppInlineNamespaceRange` records each
+  * inline namespace's source range; `populateCppInlineNamespaceScopes`
+  * resolves ranges to `ScopeId`s during `populateOwners`. Cleared via
+- * `clearCppInlineNamespaces`, called from `clearFileLocalNames`.
++ * `clearCppInlineNamespaces`, called from
++ * `cppScopeResolver.loadResolutionConfig` at the start of every pass.
+  *
+  * STL idiom this enables: `std::__1::vector` (libc++) and `std::__cxx11`
+  * (libstdc++) are inline namespaces of `std`. With this support,
+@@ -85,10 +87,13 @@ export function applyCppInlineNamespaceSideChannel(
+   for (const r of ranges) set.add(r);
+ }
+ 
+-/** Clear all inline-namespace state. Called from `clearFileLocalNames`. */
++/** Clear all inline-namespace state. Called from
++ *  `cppScopeResolver.loadResolutionConfig` at the start of every pass. */
+ export function clearCppInlineNamespaces(): void {
+   inlineNamespaceRangesByFile.clear();
+   inlineNamespaceScopeIds.clear();
++  qualifiedNsIndex = undefined;
++  qualifiedNsIndexSource = undefined;
+ }
+ 
+ /** Resolve captured ranges to actual ScopeIds by matching scope ranges
+@@ -115,11 +120,136 @@ export function isCppInlineNamespaceScope(scopeId: ScopeId): boolean {
+ }
+ 
+ /**
+- * Walk every parsed file looking for a Namespace scope whose qualified
+- * name matches `receiverName`, collect its callable ownedDefs matching
+- * `memberName`, transitively descending into any inline-namespace
+- * children (since they're members of the enclosing namespace under ISO
+- * C++).
++ * Qualified-namespace member index — built **once** per pipeline run from
++ * `parsedFiles` and reused by every qualified call site.
++ *
++ * The legacy lookup re-scanned every parsed file (rebuilding a per-file
++ * `scopesById` map each time) once **per qualified call site**, making the
++ * scope-resolution emit phase O(callsites × scopes): 25.3 min of a 33-min
++ * analyze on a 1,473-file C++ repo, 75% of total self-time in this one
++ * function (#2788). Mirrors the same fix #1990 applied to ADL
++ * (`pickCppAdlCandidates` → {@link AdlCandidateIndex}); per-site cost drops
++ * to two Map lookups.
++ *
++ * `byReceiver`: namespace simple name → member simple name → callable defs,
++ * in the exact order the legacy linear scan produced them (file-major; within
++ * a file, `parsed.scopes` declaration order; within a namespace, own
++ * `ownedDefs` before inline-namespace children, depth-first). Ordering is
++ * load-bearing: the caller returns `allHits[0]` for the single-hit case and
++ * `narrowOverloadCandidates` is first-wins.
++ */
++interface QualifiedNsMemberIndex {
++  readonly byReceiver: ReadonlyMap<string, ReadonlyMap<string, readonly SymbolDefinition[]>>;
++}
++
++type NsScope = ParsedFile['scopes'][number];
++
++let qualifiedNsIndex: QualifiedNsMemberIndex | undefined;
++let qualifiedNsIndexSource: readonly ParsedFile[] | undefined;
++
++/** Build the index in a single pass over the workspace. Visitation order
++ *  mirrors the legacy scan exactly (see {@link QualifiedNsMemberIndex}). */
++function buildQualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
++  const byReceiver = new Map<string, Map<string, SymbolDefinition[]>>();
++  // Legacy dedup was a per-call `seenNodeId` set spanning all files; since a
++  // def only ever lands in one `(receiver, member)` bucket, a per-receiver set
++  // keyed `member \0 nodeId` reproduces it. Only reachable at all via
++  // same-name inline nesting (`namespace ns { inline namespace ns { … } }`),
++  // but kept so a def is never double-counted into `'ambiguous'`.
++  const seenByReceiver = new Map<string, Set<string>>();
++
++  for (const parsed of parsedFiles) {
++    // parent → inline-namespace children. The legacy transitive walk filtered
++    // `scopesById.values()` by `parent` per recursion step — O(scopes) each,
++    // and O(scopes²) per file overall; this is the same order, built once.
++    const inlineChildrenByParent = new Map<ScopeId, (typeof parsed.scopes)[number][]>();
++    for (const sc of parsed.scopes) {
++      if (sc.parent === null) continue;
++      if (sc.kind !== 'Namespace') continue;
++      if (!inlineNamespaceScopeIds.has(sc.id)) continue;
++      let kids = inlineChildrenByParent.get(sc.parent);
++      if (kids === undefined) {
++        kids = [];
++        inlineChildrenByParent.set(sc.parent, kids);
++      }
++      kids.push(sc);
++    }
++
++    for (const scope of parsed.scopes) {
++      if (scope.kind !== 'Namespace') continue;
++      const nsDef = findNamespaceDefInScope(scope);
++      if (nsDef === undefined) continue;
++      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
++      let byMember = byReceiver.get(nsName);
++      if (byMember === undefined) {
++        byMember = new Map();
++        byReceiver.set(nsName, byMember);
++      }
++      let seen = seenByReceiver.get(nsName);
++      if (seen === undefined) {
++        seen = new Set();
++        seenByReceiver.set(nsName, seen);
++      }
++      collectNamespaceMembers(scope, inlineChildrenByParent, byMember, seen);
++    }
++  }
++  return { byReceiver };
++}
++
++/** Bucket a namespace scope's callable `ownedDefs` by member simple name,
++ *  then descend into inline-namespace children — the index-build twin of the
++ *  legacy `findMemberInNamespaceTransitive`, collecting every member name in
++ *  one walk instead of one walk per `(call site, member name)`. */
++function collectNamespaceMembers(
++  scope: NsScope,
++  inlineChildrenByParent: ReadonlyMap<ScopeId, readonly NsScope[]>,
++  byMember: Map<string, SymbolDefinition[]>,
++  seen: Set<string>,
++): void {
++  for (const def of scope.ownedDefs) {
++    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
++    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
++    const dedupKey = `${simple}\u0000${def.nodeId}`;
++    if (seen.has(dedupKey)) continue;
++    seen.add(dedupKey);
++    let arr = byMember.get(simple);
++    if (arr === undefined) {
++      arr = [];
++      byMember.set(simple, arr);
++    }
++    arr.push(def);
++  }
++  for (const child of inlineChildrenByParent.get(scope.id) ?? []) {
++    collectNamespaceMembers(child, inlineChildrenByParent, byMember, seen);
++  }
++}
++
++/** Build the index on first use of a given `parsedFiles` set; reuse it for
++ *  every subsequent call site in the same pipeline run.
++ *
++ *  The index is a function of TWO inputs: `parsedFiles` and the module-level
++ *  `inlineNamespaceScopeIds` (which inline children get descended into).
++ *  Reference identity on `parsedFiles` alone is sound here because
++ *  `populateCppInlineNamespaceScopes` fills `inlineNamespaceScopeIds` during
++ *  `populateOwners` — strictly before any resolution pass calls in — and
++ *  {@link clearCppInlineNamespaces} drops the index at the start of every
++ *  pass. Any future caller that mutates `inlineNamespaceScopeIds` mid-pass
++ *  while reusing the same `parsedFiles` reference MUST call
++ *  `clearCppInlineNamespaces` in between. Same contract as `ensureAdlIndex`. */
++function qualifiedNsMemberIndex(parsedFiles: readonly ParsedFile[]): QualifiedNsMemberIndex {
++  if (qualifiedNsIndex === undefined || qualifiedNsIndexSource !== parsedFiles) {
++    qualifiedNsIndex = buildQualifiedNsMemberIndex(parsedFiles);
++    qualifiedNsIndexSource = parsedFiles;
++  }
++  return qualifiedNsIndex;
++}
++
++/**
++ * Find the Namespace scopes whose simple name matches `receiverName` and
++ * return their callable members matching `memberName`, transitively
++ * including inline-namespace children (since they're members of the
++ * enclosing namespace under ISO C++). Served from a per-pipeline index
++ * ({@link QualifiedNsMemberIndex}), not a per-call-site workspace scan.
+  *
+  * Returns the most specific (innermost) match — for `outer::foo()`
+  * where `inline namespace v1` declares `foo`, returns `v1::foo`. When
+@@ -134,27 +264,8 @@ export function resolveCppQualifiedNamespaceMember(
+   _scopes: ScopeResolutionIndexes,
+   callsite?: Callsite,
+ ): SymbolDefinition | 'ambiguous' | undefined {
+-  const allHits: SymbolDefinition[] = [];
+-  const seenNodeId = new Set<string>();
+-  for (const parsed of parsedFiles) {
+-    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
+-    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+-    for (const scope of parsed.scopes) {
+-      if (scope.kind !== 'Namespace') continue;
+-      const nsDef = findNamespaceDefInScope(scope);
+-      if (nsDef === undefined) continue;
+-      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
+-      if (nsName !== receiverName) continue;
+-      // Found a matching namespace scope in this file. Collect ALL
+-      // members transitively through any inline-namespace children.
+-      const hits = findMemberInNamespaceTransitive(scope, scopesById, memberName);
+-      for (const hit of hits) {
+-        if (seenNodeId.has(hit.nodeId)) continue;
+-        seenNodeId.add(hit.nodeId);
+-        allHits.push(hit);
+-      }
+-    }
+-  }
++  const allHits =
++    qualifiedNsMemberIndex(parsedFiles).byReceiver.get(receiverName)?.get(memberName) ?? [];
+   if (allHits.length === 0) return undefined;
+   if (allHits.length === 1) return allHits[0];
+ 
+@@ -182,46 +293,6 @@ export function resolveCppQualifiedNamespaceMember(
+   return 'ambiguous';
+ }
+ 
+-/** Recursively search a namespace scope and any inline-namespace
+- *  descendants for callable defs with the given simple name. Non-inline
+- *  nested namespaces are NOT traversed — they require explicit
+- *  qualification (`outer::nested::foo`). Returns ALL matches so the
+- *  caller can detect same-name ambiguity across inline children (#1564). */
+-function findMemberInNamespaceTransitive(
+-  scope: {
+-    readonly id: ScopeId;
+-    readonly ownedDefs: readonly SymbolDefinition[];
+-    readonly parent: ScopeId | null;
+-  },
+-  scopesById: ReadonlyMap<
+-    ScopeId,
+-    {
+-      readonly id: ScopeId;
+-      readonly kind: string;
+-      readonly parent: ScopeId | null;
+-      readonly ownedDefs: readonly SymbolDefinition[];
+-    }
+-  >,
+-  memberName: string,
+-): SymbolDefinition[] {
+-  const results: SymbolDefinition[] = [];
+-  // Check this scope's own ownedDefs first.
+-  for (const def of scope.ownedDefs) {
+-    if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') continue;
+-    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+-    if (simple === memberName) results.push(def);
+-  }
+-  // Descend into inline-namespace children.
+-  for (const childScope of scopesById.values()) {
+-    if (childScope.parent !== scope.id) continue;
+-    if (childScope.kind !== 'Namespace') continue;
+-    if (!inlineNamespaceScopeIds.has(childScope.id)) continue;
+-    const childHits = findMemberInNamespaceTransitive(childScope, scopesById, memberName);
+-    for (const hit of childHits) results.push(hit);
+-  }
+-  return results;
+-}
+-
+ function findNamespaceDefInScope(scope: {
+   readonly ownedDefs: readonly SymbolDefinition[];
+ }): SymbolDefinition | undefined {
+diff --git a/gitnexus/test/unit/cpp-qualified-ns-index.test.ts b/gitnexus/test/unit/cpp-qualified-ns-index.test.ts
+new file mode 100644
+index 000000000..a8af02384
+--- /dev/null
++++ b/gitnexus/test/unit/cpp-qualified-ns-index.test.ts
+@@ -0,0 +1,258 @@
++/**
++ * #2788 — `resolveCppQualifiedNamespaceMember` serves qualified `ns::member()`
++ * lookups from a per-pipeline index instead of rescanning every parsed file per
++ * call site. These tests pin the two properties the index must not lose:
++ *
++ *   1. Transitive inline-namespace collection, ordering and same-name
++ *      ambiguity (#1564) — the semantics the old linear scan provided.
++ *   2. Cache invalidation — a new `parsedFiles` array, or a
++ *      `clearCppInlineNamespaces()` between passes, must not serve stale hits.
++ *      This is the failure mode the index introduces; nothing else covers it.
++ */
++
++import type {
++  ParsedFile,
++  ScopeId,
++  ScopeResolutionIndexes,
++  SymbolDefinition,
++} from 'gitnexus-shared';
++import { beforeEach, describe, expect, it } from 'vitest';
++import {
++  clearCppInlineNamespaces,
++  markCppInlineNamespaceRange,
++  populateCppInlineNamespaceScopes,
++  resolveCppQualifiedNamespaceMember,
++} from '../../src/core/ingestion/languages/cpp/inline-namespaces.js';
++
++const NO_SCOPES = {} as unknown as ScopeResolutionIndexes;
++
++interface ScopeSpec {
++  readonly id: string;
++  readonly kind: 'Namespace' | 'Module';
++  readonly parent: string | null;
++  readonly defs: readonly SymbolDefinition[];
++  /** Distinguishes each scope's range so inline marking targets exactly one. */
++  readonly line: number;
++}
++
++function def(nodeId: string, type: string, qualifiedName: string): SymbolDefinition {
++  return { nodeId, type, qualifiedName } as unknown as SymbolDefinition;
++}
++
++function nsDef(nodeId: string, qualifiedName: string): SymbolDefinition {
++  return def(nodeId, 'Namespace', qualifiedName);
++}
++
++function fnDef(nodeId: string, qualifiedName: string): SymbolDefinition {
++  return def(nodeId, 'Function', qualifiedName);
++}
++
++function range(line: number): {
++  startLine: number;
++  startCol: number;
++  endLine: number;
++  endCol: number;
++} {
++  return { startLine: line, startCol: 0, endLine: line + 1, endCol: 0 };
++}
++
++/** Build a single-file `parsedFiles` array from scope specs, marking the
++ *  scopes named in `inlineIds` as inline namespaces (capture-time range mark +
++ *  `populateOwners`-time scope-id resolution, same order as the pipeline). */
++function makeParsedFiles(
++  filePath: string,
++  specs: readonly ScopeSpec[],
++  inlineIds: readonly string[],
++): readonly ParsedFile[] {
++  const parsed = {
++    filePath,
++    scopes: specs.map((s) => ({
++      id: s.id as unknown as ScopeId,
++      kind: s.kind,
++      parent: s.parent as unknown as ScopeId | null,
++      ownedDefs: s.defs,
++      range: range(s.line),
++    })),
++  } as unknown as ParsedFile;
++  markInline(parsed, specs, inlineIds);
++  return [parsed];
++}
++
++/** Capture-time inline marking + `populateOwners`-time scope-id resolution,
++ *  in the same order the pipeline runs them. */
++function markInline(
++  parsed: ParsedFile,
++  specs: readonly ScopeSpec[],
++  inlineIds: readonly string[],
++): void {
++  for (const id of inlineIds) {
++    const spec = specs.find((s) => s.id === id);
++    if (spec === undefined) throw new Error(`inline scope ${id} must exist`);
++    markCppInlineNamespaceRange(parsed.filePath, range(spec.line));
++  }
++  populateCppInlineNamespaceScopes(parsed);
++}
++
++/** `namespace outer { <ownDefs> inline namespace v1 { <inlineDefs> } }` */
++function outerWithInlineChild(
++  filePath: string,
++  ownDefs: readonly SymbolDefinition[],
++  inlineDefs: readonly SymbolDefinition[],
++): readonly ParsedFile[] {
++  return makeParsedFiles(
++    filePath,
++    [
++      {
++        id: 'sc:outer',
++        kind: 'Namespace',
++        parent: null,
++        defs: [nsDef('n:outer', 'outer'), ...ownDefs],
++        line: 1,
++      },
++      {
++        id: 'sc:v1',
++        kind: 'Namespace',
++        parent: 'sc:outer',
++        defs: [nsDef('n:v1', 'outer.v1'), ...inlineDefs],
++        line: 10,
++      },
++    ],
++    ['sc:v1'],
++  );
++}
++
++describe('C++ qualified-namespace member index (#2788)', () => {
++  beforeEach(() => {
++    clearCppInlineNamespaces();
++  });
++
++  it('resolves outer::foo through an inline-namespace child', () => {
++    const files = outerWithInlineChild('a.cpp', [], [fnDef('n:foo@v1', 'outer.v1.foo')]);
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@v1',
++    });
++  });
++
++  it('returns undefined for an unknown namespace or member', () => {
++    const files = outerWithInlineChild('a.cpp', [], [fnDef('n:foo@v1', 'outer.v1.foo')]);
++    expect(resolveCppQualifiedNamespaceMember('nope', 'foo', files, NO_SCOPES)).toBeUndefined();
++    expect(resolveCppQualifiedNamespaceMember('outer', 'nope', files, NO_SCOPES)).toBeUndefined();
++  });
++
++  it('does not descend into a non-inline nested namespace', () => {
++    const files = makeParsedFiles(
++      'a.cpp',
++      [
++        {
++          id: 'sc:outer',
++          kind: 'Namespace',
++          parent: null,
++          defs: [nsDef('n:outer', 'outer')],
++          line: 1,
++        },
++        {
++          id: 'sc:nested',
++          kind: 'Namespace',
++          parent: 'sc:outer',
++          defs: [nsDef('n:nested', 'outer.nested'), fnDef('n:foo@nested', 'outer.nested.foo')],
++          line: 10,
++        },
++      ],
++      [],
++    );
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toBeUndefined();
++    expect(resolveCppQualifiedNamespaceMember('nested', 'foo', files, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@nested',
++    });
++  });
++
++  it('reports same-name hits across two inline children as ambiguous (#1564)', () => {
++    const files = makeParsedFiles(
++      'a.cpp',
++      [
++        {
++          id: 'sc:outer',
++          kind: 'Namespace',
++          parent: null,
++          defs: [nsDef('n:outer', 'outer')],
++          line: 1,
++        },
++        {
++          id: 'sc:v1',
++          kind: 'Namespace',
++          parent: 'sc:outer',
++          defs: [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')],
++          line: 10,
++        },
++        {
++          id: 'sc:v2',
++          kind: 'Namespace',
++          parent: 'sc:outer',
++          defs: [nsDef('n:v2', 'outer.v2'), fnDef('n:foo@v2', 'outer.v2.foo')],
++          line: 20,
++        },
++      ],
++      ['sc:v1', 'sc:v2'],
++    );
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toBe('ambiguous');
++  });
++
++  it('keeps scan order: a namespace-owned def precedes its inline child hits', () => {
++    // Two candidates with no call-site info narrow to 'ambiguous', so order is
++    // asserted through the single-hit path: only the own def is present here,
++    // and the inline child contributes a different member name.
++    const files = outerWithInlineChild(
++      'a.cpp',
++      [fnDef('n:foo@outer', 'outer.foo')],
++      [fnDef('n:bar@v1', 'outer.v1.bar')],
++    );
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@outer',
++    });
++    expect(resolveCppQualifiedNamespaceMember('outer', 'bar', files, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:bar@v1',
++    });
++  });
++
++  it('does not serve one parsedFiles array’s index to another', () => {
++    const first = outerWithInlineChild('a.cpp', [], [fnDef('n:foo@a', 'outer.v1.foo')]);
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', first, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@a',
++    });
++    const second = outerWithInlineChild('b.cpp', [], [fnDef('n:foo@b', 'outer.v1.foo')]);
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', second, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@b',
++    });
++  });
++
++  it('rebuilds after clearCppInlineNamespaces even when parsedFiles is reused', () => {
++    // Pass 1: `v1` is inline, so `outer::foo` reaches through it.
++    const specs: readonly ScopeSpec[] = [
++      {
++        id: 'sc:outer',
++        kind: 'Namespace',
++        parent: null,
++        defs: [nsDef('n:outer', 'outer')],
++        line: 1,
++      },
++      {
++        id: 'sc:v1',
++        kind: 'Namespace',
++        parent: 'sc:outer',
++        defs: [nsDef('n:v1', 'outer.v1'), fnDef('n:foo@v1', 'outer.v1.foo')],
++        line: 10,
++      },
++    ];
++    const files = makeParsedFiles('a.cpp', specs, ['sc:v1']);
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toMatchObject({
++      nodeId: 'n:foo@v1',
++    });
++
++    // Pass 2: SAME `parsedFiles` reference (so identity alone would serve the
++    // cached index), but `v1` is no longer inline. Without the index reset in
++    // `clearCppInlineNamespaces` the stale pass-1 hit survives.
++    clearCppInlineNamespaces();
++    markInline(files[0], specs, []);
++    expect(resolveCppQualifiedNamespaceMember('outer', 'foo', files, NO_SCOPES)).toBeUndefined();
++  });
++});

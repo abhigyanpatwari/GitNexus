@@ -5,8 +5,10 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import type { ImpactRisk } from 'gitnexus-shared';
 import type {
   BridgeHandle,
+  BridgeMeta,
   ContractType,
   CrossRepoImpact,
   GroupConfig,
@@ -23,12 +25,24 @@ import {
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
 import {
+  bridgeMetaMatchesFile,
   closeBridgeDb,
   getCachedBridgeReadOnly,
   queryBridge,
   readBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+// Re-exported so the three surfaces keep one import site for the vocabulary,
+// while the fold itself stays in a leaf module no native binding reaches.
+export {
+  truncationFields,
+  crossRepoCompleteness,
+  type TruncationFields,
+  type CrossRepoCompleteness,
+  type CrossRepoCompletenessInput,
+} from './completeness.js';
+import { truncationFields, crossRepoCompleteness } from './completeness.js';
+import { compareCodeUnits } from '../../lib/utils.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
 // sees (nearly) all symbols. Bypasses the MCP-facing default of 100.
@@ -39,6 +53,26 @@ export const MAX_SUPPORTED_CROSS_DEPTH = 1;
 
 /** Default wall-clock budget for the Phase 1 `impact` leg when callers omit `timeoutMs`. */
 export const DEFAULT_LOCAL_IMPACT_TIMEOUT_MS = 30_000;
+
+/**
+ * Cap on neighbour fan-outs attempted per group-impact request.
+ *
+ * The bound used to be the wall clock alone, which made the cutoff a function
+ * of machine load: an idle host traversed more crossings and `mergeRisk`
+ * escalated to CRITICAL at three, while a loaded host stopped at two and
+ * reported HIGH or lower — same graph, same arguments, different verdict
+ * (#2787). A count is deterministic, and the neighbour list carries a total
+ * order over the full crossing identity (confidence DESC, then repo, uid,
+ * contract), so the cap keeps the strongest crossings rather than an arbitrary
+ * prefix.
+ *
+ * 50 is borrowed from `MAX_CROSSINGS_TO_TRY` (cross-trace.ts) on cost, not on
+ * scope — that one caps ContractLinks per repo pair inside a trace, this one
+ * caps the total across all neighbour repos in one impact call, and group impact
+ * had no numeric cap at all before #2787. The wall clock stays as a hang
+ * backstop below; this is the bound that normally binds.
+ */
+export const MAX_NEIGHBOR_FANOUT = 50;
 
 const CY_NEIGHBORS_UPSTREAM = `
 MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
@@ -125,6 +159,15 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
       name: string;
       repoPath: string;
       target: string;
+      // Target selectors, same names/semantics as the single-repo impact tool
+      // (target_uid = zero-ambiguity lookup that wins over the name;
+      // file_path/kind narrow a name shared by same-named symbols). Threading
+      // them through HERE is what makes the MCP boundary's forwarding live —
+      // dropping them at this boundary silently re-broke the group-mode
+      // disambiguation loop once already.
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth: number;
       crossDepth: number;
@@ -139,11 +182,21 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   | { ok: false; error: string } {
   const name = String(params.name ?? '').trim();
   const repoPath = String(params.repo ?? '').trim();
-  const target = String(params.target ?? '').trim();
+  // Optional string, same helper shape as cross-trace's `str()`: empty/blank
+  // counts as absent so `target_uid: ''` degrades to the name lookup rather
+  // than a zero-ambiguity lookup of the empty uid. Parsed before the required
+  // check so UID-only callers (MCP impact schema requires `direction`, not
+  // `target`) are accepted.
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v : undefined;
+  const targetName = String(params.target ?? '').trim();
+  const target_uidEarly = str(params.target_uid);
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
     return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
-  if (!target) return { ok: false, error: 'target is required' };
+  if (!targetName && !target_uidEarly)
+    return { ok: false, error: 'target or target_uid is required' };
+  const target = targetName || target_uidEarly!;
   if (
     params.service !== undefined &&
     params.service !== null &&
@@ -171,6 +224,10 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
+  const target_uid = target_uidEarly;
+  const file_path = str(params.file_path);
+  const kind = str(params.kind);
+
   // Clamp at the validate boundary so the downstream `deadline` (line
   // ~366) and `safeLocalImpact`'s `setTimeout` both see a single
   // bounded value. Without this, the outer deadline budgeted Phase-2
@@ -190,6 +247,9 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth,
@@ -210,6 +270,17 @@ async function resolveGroupRepo(
 ): Promise<GroupRepoHandle | { error: string }> {
   const registryName = config.repos[repoPath];
   if (!registryName) {
+    const matchingMemberPaths = Object.entries(config.repos)
+      .filter(([, alias]) => alias.toLowerCase() === repoPath.toLowerCase())
+      .map(([memberPath]) => memberPath);
+    if (matchingMemberPaths.length > 0) {
+      return {
+        error:
+          `Unknown repo path "${repoPath}" in this group. ` +
+          `That value is a registry alias for member path(s): ${matchingMemberPaths.join(', ')}. ` +
+          `Pass the group.yaml key to --repo, not the alias.`,
+      };
+    }
     return { error: `Unknown repo path "${repoPath}" in this group.` };
   }
   try {
@@ -348,18 +419,88 @@ function extractProcessNames(impact: unknown): string[] {
 // permanently that a PDG `risk:'UNKNOWN'` never coalesces to a confident `LOW`.
 // No behavior change — `'UNKNOWN'` was already handled correctly at the
 // `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
-export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
-  const highConf = cross.some((c) => c.contract.confidence >= 0.85);
+function asImpactRisk(value: unknown, fallback: ImpactRisk = 'LOW'): ImpactRisk {
+  return value === 'LOW' ||
+    value === 'MEDIUM' ||
+    value === 'HIGH' ||
+    value === 'CRITICAL' ||
+    value === 'UNKNOWN'
+    ? value
+    : fallback;
+}
+
+export function mergeRisk(localRisk: ImpactRisk, cross: CrossRepoImpact[]): ImpactRisk {
+  const traversed = cross.filter((c) => c.fanout_status !== 'not_attempted');
+  const highConf = traversed.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
-  if (cross.length >= 3) return 'CRITICAL';
+  if (traversed.length >= 3) return 'CRITICAL';
   if (highConf) return 'HIGH';
-  if (cross.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
+  if (traversed.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
   return localRisk;
+}
+
+function liftLocalRiskMeta(
+  local: unknown,
+  cross: CrossRepoImpact[],
+): Pick<GroupImpactResult, 'riskSharedAxes' | 'riskScale'> {
+  const { riskSharedAxes, riskScale } = local as {
+    riskSharedAxes?: unknown;
+    riskScale?: GroupImpactResult['riskScale'];
+  };
+  return {
+    ...(riskSharedAxes !== undefined
+      ? { riskSharedAxes: mergeRisk(asImpactRisk(riskSharedAxes), cross) }
+      : {}),
+    ...(riskScale !== undefined ? { riskScale } : {}),
+  };
+}
+
+/**
+ * Is this bridge's metadata unable to say where its contents came from?
+ *
+ * The three reads are all about a `BridgeMeta` and stay OUT of
+ * `crossRepoCompleteness` on purpose (see its doc): they are how a caller that
+ * opened a bridge computes `provenanceUnknown`, not how every caller does.
+ *
+ *   - `version === 0` — no readable meta.json at all (`readBridgeMeta` answers
+ *     that for both "absent" and "unparseable");
+ *   - `repoListsUnreadable` — a meta.json that parsed but whose repo lists are
+ *     not repo lists. A value we could not read is not a measurement of zero,
+ *     so it may not be spent as one;
+ *   - `pairedWithDatabase === false` — a meta.json that does not describe the
+ *     database sitting beside it, which is what a sync interrupted between the
+ *     swap and the metadata write leaves behind. Measured by
+ *     `ensureBridgeReady` BEFORE the database is opened and carried on the
+ *     meta; this only reads the answer (#3012).
+ *
+ * Treating any of them as complete is the fail-open the completeness channel
+ * exists to close.
+ */
+export function bridgeProvenanceUnknown(meta: BridgeMeta): boolean {
+  return (
+    meta.version === 0 || meta.repoListsUnreadable === true || meta.pairedWithDatabase === false
+  );
+}
+
+function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
+  const sameBoundary = (entry: CrossRepoImpact): boolean =>
+    entry.repo_path === candidate.repo_path && entry.contract.id === candidate.contract.id;
+
+  if (candidate.fanout_status === 'not_attempted') {
+    if (cross.some(sameBoundary)) return;
+  } else {
+    const boundaryOnlyIndex = cross.findIndex(
+      (entry) => sameBoundary(entry) && entry.fanout_status === 'not_attempted',
+    );
+    if (boundaryOnlyIndex >= 0) cross.splice(boundaryOnlyIndex, 1);
+  }
+
+  cross.push(candidate);
 }
 
 export async function ensureBridgeReady(
   groupDir: string,
-): Promise<{ handle: BridgeHandle } | { error: string }> {
+): Promise<{ handle: BridgeHandle; meta: BridgeMeta } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return {
@@ -374,6 +515,13 @@ export async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
+  // Pair the metadata to the database BEFORE opening it, and carry the answer.
+  // An unstamped pair is judged on the two files' write order, so any open that
+  // touched `bridge.lbug`'s mtime would silently convert "legacy but intact"
+  // into "provenance unknown" for every pre-stamp bridge on that platform. This
+  // ordering removes the question rather than betting on the answer.
+  meta.pairedWithDatabase = await bridgeMetaMatchesFile(groupDir, meta);
+
   // Use the cached read-only handle if available — avoids reopening the same
   // bridge.lbug in a long-lived MCP server, which fails on Windows because
   // the OS handle isn't fully released before the next open races in.
@@ -383,7 +531,7 @@ export async function ensureBridgeReady(
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
     };
   }
-  return { handle };
+  return { handle, meta };
 }
 
 function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
@@ -431,7 +579,18 @@ export async function resolveBridgeNeighbors(
     const n = rowToNeighbor(raw);
     if (n) neighbors.push(n);
   }
-  neighbors.sort((a, b) => b.confidence - a.confidence);
+  // Sort on the FULL crossing identity — the same triple the fan-out dedups on
+  // below (`repo\0uid\0contractId`). Two links that share (confidence, repo,
+  // uid) but differ in contract both survive that dedup, so leaving contractId
+  // out of the comparator makes them compare 0 and fall back to raw bridge row
+  // order, which is what decides who lands past MAX_NEIGHBOR_FANOUT (#2787).
+  neighbors.sort(
+    (a, b) =>
+      b.confidence - a.confidence ||
+      compareCodeUnits(a.neighborRepo, b.neighborRepo) ||
+      compareCodeUnits(a.neighborUid, b.neighborUid) ||
+      compareCodeUnits(a.contractId, b.contractId),
+  );
   return neighbors;
 }
 
@@ -446,6 +605,9 @@ export async function runGroupImpact(
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth: _crossDepth,
@@ -473,6 +635,14 @@ export async function runGroupImpact(
 
   const impactParams: Parameters<GroupToolPort['impact']>[1] = {
     target,
+    // Selector params pass through to the member repo's impact (the port
+    // contract in service.ts documents them), so the single-repo tool's
+    // "re-call with target_uid to disambiguate" loop works unchanged in
+    // group mode. `undefined` keeps the call shape flat — same convention
+    // as the relationTypes line below.
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     relationTypes: relationTypes && relationTypes.length > 0 ? relationTypes : undefined,
@@ -497,7 +667,7 @@ export async function runGroupImpact(
       group: name,
       cross: [],
       outOfScope: [],
-      truncated: true,
+      ...truncationFields(true, 'timeout'),
       truncatedRepos: [],
       summary: {
         direct: 0,
@@ -506,8 +676,8 @@ export async function runGroupImpact(
         cross_repo_hits: 0,
       },
       risk: 'UNKNOWN',
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
-      truncationReason: 'timeout',
       crossDepthWarning,
     };
   }
@@ -531,7 +701,7 @@ export async function runGroupImpact(
         group: name,
         cross: [],
         outOfScope: [],
-        truncated: false,
+        ...truncationFields(false),
         truncatedRepos: [],
         summary: {
           direct: 0,
@@ -554,7 +724,7 @@ export async function runGroupImpact(
       group: name,
       cross: [],
       outOfScope: [],
-      truncated: Boolean((local as { partial?: boolean }).partial),
+      ...truncationFields(Boolean((local as { partial?: boolean }).partial), 'partial'),
       truncatedRepos: [],
       summary: {
         direct: s.direct ?? 0,
@@ -562,9 +732,9 @@ export async function runGroupImpact(
         modules_affected: s.modules_affected ?? 0,
         cross_repo_hits: 0,
       },
-      risk: String((local as { risk?: string }).risk ?? 'LOW'),
+      risk: asImpactRisk((local as { risk?: unknown }).risk),
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
-      truncationReason: (local as { partial?: boolean }).partial ? 'partial' : undefined,
       crossDepthWarning,
     };
   }
@@ -573,11 +743,36 @@ export async function runGroupImpact(
   if ('error' in bridgePrep) return { error: bridgePrep.error };
 
   const handle = bridgePrep.handle;
+  // Repos the sync that built this bridge could not account for. Their
+  // contracts — and every cross-link touching them — are simply absent from
+  // bridge.lbug, and nothing else in this walk can notice that: the only
+  // incompleteness channel on the result is `truncationFields`, driven by
+  // fan-out state. Without folding these in, a query about a symbol whose one
+  // downstream consumer lives in an unreadable repo returns
+  // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
+  // which is a wrong answer, not an empty one, for a tool an agent uses to
+  // license a delete or a rename.
+  //
+  // The metadata read that answers it (`bridgeProvenanceUnknown`) happens
+  // INSIDE the `try` below, and the flag is initialized fail-closed here only
+  // because it outlives that block. The lease taken by `ensureBridgeReady` is
+  // released by the `finally` and nowhere else, so work done between the lease
+  // and the `try` is work whose every throw leaks a refcount the cached handle
+  // can never get back — which is how a malformed meta.json used to wedge the
+  // handle as well as crash the query. (The repo lists are folded in after the
+  // `finally`, where a throw can no longer strand the lease.)
+  let provenanceUnknown = true;
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
+  /** Real `impactByUid` fan-outs issued — what MAX_NEIGHBOR_FANOUT bounds. */
+  let attemptedFanouts = 0;
+  /** True when the wall-clock backstop, not the count cap, cut the fan-out. */
+  let fanoutTimedOut = false;
 
   try {
+    provenanceUnknown = bridgeProvenanceUnknown(bridgePrep.meta);
+
     const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
       uids,
@@ -587,7 +782,12 @@ export async function runGroupImpact(
     const seen = new Set<string>();
 
     for (const n of neighbors) {
-      if (servicePrefix && !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)) {
+      const manifestOnly = n.neighborUid.startsWith('manifest::');
+      if (
+        servicePrefix &&
+        !manifestOnly &&
+        !fileMatchesServicePrefix(n.neighborFilePath, servicePrefix)
+      ) {
         continue;
       }
       if (!repoInSubgroup(n.neighborRepo, subgroup)) {
@@ -604,8 +804,18 @@ export async function runGroupImpact(
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) {
+      // Deterministic bound first: the count decides the cutoff on every host.
+      // Manifest-only crossings are exempt because they cost no `impactByUid`
+      // and dropping them regresses #2784.
+      if (!manifestOnly && attemptedFanouts >= MAX_NEIGHBOR_FANOUT) {
+        truncatedRepos.push(n.neighborRepo);
+        continue;
+      }
+      // Wall clock second, as a hang backstop only. It is load-dependent by
+      // construction, so when it is what fired the response must say `timeout`,
+      // not the generic `partial` it used to report.
+      if (!manifestOnly && deadline - Date.now() <= 0) {
+        fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
@@ -621,11 +831,41 @@ export async function runGroupImpact(
         continue;
       }
 
+      // A manifest link can prove the repository boundary even when its far
+      // endpoint has no graph symbol of its own (for example, a string-based
+      // RPC dispatch). Those endpoints deliberately use a deterministic
+      // `manifest::...` UID. Calling impactByUid with that synthetic value can
+      // never succeed because it is not a node in the verified neighbor
+      // repository; dropping the crossing here made `group sync` report the
+      // manifest link while `group impact` silently returned cross=0 (#2722).
+      //
+      // Preserve the proven crossing with an empty local fan-out. Real UIDs
+      // still take the normal impactByUid path below, where failures remain
+      // truncations rather than false successful traversals.
+      if (manifestOnly) {
+        addCrossImpact(cross, {
+          repo: regName,
+          repo_path: n.neighborRepo,
+          contract: {
+            id: n.contractId,
+            type: n.contractType as ContractType,
+            match_type: 'manifest',
+            confidence: n.confidence,
+          },
+          by_depth: {},
+          affected_processes: [],
+          fanout_status: 'not_attempted',
+        });
+        continue;
+      }
+
+      const remainingMs = deadline - Date.now();
       // Phase-2 hardening: race each impactByUid against a per-call
       // timeout derived from the remaining budget. Without this wrap a
       // single hung neighbor would pin the request past the clamped
       // timeout, which Codex's adversarial review on PR #1331 flagged
       // as the still-open half of CodeQL #184 / js/resource-exhaustion.
+      attemptedFanouts += 1;
       const { value: fan, timedOut: neighborTimedOut } = await safeNeighborImpact(
         deps.port,
         neighborHandle.id,
@@ -640,11 +880,12 @@ export async function runGroupImpact(
         remainingMs,
       );
       if (neighborTimedOut || fan == null) {
+        if (neighborTimedOut) fanoutTimedOut = true;
         truncatedRepos.push(n.neighborRepo);
         continue;
       }
 
-      cross.push({
+      addCrossImpact(cross, {
         repo: regName,
         repo_path: n.neighborRepo,
         contract: {
@@ -662,17 +903,78 @@ export async function runGroupImpact(
   }
 
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
-  const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
+  const localRisk = asImpactRisk((local as { risk?: unknown }).risk);
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated = truncatedRepos.length > 0 || localPartial;
+  // The bridge's own incompleteness, in the shared vocabulary, read through
+  // what this query DECLARED. The fan-out above already drops every neighbour
+  // outside `subgroup`, so an incomplete repo the query excluded could not have
+  // contributed a crossing to this answer — marking the answer a floor because
+  // of it makes the marker fire on results it does not describe, which is how a
+  // caller learns to ignore it. An unscoped query passes `subgroup: undefined`,
+  // which `repoInSubgroup` answers true for, so the intersection is the whole
+  // set and that path is byte-for-byte the old behaviour.
+  //
+  // The declared scope is the subgroup PLUS the query's own repo (`exact`
+  // reuses the one membership helper for the equality, rather than growing a
+  // second notion of it): the walk starts from `repoPath`'s contracts in the
+  // bridge, so if THAT is the repo the sync could not read there are no
+  // crossings to find for any scope, and a subgroup excluding it must not turn
+  // that vacuum into a confident "complete".
+  //
+  // Declared scope, not traversed scope: an incomplete repo's contracts are
+  // absent from the bridge by definition, so it is never in the set the walk
+  // reached — filtering on what was traversed would empty the intersection on
+  // every query and silently restore the fail-open.
+  //
+  // Sound only while `MAX_SUPPORTED_CROSS_DEPTH` is 1. At depth 2+ an
+  // out-of-scope repo can sit BETWEEN two in-scope ones, so dropping it would
+  // convert a genuine lower bound into a confident complete answer; widen this
+  // predicate in the same change that raises the depth.
+  const bridge = crossRepoCompleteness({
+    unreadableRepos: bridgePrep.meta.unreadableRepos,
+    missingRepos: bridgePrep.meta.missingRepos,
+    suppressedMatchStages: bridgePrep.meta.suppressedMatchStages,
+    provenanceUnknown,
+    inScope: (candidate) =>
+      repoInSubgroup(candidate, subgroup) || repoInSubgroup(candidate, repoPath, true),
+  });
+  // One predicate, read twice below. Written out at both sites, a third runtime
+  // cause added to the flag and forgotten at the reason would label a
+  // retry-able answer `incomplete-sync` — telling the operator to re-sync for
+  // something a retry fixes. That reason-vs-flag drift is what `truncationFields`
+  // exists to prevent.
+  const runtimeTruncated = truncatedRepos.length > 0 || localPartial;
+  const truncated = runtimeTruncated || bridge.truncated;
 
   const result: GroupImpactResult = {
     local,
     group: name,
     cross,
     outOfScope,
-    truncated,
-    truncatedRepos: [...new Set(truncatedRepos)],
+    // The risk VALUE is never clamped down. `mergeRisk` is monotone increasing
+    // in the traversed-crossing count, so truncation can only under-report —
+    // and under-reporting a blast radius is the unsafe direction (an agent told
+    // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
+    // warning intact while making the incompleteness legible.
+    // Runtime limits first — they are what the caller can retry. Past those, the
+    // BRIDGE's own reason wins: it already distinguished an unreadable repo
+    // ('incomplete-sync', remedy: re-sync) from a stage the sync was asked to
+    // skip ('suppressed-stage', remedy: re-sync WITHOUT the flag). Hardcoding
+    // the fallback here overrode that and told every caller to repair a repo
+    // that read fine — and made the second value unreachable from this surface
+    // while the tool description promised it. `cross-trace.ts` re-spreads the
+    // bridge's fields for the same reason.
+    ...truncationFields(
+      truncated,
+      fanoutTimedOut
+        ? 'timeout'
+        : runtimeTruncated
+          ? 'partial'
+          : bridge.truncated
+            ? bridge.truncationReason
+            : 'incomplete-sync',
+    ),
+    truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {
       direct: localSum.direct ?? 0,
       processes_affected: localSum.processes_affected ?? 0,
@@ -680,11 +982,14 @@ export async function runGroupImpact(
       cross_repo_hits: cross.length,
     },
     risk: mergeRisk(localRisk, cross),
+    ...liftLocalRiskMeta(local, cross),
     timeoutMs,
-    truncationReason: truncated ? 'partial' : undefined,
     crossDepthWarning,
   };
   return result;
 }
 
 export { normalizeServicePrefix, fileMatchesServicePrefix } from './group-path-utils.js';
+// Re-exported, not redefined: the single definition lives in lib/utils.ts, but
+// this module's own surface is what the #2787 regression test imports it from.
+export { compareCodeUnits };

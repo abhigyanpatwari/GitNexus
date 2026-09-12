@@ -7,6 +7,8 @@ const LEGEND_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Enum',
   'Type',
@@ -20,6 +22,8 @@ const ICON_MAP: Record<string, string> = {
   Folder: 'Folder',
   File: 'FileCode',
   Class: 'Box',
+  Protocol: 'Hash',
+  Category: 'Box',
   Function: 'Braces',
   Method: 'Braces',
   Interface: 'Hash',
@@ -62,6 +66,8 @@ describe('color legend', () => {
     expect(LEGEND_LABELS).toContain('Type');
     expect(LEGEND_LABELS).toContain('Decorator');
     expect(LEGEND_LABELS).toContain('Variable');
+    expect(LEGEND_LABELS).toContain('Protocol');
+    expect(LEGEND_LABELS).toContain('Category');
   });
 
   it('every legend label has a color defined', () => {
@@ -76,6 +82,8 @@ describe('color legend', () => {
       'Folder',
       'File',
       'Class',
+      'Protocol',
+      'Category',
       'Interface',
       'Enum',
       'Type',

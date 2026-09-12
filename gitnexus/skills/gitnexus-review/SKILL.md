@@ -120,10 +120,17 @@ and do not claim a complete graph-backed review.
    review surface: when the diff changes what gets emitted or persisted,
    verify every schema/version constant gating caches, incremental
    writebacks, and fingerprint baselines was bumped or regenerated — in
-   GitNexus itself, for example: `INCREMENTAL_SCHEMA_VERSION` (the
-   incremental write set covers only changed files, so new cross-file edges
-   never reach an existing index without the bump), the parse-store
-   `SCHEMA_BUMP`, and both bench fingerprint sets.
+   GitNexus itself, for example: graph DDL needs no manual bump, because
+   `SCHEMA_FINGERPRINT` (`gitnexus/src/core/lbug/schema.ts`) is derived
+   from `NODE_SCHEMA_QUERIES` + `REL_SCHEMA_QUERIES` and moves on its own;
+   the check there is whether the diff changed any string in those arrays,
+   and, if it added a new DDL array, whether that array was folded into the
+   fingerprint. The hand-maintained ritual still applies where no
+   declarative artifact describes the invalidated set: the parse-store
+   `SCHEMA_BUMP` and both bench fingerprint sets still need an explicit
+   bump, re-checked against the base branch right before merge. Semantic
+   changes that leave the DDL untouched are outside the fingerprint; they
+   rely on the analyzer runner-identity receipt in the index metadata.
 
 ## Expert lenses
 

@@ -10,6 +10,12 @@ import {
   getAvailableModels,
   getProviderCapabilities,
 } from '../../src/core/llm/settings-service';
+import {
+  getMiniMaxModelCapabilities,
+  MINIMAX_ANTHROPIC_BASE_URLS,
+  MINIMAX_MODEL_IDS,
+} from '../../src/core/llm/types';
+import { createChatModel } from '../../src/core/llm/agent';
 
 describe('loadSettings', () => {
   it('returns defaults when nothing is stored', () => {
@@ -17,6 +23,11 @@ describe('loadSettings', () => {
     expect(settings.activeProvider).toBeDefined();
     expect(settings.openai).toBeDefined();
     expect(settings.ollama).toBeDefined();
+    expect(settings.minimax).toMatchObject({
+      model: MINIMAX_MODEL_IDS[0],
+      baseUrl: MINIMAX_ANTHROPIC_BASE_URLS.global_en,
+      thinkingMode: 'adaptive',
+    });
   });
 
   it('merges stored values with defaults', () => {
@@ -33,6 +44,30 @@ describe('loadSettings', () => {
     expect(settings.ollama.model).toBe('qwen3-coder:30b');
     // Should still have other provider defaults
     expect(settings.openai).toBeDefined();
+  });
+
+  it('migrates unsupported legacy MiniMax models to the current default', () => {
+    sessionStorage.setItem(
+      'gitnexus-llm-settings',
+      JSON.stringify({
+        activeProvider: 'minimax',
+        minimax: {
+          apiKey: 'minimax-test-key',
+          model: 'MiniMax-M2.5',
+          temperature: 0.1,
+        },
+      }),
+    );
+
+    const settings = loadSettings();
+    expect(settings.minimax).toMatchObject({
+      model: MINIMAX_MODEL_IDS[0],
+      thinkingMode: 'adaptive',
+    });
+
+    const model = createChatModel(getActiveProviderConfig()!) as any;
+    expect(model.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(model.thinking).toEqual({ type: 'adaptive' });
   });
 
   it('returns defaults on corrupted JSON', () => {
@@ -116,6 +151,26 @@ describe('getActiveProviderConfig', () => {
     expect(config!.provider).toBe('deepseek');
   });
 
+  it('returns the regional endpoint and thinking mode for MiniMax', () => {
+    const settings = loadSettings();
+    settings.activeProvider = 'minimax';
+    settings.minimax = {
+      ...settings.minimax,
+      apiKey: 'minimax-test-key',
+      model: MINIMAX_MODEL_IDS[0],
+      baseUrl: MINIMAX_ANTHROPIC_BASE_URLS.cn_zh,
+      thinkingMode: 'disabled',
+    };
+    saveSettings(settings);
+
+    expect(getActiveProviderConfig()).toMatchObject({
+      provider: 'minimax',
+      model: MINIMAX_MODEL_IDS[0],
+      baseUrl: MINIMAX_ANTHROPIC_BASE_URLS.cn_zh,
+      thinkingMode: 'disabled',
+    });
+  });
+
   it('returns null for openrouter with empty API key', () => {
     const settings = loadSettings();
     settings.activeProvider = 'openrouter';
@@ -161,6 +216,20 @@ describe('getAvailableModels', () => {
     expect(getAvailableModels('ollama').length).toBeGreaterThan(0);
     expect(getAvailableModels('anthropic')).toContain('claude-sonnet-4-20250514');
     expect(getAvailableModels('deepseek')).toContain('deepseek-v4-flash');
+    expect(getAvailableModels('minimax')).toEqual([...MINIMAX_MODEL_IDS]);
+  });
+
+  it('describes MiniMax model input and thinking capabilities', () => {
+    expect(getMiniMaxModelCapabilities(MINIMAX_MODEL_IDS[0])).toEqual({
+      contextWindow: 1_000_000,
+      inputModalities: ['text', 'image', 'video'],
+      thinkingModes: ['adaptive', 'disabled'],
+    });
+    expect(getMiniMaxModelCapabilities(MINIMAX_MODEL_IDS[1])).toEqual({
+      contextWindow: 204_800,
+      inputModalities: ['text'],
+      thinkingModes: ['always_on'],
+    });
   });
 
   it('returns empty array for unknown provider', () => {
