@@ -722,18 +722,34 @@ const stampMatchesStat = (
 /**
  * LadybugDB can still flush WAL/shadow into the main file after `close` and
  * the atomic rename. Stamping the first `stat` then loses the exact-equality
- * check the moment that flush lands. Wait until two consecutive stats agree.
+ * check the moment that flush lands.
+ *
+ * Wait a quiet interval before every comparison — including the first — so an
+ * initially-stable pair is not stamped on the same tick as close/rename. Two
+ * consecutive agreeing stats after that interval are treated as settled. A
+ * flush that arrives later than the retry budget can still miss; this is a
+ * best-effort wait, not a lock on the file.
  */
+const BRIDGE_SETTLE_MS = 10;
+const BRIDGE_SETTLE_ATTEMPTS = 10;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 const statSettledBridgeFile = async (filePath: string): Promise<Stats> => {
   let current = await fsp.stat(filePath);
-  for (let i = 0; i < 10; i++) {
-    await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < BRIDGE_SETTLE_ATTEMPTS; i++) {
+    await delay(BRIDGE_SETTLE_MS);
     const next = await fsp.stat(filePath);
     if (next.size === current.size && next.mtimeMs === current.mtimeMs) {
-      return next;
+      await delay(BRIDGE_SETTLE_MS);
+      const confirm = await fsp.stat(filePath);
+      if (confirm.size === next.size && confirm.mtimeMs === next.mtimeMs) {
+        return confirm;
+      }
+      current = confirm;
+      continue;
     }
     current = next;
-    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return current;
 };
