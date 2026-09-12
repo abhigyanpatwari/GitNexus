@@ -246,17 +246,15 @@ describe('bridgeMetaMatchesFile with a half-written stamp', () => {
   it('control: a fully stamped pair written together still matches', async () => {
     await seedStamped();
     const meta = await readBridgeMeta(groupDir);
-    expect(Number.isInteger(meta.bridgeMtimeMs)).toBe(true);
     await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
-    // Pre-rounding stamps stored a float. Rounding both sides keeps those
-    // pairs matching after a JSON read, which is how every production caller
-    // loads metadata.
+    // Distinct filesystem mtimes must not collapse: rounding would treat
+    // T and T+0.25 as the same stamp and wave a same-size swap through.
     await expect(
       bridgeMetaMatchesFile(groupDir, {
         ...meta,
         bridgeMtimeMs: (meta.bridgeMtimeMs as number) + 0.25,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
   });
 });
 

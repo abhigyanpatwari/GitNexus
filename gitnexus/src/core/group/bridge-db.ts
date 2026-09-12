@@ -706,19 +706,17 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
  * "verified" for a pair the same code path had just found broken.
  */
 /**
- * Persist and compare mtimes as whole milliseconds. `stat.mtimeMs` is a
- * float (ns-precision on Linux); JSON cannot round-trip every such value,
- * and an exact `===` against a later `stat` flakes on CI (the control case
- * in `bridge-meta-swap-window.test.ts`).
+ * Canonicalize `mtimeMs` the way `JSON.stringify` will persist it. Do not
+ * `Math.round`: two same-size databases written in the same millisecond
+ * must still fail the pair check if their filesystem mtimes differ.
  */
-const stampBridgeMtimeMs = (mtimeMs: number): number => Math.round(mtimeMs);
+const persistMtimeMs = (mtimeMs: number): number => JSON.parse(JSON.stringify(mtimeMs)) as number;
 
 const stampMatchesStat = (
   stat: { size: number; mtimeMs: number },
   meta: Pick<BridgeMeta, 'bridgeSize' | 'bridgeMtimeMs'>,
 ): boolean =>
-  stat.size === meta.bridgeSize &&
-  stampBridgeMtimeMs(stat.mtimeMs) === stampBridgeMtimeMs(meta.bridgeMtimeMs as number);
+  stat.size === meta.bridgeSize && persistMtimeMs(stat.mtimeMs) === persistMtimeMs(meta.bridgeMtimeMs as number);
 
 /**
  * LadybugDB can still flush WAL/shadow into the main file after `close` and
@@ -988,7 +986,7 @@ export async function refreshPreservedBridgeMeta(
     const stat = await fsp.stat(dbPath).catch(() => null);
     if (stat) {
       refreshed.bridgeSize = stat.size;
-      refreshed.bridgeMtimeMs = stampBridgeMtimeMs(stat.mtimeMs);
+      refreshed.bridgeMtimeMs = persistMtimeMs(stat.mtimeMs);
       await writeBridgeMeta(groupDir, refreshed);
       return 'restamped';
     }
@@ -1413,7 +1411,7 @@ export async function writeBridgeUnlocked(
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       bridgeSize: finalStat.size,
-      bridgeMtimeMs: stampBridgeMtimeMs(finalStat.mtimeMs),
+      bridgeMtimeMs: persistMtimeMs(finalStat.mtimeMs),
       missingRepos: input.missingRepos,
       // Persisted whenever the caller supplied it, `[]` included: an empty list
       // is the measurement "this sync accounted for every repo", and it is a
