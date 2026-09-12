@@ -21,6 +21,8 @@ import {
   STATUS_STORAGE_REQUIREMENTS,
 } from '../../storage/storage-resolver.js';
 import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
+import { BRANCHES_DIR, branchSlug } from '../../storage/branch-index.js';
+import { getCurrentBranch } from '../../storage/git.js';
 import { escapeCypherString } from '../lbug/cypher-escape.js';
 
 /**
@@ -70,10 +72,19 @@ async function findRepoForCwd(cwd: string): Promise<{
     if (!bestMatch) return null;
 
     const storagePath = await requireRegisteredStoragePath(bestMatch, STATUS_STORAGE_REQUIREMENTS);
+    const branch = getCurrentBranch(bestMatch.path);
+    const branchIsIndexed =
+      Boolean(branch) &&
+      Array.isArray(bestMatch.branches) &&
+      bestMatch.branches.some((summary) => summary.branch === branch);
+    const indexDir =
+      branchIsIndexed && branch
+        ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch))
+        : storagePath;
     return {
       name: bestMatch.name,
       storagePath,
-      lbugPath: path.join(storagePath, LBUG_DIRECTORY),
+      lbugPath: path.join(indexDir, LBUG_DIRECTORY),
     };
   } catch {
     return null;

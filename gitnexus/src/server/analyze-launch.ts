@@ -17,7 +17,11 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
 import { INDEX_METADATA_FILE } from '../storage/repo-manager.js';
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
-import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
+import {
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS,
+  ANALYZE_STORAGE_REQUIREMENTS,
+  requireStoragePath,
+} from '../storage/storage-resolver.js';
 import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
@@ -162,7 +166,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     // For waitForSettledIndex: files (re)written by this job have mtimes at or
     // after this instant. Taken before the fork so no worker write predates it.
     const jobStartMs = Date.now();
-    const analyzeLockKey = await requireStoragePath(targetPath, ANALYZE_STORAGE_REQUIREMENTS);
+    const analyzeLockKey = await requireStoragePath(
+      targetPath,
+      opts.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
+    );
     // Acquire shared repo lock only after ownership validation. The same
     // resolved path is retained for finalization instead of being looked up
     // again through the registry after the worker exits.

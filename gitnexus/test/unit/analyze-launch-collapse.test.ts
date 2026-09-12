@@ -23,14 +23,18 @@ import { EventEmitter } from 'node:events';
 // `vi.mock` factories are hoisted above every top-level `const`, and this file
 // imports the module under test statically — so anything a factory closes over
 // must be hoisted with it.
-const H = vi.hoisted(() => ({
-  forkMock: vi.fn(),
-  STORAGE_PATH: '/tmp/gitnexus-test-storage',
-  REPO_PATH: '/tmp/gitnexus-test-repo',
-  METADATA_FILE: 'gitnexus.json',
-  // When false, the finalization gate sees no fresh index (timeout / lock-hold tests).
-  settleOk: true,
-}));
+const H = vi.hoisted(() => {
+  const STORAGE_PATH = '/tmp/gitnexus-test-storage';
+  return {
+    forkMock: vi.fn(),
+    STORAGE_PATH,
+    REPO_PATH: '/tmp/gitnexus-test-repo',
+    METADATA_FILE: 'gitnexus.json',
+    // When false, the finalization gate sees no fresh index (timeout / lock-hold tests).
+    settleOk: true,
+    requireStoragePath: vi.fn(async () => STORAGE_PATH),
+  };
+});
 const { forkMock, REPO_PATH } = H;
 
 vi.mock('child_process', async () => {
@@ -48,7 +52,10 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 vi.mock('../../src/storage/storage-resolver.js', () => ({
   ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
-  requireStoragePath: async () => H.STORAGE_PATH,
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS: {
+    allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+  },
+  requireStoragePath: H.requireStoragePath,
 }));
 
 vi.mock('node:fs', async () => {
@@ -135,6 +142,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
   beforeEach(() => {
     calls = [];
     H.settleOk = true;
+    H.requireStoragePath.mockClear();
     jobManager = new JobManager();
     child = makeChild();
     forkMock.mockImplementation(() => child);
@@ -180,6 +188,28 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
         }),
       }),
     );
+  });
+
+  it('uses the force storage set only when launch options request force', async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+
+    const ordinary = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(ordinary, REPO_PATH, {});
+    expect(H.requireStoragePath).toHaveBeenLastCalledWith(REPO_PATH, {
+      allowedStates: ['missing', 'empty', 'owned'],
+    });
+
+    const forced = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(forced, REPO_PATH, { force: true });
+    expect(H.requireStoragePath).toHaveBeenLastCalledWith(REPO_PATH, {
+      allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+    });
   });
 
   it('forwards the index-branch selector to the worker', async () => {

@@ -235,7 +235,7 @@ describe('Cursor hook source regressions', () => {
   });
 
   it('gates on a registry entry before invoking the CLI', () => {
-    expect(source).toContain('findRegisteredRepo');
+    expect(source).toContain('resolveHookRepo');
     expect(source).toContain('registry-query.cjs');
   });
 

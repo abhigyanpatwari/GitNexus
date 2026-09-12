@@ -29,7 +29,12 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
-const { findLocalOwnedRepo, findRegisteredRepo } = require('./registry-query.cjs');
+const { resolveHookRepo } = (() => {
+  // Installed copies get helpers next to this adapter. The in-tree source
+  // tree only ships the adapter, so fall back to the Claude helper copies.
+  const local = path.join(__dirname, 'registry-query.cjs');
+  return fs.existsSync(local) ? require(local) : require('../claude/registry-query.cjs');
+})();
 
 function readInput() {
   try {
@@ -296,7 +301,7 @@ function buildAfterToolContext(input) {
   // or a git mutation that might need a stale-index hint.
   if (!pattern && !gitMutation) return null;
 
-  const repo = findLocalOwnedRepo(cwd) || findRegisteredRepo(cwd);
+  const repo = resolveHookRepo(cwd);
   if (!repo) return null;
   const storagePath = repo.storagePath;
   const parts = [];

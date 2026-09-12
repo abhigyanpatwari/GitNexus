@@ -1014,7 +1014,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     req?: any,
     options: { validateStorage?: boolean } = {},
   ): Promise<any> => {
-    const repos = await listRegisteredRepos({ validate: true });
+    const repos = await listRegisteredRepos({
+      validate: options.validateStorage !== false,
+    });
     const found = resolveRegisteredRepoEntry(repos, repoName);
     const validate = (entry: RegistryEntry | null): Promise<RegistryEntry | null> =>
       options.validateStorage === false ? Promise.resolve(entry) : validateResolvedRepoEntry(entry);
@@ -1057,7 +1059,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (!currentJob || currentJob.status === 'failed') break;
             if (currentJob.status === 'complete') {
               await backend.init();
-              const freshRepos = await listRegisteredRepos({ validate: true });
+              const freshRepos = await listRegisteredRepos({
+                validate: options.validateStorage !== false,
+              });
               return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));

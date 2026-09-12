@@ -307,17 +307,22 @@ function findLocalOwnedRepo(cwd) {
   // Environment storage overrides win; a leftover repo-local .gitnexus must
   // not skip the registry scan that applies STORAGE_PATH / STORAGE_ROOT.
   if (envOverridesStorage()) return null;
+  const { branch } = registryPathsForCwd(cwd);
   let current = canonicalize(cwd);
   for (let hops = 0; hops <= LOCAL_OWNED_PARENT_HOPS && current; hops++) {
     const storagePath = path.join(current, GITNEXUS_DIR);
     if (hasLocalIndexSignal(storagePath)) {
       const metadata = readIndexMetadata(storagePath);
       if (isOwnedStorage(current, storagePath, true, metadata)) {
+        const branchDir =
+          branch != null ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch)) : null;
+        const indexDir =
+          branchDir && hasLocalIndexSignal(branchDir) ? branchDir : storagePath;
         return {
           path: current,
           storagePath,
-          lbugPath: path.join(storagePath, LBUG_DIRECTORY),
-          metadata,
+          lbugPath: path.join(indexDir, LBUG_DIRECTORY),
+          metadata: indexDir === storagePath ? metadata : readIndexMetadata(indexDir),
         };
       }
     }
@@ -379,9 +384,15 @@ function findRegisteredRepo(cwd) {
   return best;
 }
 
+/** Registry row wins (including persisted external storagePath); local owned is fallback. */
+function resolveHookRepo(cwd) {
+  return findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+}
+
 module.exports = {
   findRegisteredRepo,
   findLocalOwnedRepo,
+  resolveHookRepo,
   INDEX_METADATA_FILE,
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,

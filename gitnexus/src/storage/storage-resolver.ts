@@ -16,6 +16,9 @@ export const STORAGE_ROOT_ENV = 'GITNEXUS_STORAGE_ROOT';
 
 const STORAGE_SLOT_HASH_LENGTH = 12;
 
+/** File-backend lock sidecars (`index-lock.ts`). Not ownership data. */
+const INDEX_LOCK_ARTIFACTS = new Set(['analyze.lock', 'analyze.lock.guard']);
+
 export type StorageState =
   | 'invalid_param'
   | 'missing'
@@ -475,15 +478,16 @@ export const inspectStoragePath = async (
       };
     }
     if (legacy.state === 'absent') {
+      const hasNonLockEntries = directoryEntries.some((name) => !INDEX_LOCK_ARTIFACTS.has(name));
       return {
         ...context,
-        state: directoryEntries.length === 0 ? 'empty' : 'unowned',
+        state: hasNonLockEntries ? 'unowned' : 'empty',
         hasCodeIndexDB,
         reason:
           transientDBReason ??
-          (directoryEntries.length === 0
-            ? undefined
-            : 'Storage directory contains data but no valid ownership metadata.'),
+          (hasNonLockEntries
+            ? 'Storage directory contains data but no valid ownership metadata.'
+            : undefined),
       };
     }
     metadata = legacy.value;

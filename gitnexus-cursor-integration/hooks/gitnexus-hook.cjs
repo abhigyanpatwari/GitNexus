@@ -19,7 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
-const { findLocalOwnedRepo, findRegisteredRepo } = require('./registry-query.cjs');
+const { resolveHookRepo } = require('./registry-query.cjs');
 
 function readInput() {
   try {
@@ -385,7 +385,7 @@ function main() {
     // Cheap local owned `.gitnexus` first (up to 5 parents). Only scan the
     // registry when that walk misses — Read/Grep/Shell with a short pattern
     // must not pay for registry I/O.
-    const repo = findLocalOwnedRepo(cwd) || findRegisteredRepo(cwd);
+    const repo = resolveHookRepo(cwd);
     if (!repo) return;
     const storagePath = repo.storagePath;
 

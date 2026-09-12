@@ -50,6 +50,9 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 
 vi.mock('../../src/storage/storage-resolver.js', () => ({
   ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS: {
+    allowedStates: ['missing', 'empty', 'owned', 'unowned', 'foreign'],
+  },
   requireStoragePath: async () => H.STORAGE_PATH,
 }));
 

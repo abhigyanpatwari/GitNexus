@@ -239,6 +239,18 @@ describe('storage resolver', () => {
     );
   });
 
+  it('treats a lock-only storage directory as empty so non-force analyze can proceed', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-lock-repo-');
+    const storagePath = defaultStoragePath(repo);
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(path.join(storagePath, 'analyze.lock'), 'pid');
+    await fs.writeFile(path.join(storagePath, 'analyze.lock.guard'), 'guard');
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
+
+    await expect(requireStoragePath(repo, ANALYZE_STORAGE_REQUIREMENTS)).resolves.toBe(storagePath);
+  });
+
   it('lets --force adopt a foreign repository-local slot, not the non-force analyze set', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-adopt-repo-');
     const storagePath = defaultStoragePath(repo);
