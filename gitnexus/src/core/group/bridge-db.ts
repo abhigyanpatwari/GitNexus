@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -724,9 +725,7 @@ const stampMatchesStat = (
  * the atomic rename. Stamping the first `stat` then loses the exact-equality
  * check the moment that flush lands. Wait until two consecutive stats agree.
  */
-const statSettledBridgeFile = async (
-  filePath: string,
-): Promise<Awaited<ReturnType<typeof fsp.stat>>> => {
+const statSettledBridgeFile = async (filePath: string): Promise<Stats> => {
   let current = await fsp.stat(filePath);
   for (let i = 0; i < 10; i++) {
     await new Promise((resolve) => setImmediate(resolve));
