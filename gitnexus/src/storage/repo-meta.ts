@@ -417,8 +417,17 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
-    /** Last completed writeback phase before the process stopped. */
+    /**
+     * Last completed writeback phase before the process stopped.
+     * `'fts'` is the graph-boundary / FTS-build marker: recovery may act
+     * more narrowly than a bare dirty flag, and `--repair-fts` must not
+     * treat it as a half-written graph.
+     */
     phase?: string;
+    /** Settled write plan at the FTS boundary (in-place vs unpublished staging). */
+    writePlan?: 'in-place' | 'staging';
+    /** Whether the converged graph-boundary CHECKPOINT succeeded. */
+    checkpointSucceeded?: boolean;
     /** Directly changed/added files before importer expansion. */
     directWriteCount?: number;
     /** Extra files pulled into the writable set by importer BFS. */

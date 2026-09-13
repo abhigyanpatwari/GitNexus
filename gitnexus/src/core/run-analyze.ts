@@ -19,6 +19,14 @@ import {
   DEFAULT_VECTOR_SEARCH_CAPABILITY,
   type FtsSkipReason,
 } from './search/fts-policy.js';
+import {
+  buildFtsDirtyStamp,
+  inferNativeAbortSkip,
+  isBoundaryCheckpointFatal,
+  resolveFtsWritePlan,
+  shouldRefuseRepairFtsWhileDirty,
+  shouldStampFtsDirtyPhase,
+} from './search/fts-crash-marker.js';
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
@@ -1275,6 +1283,9 @@ async function runFullAnalysisInner(
   const existingMeta = loadedMeta
     ? withExplicitFtsDisablement(loadedMeta, ftsDisabledReason)
     : undefined;
+  // KTD6: the dying process writes nothing. Infer skip from the FTS-phase
+  // dirty flag BEFORE later saveMeta calls overwrite the on-disk phase.
+  const priorFtsNativeAbort = inferNativeAbortSkip(existingMeta?.incrementalInProgress);
 
   // Claim a fresh, ownership-validated slot before the pipeline writes caches.
   // A later registry-name collision or pipeline failure can otherwise leave
@@ -1308,13 +1319,15 @@ async function runFullAnalysisInner(
           'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
       );
     }
-    if (existingMeta.incrementalInProgress) {
-      // #2409 / tri-review 4669518496 (R6): a dirty flag means the previous
-      // run died mid-writeback — the graph may be half-written and its WAL
-      // possibly poisoned. This branch returns early, so the dirty-recovery
-      // sidecar quarantine below would never run: repairing FTS now would
-      // open the DB and replay that WAL pre-quarantine, and even a
-      // survivable open would certify FTS over a half-written graph.
+    if (shouldRefuseRepairFtsWhileDirty(existingMeta.incrementalInProgress)) {
+      // #2409 / tri-review 4669518496 (R6): a non-FTS dirty flag means the
+      // previous run died mid-writeback — the graph may be half-written and
+      // its WAL possibly poisoned. This branch returns early, so the
+      // dirty-recovery sidecar quarantine below would never run: repairing
+      // FTS now would open the DB and replay that WAL pre-quarantine, and
+      // even a survivable open would certify FTS over a half-written graph.
+      // An FTS-phase flag is different (KTD4): the graph-boundary checkpoint
+      // already ran, so `--repair-fts` must stay usable (R8).
       throw new Error(
         'Cannot repair FTS indexes: the index is mid-incremental-recovery ' +
           '(a previous analyze run did not complete cleanly). ' +
@@ -3286,13 +3299,6 @@ async function runFullAnalysisInner(
           await restoreDerivedRels(derivedSnapshot);
         }
       }
-
-      // Boundary drain (#2409): checkpoint at the end of the incremental
-      // writeback so the WAL it accumulated never lingers into the FTS and
-      // embedding phases — a later crash leaves only post-checkpoint WAL for
-      // the next open to replay. Near-instant when the periodic driver has
-      // kept up; rides the driver's bounded retry via runCheckpointWithRetry.
-      await checkpointOnce();
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
       // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
@@ -3312,6 +3318,44 @@ async function runFullAnalysisInner(
         pipelineResult.graphEmitManifest,
         contentRetention,
       );
+    }
+
+    // Converged graph-boundary drain: incremental used to checkpoint here;
+    // full rebuild did not. One site so FTS always starts after a settled
+    // plan (post-escalation `buildPath`) and a recorded checkpoint outcome.
+    const ftsWritePlan = resolveFtsWritePlan(buildPath, lbugPath);
+    let boundaryCheckpointSucceeded = false;
+    try {
+      await checkpointOnce();
+      boundaryCheckpointSucceeded = true;
+    } catch (error) {
+      if (isBoundaryCheckpointFatal(ftsWritePlan)) {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      log(
+        `Boundary WAL checkpoint failed on the in-place FTS path (best-effort): ${detail}. ` +
+          'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
+      );
+    }
+    if (shouldStampFtsDirtyPhase(ftsWritePlan)) {
+      // Lift the prior-meta precondition: a first-ever in-place run (Windows
+      // full rebuild, or any in-place incremental) must stamp too. Staging
+      // never stamps — an abort there abandons the unpublished file.
+      const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
+      const base: RepoMeta = latestMeta ?? {
+        repoPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+      };
+      await saveMeta(metaDir, {
+        ...base,
+        incrementalInProgress: buildFtsDirtyStamp({
+          prior: base.incrementalInProgress,
+          writePlan: 'in-place',
+          checkpointSucceeded: boundaryCheckpointSucceeded,
+        }),
+      });
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
@@ -3347,7 +3391,18 @@ async function runFullAnalysisInner(
     let ftsSkipReason: FtsSkipReason | undefined = ftsAvailable
       ? undefined
       : (ftsDisabledReason ?? 'extension-unavailable');
-    if (ftsAvailable) {
+    if (ftsAvailable && priorFtsNativeAbort) {
+      // KTD6 / R11: do not retry CREATE_FTS_INDEX after a native abort —
+      // the same content can kill the process again. `--repair-fts` is the
+      // explicit retry (its early-return path never reaches this branch).
+      ftsReady = false;
+      ftsSkipReason = 'native-abort';
+      log(
+        'FTS index build skipped — a previous analyze aborted while building search indexes. ' +
+          'Graph analysis completed. Run `gitnexus analyze --repair-fts` to retry.',
+      );
+      progress('fts', 90, 'Search indexes skipped (previous native abort)');
+    } else if (ftsAvailable) {
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-
