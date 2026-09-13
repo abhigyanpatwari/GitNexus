@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { loadMeta } from '../../storage/repo-meta.js';
+import { allowsFtsCrashWalPark } from '../search/fts-crash-marker.js';
 import {
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
@@ -31,6 +33,40 @@ export type WalCrashEvidence = {
 };
 
 export const CLEAN_LBUG_SIDECARS_COMMAND = 'gitnexus clean --lbug-sidecars';
+
+export const FTS_READER_REPAIR_COMMAND = 'gitnexus analyze --repair-fts';
+
+export const ftsReaderRefuseMessage = (dbPath: string): string =>
+  `Cannot open ${path.basename(dbPath)} read-only after an in-place FTS abort. ` +
+  `The leftover WAL would replay and kill this process. ` +
+  `Run \`${FTS_READER_REPAIR_COMMAND}\` after stopping any GitNexus MCP or serve process.`;
+
+export class FtsReaderUnrepairableError extends Error {
+  readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+  constructor(dbPath: string) {
+    super(ftsReaderRefuseMessage(dbPath));
+    this.name = 'FtsReaderUnrepairableError';
+  }
+}
+
+/**
+ * Advisory reader gate (KTD10 / R9b). When meta names an in-place
+ * checkpointed FTS abort and a large orphan WAL is still live, refuse
+ * before the native open. Does not write, rename, or repair. Missing or
+ * unreadable meta falls through to today's open path.
+ */
+export const assertReadOnlyFtsCrashSafe = async (dbPath: string): Promise<void> => {
+  let meta;
+  try {
+    meta = await loadMeta(path.dirname(dbPath));
+  } catch {
+    return;
+  }
+  if (!meta || !allowsFtsCrashWalPark(meta.incrementalInProgress)) return;
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind !== 'orphan-wal') return;
+  throw new FtsReaderUnrepairableError(dbPath);
+};
 
 export const ftsCrashParkFailureMessage = (failedPath: string, err?: unknown): string => {
   const detail = err instanceof Error ? err.message : err != null ? String(err) : '';

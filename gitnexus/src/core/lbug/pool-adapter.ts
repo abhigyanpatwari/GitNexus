@@ -29,6 +29,8 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
 import {
+  assertReadOnlyFtsCrashSafe,
+  FtsReaderUnrepairableError,
   guardWalQuarantine,
   isMissingFsError,
   isMissingShadowSidecarError,
@@ -628,6 +630,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
   let db: lbug.Database | undefined;
   silenceStdout();
   try {
+    await assertReadOnlyFtsCrashSafe(dbPath);
     await preflightLbugSidecars(dbPath, {
       mode: 'read-only',
       logger: poolSidecarLogger,
@@ -845,6 +848,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<InitLbugAttem
       // Not retryable: the on-disk file's storage version doesn't change
       // on its own. Fail immediately with an actionable message.
       throwIfStorageVersionMismatch(lastError);
+      if (lastError instanceof FtsReaderUnrepairableError) {
+        throw lastError;
+      }
 
       if (isWalCorruptionError(lastError)) {
         try {

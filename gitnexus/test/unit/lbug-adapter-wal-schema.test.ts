@@ -67,6 +67,9 @@ function makeFsMock(dbPath: string) {
       mkdir: vi.fn(async () => {}),
       open: makeOpenMock(),
       readdir: vi.fn(async () => []),
+      readFile: vi.fn(async () => {
+        throw ENOENT;
+      }),
     },
   };
 }
@@ -118,6 +121,14 @@ describe('doInitLbug WAL corruption guard — structural', () => {
     expect(walGuardIdx).toBeGreaterThan(-1);
     expect(warnIdx).toBeGreaterThan(-1);
     expect(walGuardIdx).toBeLessThan(warnIdx);
+  });
+
+  it('refuses a read-only FTS crash before preflight', () => {
+    const readOnlyBlock = adapterSource.slice(adapterSource.indexOf('if (readOnly)'));
+    const refuseIdx = readOnlyBlock.indexOf('assertReadOnlyFtsCrashSafe(dbPath)');
+    const preflightIdx = readOnlyBlock.indexOf('preflightLbugSidecars');
+    expect(refuseIdx).toBeGreaterThan(-1);
+    expect(preflightIdx).toBeGreaterThan(refuseIdx);
   });
 
   it('imports throwIfStorageVersionMismatch and uses it in the schema catch', () => {
@@ -641,6 +652,9 @@ function makeFsMockWithWalSize(
       mkdir: vi.fn(async () => {}),
       open: makeOpenMock(),
       readdir: vi.fn(async () => []),
+      readFile: vi.fn(async () => {
+        throw ENOENT;
+      }),
     },
   };
 }

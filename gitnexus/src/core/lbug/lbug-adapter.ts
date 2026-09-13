@@ -64,6 +64,7 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  assertReadOnlyFtsCrashSafe,
   cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
@@ -818,6 +819,7 @@ const doInitLbug = async (
   // create databases and don't need the lock.
   // ---------------------------------------------------------------------------
   if (readOnly) {
+    await assertReadOnlyFtsCrashSafe(dbPath);
     await preflightLbugSidecars(dbPath, {
       mode: 'read-only',
       logger,
