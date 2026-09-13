@@ -43,6 +43,7 @@ import {
 // Remedy classification for LOAD failures (#2374/#2383). Pure + node:fs only, so
 // this adds no cycle: `extension-loader.ts` already depends on it.
 import { diagnoseExtensionLoad } from './extension-load-error.js';
+import { resolveFtsVersionPair } from './vendored-extension-path.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -63,9 +64,11 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  assertReadOnlyFtsCrashSafe,
   cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
+  type WalCrashEvidence,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
@@ -280,10 +283,9 @@ const DB_LOCK_RETRY_DELAY_MS = 500;
 /**
  * Return true when the error message indicates a write was attempted against
  * a read-only LadybugDB connection. The MCP query pool opens DBs read-only,
- * so any path that calls a `CREATE_*` procedure there will surface this
- * (e.g. defensive `ensureFTSIndex` calls). Owners of the writable analyze
- * path should ignore this error — index creation is owned by `gitnexus
- * analyze` and either already happened or will happen on the next run.
+ * so any path that calls a `CREATE_*` procedure there will surface this.
+ * Index creation is owned by `gitnexus analyze` and either already happened
+ * or will happen on the next run.
  */
 export const isReadOnlyDbError = (err: unknown): boolean => {
   // Walk the `cause` chain (bounded) so a wrapped read-only error — e.g. the
@@ -546,8 +548,11 @@ const refuseLargeWalQuarantine = async (
   dbPath: string,
   mode: 'read-only' | 'writable',
   triggeringErr: unknown,
+  crashEvidence?: WalCrashEvidence,
 ): Promise<void> => {
-  await guardWalQuarantine(dbPath, mode, triggeringErr, logger);
+  // Latitude defaults to refusal. Only the analyze writer passes
+  // `fts-inplace-checkpointed`; serve never does (R9).
+  await guardWalQuarantine(dbPath, mode, triggeringErr, logger, crashEvidence);
 };
 
 const reopenReadOnlyAfterMissingShadow = async (
@@ -814,6 +819,7 @@ const doInitLbug = async (
   // create databases and don't need the lock.
   // ---------------------------------------------------------------------------
   if (readOnly) {
+    await assertReadOnlyFtsCrashSafe(dbPath);
     await preflightLbugSidecars(dbPath, {
       mode: 'read-only',
       logger,
@@ -3408,8 +3414,8 @@ export const loadVectorExtension = async (
 };
 /**
  * Default stemmer for FTS indexes. Single source so the analyze path
- * (`getSearchFTSStemmer`) and the read-only `createFTSIndex`/`ensureFTSIndex`
- * defaults can never silently diverge.
+ * (`getSearchFTSStemmer`) and `createFTSIndex` defaults can never silently
+ * diverge.
  */
 export const DEFAULT_FTS_STEMMER = 'porter';
 
@@ -3772,45 +3778,6 @@ export const ensureFtsRowDmlSafe = async (
   return await loadFTSExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 
-/**
- * Lazy-create an FTS index, caching the fact in-process.
- *
- * Kept for writable maintenance paths that need to lazily materialize an
- * index. Read-only query paths must not call this; production analysis owns
- * creating the configured search indexes before the database is served.
- *
- * Safe to call repeatedly — the in-process Set guarantees only the first
- * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.
- *
- * Defense in depth: if the active connection is read-only (e.g. the MCP
- * pool adapter), `CREATE_FTS_INDEX` will fail with "Cannot execute write
- * operations in a read-only database". Treat that as a no-op and cache
- * the key so callers don't loop on a path that can never succeed here —
- * the index is owned by `gitnexus analyze` (writable) and either already
- * exists or will be created on the next analyze.
- */
-export const ensureFTSIndex = async (
-  tableName: string,
-  indexName: string,
-  properties: string[],
-  stemmer: string = DEFAULT_FTS_STEMMER,
-): Promise<void> => {
-  const key = ftsIndexKey(tableName, indexName);
-  if (ensuredFTSIndexes.has(key)) return;
-  try {
-    await createFTSIndex(tableName, indexName, properties, stemmer);
-  } catch (e) {
-    // Read-only DB: writable analyze owns index creation; silently skip
-    // and cache so callers don't loop on a path that can never succeed
-    // here (the MCP query pool opens DBs read-only by design).
-    if (isReadOnlyDbError(e)) {
-      ensuredFTSIndexes.add(key);
-      return;
-    }
-    throw e;
-  }
-};
-
 export type FtsQueryFailureClass = 'missing-index' | 'missing-table' | 'other';
 
 /**
@@ -4068,7 +4035,14 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
       // extension binary is not re-inspected, falling back to a fresh structural
       // diagnosis when nothing recorded one.
       const ftsCapability = getFtsCapability();
-      const { remedy } = ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
+      const { remedy } =
+        ftsCapability?.diagnosis ??
+        diagnoseExtensionLoad(
+          ftsCapability?.reason,
+          'FTS',
+          undefined,
+          resolveFtsVersionPair(undefined),
+        );
       // Deliberately message-only: `remedy` is generated text (fixed system paths
       // at most), and LadybugDB's own path-bearing `reason` is NEVER interpolated
       // here — the #2374/#2375 redaction contract.

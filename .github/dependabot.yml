@@ -89,6 +89,10 @@ updates:
       # tree-sitter-cli follows the runtime's version cadence. Bump when
       # regenerating vendor/tree-sitter-proto/src/parser.c, not on a schedule.
       - dependency-name: tree-sitter-cli
+      # Pin @ladybugdb/core so a daily bump cannot ship a skewed FTS artifact.
+      # The extension version is a separate upstream constant, not derivable
+      # from the core version (see vendor/lbug-fts/manifest.json).
+      - dependency-name: '@ladybugdb/core'
 
   # gitnexus-web (thin frontend client).
   - package-ecosystem: npm

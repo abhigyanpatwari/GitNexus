@@ -29,7 +29,17 @@ export type ExtensionLoadErrorKind =
   | 'missing_file'
   | 'corrupt_file'
   | 'missing_dependency'
+  | 'version_skew'
   | 'unknown';
+
+export interface ExtensionVersionPair {
+  expected?: string;
+  found?: string;
+}
+
+/** Kinds whose remedy must replace the generic network-install tail. */
+export const usesClassifiedLoadRemedy = (kind: ExtensionLoadErrorKind): boolean =>
+  kind === 'missing_dependency' || kind === 'version_skew';
 
 export interface ExtensionLoadDiagnosis {
   readonly kind: ExtensionLoadErrorKind;
@@ -111,6 +121,13 @@ const LOAD_FAILURE_WRAPPER = /failed to load library/i;
 const repairFtsHint = (label: string, lead: string): string =>
   label === 'FTS' ? ` (${lead}\`gitnexus analyze --repair-fts\`)` : '';
 
+const VERSION_SKEW_HINT = 'This is a version mismatch, not a missing host runtime.';
+
+const versionSkewRemedy = (label: string, expected: string, found: string): string =>
+  `The ${label} extension version ${found} does not match the expected ${expected}. ` +
+  `Use a matching artifact${repairFtsHint(label, 'or ')} and run \`gitnexus doctor\`. ` +
+  VERSION_SKEW_HINT;
+
 const missingFileRemedy = (label: string): string =>
   `The ${label} extension is not installed. Re-run with network access and ` +
   `GITNEXUS_LBUG_EXTENSION_INSTALL=auto${repairFtsHint(label, 'or ')} to download it.`;
@@ -127,25 +144,21 @@ const VC_REDIST_INSTALL_HINT =
   'the Microsoft Visual C++ 2015-2022 Redistributable (x64) from ' +
   'https://aka.ms/vs/17/release/vc_redist.x64.exe';
 
-// Git for Windows already ships the OpenSSL 3 DLLs in its mingw64 bin directory,
-// so the identical command that fails in PowerShell succeeds in Git Bash (#2669
-// reporter, who had the VC++ redist installed and still failed until that
-// directory was on PATH). Deliberately a fixed system path and never a
-// user-profile one: remedy text is NOT path-redacted (fts-indexes.ts redacts
-// only the reason), and fts-degraded-warning.test.ts asserts that no
-// `C:\Users\…` path ever reaches a user through this surface.
-const GIT_BASH_OPENSSL_HINT =
-  ' If Git for Windows is installed you already have those DLLs: run the same command from Git Bash, ' +
-  'or prepend "C:\\Program Files\\Git\\mingw64\\bin" to PATH.';
+// U7 arm B (OQ1 unanswered; KTD13 forbids shipping OpenSSL DLLs without a
+// named CVE owner). Name the system runtimes. Do not tell anyone to borrow
+// DLLs from Git for Windows or prepend a third-party application directory.
+const WINDOWS_OPENSSL_RUNTIME_HINT =
+  ' If the error persists, install OpenSSL 3 as a system runtime so ' +
+  'libcrypto-3-x64.dll and libssl-3-x64.dll resolve without borrowing them ' +
+  'from another application.';
 
 // MSVC-first per DuckDB's canonical answer for this exact error; OpenSSL second.
 const windowsMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension is present but a required runtime library is missing (Windows error 126). ` +
   'Reinstalling the extension will NOT help. Install ' +
   VC_REDIST_INSTALL_HINT +
-  '; if the error persists, the extension also needs OpenSSL 3 ' +
-  '(libcrypto-3-x64.dll / libssl-3-x64.dll) on the DLL search path.' +
-  GIT_BASH_OPENSSL_HINT;
+  '.' +
+  WINDOWS_OPENSSL_RUNTIME_HINT;
 
 const posixMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension is present but a shared library it depends on could not be loaded (named in ` +
@@ -217,8 +230,7 @@ const structuralMissingDependencyRemedy = (label: string): string =>
   `The ${label} extension file is valid, so the failure is a missing or incompatible runtime dependency, ` +
   'not the extension itself — reinstalling will NOT help. On Windows, install ' +
   VC_REDIST_INSTALL_HINT +
-  ' and ensure OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.' +
-  GIT_BASH_OPENSSL_HINT;
+  ' and install OpenSSL 3 as a system runtime; on Linux/macOS install the shared library named in the error above.';
 
 /**
  * Pull the extension file path out of lbug's load error. lbug's wrapper is
@@ -357,15 +369,23 @@ export function inspectExtensionBinary(
 export function diagnoseExtensionLoad(
   reason: string | undefined | null,
   label: string = 'FTS',
+  explicitPath?: string | null,
+  versions?: ExtensionVersionPair,
 ): ExtensionLoadDiagnosis {
   const text = reason ?? '';
   const stringResult = classifyExtensionLoadError(text, label);
-  const fileState = inspectExtensionBinary(extractExtensionPath(text));
+  const fileState = inspectExtensionBinary(explicitPath ?? extractExtensionPath(text));
 
   if (fileState === 'corrupt') {
     return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };
   }
   if (fileState === 'valid') {
+    if (versions?.expected && versions.found && versions.expected !== versions.found) {
+      return {
+        kind: 'version_skew',
+        remedy: versionSkewRemedy(label, versions.expected, versions.found),
+      };
+    }
     // The structural probe only inspects the first BINARY_HEADER_BYTES, so a file
     // truncated AFTER its header still reads 'valid'. When the loader itself reported
     // corruption (e.g. "file too short" / Windows error 193 "not a valid Win32

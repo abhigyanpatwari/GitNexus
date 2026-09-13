@@ -7,6 +7,7 @@ import {
   classifyExtensionLoadError,
   diagnoseExtensionLoad,
   extractExtensionPath,
+  usesClassifiedLoadRemedy,
   type ExtensionLoadErrorKind,
 } from '../../src/core/lbug/extension-load-error.js';
 
@@ -154,9 +155,8 @@ describe('classifyExtensionLoadError', () => {
     expect(remedy).toMatch(/will NOT help/);
     // Must not resurrect the old, wrong "retry the network install" instruction.
     expect(remedy).not.toMatch(/Retry with network access/i);
-    // #2669: the zero-install path — Git for Windows already ships those DLLs.
-    expect(remedy).toMatch(/Git Bash/);
-    expect(remedy).toMatch(/mingw64/);
+    expect(remedy).toMatch(/system runtime/);
+    expect(remedy).not.toMatch(/Git Bash|mingw64|Program Files\\Git/i);
     // Never a user-profile path: remedy text reaches /api/search unredacted.
     expect(remedy).not.toMatch(/C:\\Users\\/);
   });
@@ -323,8 +323,8 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
       const { kind, remedy } = diagnoseExtensionLoad(reason);
       expect(kind).toBe('missing_dependency');
       expect(remedy).toMatch(/vc_redist\.x64\.exe/);
-      // #2669: the structural remedy carries the same zero-install hint.
-      expect(remedy).toMatch(/Git Bash/);
+      expect(remedy).toMatch(/OpenSSL 3/);
+      expect(remedy).not.toMatch(/Git Bash|mingw64|Program Files\\Git/i);
       expect(remedy).not.toMatch(/C:\\Users\\/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -354,5 +354,54 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
         'Failed to load library: /nope/libfts.lbug_extension which is needed by extension: fts. Error: xyz',
       ),
     ).toMatchObject({ kind: 'missing_dependency' });
+  });
+
+  it('a valid artifact with mismatched versions is version_skew, not missing_dependency (U3)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-skew-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: <localized>`;
+      const { kind, remedy } = diagnoseExtensionLoad(reason, 'FTS', file, {
+        expected: '0.18.1',
+        found: '0.17.0',
+      });
+      expect(kind).toBe('version_skew');
+      expect(remedy).toContain('0.18.1');
+      expect(remedy).toContain('0.17.0');
+      expect(remedy).not.toMatch(/VC\+\+|OpenSSL|vcredist/i);
+      expect(remedy).not.toContain(file);
+      expect(usesClassifiedLoadRemedy(kind)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('matching versions plus a Windows 126 signature stay missing_dependency', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-match-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: The specified module could not be found.`;
+      expect(
+        diagnoseExtensionLoad(reason, 'FTS', file, { expected: '0.18.1', found: '0.18.1' }),
+      ).toMatchObject({ kind: 'missing_dependency' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a truncated artifact stays corrupt even when versions also differ', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-trunc-skew-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, Buffer.from('short'));
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: file too short`;
+      expect(
+        diagnoseExtensionLoad(reason, 'FTS', file, { expected: '0.18.1', found: '0.17.0' }),
+      ).toMatchObject({ kind: 'corrupt_file' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { loadMeta } from '../../storage/repo-meta.js';
+import { allowsFtsCrashWalPark } from '../search/fts-crash-marker.js';
 import {
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
@@ -20,6 +22,62 @@ export interface SidecarRecoveryLogger {
 }
 
 export const TINY_ORPHAN_WAL_BYTES = 4 * 1024;
+
+/**
+ * Analyze-writer crash evidence for WAL quarantine latitude (KTD5).
+ * `mode` is a warning label only and must not carry this. Omit on serve
+ * and the MCP pool — those keep today's large-WAL refusal.
+ */
+export type WalCrashEvidence = {
+  readonly kind: 'fts-inplace-checkpointed';
+};
+
+export const CLEAN_LBUG_SIDECARS_COMMAND = 'gitnexus clean --lbug-sidecars';
+
+export const FTS_READER_REPAIR_COMMAND = 'gitnexus analyze --repair-fts';
+
+export const ftsReaderRefuseMessage = (dbPath: string): string =>
+  `Cannot open ${path.basename(dbPath)} read-only after an in-place FTS abort. ` +
+  `The leftover WAL would replay and kill this process. ` +
+  `Run \`${FTS_READER_REPAIR_COMMAND}\` after stopping any GitNexus MCP or serve process.`;
+
+export class FtsReaderUnrepairableError extends Error {
+  readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+  constructor(dbPath: string) {
+    super(ftsReaderRefuseMessage(dbPath));
+    this.name = 'FtsReaderUnrepairableError';
+  }
+}
+
+/**
+ * Advisory reader gate (KTD10 / R9b). When meta names an in-place
+ * checkpointed FTS abort and a large orphan WAL is still live, refuse
+ * before the native open. Does not write, rename, or repair. Missing or
+ * unreadable meta falls through to today's open path.
+ */
+export const assertReadOnlyFtsCrashSafe = async (dbPath: string): Promise<void> => {
+  let meta;
+  try {
+    meta = await loadMeta(path.dirname(dbPath));
+  } catch {
+    return;
+  }
+  if (!meta || !allowsFtsCrashWalPark(meta.incrementalInProgress)) return;
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind !== 'orphan-wal') return;
+  throw new FtsReaderUnrepairableError(dbPath);
+};
+
+export const ftsCrashParkFailureMessage = (failedPath: string, err?: unknown): string => {
+  const detail = err instanceof Error ? err.message : err != null ? String(err) : '';
+  return (
+    `Cannot park ${path.basename(failedPath)} after an in-place FTS abort` +
+    (detail ? ` (${detail})` : '') +
+    `. The database was not opened. Run \`${CLEAN_LBUG_SIDECARS_COMMAND}\` ` +
+    'after stopping any GitNexus MCP or serve process, then retry ' +
+    '`gitnexus analyze` or `gitnexus analyze --repair-fts`.'
+  );
+};
 
 /**
  * Counter-based warn anti-spam (PR #1747 review, Finding 6).
@@ -297,6 +355,7 @@ export const guardWalQuarantine = async (
   mode: string,
   triggeringErr: unknown,
   logger: SidecarRecoveryLogger,
+  crashEvidence?: WalCrashEvidence,
 ): Promise<void> => {
   const state = await inspectLbugSidecars(dbPath);
   if (state.kind === 'wal-with-shadow') {
@@ -310,6 +369,15 @@ export const guardWalQuarantine = async (
     throw new Error(presentShadowUnreachableMessage(dbPath, triggeringErr));
   }
   if (state.kind === 'orphan-wal') {
+    if (crashEvidence?.kind === 'fts-inplace-checkpointed') {
+      const { failed } = await quarantineSidecarsForDirtyRecovery(dbPath, (message) =>
+        logger.warn(message),
+      );
+      if (failed.length > 0) {
+        throw new Error(ftsCrashParkFailureMessage(failed[0]!));
+      }
+      return;
+    }
     warnOnce(
       logger,
       `${dbPath}:large-wal-refuse:${mode}`,
@@ -550,6 +618,12 @@ const dirtyRecoveryParkedNames = (dbPath: string): string[] =>
  * remains adjacent to the DB — every entry is in `moved` or `removed`, so
  * every subsequent open this run performs is replay-free — or the entry is
  * in `failed` and the caller MUST abort before any DB open.
+ *
+ * Retention: these parks are not reclaimed on the next writable open
+ * (unlike missing-shadow quarantines). FTS-phase parks stay until
+ * `gitnexus clean --lbug-sidecars` or the next park overwrites the same
+ * fixed `.dirty-recovery` name. That is intentional — the parked bytes
+ * are the only forensic copy of a proven in-place abort.
  *
  * @returns `moved` — destination paths now holding the parked bytes;
  * `removed` — source sidecars whose bytes are GONE (forensics lost, replay

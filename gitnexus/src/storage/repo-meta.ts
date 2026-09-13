@@ -86,6 +86,18 @@ export interface AnalyzerRunnerIdentity {
   };
 }
 
+/**
+ * Hand-mirrored `FtsSkipReason` from core/search/fts-policy.ts so storage
+ * takes no core import. Change both declarations together.
+ */
+export type PersistedFtsSkipReason =
+  | 'extension-unavailable'
+  | 'build-failed'
+  | 'disabled-by-flag'
+  | 'disabled-by-env'
+  | 'native-abort'
+  | 'tuple-missing';
+
 export interface RepoMeta {
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
@@ -184,17 +196,19 @@ export interface RepoMeta {
        *    `--repair-fts` or a content change addresses it.
        *  - `disabled-by-flag` / `disabled-by-env` — deliberate opt-out.
        *    A later analyze without the opt-out rebuilds FTS at the same commit.
+       *  - `native-abort` — inferred on the next run from an FTS-phase dirty
+       *    flag after the previous process died in the native FTS build.
+       *  - `tuple-missing` — no packaged artifact for this platform tuple.
+       *    The tuple itself is not persisted (closed enum; live messages name it).
        *
        * Collapsing both into `status: 'unavailable'` is exactly what made that
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       * No schema version: meta reads are unchecked casts; an older binary
+       * seeing a new member gets undefined (cause unknown).
        */
-      skipReason?:
-        | 'extension-unavailable'
-        | 'build-failed'
-        | 'disabled-by-flag'
-        | 'disabled-by-env';
+      skipReason?: PersistedFtsSkipReason;
     };
     vectorSearch: {
       provider: string;
@@ -403,8 +417,17 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
-    /** Last completed writeback phase before the process stopped. */
+    /**
+     * Last completed writeback phase before the process stopped.
+     * `'fts'` is the graph-boundary / FTS-build marker: recovery may act
+     * more narrowly than a bare dirty flag, and `--repair-fts` must not
+     * treat it as a half-written graph.
+     */
     phase?: string;
+    /** Settled write plan at the FTS boundary (in-place vs unpublished staging). */
+    writePlan?: 'in-place' | 'staging';
+    /** Whether the converged graph-boundary CHECKPOINT succeeded. */
+    checkpointSucceeded?: boolean;
     /** Directly changed/added files before importer expansion. */
     directWriteCount?: number;
     /** Extra files pulled into the writable set by importer BFS. */

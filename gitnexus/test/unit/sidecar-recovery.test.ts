@@ -5,6 +5,8 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
+  assertReadOnlyFtsCrashSafe,
+  FtsReaderUnrepairableError,
   cleanParkedDirtyRecoverySidecars,
   cleanParkedLbugSidecars,
   cleanQuarantinedMissingShadowWals,
@@ -416,6 +418,124 @@ describe('LadybugDB sidecar recovery', () => {
 
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.debug).toHaveBeenCalled();
+    });
+
+    it('parks a large orphan WAL only with fts-inplace-checkpointed evidence', async () => {
+      const wal = Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab);
+      await fs.writeFile(`${dbPath}.wal`, wal);
+      await guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+        kind: 'fts-inplace-checkpointed',
+      });
+      expect(Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), wal)).toBe(0);
+      await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('still refuses a large orphan WAL when crash evidence is omitted', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger()),
+      ).rejects.toThrow(/Rebuild the index/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('still refuses a present shadow even with crash evidence', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/present but unreachable/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('names gitnexus clean --lbug-sidecars when an evidenced park fails', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      const originalRename: typeof fs.rename = fs.rename;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(to).includes('.dirty-recovery')) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRename(from, to);
+      });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p) === `${dbPath}.wal`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/gitnexus clean --lbug-sidecars/);
+    });
+  });
+
+  describe('assertReadOnlyFtsCrashSafe (KTD10 reader refuse)', () => {
+    const ftsDirtyMeta = {
+      incrementalInProgress: {
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: 'fts',
+        writePlan: 'in-place',
+        checkpointSucceeded: true,
+      },
+    };
+
+    const snapshotDir = async (): Promise<string> => {
+      const names = (await fs.readdir(dir)).sort();
+      const parts = await Promise.all(
+        names.map(async (name) => {
+          const bytes = await fs.readFile(path.join(dir, name));
+          return `${name}:${bytes.length}:${Buffer.from(bytes).toString('hex').slice(0, 32)}`;
+        }),
+      );
+      return parts.join('|');
+    };
+
+    it('refuses a large orphan WAL when FTS crash evidence is on disk, without touching files', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), JSON.stringify(ftsDirtyMeta));
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toThrow(
+        /gitnexus analyze --repair-fts/,
+      );
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through when meta is missing so today large-WAL readers stay unchanged', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through when meta is corrupt', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), '{not-json');
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through for a non-FTS dirty flag', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          incrementalInProgress: { startedAt: 1, toWriteCount: 3, phase: 'load-graph' },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
     });
   });
 
