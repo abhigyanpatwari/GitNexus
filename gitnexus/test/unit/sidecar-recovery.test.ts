@@ -417,6 +417,62 @@ describe('LadybugDB sidecar recovery', () => {
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.debug).toHaveBeenCalled();
     });
+
+    it('parks a large orphan WAL only with fts-inplace-checkpointed evidence', async () => {
+      const wal = Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab);
+      await fs.writeFile(`${dbPath}.wal`, wal);
+      await guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+        kind: 'fts-inplace-checkpointed',
+      });
+      expect(Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), wal)).toBe(0);
+      await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('still refuses a large orphan WAL when crash evidence is omitted', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger()),
+      ).rejects.toThrow(/Rebuild the index/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('still refuses a present shadow even with crash evidence', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/present but unreachable/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('names gitnexus clean --lbug-sidecars when an evidenced park fails', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      const originalRename: typeof fs.rename = fs.rename;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(to).includes('.dirty-recovery')) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRename(from, to);
+      });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p) === `${dbPath}.wal`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/gitnexus clean --lbug-sidecars/);
+    });
   });
 
   describe('presentShadowUnreachableMessage (present-but-locked, not missing — S2)', () => {

@@ -564,6 +564,9 @@ async function tryQuarantineForMissingShadow(
   // refuseLargeWalQuarantine (issue #2382 review, Finding B). Kept OUTSIDE the
   // try so the actionable recovery message propagates to the MCP caller rather
   // than being re-wrapped as a rename failure.
+  // Never pass crash evidence: the pool is a reader/MCP surface and must
+  // keep today's large-WAL refusal (R9). Analyze parks via the dirty-recovery
+  // family before it opens.
   await guardWalQuarantine(dbPath, opts.reason, opts.err, poolSidecarLogger);
   try {
     const quarantinePath = await quarantineWalForMissingShadow(dbPath, {

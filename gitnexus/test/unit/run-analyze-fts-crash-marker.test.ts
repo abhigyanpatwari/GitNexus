@@ -25,9 +25,11 @@ import { EMBEDDING_DIMS, SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.j
 import { getSearchFTSCjkSegmentation } from '../../src/core/search/cjk-segmentation.js';
 import {
   FTS_DIRTY_PHASE,
+  allowsFtsCrashWalPark,
   buildFtsDirtyStamp,
   inferNativeAbortSkip,
   isBoundaryCheckpointFatal,
+  isFtsStagingDirty,
   resolveFtsWritePlan,
   shouldRefuseRepairFtsWhileDirty,
   shouldStampFtsDirtyPhase,
@@ -68,6 +70,20 @@ const incrementalMeta = (repoPath: string): RepoMeta => ({
   embeddingDims: EMBEDDING_DIMS,
   runnerIdentity: resolveAnalyzerRunnerIdentity(RUN_ANALYZE_URL.href),
 });
+
+const headCommit = (repoPath: string): string =>
+  execSync('git rev-parse HEAD', { cwd: repoPath, encoding: 'utf8' }).trim();
+
+const GRAPH_BYTES = 'QUERYABLE_GRAPH_BYTES_U5';
+const WAL_PATTERN = Buffer.alloc(8192, 0xab);
+
+const ftsInPlaceDirty = {
+  startedAt: Date.now() - 60_000,
+  toWriteCount: 0,
+  phase: FTS_DIRTY_PHASE,
+  writePlan: 'in-place' as const,
+  checkpointSucceeded: true,
+};
 
 const fileGraph = () => {
   const graph = createKnowledgeGraph();
@@ -154,6 +170,61 @@ describe('FTS crash-marker policy (characterization)', () => {
     );
   });
 
+  it('warrants a live WAL park only for in-place FTS after a successful checkpoint', () => {
+    expect(
+      allowsFtsCrashWalPark({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+        checkpointSucceeded: true,
+      }),
+    ).toBe(true);
+    expect(
+      allowsFtsCrashWalPark({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'staging',
+        checkpointSucceeded: true,
+      }),
+    ).toBe(false);
+    expect(
+      allowsFtsCrashWalPark({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+        checkpointSucceeded: false,
+      }),
+    ).toBe(false);
+    expect(
+      allowsFtsCrashWalPark({
+        startedAt: 1,
+        toWriteCount: 3,
+        phase: 'load-graph',
+        writePlan: 'in-place',
+        checkpointSucceeded: true,
+      }),
+    ).toBe(false);
+    expect(
+      isFtsStagingDirty({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'staging',
+      }),
+    ).toBe(true);
+    expect(
+      isFtsStagingDirty({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+      }),
+    ).toBe(false);
+  });
+
   it('lifts the prior-meta precondition on the in-place stamp', () => {
     const stamp = buildFtsDirtyStamp({
       writePlan: 'in-place',
@@ -185,6 +256,7 @@ describe('runFullAnalysis FTS crash marker', () => {
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
     vi.doUnmock('../../src/core/lbug/wal-checkpoint-driver.js');
+    vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -592,6 +664,267 @@ describe('runFullAnalysis FTS crash marker', () => {
         checkpointSucceeded: false,
       });
     } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('parks an in-place FTS crash WAL and keeps the graph on the next analyze', async () => {
+    const wipeLbugDbFiles = vi.fn(async () => undefined);
+    const runPipelineFromRepo = vi.fn(async () => {
+      throw new Error('pipeline must not run on FTS-park survivorship');
+    });
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-survivorship-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        incrementalInProgress: ftsInPlaceDirty,
+      });
+      await fs.writeFile(lbugPath, GRAPH_BYTES);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('native-abort');
+      expect(wipeLbugDbFiles).not.toHaveBeenCalled();
+      expect(runPipelineFromRepo).not.toHaveBeenCalled();
+      expect(await fs.readFile(lbugPath, 'utf8')).toBe(GRAPH_BYTES);
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal.dirty-recovery`), WAL_PATTERN)).toBe(
+        0,
+      );
+      await expect(fs.stat(`${lbugPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+      const finalMeta = await loadMeta(storagePath);
+      expect(finalMeta?.incrementalInProgress).toBeUndefined();
+      expect(finalMeta?.capabilities?.fts).toMatchObject({
+        status: 'unavailable',
+        skipReason: 'native-abort',
+      });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('does not keep the graph for a non-FTS dirty flag', async () => {
+    const wipeLbugDbFiles = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: fileGraph(),
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-nonfts-dirty-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        incrementalInProgress: {
+          startedAt: Date.now() - 60_000,
+          toWriteCount: 12,
+          phase: 'load-graph',
+        },
+      });
+      await fs.writeFile(lbugPath, GRAPH_BYTES);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).not.toBe(true);
+      expect(result.ftsSkipReason).not.toBe('native-abort');
+      expect(wipeLbugDbFiles).toHaveBeenCalled();
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal.dirty-recovery`), WAL_PATTERN)).toBe(
+        0,
+      );
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('leaves a staging FTS abort WAL on the live index', async () => {
+    const wipeLbugDbFiles = vi.fn(async () => undefined);
+    const runPipelineFromRepo = vi.fn(async () => {
+      throw new Error('pipeline must not run on staging FTS recover');
+    });
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-staging-wal-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        incrementalInProgress: {
+          startedAt: Date.now() - 60_000,
+          toWriteCount: 0,
+          phase: FTS_DIRTY_PHASE,
+          writePlan: 'staging',
+          checkpointSucceeded: true,
+        },
+      });
+      await fs.writeFile(lbugPath, GRAPH_BYTES);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.ftsSkipReason).toBe('native-abort');
+      expect(wipeLbugDbFiles).not.toHaveBeenCalled();
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal`), WAL_PATTERN)).toBe(0);
+      await expect(fs.stat(`${lbugPath}.wal.dirty-recovery`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('parks a live WAL before --repair-fts opens the DB', async () => {
+    const initLbug = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      initLbug,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-repair-park-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'abc',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+        incrementalInProgress: ftsInPlaceDirty,
+      });
+      await createPlaceholderGraphStore(lbugPath);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true },
+        { onProgress: () => {} },
+      );
+      expect(result.ftsRepairedOnly).toBe(true);
+      expect(createSearchFTSIndexes).toHaveBeenCalled();
+      expect(initLbug).toHaveBeenCalled();
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal.dirty-recovery`), WAL_PATTERN)).toBe(
+        0,
+      );
+      const initOrder = initLbug.mock.invocationCallOrder[0] ?? 0;
+      expect(initOrder).toBeGreaterThan(0);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('refuses to open the DB when an FTS-phase park cannot move the WAL', async () => {
+    const initLbug = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      initLbug,
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-park-fail-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        incrementalInProgress: ftsInPlaceDirty,
+      });
+      await fs.writeFile(lbugPath, GRAPH_BYTES);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const originalRename: typeof fs.rename = fs.rename;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(to).includes('.dirty-recovery')) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRename(from, to);
+      });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p) === `${lbugPath}.wal`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {} },
+        ),
+      ).rejects.toThrow(/gitnexus clean --lbug-sidecars/);
+      expect(initLbug).not.toHaveBeenCalled();
+      expect(await fs.readFile(lbugPath, 'utf8')).toBe(GRAPH_BYTES);
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal`), WAL_PATTERN)).toBe(0);
+    } finally {
+      vi.restoreAllMocks();
       await tmpRepo.cleanup();
     }
   });

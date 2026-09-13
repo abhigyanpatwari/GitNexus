@@ -38,6 +38,20 @@ export const inferNativeAbortSkip = (
   dirty: RepoMeta['incrementalInProgress'] | undefined,
 ): boolean => isFtsDirtyPhase(dirty);
 
+/**
+ * KTD5 conjunctive warrant for parking a live WAL: FTS phase, in-place
+ * write plan (Windows full rebuild, POSIX incremental, escalated-in-place),
+ * and a successful graph-boundary checkpoint. Staging never qualifies —
+ * the live index next to an unpublished staging file must keep its WAL.
+ */
+export const allowsFtsCrashWalPark = (
+  dirty: RepoMeta['incrementalInProgress'] | undefined,
+): boolean =>
+  isFtsDirtyPhase(dirty) && dirty.writePlan === 'in-place' && dirty.checkpointSucceeded === true;
+
+export const isFtsStagingDirty = (dirty: RepoMeta['incrementalInProgress'] | undefined): boolean =>
+  isFtsDirtyPhase(dirty) && dirty.writePlan === 'staging';
+
 export const buildFtsDirtyStamp = (args: {
   prior?: IncrementalDirtyState;
   now?: number;

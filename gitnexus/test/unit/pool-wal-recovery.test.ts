@@ -57,6 +57,7 @@ vi.mock('../../src/mcp/stdio-capture.js', () => ({
   getActiveStdoutWrite: vi.fn(() => vi.fn()),
 }));
 
+import { readFileSync } from 'node:fs';
 import fs from 'fs/promises';
 import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
 
@@ -511,5 +512,14 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
 
     await expect(initLbug('test-repo-pool-large-wal', dbPath)).rejects.toThrow(/Rebuild the index/);
     expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('never threads FTS crash evidence into the pool reader path', () => {
+    const src = readFileSync(
+      new URL('../../src/core/lbug/pool-adapter.ts', import.meta.url),
+      'utf8',
+    );
+    expect(src).toMatch(/Never pass crash evidence/);
+    expect(src).not.toMatch(/fts-inplace-checkpointed/);
   });
 });

@@ -67,6 +67,7 @@ import {
   cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
+  type WalCrashEvidence,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
@@ -546,8 +547,11 @@ const refuseLargeWalQuarantine = async (
   dbPath: string,
   mode: 'read-only' | 'writable',
   triggeringErr: unknown,
+  crashEvidence?: WalCrashEvidence,
 ): Promise<void> => {
-  await guardWalQuarantine(dbPath, mode, triggeringErr, logger);
+  // Latitude defaults to refusal. Only the analyze writer passes
+  // `fts-inplace-checkpointed`; serve never does (R9).
+  await guardWalQuarantine(dbPath, mode, triggeringErr, logger, crashEvidence);
 };
 
 const reopenReadOnlyAfterMissingShadow = async (

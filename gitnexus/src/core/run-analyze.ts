@@ -20,9 +20,12 @@ import {
   type FtsSkipReason,
 } from './search/fts-policy.js';
 import {
+  allowsFtsCrashWalPark,
   buildFtsDirtyStamp,
   inferNativeAbortSkip,
   isBoundaryCheckpointFatal,
+  isFtsDirtyPhase,
+  isFtsStagingDirty,
   resolveFtsWritePlan,
   shouldRefuseRepairFtsWhileDirty,
   shouldStampFtsDirtyPhase,
@@ -128,6 +131,7 @@ import {
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
+  ftsCrashParkFailureMessage,
   quarantineSidecarsForDirtyRecovery,
   inspectLbugSidecars,
 } from './lbug/sidecar-recovery.js';
@@ -1364,6 +1368,22 @@ async function runFullAnalysisInner(
       );
     }
     await ensureWritableStorage();
+    // P1 R8: park a poisoned live WAL before opening. Staging never parks —
+    // the live index next to an unpublished staging file must replay its WAL.
+    const repairDirty = existingMeta.incrementalInProgress;
+    if (isFtsDirtyPhase(repairDirty) && repairDirty.writePlan !== 'staging') {
+      const {
+        moved: repairParked,
+        removed: repairRemoved,
+        failed: repairParkFailed,
+      } = await quarantineSidecarsForDirtyRecovery(lbugPath, (message) => log(`   ${message}`));
+      if (repairParkFailed.length > 0) {
+        throw new Error(ftsCrashParkFailureMessage(repairParkFailed[0]!));
+      }
+      if (repairParked.length + repairRemoved.length > 0) {
+        log('Parked leftover WAL/shadow from the previous in-place FTS abort before --repair-fts.');
+      }
+    }
     try {
       await initAnalysisLbug(lbugPath);
       // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
@@ -1544,10 +1564,12 @@ async function runFullAnalysisInner(
     }
   }
 
-  // ── Crash recovery: dirty flag forces full rebuild ────────────────
-  // If the previous incremental run set incrementalInProgress and didn't
-  // clear it, the on-disk index may be in a half-state. Cheapest path
-  // back to a known-good index is to wipe + rebuild from scratch.
+  // ── Crash recovery ────────────────────────────────────────────────
+  // A non-FTS dirty flag (or an FTS abort that never checkpointed) still
+  // forces a wipe + rebuild. An in-place FTS abort AFTER a successful
+  // graph-boundary checkpoint (Windows full rebuild, POSIX incremental)
+  // parks the live WAL and keeps the graph. A staging FTS abort never
+  // parks the live WAL — that index must replay its own delta.
   if (existingMeta?.incrementalInProgress) {
     const dirty = existingMeta.incrementalInProgress;
     const dirtyDetails =
@@ -1573,52 +1595,91 @@ async function runFullAnalysisInner(
             .filter(Boolean)
             .join(', ')
         : 'legacy dirty flag';
-    log(
-      // "analyze run", not "incremental run" — since #2099 F1 the flag is a
-      // generic dirty marker written by BOTH writeback branches.
-      'Previous analyze run did not complete cleanly (incrementalInProgress flag set); ' +
-        `last dirty state: ${dirtyDetails}; ` +
-        'forcing full rebuild to restore a known-good index.',
-    );
-    options = { ...options, force: true };
-    // Reload meta after clearing the flag in-memory; we still want fileHashes
-    // for the post-rebuild meta carry-over, but force=true ensures the
-    // rebuild path executes.
-    //
-    // #2409 defect 2: the crashed writeback's WAL can be poisoned — replaying
-    // it kills the process natively, and the first DB open of this recovery
-    // run (the embedding-cache preservation open below) happens BEFORE the
-    // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
-    // now, while nothing is open, so every open in this run is replay-free.
-    // The rebuild wipes the DB regardless, so no committed data is at stake.
-    await ensureWritableStorage();
-    const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
-    if (removed.length > 0) {
+
+    const persistFtsNativeAbortRecovery = async (): Promise<void> => {
+      existingMeta.incrementalInProgress = undefined;
+      existingMeta.capabilities = {
+        ...existingMeta.capabilities,
+        graph: existingMeta.capabilities?.graph ?? DEFAULT_GRAPH_CAPABILITY,
+        fts: {
+          provider: existingMeta.capabilities?.fts?.provider ?? 'ladybugdb-fts',
+          status: 'unavailable',
+          skipReason: 'native-abort',
+        },
+        vectorSearch: existingMeta.capabilities?.vectorSearch ?? DEFAULT_VECTOR_SEARCH_CAPABILITY,
+      };
+      await saveMeta(metaDir, existingMeta);
+    };
+
+    if (allowsFtsCrashWalPark(dirty)) {
       log(
-        `Dirty-state recovery discarded ${removed.map((p) => path.basename(p)).join(', ')} ` +
-          'from the interrupted run (the file could not be moved aside, so its bytes were ' +
-          'removed — post-mortem forensics lost). Recovery proceeds with full embedding ' +
-          'preservation.',
+        'Previous analyze run aborted during in-place FTS after a successful graph checkpoint ' +
+          `(${dirtyDetails}); parking leftover WAL/shadow so the existing graph can reopen. ` +
+          'Search indexes stay skipped until `gitnexus analyze --repair-fts`.',
       );
-    }
-    if (failed.length > 0) {
-      // FIX 1 (this shipping review, replacing the tri-review 4669518496
-      // P2-3 drop-shape design): under a persistent lock the old drop-shape
-      // run derived its embedding mode as "drop", ran the WHOLE pipeline,
-      // and then died at the rebuild wipe on the very same handle — wasting
-      // minutes and zeroing embeddings on the way. A possibly-poisoned
-      // sidecar still sits next to the DB (any pre-wipe open would replay it
-      // and die), so failing here, in seconds, with the same actionable
-      // typed error the wipe would eventually throw is strictly better —
-      // and the CLI's LbugWipeError handler already renders it
-      // (recoveryHint 'lbug-wipe-failed'). The message is self-contained
-      // (headline + paths + lock guidance) because serve forwards only
-      // err.message over worker IPC.
-      throw new LbugWipeError(failed, {
-        headline:
-          "Cannot start dirty-state recovery — the interrupted run's LadybugDB sidecars " +
-          'could neither be moved aside nor removed:',
-      });
+      await ensureWritableStorage();
+      const { failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, (message) =>
+        log(`   ${message}`),
+      );
+      if (failed.length > 0) {
+        throw new Error(ftsCrashParkFailureMessage(failed[0]!));
+      }
+      await persistFtsNativeAbortRecovery();
+    } else if (isFtsStagingDirty(dirty)) {
+      log(
+        'Previous analyze run aborted during FTS after a staging writeback ' +
+          `(${dirtyDetails}); leaving the live index WAL in place so the unpublished ` +
+          'staging file can still replay. Not forcing a rebuild.',
+      );
+      await persistFtsNativeAbortRecovery();
+    } else {
+      log(
+        // "analyze run", not "incremental run" — since #2099 F1 the flag is a
+        // generic dirty marker written by BOTH writeback branches.
+        'Previous analyze run did not complete cleanly (incrementalInProgress flag set); ' +
+          `last dirty state: ${dirtyDetails}; ` +
+          'forcing full rebuild to restore a known-good index.',
+      );
+      options = { ...options, force: true };
+      // Reload meta after clearing the flag in-memory; we still want fileHashes
+      // for the post-rebuild meta carry-over, but force=true ensures the
+      // rebuild path executes.
+      //
+      // #2409 defect 2: the crashed writeback's WAL can be poisoned — replaying
+      // it kills the process natively, and the first DB open of this recovery
+      // run (the embedding-cache preservation open below) happens BEFORE the
+      // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
+      // now, while nothing is open, so every open in this run is replay-free.
+      // The rebuild wipes the DB regardless, so no committed data is at stake.
+      await ensureWritableStorage();
+      const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
+      if (removed.length > 0) {
+        log(
+          `Dirty-state recovery discarded ${removed.map((p) => path.basename(p)).join(', ')} ` +
+            'from the interrupted run (the file could not be moved aside, so its bytes were ' +
+            'removed — post-mortem forensics lost). Recovery proceeds with full embedding ' +
+            'preservation.',
+        );
+      }
+      if (failed.length > 0) {
+        // FIX 1 (this shipping review, replacing the tri-review 4669518496
+        // P2-3 drop-shape design): under a persistent lock the old drop-shape
+        // run derived its embedding mode as "drop", ran the WHOLE pipeline,
+        // and then died at the rebuild wipe on the very same handle — wasting
+        // minutes and zeroing embeddings on the way. A possibly-poisoned
+        // sidecar still sits next to the DB (any pre-wipe open would replay it
+        // and die), so failing here, in seconds, with the same actionable
+        // typed error the wipe would eventually throw is strictly better —
+        // and the CLI's LbugWipeError handler already renders it
+        // (recoveryHint 'lbug-wipe-failed'). The message is self-contained
+        // (headline + paths + lock guidance) because serve forwards only
+        // err.message over worker IPC.
+        throw new LbugWipeError(failed, {
+          headline:
+            "Cannot start dirty-state recovery — the interrupted run's LadybugDB sidecars " +
+            'could neither be moved aside nor removed:',
+        });
+      }
     }
   }
 
@@ -2059,6 +2120,7 @@ async function runFullAnalysisInner(
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
           ...(ftsDisabledReason ? { ftsSkipped: true, ftsSkipReason: ftsDisabledReason } : {}),
+          ...(priorFtsNativeAbort ? { ftsSkipped: true, ftsSkipReason: 'native-abort' } : {}),
           isPrimaryBranch: !placement.branch,
         };
       }
