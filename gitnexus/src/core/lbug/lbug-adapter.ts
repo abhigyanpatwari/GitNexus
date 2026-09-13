@@ -43,6 +43,7 @@ import {
 // Remedy classification for LOAD failures (#2374/#2383). Pure + node:fs only, so
 // this adds no cycle: `extension-loader.ts` already depends on it.
 import { diagnoseExtensionLoad } from './extension-load-error.js';
+import { resolveFtsVersionPair } from './vendored-extension-path.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -4028,7 +4029,14 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
       // extension binary is not re-inspected, falling back to a fresh structural
       // diagnosis when nothing recorded one.
       const ftsCapability = getFtsCapability();
-      const { remedy } = ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
+      const { remedy } =
+        ftsCapability?.diagnosis ??
+        diagnoseExtensionLoad(
+          ftsCapability?.reason,
+          'FTS',
+          undefined,
+          resolveFtsVersionPair(undefined),
+        );
       // Deliberately message-only: `remedy` is generated text (fixed system paths
       // at most), and LadybugDB's own path-bearing `reason` is NEVER interpolated
       // here — the #2374/#2375 redaction contract.

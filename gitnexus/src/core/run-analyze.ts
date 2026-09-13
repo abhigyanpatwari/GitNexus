@@ -108,7 +108,12 @@ import {
   getFtsCapability,
   resolveAnalyzeInstallPolicy,
 } from './lbug/extension-loader.js';
-import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
+import {
+  diagnoseExtensionLoad,
+  extractExtensionPath,
+  usesClassifiedLoadRemedy,
+} from './lbug/extension-load-error.js';
+import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
@@ -1373,12 +1378,17 @@ async function runFullAnalysisInner(
         // by re-installing — the file is already present. Route that class to the
         // classified remedy (install VC++ redist / OpenSSL) instead of the old
         // "retry the network install" text that trapped the user in a loop.
-        const { kind, remedy } = diagnoseExtensionLoad(rawFtsReason);
-        const remedyTail =
-          kind === 'missing_dependency'
-            ? ` ${remedy}`
-            : '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
-              'or pre-install the extension file; run `gitnexus doctor` for live FTS status.';
+        const inspectPath = extractExtensionPath(rawFtsReason);
+        const { kind, remedy } = diagnoseExtensionLoad(
+          rawFtsReason,
+          'FTS',
+          inspectPath,
+          resolveFtsVersionPair(inspectPath),
+        );
+        const remedyTail = usesClassifiedLoadRemedy(kind)
+          ? ` ${remedy}`
+          : '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
+            'or pre-install the extension file; run `gitnexus doctor` for live FTS status.';
         throw new Error(
           'Cannot repair FTS indexes: the LadybugDB FTS extension failed to load' +
             (ftsReason ? ` — ${ftsReason}` : '') +
@@ -2992,7 +3002,15 @@ async function runFullAnalysisInner(
             : undefined,
         ]
           .filter((e): e is { reason: string | undefined; label: string } => e !== undefined)
-          .map(({ reason, label }) => diagnoseExtensionLoad(reason, label).remedy);
+          .map(({ reason, label }) => {
+            const inspectPath = extractExtensionPath(reason);
+            return diagnoseExtensionLoad(
+              reason,
+              label,
+              inspectPath,
+              label === 'FTS' ? resolveFtsVersionPair(inspectPath) : undefined,
+            ).remedy;
+          });
         log(
           `Incremental: ${escalationCauses.join('; and ')} — switching to a full DB write ` +
             `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.` +
@@ -3381,9 +3399,15 @@ async function runFullAnalysisInner(
       // Same #2383 mock seam as the repair path above — keep the exported
       // `getExtensionCapabilities()` lookup here.
       const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
-      const { kind, remedy } = diagnoseExtensionLoad(ftsReason);
+      const inspectPath = extractExtensionPath(ftsReason);
+      const { kind, remedy } = diagnoseExtensionLoad(
+        ftsReason,
+        'FTS',
+        inspectPath,
+        resolveFtsVersionPair(inspectPath),
+      );
       log(
-        kind === 'missing_dependency'
+        usesClassifiedLoadRemedy(kind)
           ? `${FTS_UNAVAILABLE_LEAD} ${remedy}`
           : FTS_UNAVAILABLE_MESSAGE,
       );

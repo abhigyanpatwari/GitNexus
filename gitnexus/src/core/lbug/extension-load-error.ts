@@ -29,7 +29,17 @@ export type ExtensionLoadErrorKind =
   | 'missing_file'
   | 'corrupt_file'
   | 'missing_dependency'
+  | 'version_skew'
   | 'unknown';
+
+export interface ExtensionVersionPair {
+  expected?: string;
+  found?: string;
+}
+
+/** Kinds whose remedy must replace the generic network-install tail. */
+export const usesClassifiedLoadRemedy = (kind: ExtensionLoadErrorKind): boolean =>
+  kind === 'missing_dependency' || kind === 'version_skew';
 
 export interface ExtensionLoadDiagnosis {
   readonly kind: ExtensionLoadErrorKind;
@@ -110,6 +120,13 @@ const LOAD_FAILURE_WRAPPER = /failed to load library/i;
 // repairs FTS indexes only) must not be dispensed for other extensions.
 const repairFtsHint = (label: string, lead: string): string =>
   label === 'FTS' ? ` (${lead}\`gitnexus analyze --repair-fts\`)` : '';
+
+const VERSION_SKEW_HINT = 'This is a version mismatch, not a missing host runtime.';
+
+const versionSkewRemedy = (label: string, expected: string, found: string): string =>
+  `The ${label} extension version ${found} does not match the expected ${expected}. ` +
+  `Use a matching artifact${repairFtsHint(label, 'or ')} and run \`gitnexus doctor\`. ` +
+  VERSION_SKEW_HINT;
 
 const missingFileRemedy = (label: string): string =>
   `The ${label} extension is not installed. Re-run with network access and ` +
@@ -358,6 +375,7 @@ export function diagnoseExtensionLoad(
   reason: string | undefined | null,
   label: string = 'FTS',
   explicitPath?: string | null,
+  versions?: ExtensionVersionPair,
 ): ExtensionLoadDiagnosis {
   const text = reason ?? '';
   const stringResult = classifyExtensionLoadError(text, label);
@@ -367,6 +385,12 @@ export function diagnoseExtensionLoad(
     return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };
   }
   if (fileState === 'valid') {
+    if (versions?.expected && versions.found && versions.expected !== versions.found) {
+      return {
+        kind: 'version_skew',
+        remedy: versionSkewRemedy(label, versions.expected, versions.found),
+      };
+    }
     // The structural probe only inspects the first BINARY_HEADER_BYTES, so a file
     // truncated AFTER its header still reads 'valid'. When the loader itself reported
     // corruption (e.g. "file too short" / Windows error 193 "not a valid Win32

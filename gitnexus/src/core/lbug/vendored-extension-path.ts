@@ -67,6 +67,26 @@ export const validateVendoredExtensionPath = (
   return realFile;
 };
 
+export const inferExtensionVersionFromPath = (
+  filePath: string | null | undefined,
+): string | undefined => {
+  if (!filePath) return undefined;
+  const home = /[/\\]extension[/\\](\d+\.\d+\.\d+)[/\\]/.exec(filePath);
+  return home?.[1];
+};
+
+export const resolveFtsVersionPair = (
+  inspectPath?: string | null,
+  vendorRoot?: string,
+): { expected?: string; found?: string } => {
+  const expected = readFtsArtifactManifest(vendorRoot).extensionVersion;
+  const fromPath = inferExtensionVersionFromPath(inspectPath);
+  const found =
+    fromPath ??
+    (inspectPath && inspectPath.replace(/\\/g, '/').includes('/lbug-fts/') ? expected : undefined);
+  return { expected, found };
+};
+
 export const resolveVendoredFtsPath = (opts?: {
   tuple?: string;
   vendorRoot?: string;

@@ -24,7 +24,8 @@ import {
   getOsPageSize,
   isPageSizeAwareLadybug,
 } from '../core/lbug/lbug-config.js';
-import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
+import { diagnoseExtensionLoad, extractExtensionPath } from '../core/lbug/extension-load-error.js';
+import { resolveFtsVersionPair } from '../core/lbug/vendored-extension-path.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { updateEligibleInstallSync } from '../core/install-context.js';
 import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
@@ -270,7 +271,12 @@ export const doctorCommand = async () => {
     // Policy `never` is not a load failure — skip structural diagnosis.
     const { kind, remedy } = ftsProbe.suppressed
       ? { kind: 'unknown' as const, remedy: '' }
-      : diagnoseExtensionLoad(ftsProbe.reason);
+      : diagnoseExtensionLoad(
+          ftsProbe.reason,
+          'FTS',
+          extractExtensionPath(ftsProbe.reason),
+          resolveFtsVersionPair(extractExtensionPath(ftsProbe.reason)),
+        );
     if (kind !== 'unknown') {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }

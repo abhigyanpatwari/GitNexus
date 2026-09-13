@@ -9,7 +9,10 @@ import {
 } from '../lbug/lbug-adapter.js';
 import { getFtsCapability } from '../lbug/extension-loader.js';
 import { FTS_DISABLED_MESSAGE, type FtsDisabledReason } from './fts-policy.js';
-import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
+import {
+  classifyExtensionLoadError,
+  usesClassifiedLoadRemedy,
+} from '../lbug/extension-load-error.js';
 import { FTS_INDEXES, type FTSIndexDefinition } from './fts-schema.js';
 
 /**
@@ -89,10 +92,9 @@ export const ftsDegradedWarning = (
     // per-request path (HTTP /api/search + MCP query) does NO file I/O (#2383 F3);
     // fall back to the pure, no-I/O string classifier if it is somehow absent.
     const { kind, remedy } = fts.diagnosis ?? classifyExtensionLoadError(fts.reason);
-    const tail =
-      kind === 'missing_dependency'
-        ? ` ${remedy}`
-        : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
+    const tail = usesClassifiedLoadRemedy(kind)
+      ? ` ${remedy}`
+      : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +

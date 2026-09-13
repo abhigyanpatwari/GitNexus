@@ -11,6 +11,7 @@ import {
   defaultVendorRoot,
   isUnsupportedFtsTuple,
   nodePlatformTuple,
+  resolveFtsVersionPair,
   resolveVendoredFtsPath,
 } from './vendored-extension-path.js';
 import { logger } from '../logger.js';
@@ -272,6 +273,8 @@ export class ExtensionManager {
     const attempts: ExtensionLoadAttempt[] = [];
     let lastError: string | undefined;
     let lastInspectPath: string | null = null;
+    const versionsFor = (inspectPath: string | null) =>
+      name === 'fts' ? resolveFtsVersionPair(inspectPath, opts.vendorRoot) : undefined;
 
     if (policy === 'never') {
       this.markUnavailable(
@@ -327,6 +330,7 @@ export class ExtensionManager {
         quiet,
         attempts,
         lastInspectPath,
+        versionsFor(lastInspectPath),
       );
       return false;
     }
@@ -350,6 +354,7 @@ export class ExtensionManager {
         quiet,
         attempts,
         lastInspectPath,
+        versionsFor(lastInspectPath),
       );
       return false;
     }
@@ -368,6 +373,7 @@ export class ExtensionManager {
       quiet,
       attempts,
       extractExtensionPath(retryError),
+      versionsFor(extractExtensionPath(retryError)),
     );
     return false;
   }
@@ -433,6 +439,7 @@ export class ExtensionManager {
     quiet = false,
     attempts: ExtensionLoadAttempt[] = [],
     inspectPath: string | null = null,
+    versions?: { expected?: string; found?: string },
   ): void {
     // Classify once here (the single load-failure sink, run per Database not per
     // request) so the hot per-request warning path does no file I/O (#2383 F3).
@@ -442,7 +449,7 @@ export class ExtensionManager {
       loaded: false,
       reason,
       attempts,
-      diagnosis: diagnoseExtensionLoad(reason, label, inspectPath),
+      diagnosis: diagnoseExtensionLoad(reason, label, inspectPath, versions),
     });
     const message = `GitNexus: ${label} extension unavailable; continuing without ${label} features. ${reason}`;
     // A quiet probe must not register the dedup key: the owning caller may hit

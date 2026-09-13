@@ -3,9 +3,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  inferExtensionVersionFromPath,
   isPathInsideRoot,
   nodePlatformTuple,
   readFtsArtifactManifest,
+  resolveFtsVersionPair,
   resolveVendoredFtsPath,
   validateVendoredExtensionPath,
 } from '../../src/core/lbug/vendored-extension-path.js';
@@ -71,5 +73,42 @@ describe('resolveVendoredFtsPath', () => {
     writeFileSync(evil, 'placeholder');
     expect(isPathInsideRoot(vendorRoot, evil)).toBe(false);
     expect(validateVendoredExtensionPath(evil, vendorRoot)).toBeNull();
+  });
+});
+
+describe('resolveFtsVersionPair', () => {
+  it('reads expected from the manifest and found from a Ladybug home path', () => {
+    const vendorRoot = makeVendorRoot();
+    mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
+    writeFileSync(
+      join(vendorRoot, 'lbug-fts', 'manifest.json'),
+      JSON.stringify({ extensionVersion: '0.18.1' }),
+    );
+    expect(
+      inferExtensionVersionFromPath(
+        '/home/alice/.lbdb/extension/0.17.0/linux_amd64/fts/libfts.lbug_extension',
+      ),
+    ).toBe('0.17.0');
+    expect(
+      resolveFtsVersionPair(
+        'C:\\Users\\bob\\.lbdb\\extension\\0.17.0\\win_amd64\\fts\\libfts.lbug_extension',
+        vendorRoot,
+      ),
+    ).toEqual({ expected: '0.18.1', found: '0.17.0' });
+  });
+
+  it('treats a packaged lbug-fts path as the expected version when home inference is empty', () => {
+    const vendorRoot = makeVendorRoot();
+    mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
+    writeFileSync(
+      join(vendorRoot, 'lbug-fts', 'manifest.json'),
+      JSON.stringify({ extensionVersion: '0.18.1' }),
+    );
+    expect(
+      resolveFtsVersionPair(
+        join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64', 'libfts.lbug_extension'),
+        vendorRoot,
+      ),
+    ).toEqual({ expected: '0.18.1', found: '0.18.1' });
   });
 });
