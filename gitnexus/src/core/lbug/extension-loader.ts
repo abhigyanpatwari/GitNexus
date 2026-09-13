@@ -321,7 +321,8 @@ export class ExtensionManager {
       this.markLoaded(name, attempts);
       return true;
     }
-    lastInspectPath = extractExtensionPath(loadError);
+    const namedPath = extractExtensionPath(loadError);
+    if (namedPath) lastInspectPath = namedPath;
 
     if (policy === 'load-only') {
       this.markUnavailable(

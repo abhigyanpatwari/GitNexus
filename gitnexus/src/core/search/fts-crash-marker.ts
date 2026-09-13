@@ -55,6 +55,32 @@ export const allowsFtsCrashWalPark = (
 ): boolean =>
   isFtsDirtyPhase(dirty) && dirty.writePlan === 'in-place' && dirty.checkpointSucceeded === true;
 
+export const isInPlaceFtsDirty = (
+  dirty: RepoMeta['incrementalInProgress'] | undefined,
+): dirty is IncrementalDirtyState & { phase: typeof FTS_DIRTY_PHASE; writePlan: 'in-place' } =>
+  isFtsDirtyPhase(dirty) && dirty.writePlan === 'in-place';
+
+/** Persisted FTS capability fields used as crash evidence after the dirty flag is cleared. */
+export type PersistedFtsCrashEvidence = {
+  skipReason?: string;
+  writePlan?: FtsWritePlan;
+};
+
+export const hasRecoveredInPlaceFtsAbort = (fts: PersistedFtsCrashEvidence | undefined): boolean =>
+  fts?.skipReason === 'native-abort' && fts.writePlan === 'in-place';
+
+/**
+ * Reader / `--repair-fts` refuse-or-park warrant. Any in-place FTS dirty
+ * flag is enough — a failed graph-boundary checkpoint still leaves CREATE
+ * able to abort with a live WAL. After persist clears the flag, a
+ * `native-abort` skip plus persisted `writePlan: 'in-place'` is the same
+ * evidence. Staging persist also writes `native-abort` and must not match.
+ */
+export const shouldRefuseFtsCrashWal = (
+  dirty: RepoMeta['incrementalInProgress'] | undefined,
+  fts?: PersistedFtsCrashEvidence,
+): boolean => isInPlaceFtsDirty(dirty) || hasRecoveredInPlaceFtsAbort(fts);
+
 export const isFtsStagingDirty = (dirty: RepoMeta['incrementalInProgress'] | undefined): boolean =>
   isFtsDirtyPhase(dirty) && dirty.writePlan === 'staging';
 

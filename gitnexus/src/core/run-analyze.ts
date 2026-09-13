@@ -26,6 +26,7 @@ import {
   isBoundaryCheckpointFatal,
   isFtsStagingDirty,
   resolveFtsWritePlan,
+  shouldRefuseFtsCrashWal,
   shouldRefuseRepairFtsWhileDirty,
   shouldStampFtsDirtyPhase,
 } from './search/fts-crash-marker.js';
@@ -1377,7 +1378,7 @@ async function runFullAnalysisInner(
     // P1 R8: park a poisoned live WAL before opening. Staging never parks —
     // the live index next to an unpublished staging file must replay its WAL.
     const repairDirty = existingMeta.incrementalInProgress;
-    if (allowsFtsCrashWalPark(repairDirty)) {
+    if (shouldRefuseFtsCrashWal(repairDirty, existingMeta.capabilities?.fts)) {
       const {
         moved: repairParked,
         removed: repairRemoved,
@@ -1435,6 +1436,17 @@ async function runFullAnalysisInner(
         );
       }
       progress('fts', 85, 'Repairing search indexes...');
+      // Restamp before CREATE so a second native abort still has in-place
+      // FTS dirty evidence after persist cleared the first stamp.
+      const latestBeforeCreate = (await loadMeta(metaDir)) ?? existingMeta;
+      await saveMeta(metaDir, {
+        ...latestBeforeCreate,
+        incrementalInProgress: buildFtsDirtyStamp({
+          prior: latestBeforeCreate.incrementalInProgress,
+          writePlan: 'in-place',
+          checkpointSucceeded: true,
+        }),
+      });
       const repairFailures = await createSearchFTSIndexes({
         indexes: ftsIndexes,
         onIndexStart: options.verbose
@@ -1612,6 +1624,7 @@ async function runFullAnalysisInner(
           provider: existingMeta.capabilities?.fts?.provider ?? 'ladybugdb-fts',
           status: 'unavailable',
           skipReason: 'native-abort',
+          ...(dirty.writePlan ? { writePlan: dirty.writePlan } : {}),
         },
         vectorSearch: existingMeta.capabilities?.vectorSearch ?? DEFAULT_VECTOR_SEARCH_CAPABILITY,
       };
@@ -4305,6 +4318,14 @@ async function runFullAnalysisInner(
           // 'unavailable', and the next run does it again. Stamping the
           // discriminator the run already computed makes the read exact instead.
           skipReason: ftsReady ? undefined : ftsSkipReason,
+          // Keep the abort write plan after persist cleared the dirty flag
+          // so a leftover live WAL is still refuse-able. Successful FTS
+          // drops it with skipReason.
+          ...(!ftsReady &&
+          ftsSkipReason === 'native-abort' &&
+          existingMeta?.capabilities?.fts?.writePlan
+            ? { writePlan: existingMeta.capabilities.fts.writePlan }
+            : {}),
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',

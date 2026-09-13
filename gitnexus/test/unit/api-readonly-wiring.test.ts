@@ -67,6 +67,17 @@ describe('api read-only endpoint wiring', () => {
     );
   });
 
+  it('/api/embed refuses an in-place FTS crash WAL before the writable open', async () => {
+    const source = await readSource();
+    const embedSection = source.match(
+      /\/\/ Run embedding pipeline asynchronously[\s\S]*?skipFtsOption\(ftsSession\.skipFts\)/,
+    );
+    expect(embedSection).not.toBeNull();
+    expect(embedSection![0]).toContain('assertReadOnlyFtsCrashSafe(lbugPath)');
+    expect(embedSection![0]).not.toMatch(/fts-inplace-checkpointed/);
+    expect(embedSection![0]).not.toMatch(/readOnly:\s*true/);
+  });
+
   it('/api/embed remains write-mode (writes embeddings — must not be flipped to readOnly)', async () => {
     const source = await readSource();
     // Negative assertion: no `readOnly: true` between the embed job's

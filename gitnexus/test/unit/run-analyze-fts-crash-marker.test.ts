@@ -27,10 +27,13 @@ import {
   FTS_DIRTY_PHASE,
   allowsFtsCrashWalPark,
   buildFtsDirtyStamp,
+  hasRecoveredInPlaceFtsAbort,
   inferNativeAbortSkip,
   isBoundaryCheckpointFatal,
   isFtsStagingDirty,
+  isInPlaceFtsDirty,
   resolveFtsWritePlan,
+  shouldRefuseFtsCrashWal,
   shouldRefuseRepairFtsWhileDirty,
   shouldStampFtsDirtyPhase,
 } from '../../src/core/search/fts-crash-marker.js';
@@ -223,6 +226,37 @@ describe('FTS crash-marker policy (characterization)', () => {
         writePlan: 'in-place',
         checkpointSucceeded: true,
       }),
+    ).toBe(false);
+    expect(
+      isInPlaceFtsDirty({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+        checkpointSucceeded: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRefuseFtsCrashWal({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+        checkpointSucceeded: false,
+      }),
+    ).toBe(true);
+    expect(hasRecoveredInPlaceFtsAbort({ skipReason: 'native-abort', writePlan: 'in-place' })).toBe(
+      true,
+    );
+    expect(hasRecoveredInPlaceFtsAbort({ skipReason: 'native-abort', writePlan: 'staging' })).toBe(
+      false,
+    );
+    expect(hasRecoveredInPlaceFtsAbort({ skipReason: 'native-abort' })).toBe(false);
+    expect(
+      shouldRefuseFtsCrashWal(undefined, { skipReason: 'native-abort', writePlan: 'in-place' }),
+    ).toBe(true);
+    expect(
+      shouldRefuseFtsCrashWal(undefined, { skipReason: 'native-abort', writePlan: 'staging' }),
     ).toBe(false);
     expect(
       isFtsStagingDirty({
@@ -606,6 +640,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       expect(finalMeta?.capabilities?.fts).toMatchObject({
         status: 'unavailable',
         skipReason: 'native-abort',
+        writePlan: 'in-place',
       });
     } finally {
       await tmpRepo.cleanup();
@@ -864,6 +899,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       expect(finalMeta?.capabilities?.fts).toMatchObject({
         status: 'unavailable',
         skipReason: 'native-abort',
+        writePlan: 'in-place',
       });
     } finally {
       await tmpRepo.cleanup();
@@ -977,7 +1013,15 @@ describe('runFullAnalysis FTS crash marker', () => {
 
   it('parks a live WAL before --repair-fts opens the DB', async () => {
     const initLbug = vi.fn(async () => undefined);
-    const createSearchFTSIndexes = vi.fn(async () => []);
+    const createSearchFTSIndexes = vi.fn(async () => {
+      const midMeta = await loadMeta(getStoragePaths(tmpRepo.dbPath).storagePath);
+      expect(midMeta?.incrementalInProgress).toMatchObject({
+        phase: FTS_DIRTY_PHASE,
+        writePlan: 'in-place',
+        checkpointSucceeded: true,
+      });
+      return [];
+    });
     vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
       ...(await mockLbugAdapter()),
       initLbug,
@@ -1030,6 +1074,66 @@ describe('runFullAnalysis FTS crash marker', () => {
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.incrementalInProgress).toBeUndefined();
       expect(finalMeta?.capabilities?.fts).toMatchObject({ status: 'available' });
+    } finally {
+      vi.restoreAllMocks();
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('parks a live WAL after persist cleared the dirty flag when writePlan is in-place', async () => {
+    const initLbug = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      initLbug,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-repair-persisted-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'abc',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: {
+            provider: 'ladybugdb-fts',
+            status: 'unavailable',
+            skipReason: 'native-abort',
+            writePlan: 'in-place',
+          },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true },
+        { onProgress: () => {} },
+      );
+      expect(result.ftsRepairedOnly).toBe(true);
+      expect(createSearchFTSIndexes).toHaveBeenCalled();
+      expect(initLbug).toHaveBeenCalled();
+      expect(Buffer.compare(await fs.readFile(`${lbugPath}.wal.dirty-recovery`), WAL_PATTERN)).toBe(
+        0,
+      );
+      await expect(fs.stat(`${lbugPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       vi.restoreAllMocks();
       await tmpRepo.cleanup();

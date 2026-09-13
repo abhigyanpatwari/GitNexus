@@ -38,6 +38,7 @@ import {
   withLbugDb,
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
+import { assertReadOnlyFtsCrashSafe } from '../core/lbug/sidecar-recovery.js';
 import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
@@ -2000,6 +2001,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
             const ftsSession = await loadFtsSession(storagePath);
             let embeddingMeta = ftsSession.meta;
+            // Writable embed still replays a leftover FTS-abort WAL. Refuse
+            // here — doInitLbug only gates the readOnly path, and analyze
+            // writers must still be able to park/rebuild.
+            await assertReadOnlyFtsCrashSafe(lbugPath);
             await withLbugDb(
               lbugPath,
               async () => {

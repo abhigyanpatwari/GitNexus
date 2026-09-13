@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { loadMeta } from '../../storage/repo-meta.js';
-import { allowsFtsCrashWalPark } from '../search/fts-crash-marker.js';
+import { shouldRefuseFtsCrashWal } from '../search/fts-crash-marker.js';
 import {
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
@@ -49,11 +49,18 @@ export class FtsReaderUnrepairableError extends Error {
   }
 }
 
+const sidecarHasLiveWal = (state: LbugSidecarState): boolean =>
+  state.kind === 'orphan-wal' ||
+  state.kind === 'tiny-orphan-wal' ||
+  state.kind === 'wal-with-shadow';
+
 /**
- * Advisory reader gate (KTD10 / R9b). When meta names an in-place
- * checkpointed FTS abort and a large orphan WAL is still live, refuse
- * before the native open. Does not write, rename, or repair. Missing or
- * unreadable meta falls through to today's open path.
+ * Advisory reader gate (KTD10 / R9b). When meta names an in-place FTS
+ * abort (live dirty flag, or a persisted in-place `native-abort`) and a
+ * WAL is still live, refuse before the native open. Does not write,
+ * rename, or repair. Parking still requires the conjunctive
+ * `allowsFtsCrashWalPark` warrant. Missing or unreadable meta falls
+ * through to today's open path.
  */
 export const assertReadOnlyFtsCrashSafe = async (dbPath: string): Promise<void> => {
   let meta;
@@ -62,9 +69,11 @@ export const assertReadOnlyFtsCrashSafe = async (dbPath: string): Promise<void> 
   } catch {
     return;
   }
-  if (!meta || !allowsFtsCrashWalPark(meta.incrementalInProgress)) return;
+  if (!meta || !shouldRefuseFtsCrashWal(meta.incrementalInProgress, meta.capabilities?.fts)) {
+    return;
+  }
   const state = await inspectLbugSidecars(dbPath);
-  if (state.kind !== 'orphan-wal') return;
+  if (!sidecarHasLiveWal(state)) return;
   throw new FtsReaderUnrepairableError(dbPath);
 };
 

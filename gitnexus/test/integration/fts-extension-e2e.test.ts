@@ -316,6 +316,7 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     expect(second.status).toBe(0);
     expect(second.output).not.toContain('its extension is not loaded');
     expect(second.output).not.toContain('full DB write');
+    expect(second.output).not.toContain('forcing full rebuild');
     expect(second.output).toMatch(/Incremental:|indexed successfully/);
   }, 400_000);
 });

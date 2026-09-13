@@ -13,11 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import {
-  FTS_DISABLED_MESSAGE,
-  formatAnalyzeFtsSkipSummary,
-  isExplicitFtsDisablement,
-} from '../core/search/fts-policy.js';
+import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
@@ -1455,8 +1451,9 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
-      if (isExplicitFtsDisablement(result.ftsSkipReason))
-        console.log(`  ${FTS_DISABLED_MESSAGE}\n`);
+      if (result.ftsSkipped) {
+        console.log(`  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}\n`);
+      }
       if (runOptions.registryName) {
         console.log(`  Registry name: ${result.repoName}\n`);
       }

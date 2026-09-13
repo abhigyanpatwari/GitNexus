@@ -210,6 +210,14 @@ export interface RepoMeta {
        * drop the field to `undefined` at parse time.
        */
       skipReason?: PersistedFtsSkipReason;
+      /**
+       * Write plan of the analyze that aborted, persisted with
+       * `skipReason: 'native-abort'` so readers can refuse a leftover live
+       * WAL after recovery clears `incrementalInProgress`. Staging persist
+       * also writes `native-abort` and must keep its live WAL. Absent on
+       * older indexes and on non-abort skips.
+       */
+      writePlan?: 'in-place' | 'staging';
     };
     vectorSearch: {
       provider: string;

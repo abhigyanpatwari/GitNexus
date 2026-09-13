@@ -537,6 +537,71 @@ describe('LadybugDB sidecar recovery', () => {
       );
       await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
     });
+
+    it('refuses an in-place FTS dirty WAL even when the boundary checkpoint failed', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          incrementalInProgress: {
+            startedAt: 1,
+            toWriteCount: 0,
+            phase: 'fts',
+            writePlan: 'in-place',
+            checkpointSucceeded: false,
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+    });
+
+    it('refuses a persisted in-place native-abort plus a live WAL after the dirty flag is gone', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          capabilities: {
+            fts: {
+              provider: 'ladybugdb-fts',
+              status: 'unavailable',
+              skipReason: 'native-abort',
+              writePlan: 'in-place',
+            },
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+    });
+
+    it('falls through for a persisted staging native-abort so the live WAL can replay', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          capabilities: {
+            fts: {
+              provider: 'ladybugdb-fts',
+              status: 'unavailable',
+              skipReason: 'native-abort',
+              writePlan: 'staging',
+            },
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+    });
+
+    it('refuses a tiny orphan WAL when in-place FTS crash evidence is on disk', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), JSON.stringify(ftsDirtyMeta));
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+    });
   });
 
   describe('presentShadowUnreachableMessage (present-but-locked, not missing — S2)', () => {

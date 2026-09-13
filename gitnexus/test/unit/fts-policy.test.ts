@@ -240,4 +240,20 @@ describe('FTS skip-reason members (U6)', () => {
       'GITNEXUS_LBUG_EXTENSION_INSTALL=auto',
     );
   });
+
+  it('prints the skip summary on the already-up-to-date CLI path whenever FTS was skipped', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const analyzeSrc = await readFile(
+      fileURLToPath(new URL('../../src/cli/analyze.ts', import.meta.url)),
+      'utf8',
+    );
+    const alreadyUpToDate = analyzeSrc.match(
+      /Already up to date[\s\S]{0,400}if \(runOptions\.registryName\)/,
+    );
+    expect(alreadyUpToDate).not.toBeNull();
+    expect(alreadyUpToDate![0]).toContain('if (result.ftsSkipped)');
+    expect(alreadyUpToDate![0]).toContain('formatAnalyzeFtsSkipSummary(result.ftsSkipReason)');
+    expect(alreadyUpToDate![0]).not.toContain('isExplicitFtsDisablement');
+  });
 });

@@ -428,6 +428,36 @@ describe('getExtensionInstallTimeoutMs', () => {
   });
 });
 
+const buildHostValidBinary = (): Buffer => {
+  const arm = process.arch === 'arm64';
+  if (process.platform === 'win32') {
+    const peOff = 0x80;
+    const b = Buffer.alloc(peOff + 8);
+    b[0] = 0x4d;
+    b[1] = 0x5a;
+    b.writeUInt32LE(peOff, 0x3c);
+    b[peOff] = 0x50;
+    b[peOff + 1] = 0x45;
+    b.writeUInt16LE(arm ? 0xaa64 : 0x8664, peOff + 4);
+    return b;
+  }
+  if (process.platform === 'darwin') {
+    const b = Buffer.alloc(32);
+    b.writeUInt32LE(0xfeedfacf, 0);
+    b.writeUInt32LE(arm ? 0x0100000c : 0x01000007, 4);
+    return b;
+  }
+  const b = Buffer.alloc(64);
+  b[0] = 0x7f;
+  b[1] = 0x45;
+  b[2] = 0x4c;
+  b[3] = 0x46;
+  b[4] = 2;
+  b[5] = 1;
+  b.writeUInt16LE(arm ? 0xb7 : 0x3e, 18);
+  return b;
+};
+
 const writeVendorArtifact = (
   root: string,
   tuple: string,
@@ -542,6 +572,35 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     expect(manager.getCapabilities()[0]?.reason).toContain('win32-arm64');
     expect(manager.getCapabilities()[0]?.reason).toContain('no packaged FTS artifact');
     expect(manager.getCapabilities()[0]?.reason).not.toContain(vendorRoot);
+  });
+
+  it('keeps the vendored inspect path when named LOAD has no .lbug_extension path', async () => {
+    const vendorRoot = makeRoot();
+    const artifact = writeVendorArtifact(vendorRoot, 'linux-x64');
+    writeFileSync(artifact, buildHostValidBinary());
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          `Failed to load library: ${artifact} which is needed by extension: fts. Error: 126 The specified module could not be found.`,
+        ),
+      )
+      .mockRejectedValueOnce(new Error('Extension "fts" has not been installed.'));
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({
+      policy: 'load-only',
+      installExtension,
+      warn: noopWarn,
+    });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(false);
+
+    expect(installExtension).not.toHaveBeenCalled();
+    const cap = manager.getCapabilities()[0];
+    expect(cap?.diagnosis?.kind).toBe('missing_dependency');
+    expect(cap?.diagnosis?.remedy).toMatch(/OpenSSL|VC\+\+|runtime/i);
   });
 
   it('diagnoses a truncated home copy as corrupt, not missing_dependency (KTD7)', async () => {
