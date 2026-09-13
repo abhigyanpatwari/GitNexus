@@ -95,6 +95,10 @@ const PLATFORM_LOGIC = [
   // here does not claim Windows-specific behavioral coverage.
   'test/unit/extension-load-error.test.ts',
   'test/unit/fts-degraded-warning.test.ts',
+  // Vendored-root symlink containment uses realpathSync + path.relative; a
+  // prefix-only leak follows a Windows junction / POSIX symlink out of
+  // vendor/. Ubuntu-only would leave that guard unverified on the OS matrix.
+  'test/unit/lbug-extension-loader.test.ts',
   // Global registry writes use the platform-specific index-lock backend
   // (Windows named pipe, Linux socket, or macOS file lock). This includes the
   // overlapping-registration regression from #2716 on every OS matrix.

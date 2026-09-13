@@ -27,7 +27,11 @@ import fs from 'fs';
 import os from 'os';
 
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
-import { resolveVendoredFtsPath } from '../../src/core/lbug/vendored-extension-path.js';
+import {
+  defaultVendorRoot,
+  nodePlatformTuple,
+  resolveVendoredFtsPath,
+} from '../../src/core/lbug/vendored-extension-path.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
 
@@ -51,16 +55,31 @@ const makeTmpDir = (label: string): string => {
  * copy already installed under the machine's real home, then one real
  * out-of-process install into a probe home.
  */
+/** Ladybug HOME layout: `~/.lbdb/extension/<coreVersion>/<upstreamPlatform>/fts/<file>`. */
+const ladybugHomeExtensionRelPath = (filename: string): string | null => {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(defaultVendorRoot(), 'lbug-fts', 'manifest.json'), 'utf8'),
+    ) as {
+      coreVersion?: string;
+      tuples?: Array<{ tuple: string; upstreamPlatform: string }>;
+    };
+    const upstream = raw.tuples?.find(
+      (entry) => entry.tuple === nodePlatformTuple(),
+    )?.upstreamPlatform;
+    if (!raw.coreVersion || !upstream) return null;
+    return path.join('.lbdb', 'extension', raw.coreVersion, upstream, 'fts', filename);
+  } catch {
+    return null;
+  }
+};
+
 const resolveSeedExtension = (): void => {
   const packaged = resolveVendoredFtsPath();
   if (packaged) {
-    extensionRelPath = path.join(
-      '.lbdb',
-      'extension',
-      'vendor-seed',
-      'fts',
-      path.basename(packaged),
-    );
+    extensionRelPath =
+      ladybugHomeExtensionRelPath(path.basename(packaged)) ??
+      path.join('.lbdb', 'extension', 'vendor-seed', 'fts', path.basename(packaged));
     seedExtensionFile = packaged;
     return;
   }

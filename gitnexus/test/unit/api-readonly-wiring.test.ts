@@ -73,7 +73,10 @@ describe('api read-only endpoint wiring', () => {
       /\/\/ Run embedding pipeline asynchronously[\s\S]*?skipFtsOption\(ftsSession\.skipFts\)/,
     );
     expect(embedSection).not.toBeNull();
-    expect(embedSection![0]).toContain('assertReadOnlyFtsCrashSafe(lbugPath)');
+    const gateIdx = embedSection![0].indexOf('assertReadOnlyFtsCrashSafe(lbugPath)');
+    const openIdx = embedSection![0].indexOf('await withLbugDb(');
+    expect(gateIdx).toBeGreaterThan(-1);
+    expect(openIdx).toBeGreaterThan(gateIdx);
     expect(embedSection![0]).not.toMatch(/fts-inplace-checkpointed/);
     expect(embedSection![0]).not.toMatch(/readOnly:\s*true/);
   });

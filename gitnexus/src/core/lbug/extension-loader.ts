@@ -218,12 +218,13 @@ export const installDuckDbExtensionOutOfProcess = async (
 /**
  * Centralized lifecycle manager for optional LadybugDB extensions.
  *
- * Always tries `LOAD EXTENSION <name>` first — it is per-connection,
- * idempotent, and never touches the network. If `LOAD` fails and the active
- * policy permits, the manager runs a single bounded out-of-process `INSTALL`
- * attempt per process and retries `LOAD`. Capability outcomes are cached so
- * unavailable extensions degrade search features without ever blocking
- * subsequent analyze or query calls.
+ * Tries `LOAD` first — it is per-connection, idempotent, and never
+ * touches the network. For FTS, a packaged vendored path is path-LOADed
+ * before the named `LOAD EXTENSION fts`. If `LOAD` fails and the active
+ * policy permits, the manager runs a single bounded out-of-process
+ * `INSTALL` attempt per process and retries `LOAD`. Capability outcomes
+ * are cached so unavailable extensions degrade search features without
+ * ever blocking subsequent analyze or query calls.
  *
  * Policy precedence (most specific wins):
  *   per-call `opts.policy` → constructor `options.policy` → env → `load-only`

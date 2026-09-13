@@ -12,7 +12,8 @@ import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
-import type { ContentRetention } from '../../storage/repo-meta.js';
+import { loadMeta, type ContentRetention } from '../../storage/repo-meta.js';
+import { allowsFtsCrashWalPark, hasRecoveredInPlaceFtsAbort } from '../search/fts-crash-marker.js';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -583,11 +584,37 @@ const reopenReadOnlyAfterMissingShadow = async (
   }
 };
 
+const writableFtsCrashWalEvidence = async (
+  dbPath: string,
+): Promise<WalCrashEvidence | undefined> => {
+  try {
+    const meta = await loadMeta(path.dirname(dbPath));
+    if (
+      meta &&
+      (allowsFtsCrashWalPark(meta.incrementalInProgress) ||
+        hasRecoveredInPlaceFtsAbort(meta.capabilities?.fts))
+    ) {
+      return { kind: 'fts-inplace-checkpointed' };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+};
+
 const reopenWritableAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
 ): Promise<LbugConnectionHandle> => {
-  await refuseLargeWalQuarantine(dbPath, 'writable', err);
+  // Analyze writers may park a leftover in-place FTS abort WAL. Serve/embed
+  // refuse first via assertReadOnlyFtsCrashSafe and must not pass this
+  // evidence themselves (R9); read-only reopen never parks.
+  await refuseLargeWalQuarantine(
+    dbPath,
+    'writable',
+    err,
+    await writableFtsCrashWalEvidence(dbPath),
+  );
   try {
     await quarantineWalForMissingShadow(dbPath, {
       logger,

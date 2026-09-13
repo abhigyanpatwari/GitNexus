@@ -131,6 +131,24 @@ describe('doInitLbug WAL corruption guard — structural', () => {
     expect(preflightIdx).toBeGreaterThan(refuseIdx);
   });
 
+  it('writable missing-shadow reopen can pass FTS crash evidence; read-only must not', () => {
+    const evidenceStart = adapterSource.indexOf('const writableFtsCrashWalEvidence');
+    const writableStart = adapterSource.indexOf('const reopenWritableAfterMissingShadow');
+    const readOnlyStart = adapterSource.indexOf('const reopenReadOnlyAfterMissingShadow');
+    expect(evidenceStart).toBeGreaterThan(-1);
+    expect(writableStart).toBeGreaterThan(evidenceStart);
+    expect(readOnlyStart).toBeGreaterThan(-1);
+    expect(adapterSource.slice(evidenceStart, writableStart + 600)).toMatch(
+      /fts-inplace-checkpointed/,
+    );
+    expect(adapterSource.slice(writableStart, writableStart + 600)).toMatch(
+      /writableFtsCrashWalEvidence/,
+    );
+    expect(adapterSource.slice(readOnlyStart, evidenceStart)).not.toMatch(
+      /fts-inplace-checkpointed/,
+    );
+  });
+
   it('imports throwIfStorageVersionMismatch and uses it in the schema catch', () => {
     expect(adapterSource).toMatch(/throwIfStorageVersionMismatch/);
     expect(schemaLoopBody).toMatch(/isStorageVersionMismatchError\(err\)/);
