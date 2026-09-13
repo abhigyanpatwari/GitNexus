@@ -97,7 +97,7 @@ describe('resolveFtsVersionPair', () => {
     ).toEqual({ expected: '0.18.1', found: '0.17.0' });
   });
 
-  it('treats a packaged lbug-fts path as the expected version when home inference is empty', () => {
+  it('leaves found unset when a packaged lbug-fts path has no version segment', () => {
     const vendorRoot = makeVendorRoot();
     mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
     writeFileSync(
@@ -109,6 +109,15 @@ describe('resolveFtsVersionPair', () => {
         join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64', 'libfts.lbug_extension'),
         vendorRoot,
       ),
-    ).toEqual({ expected: '0.18.1', found: '0.18.1' });
+    ).toEqual({ expected: '0.18.1', found: undefined });
+  });
+});
+
+describe('readFtsArtifactManifest', () => {
+  it.each(['null', '[]'] as const)('returns {} when manifest.json is %s', (contents) => {
+    const vendorRoot = makeVendorRoot();
+    mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
+    writeFileSync(join(vendorRoot, 'lbug-fts', 'manifest.json'), contents);
+    expect(readFtsArtifactManifest(vendorRoot)).toEqual({});
   });
 });

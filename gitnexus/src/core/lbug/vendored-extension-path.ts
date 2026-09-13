@@ -29,7 +29,11 @@ export const readFtsArtifactManifest = (
 ): FtsArtifactManifest => {
   const manifestPath = path.join(vendorRoot, 'lbug-fts', 'manifest.json');
   try {
-    return JSON.parse(readFileSync(manifestPath, 'utf8')) as FtsArtifactManifest;
+    const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as FtsArtifactManifest;
+    }
+    return {};
   } catch {
     return {};
   }
@@ -80,10 +84,7 @@ export const resolveFtsVersionPair = (
   vendorRoot?: string,
 ): { expected?: string; found?: string } => {
   const expected = readFtsArtifactManifest(vendorRoot).extensionVersion;
-  const fromPath = inferExtensionVersionFromPath(inspectPath);
-  const found =
-    fromPath ??
-    (inspectPath && inspectPath.replace(/\\/g, '/').includes('/lbug-fts/') ? expected : undefined);
+  const found = inferExtensionVersionFromPath(inspectPath);
   return { expected, found };
 };
 

@@ -24,7 +24,6 @@ import {
   buildFtsDirtyStamp,
   inferNativeAbortSkip,
   isBoundaryCheckpointFatal,
-  isFtsDirtyPhase,
   isFtsStagingDirty,
   resolveFtsWritePlan,
   shouldRefuseRepairFtsWhileDirty,
@@ -1288,8 +1287,12 @@ async function runFullAnalysisInner(
     ? withExplicitFtsDisablement(loadedMeta, ftsDisabledReason)
     : undefined;
   // KTD6: the dying process writes nothing. Infer skip from the FTS-phase
-  // dirty flag BEFORE later saveMeta calls overwrite the on-disk phase.
-  const priorFtsNativeAbort = inferNativeAbortSkip(existingMeta?.incrementalInProgress);
+  // dirty flag (or a persisted native-abort skipReason) BEFORE later
+  // saveMeta calls overwrite the on-disk phase.
+  const priorFtsNativeAbort = inferNativeAbortSkip(
+    existingMeta?.incrementalInProgress,
+    existingMeta?.capabilities?.fts?.skipReason,
+  );
 
   // Claim a fresh, ownership-validated slot before the pipeline writes caches.
   // A later registry-name collision or pipeline failure can otherwise leave
@@ -1306,6 +1309,7 @@ async function runFullAnalysisInner(
   }
 
   // ── FTS-only repair path ────────────────────────────────────────────
+  const requestedRepairFts = Boolean(options.repairFts);
   if (
     options.repairFts &&
     existingMeta &&
@@ -1330,8 +1334,10 @@ async function runFullAnalysisInner(
       // dirty-recovery sidecar quarantine below would never run: repairing
       // FTS now would open the DB and replay that WAL pre-quarantine, and
       // even a survivable open would certify FTS over a half-written graph.
-      // An FTS-phase flag is different (KTD4): the graph-boundary checkpoint
-      // already ran, so `--repair-fts` must stay usable (R8).
+      // An FTS-phase flag with a successful checkpoint is different (KTD4):
+      // the graph-boundary checkpoint already ran, so `--repair-fts` must
+      // stay usable (R8). Missing/failed checkpoint is treated like a
+      // half-written graph.
       throw new Error(
         'Cannot repair FTS indexes: the index is mid-incremental-recovery ' +
           '(a previous analyze run did not complete cleanly). ' +
@@ -1371,7 +1377,7 @@ async function runFullAnalysisInner(
     // P1 R8: park a poisoned live WAL before opening. Staging never parks —
     // the live index next to an unpublished staging file must replay its WAL.
     const repairDirty = existingMeta.incrementalInProgress;
-    if (isFtsDirtyPhase(repairDirty) && repairDirty.writePlan !== 'staging') {
+    if (allowsFtsCrashWalPark(repairDirty)) {
       const {
         moved: repairParked,
         removed: repairRemoved,
@@ -1478,6 +1484,7 @@ async function runFullAnalysisInner(
         const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
         await saveMeta(metaDir, {
           ...latestMeta,
+          incrementalInProgress: undefined,
           capabilities: {
             graph: latestMeta.capabilities?.graph ?? DEFAULT_GRAPH_CAPABILITY,
             fts: { provider: 'ladybugdb-fts', status: 'available' },
@@ -3388,8 +3395,7 @@ async function runFullAnalysisInner(
     const ftsWritePlan = resolveFtsWritePlan(buildPath, lbugPath);
     let boundaryCheckpointSucceeded = false;
     try {
-      await checkpointOnce();
-      boundaryCheckpointSucceeded = true;
+      boundaryCheckpointSucceeded = await checkpointOnce();
     } catch (error) {
       if (isBoundaryCheckpointFatal(ftsWritePlan)) {
         throw error;
@@ -3448,15 +3454,22 @@ async function runFullAnalysisInner(
     let ftsReady = ftsAvailable;
     // Why FTS ended up skipped (#2658 review L2): an explicit opt-out
     // (`disabled-by-flag` / `disabled-by-env`, #3091) when one was recorded,
+    // else tuple-missing when the loader reported no packaged artifact,
     // else extension-unavailable up front, or build-failed in the degrade
     // branch below.
+    const tupleMissing =
+      !ftsAvailable &&
+      !ftsDisabledReason &&
+      /no packaged FTS artifact/i.test(getFtsCapability()?.reason ?? '');
     let ftsSkipReason: FtsSkipReason | undefined = ftsAvailable
       ? undefined
-      : (ftsDisabledReason ?? 'extension-unavailable');
-    if (ftsAvailable && priorFtsNativeAbort) {
+      : (ftsDisabledReason ?? (tupleMissing ? 'tuple-missing' : 'extension-unavailable'));
+    if (ftsAvailable && priorFtsNativeAbort && !requestedRepairFts) {
       // KTD6 / R11: do not retry CREATE_FTS_INDEX after a native abort —
       // the same content can kill the process again. `--repair-fts` is the
-      // explicit retry (its early-return path never reaches this branch).
+      // explicit retry: its early-return path never reaches this branch,
+      // and a retention-mismatch rewrite that started as `--repair-fts`
+      // still creates indexes.
       ftsReady = false;
       ftsSkipReason = 'native-abort';
       log(

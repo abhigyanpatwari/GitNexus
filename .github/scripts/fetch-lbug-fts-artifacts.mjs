@@ -30,8 +30,34 @@ const readExistingHash = (filePath) => {
 
 export const supportedTuples = (manifest) => manifest.tuples.map((entry) => entry.tuple);
 
+const SAFE_TUPLE = /^(darwin|linux|win32)-(x64|arm64)$/;
+const SAFE_FILENAME = /^[\w.-]+\.lbug_extension$/;
+
+/** Relative-path containment — not a prefix match (rejects `prebuilds-evil`). */
+const isPathInsideRoot = (root, candidate) => {
+  const relative = path.relative(root, candidate);
+  if (path.isAbsolute(relative)) return false;
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..';
+};
+
+export function assertSafeArtifactDest({ prebuildsDir, tuple, filename }) {
+  if (!SAFE_TUPLE.test(String(tuple ?? ''))) {
+    throw new Error(
+      `unsafe FTS artifact tuple: '${tuple}' (expected (darwin|linux|win32)-(x64|arm64))`,
+    );
+  }
+  if (!SAFE_FILENAME.test(String(filename ?? ''))) {
+    throw new Error(`unsafe FTS artifact filename: '${filename}' (expected *.lbug_extension)`);
+  }
+  const dest = path.join(prebuildsDir, tuple, filename);
+  if (!isPathInsideRoot(prebuildsDir, dest)) {
+    throw new Error(`FTS artifact dest is not inside prebuildsDir: ${dest}`);
+  }
+  return dest;
+}
+
 async function fetchBuffer(url) {
-  const res = await fetch(url);
+  const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) {
     throw new Error(`GET ${url} → ${res.status} ${res.statusText}`);
   }
@@ -46,9 +72,12 @@ export async function refreshArtifacts({
   mkdirSync(prebuildsDir, { recursive: true });
   const lines = [];
   for (const { tuple, upstreamPlatform } of manifest.tuples) {
-    const destDir = path.join(prebuildsDir, tuple);
-    mkdirSync(destDir, { recursive: true });
-    const dest = path.join(destDir, manifest.filename);
+    const dest = assertSafeArtifactDest({
+      prebuildsDir,
+      tuple,
+      filename: manifest.filename,
+    });
+    mkdirSync(path.dirname(dest), { recursive: true });
     const url = artifactUrl(manifest, upstreamPlatform);
     const previousHash = readExistingHash(dest);
     const previousSize = previousHash ? readFileSync(dest).byteLength : 0;

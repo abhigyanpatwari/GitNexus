@@ -93,6 +93,16 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
   }
 }
 
+/** Include a string `Error.code` in MCP error text when present. */
+function formatMcpToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? (error as { code: unknown }).code
+      : undefined;
+  return typeof code === 'string' ? `Error [${code}]: ${message}` : `Error: ${message}`;
+}
+
 /**
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
@@ -171,13 +181,13 @@ export function createMCPServer(
           },
         ],
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         contents: [
           {
             uri,
             mimeType: 'text/plain',
-            text: `Error: ${err.message}`,
+            text: formatMcpToolError(err),
           },
         ],
       };
@@ -241,12 +251,11 @@ export function createMCPServer(
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [
           {
             type: 'text',
-            text: applyMcpMaxTokens(`Error: ${message}`, maxTokens),
+            text: applyMcpMaxTokens(formatMcpToolError(error), maxTokens),
           },
         ],
         isError: true,

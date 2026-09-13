@@ -222,6 +222,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -278,6 +279,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
+    tryFlushWAL: vi.fn(async () => true),
     loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
     deleteNodesForFile: vi.fn(async () => undefined),
     deleteNodesForFiles: vi.fn(async () => undefined),
@@ -568,6 +570,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -633,6 +636,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -701,6 +705,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -772,6 +777,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -843,6 +849,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteNodesForFiles: vi.fn(async () => undefined),
@@ -922,6 +929,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -995,6 +1003,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1113,6 +1122,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       // ≥1 cached row with a real-dims embedding: the harness default (empty
       // cache) would leave restoredEmbeddingCount at 0 and the recreation
       // gate shut — this test would then assert nothing.
@@ -1266,6 +1276,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1551,6 +1562,7 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({
         embeddingNodeIds: new Set<string>(),
         embeddings: [],

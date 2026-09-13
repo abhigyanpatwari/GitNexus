@@ -380,12 +380,6 @@ export function diagnoseExtensionLoad(
     return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };
   }
   if (fileState === 'valid') {
-    if (versions?.expected && versions.found && versions.expected !== versions.found) {
-      return {
-        kind: 'version_skew',
-        remedy: versionSkewRemedy(label, versions.expected, versions.found),
-      };
-    }
     // The structural probe only inspects the first BINARY_HEADER_BYTES, so a file
     // truncated AFTER its header still reads 'valid'. When the loader itself reported
     // corruption (e.g. "file too short" / Windows error 193 "not a valid Win32
@@ -395,6 +389,12 @@ export function diagnoseExtensionLoad(
     // corrupt_file), so they still fall through to the dependency remedy below.
     if (stringResult.kind === 'corrupt_file') {
       return stringResult;
+    }
+    if (versions?.expected && versions.found && versions.expected !== versions.found) {
+      return {
+        kind: 'version_skew',
+        remedy: versionSkewRemedy(label, versions.expected, versions.found),
+      };
     }
     // A structurally sound binary that still failed to load ⇒ a dependency/runtime
     // problem, decided WITHOUT the localized tail. Keep the string classifier's

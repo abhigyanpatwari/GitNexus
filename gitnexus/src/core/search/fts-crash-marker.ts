@@ -3,8 +3,9 @@
  *
  * A native abort during CREATE_FTS_INDEX kills the process before JS can
  * persist a skip reason. The next run infers `native-abort` from this phase
- * value. Tests induce the flag through saveMeta — they cannot be a green
- * real-abort of analyze.
+ * value, or from a persisted `capabilities.fts.skipReason` of `native-abort`
+ * after recovery clears the dirty flag. Tests induce the flag through
+ * saveMeta — they cannot be a green real-abort of analyze.
  */
 import type { RepoMeta } from '../../storage/repo-meta.js';
 
@@ -29,14 +30,19 @@ export const isFtsDirtyPhase = (
 ): dirty is IncrementalDirtyState & { phase: typeof FTS_DIRTY_PHASE } =>
   dirty?.phase === FTS_DIRTY_PHASE;
 
-/** Half-written graph still blocks `--repair-fts`. An FTS-phase crash does not. */
+/**
+ * Half-written graph, or FTS-phase without a successful checkpoint, blocks
+ * `--repair-fts`. FTS-phase + `checkpointSucceeded === true` is admitted
+ * (in-place or staging). Staging still must not park.
+ */
 export const shouldRefuseRepairFtsWhileDirty = (
   dirty: RepoMeta['incrementalInProgress'] | undefined,
-): boolean => dirty != null && !isFtsDirtyPhase(dirty);
+): boolean => dirty != null && (!isFtsDirtyPhase(dirty) || dirty.checkpointSucceeded !== true);
 
 export const inferNativeAbortSkip = (
   dirty: RepoMeta['incrementalInProgress'] | undefined,
-): boolean => isFtsDirtyPhase(dirty);
+  skipReason?: string,
+): boolean => isFtsDirtyPhase(dirty) || skipReason === 'native-abort';
 
 /**
  * KTD5 conjunctive warrant for parking a live WAL: FTS phase, in-place

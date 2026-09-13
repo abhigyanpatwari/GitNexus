@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
+import { escapeCypherString } from '../../src/core/lbug/cypher-escape.js';
 import {
   ExtensionManager,
   getExtensionInstallChildProcessArgs,
@@ -503,17 +504,41 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     expect(manager.getCapabilities()[0]?.reason).toContain('never');
   });
 
-  it('names an unsupported tuple and still tries the named load', async () => {
+  it('fails closed on an unsupported tuple without named LOAD or INSTALL', async () => {
     const vendorRoot = makeRoot();
     writeVendorArtifact(vendorRoot, 'linux-x64');
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
-    const manager = new ExtensionManager({ policy: 'load-only', warn: noopWarn });
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({
+      policy: 'load-only',
+      installExtension,
+      warn: noopWarn,
+    });
 
     await expect(
       manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'win32-arm64' }),
     ).resolves.toBe(false);
-    expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION fts']);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
     expect(manager.getCapabilities()[0]?.reason).toContain('win32-arm64');
+    expect(manager.getCapabilities()[0]?.reason).toContain('no packaged FTS artifact');
+    expect(manager.getCapabilities()[0]?.reason).not.toContain(vendorRoot);
+  });
+
+  it('does not INSTALL on an unsupported tuple under auto policy', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn();
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'win32-arm64' }),
+    ).resolves.toBe(false);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(manager.getCapabilities()[0]?.reason).toContain('win32-arm64');
+    expect(manager.getCapabilities()[0]?.reason).toContain('no packaged FTS artifact');
     expect(manager.getCapabilities()[0]?.reason).not.toContain(vendorRoot);
   });
 
@@ -558,7 +583,7 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     await expect(
       manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
     ).resolves.toBe(true);
-    expect(query.mock.calls[0][0]).toBe(`LOAD EXTENSION '${artifact.replace(/'/g, "\\'")}'`);
+    expect(query.mock.calls[0][0]).toBe(`LOAD EXTENSION '${escapeCypherString(artifact)}'`);
   });
 
   it('rejects a sibling directory that only shares the vendor prefix', async () => {

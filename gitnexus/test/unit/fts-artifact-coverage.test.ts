@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { load } from 'js-yaml';
+import { assertSafeArtifactDest } from '../../../.github/scripts/fetch-lbug-fts-artifacts.mjs';
 
 /**
  * Coverage for the FTS pairing gate `scripts/assert-publish-fts-coverage.cjs`.
@@ -50,6 +51,15 @@ describe('findPairingProblems (pure pairing core)', () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('0.18.4');
     expect(problems[0]).toContain('0.18.3');
+  });
+
+  it('fails when a caret prefix is stripped-equivalent but not an exact x.y.z pin', () => {
+    const problems = findPairingProblems({
+      installedCoreVersion: '^0.18.3',
+      manifestCoreVersion: '0.18.3',
+      manifestExtensionVersion: '0.18.1',
+    });
+    expect(problems.length).toBeGreaterThan(0);
   });
 });
 
@@ -169,6 +179,42 @@ describe('findArtifactProblems (U1 integrity gate)', () => {
       filename: FILENAME,
     });
     expect(problems.some((p) => p.includes('files no longer covers'))).toBe(true);
+  });
+
+  it('fails when tuples is empty even if files and checksums look fine', () => {
+    const problems = findArtifactProblems({
+      tuples: [],
+      unsupportedTuples: ['win32-arm64'],
+      filesField: ['vendor'],
+      checksumByRelPath: matchingChecksums,
+      artifactByTuple: presentArtifacts,
+      filename: FILENAME,
+    });
+    expect(problems.some((p) => p.includes('manifest.tuples is empty'))).toBe(true);
+  });
+});
+
+describe('assertSafeArtifactDest (fetch-script path allowlist)', () => {
+  const prebuildsDir = path.join(GITNEXUS_ROOT, 'vendor', 'lbug-fts', 'prebuilds');
+
+  it('rejects a path-escaping tuple', () => {
+    expect(() =>
+      assertSafeArtifactDest({
+        prebuildsDir,
+        tuple: '../evil',
+        filename: FILENAME,
+      }),
+    ).toThrow(/unsafe FTS artifact tuple/);
+  });
+
+  it('rejects a filename that is not a .lbug_extension', () => {
+    expect(() =>
+      assertSafeArtifactDest({
+        prebuildsDir,
+        tuple: 'linux-x64',
+        filename: 'not-an-extension',
+      }),
+    ).toThrow(/unsafe FTS artifact filename/);
   });
 });
 

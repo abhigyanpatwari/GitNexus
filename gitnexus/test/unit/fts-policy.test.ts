@@ -226,7 +226,11 @@ describe('FTS skip-reason members (U6)', () => {
   });
 
   it('names each skip reason instead of falling through to the network-install remedy', () => {
-    expect(formatAnalyzeFtsSkipSummary('native-abort')).toMatch(/aborted while building/);
+    const nativeAbort = formatAnalyzeFtsSkipSummary('native-abort');
+    expect(nativeAbort).toMatch(/aborted while building/);
+    expect(nativeAbort.replaceAll('gitnexus analyze --repair-fts', '')).not.toContain(
+      'gitnexus analyze',
+    );
     expect(formatAnalyzeFtsSkipSummary('tuple-missing')).toMatch(/no packaged FTS artifact/);
     expect(formatAnalyzeFtsSkipSummary('build-failed')).toMatch(/search index build failed/);
     expect(formatAnalyzeFtsSkipSummary('extension-unavailable')).toContain(

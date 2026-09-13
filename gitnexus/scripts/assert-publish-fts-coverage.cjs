@@ -16,17 +16,19 @@ const WIN32_ARM64 = 'win32-arm64';
  * Pure pairing core (exported for tests). Returns human-readable problem
  * strings; an empty array means the core↔extension pin is consistent.
  */
+const EXACT_CORE_PIN = /^\d+\.\d+\.\d+$/;
+
 function findPairingProblems({
   installedCoreVersion,
   manifestCoreVersion,
   manifestExtensionVersion,
 }) {
   const problems = [];
-  const installed = String(installedCoreVersion ?? '').replace(/^[^\d]*/, '');
-  const pinned = String(manifestCoreVersion ?? '').replace(/^[^\d]*/, '');
-  if (!installed || !pinned) {
+  const installed = String(installedCoreVersion ?? '');
+  const pinned = String(manifestCoreVersion ?? '');
+  if (!EXACT_CORE_PIN.test(installed) || !EXACT_CORE_PIN.test(pinned)) {
     problems.push(
-      `core pin missing: installed '${installedCoreVersion ?? ''}' vs manifest '${manifestCoreVersion ?? ''}'`,
+      `core pin must be exact x.y.z: installed '${installedCoreVersion ?? ''}' vs manifest '${manifestCoreVersion ?? ''}'`,
     );
     return problems;
   }
@@ -100,6 +102,9 @@ function findArtifactProblems({
 }) {
   const problems = [];
   const filenameSafe = filename || 'libfts.lbug_extension';
+  if (!tuples || tuples.length === 0) {
+    problems.push('manifest.tuples is empty — refusing to publish with 0 artifacts');
+  }
   if (!filesCoverFtsArtifacts(filesField)) {
     problems.push('package.json files no longer covers vendor/lbug-fts/prebuilds');
   }
@@ -158,7 +163,9 @@ function main() {
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   } catch (err) {
-    console.error(`[fts-pairing] Refusing to publish — cannot read ${manifestPath}: ${err.message}`);
+    console.error(
+      `[fts-pairing] Refusing to publish — cannot read ${manifestPath}: ${err.message}`,
+    );
     process.exit(1);
   }
 
@@ -175,7 +182,9 @@ function main() {
   const prebuildsDir = path.join(vendorDir, 'prebuilds');
   let checksumByRelPath = {};
   try {
-    checksumByRelPath = parseSha256Sums(fs.readFileSync(path.join(prebuildsDir, 'SHA256SUMS'), 'utf8'));
+    checksumByRelPath = parseSha256Sums(
+      fs.readFileSync(path.join(prebuildsDir, 'SHA256SUMS'), 'utf8'),
+    );
   } catch (err) {
     pairing.push(`cannot read SHA256SUMS: ${err.message}`);
   }
@@ -201,7 +210,7 @@ function main() {
   }
 
   console.log(
-    `[fts-pairing] OK — core ${installedCoreVersion.replace(/^[^\d]*/, '')} ↔ extension ${manifest.extensionVersion}; ` +
+    `[fts-pairing] OK — core ${installedCoreVersion} ↔ extension ${manifest.extensionVersion}; ` +
       `${tuples.length} artifacts.`,
   );
 }

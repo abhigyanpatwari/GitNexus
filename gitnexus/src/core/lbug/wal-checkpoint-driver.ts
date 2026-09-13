@@ -130,11 +130,13 @@ export const runCheckpointWithRetry = async (
  *
  * Honors the `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` opt-out so operators can
  * disable the manual path if it ever interacts badly with a future
- * Ladybug release.
+ * Ladybug release. Returns true when a CHECKPOINT ran, false when the
+ * opt-out skipped it.
  */
-export const checkpointOnce = async (): Promise<void> => {
-  if (!isManualCheckpointEnabled()) return;
+export const checkpointOnce = async (): Promise<boolean> => {
+  if (!isManualCheckpointEnabled()) return false;
   await runCheckpointWithRetry();
+  return true;
 };
 
 /** Default cadence (ms) for the periodic driver. */

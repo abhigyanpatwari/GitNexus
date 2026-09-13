@@ -106,7 +106,7 @@ const FTS_EXTENSION_UNAVAILABLE_MESSAGE =
 
 const FTS_NATIVE_ABORT_MESSAGE =
   'Warning: full-text/BM25 search is disabled — a previous analyze aborted while building the search indexes.\n' +
-  '  Rerun `gitnexus analyze` or `gitnexus analyze --repair-fts` to recover. Run `gitnexus doctor` for details.';
+  '  Rerun `gitnexus analyze --repair-fts` to recover. Run `gitnexus doctor` for details.';
 
 const FTS_TUPLE_MISSING_MESSAGE =
   'Warning: full-text/BM25 search is disabled — no packaged FTS artifact is available for this platform.\n' +

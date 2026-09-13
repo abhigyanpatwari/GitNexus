@@ -305,7 +305,16 @@ export class ExtensionManager {
       } else if (isUnsupportedFtsTuple(tuple, vendorRoot)) {
         attempts.push({ source: 'vendored', tuple });
         lastError = `no packaged FTS artifact for ${tuple}`;
-        lastInspectPath = null;
+        this.markUnavailable(
+          name,
+          label,
+          this.composeReason(lastError, attempts),
+          warn,
+          quiet,
+          attempts,
+          null,
+        );
+        return false;
       }
     }
 

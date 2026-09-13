@@ -146,7 +146,7 @@ describe('FTS crash-marker policy (characterization)', () => {
     expect(isBoundaryCheckpointFatal('in-place')).toBe(false);
   });
 
-  it('admits --repair-fts only for the FTS phase', () => {
+  it('admits --repair-fts only for an FTS phase with a successful checkpoint', () => {
     expect(shouldRefuseRepairFtsWhileDirty(undefined)).toBe(false);
     expect(
       shouldRefuseRepairFtsWhileDirty({
@@ -161,6 +161,14 @@ describe('FTS crash-marker policy (characterization)', () => {
         toWriteCount: 0,
         phase: FTS_DIRTY_PHASE,
       }),
+    ).toBe(true);
+    expect(
+      shouldRefuseRepairFtsWhileDirty({
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: FTS_DIRTY_PHASE,
+        checkpointSucceeded: true,
+      }),
     ).toBe(false);
     expect(inferNativeAbortSkip({ startedAt: 1, toWriteCount: 0, phase: 'full-rebuild' })).toBe(
       false,
@@ -168,6 +176,15 @@ describe('FTS crash-marker policy (characterization)', () => {
     expect(inferNativeAbortSkip({ startedAt: 1, toWriteCount: 0, phase: FTS_DIRTY_PHASE })).toBe(
       true,
     );
+  });
+
+  it('infers native-abort from a persisted skipReason after the dirty flag is gone', () => {
+    expect(inferNativeAbortSkip(undefined, 'native-abort')).toBe(true);
+    expect(inferNativeAbortSkip(undefined, 'tuple-missing')).toBe(false);
+    expect(inferNativeAbortSkip(undefined, 'extension-unavailable')).toBe(false);
+    expect(inferNativeAbortSkip(undefined, 'build-failed')).toBe(false);
+    expect(inferNativeAbortSkip(undefined, 'disabled-by-flag')).toBe(false);
+    expect(inferNativeAbortSkip(undefined)).toBe(false);
   });
 
   it('warrants a live WAL park only for in-place FTS after a successful checkpoint', () => {
@@ -266,6 +283,7 @@ describe('runFullAnalysis FTS crash marker', () => {
     const sequence: string[] = [];
     const checkpointOnce = vi.fn(async () => {
       sequence.push('checkpoint');
+      return true;
     });
     let midBuild: RepoMeta | null = null;
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
@@ -476,6 +494,42 @@ describe('runFullAnalysis FTS crash marker', () => {
     }
   });
 
+  it('refuses --repair-fts for an FTS-phase crash without a successful checkpoint', async () => {
+    const initLbug = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      initLbug,
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-repair-refuse-nocheckpoint-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+        incrementalInProgress: {
+          startedAt: Date.now() - 60_000,
+          toWriteCount: 0,
+          phase: FTS_DIRTY_PHASE,
+          writePlan: 'in-place',
+          checkpointSucceeded: false,
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} }),
+      ).rejects.toThrow(/mid-incremental-recovery[\s\S]*gitnexus analyze/);
+      expect(initLbug).not.toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('still refuses --repair-fts for a half-written graph phase', async () => {
     const tmpRepo = await createTempDir('gitnexus-fts-crash-repair-refuse-');
     try {
@@ -553,6 +607,102 @@ describe('runFullAnalysis FTS crash marker', () => {
         status: 'unavailable',
         skipReason: 'native-abort',
       });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('skips CREATE from a persisted native-abort skipReason after the dirty flag is gone', async () => {
+    const buildSearchIndexesOrDegrade = vi.fn(async () => ({ ok: true }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      buildSearchIndexesOrDegrade,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-skipreason-persist-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'native-abort' },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(buildSearchIndexesOrDegrade).not.toHaveBeenCalled();
+      expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('native-abort');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('still creates FTS indexes when --repair-fts is rewritten by a retention mismatch', async () => {
+    const buildSearchIndexesOrDegrade = vi.fn(async () => ({ ok: true }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-repair-retention-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+        contentRetention: 'symbol',
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'native-abort' },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(buildSearchIndexesOrDegrade).toHaveBeenCalled();
+      expect(result.ftsSkipReason).not.toBe('native-abort');
     } finally {
       await tmpRepo.cleanup();
     }
@@ -868,6 +1018,9 @@ describe('runFullAnalysis FTS crash marker', () => {
       );
       const initOrder = initLbug.mock.invocationCallOrder[0] ?? 0;
       expect(initOrder).toBeGreaterThan(0);
+      const finalMeta = await loadMeta(storagePath);
+      expect(finalMeta?.incrementalInProgress).toBeUndefined();
+      expect(finalMeta?.capabilities?.fts).toMatchObject({ status: 'available' });
     } finally {
       await tmpRepo.cleanup();
     }

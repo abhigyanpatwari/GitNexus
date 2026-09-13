@@ -585,6 +585,12 @@ export const streamGraphNdjson = async (
   });
 };
 
+const httpErrorBody = (err: any, fallback: string): { error: string; code?: string } => {
+  const body: { error: string; code?: string } = { error: err.message || fallback };
+  if (typeof err?.code === 'string') body.code = err.code;
+  return body;
+};
+
 const statusFromError = (err: any): number => {
   // Validation helpers throw BadRequestError / ForbiddenError with a typed
   // .status field — honor it before falling back to message-string matching.
@@ -862,7 +868,7 @@ export const handleQueryRequest = async (
       res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
       return;
     }
-    res.status(500).json({ error: err.message || 'Query failed' });
+    res.status(500).json(httpErrorBody(err, 'Query failed'));
   }
 };
 
@@ -1358,17 +1364,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       if (err instanceof ClientDisconnectedError) {
         return;
       }
-      const message = err.message || 'Failed to build graph';
+      const body = httpErrorBody(err, 'Failed to build graph');
       if (res.headersSent) {
         try {
-          res.write(JSON.stringify({ type: 'error', error: message }) + '\n');
+          res.write(JSON.stringify({ type: 'error', ...body }) + '\n');
         } catch {
           // Best-effort only after streaming has started.
         }
         res.end();
         return;
       }
-      res.status(500).json({ error: message });
+      res.status(500).json(body);
     }
   });
 
@@ -1552,7 +1558,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.json(response);
     } catch (err: any) {
       if (sendStorageRequirementHttp(err, res)) return;
-      res.status(500).json({ error: err.message || 'Search failed' });
+      res.status(500).json(httpErrorBody(err, 'Search failed'));
     }
   });
 
@@ -1623,7 +1629,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
       if (sendStorageRequirementHttp(err, res)) return;
-      res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Grep failed'));
     }
   });
 
@@ -1633,7 +1639,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const result = await backend.queryProcesses(requestedRepo(req));
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query processes' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query processes'));
     }
   });
 
@@ -1653,9 +1659,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res
-        .status(statusFromError(err))
-        .json({ error: err.message || 'Failed to query process detail' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query process detail'));
     }
   });
 
@@ -1665,7 +1669,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const result = await backend.queryClusters(requestedRepo(req));
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query clusters' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query clusters'));
     }
   });
 
@@ -1685,9 +1689,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res
-        .status(statusFromError(err))
-        .json({ error: err.message || 'Failed to query cluster detail' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query cluster detail'));
     }
   });
 

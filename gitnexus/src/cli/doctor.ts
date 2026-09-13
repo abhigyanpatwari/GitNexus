@@ -26,7 +26,10 @@ import {
 } from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad, extractExtensionPath } from '../core/lbug/extension-load-error.js';
 import { resolveFtsVersionPair } from '../core/lbug/vendored-extension-path.js';
-import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
+import {
+  getExtensionInstallPolicy,
+  resolveAnalyzeInstallPolicy,
+} from '../core/lbug/extension-loader.js';
 import { updateEligibleInstallSync } from '../core/install-context.js';
 import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
@@ -312,14 +315,17 @@ export const doctorCommand = async () => {
   // Surface the optional-extension install policy so offline users can see
   // whether analyze/query will reach the network (extension.ladybugdb.com).
   // Literal label (like the 'native' line) to avoid adding i18n keys.
-  const installPolicy = getExtensionInstallPolicy();
-  const policyHint =
-    installPolicy === 'load-only'
+  const serveQueryPolicy = getExtensionInstallPolicy();
+  const analyzePolicy = resolveAnalyzeInstallPolicy();
+  const policyHint = (policy: string) =>
+    policy === 'load-only'
       ? ' (offline; load only, no network install)'
-      : installPolicy === 'never'
+      : policy === 'never'
         ? ' (optional extensions disabled)'
         : ' (installs missing extensions over network)';
-  console.log(`  ${padDisplayEnd('Ext install:', 18)}${installPolicy}${policyHint}`);
+  console.log(
+    `  ${padDisplayEnd('Ext install:', 18)}serve/query=${serveQueryPolicy}${policyHint(serveQueryPolicy)}; analyze=${analyzePolicy}${policyHint(analyzePolicy)}`,
+  );
   console.log(
     `  ${label('doctor.labels.exactScanLimit', 18)}${t('doctor.chunks', { count: capabilities.exactScanLimit })}`,
   );

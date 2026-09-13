@@ -133,6 +133,15 @@ describe('doctor FTS policy claims (U12)', () => {
     expect(output).toContain('suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never');
     expect(output).not.toMatch(/Full-text search:\s+unavailable/);
   });
+
+  it('prints both serve/query and analyze extension install policies', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/serve\/query=/);
+    expect(output).toMatch(/analyze=/);
+  });
 });
 
 describe('doctor embedding-runtime support status', () => {

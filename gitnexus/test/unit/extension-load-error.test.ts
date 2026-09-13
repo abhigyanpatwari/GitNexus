@@ -391,6 +391,20 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
     }
   });
 
+  it('a header-valid file the loader calls "file too short" stays corrupt_file even when versions also differ', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-valid-trunc-skew-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: file too short`;
+      expect(
+        diagnoseExtensionLoad(reason, 'FTS', file, { expected: '0.18.1', found: '0.17.0' }),
+      ).toMatchObject({ kind: 'corrupt_file' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a truncated artifact stays corrupt even when versions also differ', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ext-diag-trunc-skew-'));
     const file = join(dir, 'libfts.lbug_extension');
