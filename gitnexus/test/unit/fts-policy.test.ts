@@ -4,13 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FTS_DISABLED_MESSAGE,
+  FTS_SKIP_REASONS,
+  formatAnalyzeFtsSkipSummary,
   getFtsDisabledReason,
   isExplicitFtsDisablement,
   resolveFtsDisableReason,
   withExplicitFtsDisablement,
+  type FtsSkipReason,
 } from '../../src/core/search/fts-policy.js';
-import type { RepoMeta } from '../../src/storage/repo-meta.js';
-import { ftsDegradedWarning } from '../../src/core/search/fts-indexes.js';
+import type { PersistedFtsSkipReason, RepoMeta } from '../../src/storage/repo-meta.js';
+import { classifyFtsBuildError, ftsDegradedWarning } from '../../src/core/search/fts-indexes.js';
 import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
 import { hybridSearch } from '../../src/core/search/hybrid-search.js';
 import { extensionManager, resetExtensionState } from '../../src/core/lbug/extension-loader.js';
@@ -33,11 +36,19 @@ describe('explicit FTS opt-out', () => {
     expect(isExplicitFtsDisablement('disabled-by-flag')).toBe(true);
     expect(isExplicitFtsDisablement('disabled-by-env')).toBe(true);
     expect(isExplicitFtsDisablement('build-failed')).toBe(false);
+    expect(isExplicitFtsDisablement('native-abort')).toBe(false);
+    expect(isExplicitFtsDisablement('tuple-missing')).toBe(false);
   });
 
   it('does not infer intent from a failed or legacy index', () => {
     expect(getFtsDisabledReason(undefined)).toBeUndefined();
-    for (const skipReason of [undefined, 'build-failed', 'extension-unavailable'] as const) {
+    for (const skipReason of [
+      undefined,
+      'build-failed',
+      'extension-unavailable',
+      'native-abort',
+      'tuple-missing',
+    ] as const) {
       expect(
         getFtsDisabledReason({ provider: 'ladybugdb-fts', status: 'unavailable', skipReason }),
       ).toBeUndefined();
@@ -148,5 +159,81 @@ describe('explicit FTS opt-out', () => {
     });
     expect(semantic).toHaveBeenCalledWith(executeQuery, 'handler', 10);
     expect(executeQuery).not.toHaveBeenCalled();
+  });
+});
+
+describe('FTS skip-reason members (U6)', () => {
+  type SameSkipReason = FtsSkipReason extends PersistedFtsSkipReason
+    ? PersistedFtsSkipReason extends FtsSkipReason
+      ? true
+      : never
+    : never;
+  const _storageMirrorsCore: SameSkipReason = true;
+  void _storageMirrorsCore;
+
+  it('round-trips native-abort and tuple-missing through the capability stamp', () => {
+    const base = {
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      lastCommit: 'abc',
+      capabilities: {
+        graph: { provider: 'ladybugdb', status: 'available' as const },
+        fts: { provider: 'ladybugdb-fts', status: 'available' as const },
+        vectorSearch: {
+          provider: 'ladybugdb-vector',
+          status: 'vector-index' as const,
+          exactScanLimit: 10,
+        },
+      },
+    } as RepoMeta;
+
+    for (const reason of ['native-abort', 'tuple-missing'] as const) {
+      const stamped: RepoMeta = {
+        ...base,
+        capabilities: {
+          ...base.capabilities!,
+          fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: reason },
+        },
+      };
+      expect(stamped.capabilities?.fts?.skipReason).toBe(reason);
+      expect(isExplicitFtsDisablement(stamped.capabilities?.fts?.skipReason)).toBe(false);
+    }
+  });
+
+  it('lets the storage union accept every core-side member', () => {
+    for (const reason of FTS_SKIP_REASONS) {
+      const persisted: PersistedFtsSkipReason = reason;
+      const core: FtsSkipReason = persisted;
+      expect(core).toBe(reason);
+    }
+  });
+
+  it('keeps explicit disablement ahead of the new failure members', () => {
+    expect(resolveFtsDisableReason(true, '1')).toBe('disabled-by-flag');
+    expect(isExplicitFtsDisablement(resolveFtsDisableReason(true))).toBe(true);
+    expect(formatAnalyzeFtsSkipSummary('disabled-by-flag')).toBe(FTS_DISABLED_MESSAGE);
+    expect(formatAnalyzeFtsSkipSummary('native-abort')).not.toContain(
+      'GITNEXUS_LBUG_EXTENSION_INSTALL=auto',
+    );
+    expect(formatAnalyzeFtsSkipSummary('tuple-missing')).not.toContain(
+      'GITNEXUS_LBUG_EXTENSION_INSTALL=auto',
+    );
+  });
+
+  it('still classifies a message-bearing tokenizer failure as capability', () => {
+    expect(classifyFtsBuildError('Runtime exception: Failed calling LOWER: Invalid UTF-8.')).toBe(
+      'capability',
+    );
+  });
+
+  it('names each skip reason instead of falling through to the network-install remedy', () => {
+    expect(formatAnalyzeFtsSkipSummary('native-abort')).toMatch(/aborted while building/);
+    expect(formatAnalyzeFtsSkipSummary('tuple-missing')).toMatch(/no packaged FTS artifact/);
+    expect(formatAnalyzeFtsSkipSummary('build-failed')).toMatch(/search index build failed/);
+    expect(formatAnalyzeFtsSkipSummary('extension-unavailable')).toContain(
+      'GITNEXUS_LBUG_EXTENSION_INSTALL=auto',
+    );
+    expect(formatAnalyzeFtsSkipSummary(undefined)).toContain(
+      'GITNEXUS_LBUG_EXTENSION_INSTALL=auto',
+    );
   });
 });

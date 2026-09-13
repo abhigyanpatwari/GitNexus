@@ -86,6 +86,18 @@ export interface AnalyzerRunnerIdentity {
   };
 }
 
+/**
+ * Hand-mirrored `FtsSkipReason` from core/search/fts-policy.ts so storage
+ * takes no core import. Change both declarations together.
+ */
+export type PersistedFtsSkipReason =
+  | 'extension-unavailable'
+  | 'build-failed'
+  | 'disabled-by-flag'
+  | 'disabled-by-env'
+  | 'native-abort'
+  | 'tuple-missing';
+
 export interface RepoMeta {
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
@@ -184,17 +196,19 @@ export interface RepoMeta {
        *    `--repair-fts` or a content change addresses it.
        *  - `disabled-by-flag` / `disabled-by-env` — deliberate opt-out.
        *    A later analyze without the opt-out rebuilds FTS at the same commit.
+       *  - `native-abort` — inferred on the next run from an FTS-phase dirty
+       *    flag after the previous process died in the native FTS build.
+       *  - `tuple-missing` — no packaged artifact for this platform tuple.
+       *    The tuple itself is not persisted (closed enum; live messages name it).
        *
        * Collapsing both into `status: 'unavailable'` is exactly what made that
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       * No schema version: meta reads are unchecked casts; an older binary
+       * seeing a new member gets undefined (cause unknown).
        */
-      skipReason?:
-        | 'extension-unavailable'
-        | 'build-failed'
-        | 'disabled-by-flag'
-        | 'disabled-by-env';
+      skipReason?: PersistedFtsSkipReason;
     };
     vectorSearch: {
       provider: string;

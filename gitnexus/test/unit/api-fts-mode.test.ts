@@ -182,6 +182,16 @@ const cases = [
     fts: { provider: 'ladybugdb-fts', status: 'degraded', skipReason: 'build-failed' },
     skip: false,
   },
+  {
+    name: 'native-abort',
+    fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'native-abort' },
+    skip: false,
+  },
+  {
+    name: 'tuple-missing',
+    fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'tuple-missing' },
+    skip: false,
+  },
 ] as const;
 
 describe('serve uses one metadata-derived FTS mode on every DB-open path', () => {

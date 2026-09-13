@@ -590,8 +590,10 @@ export interface AnalyzeResult {
    * `extension-unavailable` (the LadybugDB FTS extension could not load — the
    * offline-first case, remedied by installing it) vs `build-failed` (the
    * extension loaded but the index build/verify failed non-fatally — remedied by
-   * `--repair-fts`, not by installing the extension). Lets the CLI show the
-   * correct recovery hint instead of always blaming a missing extension.
+   * `--repair-fts`, not by installing the extension) vs `native-abort` (inferred
+   * on the next run from an FTS-phase crash) vs `tuple-missing` (no packaged
+   * artifact for this platform). Lets the CLI show the correct recovery hint
+   * instead of always blaming a missing extension.
    * `disabled-by-flag` and `disabled-by-env` record intentional opt-out;
    * neither calls for extension installation or repair.
    */
