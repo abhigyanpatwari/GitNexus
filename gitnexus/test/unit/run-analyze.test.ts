@@ -656,7 +656,9 @@ describe('run-analyze module', () => {
       // incremental write set is non-empty. A forced rebuild also heals.
       const skipWipe = recoveryLogs.find((message) => message.includes('skipping wipe'));
       if (skipWipe) {
-        expect(skipWipe).toMatch(/changed=[1-9]/);
+        // #2790 was changed=0/added=0/deleted=0 over the old graph. A write
+        // set with added files is a real incremental, not that bug.
+        expect(skipWipe).not.toMatch(/changed=0, added=0, deleted=0/);
       } else {
         expect(recoveryLogs).toContainEqual(
           expect.stringContaining('forcing full rebuild to restore a known-good index'),
