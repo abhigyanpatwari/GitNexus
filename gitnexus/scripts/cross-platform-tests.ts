@@ -85,6 +85,10 @@ const PLATFORM_LOGIC = [
   'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
+  // U7 arm B: Windows FTS names a vendor-neutral OpenSSL/VC++ prerequisite
+  // and must never recommend borrowing Git for Windows DLLs. The file's
+  // assertions are unconditional so a skip-only suite cannot stay green.
+  'test/integration/fts-windows-dependency.test.ts',
   // Global registry writes use the platform-specific index-lock backend
   // (Windows named pipe, Linux socket, or macOS file lock). This includes the
   // overlapping-registration regression from #2716 on every OS matrix.

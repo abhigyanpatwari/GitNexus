@@ -614,20 +614,17 @@ runtime dependencies Windows does not ship by default:
 
 1. **Microsoft Visual C++ 2015-2022 Redistributable (x64)** —
    <https://aka.ms/vs/17/release/vc_redist.x64.exe>
-2. **OpenSSL 3** — `libssl-3-x64.dll` and `libcrypto-3-x64.dll`, resolvable on `PATH`
+2. **OpenSSL 3** — install it as a system runtime so `libssl-3-x64.dll` and
+   `libcrypto-3-x64.dll` resolve without borrowing them from another application.
 
-The redistributable alone is **not** sufficient. If Git for Windows is installed you already have
-the OpenSSL DLLs — run `gitnexus` from **Git Bash**, or prepend the directory to `PATH` in the
-shell you use:
+The redistributable alone is **not** sufficient. Do not prepend a third-party
+application directory (including Git for Windows) to `PATH` to pick up those DLLs.
 
-```powershell
-$env:PATH = "C:\Program Files\Git\mingw64\bin;$env:PATH"
-gitnexus analyze --repair-fts
-```
-
-Without them the index is still built, but without search tables, so `query` returns empty keyword
-results until you re-run `gitnexus analyze --repair-fts` from a shell where the DLLs resolve
-([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669)).
+Without both runtimes the index is still built, but without search tables, so
+`query` returns empty keyword results until you install the prerequisites and
+re-run `gitnexus analyze --repair-fts`
+([#2669](https://github.com/abhigyanpatwari/GitNexus/issues/2669),
+[#3218](https://github.com/abhigyanpatwari/GitNexus/issues/3218)).
 
 ### Installation fails with native module errors
 
