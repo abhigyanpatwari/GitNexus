@@ -89,6 +89,12 @@ const PLATFORM_LOGIC = [
   // and must never recommend borrowing Git for Windows DLLs. The file's
   // assertions are unconditional so a skip-only suite cannot stay green.
   'test/integration/fts-windows-dependency.test.ts',
+  // Remedy-text suites: discoverability only. They pass explicit platform
+  // strings into pure classifiers and drive mocked rejections with hardcoded
+  // literals, so they assert identically on every runner. Registering them
+  // here does not claim Windows-specific behavioral coverage.
+  'test/unit/extension-load-error.test.ts',
+  'test/unit/fts-degraded-warning.test.ts',
   // Global registry writes use the platform-specific index-lock backend
   // (Windows named pipe, Linux socket, or macOS file lock). This includes the
   // overlapping-registration regression from #2716 on every OS matrix.
@@ -212,6 +218,7 @@ const SPAWN_CLI = [
   // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
   // run on the Windows/macOS matrix, not just the Ubuntu full suite.
   'test/integration/fts-extension-e2e.test.ts',
+  'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   loadMeta: vi.fn(),
@@ -73,6 +73,7 @@ vi.mock('../../src/server/analyze-job.js', () => ({
 
 import { createServer } from '../../src/server/api.js';
 import { FTS_DISABLED_MESSAGE } from '../../src/core/search/fts-policy.js';
+import { extensionManager, resetExtensionState } from '../../src/core/lbug/extension-loader.js';
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fts-mode-fixture-'));
 const entry = {
@@ -259,6 +260,31 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
       expect(mocks.loadMeta).toHaveBeenCalledExactlyOnceWith(entry.storagePath);
     },
   );
+});
+
+describe('GET /api/search FTS warning redaction', () => {
+  afterEach(() => {
+    resetExtensionState();
+  });
+
+  it('redacts a space-containing vendor path from the HTTP response body', async () => {
+    const spaced = '/tmp/fts vendor/lbug-fts/prebuilds/linux-x64/libfts.lbug_extension';
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed to load library '${spaced}': invalid ELF header`)),
+      'fts',
+      'FTS',
+      { policy: 'load-only', vendorRoot: '/tmp/empty-vendor-root' },
+    );
+    mocks.loadMeta.mockResolvedValue({
+      capabilities: { fts: { provider: 'ladybugdb-fts', status: 'available' } },
+    });
+    mocks.search.mockResolvedValue({ results: [], ftsAvailable: false });
+    const response = await invoke('/api/search');
+    expect(String(response.body.warning)).toContain('invalid ELF header');
+    expect(String(response.body.warning)).not.toMatch(/fts vendor|\/tmp\/|C:\\Users\\/);
+  });
 });
 
 describe('GET /api/repos catalog validation', () => {
