@@ -11,6 +11,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const WIN32_ARM64 = 'win32-arm64';
+const SAFE_FILENAME = /^[\w.-]+\.lbug_extension$/;
 const REQUIRED_SUPPORTED_TUPLES = [
   'linux-x64',
   'linux-arm64',
@@ -109,6 +110,9 @@ function findArtifactProblems({
 }) {
   const problems = [];
   const filenameSafe = filename || 'libfts.lbug_extension';
+  if (!SAFE_FILENAME.test(filenameSafe)) {
+    problems.push(`invalid FTS artifact filename: ${filenameSafe}`);
+  }
   const listed = new Set(tuples || []);
   for (const required of REQUIRED_SUPPORTED_TUPLES) {
     if (!listed.has(required)) {

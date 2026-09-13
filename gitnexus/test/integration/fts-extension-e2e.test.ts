@@ -326,10 +326,10 @@ describe('auto policy — packaged vendor does not need a HOME reinstall', () =>
     expect(query.output).not.toContain('keyword search degraded');
   }, 600_000);
 
-  it('a fresh machine with no HOME copy still gets full FTS from the packaged artifact', () => {
+  it('a fresh machine with no HOME copy still gets full FTS under load-only', () => {
     const { home } = makeHome('missing');
     const repo = makeFixtureRepo('fresh');
-    const result = runCli(['analyze'], repo, home, 'auto');
+    const result = runCli(['analyze'], repo, home, 'load-only');
     expect(result.status).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');

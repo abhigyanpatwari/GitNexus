@@ -205,8 +205,9 @@ export interface RepoMeta {
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
-       * No schema version: meta reads are unchecked casts; an older binary
-       * seeing a new member gets undefined (cause unknown).
+       * No schema version: meta reads are unchecked casts. An older binary
+       * still sees the raw JSON string for an unknown member; it does not
+       * drop the field to `undefined` at parse time.
        */
       skipReason?: PersistedFtsSkipReason;
     };

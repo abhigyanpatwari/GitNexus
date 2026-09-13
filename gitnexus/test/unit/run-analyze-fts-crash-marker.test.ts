@@ -924,6 +924,9 @@ describe('runFullAnalysis FTS crash marker', () => {
   });
 
   it('leaves a staging FTS abort WAL on the live index', async () => {
+    // Defensive: production never stamps phase=fts on a staging plan
+    // (`shouldStampFtsDirtyPhase('staging')` is false). The park warrant
+    // must still refuse this combination if it appears on disk.
     const wipeLbugDbFiles = vi.fn(async () => undefined);
     const runPipelineFromRepo = vi.fn(async () => {
       throw new Error('pipeline must not run on staging FTS recover');

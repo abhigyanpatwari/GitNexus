@@ -83,7 +83,7 @@ describe('resolveFtsVersionPair', () => {
     mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
     writeFileSync(
       join(vendorRoot, 'lbug-fts', 'manifest.json'),
-      JSON.stringify({ extensionVersion: '0.18.1' }),
+      JSON.stringify({ coreVersion: '0.18.3', extensionVersion: '0.18.1' }),
     );
     expect(
       inferExtensionVersionFromPath(
@@ -95,7 +95,7 @@ describe('resolveFtsVersionPair', () => {
         'C:\\Users\\bob\\.lbdb\\extension\\0.17.0\\win_amd64\\fts\\libfts.lbug_extension',
         vendorRoot,
       ),
-    ).toEqual({ expected: '0.18.1', found: '0.17.0' });
+    ).toEqual({ expected: '0.18.3', found: '0.17.0' });
   });
 
   it('leaves found unset when a packaged lbug-fts path has no version segment', () => {
@@ -103,14 +103,14 @@ describe('resolveFtsVersionPair', () => {
     mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
     writeFileSync(
       join(vendorRoot, 'lbug-fts', 'manifest.json'),
-      JSON.stringify({ extensionVersion: '0.18.1' }),
+      JSON.stringify({ coreVersion: '0.18.3', extensionVersion: '0.18.1' }),
     );
     expect(
       resolveFtsVersionPair(
         join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64', 'libfts.lbug_extension'),
         vendorRoot,
       ),
-    ).toEqual({ expected: '0.18.1', found: undefined });
+    ).toEqual({ expected: '0.18.3', found: undefined });
   });
 });
 

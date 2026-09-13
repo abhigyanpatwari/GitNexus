@@ -2127,7 +2127,9 @@ async function runFullAnalysisInner(
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
           ...(ftsDisabledReason ? { ftsSkipped: true, ftsSkipReason: ftsDisabledReason } : {}),
-          ...(priorFtsNativeAbort ? { ftsSkipped: true, ftsSkipReason: 'native-abort' } : {}),
+          ...(!ftsDisabledReason && priorFtsNativeAbort
+            ? { ftsSkipped: true, ftsSkipReason: 'native-abort' }
+            : {}),
           isPrimaryBranch: !placement.branch,
         };
       }

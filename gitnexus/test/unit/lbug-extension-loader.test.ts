@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -602,6 +602,12 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
       JSON.stringify({ filename: 'libfts.lbug_extension' }),
     );
     mkdirSync(path.join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64'), { recursive: true });
+    // Candidate must exist so resolveVendoredFtsPath reaches realpath containment
+    // (a prefix-only leak would follow this symlink into vendor-evil).
+    symlinkSync(
+      path.join(evil, 'libfts.lbug_extension'),
+      path.join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64', 'libfts.lbug_extension'),
+    );
 
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
     const manager = new ExtensionManager({ policy: 'load-only', warn: noopWarn });

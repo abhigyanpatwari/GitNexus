@@ -109,7 +109,10 @@ export const resolveFtsVersionPair = (
   inspectPath?: string | null,
   vendorRoot?: string,
 ): { expected?: string; found?: string } => {
-  const expected = readFtsArtifactManifest(vendorRoot).extensionVersion;
+  // Ladybug's home path is `~/.lbdb/extension/<coreVersion>/…`. Compare that
+  // directory to the packaged core pin, not the (often different) artifact
+  // version, or a matching runtime looks skewed.
+  const expected = readFtsArtifactManifest(vendorRoot).coreVersion;
   const found = inferExtensionVersionFromPath(inspectPath);
   return { expected, found };
 };

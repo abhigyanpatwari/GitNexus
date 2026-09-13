@@ -1,4 +1,4 @@
-import type { RepoMeta } from '../../storage/repo-meta.js';
+import type { PersistedFtsSkipReason, RepoMeta } from '../../storage/repo-meta.js';
 
 export type FtsDisabledReason = 'disabled-by-flag' | 'disabled-by-env';
 
@@ -11,6 +11,14 @@ export type FtsFailureSkipReason =
   | 'tuple-missing';
 
 export type FtsSkipReason = FtsDisabledReason | FtsFailureSkipReason;
+
+type _FtsSkipReasonStorageParity = FtsSkipReason extends PersistedFtsSkipReason
+  ? PersistedFtsSkipReason extends FtsSkipReason
+    ? true
+    : never
+  : never;
+const _ftsSkipReasonStorageParity: _FtsSkipReasonStorageParity = true;
+void _ftsSkipReasonStorageParity;
 
 /** Runtime list for storage/core parity tests. Order is not significant. */
 export const FTS_SKIP_REASONS: readonly FtsSkipReason[] = [

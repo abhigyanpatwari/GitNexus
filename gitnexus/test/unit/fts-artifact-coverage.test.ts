@@ -196,6 +196,18 @@ describe('findArtifactProblems (U1 integrity gate)', () => {
     expect(problems.some((p) => p.includes('manifest.tuples is empty'))).toBe(true);
   });
 
+  it('fails when the manifest filename is not a .lbug_extension', () => {
+    const problems = findArtifactProblems({
+      tuples: [...TUPLES],
+      unsupportedTuples: ['win32-arm64'],
+      filesField: ['vendor'],
+      checksumByRelPath: matchingChecksums,
+      artifactByTuple: presentArtifacts,
+      filename: '../../manifest.json',
+    });
+    expect(problems.some((p) => p.includes('invalid FTS artifact filename'))).toBe(true);
+  });
+
   it('fails when a required supported tuple is omitted from the manifest list', () => {
     const problems = findArtifactProblems({
       tuples: TUPLES.filter((t) => t !== 'darwin-arm64'),

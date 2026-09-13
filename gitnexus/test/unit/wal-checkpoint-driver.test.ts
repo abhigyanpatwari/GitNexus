@@ -154,6 +154,7 @@ describe('checkpointOnce — opt-out', () => {
   });
 
   it('returns the flushed warrant, not a hardcoded success', async () => {
+    delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
     const flush = vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(false);
     await expect(checkpointOnce()).resolves.toBe(false);
     expect(flush).toHaveBeenCalled();
