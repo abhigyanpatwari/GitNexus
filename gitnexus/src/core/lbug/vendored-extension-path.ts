@@ -1,18 +1,16 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { VENDOR_ROOT } from '../vendor-root.js';
 
 /**
  * Resolve the packaged FTS extension for this process's Node platform tuple.
  *
  * Lives here (not in extension-loader) so the doctor startup probe can share
  * the same path without importing the loader, which statically pulls lbug-config.
- * U2 will attach descriptor-based LOAD to this resolver; U1 fills the prebuilds.
  */
 const DEFAULT_FILENAME = 'libfts.lbug_extension';
 
-export const defaultVendorRoot = (): string =>
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'vendor');
+export const defaultVendorRoot = (): string => VENDOR_ROOT;
 
 export const nodePlatformTuple = (
   platform: NodeJS.Platform = process.platform,
@@ -23,6 +21,7 @@ export interface FtsArtifactManifest {
   coreVersion?: string;
   extensionVersion?: string;
   filename?: string;
+  unsupportedTuples?: Array<{ tuple: string; reason?: string }>;
 }
 
 export const readFtsArtifactManifest = (
@@ -36,6 +35,38 @@ export const readFtsArtifactManifest = (
   }
 };
 
+export const isUnsupportedFtsTuple = (
+  tuple: string,
+  vendorRoot: string = defaultVendorRoot(),
+): boolean =>
+  (readFtsArtifactManifest(vendorRoot).unsupportedTuples ?? []).some(
+    (entry) => entry.tuple === tuple,
+  );
+
+/** Relative-path containment — not a prefix match (rejects `vendor-evil`). */
+export const isPathInsideRoot = (root: string, candidate: string): boolean => {
+  const relative = path.relative(root, candidate);
+  if (path.isAbsolute(relative)) return false;
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..';
+};
+
+export const validateVendoredExtensionPath = (
+  candidate: string,
+  vendorRoot: string,
+): string | null => {
+  let realFile: string;
+  let realRoot: string;
+  try {
+    realFile = realpathSync(candidate);
+    realRoot = realpathSync(vendorRoot);
+  } catch {
+    return null;
+  }
+  if (!/\.lbug_extension$/i.test(realFile)) return null;
+  if (!isPathInsideRoot(realRoot, realFile)) return null;
+  return realFile;
+};
+
 export const resolveVendoredFtsPath = (opts?: {
   tuple?: string;
   vendorRoot?: string;
@@ -46,5 +77,6 @@ export const resolveVendoredFtsPath = (opts?: {
   const filename =
     opts?.filename ?? readFtsArtifactManifest(vendorRoot).filename ?? DEFAULT_FILENAME;
   const candidate = path.resolve(vendorRoot, 'lbug-fts', 'prebuilds', tuple, filename);
-  return existsSync(candidate) ? candidate : null;
+  if (!existsSync(candidate)) return null;
+  return validateVendoredExtensionPath(candidate, vendorRoot);
 };

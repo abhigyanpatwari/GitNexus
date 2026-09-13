@@ -357,10 +357,11 @@ export function inspectExtensionBinary(
 export function diagnoseExtensionLoad(
   reason: string | undefined | null,
   label: string = 'FTS',
+  explicitPath?: string | null,
 ): ExtensionLoadDiagnosis {
   const text = reason ?? '';
   const stringResult = classifyExtensionLoadError(text, label);
-  const fileState = inspectExtensionBinary(extractExtensionPath(text));
+  const fileState = inspectExtensionBinary(explicitPath ?? extractExtensionPath(text));
 
   if (fileState === 'corrupt') {
     return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };

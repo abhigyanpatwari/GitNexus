@@ -1,8 +1,27 @@
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
 import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
-import { diagnoseExtensionLoad, type ExtensionLoadDiagnosis } from './extension-load-error.js';
+import { escapeCypherString } from './cypher-escape.js';
+import {
+  diagnoseExtensionLoad,
+  extractExtensionPath,
+  type ExtensionLoadDiagnosis,
+} from './extension-load-error.js';
+import {
+  defaultVendorRoot,
+  isUnsupportedFtsTuple,
+  nodePlatformTuple,
+  resolveVendoredFtsPath,
+} from './vendored-extension-path.js';
 import { logger } from '../logger.js';
+
+export type ExtensionAttemptSource = 'vendored' | 'named' | 'install';
+
+/** Structured load attempt — source and tuple labels only, never a path. */
+export interface ExtensionLoadAttempt {
+  source: ExtensionAttemptSource;
+  tuple?: string;
+}
 
 const DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS = 15_000;
 const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -37,6 +56,8 @@ export interface ExtensionCapability {
    * cached remedy instead of re-inspecting the extension file on every call (#2383 F3).
    */
   diagnosis?: ExtensionLoadDiagnosis;
+  /** What this ensure() tried, labels only (KTD7). */
+  attempts?: ExtensionLoadAttempt[];
 }
 
 /** Per-call overrides applied on top of `ExtensionManager` defaults. */
@@ -55,6 +76,10 @@ export interface ExtensionEnsureOptions {
    * degradation goes unreported.
    */
   quiet?: boolean;
+  /** Injected vendor tree for tests / e2e. Never an attacker-controlled env. */
+  vendorRoot?: string;
+  /** Injected Node platform tuple (`linux-x64`). Defaults to this process. */
+  platformTuple?: string;
 }
 
 export interface ExtensionManagerOptions {
@@ -244,28 +269,69 @@ export class ExtensionManager {
     const warn = this.options.warn ?? ((msg: string) => logger.warn(msg));
     const quiet = opts.quiet === true;
 
+    const attempts: ExtensionLoadAttempt[] = [];
+    let lastError: string | undefined;
+    let lastInspectPath: string | null = null;
+
     if (policy === 'never') {
-      this.markUnavailable(name, label, 'extension install policy is "never"', warn, quiet);
+      this.markUnavailable(
+        name,
+        label,
+        'extension install policy is "never"',
+        warn,
+        quiet,
+        attempts,
+        null,
+      );
       return false;
     }
 
+    if (name === 'fts') {
+      const tuple = opts.platformTuple ?? nodePlatformTuple();
+      const vendorRoot = opts.vendorRoot ?? defaultVendorRoot();
+      const vendored = resolveVendoredFtsPath({ vendorRoot, tuple });
+      if (vendored) {
+        attempts.push({ source: 'vendored', tuple });
+        const vendoredError = await this.tryLoadPath(query, vendored);
+        if (vendoredError === null) {
+          this.markLoaded(name, attempts);
+          return true;
+        }
+        lastError = vendoredError;
+        lastInspectPath = vendored;
+      } else if (isUnsupportedFtsTuple(tuple, vendorRoot)) {
+        attempts.push({ source: 'vendored', tuple });
+        lastError = `no packaged FTS artifact for ${tuple}`;
+        lastInspectPath = null;
+      }
+    }
+
+    attempts.push({ source: 'named' });
     const loadError = await this.tryLoad(query, name);
     if (loadError === null) {
-      this.markLoaded(name);
+      this.markLoaded(name, attempts);
       return true;
     }
+    lastError = loadError;
+    lastInspectPath = extractExtensionPath(loadError);
 
     if (policy === 'load-only') {
       this.markUnavailable(
         name,
         label,
-        `load-only policy (no install attempted); LOAD ${name} failed: ${loadError}`,
+        this.composeReason(
+          `load-only policy (no install attempted); LOAD ${name} failed: ${loadError}`,
+          attempts,
+        ),
         warn,
         quiet,
+        attempts,
+        lastInspectPath,
       );
       return false;
     }
 
+    attempts.push({ source: 'install' });
     let install = this.installAttempted.get(name);
     if (!install) {
       const installFn = this.options.installExtension ?? installDuckDbExtensionOutOfProcess;
@@ -279,25 +345,29 @@ export class ExtensionManager {
       this.markUnavailable(
         name,
         label,
-        `${install.message}; LOAD ${name} had failed: ${loadError}`,
+        this.composeReason(`${install.message}; LOAD ${name} had failed: ${loadError}`, attempts),
         warn,
         quiet,
+        attempts,
+        lastInspectPath,
       );
       return false;
     }
 
     const retryError = await this.tryLoad(query, name);
     if (retryError === null) {
-      this.markLoaded(name);
+      this.markLoaded(name, attempts);
       return true;
     }
 
     this.markUnavailable(
       name,
       label,
-      `LOAD ${name} failed after successful INSTALL: ${retryError}`,
+      this.composeReason(`LOAD ${name} failed after successful INSTALL: ${retryError}`, attempts),
       warn,
       quiet,
+      attempts,
+      extractExtensionPath(retryError),
     );
     return false;
   }
@@ -323,8 +393,36 @@ export class ExtensionManager {
     }
   }
 
-  private markLoaded(name: string): void {
-    this.capabilities.set(name, { name, loaded: true });
+  private async tryLoadPath(
+    query: (sql: string) => Promise<unknown>,
+    absPath: string,
+  ): Promise<string | null> {
+    try {
+      await query(`LOAD EXTENSION '${escapeCypherString(absPath)}'`);
+      return null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return alreadyAvailable(msg) ? null : oneLine(msg);
+    }
+  }
+
+  private composeReason(base: string, attempts: ExtensionLoadAttempt[]): string {
+    if (!attempts.some((attempt) => attempt.source === 'vendored')) return base;
+    const trail = attempts
+      .map((attempt) =>
+        attempt.source === 'vendored' ? `vendored ${attempt.tuple}` : attempt.source,
+      )
+      .join(', ');
+    return `${base} (attempts: ${trail})`;
+  }
+
+  private markLoaded(name: string, attempts: ExtensionLoadAttempt[] = []): void {
+    const record = attempts.some((attempt) => attempt.source === 'vendored') ? attempts : undefined;
+    this.capabilities.set(name, {
+      name,
+      loaded: true,
+      ...(record ? { attempts: record } : {}),
+    });
   }
 
   private markUnavailable(
@@ -333,14 +431,18 @@ export class ExtensionManager {
     reason: string,
     warn: (message: string) => void,
     quiet = false,
+    attempts: ExtensionLoadAttempt[] = [],
+    inspectPath: string | null = null,
   ): void {
     // Classify once here (the single load-failure sink, run per Database not per
     // request) so the hot per-request warning path does no file I/O (#2383 F3).
+    // Diagnose the LAST attempt's file, never a path scraped from concatenated text.
     this.capabilities.set(name, {
       name,
       loaded: false,
       reason,
-      diagnosis: diagnoseExtensionLoad(reason, label),
+      attempts,
+      diagnosis: diagnoseExtensionLoad(reason, label, inspectPath),
     });
     const message = `GitNexus: ${label} extension unavailable; continuing without ${label} features. ${reason}`;
     // A quiet probe must not register the dedup key: the owning caller may hit
