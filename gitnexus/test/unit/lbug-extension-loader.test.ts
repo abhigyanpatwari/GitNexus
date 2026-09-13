@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -471,7 +471,9 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     ).resolves.toBe(true);
 
     expect(query).toHaveBeenCalledTimes(1);
-    expect(query.mock.calls[0][0]).toBe(`LOAD EXTENSION '${artifact}'`);
+    expect(query.mock.calls[0][0]).toBe(
+      `LOAD EXTENSION '${escapeCypherString(realpathSync(artifact))}'`,
+    );
     expect(installExtension).not.toHaveBeenCalled();
     expect(JSON.stringify(manager.getCapabilities())).not.toContain(vendorRoot);
   });
@@ -583,7 +585,9 @@ describe('ExtensionManager — vendored-first FTS (U2)', () => {
     await expect(
       manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
     ).resolves.toBe(true);
-    expect(query.mock.calls[0][0]).toBe(`LOAD EXTENSION '${escapeCypherString(artifact)}'`);
+    expect(query.mock.calls[0][0]).toBe(
+      `LOAD EXTENSION '${escapeCypherString(realpathSync(artifact))}'`,
+    );
   });
 
   it('rejects a sibling directory that only shares the vendor prefix', async () => {

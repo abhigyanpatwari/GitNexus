@@ -271,7 +271,6 @@ export class ExtensionManager {
     const quiet = opts.quiet === true;
 
     const attempts: ExtensionLoadAttempt[] = [];
-    let lastError: string | undefined;
     let lastInspectPath: string | null = null;
     const versionsFor = (inspectPath: string | null) =>
       name === 'fts' ? resolveFtsVersionPair(inspectPath, opts.vendorRoot) : undefined;
@@ -300,15 +299,13 @@ export class ExtensionManager {
           this.markLoaded(name, attempts);
           return true;
         }
-        lastError = vendoredError;
         lastInspectPath = vendored;
       } else if (isUnsupportedFtsTuple(tuple, vendorRoot)) {
         attempts.push({ source: 'vendored', tuple });
-        lastError = `no packaged FTS artifact for ${tuple}`;
         this.markUnavailable(
           name,
           label,
-          this.composeReason(lastError, attempts),
+          this.composeReason(`no packaged FTS artifact for ${tuple}`, attempts),
           warn,
           quiet,
           attempts,
@@ -324,7 +321,6 @@ export class ExtensionManager {
       this.markLoaded(name, attempts);
       return true;
     }
-    lastError = loadError;
     lastInspectPath = extractExtensionPath(loadError);
 
     if (policy === 'load-only') {

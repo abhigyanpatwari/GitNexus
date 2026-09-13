@@ -24,6 +24,26 @@ export interface FtsArtifactManifest {
   unsupportedTuples?: Array<{ tuple: string; reason?: string }>;
 }
 
+const asOptionalString = (value: unknown): string | undefined =>
+  typeof value === 'string' && value.length > 0 ? value : undefined;
+
+/** Drop non-array / non-object entries so `.some(entry => entry.tuple)` cannot throw. */
+const asUnsupportedTuples = (value: unknown): FtsArtifactManifest['unsupportedTuples'] => {
+  if (!Array.isArray(value)) return undefined;
+  const entries: Array<{ tuple: string; reason?: string }> = [];
+  for (const entry of value) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const tuple = (entry as { tuple?: unknown }).tuple;
+    if (typeof tuple !== 'string' || tuple.length === 0) continue;
+    const reason = (entry as { reason?: unknown }).reason;
+    entries.push({
+      tuple,
+      ...(typeof reason === 'string' ? { reason } : {}),
+    });
+  }
+  return entries;
+};
+
 export const readFtsArtifactManifest = (
   vendorRoot: string = defaultVendorRoot(),
 ): FtsArtifactManifest => {
@@ -31,7 +51,13 @@ export const readFtsArtifactManifest = (
   try {
     const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
     if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as FtsArtifactManifest;
+      const rec = parsed as Record<string, unknown>;
+      return {
+        coreVersion: asOptionalString(rec.coreVersion),
+        extensionVersion: asOptionalString(rec.extensionVersion),
+        filename: asOptionalString(rec.filename),
+        unsupportedTuples: asUnsupportedTuples(rec.unsupportedTuples),
+      };
     }
     return {};
   } catch {

@@ -308,6 +308,7 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
       queryImporters: vi.fn(async () => []),
       queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
+      tryFlushWAL: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),

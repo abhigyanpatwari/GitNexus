@@ -1004,6 +1004,7 @@ describe('runFullAnalysis FTS crash marker', () => {
       await createPlaceholderGraphStore(lbugPath);
       await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
 
+      const renameSpy = vi.spyOn(fs, 'rename');
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
         tmpRepo.dbPath,
@@ -1018,10 +1019,16 @@ describe('runFullAnalysis FTS crash marker', () => {
       );
       const initOrder = initLbug.mock.invocationCallOrder[0] ?? 0;
       expect(initOrder).toBeGreaterThan(0);
+      const parkIdx = renameSpy.mock.calls.findIndex(([, to]) =>
+        String(to).includes('.dirty-recovery'),
+      );
+      expect(parkIdx).toBeGreaterThanOrEqual(0);
+      expect(renameSpy.mock.invocationCallOrder[parkIdx] ?? 0).toBeLessThan(initOrder);
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.incrementalInProgress).toBeUndefined();
       expect(finalMeta?.capabilities?.fts).toMatchObject({ status: 'available' });
     } finally {
+      vi.restoreAllMocks();
       await tmpRepo.cleanup();
     }
   });

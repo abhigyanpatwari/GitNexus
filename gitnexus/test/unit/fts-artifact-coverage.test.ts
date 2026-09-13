@@ -6,7 +6,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { load } from 'js-yaml';
-import { assertSafeArtifactDest } from '../../../.github/scripts/fetch-lbug-fts-artifacts.mjs';
+import {
+  assertSafeArtifactDest,
+  officialArtifactUrl,
+} from '../../../.github/scripts/fetch-lbug-fts-artifacts.mjs';
 
 /**
  * Coverage for the FTS pairing gate `scripts/assert-publish-fts-coverage.cjs`.
@@ -192,6 +195,18 @@ describe('findArtifactProblems (U1 integrity gate)', () => {
     });
     expect(problems.some((p) => p.includes('manifest.tuples is empty'))).toBe(true);
   });
+
+  it('fails when a required supported tuple is omitted from the manifest list', () => {
+    const problems = findArtifactProblems({
+      tuples: TUPLES.filter((t) => t !== 'darwin-arm64'),
+      unsupportedTuples: ['win32-arm64'],
+      filesField: ['vendor'],
+      checksumByRelPath: matchingChecksums,
+      artifactByTuple: presentArtifacts,
+      filename: FILENAME,
+    });
+    expect(problems.some((p) => p.includes('missing required darwin-arm64'))).toBe(true);
+  });
 });
 
 describe('assertSafeArtifactDest (fetch-script path allowlist)', () => {
@@ -215,6 +230,26 @@ describe('assertSafeArtifactDest (fetch-script path allowlist)', () => {
         filename: 'not-an-extension',
       }),
     ).toThrow(/unsafe FTS artifact filename/);
+  });
+});
+
+describe('officialArtifactUrl (fetch-script origin pin)', () => {
+  const valid = {
+    officialRepo: 'https://extension.ladybugdb.com/',
+    extensionVersion: '0.18.1',
+    filename: FILENAME,
+  };
+
+  it('builds a URL only for the official host and allowlisted path segments', () => {
+    expect(officialArtifactUrl(valid, 'linux_amd64')).toBe(
+      `https://extension.ladybugdb.com/v0.18.1/linux_amd64/fts/${FILENAME}`,
+    );
+  });
+
+  it('refuses a redirected officialRepo', () => {
+    expect(() =>
+      officialArtifactUrl({ ...valid, officialRepo: 'https://evil.example/' }, 'linux_amd64'),
+    ).toThrow(/unofficial FTS repo/);
   });
 });
 

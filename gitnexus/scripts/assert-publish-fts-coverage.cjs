@@ -11,6 +11,13 @@ const path = require('path');
 const crypto = require('crypto');
 
 const WIN32_ARM64 = 'win32-arm64';
+const REQUIRED_SUPPORTED_TUPLES = [
+  'linux-x64',
+  'linux-arm64',
+  'darwin-x64',
+  'darwin-arm64',
+  'win32-x64',
+];
 
 /**
  * Pure pairing core (exported for tests). Returns human-readable problem
@@ -102,6 +109,12 @@ function findArtifactProblems({
 }) {
   const problems = [];
   const filenameSafe = filename || 'libfts.lbug_extension';
+  const listed = new Set(tuples || []);
+  for (const required of REQUIRED_SUPPORTED_TUPLES) {
+    if (!listed.has(required)) {
+      problems.push(`manifest.tuples is missing required ${required}`);
+    }
+  }
   if (!tuples || tuples.length === 0) {
     problems.push('manifest.tuples is empty — refusing to publish with 0 artifacts');
   }

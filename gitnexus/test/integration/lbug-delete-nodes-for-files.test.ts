@@ -517,7 +517,10 @@ withTestLbugDB('embedding-row-dml-vector-gate', (handle) => {
       process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'load-only';
       await withUnreadableIndexCatalog(async (seen) => {
         await ensureFtsRowDmlSafe();
-        expect(seen.some((s) => /^\s*LOAD EXTENSION fts\b/i.test(s))).toBe(true);
+        const isFtsLoad = (sql: string): boolean =>
+          /^\s*LOAD\s+EXTENSION\b/i.test(sql) &&
+          (/\bfts\b/i.test(sql) || /libfts\.lbug_extension/i.test(sql));
+        expect(seen.some(isFtsLoad)).toBe(true);
         // …and it did not charge the caller a VECTOR load it never needed.
         expect(seen.some((s) => /^\s*LOAD EXTENSION vector\b/i.test(s))).toBe(false);
       });

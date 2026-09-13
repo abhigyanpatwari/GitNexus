@@ -9,6 +9,7 @@ import {
   readFtsArtifactManifest,
   resolveFtsVersionPair,
   resolveVendoredFtsPath,
+  isUnsupportedFtsTuple,
   validateVendoredExtensionPath,
 } from '../../src/core/lbug/vendored-extension-path.js';
 
@@ -119,5 +120,21 @@ describe('readFtsArtifactManifest', () => {
     mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
     writeFileSync(join(vendorRoot, 'lbug-fts', 'manifest.json'), contents);
     expect(readFtsArtifactManifest(vendorRoot)).toEqual({});
+  });
+
+  it('sanitizes a non-array unsupportedTuples so lookup does not throw', () => {
+    const vendorRoot = makeVendorRoot();
+    mkdirSync(join(vendorRoot, 'lbug-fts'), { recursive: true });
+    writeFileSync(
+      join(vendorRoot, 'lbug-fts', 'manifest.json'),
+      JSON.stringify({
+        coreVersion: 1,
+        filename: '',
+        unsupportedTuples: {},
+      }),
+    );
+    expect(readFtsArtifactManifest(vendorRoot)).toEqual({});
+    expect(() => isUnsupportedFtsTuple('linux-x64', vendorRoot)).not.toThrow();
+    expect(isUnsupportedFtsTuple('linux-x64', vendorRoot)).toBe(false);
   });
 });

@@ -204,7 +204,10 @@ describe('dropFTSIndex with the FTS extension unloaded (#2841)', () => {
       sql: string,
       ...rest: unknown[]
     ) {
-      if (/^\s*LOAD EXTENSION fts\b/i.test(sql)) {
+      if (
+        /^\s*LOAD\s+EXTENSION\b/i.test(sql) &&
+        (/\bfts\b/i.test(sql) || /libfts\.lbug_extension/i.test(sql))
+      ) {
         return Promise.reject(new Error(FORCED_LOAD_FAILURE));
       }
       return originalQuery.call(this, sql, ...rest);

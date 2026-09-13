@@ -152,6 +152,12 @@ describe('checkpointOnce — opt-out', () => {
     await expect(checkpointOnce()).resolves.toBe(false);
     expect(flush).not.toHaveBeenCalled();
   });
+
+  it('returns the flushed warrant, not a hardcoded success', async () => {
+    const flush = vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(false);
+    await expect(checkpointOnce()).resolves.toBe(false);
+    expect(flush).toHaveBeenCalled();
+  });
 });
 
 describe('startWalCheckpointDriver — lifecycle', () => {

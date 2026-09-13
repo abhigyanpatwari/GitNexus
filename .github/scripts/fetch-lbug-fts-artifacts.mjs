@@ -18,8 +18,34 @@ const VENDOR = path.join(REPO_ROOT, 'gitnexus', 'vendor', 'lbug-fts');
 const PREBUILDS = path.join(VENDOR, 'prebuilds');
 const MANIFEST_PATH = path.join(VENDOR, 'manifest.json');
 
-const artifactUrl = (manifest, upstreamPlatform) =>
-  `${manifest.officialRepo}v${manifest.extensionVersion}/${upstreamPlatform}/fts/${manifest.filename}`;
+/** Only the Ladybug official extension host — never a manifest-supplied origin. */
+const OFFICIAL_REPO = 'https://extension.ladybugdb.com/';
+const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
+const SAFE_UPSTREAM = /^(linux_amd64|linux_arm64|osx_amd64|osx_arm64|win_amd64)$/;
+
+/**
+ * Build the official artifact URL from allowlisted fields only.
+ * `officialRepo` in the manifest must match {@link OFFICIAL_REPO}; the
+ * origin itself is a constant so an edited manifest cannot redirect the fetch.
+ */
+export function officialArtifactUrl(manifest, upstreamPlatform) {
+  const officialRepo = String(manifest?.officialRepo ?? '');
+  if (officialRepo !== OFFICIAL_REPO) {
+    throw new Error(`refusing unofficial FTS repo: '${officialRepo}'`);
+  }
+  const version = String(manifest?.extensionVersion ?? '');
+  if (!EXACT_VERSION.test(version)) {
+    throw new Error(`unsafe extensionVersion: '${version}'`);
+  }
+  if (!SAFE_UPSTREAM.test(String(upstreamPlatform ?? ''))) {
+    throw new Error(`unsafe upstream platform: '${upstreamPlatform}'`);
+  }
+  const filename = String(manifest?.filename ?? '');
+  if (!SAFE_FILENAME.test(filename)) {
+    throw new Error(`unsafe FTS artifact filename: '${filename}'`);
+  }
+  return `${OFFICIAL_REPO}v${version}/${upstreamPlatform}/fts/${filename}`;
+}
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
@@ -57,12 +83,23 @@ export function assertSafeArtifactDest({ prebuildsDir, tuple, filename }) {
 }
 
 async function fetchBuffer(url) {
+  // codeql[js/request-forgery] — origin is OFFICIAL_REPO; path segments are allowlisted.
+  // lgtm[js/request-forgery]
+  // codeql[js/file-access-to-http] — versions/platforms are regex-pinned, not raw file bytes.
   const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
   if (!res.ok) {
     throw new Error(`GET ${url} → ${res.status} ${res.statusText}`);
   }
   return Buffer.from(await res.arrayBuffer());
 }
+
+const writeAllowlistedArtifact = (prebuildsDir, dest, buf) => {
+  if (!isPathInsideRoot(prebuildsDir, dest)) {
+    throw new Error(`FTS artifact dest is not inside prebuildsDir: ${dest}`);
+  }
+  // codeql[js/http-to-file-access] — dest is assertSafeArtifactDest + containment-checked.
+  writeFileSync(dest, buf);
+};
 
 export async function refreshArtifacts({
   manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')),
@@ -78,12 +115,12 @@ export async function refreshArtifacts({
       filename: manifest.filename,
     });
     mkdirSync(path.dirname(dest), { recursive: true });
-    const url = artifactUrl(manifest, upstreamPlatform);
+    const url = officialArtifactUrl(manifest, upstreamPlatform);
     const previousHash = readExistingHash(dest);
     const previousSize = previousHash ? readFileSync(dest).byteLength : 0;
     const buf = await download(url);
     const nextHash = sha256(buf);
-    writeFileSync(dest, buf);
+    writeAllowlistedArtifact(prebuildsDir, dest, buf);
     const changed = previousHash !== nextHash;
     console.log(
       changed

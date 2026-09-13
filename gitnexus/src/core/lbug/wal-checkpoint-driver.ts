@@ -130,13 +130,15 @@ export const runCheckpointWithRetry = async (
  *
  * Honors the `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` opt-out so operators can
  * disable the manual path if it ever interacts badly with a future
- * Ladybug release. Returns true when a CHECKPOINT ran, false when the
- * opt-out skipped it.
+ * Ladybug release. Returns true only when a CHECKPOINT actually flushed
+ * (`tryFlushWAL` → true). Opt-out and a no-op flush (no open connection)
+ * both return false so an FTS park warrant cannot treat a skipped
+ * checkpoint as success.
  */
 export const checkpointOnce = async (): Promise<boolean> => {
   if (!isManualCheckpointEnabled()) return false;
-  await runCheckpointWithRetry();
-  return true;
+  const { flushed } = await runCheckpointWithRetry();
+  return flushed;
 };
 
 /** Default cadence (ms) for the periodic driver. */
