@@ -1,19 +1,24 @@
 /**
  * Regression Tests: read-only DB error discriminator (#1224)
  *
- * The MCP query pool opens LadybugDB read-only. Defensive callers of
- * `ensureFTSIndex` from that pool used to spam stderr with five
- * "Cannot execute write operations in a read-only database" warnings
- * per query because the cache was invalidated each time. The fix:
- * `ensureFTSIndex` now treats the read-only error as a no-op and
- * caches the key — but to do that it relies on a precise discriminator
- * that does NOT swallow lock / busy / "already exists" errors.
+ * The MCP query pool opens LadybugDB read-only. A write there surfaces
+ * "Cannot execute write operations in a read-only database". The
+ * discriminator must stay precise so lock / busy / "already exists"
+ * errors are not swallowed.
  *
  * This file unit-tests the discriminator directly so future refactors
  * keep the contract.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { isReadOnlyDbError } from '../../src/core/lbug/lbug-adapter.js';
+
+const adapterSource = readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), '../../src/core/lbug/lbug-adapter.ts'),
+  'utf8',
+);
 
 describe('isReadOnlyDbError', () => {
   it('matches the canonical LadybugDB read-only message verbatim', () => {
@@ -69,7 +74,7 @@ describe('isReadOnlyDbError', () => {
     expect(isReadOnlyDbError(wrapped)).toBe(false);
   });
 
-  it('does NOT match unrelated errors that the ensure path must still surface', () => {
+  it('does NOT match unrelated errors that create/drop must still surface', () => {
     // Lock contention — handled separately by isDbBusyError; must not be
     // silenced by the read-only filter.
     expect(isReadOnlyDbError(new Error('Could not set lock on file'))).toBe(false);
@@ -79,5 +84,15 @@ describe('isReadOnlyDbError', () => {
     expect(isReadOnlyDbError(new Error('Table File does not exist'))).toBe(false);
     // Generic transient error.
     expect(isReadOnlyDbError(new Error('Connection refused'))).toBe(false);
+  });
+
+  it('has no production ensureFTSIndex residue (#1500)', () => {
+    expect(adapterSource).not.toContain('ensureFTSIndex');
+    expect(adapterSource).toContain('export const createFTSIndex');
+    const start = adapterSource.indexOf('export const createFTSIndex');
+    const nextExport = adapterSource.indexOf('\nexport const', start + 1);
+    const createBody = adapterSource.slice(start, nextExport);
+    expect(createBody).toContain("includes('already exists')");
+    expect(createBody).not.toContain('isReadOnlyDbError');
   });
 });
