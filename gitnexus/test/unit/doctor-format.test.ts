@@ -11,11 +11,20 @@ import {
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
 
-const nativeProbeState = vi.hoisted(() => ({ vectorLoaded: true }));
+const nativeProbeState = vi.hoisted(() => ({
+  vectorLoaded: true,
+  fts: { loaded: true } as {
+    loaded: boolean;
+    suppressed?: boolean;
+    reason?: string;
+  },
+}));
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({
   checkLbugNative: () => ({ ok: true, binaryPath: '/synthetic/lbugjs.node' }),
-  probeFtsExtensionLoad: async () => ({ loaded: true }),
+  ftsAvailabilityLabel: (probe: { loaded: boolean; suppressed?: boolean }) =>
+    probe.loaded ? 'available' : probe.suppressed ? 'suppressed' : 'unavailable',
+  probeFtsExtensionLoad: async () => nativeProbeState.fts,
   probeVectorExtensionLoad: async () =>
     nativeProbeState.vectorLoaded
       ? { loaded: true }
@@ -67,6 +76,7 @@ describe('doctor VECTOR capability claims', () => {
 
   afterEach(() => {
     nativeProbeState.vectorLoaded = true;
+    nativeProbeState.fts = { loaded: true };
     setCliLanguage(null);
     vi.restoreAllMocks();
     for (const key of ENV_KEYS) {
@@ -99,6 +109,29 @@ describe('doctor VECTOR capability claims', () => {
     expect(output).toContain('VECTOR 扩展：');
     expect(output).toContain('语义支持：');
     expect(output).toContain('支持向量索引（未检查仓库索引）');
+  });
+});
+
+describe('doctor FTS policy claims (U12)', () => {
+  afterEach(() => {
+    nativeProbeState.fts = { loaded: true };
+    setCliLanguage(null);
+    vi.restoreAllMocks();
+  });
+
+  it('reports suppressed-by-policy, not unavailable, when the probe is suppressed', async () => {
+    nativeProbeState.fts = {
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    };
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/Full-text search:\s+suppressed/);
+    expect(output).toContain('suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never');
+    expect(output).not.toMatch(/Full-text search:\s+unavailable/);
   });
 });
 

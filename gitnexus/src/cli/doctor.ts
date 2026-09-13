@@ -14,6 +14,7 @@ import {
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import {
   checkLbugNative,
+  ftsAvailabilityLabel,
   type NativeCheckResult,
   probeFtsExtensionLoad,
   probeVectorExtensionLoad,
@@ -258,9 +259,7 @@ export const doctorCommand = async () => {
   const ftsProbe = nativeCheck.ok
     ? await probeFtsExtensionLoad()
     : { loaded: false, reason: 'LadybugDB native module (lbugjs.node) failed to load' };
-  console.log(
-    `  ${label('doctor.labels.fullTextSearch', 18)}${ftsProbe.loaded ? 'available' : 'unavailable'}`,
-  );
+  console.log(`  ${label('doctor.labels.fullTextSearch', 18)}${ftsAvailabilityLabel(ftsProbe)}`);
   if (!ftsProbe.loaded && ftsProbe.reason) {
     console.log(`  ${padDisplayEnd('', 18)}${ftsProbe.reason}`);
     // Add an actionable remedy for recognized failure classes (#2374). The
@@ -268,7 +267,10 @@ export const doctorCommand = async () => {
     // ("specified module could not be found") is opaque, so name the fix (VC++
     // redist, then OpenSSL) instead of leaving the user to reinstall in vain.
     // `unknown`'s remedy is "run doctor", which would be circular here.
-    const { kind, remedy } = diagnoseExtensionLoad(ftsProbe.reason);
+    // Policy `never` is not a load failure — skip structural diagnosis.
+    const { kind, remedy } = ftsProbe.suppressed
+      ? { kind: 'unknown' as const, remedy: '' }
+      : diagnoseExtensionLoad(ftsProbe.reason);
     if (kind !== 'unknown') {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
