@@ -27,6 +27,7 @@ import fs from 'fs';
 import os from 'os';
 
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
+import { resolveVendoredFtsPath } from '../../src/core/lbug/vendored-extension-path.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
 
@@ -45,12 +46,24 @@ const makeTmpDir = (label: string): string => {
 };
 
 /**
- * Locate a known-good extension file for the running LadybugDB version.
- * Prefers a copy already installed under the machine's real home (pure file
- * read, offline); falls back to one real out-of-process install into a probe
- * home — the production installer script, not a reimplementation.
+ * Locate a known-good extension file for HOME-copy fixtures.
+ * Prefers the packaged vendor artifact (offline, no HOME/network), then a
+ * copy already installed under the machine's real home, then one real
+ * out-of-process install into a probe home.
  */
 const resolveSeedExtension = (): void => {
+  const packaged = resolveVendoredFtsPath();
+  if (packaged) {
+    extensionRelPath = path.join(
+      '.lbdb',
+      'extension',
+      'vendor-seed',
+      'fts',
+      path.basename(packaged),
+    );
+    seedExtensionFile = packaged;
+    return;
+  }
   const realExtensionRoot = path.join(os.homedir(), '.lbdb', 'extension');
   const installed = findInstalledFtsExtension(realExtensionRoot);
   if (installed) {
