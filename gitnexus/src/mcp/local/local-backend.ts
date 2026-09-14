@@ -9388,11 +9388,15 @@ export class LocalBackend {
 
   async disconnect(): Promise<void> {
     await closeLbug(); // close all connections
-    // Note: we intentionally do NOT call disposeEmbedder() here.
-    // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
-    // and importing the embedder module on Node v24+ crashes if onnxruntime
-    // was never loaded during the session. Since process.exit(0) follows
-    // immediately after disconnect(), the OS reclaims everything. See #38, #89.
+    // Reap the embedding sidecar. Do not run ONNX dispose in this process
+    // (native dispose can SIGSEGV). Sidecar-client import does not load ONNX.
+    const { reapEmbeddingSidecar } =
+      await import('../../core/embeddings/embedding-sidecar-client.js');
+    try {
+      reapEmbeddingSidecar();
+    } catch {
+      // Reap must not hide disconnect failures or delay process.exit.
+    }
     this.repos.clear();
     this.contextCache.clear();
     this.initializedRepos.clear();

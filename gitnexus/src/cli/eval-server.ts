@@ -859,6 +859,13 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     idleTimer = setTimeout(async () => {
       logger.info({ idleTimeoutSec }, 'GitNexus eval-server: idle timeout reached, shutting down');
       await backend.disconnect();
+      try {
+        const { reapEmbeddingSidecar } =
+          await import('../core/embeddings/embedding-sidecar-client.js');
+        reapEmbeddingSidecar();
+      } catch {
+        // Idle shutdown must still exit.
+      }
       process.exit(0);
     }, idleTimeoutSec * 1000);
   }
@@ -904,6 +911,13 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         res.end(JSON.stringify({ status: 'shutting_down' }));
         setTimeout(async () => {
           await backend.disconnect();
+          try {
+            const { reapEmbeddingSidecar } =
+              await import('../core/embeddings/embedding-sidecar-client.js');
+            reapEmbeddingSidecar();
+          } catch {
+            // Shutdown must still exit.
+          }
           server.close();
           process.exit(0);
         }, 100);
@@ -1066,6 +1080,13 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const shutdown = async () => {
     logger.info('GitNexus eval-server: shutting down...');
     await backend.disconnect();
+    try {
+      const { reapEmbeddingSidecar } =
+        await import('../core/embeddings/embedding-sidecar-client.js');
+      reapEmbeddingSidecar();
+    } catch {
+      // Shutdown must still exit.
+    }
     server.close();
     process.exit(0);
   };

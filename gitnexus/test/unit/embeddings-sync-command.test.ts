@@ -21,6 +21,10 @@ const {
   fetchExistingEmbeddingHashesMock,
   runEmbeddingPipelineMock,
   resolveEmbeddingIdentityMock,
+  installEmbeddingRuntimeMock,
+  resolveEmbeddingRuntimeMock,
+  isPrefixRuntimeLoadableMock,
+  reapEmbeddingSidecarMock,
 } = vi.hoisted(() => ({
   acquireIndexLockMock: vi.fn(),
   releaseMock: vi.fn(),
@@ -34,6 +38,10 @@ const {
   fetchExistingEmbeddingHashesMock: vi.fn(),
   runEmbeddingPipelineMock: vi.fn(),
   resolveEmbeddingIdentityMock: vi.fn(),
+  installEmbeddingRuntimeMock: vi.fn(),
+  resolveEmbeddingRuntimeMock: vi.fn(),
+  isPrefixRuntimeLoadableMock: vi.fn(),
+  reapEmbeddingSidecarMock: vi.fn(),
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -65,6 +73,17 @@ vi.mock('../../src/core/embeddings/embedding-pipeline.js', () => ({
 
 vi.mock('../../src/core/embeddings/embedding-identity.js', () => ({
   resolveEmbeddingIdentity: () => resolveEmbeddingIdentityMock(),
+}));
+
+vi.mock('../../src/core/embeddings/runtime-install.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-install.js')>()),
+  installEmbeddingRuntime: (...args: unknown[]) => installEmbeddingRuntimeMock(...args),
+  resolveEmbeddingRuntime: () => resolveEmbeddingRuntimeMock(),
+  isPrefixRuntimeLoadable: () => isPrefixRuntimeLoadableMock(),
+}));
+
+vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
+  reapEmbeddingSidecar: () => reapEmbeddingSidecarMock(),
 }));
 
 const IDENTITY = { model: 'test-model', dimensions: 768, provider: 'local' } as const;
@@ -126,6 +145,10 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
       failedNodeIds: [],
     });
     resolveEmbeddingIdentityMock.mockReset().mockReturnValue({ ...IDENTITY });
+    installEmbeddingRuntimeMock.mockReset().mockResolvedValue(undefined);
+    resolveEmbeddingRuntimeMock.mockReset().mockReturnValue({ source: 'package' });
+    isPrefixRuntimeLoadableMock.mockReset().mockReturnValue(true);
+    reapEmbeddingSidecarMock.mockReset();
   });
 
   afterEach(async () => {
@@ -352,6 +375,35 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
 
     await expect(run()).rejects.toThrow('pipeline boom');
     expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('keeps the pipeline error when sidecar reap also throws', async () => {
+    await store();
+    runEmbeddingPipelineMock.mockRejectedValue(new Error('pipeline boom'));
+    reapEmbeddingSidecarMock.mockImplementation(() => {
+      throw new Error('reap boom');
+    });
+
+    await expect(run()).rejects.toThrow('pipeline boom');
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it('auto-heals a missing stack without requesting CUDA binaries', async () => {
+    await store();
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+
+    await run();
+
+    expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installEmbeddingRuntimeMock.mock.calls[0]?.[0]).toEqual({});
+    expect(installEmbeddingRuntimeMock.mock.calls[0]?.[0]).not.toMatchObject({ cuda: true });
+  });
+
+  it('does not statically import the embedding pipeline', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../../src/cli/embeddings-sync.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(/^import .*embedding-pipeline/m);
+    expect(src).toContain("await import('../core/embeddings/embedding-pipeline.js')");
   });
 
   it('loads existing hashes without materializing cached vectors', async () => {

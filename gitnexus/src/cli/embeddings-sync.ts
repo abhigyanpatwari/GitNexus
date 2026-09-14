@@ -11,8 +11,6 @@ import {
   fetchExistingEmbeddingHashes,
   initLbug,
 } from '../core/lbug/lbug-adapter.js';
-import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { resolveEmbeddingIdentity } from '../core/embeddings/embedding-identity.js';
 import {
   decideEmbeddingResume,
   mintInterruptedCheckpoint,
@@ -27,6 +25,16 @@ import {
   measurePersistedEmbeddingCount,
   persistedEmbeddingCountOrUndefined,
 } from '../core/embedding-count.js';
+import { isHttpMode } from '../core/embeddings/http-client.js';
+import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+  getEmbeddingInstallTimeoutMs,
+  getEmbeddingRuntimeDir,
+  installEmbeddingRuntime,
+  isPrefixRuntimeLoadable,
+  resolveEmbeddingRuntime,
+} from '../core/embeddings/runtime-install.js';
+import { localEmbeddingPrefixUnloadableMessage } from '../core/embeddings/runtime-support.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -62,6 +70,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       );
     }
 
+    const { resolveEmbeddingIdentity } = await import('../core/embeddings/embedding-identity.js');
     const identity = resolveEmbeddingIdentity();
     let forceReembedNodeIds: ReadonlySet<string> | undefined;
     let resumedFrom: EmbeddingCheckpoint | undefined;
@@ -111,6 +120,26 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       );
     }
 
+    if (!isHttpMode()) {
+      const resolved = resolveEmbeddingRuntime();
+      if (
+        !isPrefixRuntimeLoadable() &&
+        (resolved === null || resolved.source === 'runtime-prefix')
+      ) {
+        throw new Error(localEmbeddingPrefixUnloadableMessage());
+      }
+      if (resolved === null) {
+        cliInfo(
+          `Local embedding runtime is not installed (optional packages were skipped at install time).`,
+        );
+        cliInfo(`Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …`);
+        await installEmbeddingRuntime(
+          {},
+          getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+        );
+      }
+    }
+
     await initLbug(lbugPath);
     try {
       const existing = await fetchExistingEmbeddingHashes(executeQuery);
@@ -139,6 +168,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       cliInfo(`Embedding ${repoPath}`);
       cliInfo(`Checkpointed nodes already present: ${existing?.size ?? 0}`);
 
+      const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
       const result = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -190,6 +220,13 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       cliInfo(`Embeddings ready: ${embeddings}`);
     } finally {
       await closeLbug().catch(() => {});
+      try {
+        const { reapEmbeddingSidecar } =
+          await import('../core/embeddings/embedding-sidecar-client.js');
+        reapEmbeddingSidecar();
+      } catch {
+        // Reap failure must not hide a pipeline error.
+      }
     }
   } finally {
     lock.release();

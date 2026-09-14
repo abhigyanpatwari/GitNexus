@@ -410,13 +410,14 @@ describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)'
     }
   });
 
-  it('MCP embedder installs the resolver hook on a successful local init', async () => {
+  it('MCP embedder does not install the resolver hook in the parent on local init', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/mcp/core/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
 
-      expect(resolverHookInstalled).toHaveBeenCalled();
+      expect(resolverHookInstalled).not.toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
     } finally {
       restore();
     }

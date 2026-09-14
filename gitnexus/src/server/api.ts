@@ -2329,6 +2329,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
+      try {
+        const { reapEmbeddingSidecar } =
+          await import('../core/embeddings/embedding-sidecar-client.js');
+        reapEmbeddingSidecar();
+      } catch {
+        // Shutdown must still exit; sidecar may already be gone.
+      }
       const { flushLoggerSync } = await import('../core/logger.js');
       flushLoggerSync();
       process.exit(0);

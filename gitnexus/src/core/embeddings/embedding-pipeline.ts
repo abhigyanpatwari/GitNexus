@@ -1010,6 +1010,14 @@ export const semanticSearch = async (
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
+  const tableCheck = await executeQuery(
+    `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
+  );
+  const count = tableCheck[0]?.cnt ?? tableCheck[0]?.[0] ?? 0;
+  if (!tableCheck.length || count === 0) {
+    return [];
+  }
+
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
   }
