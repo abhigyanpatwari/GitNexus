@@ -43,7 +43,7 @@ interface GrammarSource {
   /**
    * When true, this grammar may be disabled at runtime via
    * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
-   * (optionalDependencies / vendored — swift/dart/kotlin). Required dependencies
+   * (optionalDependencies / vendored — swift/dart/kotlin/lua). Required dependencies
    * routed through the optional machinery for ABI safety (e.g. C, which is
    * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
    * required parser is always an install/platform problem, never a user choice.

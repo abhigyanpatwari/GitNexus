@@ -46,11 +46,13 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
   });
 
   it('a comma list can name zig on its own', async () => {
+    const base = await freshLoader(undefined);
+    const luaBase = base.isLanguageAvailable(SupportedLanguages.Lua);
     const { isLanguageAvailable, isGrammarRuntimeSkipped } = await freshLoader('zig');
     expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
     expect(isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(true);
     expect(isGrammarRuntimeSkipped(SupportedLanguages.Swift)).toBe(false);
-    expect(isLanguageAvailable(SupportedLanguages.Lua)).toBe(false);
+    expect(isLanguageAvailable(SupportedLanguages.Lua)).toBe(luaBase);
   });
 
   it('skip=all/true/* also skip every optional grammar', async () => {
