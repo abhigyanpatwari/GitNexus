@@ -19,7 +19,9 @@ function releaseSubjectRegex(): string {
   const yaml = readFileSync(WORKFLOW, 'utf8');
   const match = yaml.match(/RELEASE_SUBJECT_RE='([^']+)'/);
   if (!match) {
-    throw new Error('RELEASE_SUBJECT_RE not found in publish.yml — did the rc-guard Decide step change?');
+    throw new Error(
+      'RELEASE_SUBJECT_RE not found in publish.yml — did the rc-guard Decide step change?',
+    );
   }
   return match[1];
 }
