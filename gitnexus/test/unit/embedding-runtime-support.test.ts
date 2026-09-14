@@ -39,6 +39,15 @@ vi.mock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
   isEffectiveCudaAvailable: () => false,
 }));
 
+vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
+  ensureEmbeddingSidecar: vi.fn(async () => ({ device: 'cpu' })),
+  getSidecarDevice: () => 'cpu',
+  reapEmbeddingSidecar: vi.fn(),
+  sidecarEmbedBatch: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
+  isEmbeddingSidecarReady: () => false,
+  isLocalEmbeddingsUnavailable: () => false,
+}));
+
 /**
  * Mock `module.registerHooks` with a spy (#2372). Without this, a successful
  * local `initEmbedder()` calls the REAL `ensureEmbeddingStackResolvable` /
@@ -386,20 +395,16 @@ describe('MCP embedQuery on darwin/x64', () => {
 });
 
 describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)', () => {
-  // Regression guard for the two local embedders drifting apart (gitnexus PR #2341
-  // follow-up): both `core/embeddings/embedder.ts` and `mcp/core/embedder.ts` must
-  // install the CUDA-build-matching redirect during a successful local init. (The
-  // source itself places the call before `await import('@huggingface/transformers')`
-  // — not re-asserted here via mock call-order, since the hoisted `@huggingface/
-  // transformers` mock's factory only fires once per file run for this external
-  // package, making a second per-test "called fresh" assertion on it unreliable.)
-  it('core embedder installs the resolver hook on a successful local init', async () => {
+  // Parent façade must not install CUDA / transformers hooks; the child local
+  // init and the MCP embedder (until U2) still do.
+  it('core embedder does not install the resolver hook in the parent on local init', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
 
-      expect(resolverHookInstalled).toHaveBeenCalled();
+      expect(resolverHookInstalled).not.toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
     } finally {
       restore();
     }
@@ -417,15 +422,12 @@ describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)'
     }
   });
 
-  it('registers the runtime-prefix fallback through the mocked registerHooks, not the real global API (#2372)', async () => {
-    // The whole point of the node:module mock: a successful local init exercises
-    // ensureEmbeddingStackResolvable's registration via the spy, so no real
-    // process-global resolution hook leaks into other tests in the worker.
+  it('does not register process-global resolution hooks in the parent on local init (#2372)', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
-      expect(registerHooksSpy).toHaveBeenCalled();
+      expect(registerHooksSpy).not.toHaveBeenCalled();
     } finally {
       restore();
     }

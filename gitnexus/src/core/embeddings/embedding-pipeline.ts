@@ -17,6 +17,7 @@ import {
   embeddingToArray,
   isEmbedderReady,
 } from './embedder.js';
+import { isHttpMode } from './http-client.js';
 import { generateEmbeddingText } from './text-generator.js';
 import { chunkNode, characterChunk } from './chunker.js';
 import { extractStructuralNames } from './structural-extractor.js';
@@ -560,7 +561,7 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 0,
     });
 
-    if (!isEmbedderReady()) {
+    if (!isHttpMode()) {
       await initEmbedder((modelProgress: ModelProgress) => {
         const downloadPercent = modelProgress.progress ?? 0;
         onProgress({
