@@ -87,6 +87,7 @@ describe('embedding sidecar client', () => {
       delete process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
     else process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS = originalSidecarTimeout;
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('strips GITNEXUS_EMBEDDING_URL and does not inherit stdout', async () => {
@@ -155,7 +156,6 @@ describe('embedding sidecar client', () => {
     const batch = await embedBatch(['hello']);
     expect(batch).toHaveLength(1);
     expect(forkMock).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
   });
 
   it('marks local embeddings unavailable on native abort and does not respawn', async () => {
