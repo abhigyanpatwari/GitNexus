@@ -23,7 +23,7 @@ import { resolveEmbeddingRuntime } from './runtime-install.js';
 import {
   ensureEmbeddingSidecar,
   getSidecarDevice,
-  reapEmbeddingSidecar,
+  reapEmbeddingSidecarAndWait,
   sidecarEmbedBatch,
 } from './embedding-sidecar-client.js';
 import type { EmbeddingSidecarDevice } from './embedding-sidecar-protocol.js';
@@ -142,5 +142,5 @@ export const embeddingToArray = (embedding: Float32Array): number[] => {
  * Reap the sidecar. Never runs ONNX dispose in this process.
  */
 export const disposeEmbedder = async (): Promise<void> => {
-  reapEmbeddingSidecar();
+  await reapEmbeddingSidecarAndWait();
 };

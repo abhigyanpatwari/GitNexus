@@ -163,7 +163,12 @@ describe('doctor embedding-runtime support status', () => {
       ['linux', 'x64'],
       ['win32', 'x64'],
     ] as Array<[NodeJS.Platform, NodeJS.Architecture]>) {
-      const { status, detail } = localEmbeddingDoctorStatus({ httpMode: false, platform, arch });
+      const { status, detail } = localEmbeddingDoctorStatus({
+        httpMode: false,
+        platform,
+        arch,
+        resolution: { source: 'package' },
+      });
       expect(status).toBe('✓ local embeddings supported');
       expect(detail).toBeNull();
     }

@@ -48,12 +48,6 @@ async function handle(msg: SidecarRequest): Promise<void> {
         });
         return;
       }
-      case 'dispose': {
-        // Exit the child; do not run ONNX dispose (it can SIGSEGV this process).
-        send({ id: msg.id, type: 'disposed' });
-        process.exit(0);
-        return;
-      }
     }
   } catch (err) {
     send({

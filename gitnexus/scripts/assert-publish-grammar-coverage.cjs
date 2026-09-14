@@ -75,11 +75,21 @@ function filesCoverGrammarPrebuilds(entries, grammarName) {
   );
 }
 
-function filesCoverGrammarBindings(entries) {
-  if (entries.includes('vendor')) return true;
+function filesCoverGrammarBindings(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/bindings/node/index.js')) {
+    return true;
+  }
   return (
-    entries.includes('vendor/**/bindings/node/index.js') ||
-    entries.some((n) => n.endsWith('/bindings/node/index.js'))
+    entries.includes(`vendor/${grammarName}/bindings/node/index.js`) ||
+    entries.includes(`vendor/${grammarName}`)
+  );
+}
+
+function filesCoverGrammarPackageJson(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/package.json')) return true;
+  return (
+    entries.includes(`vendor/${grammarName}/package.json`) ||
+    entries.includes(`vendor/${grammarName}`)
   );
 }
 
@@ -100,9 +110,14 @@ function findPackedFilesProblems({ filesField, grammarNames }) {
     if (!filesCoverGrammarPrebuilds(entries, name)) {
       problems.push(`${name}: package.json files does not cover vendor/${name}/prebuilds`);
     }
-  }
-  if (!filesCoverGrammarBindings(entries)) {
-    problems.push('package.json files does not cover vendor/**/bindings/node/index.js');
+    if (!filesCoverGrammarBindings(entries, name)) {
+      problems.push(
+        `${name}: package.json files does not cover vendor/${name}/bindings/node/index.js`,
+      );
+    }
+    if (!filesCoverGrammarPackageJson(entries, name)) {
+      problems.push(`${name}: package.json files does not cover vendor/${name}/package.json`);
+    }
   }
   if (!filesCoverLeiden(entries)) {
     problems.push('package.json files does not cover vendor/leiden/index.cjs and utils.cjs');
@@ -250,6 +265,7 @@ module.exports = {
   filesShipsVendorSource,
   filesCoverGrammarPrebuilds,
   filesCoverGrammarBindings,
+  filesCoverGrammarPackageJson,
   filesCoverLeiden,
   isBuildableFromSource,
   sourceBuildSet,

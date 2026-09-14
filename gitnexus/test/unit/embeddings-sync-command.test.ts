@@ -414,6 +414,17 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(installEmbeddingRuntimeMock.mock.calls[0]?.[0]).not.toMatchObject({ cuda: true });
   });
 
+  it('wraps a failed auto-install with the missing-stack recovery path', async () => {
+    await store();
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    installEmbeddingRuntimeMock.mockRejectedValue(new Error('npm install timed out'));
+
+    await expect(run()).rejects.toThrow(
+      /Could not install the embedding runtime[\s\S]*gitnexus embeddings install/,
+    );
+    expect(initLbugMock).not.toHaveBeenCalled();
+  });
+
   it('does not statically import the embedding pipeline', async () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(new URL('../../src/cli/embeddings-sync.ts', import.meta.url), 'utf8');

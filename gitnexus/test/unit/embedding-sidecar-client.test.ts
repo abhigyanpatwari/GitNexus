@@ -44,15 +44,13 @@ class FakeChild extends EventEmitter {
         vectors: msg.texts.map(() => [0.25, 0.5, 0.75]),
       };
     }
-    if (msg.type === 'dispose') {
-      return { id: msg.id, type: 'disposed' };
-    }
     return undefined;
   }
 }
 
 describe('embedding sidecar client', () => {
   const originalUrl = process.env.GITNEXUS_EMBEDDING_URL;
+  const originalModel = process.env.GITNEXUS_EMBEDDING_MODEL;
   const originalHfTimeout = process.env.HF_DOWNLOAD_TIMEOUT_MS;
   const originalHfAttempts = process.env.HF_MAX_ATTEMPTS;
   const originalSidecarTimeout = process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
@@ -79,6 +77,8 @@ describe('embedding sidecar client', () => {
     client._setForkForTests(null);
     if (originalUrl === undefined) delete process.env.GITNEXUS_EMBEDDING_URL;
     else process.env.GITNEXUS_EMBEDDING_URL = originalUrl;
+    if (originalModel === undefined) delete process.env.GITNEXUS_EMBEDDING_MODEL;
+    else process.env.GITNEXUS_EMBEDDING_MODEL = originalModel;
     if (originalHfTimeout === undefined) delete process.env.HF_DOWNLOAD_TIMEOUT_MS;
     else process.env.HF_DOWNLOAD_TIMEOUT_MS = originalHfTimeout;
     if (originalHfAttempts === undefined) delete process.env.HF_MAX_ATTEMPTS;
@@ -156,7 +156,6 @@ describe('embedding sidecar client', () => {
     expect(batch).toHaveLength(1);
     expect(forkMock).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
-    delete process.env.GITNEXUS_EMBEDDING_MODEL;
   });
 
   it('marks local embeddings unavailable on native abort and does not respawn', async () => {
@@ -242,11 +241,30 @@ describe('embedding sidecar client', () => {
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
     delete process.env.HF_DOWNLOAD_TIMEOUT_MS;
     delete process.env.HF_MAX_ATTEMPTS;
-    expect(sidecarInitTimeoutMs()).toBe(5 * 60 * 1_000 * 3);
+    // 3 attempts × 5 min plus 2s + 4s exponential backoff.
+    expect(sidecarInitTimeoutMs()).toBe(5 * 60 * 1_000 * 3 + 2_000 + 4_000);
     expect(sidecarInitTimeoutMs()).toBeGreaterThan(15_000);
 
     process.env.HF_DOWNLOAD_TIMEOUT_MS = '120000';
     process.env.HF_MAX_ATTEMPTS = '2';
-    expect(sidecarInitTimeoutMs()).toBe(240_000);
+    expect(sidecarInitTimeoutMs()).toBe(240_000 + 2_000);
+
+    process.env.HF_DOWNLOAD_TIMEOUT_MS = String(60 * 60 * 1_000);
+    process.env.HF_MAX_ATTEMPTS = '1';
+    expect(sidecarInitTimeoutMs()).toBe(30 * 60 * 1_000);
+  });
+
+  it('does not let a reaped child reset its replacement', async () => {
+    const { ensureEmbeddingSidecar, reapEmbeddingSidecar, sidecarEmbedBatch } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await ensureEmbeddingSidecar();
+    const first = children[0];
+    reapEmbeddingSidecar();
+    await ensureEmbeddingSidecar();
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    first.emit('error', new Error('late error from reaped child'));
+    first.emit('close', 1, null);
+    await expect(sidecarEmbedBatch(['still-alive'])).resolves.toHaveLength(1);
+    expect(forkMock).toHaveBeenCalledTimes(2);
   });
 });

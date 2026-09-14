@@ -65,6 +65,7 @@ describe('findPackedFilesProblems (files globs, not on-disk counts)', () => {
   const lean = [
     'vendor/**/prebuilds/**',
     'vendor/**/bindings/node/index.js',
+    'vendor/**/package.json',
     'vendor/leiden/index.cjs',
     'vendor/leiden/utils.cjs',
   ];
@@ -81,6 +82,34 @@ describe('findPackedFilesProblems (files globs, not on-disk counts)', () => {
     expect(problems.some((p: string) => p.includes('tree-sitter-kotlin'))).toBe(true);
     expect(problems.some((p: string) => p.includes('bindings/node/index.js'))).toBe(true);
     expect(problems.some((p: string) => p.includes('leiden'))).toBe(true);
+  });
+
+  it('fails when only one grammar binding is listed explicitly', () => {
+    const problems = findPackedFilesProblems({
+      filesField: [
+        'vendor/**/prebuilds/**',
+        'vendor/tree-sitter-c/bindings/node/index.js',
+        'vendor/**/package.json',
+        'vendor/leiden/index.cjs',
+        'vendor/leiden/utils.cjs',
+      ],
+      grammarNames: grammars,
+    });
+    expect(problems.some((p: string) => p.includes('tree-sitter-kotlin'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('bindings/node/index.js'))).toBe(true);
+  });
+
+  it('fails when per-grammar package.json is omitted', () => {
+    const problems = findPackedFilesProblems({
+      filesField: [
+        'vendor/**/prebuilds/**',
+        'vendor/**/bindings/node/index.js',
+        'vendor/leiden/index.cjs',
+        'vendor/leiden/utils.cjs',
+      ],
+      grammarNames: grammars,
+    });
+    expect(problems.some((p: string) => p.includes('package.json'))).toBe(true);
   });
 
   it('fails when Leiden entrypoints are dropped', () => {

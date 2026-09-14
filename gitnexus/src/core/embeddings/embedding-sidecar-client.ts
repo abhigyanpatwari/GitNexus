@@ -10,7 +10,13 @@ import { fork, type ChildProcess, type ForkOptions } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { HF_DOWNLOAD_TIMEOUT_MS, HF_MAX_ATTEMPTS, HF_MAX_ATTEMPTS_CAP } from './hf-env.js';
+import {
+  HF_BASE_DELAY_MS,
+  HF_DOWNLOAD_TIMEOUT_MS,
+  HF_MAX_ATTEMPTS,
+  HF_MAX_ATTEMPTS_CAP,
+  HF_MAX_TIMEOUT_MS,
+} from './hf-env.js';
 import {
   getLocalEmbeddingRuntimeBlocker,
   LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
@@ -92,13 +98,17 @@ const childEnv = (): NodeJS.ProcessEnv => {
 export const sidecarInitTimeoutMs = (): number => {
   const rawTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
   const perAttempt =
-    Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : HF_DOWNLOAD_TIMEOUT_MS;
+    Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(rawTimeout, HF_MAX_TIMEOUT_MS)
+      : HF_DOWNLOAD_TIMEOUT_MS;
   const rawAttempts = Number(process.env.HF_MAX_ATTEMPTS);
   const attempts =
     Number.isInteger(rawAttempts) && rawAttempts > 0
       ? Math.min(rawAttempts, HF_MAX_ATTEMPTS_CAP)
       : HF_MAX_ATTEMPTS;
-  return perAttempt * attempts;
+  // Child retries use exponential waits between attempts (HF_BASE_DELAY_MS * 2^i).
+  const backoffMs = attempts > 1 ? HF_BASE_DELAY_MS * (2 ** (attempts - 1) - 1) : 0;
+  return perAttempt * attempts + backoffMs;
 };
 
 export const sidecarEmbedTimeoutMs = (): number => {
@@ -161,12 +171,14 @@ const attachChild = (proc: ChildProcess): void => {
     waiter.resolve(msg);
   });
   proc.on('close', (code, signal) => {
+    if (child !== proc) return;
     noteChildDeath(signal);
     child = null;
     ready = false;
     rejectAll(new EmbeddingSidecarDeadError(code, signal));
   });
   proc.on('error', (err) => {
+    if (child !== proc) return;
     noteChildDeath(null);
     child = null;
     ready = false;
@@ -214,6 +226,24 @@ export const reapEmbeddingSidecar = (): void => {
   } catch {
     // already gone
   }
+};
+
+/** Reap and wait for the killed child's close/error so an awaited dispose is a real boundary. */
+export const reapEmbeddingSidecarAndWait = async (timeoutMs = 5_000): Promise<void> => {
+  const proc = child;
+  if (!proc) return;
+  const closed = new Promise<void>((resolve) => {
+    const finish = (): void => resolve();
+    proc.once('close', finish);
+    proc.once('error', finish);
+  });
+  reapEmbeddingSidecar();
+  await Promise.race([
+    closed,
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, timeoutMs);
+    }),
+  ]);
 };
 
 export const isEmbeddingSidecarReady = (): boolean => ready && child !== null;

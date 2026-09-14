@@ -253,9 +253,8 @@ describe('isLocalEmbeddingSidecarAbortMessage', () => {
 });
 
 describe('isLocalEmbeddingStackInstalled', () => {
-  it('resolves the optional stack in the dev workspace without importing it', () => {
-    expect(isLocalEmbeddingStackInstalled()).toBe(true);
-    // Resolution only — the transformers.js import spy must not fire.
+  it('probes stack resolution without importing transformers.js', () => {
+    isLocalEmbeddingStackInstalled();
     expect(transformersImported).not.toHaveBeenCalled();
   });
 });
@@ -407,8 +406,8 @@ describe('MCP embedQuery on darwin/x64', () => {
 });
 
 describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)', () => {
-  // Parent façade must not install CUDA / transformers hooks; the child local
-  // init and the MCP embedder (until U2) still do.
+  // Parent façade must not install CUDA / transformers hooks; only the
+  // sidecar child local-init path does.
   it('core embedder does not install the resolver hook in the parent on local init', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {

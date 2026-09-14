@@ -32,7 +32,10 @@ import {
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
-import { assessLocalEmbeddingRuntime } from '../core/embeddings/runtime-support.js';
+import {
+  assessLocalEmbeddingRuntime,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
 import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
@@ -127,10 +130,17 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       if (assessment.status === 'needs-install') {
         cliInfo(`Local embedding runtime is not installed.`);
         cliInfo(`Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …`);
-        await installEmbeddingRuntime(
-          {},
-          getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
-        );
+        try {
+          await installEmbeddingRuntime(
+            {},
+            getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+          );
+        } catch (err) {
+          throw new Error(
+            `Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+              localEmbeddingStackMissingMessage(),
+          );
+        }
       }
     }
 

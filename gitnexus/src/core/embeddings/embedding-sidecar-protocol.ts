@@ -16,8 +16,7 @@ export type SidecarRequest =
       embeddingConfig?: Partial<EmbeddingConfig>;
       forceDevice?: EmbeddingSidecarDevice;
     }
-  | { id: number; type: 'embed'; texts: string[] }
-  | { id: number; type: 'dispose' };
+  | { id: number; type: 'embed'; texts: string[] };
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
@@ -27,5 +26,4 @@ export type SidecarResponse =
   | { id: number; type: 'ready'; device: EmbeddingSidecarDevice }
   | { id: number; type: 'progress'; progress: number; status: ModelProgress['status'] }
   | { id: number; type: 'vectors'; vectors: number[][] }
-  | { id: number; type: 'error'; message: string }
-  | { id: number; type: 'disposed' };
+  | { id: number; type: 'error'; message: string };

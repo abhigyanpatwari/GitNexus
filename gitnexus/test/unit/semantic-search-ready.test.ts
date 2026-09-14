@@ -31,7 +31,6 @@ describe('semanticSearch ready-check (KTD11)', () => {
     embedTextMock.mockResolvedValue(new Float32Array(384));
     const executeQuery = vi.fn(async (cypher: string) => {
       if (cypher.includes('count(e) AS cnt')) return [{ cnt: 2 }];
-      if (cypher.includes('COUNT(*)')) return [{ cnt: 0 }];
       return [];
     });
 
