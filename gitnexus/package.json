@@ -35,8 +35,16 @@
     "hooks",
     "scripts",
     "skills",
-    "vendor",
-    "web"
+    "web",
+    "vendor/**/prebuilds/**",
+    "vendor/**/bindings/node/index.js",
+    "vendor/**/src/node-types.json",
+    "vendor/**/package.json",
+    "vendor/**/LICENSE",
+    "vendor/**/README.md",
+    "vendor/leiden/index.cjs",
+    "vendor/leiden/utils.cjs",
+    "vendor/lbug-fts/manifest.json"
   ],
   "scripts": {
     "build": "node scripts/build.js",

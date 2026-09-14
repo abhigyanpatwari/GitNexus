@@ -2,9 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { globSync } from 'glob';
 
 /**
  * Coverage for the publish guard `scripts/assert-publish-grammar-coverage.cjs`.
@@ -114,11 +115,81 @@ describe('findStrayBuildArtifacts (stray vendor build dirs that would ship + sha
   });
 });
 
-describe('real repo publish-safety (guards against premature files narrowing)', () => {
+describe('real repo publish-safety (lean files + 6/6 prebuilds)', () => {
+  const GITNEXUS_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+  const VENDORED = [
+    'tree-sitter-c',
+    'tree-sitter-dart',
+    'tree-sitter-kotlin',
+    'tree-sitter-objc',
+    'tree-sitter-proto',
+    'tree-sitter-swift',
+    'tree-sitter-zig',
+  ] as const;
+  const TUPLES = [
+    'linux-x64',
+    'linux-arm64',
+    'darwin-x64',
+    'darwin-arm64',
+    'win32-x64',
+    'win32-arm64',
+  ] as const;
+
+  const simulatePackedVendorFiles = (filesField: string[]): string[] => {
+    const packed = new Set<string>();
+    for (const pattern of filesField) {
+      const n = String(pattern).replace(/\\/g, '/');
+      if (!n.startsWith('vendor')) continue;
+      for (const match of globSync(n, { cwd: GITNEXUS_ROOT, nodir: true, dot: false })) {
+        packed.add(match.replace(/\\/g, '/'));
+      }
+    }
+    return [...packed];
+  };
+
   it('the script exits 0 against the committed repo state', () => {
     // Deterministic: reads package.json + walks vendor/ — no npm pack, fast.
     const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', timeout: 20_000 });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('[publish-guard] OK');
+    expect(r.stdout).toContain('prebuilds-only');
+  });
+
+  it('package.json files is lean: no bare vendor, no shipped parser.c, load files remain', () => {
+    const pkg = JSON.parse(readFileSync(path.join(GITNEXUS_ROOT, 'package.json'), 'utf8')) as {
+      files: string[];
+    };
+    expect(filesShipsVendorSource(pkg.files)).toBe(false);
+    expect(pkg.files).not.toContain('vendor');
+    expect(pkg.files).toContain('vendor/**/prebuilds/**');
+    expect(pkg.files).toContain('vendor/leiden/index.cjs');
+    expect(pkg.files).toContain('vendor/leiden/utils.cjs');
+    expect(pkg.files).toContain('vendor/lbug-fts/manifest.json');
+
+    const packed = simulatePackedVendorFiles(pkg.files);
+    expect(packed.some((p) => /vendor\/tree-sitter-[^/]+\/src\/parser\.c$/.test(p))).toBe(false);
+    expect(packed.some((p) => /vendor\/tree-sitter-[^/]+\/src\/scanner\.c$/.test(p))).toBe(false);
+    expect(packed.some((p) => p.endsWith('binding.gyp'))).toBe(false);
+
+    for (const name of VENDORED) {
+      expect(packed, name).toContain(`vendor/${name}/package.json`);
+      expect(packed, name).toContain(`vendor/${name}/bindings/node/index.js`);
+      expect(packed, name).toContain(`vendor/${name}/src/node-types.json`);
+      for (const tuple of TUPLES) {
+        expect(
+          packed.some(
+            (p) => p.startsWith(`vendor/${name}/prebuilds/${tuple}/`) && p.endsWith('.node'),
+          ),
+          `${name} ${tuple}`,
+        ).toBe(true);
+      }
+    }
+
+    expect(packed).toContain('vendor/leiden/index.cjs');
+    expect(packed).toContain('vendor/leiden/utils.cjs');
+    expect(packed).toContain('vendor/lbug-fts/manifest.json');
+    for (const tuple of ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'win32-x64']) {
+      expect(packed).toContain(`vendor/lbug-fts/prebuilds/${tuple}/libfts.lbug_extension`);
+    }
   });
 });

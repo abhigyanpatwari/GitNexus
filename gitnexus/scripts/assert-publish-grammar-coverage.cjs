@@ -2,20 +2,19 @@
 /**
  * Publish guard: every vendored tree-sitter grammar must ship a loadable binding.
  *
- * The npm tarball includes gitnexus/vendor/ (package.json `files`). A grammar is
- * "covered" on a platform-arch tuple if EITHER a prebuild ships for it OR the
- * grammar's full source-build set ships (so the install can source-build it,
- * toolchain permitting). A future lean publish — dropping the ~50 MB of generated
- * source to ship prebuilds only — is safe ONLY once every grammar has all six
- * prebuilds; doing it while any grammar still lacks a prebuild would ship a
- * grammar with NO loadable binding (neither prebuild nor buildable source) → that
- * language is silently dead for users.
+ * The npm tarball ships a lean vendor/ allow-list (package.json `files`):
+ * prebuilds, the bindings entry, node-types.json, and package metadata — not
+ * generated parser.c. A grammar is "covered" on a platform-arch tuple if EITHER
+ * a prebuild ships for it OR the grammar's full source-build set ships (so the
+ * install can source-build it, toolchain permitting). Lean publish is safe ONLY
+ * when every grammar has all six prebuilds; dropping source while any grammar
+ * still lacks a prebuild would ship a grammar with NO loadable binding.
  *
  * HOW SOURCE INCLUSION IS DECIDED. The `files` allow-list OVERRIDES `.npmignore`
  * for the vendored subtree (verified: an active "vendor/(star-star)/src/parser.c"
  * in .npmignore does NOT drop it from `npm pack`). So `.npmignore` can never
  * exclude vendored source — the ONLY lever is the `files` field. A broad `vendor`
- * ships the whole subtree (source + prebuilds); a lean publish narrows `files` to
+ * ships the whole subtree (source + prebuilds); lean publish narrows `files` to
  * non-source subpaths. This guard therefore reads `files` directly rather than
  * shelling out to `npm pack` (which, in prepack, would re-enter this guard and,
  * on npm versions that don't honor --ignore-scripts for prepare/prepack, run the
