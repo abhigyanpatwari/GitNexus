@@ -127,6 +127,19 @@ describe('CLI commands', () => {
       expect(optional?.['node-addon-api']).toBeUndefined();
     });
 
+    it('declares node-gyp for the offline source-build fallback', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const deps = pkg.default.dependencies ?? {};
+      expect(deps['node-gyp']).toBeDefined();
+
+      const script = await fs.readFile(
+        path.join(REPO_ROOT, 'gitnexus/scripts/build-tree-sitter-grammars.cjs'),
+        'utf8',
+      );
+      expect(script).toContain("require.resolve('node-gyp/bin/node-gyp.js')");
+      expect(script).not.toContain('npx node-gyp rebuild');
+    });
+
     it('keeps vendored Swift runtime with vendored source + GitNexus-built prebuilds and hoisted activation script', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
       const swiftPkg = await import('../../vendor/tree-sitter-swift/package.json', {
