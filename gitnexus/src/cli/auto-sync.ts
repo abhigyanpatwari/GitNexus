@@ -117,6 +117,7 @@ function defaultSyncConfig(localPath: string): string {
     'projects:',
     `  - local_path: ${localPath}`,
     '    branches: [master, main]',
+    '    pdg: false',
     '    overwrite_local_changes: false',
     '    remote_urls:',
     '      - git@github.com:owner/repo.git',

@@ -131,6 +131,7 @@ export async function startAutoSyncWatch(
     let activeRun: Promise<void> | undefined;
     let activeAbortController: AbortController | undefined;
     let stopping = false;
+    let rerunRequested = false;
     let statusWrite = Promise.resolve();
     const updateStatus = (state: WatchStatusState, message?: string) => {
       const write = statusWrite.then(() =>
@@ -152,7 +153,8 @@ export async function startAutoSyncWatch(
     const runSafely = () => {
       if (stopping) return;
       if (activeRun) {
-        stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
+        rerunRequested = true;
+        stderr.write('[auto-sync] Previous run is still active; queued one immediate follow-up.\n');
         return;
       }
       const startedAt = new Date();
@@ -179,6 +181,8 @@ export async function startAutoSyncWatch(
           stderr.write('[auto-sync] Watch loop finished: failed.\n');
         })
         .finally(async () => {
+          const runAgain = rerunRequested;
+          rerunRequested = false;
           if (activeRun === run) {
             activeRun = undefined;
             activeAbortController = undefined;
@@ -186,6 +190,7 @@ export async function startAutoSyncWatch(
           if (!stopping) {
             await updateStatus('running').catch(reportStatusWriteFailure);
           }
+          if (runAgain && !stopping && !activeRun) runSafely();
         });
       activeRun = run;
       activeAbortController = abortController;
@@ -195,6 +200,7 @@ export async function startAutoSyncWatch(
     const stop = () =>
       (stopPromise ??= (async () => {
         stopping = true;
+        rerunRequested = false;
         clearIntervalFn(timer);
         clearIntervalFn(controlTimer);
         activeAbortController?.abort();
