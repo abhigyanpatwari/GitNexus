@@ -53,6 +53,14 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
     .mockResolvedValue({ moved: [], removed: [], failed: [] }),
   renameFailureMessage: vi.fn((p: string) => `rename failed for ${p}`),
   statIfExists: vi.fn().mockResolvedValue(null),
+  assertReadOnlyFtsCrashSafe: vi.fn().mockResolvedValue(undefined),
+  FtsReaderUnrepairableError: class FtsReaderUnrepairableError extends Error {
+    readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+    constructor(dbPath = '') {
+      super(dbPath);
+      this.name = 'FtsReaderUnrepairableError';
+    }
+  },
 }));
 
 const { initLbug, closeLbug, isLbugReady, unpinRepo } =

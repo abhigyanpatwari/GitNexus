@@ -16,6 +16,10 @@ vi.mock('fs/promises', () => ({
     stat: vi.fn().mockResolvedValue({}),
     unlink: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
+    readFile: vi.fn(async () => {
+      const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      throw err;
+    }),
   },
 }));
 
@@ -57,6 +61,7 @@ vi.mock('../../src/mcp/stdio-capture.js', () => ({
   getActiveStdoutWrite: vi.fn(() => vi.fn()),
 }));
 
+import { readFileSync } from 'node:fs';
 import fs from 'fs/promises';
 import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
 
@@ -92,6 +97,10 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     (createLbugDatabase as any).mockReset();
     (fs.stat as any).mockReset();
     (fs.rename as any).mockReset();
+    (fs.readFile as any).mockReset();
+    (fs.readFile as any).mockImplementation(async () => {
+      throw ENOENT_STAT;
+    });
     mockInit.mockReset();
     mockClose.mockReset();
     connectionQueryMock.mockReset();
@@ -325,6 +334,10 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
     (createLbugDatabase as any).mockReset();
     (fs.stat as any).mockReset();
     (fs.rename as any).mockReset();
+    (fs.readFile as any).mockReset();
+    (fs.readFile as any).mockImplementation(async () => {
+      throw ENOENT_STAT;
+    });
     mockInit.mockReset();
     mockClose.mockReset();
     connectionQueryMock.mockReset();
@@ -511,5 +524,44 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
 
     await expect(initLbug('test-repo-pool-large-wal', dbPath)).rejects.toThrow(/Rebuild the index/);
     expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('refuses a large orphan WAL with FTS crash evidence before the native open', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const { FtsReaderUnrepairableError } = await import('../../src/core/lbug/sidecar-recovery.js');
+    const dbPath = '/tmp/test-pool-fts-reader-refuse/lbug';
+
+    (fs.stat as any).mockImplementation(async (p: string) => {
+      if (p.endsWith('.shadow')) throw ENOENT_STAT;
+      if (p.endsWith('.wal')) return { size: 8192 };
+      return { size: 0 };
+    });
+    (fs.readFile as any).mockResolvedValue(
+      JSON.stringify({
+        incrementalInProgress: {
+          startedAt: 1,
+          toWriteCount: 0,
+          phase: 'fts',
+          writePlan: 'in-place',
+          checkpointSucceeded: true,
+        },
+      }),
+    );
+
+    await expect(initLbug('test-repo-pool-fts-reader-refuse', dbPath)).rejects.toBeInstanceOf(
+      FtsReaderUnrepairableError,
+    );
+    expect(createLbugDatabase).not.toHaveBeenCalled();
+    expect(fs.rename).not.toHaveBeenCalled();
+    expect(fs.unlink).not.toHaveBeenCalled();
+  });
+
+  it('never threads FTS crash evidence into the pool reader path', () => {
+    const src = readFileSync(
+      new URL('../../src/core/lbug/pool-adapter.ts', import.meta.url),
+      'utf8',
+    );
+    expect(src).toMatch(/Never pass crash evidence/);
+    expect(src).not.toMatch(/fts-inplace-checkpointed/);
   });
 });

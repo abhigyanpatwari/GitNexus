@@ -10,7 +10,9 @@
  * native engine lives in `test/integration/analyze-wal-checkpoint-failure.test.ts`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as lbugAdapter from '../../src/core/lbug/lbug-adapter.js';
 import {
+  checkpointOnce,
   isManualCheckpointEnabled,
   runCheckpointWithRetry,
   startWalCheckpointDriver,
@@ -130,6 +132,32 @@ describe('isManualCheckpointEnabled — env var parsing', () => {
   it.each(['1', 'true', 'on', 'yes', ''])('returns true for non-opt-out value %s', (value) => {
     process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = value;
     expect(isManualCheckpointEnabled()).toBe(true);
+  });
+});
+
+describe('checkpointOnce — opt-out', () => {
+  let originalEnv: string | undefined;
+  beforeEach(() => {
+    originalEnv = process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+  });
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+    else process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  it('resolves false and does not call CHECKPOINT when GITNEXUS_WAL_MANUAL_CHECKPOINT=0', async () => {
+    process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = '0';
+    const flush = vi.spyOn(lbugAdapter, 'tryFlushWAL');
+    await expect(checkpointOnce()).resolves.toBe(false);
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('returns the flushed warrant, not a hardcoded success', async () => {
+    delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
+    const flush = vi.spyOn(lbugAdapter, 'tryFlushWAL').mockResolvedValue(false);
+    await expect(checkpointOnce()).resolves.toBe(false);
+    expect(flush).toHaveBeenCalled();
   });
 });
 

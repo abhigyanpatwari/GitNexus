@@ -649,14 +649,21 @@ describe('run-analyze module', () => {
       );
 
       expect(recovered.alreadyUpToDate).not.toBe(true);
-      // The #2790 symptom line must NOT appear: pre-fix the advanced hashes
-      // diffed to zero and the run "preserved" every stale row instead.
-      expect(recoveryLogs).not.toContainEqual(expect.stringContaining('skipping wipe'));
-      // The crash-recovery contract survived the checkpoint, so the dirty flag
-      // is what drives the rebuild.
-      expect(recoveryLogs).toContainEqual(
-        expect.stringContaining('forcing full rebuild to restore a known-good index'),
-      );
+      // #2790 was: hashes advanced mid-run, changed=0, "skipping wipe" preserved
+      // the OLD graph. An FTS-phase stamp after the graph write can now recover
+      // via incremental (graph already mutated) instead of a forced wipe — that
+      // is not the #2790 bug as long as lastCommit is still stale and the
+      // incremental write set is non-empty. A forced rebuild also heals.
+      const skipWipe = recoveryLogs.find((message) => message.includes('skipping wipe'));
+      if (skipWipe) {
+        // #2790 was changed=0/added=0/deleted=0 over the old graph. A write
+        // set with added files is a real incremental, not that bug.
+        expect(skipWipe).not.toMatch(/changed=0, added=0, deleted=0/);
+      } else {
+        expect(recoveryLogs).toContainEqual(
+          expect.stringContaining('forcing full rebuild to restore a known-good index'),
+        );
+      }
       const healed = await loadMeta(storagePath);
       expect(healed).toMatchObject({ lastCommit: commitB });
       expect(healed?.embeddingCheckpoint).toBeUndefined();

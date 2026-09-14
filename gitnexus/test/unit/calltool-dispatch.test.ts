@@ -801,6 +801,34 @@ describe('LocalBackend.callTool', () => {
     expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
   });
 
+  it('redacts a space-containing vendor path from the MCP query warning', async () => {
+    const { extensionManager, resetExtensionState } =
+      await import('../../src/core/lbug/extension-loader.js');
+    const spaced = '/tmp/fts vendor/lbug-fts/prebuilds/linux-x64/libfts.lbug_extension';
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed to load library '${spaced}': invalid ELF header`)),
+      'fts',
+      'FTS',
+      { policy: 'load-only', vendorRoot: '/tmp/empty-vendor-root' },
+    );
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    try {
+      const result = await backend.callTool('query', { query: 'ProcessActivity' });
+      expect(result).toHaveProperty('warning');
+      expect(String((result as { warning?: string }).warning)).toContain('invalid ELF header');
+      expect(String((result as { warning?: string }).warning)).not.toMatch(
+        /fts vendor|\/tmp\/|C:\\Users\\/,
+      );
+    } finally {
+      resetExtensionState();
+    }
+  });
+
   it('does not include warning when ftsAvailable is true with zero results', async () => {
     const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
     vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: true });

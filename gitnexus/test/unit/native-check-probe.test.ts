@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 /**
@@ -30,6 +31,7 @@ vi.mock('@ladybugdb/core', () => {
 });
 
 import {
+  ftsAvailabilityLabel,
   probeFtsExtensionLoad,
   probeVectorExtensionLoad,
 } from '../../src/core/lbug/native-check.js';
@@ -91,6 +93,45 @@ describe('probeFtsExtensionLoad (#2374)', () => {
       },
     });
     await expect(probeFtsExtensionLoad()).resolves.toEqual({ loaded: true });
+  });
+
+  it('reports suppressed-by-policy under never without issuing LOAD', async () => {
+    await expect(probeFtsExtensionLoad(undefined, { policy: 'never' })).resolves.toEqual({
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    });
+    expect(h.query).not.toHaveBeenCalled();
+    expect(ftsAvailabilityLabel({ loaded: false, suppressed: true })).toBe('suppressed');
+  });
+
+  it('tries a vendored path LOAD before the name-only LOAD', async () => {
+    h.query.mockResolvedValue(closeable());
+    const vendoredPath = '/tmp/gn-fts-vendor/libfts.lbug_extension';
+
+    await expect(
+      probeFtsExtensionLoad(undefined, { vendoredPath, policy: 'load-only' }),
+    ).resolves.toEqual({ loaded: true });
+
+    expect(h.query).toHaveBeenCalledWith(`LOAD EXTENSION '${path.resolve(vendoredPath)}'`);
+    expect(h.query).not.toHaveBeenCalledWith('LOAD EXTENSION fts');
+  });
+
+  it('falls back to name-only LOAD when the vendored path LOAD fails', async () => {
+    const vendoredPath = '/tmp/gn-fts-vendor/libfts.lbug_extension';
+    h.query
+      .mockRejectedValueOnce(new Error('IO exception: missing vendored file'))
+      .mockResolvedValueOnce(closeable());
+
+    await expect(
+      probeFtsExtensionLoad(undefined, {
+        vendoredPath,
+        policy: 'load-only',
+      }),
+    ).resolves.toEqual({ loaded: true });
+
+    expect(h.query).toHaveBeenNthCalledWith(1, `LOAD EXTENSION '${path.resolve(vendoredPath)}'`);
+    expect(h.query).toHaveBeenNthCalledWith(2, 'LOAD EXTENSION fts');
   });
 });
 
