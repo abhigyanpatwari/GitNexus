@@ -547,6 +547,23 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       minimumParsedFileReads: 0,
     },
   ],
+  [
+    SupportedLanguages.ObjectiveC,
+    {
+      // `resolutionConfig` is the workspace scan from `loadResolutionConfig`
+      // (headers / frameworks / xcconfig). Left undefined so the resolver
+      // indexes THIS set: with scanned headers present the adapter unions
+      // them once, and that union's scan is the only one this counter sees.
+      files: ['Headers/Widget.h', 'Sources/main.m'],
+      fromFile: 'Sources/main.m',
+      resolutionConfig: undefined,
+      missTarget: (i) => `ghost${i}.h`,
+      hitTarget: 'Widget.h',
+      parsedImport: IGNORES_CONTEXT,
+      minimumScans: 1,
+      minimumParsedFileReads: 0,
+    },
+  ],
 ]);
 
 /**

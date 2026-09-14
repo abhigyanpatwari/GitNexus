@@ -726,6 +726,7 @@ export function runScopeResolution(
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
+      importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
       resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
           parsedFiles,
@@ -737,9 +738,23 @@ export function runScopeResolution(
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
+      wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
+      namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
+  // `export *` collisions the shared finalize refused to bind (WS1 C2). Recorded
+  // as outcomes so the refusal is auditable next to the name-fallback census —
+  // a silently unresolved importer is indistinguishable from a resolver gap.
+  for (const refused of finalized.stats.ambiguousWildcardExports) {
+    recordResolutionOutcome({
+      kind: 'reexport-ambiguous',
+      candidateIds: refused.candidateDefIds,
+      phase: 'finalize',
+      filePath: refused.filePath,
+      name: refused.name,
+    });
+  }
   // One store and ONE writer rule for heritage instantiations (#2912), shared by
   // the pre-pass below and by the language hook further down — a heritage shape
   // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
@@ -1085,6 +1100,12 @@ export function runScopeResolution(
         workspaceIndex,
         {
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+          language: provider.language,
+          isGlobalNameFallbackPlausible: provider.isGlobalNameFallbackPlausible,
+          sourceTextOf:
+            provider.isGlobalNameFallbackPlausible !== undefined
+              ? (filePath: string) => getFileContents().get(filePath)
+              : undefined,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
           markConstructionSites: provider.markConstructionSites === true,
           isFileLocalDef: provider.isFileLocalDef,
@@ -1210,7 +1231,12 @@ export function runScopeResolution(
         indexes,
         emitParsedFiles,
         postHeritageNodeLookup,
+        readonlyModel,
         calleeIdAccumulator,
+        // Same provider hook the receiver-bound pass consults for a namespace
+        // member (Case 1). Without it a hub module's re-exported callable
+        // resolves when CALLED and declines when REGISTERED.
+        provider.namespaceExportsIncludeImportedNames === true,
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the

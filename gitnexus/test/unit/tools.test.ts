@@ -58,6 +58,19 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.inputSchema.properties).toBeDefined();
       expect(Array.isArray(tool.inputSchema.required)).toBe(true);
+      expect(tool.inputSchema.additionalProperties).toBe(false);
+    }
+  });
+
+  it('impact and trace advertise depth as a maxDepth alias (#3261)', () => {
+    for (const name of ['impact', 'trace'] as const) {
+      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
+      expect(tool.inputSchema.properties.depth).toMatchObject({
+        type: 'number',
+        description: expect.stringMatching(/maxDepth/),
+        minimum: 0,
+      });
+      expect(tool.inputSchema.properties.maxDepth).toBeDefined();
     }
   });
 

@@ -16,6 +16,13 @@
 
 import path from 'path';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import {
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+} from '../../storage/storage-resolver.js';
+import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
+import { BRANCHES_DIR, branchSlug } from '../../storage/branch-index.js';
+import { getCurrentBranch } from '../../storage/git.js';
 import { escapeCypherString } from '../lbug/cypher-escape.js';
 
 /**
@@ -44,18 +51,14 @@ async function findRepoForCwd(cwd: string): Promise<{
       const repoResolved = path.resolve(entry.path);
       const normalizedRepo = isWindows ? repoResolved.toLowerCase() : repoResolved;
 
-      // Check if cwd is inside repo OR repo is inside cwd
-      // Must match at a path separator boundary to avoid false positives
-      // (e.g. /projects/gitnexusv2 should NOT match /projects/gitnexus)
+      // Exact path, or cwd inside the repo at a separator boundary.
+      // Parent-directory invocation must not attach to a nested registered checkout.
       let matched = false;
       if (normalizedCwd === normalizedRepo) {
         matched = true;
       } else {
         const repoPrefix = normalizedRepo.endsWith(sep) ? normalizedRepo : normalizedRepo + sep;
-        const cwdPrefix = normalizedCwd.endsWith(sep) ? normalizedCwd : normalizedCwd + sep;
         if (normalizedCwd.startsWith(repoPrefix)) {
-          matched = true;
-        } else if (normalizedRepo.startsWith(cwdPrefix)) {
           matched = true;
         }
       }
@@ -68,10 +71,20 @@ async function findRepoForCwd(cwd: string): Promise<{
 
     if (!bestMatch) return null;
 
+    const storagePath = await requireRegisteredStoragePath(bestMatch, STATUS_STORAGE_REQUIREMENTS);
+    const branch = getCurrentBranch(bestMatch.path);
+    const branchIsIndexed =
+      Boolean(branch) &&
+      Array.isArray(bestMatch.branches) &&
+      bestMatch.branches.some((summary) => summary.branch === branch);
+    const indexDir =
+      branchIsIndexed && branch
+        ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch))
+        : storagePath;
     return {
       name: bestMatch.name,
-      storagePath: bestMatch.storagePath,
-      lbugPath: path.join(bestMatch.storagePath, 'lbug'),
+      storagePath,
+      lbugPath: path.join(indexDir, LBUG_DIRECTORY),
     };
   } catch {
     return null;

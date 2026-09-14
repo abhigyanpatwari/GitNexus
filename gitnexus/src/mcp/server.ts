@@ -42,6 +42,7 @@ import {
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
 import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
+import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -90,6 +91,16 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     default:
       return '';
   }
+}
+
+/** Include a string `Error.code` in MCP error text when present. */
+function formatMcpToolError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'Unknown error';
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? (error as { code: unknown }).code
+      : undefined;
+  return typeof code === 'string' ? `Error [${code}]: ${message}` : `Error: ${message}`;
 }
 
 /**
@@ -170,13 +181,13 @@ export function createMCPServer(
           },
         ],
       };
-    } catch (err: any) {
+    } catch (err: unknown) {
       return {
         contents: [
           {
             uri,
             mimeType: 'text/plain',
-            text: `Error: ${err.message}`,
+            text: formatMcpToolError(err),
           },
         ],
       };
@@ -220,6 +231,12 @@ export function createMCPServer(
     try {
       const typedArgs = args as Record<string, unknown> | undefined;
       assertMcpReadOnlyToolCall(name, typedArgs, readOnly);
+      const schemaSource = schemaSourceToolName(name);
+      const advertisedTool = GITNEXUS_TOOLS.find((tool) => tool.name === schemaSource);
+      if (advertisedTool) {
+        const listed = toolForReadOnlyMcp(repositoryPolicy.toolForMcp(advertisedTool), readOnly);
+        assertKnownMcpToolArguments(name, typedArgs, listed.inputSchema.properties);
+      }
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
       const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
@@ -234,12 +251,11 @@ export function createMCPServer(
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
       return {
         content: [
           {
             type: 'text',
-            text: applyMcpMaxTokens(`Error: ${message}`, maxTokens),
+            text: applyMcpMaxTokens(formatMcpToolError(error), maxTokens),
           },
         ],
         isError: true,

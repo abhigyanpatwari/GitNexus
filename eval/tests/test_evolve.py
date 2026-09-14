@@ -9,19 +9,24 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from workflow_bench import evolve, evolution
 from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.evolve import (
+    MIN_INSTANCE_SWEEP_SECONDS,
     build_parser,
     build_proposer_prompt,
+    capped_timeout_seconds,
     executed_benchmark_arms,
     generation_timeout_seconds,
+    instance_window_budget_seconds,
     load_jsonl,
     proposer_evidence_entries,
     read_learnings,
+    remaining_runtime_seconds,
     resolve_incumbent_arms,
     runner_argv,
     select_evidence,
@@ -662,6 +667,127 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
     assert captured["settings_json"] == FakeSandbox.settings_json
 
 
+def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypatch, tmp_path):
+    """Clearing the sweep minimum is not a licence to run a full session.
+
+    --timeout is sized for a whole generation, so a proposer started with the
+    minimum left would run far past --max-runtime-seconds and the box would take
+    the evidence with it. The budget is sampled after the clone, the sanitize
+    pass and the sandbox setup, because a reading taken before them is already
+    stale by the time the session it bounds actually starts.
+    """
+
+    captured: dict[str, object] = {}
+    # Pinned clock: real setup duration would make this assert on scheduling.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: clock["now"])
+    setup_seconds = 100.0
+
+    @contextmanager
+    def fake_prepare_sandbox(**_kwargs):
+        yield SimpleNamespace(
+            claude_bin="claude",
+            command_prefix=[],
+            settings_json="{}",
+            transcript_projects=tmp_path / "transcript-projects",
+        )
+
+    def fake_run_claude(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": False, "error_kind": "session-error"}
+
+    def slow_sanitize(_clone):
+        # Stands in for the clone, the sanitize pass and the sandbox build —
+        # all of which run between the caller's decision and the session.
+        clock["now"] += setup_seconds
+        return "0" * 40
+
+    monkeypatch.setattr(evolve.runner, "make_worktree", lambda _repo, _ref, destination: destination)
+    monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", slow_sanitize)
+    monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
+    assert args.timeout > evolve.MIN_INSTANCE_SWEEP_SECONDS, "otherwise this test proves nothing"
+
+    common = {
+        "overlay_dir": tmp_path / "overlay",
+        "proposal_path": tmp_path / "proposal.md",
+        "evidence_bundle": tmp_path / "evidence",
+        "bwrap_bin": tmp_path / "bwrap",
+    }
+    budget = evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+    args.max_runtime_seconds = budget
+    started = clock["now"]
+    evolve.run_proposer("prompt", args, **common, started_monotonic=started)
+    # The setup time is charged, not handed back: a value sampled at `started`
+    # would have allowed the whole budget.
+    assert captured["timeout"] == budget - setup_seconds
+
+    # No cap configured means no budget to overrun: the session keeps its own.
+    args.max_runtime_seconds = None
+    evolve.run_proposer("prompt", args, **common, started_monotonic=started)
+    assert captured["timeout"] == args.timeout
+    evolve.run_proposer("prompt", args, **common)
+    assert captured["timeout"] == args.timeout
+
+
+def test_a_budget_spent_during_setup_stops_the_proposer_rather_than_buying_a_second(
+    monkeypatch, tmp_path
+):
+    """An exhausted cap must end the generation, not start a one-second session.
+
+    remaining_runtime_seconds floors at 0, and the call site wrapped it in
+    max(1, ...) - so a cap fully consumed by the clone, the sanitize pass and
+    the sandbox build produced a paid session with a one-second allowance
+    instead of stopping before the upload reserve the cap exists to protect.
+    """
+
+    captured: dict[str, object] = {}
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: clock["now"])
+
+    @contextmanager
+    def fake_prepare_sandbox(**_kwargs):
+        yield SimpleNamespace(
+            claude_bin="claude",
+            command_prefix=[],
+            settings_json="{}",
+            transcript_projects=tmp_path / "transcript-projects",
+        )
+
+    def fake_run_claude(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    def setup_that_spends_the_whole_budget(_clone):
+        clock["now"] += budget
+        return "0" * 40
+
+    monkeypatch.setattr(evolve.runner, "make_worktree", lambda _repo, _ref, destination: destination)
+    monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", setup_that_spends_the_whole_budget)
+    monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
+
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
+    budget = evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+    args.max_runtime_seconds = budget
+    record = evolve.run_proposer(
+        "prompt",
+        args,
+        overlay_dir=tmp_path / "overlay",
+        proposal_path=tmp_path / "proposal.md",
+        evidence_bundle=tmp_path / "evidence",
+        bwrap_bin=tmp_path / "bwrap",
+        started_monotonic=clock["now"],
+    )
+
+    assert not captured, "no session may start once the cap is exhausted"
+    assert record["ok"] is False
+    assert record["error_kind"] == "runtime-cap-exhausted"
+
+
 def test_parser_defaults_match_the_gate_minimums():
     args = build_parser().parse_args(["--tasks", "t.yaml", "--model", "pinned"])
     assert args.runs == 3
@@ -922,6 +1048,27 @@ def test_runner_argv_inserts_ce_review_for_review_overlay(tmp_path):
     )
     arms = argv[argv.index("--arms") + 1 : argv.index("--promotion-metric")]
     assert arms == ["ce_review", "review", "candidate_review"]
+    assert "--reuse-results" not in argv
+
+
+def test_runner_argv_forwards_prior_results_for_comparator_reuse(tmp_path):
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--arms", "review"]
+    )
+    overlay = tmp_path / "overlay"
+    skill = overlay / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate")
+    prior = tmp_path / "prior-bench"
+    argv = runner_argv(
+        args,
+        tmp_path / "bench",
+        overlay,
+        task_bindings=[{"id": "task"}],
+        target_base_digests={},
+        reuse_results=prior,
+    )
+    assert argv[argv.index("--reuse-results") + 1] == str(prior)
 
 
 def test_runner_argv_omits_proposer_for_manual_overlay(tmp_path):
@@ -1116,6 +1263,161 @@ def test_generation_timeout_rejects_unknown_arm() -> None:
             session_timeout=60,
             incumbent_arms=["mystery"],
         )
+
+
+def test_instance_window_budget_leaves_upload_reserve() -> None:
+    # Friday 10:57 on a box that booted 02:45 Saturday-window: ~8.2h uptime.
+    leftover = instance_window_budget_seconds(8.2 * 3600)
+    assert leftover == int(86_400 - 8.2 * 3600 - 5_400)
+    assert leftover >= MIN_INSTANCE_SWEEP_SECONDS
+    with pytest.raises(ValueError, match="only .*s left"):
+        instance_window_budget_seconds(23.5 * 3600)
+    with pytest.raises(ValueError, match="uptime must be"):
+        instance_window_budget_seconds(float("nan"))
+
+
+
+
+def test_capped_timeout_clamps_to_leftover_window(monkeypatch) -> None:
+    assert capped_timeout_seconds(10_000, None) == 10_000
+    assert capped_timeout_seconds(10_000, 90) == 90
+    with pytest.raises(ValueError, match="no time remains"):
+        capped_timeout_seconds(10_000, 0)
+    # Pinned clock: the helper is pure arithmetic, so a real elapsed-time window
+    # would assert on scheduling rather than on the behaviour under test.
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: 1040.0)
+    started = 1000.0
+    assert remaining_runtime_seconds(max_runtime_seconds=None, started_monotonic=started) is None
+    leftover = remaining_runtime_seconds(max_runtime_seconds=100, started_monotonic=started)
+    assert leftover is not None
+    assert leftover == 60
+
+
+def test_parser_rejects_non_positive_max_runtime() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["--tasks", "t.yaml", "--model", "pinned", "--max-runtime-seconds", "0"]
+        )
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--max-runtime-seconds", "7200"]
+    )
+    assert args.max_runtime_seconds == 7200
+    assert args.max_runtime_from_instance_window is False
+
+
+def _task_file(tmp_path: Path) -> Path:
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text(
+        """tasks:
+  - id: demo
+    class: test
+    repo: .
+    prompt: implement
+    verify: "true"
+    oracle:
+      command: "true"
+      files:
+        - source: hidden.test.ts
+          target: hidden.test.ts
+"""
+    )
+    return tasks
+
+
+def _stub_main_preflight(monkeypatch, tmp_path) -> None:
+    """Everything main() shells out to before it reaches _run_generations."""
+
+    monkeypatch.setattr(evolve.runner, "selected_task_bindings", lambda _tasks: [{"id": "demo"}])
+    monkeypatch.setattr(evolve, "preflight_bubblewrap", lambda: tmp_path / "bwrap")
+    monkeypatch.setattr(evolve, "require_claude_sandbox_helpers", lambda: None)
+
+
+def test_the_runtime_cap_is_derived_where_its_clock_starts(monkeypatch, tmp_path, capsys) -> None:
+    """The budget and the clock it is measured against must be one instant.
+
+    run-evolution.sh used to compute the budget in a separate `uv run python -c`
+    and pass a number, so the script's remaining provenance work and this
+    interpreter's startup were charged to the sweep — out of the upload reserve
+    the cap exists to protect. main() reads /proc/uptime itself now, next to its
+    own clock, so no interval exists to lose.
+    """
+
+    monkeypatch.setenv("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", "20000")
+    monkeypatch.setenv("EVENTBRIDGE_STOP_RESERVE_SECONDS", "1000")
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", lambda: 3600.0)
+    captured: dict[str, object] = {}
+
+    def record(args, **kwargs):
+        captured["max_runtime_seconds"] = args.max_runtime_seconds
+        captured["started_monotonic"] = kwargs["started_monotonic"]
+        return 0
+
+    monkeypatch.setattr(evolve, "_run_generations", record)
+    _stub_main_preflight(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--out-root",
+            str(tmp_path / "out"),
+            "--max-runtime-from-instance-window",
+        ],
+    )
+
+    assert evolve.main() == 0
+
+    assert captured["max_runtime_seconds"] == 20000 - 3600 - 1000
+    # Derived here, not passed in: the clock handed to the sweep is the one
+    # taken beside the uptime read.
+    assert isinstance(captured["started_monotonic"], float)
+    assert "capping the sweep to 15400s" in capsys.readouterr().out
+
+
+def test_the_runtime_cap_refuses_two_sources_of_truth(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", lambda: 3600.0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--max-runtime-from-instance-window",
+            "--max-runtime-seconds",
+            "7200",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        evolve.main()
+
+
+def test_the_runtime_cap_fails_closed_without_a_readable_uptime(monkeypatch, tmp_path) -> None:
+    def unreadable():
+        raise ValueError("cannot read instance uptime from /proc/uptime")
+
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", unreadable)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--max-runtime-from-instance-window",
+        ],
+    )
+    # Better to refuse than to run a box-stopped sweep believing it is uncapped.
+    with pytest.raises(SystemExit):
+        evolve.main()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Bubblewrap PID namespaces require Linux")

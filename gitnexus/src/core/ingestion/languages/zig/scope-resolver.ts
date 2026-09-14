@@ -5,8 +5,9 @@
  * Thin wiring: Zig has no inheritance (default MRO linearization over an
  * empty heritage set), no `super`, and is statically typed (field-fallback
  * heuristic off per the contract guidance). Import resolution reuses the
- * same `resolveZigImportInternal` the legacy import-resolver config wraps,
- * with `build.zig.zon` `.path` deps threaded through `loadResolutionConfig`.
+ * same `resolveZigImportInternal` the legacy import-resolver config wraps, with
+ * the repo's Zig build packages threaded through `loadResolutionConfig` and the
+ * one governing each file selected per-file by `zigPackageFor`.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
@@ -14,7 +15,11 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { loadZigBuildConfig, type ZigBuildZonConfig } from '../../language-config.js';
+import {
+  loadZigWorkspaceIndex,
+  zigPackageFor,
+  type ZigWorkspaceIndex,
+} from '../../language-config.js';
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import { zigProvider } from '../zig.js';
 import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
@@ -46,14 +51,23 @@ export const zigScopeResolver: ScopeResolver = {
   // import; a one-hop split at the last dot resolved none of them.
   resolveNamespaceChains: true,
 
-  loadResolutionConfig: (repoPath: string) => loadZigBuildConfig(repoPath),
+  // The whole workspace, not just the root package. A Zig module's import table
+  // is declared by the `build.zig` of the package the file belongs to, so a repo
+  // laying its packages out as `packages/<name>/build.zig` has as many import
+  // tables as packages — and reading only the root one leaves every bare
+  // `@import("<module>")` in such a repo unresolved. Same shape, same reason, as
+  // `loadTsconfigIndex` for a TypeScript monorepo.
+  loadResolutionConfig: (repoPath: string) => loadZigWorkspaceIndex(repoPath),
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveZigImportInternal(
       fromFile,
       targetRaw,
       allFilePaths,
-      (resolutionConfig as ZigBuildZonConfig | null | undefined) ?? null,
+      // The package governing THIS file — `zigPackageFor` is the `tsconfigFor`
+      // analogue. `resolveZigImportInternal` is handed one package's config and
+      // is unchanged by this: which config it receives is the only difference.
+      zigPackageFor(resolutionConfig as ZigWorkspaceIndex | null | undefined, fromFile),
     ),
 
   // `pub usingnamespace @import("x.zig");` — target decls become local decls.

@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.6.11",
+  "version": "1.6.12",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -53,11 +53,11 @@
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
+    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/assert-publish-fts-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
-    "@ladybugdb/core": "^0.19.0",
+    "@ladybugdb/core": "0.18.3",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "busboy": "^1.6.0",

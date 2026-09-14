@@ -13,6 +13,8 @@ export const NODE_TABLES = [
   'Folder',
   'Function',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Method',
   'CodeElement',

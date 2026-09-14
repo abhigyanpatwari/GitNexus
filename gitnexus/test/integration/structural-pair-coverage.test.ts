@@ -72,6 +72,13 @@ type CorpusEntry = {
  */
 const NON_BRIDGE_CORPUS = [
   {
+    // Dynamic Spring lookup inside a constructor targets a synthetic @Bean
+    // CodeElement, not the bean's declared return-type Class/Interface (#3238).
+    fixture: 'spring-constructor-bean-lookup',
+    emitter: 'spring constructor INJECTS',
+    sentinels: ['Constructor|CodeElement'],
+  },
+  {
     // `cobol-processor.ts`: CONTAINS/CALLS/ACCESSES over Module / Namespace /
     // Record / Property / CodeElement.
     fixture: 'cobol-app',

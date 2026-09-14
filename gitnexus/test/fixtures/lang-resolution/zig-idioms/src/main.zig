@@ -21,6 +21,7 @@ pub usingnamespace @import("mixin.zig");
 pub const Interfaces = .{
     @import("webapi/AbortController.zig"),
     @import("webapi/AbortSignal.zig"),
+    @import("webapi/Element.zig"),
 };
 
 pub fn main() void {

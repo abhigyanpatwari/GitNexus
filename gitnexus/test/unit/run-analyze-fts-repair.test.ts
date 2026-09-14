@@ -222,6 +222,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -278,6 +279,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
+    tryFlushWAL: vi.fn(async () => true),
     loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
     deleteNodesForFile: vi.fn(async () => undefined),
     deleteNodesForFiles: vi.fn(async () => undefined),
@@ -568,6 +570,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -633,6 +636,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -701,6 +705,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -772,6 +777,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -827,6 +833,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // Select the atomic path on Windows too; the native adapter is mocked below.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     // The single-writer lock rules out a concurrent-writer race, so an
     // integrity-class FTS failure on the atomic-swap (--force) path is a real
     // broken build: run-analyze must throw BEFORE swapping the staging DB in,
@@ -841,6 +849,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteNodesForFiles: vi.fn(async () => undefined),
@@ -878,6 +887,13 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       await fs.mkdir(storagePath, { recursive: true });
       // A pre-existing "previous index" that must survive the aborted rebuild.
       await createPlaceholderGraphStore(lbugPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        storagePath,
+        lastCommit: 'previous-index',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
       const before = await fs.readFile(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -913,6 +929,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -986,6 +1003,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1104,6 +1122,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       // ≥1 cached row with a real-dims embedding: the harness default (empty
       // cache) would leave restoredEmbeddingCount at 0 and the recreation
       // gate shut — this test would then assert nothing.
@@ -1257,6 +1276,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1542,6 +1562,7 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({
         embeddingNodeIds: new Set<string>(),
         embeddings: [],
@@ -1665,8 +1686,10 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
     expect(error).toMatchObject({
       message: expect.stringMatching(/--drop-embeddings/),
     });
-    // The index really was not registered: no finalize meta was written.
-    expect(meta).toBeNull();
+    // A pre-pipeline ownership marker is expected, but no finalized receipt
+    // may claim that the failed index is usable.
+    expect(meta).toMatchObject({ lastCommit: '' });
+    expect(meta?.stats).toBeUndefined();
   });
 
   // State 3 — "cannot ask" is not "wrote nothing".

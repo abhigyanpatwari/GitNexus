@@ -169,31 +169,73 @@ Two things block it today, and neither is small:
    would then leave the live index with fresh File content and stale symbols,
    instead of untouched.
 
-## scopeResolution is memory-traffic bound, not algorithmic
+## scopeResolution — 14.7s, and it is two different problems
 
-`--cpu-prof` of a one-file-edit run, top main-thread self time:
+`PROF_SCOPE_RESOLUTION=1` already exists and reports the internal split. Marks
+injected around the phase supply the rest. On a one-file edit:
+
+| step                         |       ms |   share |
+| ---------------------------- | -------: | ------: |
+| ParsedFile store rehydration |     4426 |     30% |
+| **`emit`**                   | **7161** | **49%** |
+| `resolve`                    |      966 |      7% |
+| `finalize`                   |      552 |      4% |
+| `extract`                    |      369 |      3% |
+| per-language teardown, misc  |     ~750 |      5% |
+
+`extract` is small because the parse cache works: 2121/2121 pre-extracted hits
+on the TypeScript pass. Nothing here re-parses.
+
+### Rehydration: three full store scans, one per language
+
+The corpus resolves three languages — python (54 files), typescript (2121),
+javascript (59) — and `loadParsedFilesForPaths` walks **every** shard on each
+pass. The store is 413 shards / 301 MB. A pass that wants a single file costs
+335 ms, because the skip decision needs the envelope's path listing and that
+listing is only trustworthy after the payload digest is checked.
+
+So the fixed cost is paid per language, and **it scales with language count**,
+not with how many files that language has. Measured, min-of-5, three passes:
 
 ```
-4294ms  (garbage collector)
-1552ms  v8.deserialize
- 756ms  crypto update
- 728ms  runScopeResolution
- 620ms  scope-resolution/pipeline/reconcile-ownership
- 380ms  v8-sidecar walk
- 323ms  internString
+before   python 411ms   typescript 2872ms   javascript 507ms   = 3834ms
+after    python 415ms   typescript 2805ms   javascript 248ms   = 3484ms
 ```
 
-then a tail of passes at 200–750ms (`emitReceiverBoundCalls`,
-`emitCallableValueFlow`, `buildGraphNodeLookup`, `resolveReferenceSites`).
+Memoizing each shard's authenticated listing for the run removes the repeat
+scans (−350 ms here; roughly −250 ms per additional language elsewhere). The
+first pass is unchanged by construction — it is what populates the memo.
 
-No dominant hot function, nothing quadratic. The cost is rehydrating every
-file's `ParsedFile` from the durable `.v8` shards into main-thread memory and
-re-running every pass over them.
+What is left is a floor. The digest is **not** the cost: SHA-256 over all
+301 MB takes 134 ms (2.25 GB/s, hardware-accelerated), so swapping it for
+CRC-32 would buy ~90 ms and cost an envelope-format bump. The remainder is
+`v8.deserialize` (~1240 ms) plus the cross-shard string intern walk
+(~1085 ms), and the intern walk is not optional — dropping it regresses
+retained heap ~59%, which is #2649's constraint.
 
-**So the win is not caching resolution output** — that stores more of exactly
-what is already the memory problem, and #2649 (large-repo OOM) is the standing
-constraint. The win is skipping rehydration and re-resolution for files whose
-inputs provably did not change, as a streaming/bounded design.
+### `emit` is the real target
+
+7.2s, 49% of the phase and ~21% of the whole edit loop. It is a fan of passes,
+each walking every reference site in the repo:
+
+```
+1828ms  emitCallableValueFlow      480ms  emitFreeCallFallback
+1590ms  emitReceiverBoundCalls     426ms  emitReferencesViaLookup
+ 681ms  resolveDefGraphId          313ms  emitUniqueNamePropertyAccesses
+ 529ms  lookupCore                 280ms  emitReturnShapeMemberAccesses
+ 472ms  tryEmitEdge                222ms  emitPropertyDispatchCalls
+ 449ms  getScope
+```
+
+No hot inner loop, nothing quadratic, no single pass worth more than 12% of the
+phase. Micro-optimizing any of them is not the win.
+
+The win is not running them. A one-file edit re-emits all 163,094 edges to
+write a 3,980-node subgraph. Every pass above runs over all 2121 TypeScript
+files because the pipeline rebuilds the full in-memory graph every run and only
+the DB _write_ is incremental. Making `emit` incremental means knowing which
+files' edges can change when one file's registry contribution changes — which
+is a design, not a patch, and #2649 rules out "just cache the emitted edges".
 
 ---
 
@@ -232,8 +274,12 @@ and 0.8s of post-FTS event-loop drain between them.
 
 FTS is closed as an optimization target except for the overlap above, which is a
 scheduling change to `run-analyze.ts`'s open/close discipline rather than
-anything about FTS. `scopeResolution` is the single largest step, memory-traffic
-bound, and still untouched.
+anything about FTS.
+
+`scopeResolution` is now broken down. Its rehydration half has a floor and one
+repeat-scan win that is taken. Its other half — `emit`, 7.2s — is the largest
+remaining target in the whole edit loop, and the only way at it is incremental
+resolution.
 
 Every optimization in this document that looked compelling from the armchair
 died under measurement. Measure first, and check the banner.

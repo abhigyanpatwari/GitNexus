@@ -357,6 +357,26 @@ export function emitJavaScopeCaptures(
       }
     }
 
+    // Qualified constructor `new pkg.Foo()` already binds the simple tail as
+    // `@reference.name` (F35). Copy the scoped spelling onto
+    // `@reference.qualified-name` so constructor resolution can treat it as a
+    // written qualifier instead of a bare unique-name guess (C# does the same).
+    const ctorQualifiedNode = nodeMap['@reference.call.constructor.qualified'];
+    const ctorQualifiedText = grouped['@reference.call.constructor.qualified']?.text;
+    if (
+      ctorQualifiedNode !== undefined &&
+      ctorQualifiedText !== undefined &&
+      ctorQualifiedText.length > 0 &&
+      ctorQualifiedText !== grouped['@reference.name']?.text &&
+      grouped['@reference.qualified-name'] === undefined
+    ) {
+      grouped['@reference.qualified-name'] = syntheticCapture(
+        '@reference.qualified-name',
+        ctorQualifiedNode,
+        ctorQualifiedText,
+      );
+    }
+
     // Synthesize `@reference.arity` on every callsite.
     const callTag = (
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const

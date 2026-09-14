@@ -92,6 +92,65 @@ describe('run-analyze module', () => {
     }
   });
 
+  it('restamps FTS skipReason on the already-up-to-date path when only the discriminator changes', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fts-restamp-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const indexedAt = '2026-01-01T00:00:00.000Z';
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt,
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: {
+            provider: 'ladybugdb-fts',
+            status: 'unavailable',
+            skipReason: 'disabled-by-env',
+          },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+        },
+      };
+      await saveMeta(storagePath, meta);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipFts: true },
+        { onProgress: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.ftsSkipped).toBe(true);
+      expect(result.ftsSkipReason).toBe('disabled-by-flag');
+      const restamped = await loadMeta(storagePath);
+      expect(restamped?.indexedAt).toBe(indexedAt);
+      expect(restamped?.lastCommit).toBe(currentCommit);
+      expect(restamped?.incrementalInProgress).toBeUndefined();
+      expect(restamped?.capabilities?.fts).toEqual({
+        provider: 'ladybugdb-fts',
+        status: 'unavailable',
+        skipReason: 'disabled-by-flag',
+      });
+      expect(restamped?.capabilities?.graph).toEqual(meta.capabilities?.graph);
+      expect(restamped?.capabilities?.vectorSearch).toEqual(meta.capabilities?.vectorSearch);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('applies analyze --name on the already-up-to-date path without --force', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-home-');
@@ -590,14 +649,21 @@ describe('run-analyze module', () => {
       );
 
       expect(recovered.alreadyUpToDate).not.toBe(true);
-      // The #2790 symptom line must NOT appear: pre-fix the advanced hashes
-      // diffed to zero and the run "preserved" every stale row instead.
-      expect(recoveryLogs).not.toContainEqual(expect.stringContaining('skipping wipe'));
-      // The crash-recovery contract survived the checkpoint, so the dirty flag
-      // is what drives the rebuild.
-      expect(recoveryLogs).toContainEqual(
-        expect.stringContaining('forcing full rebuild to restore a known-good index'),
-      );
+      // #2790 was: hashes advanced mid-run, changed=0, "skipping wipe" preserved
+      // the OLD graph. An FTS-phase stamp after the graph write can now recover
+      // via incremental (graph already mutated) instead of a forced wipe — that
+      // is not the #2790 bug as long as lastCommit is still stale and the
+      // incremental write set is non-empty. A forced rebuild also heals.
+      const skipWipe = recoveryLogs.find((message) => message.includes('skipping wipe'));
+      if (skipWipe) {
+        // #2790 was changed=0/added=0/deleted=0 over the old graph. A write
+        // set with added files is a real incremental, not that bug.
+        expect(skipWipe).not.toMatch(/changed=0, added=0, deleted=0/);
+      } else {
+        expect(recoveryLogs).toContainEqual(
+          expect.stringContaining('forcing full rebuild to restore a known-good index'),
+        );
+      }
       const healed = await loadMeta(storagePath);
       expect(healed).toMatchObject({ lastCommit: commitB });
       expect(healed?.embeddingCheckpoint).toBeUndefined();

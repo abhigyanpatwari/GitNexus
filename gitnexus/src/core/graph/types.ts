@@ -31,14 +31,26 @@ export interface KnowledgeGraph {
    * Zero-allocation relationship scan: fields, not objects (#2680).
    *
    * The whole-graph scans (the local-symbol pruner, community detection,
-   * process extraction) read only these four fields, and materializing a
+   * process extraction) read only these five fields, and materializing a
    * `GraphRelationship` per edge just to read them dominates iteration cost once
    * relationships are held columnar — measured at ~90 ms per analyze on a
    * million-edge graph. Prefer this over `forEachRelationship` in any pass that
    * walks every edge and needs no other field.
+   *
+   * `reason` is passed because confidence alone cannot separate a heuristic
+   * name guess from a resolved edge that happens to sit at the same number:
+   * the global-name fallback emits at exactly the process/community threshold
+   * (0.5), so the walks that must exclude it have to read the reason. See
+   * `GraphEmitSink`'s reason column, added for this consumer.
    */
   forEachRelationshipFields: (
-    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+    fn: (
+      sourceId: string,
+      targetId: string,
+      type: RelationshipType,
+      confidence: number,
+      reason: string,
+    ) => void,
   ) => void;
   getNode: (id: string) => GraphNode | undefined;
   nodeCount: number;

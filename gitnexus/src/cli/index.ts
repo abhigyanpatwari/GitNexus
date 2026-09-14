@@ -81,6 +81,7 @@ program
     'Re-parse every source file instead of replaying cached parser output',
   )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+  .option('--skip-fts', 'Skip FTS extension loading and keyword search indexes')
   .option(
     '--embeddings [limit]',
     'Enable embedding generation for semantic search (off by default). ' +
@@ -289,7 +290,8 @@ program
 
 program
   .command('status')
-  .description('Show index status for current repo')
+  .description('Show index status for the current repo or a registered index')
+  .option('-r, --repo <name>', 'Registered repository alias or path (works after checkout removal)')
   .option('--json', 'Emit machine-readable index and analyzer provenance')
   .addHelpText('after', () => t('help.identityCache.environment'))
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
@@ -304,15 +306,13 @@ program
   .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
   .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
 
-program
+const embeddings = program
   .command('embeddings')
-  .description('Manage the on-demand local embedding runtime')
+  .description(t('help.command.embeddings.description'));
+
+embeddings
   .command('install')
-  .description(
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
-      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
-      'Downloads only from your configured npm registry — mirrors and proxies apply.',
-  )
+  .description(t('help.command.embeddings.install.description'))
   .option(
     '--cuda',
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
@@ -320,6 +320,12 @@ program
   )
   .option('--force', 'Install into the runtime prefix even when the stack already resolves')
   .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
+
+embeddings
+  .command('sync [path]')
+  .description(t('help.command.embeddings.sync.description'))
+  .addHelpText('after', () => t('help.analyze.environment'))
+  .action(createLbugLazyAction(() => import('./embeddings-sync.js'), 'embeddingsSyncCommand'));
 
 program
   .command('clean')
@@ -407,7 +413,10 @@ program
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -418,7 +427,10 @@ program
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('-l, --limit <n>', 'Max callers/callees/processes to return')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program

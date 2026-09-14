@@ -7,7 +7,7 @@
  *    after the child is SIGKILLed the kernel drops the binding and our next
  *    acquire succeeds — the kernel-auto-release guarantee, no stale handling.
  *  - Test 2 pins the FILE backend and races several children reclaiming one dead
- *    holder, asserting the atomic rename-steal never lets two into the critical
+ *    holder, asserting the acquisition/reclaim guard never lets two into the critical
  *    section at once.
  *
  * The child imports the BUILT module (dist/) and this process imports the
@@ -59,6 +59,39 @@ afterEach(() => {
 });
 
 describe('index lock across processes (#2658)', () => {
+  it.each(['EEXIST', 'ENOENT'])(
+    'reports sentinel-create %s distinctly from other failures',
+    async (code) => {
+      const sentinel =
+        code === 'EEXIST'
+          ? path.join(dir, 'critical.sentinel')
+          : path.join(dir, 'missing-parent', 'critical.sentinel');
+      if (code === 'EEXIST') writeFileSync(sentinel, 'occupied');
+      child = spawn(process.execPath, [childScript], {
+        env: {
+          ...process.env,
+          LOCK_MODULE: lockModule,
+          LOCK_DIR: dir,
+          SENTINEL: sentinel,
+          MODE: 'EXCLUSIVE',
+          GITNEXUS_INDEX_LOCK_BACKEND: 'file',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+      const exitCode = await new Promise<number | null>((resolve, reject) => {
+        child!.once('error', reject);
+        child!.once('close', resolve);
+      });
+      expect(exitCode, stderr).toBe(code === 'EEXIST' ? 3 : 4);
+      expect(stderr).toContain(`code=${code}`);
+      expect(stderr).toContain(sentinel);
+    },
+  );
+
   it('excludes a second writer while held, then recovers after the holder is killed', async () => {
     if (!existsSync(lockModule)) {
       throw new Error(
@@ -91,83 +124,77 @@ describe('index lock across processes (#2658)', () => {
     lock.release();
   }, 90_000);
 
-  // The FILE backend is the DEFAULT only on macOS/BSD; Windows and Linux default
-  // to the race-free kernel lock (named pipe / abstract socket). This case FORCES
-  // the file backend to stress its rename-steal reclaim, so it runs where that
-  // backend is actually production (macOS — where the double-admit bug this
-  // guards lived and is now fixed) plus Linux. It is skipped on Windows, where
-  // the file backend is never the default; Windows' real lock (the named pipe) is
-  // covered by index-lock.test.ts on the Windows matrix and by the
-  // default-backend cross-process case above.
-  it.skipIf(process.platform === 'win32')(
-    'lets multiple waiters reclaim one dead holder without ever admitting two writers',
-    async () => {
-      if (!existsSync(lockModule)) {
-        throw new Error(
-          `dist/storage/index-lock.js missing — run \`npm run build\` first ` +
-            `(or use \`npm run test:integration\`, which builds via pretest:integration).`,
-        );
-      }
-      // This case targets the FILE backend's reclaim path specifically (the socket
-      // backend has no stale file to reclaim). Seed a stale lock owned by a dead,
-      // same-host holder — every child must reclaim it, and the reclaim must let
-      // exactly one at a time win so no two children are ever in their O_EXCL
-      // sentinel section together.
-      //
-      // The reclaim's rename-steal must NOT act on a stale staleness judgment: a
-      // waiter that judged the dead record must re-verify the file still holds it
-      // before renaming, or it will rename a live winner's freshly-created lock
-      // aside and admit a second writer (#2658 review — this reproduced at ~18% per
-      // round of 4-way contention before the judgment-verified steal). One round
-      // catches that regression only ~1-in-6 of the time, so loop several rounds to
-      // make it a reliable guard; with the fix every round is clean.
-      const sentinel = path.join(dir, 'critical.sentinel');
-      const seedDeadHolder = (): void => {
-        writeFileSync(
-          path.join(dir, 'analyze.lock'),
-          JSON.stringify({
-            v: 1,
-            pid: 999_999_999,
-            hostname: os.hostname(),
-            startTime: null,
-            token: 'dead-holder-token',
-            invocationId: 'dead-holder',
-            acquiredAt: new Date(0).toISOString(),
-          }),
-        );
-      };
+  // Force the portable fallback on every platform, including Windows where a
+  // socket-bind failure can select it. The default backend is covered above.
+  it('lets multiple waiters reclaim one dead holder without ever admitting two writers', async () => {
+    if (!existsSync(lockModule)) {
+      throw new Error(
+        `dist/storage/index-lock.js missing — run \`npm run build\` first ` +
+          `(or use \`npm run test:integration\`, which builds via pretest:integration).`,
+      );
+    }
+    // This case targets the FILE backend's reclaim path specifically (the socket
+    // backend has no stale file to reclaim). Seed a stale lock owned by a dead,
+    // same-host holder — every child must reclaim it, and the reclaim must let
+    // exactly one at a time win so no two children are ever in their O_EXCL
+    // sentinel section together.
+    //
+    // Retain repeated real-process contention alongside the deterministic
+    // stale-read/rename/restore regression in index-lock-reclaim-guard.test.ts.
+    const sentinel = path.join(dir, 'critical.sentinel');
+    const seedDeadHolder = (): void => {
+      writeFileSync(
+        path.join(dir, 'analyze.lock'),
+        JSON.stringify({
+          v: 1,
+          pid: 999_999_999,
+          hostname: os.hostname(),
+          startTime: null,
+          token: 'dead-holder-token',
+          invocationId: 'dead-holder',
+          acquiredAt: new Date(0).toISOString(),
+        }),
+      );
+    };
 
-      const runChild = (): Promise<{ code: number | null; signal: NodeJS.Signals | null }> =>
-        new Promise((resolve) => {
-          const c = spawn(process.execPath, [childScript], {
-            env: {
-              ...process.env,
-              LOCK_MODULE: lockModule,
-              LOCK_DIR: dir,
-              SENTINEL: sentinel,
-              MODE: 'EXCLUSIVE',
-              GITNEXUS_INDEX_LOCK_BACKEND: 'file',
-            },
-            stdio: ['ignore', 'pipe', 'pipe'],
-          });
-          c.once('exit', (code, signal) => resolve({ code, signal }));
+    const runChild = (): Promise<{
+      code: number | null;
+      signal: NodeJS.Signals | null;
+      stderr: string;
+    }> =>
+      new Promise((resolve, reject) => {
+        const c = spawn(process.execPath, [childScript], {
+          env: {
+            ...process.env,
+            LOCK_MODULE: lockModule,
+            LOCK_DIR: dir,
+            SENTINEL: sentinel,
+            MODE: 'EXCLUSIVE',
+            GITNEXUS_INDEX_LOCK_BACKEND: 'file',
+          },
+          stdio: ['ignore', 'pipe', 'pipe'],
         });
+        let stderr = '';
+        c.stderr?.on('data', (chunk) => {
+          stderr += String(chunk);
+        });
+        c.once('error', reject);
+        c.once('close', (code, signal) => resolve({ code, signal, stderr }));
+      });
 
-      const ROUNDS = 8;
-      const KIDS = 5;
-      for (let round = 0; round < ROUNDS; round++) {
-        seedDeadHolder(); // the previous round's winner released (unlinked) the lock
-        const results = await Promise.all(Array.from({ length: KIDS }, () => runChild()));
-        // Every child acquired, ran its exclusive section, and exited cleanly (0).
-        // Exit 3 = it found the sentinel already present = two holders at once.
-        for (const r of results) {
-          expect(r.signal).toBeNull();
-          expect(r.code).toBe(0);
-        }
-        // No leftover sentinel — the last holder cleaned up.
-        expect(existsSync(sentinel)).toBe(false);
+    const ROUNDS = 8;
+    const KIDS = 5;
+    for (let round = 0; round < ROUNDS; round++) {
+      seedDeadHolder(); // the previous round's winner released (unlinked) the lock
+      const results = await Promise.all(Array.from({ length: KIDS }, () => runChild()));
+      // Every child acquired, ran its exclusive section, and exited cleanly (0).
+      // Exit 3 = it found the sentinel already present = two holders at once.
+      for (const r of results) {
+        expect(r.signal, r.stderr).toBeNull();
+        expect(r.code, r.stderr).toBe(0);
       }
-    },
-    60_000,
-  );
+      // No leftover sentinel — the last holder cleaned up.
+      expect(existsSync(sentinel)).toBe(false);
+    }
+  }, 60_000);
 });

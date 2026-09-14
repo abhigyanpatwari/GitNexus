@@ -13,6 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
@@ -28,7 +29,6 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
-  getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
@@ -42,7 +42,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -1349,6 +1349,7 @@ const analyzeCommandImpl = async (
       force: options.force || options.skills || options.parseCache === false,
       useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
+      skipFts: options.skipFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
       dropEmbeddings: options.dropEmbeddings,
@@ -1418,7 +1419,7 @@ const analyzeCommandImpl = async (
       // run can write meta.json and then fail before registerRepo(); in
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
-      await assertAnalysisFinalized(repoPath);
+      await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
       // defaultBranch / `--default-branch` must still take effect. Surgically
       // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
@@ -1450,6 +1451,9 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (result.ftsSkipped) {
+        console.log(`  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}\n`);
+      }
       if (runOptions.registryName) {
         console.log(`  Registry name: ${result.repoName}\n`);
       }
@@ -1488,7 +1492,7 @@ const analyzeCommandImpl = async (
     // success so the silent-finalize state surfaces with a non-zero
     // exit code and an actionable error instead of being mistaken for
     // a healthy index.
-    await assertAnalysisFinalized(repoPath);
+    await assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
     // Gated so `--index-only --skills` skips community skill writes too
@@ -1519,10 +1523,9 @@ const analyzeCommandImpl = async (
               (count: number) => count >= 5,
             ).length;
           }
-          const { storagePath: sp } = getStoragePaths(repoPath);
           await generateAIContextFiles(
             repoPath,
-            sp,
+            result.storagePath,
             result.repoName,
             {
               files: s.files ?? 0,
@@ -1608,26 +1611,9 @@ const analyzeCommandImpl = async (
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
     if (result.ftsSkipped) {
-      // #2658 review L2: a build/verify failure is NOT an extension-unavailable
-      // problem — sending the user to install the extension is the wrong remedy.
-      if (result.ftsSkipReason === 'build-failed') {
-        console.log(
-          `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
-            `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
-            `  check the disk for space or corruption. Run \`gitnexus doctor\` for details.`,
-        );
-      } else {
-        console.log(
-          // NOT "then rerun" (#2841 §5.C): this run stamped `lastCommit`, so a
-          // plain rerun on an unchanged tree takes the up-to-date fast path and
-          // returns before Phase 3 could rebuild anything — the advice would be
-          // ineffective exactly when the user follows it. `--repair-fts` is the
-          // verb that rebuilds the search indexes without re-parsing the repo.
-          `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto), then run\n` +
-            `  \`gitnexus analyze --repair-fts\` to build the search indexes. Run \`gitnexus doctor\` for details.`,
-        );
-      }
+      // Total switch (#2658 L2 + native-abort/tuple-missing): a new skip
+      // reason must not inherit the network-install remedy.
+      console.log(`\n  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}`);
     }
 
     try {
@@ -1669,6 +1655,14 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
+      if (isIndexLockGuardTimeout(err)) {
+        cliError(err.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath: err.guardPath,
+        });
+        process.exitCode = 1;
+        return;
+      }
       cliError(
         `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
           `already refreshing this index and did not finish within the wait window.\n` +

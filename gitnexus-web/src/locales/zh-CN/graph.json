@@ -110,7 +110,8 @@
     "references_other": "{{count}} 条引用",
     "lines_one": "{{count}} 行",
     "lines_other": "{{count}} 行",
-    "codeNotAvailable": "内存中没有 {{path}} 的代码内容"
+    "codeNotAvailable": "内存中没有 {{path}} 的代码内容",
+    "sourceUnavailable": "此索引无法提供完整源码。"
   },
   "canvas": {
     "viewModes": {

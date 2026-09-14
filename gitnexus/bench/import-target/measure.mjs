@@ -490,6 +490,7 @@ import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/v
 import { typescriptScopeResolver } from '../../src/core/ingestion/languages/typescript/scope-resolver.ts';
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
+import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
 // which loads it dynamically. Statically it costs 6-10 s of module load
 // depending on the box (measured both ways there), because reaching the
@@ -598,6 +599,7 @@ const HEAP_BUDGETED = [
   'dart',
   'go',
   'cpp',
+  'objc',
 ];
 // javascript, typescript and vue were budgeted here until #2953 and are now
 // BOUNDED, which is a demotion in gate strength and a promotion in what the
@@ -756,6 +758,7 @@ const EXTENSION = {
   vue: '.vue',
   c: '.c',
   cpp: '.cpp',
+  objc: '.m',
   zig: '.zig',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
@@ -879,6 +882,7 @@ function uniqueDir(lang, d, i) {
   // C and C++ split headers from sources — the shape that makes
   // `resolutionConfig` load-bearing. Odd `i` is the header.
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `include/comp${d}` : `src/comp${d}`;
+  if (lang === 'objc') return `src/comp${d}`;
   if (lang === 'ruby') return `lib/mod${d}`;
   // One flat `src/mod{d}/` per index and NO nested slice, on purpose: a Zig
   // import is spelled RELATIVE TO THE IMPORTER, and `uniqueTarget` does not
@@ -974,6 +978,7 @@ function collideDir(lang, d, i) {
   if (lang === 'javascript' || lang === 'typescript') return `pkg${d}/src`;
   if (lang === 'vue') return `src/pkg${d}/components`;
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `svc${d}/include` : `svc${d}/src`;
+  if (lang === 'objc') return `svc${d}/src`;
   if (lang === 'ruby') return `svc${d}/lib/models`;
   // Rust's reasoning, verbatim: the resolver walks path components and probes
   // `.has()`, never searches, so file count is not an axis its cost has and a
@@ -1400,6 +1405,9 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/missing${h}`;
   }
+  if (lang === 'objc') {
+    return local ? `comp${j % dirs}/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
+  }
   if (lang === 'ruby') {
     return local
       ? `mod${d}/file${j}`
@@ -1629,6 +1637,9 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
       : (r >>> 3) % 2 === 0
         ? ['stdio.h', 'stdlib.h', 'string.h'][(r >>> 4) % 3]
         : `vendor${(r >>> 4) % 97}/mod0${h}`;
+  }
+  if (lang === 'objc') {
+    return local ? `src/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
   }
   if (lang === 'ruby') {
     // `models/mod{n}.rb` in every package. Ruby answers `require` from a keyed
@@ -1912,6 +1923,9 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'cpp') {
     return cppScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
+  if (lang === 'objc') {
+    return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+  }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
     return resolveCsharpImportTarget(
       { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
@@ -2132,6 +2146,7 @@ const HEAP_PROBE_TARGET = {
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
+  objc: 'vendor0/missing.m',
   // The entries below cover the BOUNDED tier — see `HEAP_BOUNDED`, which
   // derives to cobol, swift and rust; the rest were promoted. Same rule as the
   // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
@@ -2394,6 +2409,7 @@ const LANG_REGISTRY = {
   vue: SupportedLanguages.Vue,
   c: SupportedLanguages.C,
   cpp: SupportedLanguages.CPlusPlus,
+  objc: SupportedLanguages.ObjectiveC,
   zig: SupportedLanguages.Zig,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
@@ -2701,6 +2717,9 @@ for (const lang of LANGS) {
   }
   for (const arm of ['deep', 'collide']) {
     if (got[arm].resolved !== got.small.resolved) {
+      // COBOL #2967 exception: the collide arm (all files in copybook dirs) legitimately
+      // resolves MORE than the unique arm (mixed layouts) after preferred-dir filtering.
+      if (lang === 'cobol' && arm === 'collide') continue;
       failures.push(
         `${lang}: ${arm} arm resolved ${got[arm].resolved} vs small ${got.small.resolved} — the ` +
           `${arm} arm was supposed to change ${arm === 'deep' ? 'path depth' : 'directory and file NAMING'} ` +

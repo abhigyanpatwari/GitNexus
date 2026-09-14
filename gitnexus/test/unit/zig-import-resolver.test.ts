@@ -8,10 +8,12 @@ import { fileURLToPath } from 'node:url';
 import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.js';
 import {
   loadZigBuildConfig,
+  loadZigWorkspaceIndex,
   parseZigBuildModules,
   parseZigRootModules,
   parseZigBuildModuleRoots,
   parseZigBuildZon,
+  zigPackageFor,
 } from '../../src/core/ingestion/language-config.js';
 
 const FIXTURES = path.resolve(
@@ -814,5 +816,140 @@ describe('loadZigBuildConfig (zig-idioms fixture)', () => {
     // oldlib has no build.zig → no entry; the resolver falls back to
     // src/root.zig → src/oldlib.zig → src/main.zig.
     expect(config!.moduleRoots?.has('oldlib')).toBe(false);
+  });
+});
+
+describe('loadZigWorkspaceIndex / zigPackageFor (zig-monorepo fixture)', () => {
+  const MONOREPO = path.join(FIXTURES, 'zig-monorepo');
+  /** Every `.zig` the fixture indexes, repo-relative — what `allFilePaths` holds. */
+  const files = new Set<string>([
+    'packages/core/build.zig',
+    'packages/core/src/root.zig',
+    'packages/app/build.zig',
+    'packages/app/src/main.zig',
+    'packages/app/src/util.zig',
+    'packages/tool/build.zig',
+    'packages/tool/src/core.zig',
+    'packages/tool/src/main.zig',
+  ]);
+
+  it('finds the packages the root-only loader cannot see at all', async () => {
+    // The regression this exists for: with no build.zig at the repo root the
+    // root-only loader has nothing to read and answers null, so every bare
+    // `@import` in the repo is unresolvable. Asserted side by side so the
+    // difference is the test rather than a claim in a comment.
+    expect(await loadZigBuildConfig(MONOREPO)).toBeNull();
+
+    const index = await loadZigWorkspaceIndex(MONOREPO);
+    expect(index).not.toBeNull();
+    expect(index!.packages.map((p) => p.dir)).toEqual([
+      'packages/core',
+      'packages/tool',
+      'packages/app',
+    ]);
+  });
+
+  it('rebases a package-relative `.path` dep to repo-relative', async () => {
+    // `app/build.zig.zon` writes `.path = "../core"`, which means nothing
+    // against `allFilePaths` (repo-relative keys) and is rejected outright by
+    // `normalizeZigDepPath` as an escape when read from the repo root.
+    const app = zigPackageFor(await loadZigWorkspaceIndex(MONOREPO), 'packages/app/src/main.zig');
+    expect(app!.pathDeps.get('core')).toBe('packages/core');
+    expect(app!.moduleRoots?.get('core')).toEqual(['packages/core/src/root.zig']);
+  });
+
+  it('resolves a cross-package dependency from every file of the dependent package', async () => {
+    const index = await loadZigWorkspaceIndex(MONOREPO);
+    // The module root, and a file that is NOT the module root: membership is
+    // the root plus what it reaches, so both must resolve the alias.
+    for (const from of ['packages/app/src/main.zig', 'packages/app/src/util.zig']) {
+      expect(resolveZigImportInternal(from, 'core', files, zigPackageFor(index, from))).toBe(
+        'packages/core/src/root.zig',
+      );
+    }
+  });
+
+  it('keeps one alias bound to two different roots in two packages apart', async () => {
+    // The discriminating case. `tool` binds `core` to its OWN src/core.zig. A
+    // repo-wide module map — the shape a workspace index invites — would answer
+    // `packages/core/src/root.zig` here: a confident edge into a package `tool`
+    // does not depend on, which is worse than the unresolved import this change
+    // set out to fix.
+    const index = await loadZigWorkspaceIndex(MONOREPO);
+    const from = 'packages/tool/src/main.zig';
+    expect(resolveZigImportInternal(from, 'core', files, zigPackageFor(index, from))).toBe(
+      'packages/tool/src/core.zig',
+    );
+  });
+
+  it('does not leak one package’s modules to files outside it', async () => {
+    // `core` declares module `core`; `tool` never depends on `app`. A file in
+    // one package must not resolve another package's module name.
+    const index = await loadZigWorkspaceIndex(MONOREPO);
+    const from = 'packages/core/src/root.zig';
+    expect(resolveZigImportInternal(from, 'app', files, zigPackageFor(index, from))).toBeNull();
+  });
+
+  it('governs a file by the NEAREST enclosing package', async () => {
+    const index = await loadZigWorkspaceIndex(MONOREPO);
+    expect(zigPackageFor(index, 'packages/core/src/root.zig')!.rootModules?.get('core')).toBe(
+      'packages/core/src/root.zig',
+    );
+    // A path under no package at all resolves to no config rather than to the
+    // first package in the list.
+    expect(zigPackageFor(index, 'docs/notes.zig')).toBeNull();
+  });
+
+  it('keeps a genuinely single-package repo byte-identical to the root-only loader', async () => {
+    // `libs/geo` is one directory with one build.zig and no nested marker
+    // anywhere below it, so the workspace walk finds exactly one package and
+    // this really does pin the no-op case. `zig-idioms` cannot: it declares
+    // `libs/geo` as a path dep and that directory has its own build.zig, so the
+    // walk finds TWO packages there — the assertion below is the one the next
+    // test makes, and naming this file "single-package" would be the claim, not
+    // the check.
+    const single = path.join(FIXTURES, 'zig-idioms', 'libs', 'geo');
+    const index = await loadZigWorkspaceIndex(single);
+    expect(index!.packages.map((p) => p.dir)).toEqual(['']);
+    expect(index!.packages[0]!.config).toEqual(await loadZigBuildConfig(single));
+    expect(zigPackageFor(index, 'src/root.zig')).toEqual(await loadZigBuildConfig(single));
+  });
+
+  it('leaves the ROOT package of a multi-package repo as the root-only loader saw it', async () => {
+    // The root package is a scope like any other and `dir: ''` matches every
+    // file no deeper package claims, so a file outside `libs/geo` must still
+    // get exactly what `loadZigBuildConfig` alone used to answer.
+    const idioms = path.join(FIXTURES, 'zig-idioms');
+    const index = await loadZigWorkspaceIndex(idioms);
+    expect(index!.packages.map((p) => p.dir)).toEqual(['libs/geo', '']);
+    const root = index!.packages.find((p) => p.dir === '');
+    expect(root).toBeDefined();
+    expect(root!.config).toEqual(await loadZigBuildConfig(idioms));
+    expect(zigPackageFor(index, 'src/idioms.zig')).toEqual(await loadZigBuildConfig(idioms));
+    // …and a file INSIDE the nested package is governed by that package, not
+    // by the root — the regression the misnamed version of this test could not
+    // have caught, because it never looked below `src/`.
+    expect(zigPackageFor(index, 'libs/geo/src/root.zig')).toEqual(
+      await loadZigBuildConfig(idioms, 'libs/geo'),
+    );
+  });
+
+  it('rejects an ABSOLUTE `.path` in a nested package instead of rebasing it in', async () => {
+    // `packages/app` declares `.escapes = .{ .path = "/src" }`. Absolute, so it
+    // names something outside this repository — but the nested branch prefixes
+    // the package directory before normalizing, and `packages/app/` + `/src` is
+    // `packages/app//src`, which is relative by inspection. The empty segment is
+    // then dropped and the dep lands on `packages/app/src`, a directory that
+    // really exists here: an out-of-repo dependency fabricated into an in-repo
+    // resolution. `isAbsoluteZigDepPath` asks the question of the value AS
+    // WRITTEN, before any prefixing.
+    //
+    // `path.posix.join` would NOT have fixed this: it strips the leading slash
+    // too, producing the same `packages/app/src` without rejecting anything.
+    const app = zigPackageFor(await loadZigWorkspaceIndex(MONOREPO), 'packages/app/src/main.zig');
+    expect(app!.pathDeps.has('escapes')).toBe(false);
+    expect(app!.moduleRoots?.has('escapes') ?? false).toBe(false);
+    // The legitimate package-relative dep beside it is untouched.
+    expect(app!.pathDeps.get('core')).toBe('packages/core');
   });
 });

@@ -24,6 +24,21 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
+  it('forwards explicit FTS opt-out without changing the default', async () => {
+    const names = [
+      'GITNEXUS_MAX_FILE_SIZE',
+      'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+      'GITNEXUS_VERBOSE',
+    ] as const;
+    for (const name of names) vi.stubEnv(name, process.env[name]);
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    try {
+      expect((await resolveWatchOptions(repoPath, { skipFts: true }, baseline)).skipFts).toBe(true);
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).skipFts).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('accepts every scanner-admitted file instead of maintaining a second allow-list', () => {
     expect(isRelevantWatchPath('src/service.ts')).toBe(true);
     expect(isRelevantWatchPath('server/app.py')).toBe(true);

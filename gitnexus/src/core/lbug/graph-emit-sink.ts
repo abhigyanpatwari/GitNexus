@@ -70,7 +70,7 @@
  *    replaced, so the obvious rewrite is not the one that shipped.
  * 3. The remaining ~90 ms was object allocation itself, irreducible while the
  *    read API returns objects — so the five whole-graph scans moved to
- *    `forEachRelationshipFields`, which passes the four fields they actually
+ *    `forEachRelationshipFields`, which passes the five fields they actually
  *    read as primitives and allocates nothing. See
  *    {@link GraphEmitSink.forEachRelationshipFields}.
  *
@@ -282,14 +282,19 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * safe because `buildRelRow` never persists `rel.id` and no consumer keys on
    * it (audited).
    *
-   * The dropped `reason`/`step` are safe too, but for a different reason worth
-   * stating: the PERSISTED row keeps their true values, because `buildRelRow` is
-   * handed the original relationship on the way through. Only in-memory reads
-   * see the `'streamed'` placeholder, and the in-pipeline consumers of streamed
-   * edges read neither field. So e.g. the `ACCESSES reason: 'read'|'write'`
-   * distinction that MCP queries rely on survives in the database. A future
-   * in-pipeline consumer needing `reason` or `step` on a streamed edge must add
-   * the column, not trust the placeholder.
+   * `reason` IS now retained, as an interned index — the in-pipeline consumer
+   * this JSDoc anticipated arrived. Process tracing and large-graph community
+   * detection must exclude global-name-fallback edges, which are emitted at
+   * exactly their confidence threshold (0.5) and so cannot be separated by
+   * confidence alone. Interning keeps the cost at one small integer per edge
+   * (the reason vocabulary is a fixed set of literals), not one string.
+   *
+   * `id` and `step` remain dropped. The PERSISTED row keeps `step`'s true value,
+   * because `buildRelRow` is handed the original relationship on the way
+   * through; only in-memory OBJECT reads see the `'streamed'`-era placeholder,
+   * and no in-pipeline consumer of streamed edges reads `step`. A future
+   * in-pipeline consumer needing `step` must add the column, not trust the
+   * placeholder.
    *
    * Node ids are interned; the strings are shared by reference with the node
    * map's, so interning adds bookkeeping, not new text.
@@ -300,6 +305,12 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
   private readonly tgtIx: number[] = [];
   private readonly relTypes: RelationshipType[] = [];
   private readonly confidences: number[] = [];
+  /** Interned reason strings, and the per-edge index into them. The vocabulary
+   *  is a fixed set of emitter literals, so this is O(vocabulary) text plus one
+   *  small integer per edge. */
+  private readonly reasonIds = new Map<string, number>();
+  private readonly reasonByIx: string[] = [];
+  private readonly reasonIx: number[] = [];
   private finalized = false;
   /**
    * Streaming is OFF until {@link beginStreaming} is called by `parse`.
@@ -472,6 +483,16 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     this.tgtIx.push(tgtIx);
     this.relTypes.push(relationship.type);
     this.confidences.push(relationship.confidence);
+    this.reasonIx.push(this.internReason(relationship.reason));
+  }
+
+  private internReason(reason: string): number {
+    const existing = this.reasonIds.get(reason);
+    if (existing !== undefined) return existing;
+    const ix = this.reasonByIx.length;
+    this.reasonByIx.push(reason);
+    this.reasonIds.set(reason, ix);
+    return ix;
   }
 
   /** Flush + close every writer and return the COPY manifest. Every fd is
@@ -599,7 +620,13 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    * with the object-based graph despite holding relationships columnar.
    */
   forEachRelationshipFields(
-    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+    fn: (
+      sourceId: string,
+      targetId: string,
+      type: RelationshipType,
+      confidence: number,
+      reason: string,
+    ) => void,
   ): void {
     this.real.forEachRelationshipFields(fn);
     for (let ix = 0; ix < this.srcIx.length; ix++) {
@@ -608,6 +635,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
         this.nodeIdByIx[this.tgtIx[ix]],
         this.relTypes[ix],
         this.confidences[ix],
+        this.reasonByIx[this.reasonIx[ix]],
       );
     }
   }

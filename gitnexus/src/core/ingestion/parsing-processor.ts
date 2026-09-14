@@ -1,7 +1,7 @@
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageForFileContent } from './languages/index.js';
 
 import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './call-processor.js';
 
@@ -260,7 +260,7 @@ export const dispatchChunkParseRound = async (
   const dispatchGroups: DispatchGroup<ParseWorkerInput>[] = groups.map((group) => {
     const items: ParseWorkerInput[] = [];
     for (const file of group.items) {
-      const lang = getLanguageFromFilename(file.path);
+      const lang = getLanguageForFileContent(file.path, file.content);
       if (lang) items.push({ path: file.path, content: file.content });
     }
     return { items, chunkHash: group.chunkHash };

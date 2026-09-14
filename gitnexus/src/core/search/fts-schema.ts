@@ -1,3 +1,5 @@
+import type { FtsProfile } from '../../storage/repo-meta.js';
+
 export interface FTSIndexDefinition {
   readonly table: string;
   readonly indexName: string;
@@ -25,6 +27,8 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // Original 5 (minus File) gain `description`.
   { table: 'Function', indexName: 'function_fts', properties: FTS_PROPERTIES },
   { table: 'Class', indexName: 'class_fts', properties: FTS_PROPERTIES },
+  { table: 'Protocol', indexName: 'protocol_fts', properties: FTS_PROPERTIES },
+  { table: 'Category', indexName: 'category_fts', properties: FTS_PROPERTIES },
   { table: 'Method', indexName: 'method_fts', properties: FTS_PROPERTIES },
   { table: 'Interface', indexName: 'interface_fts', properties: FTS_PROPERTIES },
   // Remaining EMBEDDABLE_LABELS symbol tables — all CODE_ELEMENT_BASE-shaped
@@ -47,3 +51,16 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // Markdown headings and static document declarations must be discoverable by name.
   { table: 'Section', indexName: 'section_fts', properties: FTS_PROPERTIES },
 ];
+
+const NAME_ONLY_PROPERTIES = ['name'] as const;
+
+/** Return the FTS definitions compatible with one persisted content profile. */
+export const getFtsIndexes = (profile: FtsProfile = 'full'): readonly FTSIndexDefinition[] => {
+  if (profile === 'full') return FTS_INDEXES;
+  if (profile === 'symbol-no-file-content') {
+    return FTS_INDEXES.map((index) =>
+      index.table === 'File' ? { ...index, properties: NAME_ONLY_PROPERTIES } : index,
+    );
+  }
+  return FTS_INDEXES.map((index) => ({ ...index, properties: NAME_ONLY_PROPERTIES }));
+};

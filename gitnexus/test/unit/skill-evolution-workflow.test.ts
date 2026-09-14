@@ -270,12 +270,13 @@ describe('gitnexus skill-evolution workflow contract', () => {
   });
 
   it('passes the cell concurrency through to the benchmark', () => {
-    // The lane is serial unless told otherwise: concurrency only pays off when
-    // the runner has the vCPUs for it, and a cell starved of CPU drifts toward
-    // its session timeout, which the gate counts as an excluded run.
+    // Dispatch defaults to 3. Scheduled runs still fall back to serial unless
+    // GITNEXUS_EVOLUTION_WORKERS is set — a cell starved of CPU that hits the
+    // session ceiling is an excluded run the gate refuses.
     expect(evolveJob?.env?.WORKERS).toBe(
       "${{ inputs.workers || vars.GITNEXUS_EVOLUTION_WORKERS || '1' }}",
     );
+    expect(workflow).toMatch(/workers:\n(?:[^\n]*\n){0,4}        default: '3'/);
   });
 
   it('seeds from the newest usable completed main run, including failed runs', () => {
@@ -572,6 +573,27 @@ exit 1`);
     // uploads. The job must finish inside that window even when the schedule
     // fires late (the 2026-08-01 run was queued 65 minutes after the cron).
     expect(jobBudget as number).toBeLessThanOrEqual(21 * 60);
+    // A Friday dispatch inherits leftover uptime. The shared entrypoint — not
+    // the workflow YAML — must cap the sweep so it fails in-process and the
+    // always() upload still runs (run 33962002890).
+    const script = readFileSync(
+      path.join(REPO_ROOT, 'eval/workflow_bench/run-evolution.sh'),
+      'utf8',
+    );
+    // The flag, not a precomputed number: the CLI reads /proc/uptime in the
+    // same breath as it starts the clock the cap is measured against, so
+    // nothing between the two can be charged to the sweep.
+    expect(script).toContain('--max-runtime-from-instance-window');
+    expect(script).not.toContain('instance_window_budget_from_proc');
+    expect(script).toContain('export RUNTIME_DIGEST');
+    // The workflow's half of that contract is calling the entrypoint, not
+    // naming the flag. The YAML never mentions --max-runtime-from-instance-window
+    // at all — only the prose at gitnexus-skill-evolution.yml:179-184 describing
+    // the cap — so an assertion on flag text there would test a comment, and a
+    // loop step that had stopped invoking the script would still pass it.
+    expect(stepRun('Run the propose → benchmark → gate loop')).toContain(
+      './workflow_bench/run-evolution.sh --apply',
+    );
   });
 
   it('uploads benchmark evidence unconditionally, on a path it addresses itself', () => {

@@ -5,7 +5,7 @@
  * that signal. Mutation still fail-closes on both paths.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { writeFileSync } from 'node:fs';
@@ -177,7 +177,7 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       const tree = await seedWideBuildTree(fixture.dbPath);
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      fsCtx.unwritableExact.add(tree.packageRoot);
+      fsCtx.unwritableExact.add(await realpath(tree.packageRoot));
       spawnCtx.spawnSync.mockClear();
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
@@ -198,7 +198,9 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       fsCtx.wOkProbes.length = 0;
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      expect(fsCtx.wOkProbes).toEqual(expect.arrayContaining([tree.packageRoot, tree.sourceRoot]));
+      expect(fsCtx.wOkProbes).toEqual(
+        expect.arrayContaining([await realpath(tree.packageRoot), await realpath(tree.sourceRoot)]),
+      );
       expect(fsCtx.wOkProbes).not.toContain(cacheDirectory);
       expect(cacheGuardSpawnCount()).toBeGreaterThan(0);
     } finally {

@@ -1,0 +1,21 @@
+{
+  "coreVersion": "0.18.3",
+  "extensionVersion": "0.18.1",
+  "filename": "libfts.lbug_extension",
+  "officialRepo": "https://extension.ladybugdb.com/",
+  "urlTemplate": "{officialRepo}v{extensionVersion}/{upstreamPlatform}/fts/{filename}",
+  "upstreamDigestPublished": false,
+  "tuples": [
+    { "tuple": "linux-x64", "upstreamPlatform": "linux_amd64" },
+    { "tuple": "linux-arm64", "upstreamPlatform": "linux_arm64" },
+    { "tuple": "darwin-x64", "upstreamPlatform": "osx_amd64" },
+    { "tuple": "darwin-arm64", "upstreamPlatform": "osx_arm64" },
+    { "tuple": "win32-x64", "upstreamPlatform": "win_amd64" }
+  ],
+  "unsupportedTuples": [
+    {
+      "tuple": "win32-arm64",
+      "reason": "no upstream-published artifact at vendor-refresh time"
+    }
+  ]
+}

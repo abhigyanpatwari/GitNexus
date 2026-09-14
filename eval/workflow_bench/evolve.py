@@ -48,6 +48,7 @@ import yaml
 
 from . import runner
 from . import runner_sessions
+from .comparator_reuse import current_runtime_digest
 from .model_gateway import (
     ANTHROPIC_API_KEY_ENV,
     attach_openai_gateway,
@@ -698,8 +699,17 @@ def run_proposer(
     bwrap_bin: Path,
     sandbox_backend: str = "bwrap",
     progress_label: str | None = None,
+    started_monotonic: float | None = None,
 ) -> dict[str, Any]:
-    """Run one proposer in confinement and copy only validated outputs out."""
+    """Run one proposer in confinement and copy only validated outputs out.
+
+    ``started_monotonic`` is the sweep clock, not a precomputed budget. The
+    per-session ``--timeout`` is sized for a whole generation, so a proposer
+    started with only the sweep minimum left would otherwise run far past the
+    instance window; the clock is passed rather than the leftover because the
+    clone, the sanitize pass and the sandbox setup below all happen before the
+    session starts, and a number sampled by the caller is already stale by then.
+    """
 
     with tempfile.TemporaryDirectory(prefix="wfevolve-") as tmp:
         clone = runner.make_worktree(REPO_ROOT, "HEAD", Path(tmp))
@@ -732,11 +742,45 @@ def run_proposer(
                 host_text = getattr(sandbox, "host_text", lambda value: value)
                 environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
                 backend = getattr(sandbox, "backend", "bwrap")
+                # Sampled here, after the setup above: this is the last
+                # moment before the session starts, so it is the only reading
+                # the session's own timeout can honestly be clamped to.
+                remaining_seconds = (
+                    None
+                    if started_monotonic is None
+                    else remaining_runtime_seconds(
+                        max_runtime_seconds=args.max_runtime_seconds,
+                        started_monotonic=started_monotonic,
+                    )
+                )
+                # An exhausted cap must stop the run, not buy one more second.
+                # remaining_runtime_seconds floors at 0, and max(1, ...) turned
+                # that 0 into a one-second paid session: the admission check
+                # happens before cloning, sanitizing and sandbox setup, so those
+                # unbounded steps can spend the rest of the window and leave
+                # nothing for the upload reserve this cap exists to protect.
+                if remaining_seconds is not None and remaining_seconds < 1:
+                    # The caller stops the run on a not-ok record, which is the
+                    # right outcome: an exhausted cap should end the generation,
+                    # not start a session it cannot afford to finish.
+                    return {
+                        "ok": False,
+                        "error_kind": "runtime-cap-exhausted",
+                        "error_detail": (
+                            "the wall-clock cap elapsed during proposer setup "
+                            "(clone, sanitize, sandbox), before the session started"
+                        ),
+                        "duration_s": 0.0,
+                        "num_turns": 0,
+                        "cost_usd": None,
+                    }
                 record = runner.run_claude(
                     host_text(prompt),
                     clone,
                     claude_bin=sandbox.claude_bin,
-                    timeout=args.timeout,
+                    timeout=(
+                        args.timeout if remaining_seconds is None else min(args.timeout, remaining_seconds)
+                    ),
                     model=args.proposer_model,
                     effort=args.effort,
                     env=model_session_environment(
@@ -823,6 +867,119 @@ def _timeout_arm_key(arm: str) -> str:
     return CANDIDATE_ARMS.get(arm, arm)
 
 
+EVENTBRIDGE_INSTANCE_WINDOW_SECONDS = 86_400
+EVENTBRIDGE_STOP_RESERVE_SECONDS = 5_400
+MIN_INSTANCE_SWEEP_SECONDS = 600
+
+
+def instance_window_budget_seconds(
+    uptime_seconds: float,
+    *,
+    window_seconds: int = EVENTBRIDGE_INSTANCE_WINDOW_SECONDS,
+    reserve_seconds: int = EVENTBRIDGE_STOP_RESERVE_SECONDS,
+    min_seconds: int = MIN_INSTANCE_SWEEP_SECONDS,
+) -> int:
+    """Seconds a sweep may run before an EventBridge 24h instance stop.
+
+    The dedicated evolution box is started ~15 minutes before the Saturday
+    cron and stopped 24h later. A ``workflow_dispatch`` that lands on an
+    already-running box inherits the leftover uptime, not a fresh day.
+    Run 33962002890 dispatched Friday 10:57 UTC and was still on its last
+    review cell when the Saturday 03:00 stop cancelled the runner — 51
+    finished sessions never uploaded because a cancelled job skips even
+    ``if: always()``. Capping the in-process sweep so it *fails* (instead
+    of vanishing) leaves the reserve for the upload step.
+    """
+
+    if window_seconds < 1 or reserve_seconds < 0 or min_seconds < 1:
+        raise ValueError("instance window and minimum must be positive; reserve must be non-negative")
+    if not math.isfinite(uptime_seconds) or uptime_seconds < 0:
+        raise ValueError("uptime must be a finite non-negative number")
+    leftover = int(window_seconds - uptime_seconds - reserve_seconds)
+    if leftover < min_seconds:
+        raise ValueError(
+            f"instance window has only {leftover}s left after a {reserve_seconds}s "
+            f"upload reserve (uptime {uptime_seconds:.0f}s of {window_seconds}s); "
+            f"need at least {min_seconds}s"
+        )
+    return leftover
+
+
+def _instance_uptime_or_none() -> float | None:
+    """The uptime read main() takes before it knows whether it needs it.
+
+    Deferring the read until after argument parsing would put the parse back
+    inside the interval the cap is supposed to cover, so it happens first and
+    an unreadable /proc/uptime is only an error if the flag turns out to be set.
+    """
+
+    try:
+        return read_instance_uptime_seconds()
+    except ValueError:
+        return None
+
+
+def read_instance_uptime_seconds(uptime_path: Path = Path("/proc/uptime")) -> float:
+    """Host uptime, the clock the EventBridge stop is scheduled against."""
+
+    try:
+        return float(uptime_path.read_text().split()[0])
+    except (OSError, IndexError, ValueError) as exc:
+        raise ValueError(f"cannot read instance uptime from {uptime_path}: {exc}") from exc
+
+
+def instance_window_budget_from_uptime(
+    uptime_seconds: float,
+    *,
+    window_seconds: int | None = None,
+    reserve_seconds: int | None = None,
+) -> int:
+    """Apply the EventBridge window env overrides to an already-read uptime.
+
+    Separate from the read so ``main`` can take the uptime in the same breath
+    as its own clock: the budget and the clock it is measured against have to
+    describe one instant, or the interval between them is spent by nobody and
+    charged to the sweep.
+    """
+
+    window = (
+        window_seconds
+        if window_seconds is not None
+        else int(os.environ.get("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", str(EVENTBRIDGE_INSTANCE_WINDOW_SECONDS)))
+    )
+    reserve = (
+        reserve_seconds
+        if reserve_seconds is not None
+        else int(os.environ.get("EVENTBRIDGE_STOP_RESERVE_SECONDS", str(EVENTBRIDGE_STOP_RESERVE_SECONDS)))
+    )
+    return instance_window_budget_seconds(uptime_seconds, window_seconds=window, reserve_seconds=reserve)
+
+
+
+
+def remaining_runtime_seconds(*, max_runtime_seconds: int | None, started_monotonic: float) -> int | None:
+    """Seconds left in an optional wall-clock cap, or None when uncapped."""
+
+    if max_runtime_seconds is None:
+        return None
+    if max_runtime_seconds < 1:
+        raise ValueError("max runtime must be positive")
+    leftover = max_runtime_seconds - (time.monotonic() - started_monotonic)
+    return max(0, int(leftover))
+
+
+def capped_timeout_seconds(requested: int, remaining: int | None) -> int:
+    """Clamp one managed-process timeout to the leftover instance window."""
+
+    if requested < 1:
+        raise ValueError("requested timeout must be positive")
+    if remaining is None:
+        return requested
+    if remaining < 1:
+        raise ValueError("no time remains in the instance window")
+    return min(requested, remaining)
+
+
 def generation_timeout_seconds(
     *,
     task_count: int,
@@ -877,6 +1034,7 @@ def runner_argv(
     task_bindings: list[dict[str, Any]],
     target_base_digests: dict[str, str],
     proposer_model: str | None = None,
+    reuse_results: Path | None = None,
 ) -> list[str]:
     incumbent_arms = resolve_incumbent_arms(overlay_dir, args.arms)
     paired_arms = executed_benchmark_arms(incumbent_arms)
@@ -927,6 +1085,8 @@ def runner_argv(
         argv += ["--ce-plugin-dir", str(args.ce_plugin_dir), "--ce-plugin-version", args.ce_plugin_version]
     if args.unsafe_no_bwrap:
         argv.append("--unsafe-no-bwrap")
+    if reuse_results is not None:
+        argv += ["--reuse-results", str(reuse_results)]
     return argv
 
 
@@ -944,6 +1104,12 @@ def runner_environment(args: argparse.Namespace) -> dict[str, str]:
         # actually show progress rather than a burst at the end.
         "PYTHONUNBUFFERED": "1",
     }
+    # process_control replaces the child environment wholesale, so a digest the
+    # workflow exported reaches the runner only if it is forwarded here. Without
+    # this the runner stamps no runtime_digest and the reuse lock never engages.
+    runtime_digest = current_runtime_digest()
+    if runtime_digest:
+        env["RUNTIME_DIGEST"] = runtime_digest
     if args.auth_token:
         env[ANTHROPIC_API_KEY_ENV] = args.auth_token
     return env
@@ -1199,6 +1365,13 @@ def _require_finite_metric(value: Any, name: str, *, nullable: bool = False, max
         raise ValueError(f"promotion has invalid {name}")
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"{value} is not a positive integer")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
@@ -1237,7 +1410,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed-results",
         type=Path,
         default=None,
-        help="prior wfbench results dir used as generation-0 proposer evidence",
+        help="prior wfbench results dir used as generation-0 proposer evidence "
+        "and as --reuse-results for unchanged incumbent/CE cells",
     )
     parser.add_argument(
         "--initial-overlay",
@@ -1270,6 +1444,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=runner_sessions.SESSION_TIMEOUT_SECONDS,
         help="per session, seconds",
+    )
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=_positive_int,
+        default=None,
+        help="wall-clock cap for the whole evolve process (CI derives this from "
+        "instance uptime so the sweep exits before EventBridge stops the box)",
+    )
+    parser.add_argument(
+        "--max-runtime-from-instance-window",
+        action="store_true",
+        help="derive --max-runtime-seconds from /proc/uptime at startup, so the "
+        "budget and the clock it is measured against describe one instant",
     )
     parser.add_argument("--base-url", default=None)
     parser.add_argument(
@@ -1308,8 +1495,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # These two lines are the cap, and they are adjacent on purpose: the clock
+    # the sweep is measured against, and the uptime the budget is derived from.
+    # run-evolution.sh used to compute the budget in its own `uv run python -c`
+    # and pass a number, so the script's remaining work and this interpreter's
+    # startup were spent by nobody and charged to the sweep — out of the upload
+    # reserve the cap exists to protect. Nothing can be spent between them now.
+    started_monotonic = time.monotonic()
+    instance_uptime = _instance_uptime_or_none()
     parser = build_parser()
     args = parser.parse_args()
+    if args.max_runtime_from_instance_window:
+        if args.max_runtime_seconds is not None:
+            parser.error("--max-runtime-from-instance-window and --max-runtime-seconds are mutually exclusive")
+        if instance_uptime is None:
+            parser.error("--max-runtime-from-instance-window needs a readable /proc/uptime")
+        try:
+            args.max_runtime_seconds = instance_window_budget_from_uptime(instance_uptime)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"capping the sweep to {args.max_runtime_seconds}s so the instance-window reserve can upload evidence")
     if args.generations < 1:
         parser.error("--generations must be positive")
     if args.runs < 1 or args.timeout < 1:
@@ -1379,6 +1584,7 @@ def main() -> int:
     try:
         return _run_generations(
             args,
+            started_monotonic=started_monotonic,
             selected_task_rows=selected_task_rows,
             skipped_expensive=skipped_expensive,
             selected_tasks=selected_tasks,
@@ -1394,6 +1600,7 @@ def main() -> int:
 def _run_generations(
     args: argparse.Namespace,
     *,
+    started_monotonic: float,
     selected_task_rows: list[dict[str, Any]],
     skipped_expensive: list[str],
     selected_tasks: list[dict[str, Any]],
@@ -1465,6 +1672,19 @@ def _run_generations(
                     incumbent_arms=requested_arms,
                     prior_proposal=staged_prior_included,
                 )
+                # Check the window before the paid session, not after it. A
+                # generation that cannot fit its sweep should not buy a proposal
+                # first and discover the deadline on the way out.
+                before_proposer = remaining_runtime_seconds(
+                    max_runtime_seconds=args.max_runtime_seconds,
+                    started_monotonic=started_monotonic,
+                )
+                if before_proposer is not None and before_proposer < MIN_INSTANCE_SWEEP_SECONDS:
+                    print(
+                        f"[gen {generation}] stopping with {before_proposer}s left before the "
+                        f"instance window ends; not starting a proposer session"
+                    )
+                    return 1
                 print(f"[gen {generation}] proposing…")
                 record = run_proposer(
                     prompt,
@@ -1475,6 +1695,11 @@ def _run_generations(
                     bwrap_bin=bwrap_bin,
                     sandbox_backend=sandbox_backend,
                     progress_label=f"gen {generation} proposer",
+                    # The clock, not the reading taken above: run_proposer clones,
+                    # sanitizes and builds a sandbox before the session starts, so
+                    # before_proposer is stale by then. It still decides whether to
+                    # start at all — it just cannot decide how long to allow.
+                    started_monotonic=started_monotonic,
                 )
             # Redact any API token echoed into the session record (e.g. an
             # error_detail stderr_tail) before it enters the uploaded artifact.
@@ -1513,6 +1738,16 @@ def _run_generations(
             print(f"[gen {generation}] promotion targets contain uncommitted or drifted bytes")
             return 1
         print(f"[gen {generation}] benchmarking candidate…")
+        leftover = remaining_runtime_seconds(
+            max_runtime_seconds=args.max_runtime_seconds,
+            started_monotonic=started_monotonic,
+        )
+        if leftover is not None and leftover < MIN_INSTANCE_SWEEP_SECONDS:
+            print(
+                f"[gen {generation}] stopping with {leftover}s left before the "
+                f"instance window ends; partial evidence is in {out_root}/"
+            )
+            return 1
         benchmark_argv = runner_argv(
             args,
             bench_dir,
@@ -1520,20 +1755,30 @@ def _run_generations(
             task_bindings=selected_tasks,
             target_base_digests=target_base_digests,
             proposer_model=generation_proposer_model,
+            reuse_results=evidence_dir,
         )
         benchmark_command = (
             benchmark_argv
             if sandbox_backend == "host-unsafe"
             else pid_namespace_command(benchmark_argv, bwrap_bin=bwrap_bin)
         )
-        bench = run_managed(
-            benchmark_command,
-            timeout=generation_timeout_seconds(
+        sweep_timeout = capped_timeout_seconds(
+            generation_timeout_seconds(
                 task_count=len(selected_task_rows),
                 runs=args.runs,
                 session_timeout=args.timeout,
                 incumbent_arms=incumbent_arms,
             ),
+            leftover,
+        )
+        if leftover is not None:
+            print(
+                f"[gen {generation}] sweep timeout {sweep_timeout}s "
+                f"(instance window leftover {leftover}s)"
+            )
+        bench = run_managed(
+            benchmark_command,
+            timeout=sweep_timeout,
             env=runner_environment(args),
             require_pid_namespace=sandbox_backend == "bwrap",
             # The sweep is the multi-hour phase; without this its per-run
@@ -1545,7 +1790,13 @@ def _run_generations(
             # The sweep runs with GITNEXUS_BENCH_ANTHROPIC_API_KEY in its environment,
             # so its detail/stderr tail is a token-bearing sink like any other.
             detail = redacted_failure(args, str(bench.detail or bench.stderr_tail[-1000:]))
-            print(f"[gen {generation}] benchmark run failed ({bench.state}, exit {bench.returncode}): {detail}")
+            if leftover is not None and bench.state == "timeout":
+                print(
+                    f"[gen {generation}] benchmark hit the instance-window budget "
+                    f"({sweep_timeout}s); partial evidence is in {bench_dir}: {detail}"
+                )
+            else:
+                print(f"[gen {generation}] benchmark run failed ({bench.state}, exit {bench.returncode}): {detail}")
             return 1
         promotion = json.loads((bench_dir / "promotion.json").read_text())
         for line in summarize_gate(promotion):

@@ -44,10 +44,11 @@ import type { AnalyzeResult } from '../core/run-analyze.js';
  * ones (e.g. `isPrimaryBranch?`), so an optional non-serializable field could be
  * advertised by the type yet silently dropped by the runtime allowlist.
  *
- * `isPrimaryBranch` is intentionally excluded: the parent (`api.ts`) reads only
- * `repoName`, and nothing consumes `isPrimaryBranch` across this fork (its CLI
- * consumer calls `runFullAnalysis` in-process). Add a field here only when a
- * server-side IPC consumer actually needs it — and only if it is JSON-safe.
+ * `isPrimaryBranch` IS on the wire, under exactly the rule this comment used to
+ * cite for excluding it: a server-side consumer now needs it. `analyze-launch.ts`
+ * settles the index the run actually wrote, and only the worker knows whether
+ * core chose the flat slot or a `branches/<slug>/` sub-slot. It is a boolean, so
+ * it is JSON-safe by construction.
  */
 export type AnalyzeResultIpc = Pick<
   AnalyzeResult,
@@ -58,6 +59,7 @@ export type AnalyzeResultIpc = Pick<
   | 'ftsRepairedOnly'
   | 'ftsSkipped'
   | 'graphWriteCollapsed'
+  | 'isPrimaryBranch'
 >;
 
 /**
@@ -78,5 +80,9 @@ export function projectAnalyzeResultForIpc(result: AnalyzeResult): AnalyzeResult
     // outcome the CLI does; without it the worker reports a clean `complete`
     // for a run whose edges are mostly missing.
     graphWriteCollapsed: result.graphWriteCollapsed,
+    // Tells the parent which slot this run wrote — the flat `.gitnexus` or a
+    // `branches/<slug>/` sub-slot — so its finalization gate watches the files
+    // this job actually rewrote (#3199 review).
+    isPrimaryBranch: result.isPrimaryBranch,
   };
 }

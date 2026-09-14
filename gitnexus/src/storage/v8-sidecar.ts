@@ -185,8 +185,22 @@ const decodePrefix = (buf: Buffer): EnvelopeMeta | undefined => {
 const runtimeCompatible = (meta: EnvelopeMeta): boolean =>
   meta.recordedNodeMajor === nodeMajor() && meta.recordedV8 === process.versions.v8;
 
-export type V8CacheHit = { kind: 'hit'; value: unknown; bytes: number };
-export type V8CacheSkip = { kind: 'skip'; bytes: number };
+/**
+ * `paths` is the envelope's digest-authenticated path listing, present only
+ * when it parsed and its entry count matched the recorded `pathCount` — i.e.
+ * exactly when the skip decision below is willing to trust it. A caller that
+ * loads the same immutable shard more than once per run can memoize it and
+ * make its own skip decision without reopening the file (see
+ * `parsedfile-store.ts`). Absent means "this envelope has no listing worth
+ * trusting", which is fail-closed: load, never skip.
+ */
+export type V8CacheHit = {
+  kind: 'hit';
+  value: unknown;
+  bytes: number;
+  paths?: readonly string[];
+};
+export type V8CacheSkip = { kind: 'skip'; bytes: number; paths: readonly string[] };
 export type V8CacheLoad = V8CacheHit | V8CacheSkip;
 export type V8CacheInspection = { paths: readonly string[] };
 
@@ -294,20 +308,29 @@ export const tryLoadV8Cache = async (
     const payload = await readVerifiedPayload(fh, meta, pathRaw);
     if (!payload) return undefined;
 
-    if (wantPaths && wantPaths.size > 0 && meta.pathBytes > 0) {
+    // Parsed once and reused for both the skip decision and the returned
+    // listing, so a caller that memoizes it is trusting exactly the bytes this
+    // function was already willing to skip on. Anything that fails these checks
+    // stays `undefined` and falls through to the load.
+    let listedPaths: readonly string[] | undefined;
+    if (meta.pathBytes > 0) {
       const listed = parseCachePathListing(pathRaw);
-      if (
-        listed !== null &&
-        listed.length === meta.pathCount &&
-        listed.length > 0 &&
-        !listed.some((p) => wantPaths.has(p))
-      ) {
-        return { kind: 'skip', bytes: st.size };
+      if (listed !== null && listed.length === meta.pathCount && listed.length > 0) {
+        listedPaths = listed;
       }
+    }
+
+    if (
+      wantPaths &&
+      wantPaths.size > 0 &&
+      listedPaths &&
+      !listedPaths.some((p) => wantPaths.has(p))
+    ) {
+      return { kind: 'skip', bytes: st.size, paths: listedPaths };
     }
     const value = v8.deserialize(payload);
     if (internPool) internGraphStrings(value, internPool);
-    return { kind: 'hit', value, bytes: st.size };
+    return { kind: 'hit', value, bytes: st.size, paths: listedPaths };
   } catch (err) {
     if (!isEnoent(err)) {
       logger.debug({ err, filePath }, 'v8 cache: load failed; treating as miss');

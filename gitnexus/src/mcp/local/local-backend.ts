@@ -36,18 +36,16 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // git utilities available if needed
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
-  parseDiffHunks,
+  parseDiffHunksResult,
   coalesceHunksByPath,
   hunksOverlapRange,
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
-  type FileDiff,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
-  cleanupOldKuzuFiles,
   canonicalizePath,
   getStoragePaths,
   loadMeta,
@@ -91,6 +89,7 @@ import {
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
+import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
 import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
@@ -99,10 +98,16 @@ import {
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
 import {
-  checkStalenessAsync,
-  checkCwdMatch,
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../../core/content-retention.js';
+import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
+import {
+  stalenessPayload,
   type StalenessInfo,
-} from '../../core/git-staleness.js';
+  type StalenessPayload,
+} from '../../core/staleness-status.js';
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
@@ -116,6 +121,7 @@ import {
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
 } from '../tools.js';
+import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
@@ -129,6 +135,7 @@ import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resol
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
+import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
@@ -169,6 +176,29 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
  * only truncation signal available when the COUNT leg fails.
  */
 const CANDIDATE_WINDOW = 20;
+
+/**
+ * `content` is an index capability rather than a promise that every symbol has
+ * text. Retention `none` intentionally omits it, while `symbol` retains only
+ * symbol spans. Keep this response additive and emit it only when requested so
+ * callers relying on the legacy response shape remain compatible.
+ */
+const requestedContentAvailability = (
+  requested: boolean,
+  meta: Awaited<ReturnType<typeof loadMeta>>,
+) => {
+  if (!requested) return undefined;
+  const profile = contentRetentionFromMeta(meta);
+  return {
+    requested: true as const,
+    profile,
+    available: profile !== 'none',
+    scope: profile,
+    ...(profile === 'none'
+      ? { reason: 'Source-derived content is not retained by this index.' }
+      : {}),
+  };
+};
 
 /**
  * The pieces every ambiguous-resolution payload shares, derived once.
@@ -272,10 +302,8 @@ function normalizeToolParams(
 ): { params: Record<string, unknown> } | { error: string } {
   const input = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
   const definitions = TOOL_STRING_ALIASES[method];
-  if (!definitions) return { params: input };
-
   const normalized = { ...input };
-  for (const { canonical, aliases } of definitions) {
+  for (const { canonical, aliases } of definitions ?? []) {
     const keys = [canonical, ...aliases];
     const supplied: Array<{ key: string; value: string }> = [];
     for (const key of keys) {
@@ -306,14 +334,17 @@ function normalizeToolParams(
     if (supplied.length > 0) normalized[canonical] = supplied[0].value;
   }
 
+  const folded = foldNumericToolArgumentAliases(method, normalized);
+  if ('error' in folded) return folded;
+
   if (
     method === 'impact' &&
-    typeof normalized.target !== 'string' &&
-    (typeof normalized.target_uid !== 'string' || !normalized.target_uid.trim())
+    typeof folded.params.target !== 'string' &&
+    (typeof folded.params.target_uid !== 'string' || !folded.params.target_uid.trim())
   ) {
     return { error: 'MCP impact requires target, name, symbol, or target_uid.' };
   }
-  return { params: normalized };
+  return { params: folded.params };
 }
 
 // AI context generation is CLI-only (gitnexus analyze)
@@ -328,6 +359,8 @@ export const VALID_NODE_LABELS = new Set([
   'Folder',
   'Function',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Method',
   'CodeElement',
@@ -709,6 +742,39 @@ export interface EpistemicCauses {
    * "nothing was undecided", and a re-index is what tells the two apart.
    */
   readonly undecidedSatisfaction: number;
+  /**
+   * Symbols that name this callable in VALUE position rather than calling it
+   * (#3399) — a registration table (`bridge.accessor(Element.getNamespaceUri,
+   * …)`), a callback argument, a function pointer stored in a field.
+   *
+   * Unit: SYMBOLS — distinct referrers, the same unit and the same reason as
+   * `dispatchBoundary`: the reference edge is per-site but the walk's question
+   * is "who else might reach this", and a referrer that names the callable
+   * twice is still one place the value escapes from.
+   *
+   * Kept separate from `dispatchBoundary` even though both describe dispatch
+   * the walk cannot follow. That slot counts implementations and
+   * interface-level consumers found by the heritage probe; these are neither,
+   * and folding them in would tell a consumer branching on the numbers that an
+   * interface boundary exists where there is none. The distinction is also the
+   * actionable one: a dispatch boundary is irreducible, whereas a callable
+   * value CAN often be followed once the language models the store/load that
+   * carries it.
+   *
+   * The reference itself IS modelled — that is what makes it countable. What is
+   * missing is the invocation through the value: it happens later, through a
+   * struct field, a registry lookup, or comptime reflection, and no CALLS edge
+   * connects the eventual call site back to this symbol.
+   *
+   * Zero when the property-dispatch pass DID synthesize that invocation
+   * (`x.<key>()` through a registered object-literal key): the walk followed
+   * the registration, so nothing was missed and the result stays `exact`.
+   *
+   * Also zero — WITH a boundary note — when the probe itself could not run.
+   * The note is the signal there; the count is not, which is why a reader must
+   * branch on `epistemic` first and read the causes as explanation.
+   */
+  readonly callableValueReferences: number;
 }
 
 function epistemicFrom(dropped: {
@@ -718,6 +784,7 @@ function epistemicFrom(dropped: {
   undecided: number;
   dispatch: number;
   scopeExtraction: number;
+  callableValueReferences: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -736,6 +803,7 @@ function epistemicFrom(dropped: {
             dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
+            callableValueReferences: dropped.callableValueReferences,
           },
         }
       : { epistemic: 'exact' }
@@ -752,6 +820,7 @@ function epistemicFrom(dropped: {
           dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
+          callableValueReferences: dropped.callableValueReferences,
         },
       };
 }
@@ -849,6 +918,153 @@ function undecidedSatisfactionBoundaries(
     }
   }
   return { notes, undecided };
+}
+
+/**
+ * Boundary evidence for callables named in VALUE position (#3399).
+ *
+ * `bridge.accessor(Element.getNamespaceUri, null, .{})`, `{ onClick: handler }`,
+ * `qsort(xs, n, sz, compareItems)` — each REGISTERS a function somewhere
+ * instead of calling it. The registration is modelled (`value-ref` → a USES
+ * edge, Kythe `ref` / Joern `METHOD_REF`); the invocation through the stored
+ * value is not, because it happens later through a struct field, a registry
+ * lookup or comptime reflection.
+ *
+ * That gap is precisely the first half of `tools.ts`'s definition of
+ * `lower-bound` — the walk provably missed callers — and it was previously
+ * reported as `exact`. (The second half, a probe that could not run, is what
+ * the failure branch below publishes; the contract states both because this
+ * function can produce either.) A
+ * public DOM accessor bound into a JS bridge table came back LOW/exact with two
+ * internal callers, which is worse than no answer: `lower-bound` invites the
+ * reader to look further, `exact` tells them not to bother.
+ *
+ * Counted as DISTINCT REFERRERS rather than sites: the question the count
+ * serves is "how many places does this value escape from", and a table that
+ * registers the same callable twice is still one table.
+ *
+ * NOT every value reference is a gap. Where the property-dispatch pass
+ * synthesized the invocation side, the walk followed it and the answer stays
+ * `exact` — see the second probe below.
+ *
+ * Three failure modes, three different answers, none of them silence:
+ *   - the query cannot run       → hedge, count 0 (a probe that did not answer
+ *                                  is not evidence of completeness);
+ *   - the query returns nothing  → no hedge (a real, measured zero);
+ *   - the reference was followed → no hedge (nothing was missed).
+ *
+ * The probe reads the edge's `reason`, which is why writer and reader share
+ * {@link VALUE_REF_EDGE_REASON}. Language-neutral by construction — every
+ * provider that emits a `value-ref` capture participates, and one that emits
+ * none simply gets no rows.
+ */
+async function callableValueReferenceBoundaries(
+  lbugPath: string,
+  symId: string,
+): Promise<{ notes: string[]; referrers: number }> {
+  // `COUNT(DISTINCT …)`, not a capped row list. A `LIMIT n` here would make the
+  // published cause silently understate a target with more than n
+  // registrations — and this number is documented as "how many symbols", so a
+  // reader comparing its magnitude against `receiverTyping` would be comparing
+  // a truth to a ceiling. Aggregating in the database keeps the work bounded
+  // without capping the answer; scalar `sym.id` equality plus an implicit
+  // group-by is the shape `countByType` below already relies on.
+  //
+  // `null`, not `[]`, on failure: see below — an empty result set and an
+  // unanswerable query must not be the same value.
+  const rows = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'USES' AND r.reason = $reason
+     RETURN COUNT(DISTINCT other.id) AS cnt`,
+    { symId, reason: VALUE_REF_EDGE_REASON },
+  ).catch(() => null);
+
+  // A probe that could not run must never read as certainty — the same rule the
+  // `loadMeta` read above states, and the whole reason this function exists.
+  // Returning zero here would publish `exact` on the strength of a query that
+  // never answered.
+  if (rows === null) {
+    return {
+      referrers: 0,
+      notes: [
+        'The callable-value-reference probe could not be run against this index, so whether ' +
+          'this symbol is registered somewhere as a value is unknown. Treat the caller list as ' +
+          'incomplete until it can be re-checked.',
+      ],
+    };
+  }
+  const referrers = rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
+  if (!Number.isFinite(referrers) || referrers <= 0) return { notes: [], referrers: 0 };
+
+  // Registrations whose invocation side the analyzer ALREADY synthesized are
+  // not a gap. `emitPropertyDispatchCalls` sweep 2 connects `x.<key>()` member
+  // calls to every function registered under `<key>` and stamps those edges
+  // `property-dispatch`; where that happened, the walk did not "provably miss"
+  // the caller and `lower-bound` would be noise sprayed over an answer the
+  // analyzer actually computed. Zig — the case this was built for — never sets
+  // a property key (no object-literal key to dispatch through), so it is never
+  // excluded here; the exclusion exists to keep TypeScript/JavaScript hook
+  // tables that ARE followed from being downgraded.
+  //
+  // SYMBOL-LEVEL, NOT PER-EDGE, and that is only sound because of an invariant
+  // that lives nowhere near this line. The graph does not record which
+  // registration produced which synthesized call, so if one symbol could carry
+  // both a followed and an unfollowed registration, this would zero the note
+  // over a gap the analyzer provably did not close — #3399 returning through a
+  // side door. Today no symbol can:
+  //
+  //   - sweep 2 synthesizes CALLS only for a registration whose site carried a
+  //     `propertyKey` (sweep 1 skips the index when it is undefined);
+  //   - every JS/TS `@reference.value-ref` rule also captures
+  //     `@reference.property-key` — both are object-literal shapes;
+  //   - no Zig `@reference.value-ref` rule captures one.
+  //
+  // So a dispatchable registration is always a JS/TS one, an undispatchable
+  // registration is always a Zig one, and the two never meet on one symbol.
+  // `test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day
+  // that stops holding — a JS/TS rule for a bare callback argument
+  // (`register(handler)`), a Zig rule that grows a key. When it does, the
+  // choice to make here is between (a) splitting the edge `reason` into
+  // dispatchable / undispatchable so this probe can count them apart, and
+  // (b) hedging any symbol with an undispatchable registration regardless of
+  // dispatch. (a) is precise and costs a graph-content change; (b) is cheap and
+  // over-hedges. What is NOT acceptable is leaving this as-is, because a signal
+  // that quietly stops firing is the defect this whole feature removes.
+  //
+  // Given the invariant, the residual today is only the coarseness of the
+  // exclusion within JS/TS, and hedging every property-value registration in
+  // every JS/TS codebase is worse: a signal that fires on everything stops
+  // carrying information, and the fan-out cap warning still sits behind it.
+  const dispatched = await executeParameterized(
+    lbugPath,
+    `MATCH (other)-[r:CodeRelation]->(sym)
+     WHERE sym.id = $symId AND r.type = 'CALLS' AND r.reason = 'property-dispatch'
+     RETURN COUNT(r) AS cnt`,
+    { symId },
+  ).catch(() => null);
+  // Failure here is NOT a reason to skip the hedge: we already know a value
+  // reference exists, and being unable to prove it was followed leaves the
+  // conservative answer standing.
+  const dispatchedCount =
+    dispatched === null || dispatched.length === 0
+      ? 0
+      : Number((dispatched[0] as any).cnt ?? (dispatched[0] as any)[0] ?? 0);
+  if (Number.isFinite(dispatchedCount) && dispatchedCount > 0) {
+    return { notes: [], referrers: 0 };
+  }
+
+  const one = referrers === 1;
+  return {
+    referrers,
+    notes: [
+      `${referrers} ${one ? 'symbol references' : 'symbols reference'} this callable as a VALUE ` +
+        `rather than calling it (a registration table, a callback argument, a stored function ` +
+        `pointer). The reference is recorded, but the call made THROUGH that value is not: it is ` +
+        `dispatched later from wherever the value is stored. Callers reached that way are absent ` +
+        `from this result — actual impact may be higher.`,
+    ],
+  };
 }
 
 interface RepoHandle {
@@ -992,6 +1208,12 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
   // not `--default-prefix`, which needs git >= 2.42. `--no-ext-diff` stops a
   // configured external diff driver from replacing the unified output we parse.
   const args = [
+    // Before the subcommand: default core.quotePath C-quotes non-ASCII so
+    // `diff --git` / `+++` tokens no longer match the unquoted `a/` `b/` forms
+    // the parser also accepts. The parser still decodes quoted tokens; this
+    // pin keeps production git from emitting them.
+    '-c',
+    'core.quotePath=false',
     'diff',
     '--ignore-cr-at-eol',
     '--no-ext-diff',
@@ -1147,12 +1369,15 @@ export interface RepoListing {
   lastCommit: string;
   remoteUrl?: string;
   stats?: any;
-  staleness?: { commitsBehind: number; hint?: string };
+  staleness?: StalenessPayload;
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
   /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: Array<Omit<BranchSummary, 'stats'>>;
+  storagePath?: string;
+  contentRetention?: 'full' | 'symbol' | 'none';
+  sourceAvailable?: boolean;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -1237,21 +1462,21 @@ function canCarryStaleness(result: unknown): result is Record<string, unknown> {
 
 /**
  * #2655: attach a non-blocking `staleness` signal to a tool result when the
- * index is behind HEAD, mirroring the `list_repos` `{commitsBehind, hint}`
- * shape. Only ever ADDS a field to a carryable object result (see
+ * index is not at HEAD, in the same {@link stalenessPayload} shape `list_repos`
+ * returns. Only ever ADDS a field to a carryable object result (see
  * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ *
+ * `diverged` is attached: it is a positive finding that the index is not at
+ * HEAD, only uncountable. `unknown` is not — these are the hot read tools, and a
+ * `--skip-git` folder has no history to measure, so it would ride on every
+ * response as noise rather than signal (#3256).
  */
-export function attachToolStaleness(
-  result: unknown,
-  staleness: StalenessInfo | undefined,
-): unknown {
-  if (!staleness?.isStale || !canCarryStaleness(result)) {
+export function attachToolStaleness(result: unknown, info: StalenessInfo | undefined): unknown {
+  const staleness = stalenessPayload(info);
+  if (!staleness || !canCarryStaleness(result)) {
     return result;
   }
-  return {
-    ...result,
-    staleness: { commitsBehind: staleness.commitsBehind, hint: staleness.hint },
-  };
+  return { ...result, staleness };
 }
 
 /** tri-review Residual-2: see `LocalBackend.lastObservedPoolState`'s doc comment. */
@@ -1596,15 +1821,6 @@ export class LocalBackend {
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
 
-      // Clean up any leftover KuzuDB files from before the LadybugDB migration.
-      // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
-      const kuzu = await cleanupOldKuzuFiles(storagePath);
-      if (kuzu.found && kuzu.needsReindex) {
-        logger.error(
-          `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
-        );
-      }
-
       const handle: RepoHandle = {
         id,
         name: entry.name,
@@ -1648,7 +1864,7 @@ export class LocalBackend {
     // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
     for (const entry of entries) {
       for (const b of entry.branches ?? []) {
-        liveLbugPaths.add(getStoragePaths(entry.path, b.branch).lbugPath);
+        liveLbugPaths.add(getStoragePaths(entry.path, b.branch, entry.storagePath).lbugPath);
       }
     }
     // initializedRepos is the authoritative set of OPENED pool keys (flat AND
@@ -1900,7 +2116,7 @@ export class LocalBackend {
     const summary =
       handle.branch !== branch ? handle.branches?.find((b) => b.branch === branch) : undefined;
     if (summary) {
-      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch, handle.storagePath);
       // The lbug is the artifact the pool opens, so its presence is the
       // serviceability truth — a half-deleted dir can outlive its meta.json
       // while the lbug is gone, and vice versa (#2364 review F1 arm ii).
@@ -2260,12 +2476,22 @@ export class LocalBackend {
     // Check staleness for all repos in parallel instead of sequentially.
     // Each check spawns an async `git rev-list` — with 200 repos the sync
     // variant took ~50 s; parallel async brings it under a second (#1363).
-    const stalenessResults = await Promise.all(
-      handles.map((h) => checkStalenessAsync(h.repoPath, h.lastCommit)),
+    const listing = await Promise.all(
+      handles.map(async (h) => {
+        const [stale, meta] = await Promise.all([
+          checkStalenessAsync(h.repoPath, h.lastCommit),
+          loadMeta(h.storagePath).catch(() => null),
+        ]);
+        const contentRetention = contentRetentionFromMeta(meta);
+        const sourceAvailable = isFullSourceAvailable(
+          contentRetention,
+          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false,
+        );
+        return { h, stale, source: { contentRetention, sourceAvailable } };
+      }),
     );
 
-    return handles.map((h, i) => {
-      const stale = stalenessResults[i];
+    return listing.map(({ h, stale, source }) => {
       const selfNorm = norm(h.repoPath);
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
@@ -2277,9 +2503,7 @@ export class LocalBackend {
         lastCommit: h.lastCommit,
         remoteUrl: h.remoteUrl,
         stats: h.stats,
-        staleness: stale.isStale
-          ? { commitsBehind: stale.commitsBehind, hint: stale.hint }
-          : undefined,
+        staleness: stalenessPayload(stale, { includeUnknown: true }),
         siblings:
           siblings.length > 0
             ? siblings.map((s) => ({
@@ -2297,8 +2521,35 @@ export class LocalBackend {
                 lastCommit: b.lastCommit,
               }))
             : undefined,
+        storagePath: h.storagePath,
+        contentRetention: source.contentRetention,
+        sourceAvailable: source.sourceAvailable,
       };
     });
+  }
+
+  /**
+   * Lightweight registry count for schema-introspection callers that only
+   * need to know "one repo or many?" without paying the full staleness fan-out
+   * cost that listRepos() incurs. Uses the same validated registry
+   * `refreshRepos` / `selectToolRepository` see (`validate: true` prunes
+   * entries whose metadata is provably gone) so tools/list cannot advertise a
+   * multi-repo schema for ENOENT ghosts. No git processes are spawned.
+   */
+  async countRepos(): Promise<number> {
+    const entries = await listRegisteredRepos({ validate: true });
+    return entries.length;
+  }
+
+  /**
+   * In-memory validated registry size after the last `refreshRepos` / init /
+   * `selectToolRepository` refresh. `countRepos()` does not populate this map.
+   * Schema introspection uses this after a refreshed cwd probe so cardinality
+   * and the probe share one snapshot — without putting `refreshRepos()` (and
+   * its kuzu cleanup) on the 0–1 `countRepos` path.
+   */
+  cachedRepoCount(): number {
+    return this.repos.size;
   }
 
   /**
@@ -2433,9 +2684,10 @@ export class LocalBackend {
    * one `git rev-list` per index per TTL window; the resolved value is cached
    * for TOOL_STALENESS_TTL_MS. Keyed by lbugPath so flat and branch handles
    * (same repoPath, different lastCommit) don't share an entry. Non-blocking by
-   * construction: `checkStalenessAsync` swallows git failures to
-   * `{ isStale: false }`, so a git error never fails the tool — it just omits
-   * the `staleness` field.
+   * construction: `checkStalenessAsync` keeps `isStale: false` on every git
+   * failure and reports what it could still establish in `status` (`diverged`,
+   * `unknown`, or `current` when HEAD alone matches the index), so a git error
+   * never fails the tool — at most it attaches a `diverged` staleness field.
    */
   private stalenessForTool(repo: RepoHandle): Promise<StalenessInfo> {
     const now = Date.now();
@@ -2684,7 +2936,16 @@ export class LocalBackend {
 
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
-    const includeContent = params.include_content ?? false;
+    const requestedContent = params.include_content ?? false;
+    // Do not trust a lingering graph property when the metadata contract says
+    // source-derived text is unavailable. A full rebuild normally removes the
+    // column values; this guard keeps a partially migrated/corrupt index from
+    // disclosing text merely because a caller asked for it. `query` already
+    // reads this metadata for CJK and embedding-dimension drift diagnostics,
+    // so keep that legacy read unconditional.
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
+    const contentAvailability = requestedContentAvailability(requestedContent, meta);
     const searchQuery = rawQuery.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
@@ -2700,8 +2961,9 @@ export class LocalBackend {
     // each so both get independent wall-time records without fighting
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
+    const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
     const [bm25SearchResult, semanticResults] = await Promise.all([
-      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit)),
+      timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
       timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
     ]);
 
@@ -3033,7 +3295,7 @@ export class LocalBackend {
       warnings.push(
         ftsQueryErrors
           ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
-          : ftsDegradedWarning(warningContext),
+          : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
       // #2767: at least one FTS table succeeded (ftsUsed=true) but another
@@ -3087,7 +3349,6 @@ export class LocalBackend {
     // GITNEXUS_FTS_CJK_SEGMENTATION (the only thing that actually throws in
     // there) cannot take an unrelated diagnostic down with it. Needs no guard
     // of its own: loadMeta() returns null on any read/parse failure.
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
     try {
       // meta.json is on-disk state inside the analyzed repo, read via a
       // schema-less JSON.parse — not trusted input. Validate before
@@ -3181,6 +3442,7 @@ export class LocalBackend {
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
+      ...(contentAvailability ? { contentAvailability } : {}),
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
       ...((enrichmentDegraded || ftsPartial) && { partial: true }),
     };
@@ -3193,7 +3455,9 @@ export class LocalBackend {
     repo: RepoHandle,
     query: string,
     limit: number,
+    disabledReason?: FtsDisabledReason,
   ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+    if (disabledReason) return { results: [], ftsUsed: false };
     let searchFTSFromLbug;
     try {
       ({ searchFTSFromLbug } = await import('../../core/search/bm25-index.js'));
@@ -4195,6 +4459,12 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const { name, uid, file_path, kind, include_content } = params;
+    const requestedContent = include_content ?? false;
+    // Content retention matters only to the opt-in content response. Avoid a
+    // metadata dependency for the long-standing default context operation.
+    const meta = requestedContent ? await loadMeta(path.dirname(repo.lbugPath)) : null;
+    const contentAvailability = requestedContentAvailability(requestedContent, meta);
+    const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
 
     if (!name && !uid) {
       return { error: 'Either "name" or "uid" parameter is required.' };
@@ -4202,18 +4472,22 @@ export class LocalBackend {
 
     const outcome = await this.resolveSymbolCandidates(
       repo,
-      { uid, name, include_content },
+      { uid, name, include_content: includeContent },
       { file_path, kind },
     );
 
     if (outcome.kind === 'not_found') {
-      return { error: `Symbol '${name || uid}' not found` };
+      return {
+        error: `Symbol '${name || uid}' not found`,
+        ...(contentAvailability ? { contentAvailability } : {}),
+      };
     }
 
     if (outcome.kind === 'ambiguous') {
       const { atLeast, showing, fields } = ambiguityReport(outcome, outcome.candidates.length);
       return {
         status: 'ambiguous',
+        ...(contentAvailability ? { contentAvailability } : {}),
         message: `Found ${atLeast}${outcome.total} symbols matching '${name}'${showing}. Use uid, file_path, or kind to disambiguate.`,
         ...fields,
         candidates: outcome.candidates.map((c) => ({
@@ -4249,7 +4523,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(n) <> 'Community')
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
@@ -4404,7 +4679,8 @@ export class LocalBackend {
         repo.lbugPath,
         `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'MEMBER_OF', 'USES', 'DECLARES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+        AND (r.type <> 'MEMBER_OF' OR labels(target) <> 'Community')
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       ORDER BY uid, relType
       LIMIT 30
@@ -4583,6 +4859,7 @@ export class LocalBackend {
 
     return {
       status: 'found',
+      ...(contentAvailability ? { contentAvailability } : {}),
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
@@ -4590,7 +4867,7 @@ export class LocalBackend {
         filePath: sym.filePath || sym[3],
         startLine: toDisplayLine(sym.startLine ?? sym[4]),
         endLine: toDisplayLine(sym.endLine ?? sym[5]),
-        ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
+        ...(includeContent && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
         ...(beanMetadata ? { bean: beanMetadata } : {}),
         ...(aopMetadata ? { aop: aopMetadata } : {}),
@@ -5418,11 +5695,11 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const fileDiffs: FileDiff[] = parseDiffHunks(diffOutput);
+    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput);
 
     if (fileDiffs.length === 0) {
-      // Git printed a diff but none of it parsed: the `+++ b/` headers were not
-      // where `parseDiffHunks` looks. That is a PARSE failure, not a clean tree,
+      // Git printed a diff but none of it parsed: no `diff --git` / `+++`
+      // file header was recognised. That is a PARSE failure, not a clean tree,
       // and the clean branch below would report it to the pre-commit gate as
       // `risk_level:'none'`, no `partial`, exit 0 — a false all-clear (#2915).
       const parseFailed = diffOutput.trim().length > 0;
@@ -5455,7 +5732,9 @@ export class LocalBackend {
     const changedSymbols = new Map<string, any>();
     // Set if a swallowed graph query fails below — surfaces `partial:true` so a
     // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
-    let queryDegraded = false;
+    // An unparsed `diff --git` is the same class: later hunks must not make
+    // the gate look complete.
+    let queryDegraded = unparsedGitHeaders > 0;
 
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
@@ -6994,6 +7273,19 @@ export class LocalBackend {
       direction === 'downstream'
         ? Promise.resolve(undefined)
         : queryConvexDispatchMetadata(repo.lbugPath, symId, symName, symType);
+    // #3399 — callables named in value position. Upstream only: the question
+    // "who can reach this symbol" is the one a registration makes unanswerable.
+    // A downstream walk asks what THIS symbol reaches, which a reference INTO
+    // it does not affect.
+    //
+    // Issued alongside the heritage probe rather than after it, and read into
+    // `droppedBoundaries` below, so it hedges even when that probe finds
+    // nothing AND when it throws — a value reference is an independent reason
+    // a count is short, exactly as the receiver drops above are.
+    const valueRefPromise =
+      direction === 'downstream'
+        ? Promise.resolve({ notes: [] as string[], referrers: 0 })
+        : callableValueReferenceBoundaries(repo.lbugPath, symId);
     const interfaceRowsPromise = executeParameterized(
       repo.lbugPath,
       `MATCH (x)-[r:CodeRelation]->(iface)
@@ -7014,12 +7306,14 @@ export class LocalBackend {
               : []),
           ]);
     const convexDispatch = await convexDispatchPromise;
+    const valueRefDrops = await valueRefPromise;
     const droppedBoundaries = {
       ...receiverDrops,
       notes: [
         ...receiverDrops.notes,
         ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
+        ...valueRefDrops.notes,
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
       undecided: undecidedDrops.undecided,
@@ -7028,6 +7322,7 @@ export class LocalBackend {
       // inventing one from the presence of a note.
       dispatch: 0,
       scopeExtraction: scopeExtractionDrops.files,
+      callableValueReferences: valueRefDrops.referrers,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -7119,6 +7414,7 @@ export class LocalBackend {
           dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
           undecidedSatisfaction: droppedBoundaries.undecided,
+          callableValueReferences: droppedBoundaries.callableValueReferences,
         },
       };
     } catch {

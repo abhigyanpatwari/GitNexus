@@ -8,7 +8,12 @@ describe('api query read-only wiring', () => {
       path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
       'utf-8',
     );
-    expect(source).toMatch(/handleQueryRequest[\s\S]*withLbugDb\([\s\S]*readOnly:\s*true/);
+    // The open now routes through readOnlyFtsOptions(skipFts) so the persisted
+    // FTS mode rides along; api-readonly-wiring.test.ts pins that the helper
+    // always sets `readOnly: true`.
+    expect(source).toMatch(
+      /handleQueryRequest[\s\S]*withLbugDb\([\s\S]*(?:readOnly:\s*true|readOnlyFtsOptions\()/,
+    );
   });
 
   it('routes /api/query through handleQueryRequest', async () => {

@@ -44,6 +44,11 @@ tasks:
         target: gitnexus/node_modules
       - source: gitnexus-shared/node_modules
         target: gitnexus-shared/node_modules
+      # Host-built types/JS. The clone has no dist/, and node_modules/gitnexus-shared
+      # is a relative symlink into that unbuilt tree — without this mount, in-sandbox
+      # `tsc --noEmit` / vitest fail with TS2307 / TS6379 (run 33962002890).
+      - source: gitnexus-shared/dist
+        target: gitnexus-shared/dist
     prompt: >
       Add -j as a short alias for --json on the gitnexus status command
       (gitnexus/src/cli/index.ts), and cover the alias with a unit test in

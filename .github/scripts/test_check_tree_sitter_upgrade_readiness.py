@@ -9,8 +9,8 @@ which is deliberately dependency-free so it runs on any vanilla runner. Run with
 (pytest also discovers ``unittest.TestCase`` classes, so a future pytest CI job
 picks these up unchanged.)
 
-These tests lock in the #858 fix: the 6 vendored grammars
-(c/swift/kotlin/dart/proto/zig) are classified from the shared manifest
+These tests lock in the #858 fix: the 7 vendored grammars
+(c/swift/kotlin/dart/objc/proto/zig) are classified from the shared manifest
 (.github/vendored-grammars.json), their ABI is read from gitnexus/vendor/<name>,
 and the report never renders a bare ``?`` placeholder. All network is mocked.
 """
@@ -192,7 +192,7 @@ class AssertCurrent(TestCase):
     def test_assert_current_is_network_free_and_passes(self):
         report, code = self._run_assert_current()  # raises if any urlopen fires
         self.assertEqual(code, 0)
-        # All 6 vendored grammars are introspected from the repo (ABI 14), not skipped.
+        # All 7 vendored grammars are introspected from the repo (ABI 14), not skipped.
         for name in readiness.VENDORED_NAMES:
             self.assertIn(f"{name}: vendored ABI", report)
 
@@ -365,15 +365,16 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The 3 blockers are that same pinned tree-sitter-cpp
-        # plus two held vendored grammars: ABI-held tree-sitter-c (#1242/#858) and
+        # not counted ready. The 4 blockers are that same pinned tree-sitter-cpp
+        # plus three held vendored grammars: ABI-held tree-sitter-c (#1242/#858),
         # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
         # interface` support — ABI 14 is in range, but a hold counts as a blocker
-        # until it is lifted). If a grammar is added/removed or a pin/hold changes,
+        # until it is lifted), and tree-sitter-objc. If a grammar is added/removed
+        # or a pin/hold changes,
         # update _render_report()'s mock AND these expected counts together; a
         # mismatch here means the report prose drifted, not the regex.
         self.assertEqual(ready.groups(), ("9", "10"))
-        self.assertEqual(blockers.group(1), "3")
+        self.assertEqual(blockers.group(1), "4")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

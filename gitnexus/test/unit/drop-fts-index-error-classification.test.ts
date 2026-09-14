@@ -10,6 +10,8 @@
  * specific engine failure was not achieved during investigation, but the
  * classifier's behavior for it is still provable from the message alone.
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isBenignDropFtsIndexError, dropFTSIndex } from '../../src/core/lbug/lbug-adapter.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
@@ -204,7 +206,10 @@ describe('dropFTSIndex with the FTS extension unloaded (#2841)', () => {
       sql: string,
       ...rest: unknown[]
     ) {
-      if (/^\s*LOAD EXTENSION fts\b/i.test(sql)) {
+      if (
+        /^\s*LOAD\s+EXTENSION\b/i.test(sql) &&
+        (/\bfts\b/i.test(sql) || /libfts\.lbug_extension/i.test(sql))
+      ) {
         return Promise.reject(new Error(FORCED_LOAD_FAILURE));
       }
       return originalQuery.call(this, sql, ...rest);
@@ -236,4 +241,21 @@ describe('dropFTSIndex with the FTS extension unloaded (#2841)', () => {
       resetExtensionState();
     }
   }, 120_000);
+});
+
+describe('dropFTSIndex fallback diagnosis wiring', () => {
+  it('extracts the inspect path before resolveFtsVersionPair', () => {
+    const source = readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
+      'utf8',
+    );
+    const drop = source.slice(source.indexOf('export const dropFTSIndex'));
+    const inspectAt = drop.indexOf('extractExtensionPath(ftsCapability?.reason)');
+    const diagnoseAt = drop.indexOf('diagnoseExtensionLoad(');
+    const pairAt = drop.indexOf('resolveFtsVersionPair(inspectPath)');
+    expect(inspectAt).toBeGreaterThan(-1);
+    expect(diagnoseAt).toBeGreaterThan(inspectAt);
+    expect(pairAt).toBeGreaterThan(diagnoseAt);
+    expect(drop).not.toContain('resolveFtsVersionPair(undefined)');
+  });
 });

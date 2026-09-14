@@ -34,8 +34,10 @@ import { pathToFileURL } from 'node:url';
 
 // Partial mock: lets one test make prepareDurableParsedFileChunk fail without
 // touching the worker-side persist path (which shares the same directory).
+// Receives the chunk hash so a test can fail the reset for ONE chunk while its
+// siblings reset normally — the shape a correlated-vs-isolated failure needs.
 const prepareOverride = vi.hoisted(() => ({
-  impl: undefined as undefined | (() => Promise<void>),
+  impl: undefined as undefined | ((durableDir: string, chunkHash: string) => Promise<void>),
 }));
 const persistOverride = vi.hoisted(() => ({
   impl: undefined as undefined | (() => Promise<boolean>),
@@ -46,7 +48,7 @@ vi.mock('../../src/storage/parsedfile-store.js', async (importOriginal) => {
     ...real,
     prepareDurableParsedFileChunk: (durableDir: string, chunkHash: string) =>
       prepareOverride.impl
-        ? prepareOverride.impl()
+        ? prepareOverride.impl(durableDir, chunkHash)
         : real.prepareDurableParsedFileChunk(durableDir, chunkHash),
     persistParsedFileChunk: (
       storagePath: string,
@@ -78,6 +80,7 @@ import {
   clearParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import type { ParseCache } from '../../src/storage/parse-cache.js';
 import type { ParsedFile } from 'gitnexus-shared';
 
 // A structurally-minimal ParsedFile. `loadParsedFilesForPaths` keys on
@@ -309,7 +312,7 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     return { path: rel, size: fs.statSync(full).size };
   };
 
-  const newCache = () => ({
+  const newCache = (): ParseCache => ({
     version: PARSE_CACHE_VERSION,
     entries: new Map<string, ParseWorkerResult[]>(),
     usedKeys: new Set<string>(),
@@ -399,6 +402,279 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
 
     // Nothing was written under any key -- neither on disk nor in memory.
     expect(cache.onDiskKeys.size + cache.entries.size).toBe(0);
+  });
+
+  // #3204: the chunk above had no prior generation. When one EXISTS, skipping
+  // the write is not enough — `saveParseCache` copies the pre-existing `.v8`
+  // forward from `usedKeys`, and the durable prune then keeps the mixed
+  // directory because it prunes to exactly those saved keys.
+  const seedThenFailReset = async (
+    rel: string,
+    source: string,
+  ): Promise<{
+    file: { path: string; size: number };
+    chunkHash: string;
+    warm: ReturnType<typeof newCache>;
+  }> => {
+    const file = writeFile(rel, source);
+    const chunkHash = computeChunkHash([
+      { filePath: file.path, contentHash: fileContentHash(source) },
+    ]);
+    const cold = newCache();
+    await run(cold, [file]); // miss → populates the parse cache + durable shards
+    await persistCaches(cold);
+
+    // Corrupt (do not delete) one durable shard: the coherence gate then
+    // re-dispatches while the previous generation stays on disk, which is the
+    // only way a chunk is both a live `.v8` entry and a miss in one run.
+    const chunkDir = path.join(getDurableParsedFileDir(storageDir), chunkHash);
+    const shard = fs.readdirSync(chunkDir).find((name) => name.endsWith('.v8'));
+    if (!shard) throw new Error('expected a durable shard to corrupt');
+    fs.writeFileSync(path.join(chunkDir, shard), Buffer.from([0, 1, 2]));
+
+    const { loadParseCache } = await import('../../src/storage/parse-cache.js');
+    const warm = (await loadParseCache(storageDir)) as ReturnType<typeof newCache>;
+    expect(warm.onDiskKeys.has(chunkHash)).toBe(true); // the old generation is live
+    fs.rmSync(markerPath, { force: true });
+
+    prepareOverride.impl = () => Promise.reject(new Error('EACCES: simulated cache failure'));
+    try {
+      await run(warm, [file]);
+    } finally {
+      prepareOverride.impl = undefined;
+    }
+    expect(fs.existsSync(markerPath)).toBe(true); // the gate did fall through
+    return { file, chunkHash, warm };
+  };
+
+  const readSavedIndexKeys = (): string[] => {
+    const raw = fs.readFileSync(path.join(storageDir, 'parse-cache', 'index.json'), 'utf-8');
+    return (JSON.parse(raw) as { keys: string[] }).keys;
+  };
+
+  it('drops a pre-existing cache entry when the durable generation could not be reset', async () => {
+    const { chunkHash, warm } = await seedThenFailReset(
+      'src/stale-carryforward.ts',
+      'export function carried() { return 1; }\n',
+    );
+
+    const { saveParseCache, pruneCache } = await import('../../src/storage/parse-cache.js');
+    pruneCache(warm, warm.usedKeys);
+    const saved = await saveParseCache(storageDir, warm);
+
+    expect(saved).not.toContain(chunkHash);
+    expect(readSavedIndexKeys()).not.toContain(chunkHash);
+    expect(fs.existsSync(path.join(storageDir, 'parse-cache', `${chunkHash}.v8`))).toBe(false);
+
+    await pruneAndSaveDurableParsedFileStore(
+      getDurableParsedFileDir(storageDir),
+      PARSE_CACHE_VERSION,
+      new Set(saved),
+    );
+    const { loadDurableParsedFileIndex } = await import('../../src/storage/parsedfile-store.js');
+    const durable = await loadDurableParsedFileIndex(
+      getDurableParsedFileDir(storageDir),
+      PARSE_CACHE_VERSION,
+    );
+    expect(durable.has(chunkHash)).toBe(false);
+  });
+
+  it('keeps the chunk excluded when a post-parse merge re-adds its key', async () => {
+    // run-analyze folds sibling-branch keys into usedKeys AFTER the parse phase
+    // (#2106), and retains every loaded key when a sibling meta is unreadable.
+    // Invalidation has to outlive both, which is why it is filtered at save.
+    const { chunkHash, warm } = await seedThenFailReset(
+      'src/stale-readd.ts',
+      'export function readded() { return 1; }\n',
+    );
+
+    // Model both merges: the sibling fold re-adds the key, and the
+    // unreadable-meta fallback unions `entries.keys()` back into `usedKeys`.
+    // Either one would resurrect the chunk if invalidation were a deletion
+    // from `usedKeys` instead of a filter at save time.
+    warm.usedKeys.add(chunkHash);
+    warm.entries.set(chunkHash, [] as unknown as ParseWorkerResult[]);
+    warm.onDiskKeys?.add(chunkHash);
+    for (const key of warm.entries.keys()) warm.usedKeys.add(key);
+
+    const { saveParseCache } = await import('../../src/storage/parse-cache.js');
+    const saved = await saveParseCache(storageDir, warm);
+
+    expect(saved).not.toContain(chunkHash);
+    expect(readSavedIndexKeys()).not.toContain(chunkHash);
+  });
+
+  it('retires the chunk when the failed reset left the old generation on disk', async () => {
+    const { chunkHash, warm } = await seedThenFailReset(
+      'src/stale-marking-site.ts',
+      'export function marked() { return 1; }\n',
+    );
+
+    expect(warm.staleKeys?.has(chunkHash)).toBe(true);
+    // `onDiskKeys` carried this hash from the loaded index, so clearing it is
+    // observable; `entries` is empty on the sharded path, which is why the
+    // in-memory half is proved by the legacy-cache case below instead.
+    expect(warm.onDiskKeys?.has(chunkHash)).toBe(false);
+  });
+
+  it('clears an in-memory entry for a retired chunk', async () => {
+    // `markParseCacheChunkStale` also drops `entries`, which only matters for a
+    // legacy (non-sharded) cache whose payloads live in memory. Drive the
+    // helper directly — the sharded pipeline never populates `entries`, so the
+    // pipeline test above cannot observe this half.
+    const { markParseCacheChunkStale, saveParseCache } =
+      await import('../../src/storage/parse-cache.js');
+    const cache = newCache();
+    const chunkHash = 'a'.repeat(64);
+    cache.entries.set(chunkHash, [] as unknown as ParseWorkerResult[]);
+    cache.onDiskKeys?.add(chunkHash);
+    cache.usedKeys.add(chunkHash);
+
+    markParseCacheChunkStale(cache, chunkHash);
+
+    expect(cache.entries.has(chunkHash)).toBe(false);
+    expect(cache.onDiskKeys?.has(chunkHash)).toBe(false);
+    expect(await saveParseCache(storageDir, cache)).not.toContain(chunkHash);
+  });
+
+  it('does NOT retire a chunk when the failed reset left no old generation', async () => {
+    // `prepareDurableParsedFileChunk` is rm-then-mkdir. When the rm succeeded
+    // and the mkdir failed there is nothing stale to protect against — the
+    // workers recreate the directory and write a clean generation — so
+    // retiring would throw away a good cache entry. Only an rm failure, which
+    // leaves shards behind, justifies retirement.
+    const source = 'export function mkdirOnly() { return 1; }\n';
+    const file = writeFile('src/mkdir-only.ts', source);
+    const chunkHash = computeChunkHash([
+      { filePath: file.path, contentHash: fileContentHash(source) },
+    ]);
+    const cold = newCache();
+    await run(cold, [file]);
+    await persistCaches(cold);
+
+    // Corrupt a shard so the coherence gate re-dispatches, then model the
+    // rm-succeeded/mkdir-failed shape: the directory is gone when prepare throws.
+    const chunkDir = path.join(getDurableParsedFileDir(storageDir), chunkHash);
+    const shard = fs.readdirSync(chunkDir).find((name) => name.endsWith('.v8'));
+    if (!shard) throw new Error('expected a durable shard to corrupt');
+    fs.writeFileSync(path.join(chunkDir, shard), Buffer.from([0, 1, 2]));
+
+    const { loadParseCache, saveParseCache } = await import('../../src/storage/parse-cache.js');
+    const warm = (await loadParseCache(storageDir)) as ParseCache;
+    prepareOverride.impl = async (durableDir, hash) => {
+      fs.rmSync(path.join(durableDir, hash), { recursive: true, force: true });
+      throw new Error('EMFILE: simulated mkdir failure after a clean rm');
+    };
+    try {
+      await run(warm, [file]);
+    } finally {
+      prepareOverride.impl = undefined;
+    }
+
+    expect(warm.staleKeys?.has(chunkHash) ?? false).toBe(false);
+    expect(await saveParseCache(storageDir, warm)).toContain(chunkHash);
+  });
+
+  it('still saves a chunk whose durable generation reset succeeded', async () => {
+    const f = writeFile('src/healthy.ts', 'export function healthy() { return 1; }\n');
+    const chunkHash = computeChunkHash([
+      {
+        filePath: f.path,
+        contentHash: fileContentHash('export function healthy() { return 1; }\n'),
+      },
+    ]);
+    const cache = newCache();
+
+    await run(cache, [f]);
+    const { saveParseCache } = await import('../../src/storage/parse-cache.js');
+    const saved = await saveParseCache(storageDir, cache);
+
+    expect(saved).toContain(chunkHash);
+    expect(cache.staleKeys?.has(chunkHash) ?? false).toBe(false);
+    expect(fs.existsSync(path.join(storageDir, 'parse-cache', `${chunkHash}.v8`))).toBe(true);
+    const { loadDurableParsedFileIndex: loadIdx } =
+      await import('../../src/storage/parsedfile-store.js');
+    await pruneAndSaveDurableParsedFileStore(
+      getDurableParsedFileDir(storageDir),
+      PARSE_CACHE_VERSION,
+      new Set(saved),
+    );
+    expect(
+      (await loadIdx(getDurableParsedFileDir(storageDir), PARSE_CACHE_VERSION)).has(chunkHash),
+    ).toBe(true);
+  });
+
+  it('re-dispatches on the run after a failed reset instead of taking a warm hit', async () => {
+    const { file, chunkHash, warm } = await seedThenFailReset(
+      'src/stale-nextrun.ts',
+      'export function nextRun() { return 1; }\n',
+    );
+    await persistCaches(warm);
+
+    const { loadParseCache } = await import('../../src/storage/parse-cache.js');
+    const third = (await loadParseCache(storageDir)) as ReturnType<typeof newCache>;
+    expect(third.onDiskKeys.has(chunkHash)).toBe(false);
+    fs.rmSync(markerPath, { force: true });
+
+    await run(third, [file]);
+
+    expect(fs.existsSync(markerPath)).toBe(true);
+  });
+
+  it('retires only the failing chunk — a sibling chunk stays warm through the next run', async () => {
+    // The single-chunk tests cannot tell "retires the failing chunk" from
+    // "retires everything": one chunk plus a global spawn marker look the same
+    // either way. Two chunks, one failure, and a per-chunk assertion can.
+    const aSrc = 'export function a() { return 1; }\n';
+    const bSrc = 'export function b() { return 2; }\n';
+    const a = writeFile('src/a.ts', aSrc);
+    const b = writeFile('src/b.ts', bSrc);
+    const hashOf = (rel: string, src: string): string =>
+      computeChunkHash([{ filePath: rel, contentHash: fileContentHash(src) }]);
+    const aHash = hashOf(a.path, aSrc);
+    const bHash = hashOf(b.path, bSrc);
+
+    // chunkByteBudget 1 forces one file per chunk, so a and b hash distinctly.
+    const cold = newCache();
+    await run(cold, [a, b], 1);
+    await persistCaches(cold);
+
+    // Corrupt only a's durable shard: a re-dispatches, b still hits warm.
+    const aDir = path.join(getDurableParsedFileDir(storageDir), aHash);
+    const aShard = fs.readdirSync(aDir).find((name) => name.endsWith('.v8'));
+    if (!aShard) throw new Error('expected a durable shard for a');
+    fs.writeFileSync(path.join(aDir, aShard), Buffer.from([0, 1, 2]));
+
+    const { loadParseCache } = await import('../../src/storage/parse-cache.js');
+    const warm = (await loadParseCache(storageDir)) as ParseCache;
+    prepareOverride.impl = (_durableDir, hash) =>
+      hash === aHash
+        ? Promise.reject(new Error('EACCES: simulated cache failure'))
+        : Promise.resolve();
+    try {
+      await run(warm, [a, b], 1);
+    } finally {
+      prepareOverride.impl = undefined;
+    }
+    await persistCaches(warm);
+
+    // b survived the save; only a was retired.
+    expect(warm.staleKeys?.has(aHash)).toBe(true);
+    expect(warm.staleKeys?.has(bHash) ?? false).toBe(false);
+
+    // Actually perform the next run. An index entry alone does not exercise the
+    // warm-hit/coherence path, so the claim in the title has to be paid for.
+    // Run each chunk on its own so the single global spawn marker is
+    // unambiguous about WHICH chunk re-dispatched.
+    const bOnly = (await loadParseCache(storageDir)) as ParseCache;
+    fs.rmSync(markerPath, { force: true });
+    await run(bOnly, [b], 1);
+    expect(fs.existsSync(markerPath)).toBe(false); // sibling served warm
+
+    const aOnly = (await loadParseCache(storageDir)) as ParseCache;
+    fs.rmSync(markerPath, { force: true });
+    await run(aOnly, [a], 1);
+    expect(fs.existsSync(markerPath)).toBe(true); // retired chunk re-parsed
   });
 
   it('retains worker ParsedFiles when the main-thread run-store write fails', async () => {

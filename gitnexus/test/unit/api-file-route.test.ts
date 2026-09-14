@@ -24,7 +24,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import { handleFileRequest } from '../../src/server/api.js';
+import { handleFileRequest, type SourceAvailability } from '../../src/server/api.js';
 
 let tmpRoot: string;
 
@@ -42,7 +42,10 @@ afterAll(async () => {
 // Minimal express-shaped mock that captures status() / json() calls in a
 // shape compatible with the handler's expected interface. Returns the
 // final status (default 200 for naked res.json) and JSON body.
-const invoke = async (query: Record<string, unknown>): Promise<{ status: number; body: any }> => {
+const invoke = async (
+  query: Record<string, unknown>,
+  availability?: SourceAvailability,
+): Promise<{ status: number; body: any }> => {
   let capturedStatus = 200;
   let capturedBody: any = undefined;
   const res = {
@@ -54,7 +57,7 @@ const invoke = async (query: Record<string, unknown>): Promise<{ status: number;
       capturedBody = body;
     },
   };
-  await handleFileRequest({ query }, res, tmpRoot);
+  await handleFileRequest({ query }, res, tmpRoot, availability);
   return { status: capturedStatus, body: capturedBody };
 };
 
@@ -69,6 +72,15 @@ describe('handleFileRequest — security wiring', () => {
     const { status, body } = await invoke({ path: 'sub/nested.txt' });
     expect(status).toBe(200);
     expect(body.content).toBe('nested\n');
+  });
+
+  it('returns 410 when the selected retention profile cannot provide full source', async () => {
+    const { status, body } = await invoke(
+      { path: 'hello.txt' },
+      { available: false, reason: 'content-retention' },
+    );
+    expect(status).toBe(410);
+    expect(body).toMatchObject({ code: 'source-unavailable', reason: 'content-retention' });
   });
 
   it('returns 400 when path is missing', async () => {

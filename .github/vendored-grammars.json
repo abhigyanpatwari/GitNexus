@@ -6,6 +6,11 @@
       "upstream": { "npm": "tree-sitter-c" },
       "hold": "ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping"
     },
+    "objc": {
+      "name": "tree-sitter-objc",
+      "upstream": { "npm": "tree-sitter-objc" },
+      "hold": "Pinned at 3.0.2 for the Objective-C provider MVP; carries darwin/linux arm64+x64 prebuilds compatible with the current tree-sitter runtime (linux-arm64 built from vendored source because the upstream npm artifact is mislabeled)"
+    },
     "swift": {
       "name": "tree-sitter-swift",
       "upstream": { "npm": "tree-sitter-swift" }

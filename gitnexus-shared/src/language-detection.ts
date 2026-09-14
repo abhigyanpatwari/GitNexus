@@ -32,6 +32,7 @@ const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.Python]: ['.py'],
   [SupportedLanguages.Java]: ['.java'],
   [SupportedLanguages.C]: ['.c'],
+  [SupportedLanguages.ObjectiveC]: ['.m', '.mm'],
   [SupportedLanguages.CPlusPlus]: [
     '.cpp',
     '.cc',
@@ -111,6 +112,7 @@ const SYNTAX_MAP: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Python]: 'python',
   [SupportedLanguages.Java]: 'java',
   [SupportedLanguages.C]: 'c',
+  [SupportedLanguages.ObjectiveC]: 'objectivec',
   [SupportedLanguages.CPlusPlus]: 'cpp',
   [SupportedLanguages.CSharp]: 'csharp',
   [SupportedLanguages.Go]: 'go',

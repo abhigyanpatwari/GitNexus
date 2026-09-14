@@ -508,11 +508,24 @@ function normalizeGenericConstructorCapture(
   if (referenceNode !== undefined && referenceNode.type === 'generic_type') {
     const base = referenceNode.childForFieldName('type');
     if (base !== null) {
-      grouped['@reference.name'] = syntheticCapture(
-        '@reference.name',
-        base,
-        extractSimpleTypeNameText(base),
-      );
+      const simple = extractSimpleTypeNameText(base);
+      // Keep the written `pkg.Box[T]` spelling so constructor resolution
+      // can tell a package-qualified type from a bare unique-name guess.
+      // `Box[T]` is also `text !== simple` (`Box[T]` vs `Box`) — that is
+      // not a qualifier. Only a `qualified_type` base (`pkg.Box`) is.
+      if (
+        grouped['@reference.qualified-name'] === undefined &&
+        base.type === 'qualified_type' &&
+        referenceNode.text.length > 0 &&
+        referenceNode.text !== simple
+      ) {
+        grouped['@reference.qualified-name'] = syntheticCapture(
+          '@reference.qualified-name',
+          referenceNode,
+          referenceNode.text,
+        );
+      }
+      grouped['@reference.name'] = syntheticCapture('@reference.name', base, simple);
     }
   }
 }

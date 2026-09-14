@@ -77,6 +77,14 @@ jobs:
               # GitHub PR CodeQL gate, so this file is excluded to avoid
               # re-filing js/regex-injection on every push of the same line.
               - 'gitnexus/src/server/grep-params.ts'
+              # Tests construct tmpdir fixtures and pass them into production
+              # read-only probes (openSync(..., 'r')). CodeQL models that as
+              # js/insecure-temporary-file even though nothing is created.
+              - '**/test/**'
+              # CI vendor fetch: origin is the official Ladybug repo; dest is
+              # regex-pinned and containment-checked. Inline suppressions do
+              # not clear the PR CodeQL gate (same as grep-params.ts).
+              - '.github/scripts/fetch-lbug-fts-artifacts.mjs'
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9

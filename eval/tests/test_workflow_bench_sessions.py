@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import evolve, runner, runner_sessions, runtime_mounts
+from workflow_bench import evolve, runner, runner_artifacts, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
-from workflow_bench.process_control import ManagedProcessResult
+from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
 from workflow_bench.proposer_sandbox import SandboxError
 from workflow_bench.runner import snapshot_plan_docs
 
@@ -120,11 +120,16 @@ def skill_events(skill_input: dict, *, tool_id: str = "skill-1", is_error: bool 
 
 
 def fake_sandbox(root: Path) -> SimpleNamespace:
+    # private_root is NOT the clone. Conflating them puts the review artifact
+    # directory inside the workspace, which the real sandbox never does and
+    # which hides whether the workspace was left untouched.
+    private_root = root.parent / f"{root.name}-sandbox-private"
+    private_root.mkdir(exist_ok=True)
     return SimpleNamespace(
         backend="test-double",
         claude_bin="claude",
         clone=root,
-        private_root=root,
+        private_root=private_root,
         command_prefix=[],
         command_prefix_for=lambda **_kwargs: [],
         settings_json="{}",
@@ -1249,7 +1254,7 @@ def test_planning_cannot_change_source_tests_or_downstream_skill(monkeypatch, tm
 @pytest.mark.parametrize(
     ("attack", "expected_detail"),
     [
-        ("workspace", "unauthorized workspace path"),
+        ("workspace", "changed the read-only workspace"),
         ("skill", "changed the evaluated skill fingerprint"),
     ],
 )
@@ -1265,9 +1270,11 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     expected_skill_digest = "expected-skill-fingerprint"
 
     def adversarial_review(prompt, *args, **kwargs):
-        (tmp_path / "review-output.json").write_text(
-            '{"schema_version":1,"verdict":"approve","findings":[]}'
-        )
+        # Write where the contract now says: the artifact directory outside the
+        # workspace, which is the only place the agent can write atomically.
+        artifact = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"schema_version":1,"verdict":"approve","findings":[]}')
         if attack == "workspace":
             source.write_text("review silently changed source")
         return session_record()
@@ -1296,6 +1303,97 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     assert rec["resolved"] is False
     assert rec["error_kind"] == "review-evidence-invalid"
     assert expected_detail in rec["error_detail"]
+
+
+def test_a_cancelled_clone_copy_does_not_fall_back_to_an_uncancellable_copytree(monkeypatch, tmp_path):
+    """The reflink fallback is for a filesystem, not for a teardown.
+
+    run_managed reports cancellation as a non-OK result rather than raising, so
+    the fallback treated it like an unsupported reflink and started a copytree
+    that cannot be cancelled — waiting out exactly the full copy the outage
+    breaker set the cancellation event to avoid.
+    """
+
+    source = tmp_path / "template"
+    (source / ".git").mkdir(parents=True)
+    parent = tmp_path / "clones"
+    parent.mkdir()
+    copied: list[object] = []
+
+    monkeypatch.setattr(
+        runner_artifacts,
+        "run_managed",
+        lambda *_a, **_k: ManagedProcessResult(
+            state="cancelled",
+            returncode=None,
+            stdout_tail="",
+            stderr_tail="",
+            duration_s=0.1,
+        ),
+    )
+    monkeypatch.setattr(runner_artifacts.shutil, "copytree", lambda *a, **k: copied.append(a))
+
+    with pytest.raises(ManagedProcessError):
+        runner.copy_isolated_tree(source, parent)
+    assert copied == []
+    assert list(parent.iterdir()) == [], "the partial target must be cleaned up"
+
+
+@pytest.mark.parametrize("arm", ["review", "ce_review"])
+def test_run_arm_mounts_the_review_artifact_directory_outside_the_workspace(monkeypatch, tmp_path, arm):
+    """A writable FILE inside a read-only directory is not a writable path.
+
+    The Write tool creates `<target>.tmp.<n>.<hex>` beside the target and
+    renames it, so a read-only parent fails the temp create with EROFS and the
+    artifact stays 0 bytes. The mount target must be the directory, and it must
+    sit outside the read-only workspace.
+
+    Driven through run_arm rather than rebuilt here: an expected tuple assembled
+    in the test passes whatever run_arm actually mounts, which is the one thing
+    this needs to prove.
+    """
+
+    assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
+    assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
+
+    verify_calls: list[dict] = []
+    sandbox = fake_sandbox(tmp_path)
+    sandbox.command_prefix_for = lambda **kwargs: verify_calls.append(kwargs) or []
+
+    def review_session(prompt, *args, **kwargs):
+        artifact = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"schema_version":1,"verdict":"approve","findings":[]}')
+        return session_record()
+
+    monkeypatch.setattr(runner, "run_claude", review_session)
+    monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
+    monkeypatch.setattr(runner, "run_verify", lambda *a, **k: (True, "ok"))
+
+    runner.run_arm(
+        arm,
+        {"prompt": "p", "verify": "true"},
+        tmp_path,
+        bench_args(),
+        sandbox=sandbox,
+        expected_skill_digest="skill-digest",
+    )
+
+    review_output = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+    expected = (runner.ReadOnlyMount(source=review_output.parent, target=runner.SANDBOX_REVIEW_OUTPUT),)
+    # The EROFS bug is about the AGENT's write, so the mount that has to be the
+    # directory is the writable one on the review session — not the read-only
+    # exposure the verify command gets afterwards. Assert both: they are
+    # separate arguments to separate command prefixes.
+    writable = [call["extra_writable_mounts"] for call in verify_calls if "extra_writable_mounts" in call]
+    assert writable, "the review session must be given a writable artifact mount"
+    assert writable[-1] == expected, "mount the directory, not the file"
+    read_only = [call["extra_read_only_mounts"] for call in verify_calls if "extra_read_only_mounts" in call]
+    assert read_only, "the verify invocation must be given the artifact mount"
+    assert read_only[-1] == expected, "mount the directory, not the file"
+    assert not expected[0].target.startswith(f"{runner.SANDBOX_WORKSPACE}/")
+    # The artifact the harness later reads is the one inside that mount.
+    assert review_output.parent in review_output.parents
 
 
 def _git(repo, *args, check=True):
@@ -1348,3 +1446,34 @@ def test_make_worktree_clone_has_no_tags_but_keeps_all_branches(tmp_path):
 
     current = _git(target, "rev-parse", "HEAD").stdout.strip()
     assert current == other_sha
+
+
+def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    sha = _git_commit(repo, "base")
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    template = runner.make_worktree(repo, sha, clones)
+    (template / "marker.txt").write_text("template\n")
+
+    copy = runner.copy_isolated_tree(template, clones)
+    assert copy != template
+    assert (copy / "marker.txt").read_text() == "template\n"
+    (copy / "marker.txt").write_text("copy\n")
+    assert (template / "marker.txt").read_text() == "template\n"
+    copy_head = _git(copy, "rev-parse", "HEAD").stdout.strip()
+    template_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+    assert copy_head == template_head == sha
+    # An equal initial HEAD is also what a shared ref namespace looks like, so
+    # write a ref and prove the template cannot see it. A linked worktree would
+    # pass every assertion above, including the alternates check — its `.git` is
+    # a file, so the directory inspected below simply does not exist.
+    _git(copy, "branch", "copy-only")
+    assert _git(copy, "show-ref", "--verify", "refs/heads/copy-only").returncode == 0
+    assert _git(template, "show-ref", "--verify", "refs/heads/copy-only", check=False).returncode != 0
+    assert (copy / ".git").is_dir()
+    alternates = copy / ".git" / "objects" / "info" / "alternates"
+    assert not alternates.exists()

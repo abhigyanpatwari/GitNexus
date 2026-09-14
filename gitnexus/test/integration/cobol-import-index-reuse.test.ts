@@ -118,11 +118,9 @@ describe('COBOL COPY resolution — index reuse across imports (#2908)', () => {
     // Source tier, reached only after every copybook missed.
     expect(resolveImportTarget('PAYROLL', FROM_FILE, files, undefined)).toBe('src/PAYROLL.cob');
     expect(resolveImportTarget('TAXCALC', FROM_FILE, files, undefined)).toBe('src/TAXCALC.cobol');
-    // `path.basename(fp, '.cpy')` will not strip `.CPY`, so the stem keeps it.
-    expect(resolveImportTarget('MIXED.CPY', FROM_FILE, files, undefined)).toBe(
-      'copybooks/Mixed.CPY',
-    );
-    expect(resolveImportTarget('MIXED', FROM_FILE, files, undefined)).toBeNull();
+    // P1-A: raw extension stripped, so `Mixed.CPY` keys as `MIXED`.
+    expect(resolveImportTarget('MIXED', FROM_FILE, files, undefined)).toBe('copybooks/Mixed.CPY');
+    expect(resolveImportTarget('MIXED.CPY', FROM_FILE, files, undefined)).toBeNull();
     // Neither tier: a `.txt`, a file with no extension, and an absent member.
     expect(resolveImportTarget('NOEXT', FROM_FILE, files, undefined)).toBeNull();
     expect(resolveImportTarget('ABSENT', FROM_FILE, files, undefined)).toBeNull();
