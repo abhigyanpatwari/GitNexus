@@ -1,9 +1,9 @@
 /**
- * Tests that MCP semantic search surfaces a pruned/unloadable optional embedding
- * stack once instead of silently degrading to BM25 (#2372) — the silent-
- * degradation mode #2370 exists to fix. executeQuery is mocked to report a
- * populated embedding table so execution reaches the embedder import, which is
- * mocked to throw the missing-stack message.
+ * Tests that MCP semantic search surfaces a missing local embedding stack once
+ * instead of silently degrading to BM25 (#2372) — the silent-degradation mode
+ * #2370 exists to fix. executeQuery is mocked to report a populated embedding
+ * table so execution reaches the embedder import, which is mocked to throw the
+ * missing-stack message (R20 copy: default install no longer ships the stack).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
@@ -36,7 +36,7 @@ const stackWarns = (cap: LoggerCapture): number =>
       (r) =>
         typeof r.msg === 'string' &&
         r.msg.includes('query:vector') &&
-        r.msg.includes('optional embedding stack'),
+        r.msg.includes('local embedding stack is not installed'),
     ).length;
 
 describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => {
