@@ -508,6 +508,7 @@ analyze_timeout: 5m
 projects:
   - local_path: /absolute/path/to/clones
     branches: [main, master]
+    pdg: false
     overwrite_local_changes: false
     remote_urls:
       - git@github.com:owner/repo.git
@@ -516,7 +517,8 @@ projects:
 - `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
 - Remote URLs must use SSH SCP form and are limited to GitHub, GitLab, or Gitee.
 - `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
-- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
+- Set per-project `pdg: true` to keep the full control-flow, control/data-dependence, and taint layers current. Legacy configurations that omit `pdg` preserve an existing index's mode; an explicit `false` opt-out logs a warning before removing existing PDG data. Auto-sync requests atomic incremental publication where supported, so readers keep using the previous graph until a successful update is ready and a failed staged analysis leaves it intact; unsupported paths retain the analyzer's existing in-place behavior.
+- Analysis runs in an isolated worker; `analyze_timeout` defaults to half of `sync_interval_minutes`, but may be longer (for example, a `30m` analysis timeout with `5` minute polling) up to Node's timer limit. If a polling tick arrives while analysis is active, it is coalesced into one immediate follow-up run using the newest commit. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
 - Add `group_name` only after creating that group with `gitnexus group create <name>`. Partial clone output is isolated and removed after 14 days.
 
 See the [full auto-sync configuration and runtime reference](gitnexus/README.md#gitnexus-auto-sync) for concurrency, timeouts, failure thresholds, and runtime files.
