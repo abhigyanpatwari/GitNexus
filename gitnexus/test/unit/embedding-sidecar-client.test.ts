@@ -54,12 +54,17 @@ describe('embedding sidecar client', () => {
   const originalHfTimeout = process.env.HF_DOWNLOAD_TIMEOUT_MS;
   const originalHfAttempts = process.env.HF_MAX_ATTEMPTS;
   const originalSidecarTimeout = process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
+  const hostPlatform = process.platform;
+  const hostArch = process.arch;
 
   let forkMock: ReturnType<typeof vi.fn>;
   let children: FakeChild[];
 
   beforeEach(async () => {
     delete process.env.GITNEXUS_EMBEDDING_URL;
+    // Local-success cases must not inherit a darwin/x64 host blocker.
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     children = [];
     forkMock = vi.fn((_script: string, _args: string[], _opts: unknown) => {
       const child = new FakeChild();
@@ -86,6 +91,8 @@ describe('embedding sidecar client', () => {
     if (originalSidecarTimeout === undefined)
       delete process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
     else process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS = originalSidecarTimeout;
+    Object.defineProperty(process, 'platform', { value: hostPlatform, configurable: true });
+    Object.defineProperty(process, 'arch', { value: hostArch, configurable: true });
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
