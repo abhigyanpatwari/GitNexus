@@ -55,8 +55,13 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   // Upstream speedups may reduce these figures; retaining conservative weights
   // keeps the expensive suites distributed without changing the watchdog.
   'test/unit/incremental-index-extension-dml-gate.test.ts': 414,
-  'test/integration/skills-e2e.test.ts': 444,
-  'test/integration/fts-extension-e2e.test.ts': 146,
+  // Re-measured on windows-latest run 34815870795 after vendored-first FTS
+  // rewrote the HOME-layout e2e (373s) and skills-e2e grew to 542s. The old
+  // 146s/444s entries packed both onto shard 2/3 and blew the 20-minute
+  // watchdog with one file still queued.
+  'test/integration/skills-e2e.test.ts': 550,
+  'test/integration/fts-extension-e2e.test.ts': 380,
+  'test/integration/skip-fts.test.ts': 110,
   'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
