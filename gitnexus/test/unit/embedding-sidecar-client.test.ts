@@ -237,21 +237,32 @@ describe('embedding sidecar client', () => {
   });
 
   it('sizes the init deadline from the HF download budget, not a 15s process lifetime', async () => {
-    const { sidecarInitTimeoutMs } =
+    const { SIDECAR_INIT_IPC_SLACK_MS, sidecarInitTimeoutMs } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
     delete process.env.HF_DOWNLOAD_TIMEOUT_MS;
     delete process.env.HF_MAX_ATTEMPTS;
-    // 3 attempts × 5 min plus 2s + 4s exponential backoff.
-    expect(sidecarInitTimeoutMs()).toBe(5 * 60 * 1_000 * 3 + 2_000 + 4_000);
+    // 3 attempts × 5 min plus 2s + 4s exponential backoff, plus IPC slack.
+    expect(sidecarInitTimeoutMs()).toBe(
+      5 * 60 * 1_000 * 3 + 2_000 + 4_000 + SIDECAR_INIT_IPC_SLACK_MS,
+    );
     expect(sidecarInitTimeoutMs()).toBeGreaterThan(15_000);
 
     process.env.HF_DOWNLOAD_TIMEOUT_MS = '120000';
     process.env.HF_MAX_ATTEMPTS = '2';
-    expect(sidecarInitTimeoutMs()).toBe(240_000 + 2_000);
+    expect(sidecarInitTimeoutMs()).toBe(240_000 + 2_000 + SIDECAR_INIT_IPC_SLACK_MS);
 
     process.env.HF_DOWNLOAD_TIMEOUT_MS = String(60 * 60 * 1_000);
     process.env.HF_MAX_ATTEMPTS = '1';
-    expect(sidecarInitTimeoutMs()).toBe(30 * 60 * 1_000);
+    expect(sidecarInitTimeoutMs()).toBe(30 * 60 * 1_000 + SIDECAR_INIT_IPC_SLACK_MS);
+  });
+
+  it('clears the reap wait timeout once the child closes', async () => {
+    vi.useFakeTimers();
+    const { ensureEmbeddingSidecar, reapEmbeddingSidecarAndWait } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await ensureEmbeddingSidecar();
+    await reapEmbeddingSidecarAndWait(5_000);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('does not let a reaped child reset its replacement', async () => {

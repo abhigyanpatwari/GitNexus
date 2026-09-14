@@ -95,6 +95,9 @@ const childEnv = (): NodeJS.ProcessEnv => {
   return env;
 };
 
+/** Parent timer starts before `child.send()`; child starts each download timeout after IPC. */
+export const SIDECAR_INIT_IPC_SLACK_MS = 10_000;
+
 export const sidecarInitTimeoutMs = (): number => {
   const rawTimeout = Number(process.env.HF_DOWNLOAD_TIMEOUT_MS);
   const perAttempt =
@@ -108,7 +111,7 @@ export const sidecarInitTimeoutMs = (): number => {
       : HF_MAX_ATTEMPTS;
   // Child retries use exponential waits between attempts (HF_BASE_DELAY_MS * 2^i).
   const backoffMs = attempts > 1 ? HF_BASE_DELAY_MS * (2 ** (attempts - 1) - 1) : 0;
-  return perAttempt * attempts + backoffMs;
+  return perAttempt * attempts + backoffMs + SIDECAR_INIT_IPC_SLACK_MS;
 };
 
 export const sidecarEmbedTimeoutMs = (): number => {
@@ -238,12 +241,17 @@ export const reapEmbeddingSidecarAndWait = async (timeoutMs = 5_000): Promise<vo
     proc.once('error', finish);
   });
   reapEmbeddingSidecar();
-  await Promise.race([
-    closed,
-    new Promise<void>((resolve) => {
-      setTimeout(resolve, timeoutMs);
-    }),
-  ]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      closed,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 };
 
 export const isEmbeddingSidecarReady = (): boolean => ready && child !== null;

@@ -115,6 +115,8 @@ async function run(inputPath = '/tmp/emb-sync-repo') {
 
 describe('embeddingsSyncCommand writer safety (#3065)', () => {
   const tmpDirs: string[] = [];
+  const originalEmbeddingUrl = process.env.GITNEXUS_EMBEDDING_URL;
+  const originalEmbeddingModel = process.env.GITNEXUS_EMBEDDING_MODEL;
 
   async function store(kind: 'file' | 'missing' | 'dir' = 'file') {
     const dir = await mkdtemp(path.join(tmpdir(), 'emb-sync-'));
@@ -149,9 +151,15 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     resolveEmbeddingRuntimeMock.mockReset().mockReturnValue({ source: 'package' });
     isPrefixRuntimeLoadableMock.mockReset().mockReturnValue(true);
     reapEmbeddingSidecarMock.mockReset();
+    delete process.env.GITNEXUS_EMBEDDING_URL;
+    delete process.env.GITNEXUS_EMBEDDING_MODEL;
   });
 
   afterEach(async () => {
+    if (originalEmbeddingUrl === undefined) delete process.env.GITNEXUS_EMBEDDING_URL;
+    else process.env.GITNEXUS_EMBEDDING_URL = originalEmbeddingUrl;
+    if (originalEmbeddingModel === undefined) delete process.env.GITNEXUS_EMBEDDING_MODEL;
+    else process.env.GITNEXUS_EMBEDDING_MODEL = originalEmbeddingModel;
     await Promise.all(tmpDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
 
