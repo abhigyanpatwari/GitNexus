@@ -242,8 +242,15 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Lua: `function foo()` is global (reachable from other files via require/_G);
  *  `local function foo()` is module-private. */
-export const luaExportChecker: ExportChecker = (node, _name) =>
-  node.type !== 'local_function_definition_statement';
+export const luaExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current !== null) {
+    if (current.type === 'local_function_definition_statement') return false;
+    if (current.type === 'function_definition_statement') return true;
+    current = current.parent;
+  }
+  return true;
+};
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');

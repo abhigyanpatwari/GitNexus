@@ -42,7 +42,7 @@ const LUA_CALLABLE_CAPTURE_OPTIONS = {
     'function_definition',
   ]),
   callNodeTypes: new Set(['call']),
-  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterListNodeTypes: new Set(['parameters', 'parameter_list', 'argument_list']),
   parameterNodeTypes: new Set(['identifier', 'vararg_expression']),
   bindingNodeTypes: new Set(['local_variable_declaration']),
   assignmentNodeTypes: new Set(['variable_assignment']),
@@ -303,7 +303,11 @@ function addLuaArityCaptures(
   functionNode: Parser.SyntaxNode,
 ): void {
   const parameters = functionNode.childForFieldName('parameters');
-  if (parameters?.type !== 'parameter_list') return;
+  if (
+    parameters === null ||
+    !LUA_CALLABLE_CAPTURE_OPTIONS.parameterListNodeTypes.has(parameters.type)
+  )
+    return;
   const hasVararg = parameters.namedChildren.some((child) => child.type === 'vararg_expression');
   const fixedCount = parameters.namedChildren.filter(
     (child) => child.type !== 'vararg_expression',

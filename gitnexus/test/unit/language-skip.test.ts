@@ -27,14 +27,20 @@ describe('isLanguageAvailable', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(true);
   });
 
-  it('reports Lua availability according to the optional grammar state', () => {
+  it('reports Lua availability according to the optional grammar state', async () => {
     const available = isLanguageAvailable(SupportedLanguages.Lua);
     if (isGrammarRuntimeSkipped(SupportedLanguages.Lua)) {
       expect(available).toBe(false);
     } else {
-      // Lua is optional and may be unavailable when no matching prebuild or
-      // local native toolchain exists, even without an explicit skip flag.
-      expect(typeof available).toBe('boolean');
+      // Without an explicit skip, availability is install-dependent. Check
+      // that the boolean probe agrees with the actual optional load result.
+      try {
+        await loadLanguage(SupportedLanguages.Lua);
+        expect(available).toBe(true);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        expect(available).toBe(false);
+      }
     }
   });
 
