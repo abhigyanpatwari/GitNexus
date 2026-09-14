@@ -63,6 +63,61 @@ function filesShipsVendorSource(filesField) {
   });
 }
 
+function normalizeFilesEntry(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .replace(/\/\*\*?$/, '');
+}
+
+function filesEntries(filesField) {
+  return (filesField || []).map(normalizeFilesEntry);
+}
+
+function filesCoverGrammarPrebuilds(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/prebuilds')) return true;
+  return (
+    entries.includes(`vendor/${grammarName}/prebuilds`) || entries.includes(`vendor/${grammarName}`)
+  );
+}
+
+function filesCoverGrammarBindings(entries) {
+  if (entries.includes('vendor')) return true;
+  return (
+    entries.includes('vendor/**/bindings/node/index.js') ||
+    entries.some((n) => n.endsWith('/bindings/node/index.js'))
+  );
+}
+
+function filesCoverLeiden(entries) {
+  if (entries.includes('vendor') || entries.includes('vendor/leiden')) return true;
+  return (
+    entries.includes('vendor/leiden/index.cjs') && entries.includes('vendor/leiden/utils.cjs')
+  );
+}
+
+/**
+ * Packed-tarball coverage from `files` globs — not on-disk prebuild counts.
+ * Lean publish can leave 6/6 `.node` files in the checkout while omitting
+ * them from the pack list.
+ */
+function findPackedFilesProblems({ filesField, grammarNames }) {
+  const entries = filesEntries(filesField);
+  const problems = [];
+  for (const name of grammarNames || []) {
+    if (!filesCoverGrammarPrebuilds(entries, name)) {
+      problems.push(`${name}: package.json files does not cover vendor/${name}/prebuilds`);
+    }
+  }
+  if (!filesCoverGrammarBindings(entries)) {
+    problems.push('package.json files does not cover vendor/**/bindings/node/index.js');
+  }
+  if (!filesCoverLeiden(entries)) {
+    problems.push('package.json files does not cover vendor/leiden/index.cjs and utils.cjs');
+  }
+  return problems;
+}
+
 /** The on-disk source-build inputs for a grammar (relative paths). */
 function sourceBuildSet(grammarDir) {
   return SOURCE_BUILD_REL.filter((rel) => fs.existsSync(path.join(grammarDir, rel)));
@@ -170,7 +225,13 @@ function main() {
     process.exit(1);
   }
 
-  const problems = findCoverageProblems({ grammars });
+  const problems = [
+    ...findCoverageProblems({ grammars }),
+    ...findPackedFilesProblems({
+      filesField: pkg.files,
+      grammarNames: grammars.map((g) => g.name),
+    }),
+  ];
   if (problems.length > 0) {
     console.error('[publish-guard] Refusing to publish — a vendored grammar would ship unusable:');
     for (const p of problems) console.error(`  - ${p}`);
@@ -192,8 +253,12 @@ if (require.main === module) main();
 
 module.exports = {
   findCoverageProblems,
+  findPackedFilesProblems,
   findStrayBuildArtifacts,
   filesShipsVendorSource,
+  filesCoverGrammarPrebuilds,
+  filesCoverGrammarBindings,
+  filesCoverLeiden,
   isBuildableFromSource,
   sourceBuildSet,
   countPrebuiltTuples,

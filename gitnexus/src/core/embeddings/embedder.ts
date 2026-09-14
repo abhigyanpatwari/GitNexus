@@ -103,6 +103,7 @@ export const embedText = async (
   }
 
   const [vec] = await sidecarEmbedBatch([text]);
+  options.signal?.throwIfAborted();
   return vec;
 };
 
@@ -124,7 +125,9 @@ export const embedBatch = async (
     throw new Error(runtimeBlocker);
   }
 
-  return sidecarEmbedBatch(texts);
+  const vectors = await sidecarEmbedBatch(texts);
+  options.signal?.throwIfAborted();
+  return vectors;
 };
 
 export const embeddingToArray = (embedding: Float32Array): number[] => {

@@ -3,8 +3,10 @@ import {
   getLocalEmbeddingRuntimeBlocker,
   getMissingLocalEmbeddingStackMessage,
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingSidecarAbortMessage,
   isLocalEmbeddingStackInstalled,
   isMissingLocalEmbeddingStackMessage,
+  LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
   localEmbeddingStackMissingMessage,
 } from '../../src/core/embeddings/runtime-support.js';
 
@@ -237,6 +239,16 @@ describe('isMissingLocalEmbeddingStackMessage', () => {
     expect(isMissingLocalEmbeddingStackMessage(blocker)).toBe(false);
     expect(isLocalEmbeddingRuntimeBlockerMessage(localEmbeddingStackMissingMessage())).toBe(false);
     expect(isMissingLocalEmbeddingStackMessage('ECONNREFUSED while downloading model')).toBe(false);
+  });
+});
+
+describe('isLocalEmbeddingSidecarAbortMessage', () => {
+  it('recognises sidecar abort and sidecar-dead text', () => {
+    expect(isLocalEmbeddingSidecarAbortMessage(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD)).toBe(true);
+    expect(isLocalEmbeddingSidecarAbortMessage('Embedding sidecar died (signal SIGSEGV)')).toBe(
+      true,
+    );
+    expect(isLocalEmbeddingSidecarAbortMessage(localEmbeddingStackMissingMessage())).toBe(false);
   });
 });
 

@@ -7,7 +7,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
-import { localEmbeddingStackMissingMessage } from '../../src/core/embeddings/runtime-support.js';
+import {
+  LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
+  localEmbeddingStackMissingMessage,
+} from '../../src/core/embeddings/runtime-support.js';
 
 const executeQueryMock = vi.fn();
 const embedQueryMock = vi.fn();
@@ -53,6 +56,26 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
       expect(await callSemanticSearch(backend)).toEqual([]);
       expect(await callSemanticSearch(backend)).toEqual([]);
       expect(stackWarns(cap)).toBe(1); // once per LocalBackend instance
+      expect(
+        (backend as unknown as { lastVectorDegradedReason?: string }).lastVectorDegradedReason,
+      ).toContain('local embedding stack is not installed');
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('stashes sidecar-abort text for query() warnings', async () => {
+    embedQueryMock.mockRejectedValue(new Error(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD));
+    const backend = new LocalBackend();
+    const cap = _captureLogger();
+    try {
+      expect(await callSemanticSearch(backend)).toEqual([]);
+      expect(
+        (backend as unknown as { lastVectorDegradedReason?: string }).lastVectorDegradedReason,
+      ).toBe(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD);
+      expect(
+        cap.records().some((r) => typeof r.msg === 'string' && r.msg.includes('sidecar aborted')),
+      ).toBe(true);
     } finally {
       cap.restore();
     }

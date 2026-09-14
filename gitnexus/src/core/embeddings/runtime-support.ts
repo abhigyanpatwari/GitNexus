@@ -168,6 +168,18 @@ export const getMissingLocalEmbeddingStackMessage = (err: unknown): string | nul
 export const isMissingLocalEmbeddingStackMessage = (message: string): boolean =>
   message.includes(LOCAL_EMBEDDING_STACK_MISSING_LEAD);
 
+/** Lead line when the embedding sidecar has been marked permanently unavailable. */
+export const LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD =
+  'Local embeddings are unavailable after the sidecar aborted';
+
+/**
+ * True when `message` is a sidecar-abort or sidecar-dead error. MCP `query()`
+ * must treat these like a missing stack so agents see the degradation.
+ */
+export const isLocalEmbeddingSidecarAbortMessage = (message: string): boolean =>
+  message.includes(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD) ||
+  message.includes('Embedding sidecar died');
+
 /**
  * True when the optional local embedding stack resolves from this install —
  * either the normally-installed packages or the on-demand runtime prefix.

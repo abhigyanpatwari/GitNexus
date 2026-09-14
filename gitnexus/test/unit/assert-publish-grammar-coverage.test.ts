@@ -22,8 +22,12 @@ const requireCjs = createRequire(import.meta.url);
 const SCRIPT = fileURLToPath(
   new URL('../../scripts/assert-publish-grammar-coverage.cjs', import.meta.url),
 );
-const { findCoverageProblems, filesShipsVendorSource, findStrayBuildArtifacts } =
-  requireCjs(SCRIPT);
+const {
+  findCoverageProblems,
+  findPackedFilesProblems,
+  filesShipsVendorSource,
+  findStrayBuildArtifacts,
+} = requireCjs(SCRIPT);
 
 describe('findCoverageProblems (pure decision core)', () => {
   it('passes when source ships, even with incomplete prebuilds (transitional state)', () => {
@@ -53,6 +57,38 @@ describe('findCoverageProblems (pure decision core)', () => {
     const problems = findCoverageProblems({ grammars });
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain('no loadable binding');
+  });
+});
+
+describe('findPackedFilesProblems (files globs, not on-disk counts)', () => {
+  const grammars = ['tree-sitter-c', 'tree-sitter-kotlin'];
+  const lean = [
+    'vendor/**/prebuilds/**',
+    'vendor/**/bindings/node/index.js',
+    'vendor/leiden/index.cjs',
+    'vendor/leiden/utils.cjs',
+  ];
+
+  it('passes the current lean files list', () => {
+    expect(findPackedFilesProblems({ filesField: lean, grammarNames: grammars })).toEqual([]);
+  });
+
+  it('fails when files only covers FTS plus one grammar prebuild', () => {
+    const problems = findPackedFilesProblems({
+      filesField: ['vendor/lbug-fts/prebuilds/**', 'vendor/tree-sitter-c/prebuilds/**'],
+      grammarNames: grammars,
+    });
+    expect(problems.some((p: string) => p.includes('tree-sitter-kotlin'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('bindings/node/index.js'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('leiden'))).toBe(true);
+  });
+
+  it('fails when Leiden entrypoints are dropped', () => {
+    const problems = findPackedFilesProblems({
+      filesField: ['vendor/**/prebuilds/**', 'vendor/**/bindings/node/index.js'],
+      grammarNames: grammars,
+    });
+    expect(problems.some((p: string) => p.includes('leiden'))).toBe(true);
   });
 });
 

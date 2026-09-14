@@ -55,6 +55,7 @@ describe('embedding sidecar client', () => {
   const originalUrl = process.env.GITNEXUS_EMBEDDING_URL;
   const originalHfTimeout = process.env.HF_DOWNLOAD_TIMEOUT_MS;
   const originalHfAttempts = process.env.HF_MAX_ATTEMPTS;
+  const originalSidecarTimeout = process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
 
   let forkMock: ReturnType<typeof vi.fn>;
   let children: FakeChild[];
@@ -82,6 +83,10 @@ describe('embedding sidecar client', () => {
     else process.env.HF_DOWNLOAD_TIMEOUT_MS = originalHfTimeout;
     if (originalHfAttempts === undefined) delete process.env.HF_MAX_ATTEMPTS;
     else process.env.HF_MAX_ATTEMPTS = originalHfAttempts;
+    if (originalSidecarTimeout === undefined)
+      delete process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS;
+    else process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS = originalSidecarTimeout;
+    vi.useRealTimers();
   });
 
   it('strips GITNEXUS_EMBEDDING_URL and does not inherit stdout', async () => {
@@ -154,7 +159,7 @@ describe('embedding sidecar client', () => {
     delete process.env.GITNEXUS_EMBEDDING_MODEL;
   });
 
-  it('treats signal death as sidecar-dead and recreates once', async () => {
+  it('marks local embeddings unavailable on native abort and does not respawn', async () => {
     const { sidecarEmbedBatch } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
     await sidecarEmbedBatch(['first']);
@@ -162,14 +167,52 @@ describe('embedding sidecar client', () => {
 
     children[0].emit('close', null, 'SIGSEGV');
 
-    await sidecarEmbedBatch(['second']);
-    expect(forkMock).toHaveBeenCalledTimes(2);
-
-    children[1].emit('close', null, 'SIGABRT');
-    await expect(sidecarEmbedBatch(['third'])).rejects.toThrow(
+    await expect(sidecarEmbedBatch(['second'])).rejects.toThrow(
       /unavailable after the sidecar aborted/,
     );
-    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not respawn after init-time SIGSEGV', async () => {
+    forkMock.mockImplementation(() => {
+      const child = new FakeChild();
+      children.push(child);
+      child.send = vi.fn(() => {
+        queueMicrotask(() => child.emit('close', null, 'SIGSEGV'));
+        return true;
+      });
+      return child as unknown as ChildProcess;
+    });
+    const { ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await expect(ensureEmbeddingSidecar()).rejects.toThrow(/Embedding sidecar died/);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    await expect(ensureEmbeddingSidecar()).rejects.toThrow(/unavailable after the sidecar aborted/);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('SIGKILLs a stalled embed request and rejects with a timeout', async () => {
+    process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS = '50';
+    vi.useFakeTimers();
+    const { sidecarEmbedBatch } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await sidecarEmbedBatch(['warmup']);
+    children[0].send = vi.fn(() => true);
+    const pending = sidecarEmbedBatch(['stalled']);
+    const assertion = expect(pending).rejects.toThrow(/timed out after 50ms \(embed\)/);
+    await vi.advanceTimersByTimeAsync(50);
+    await assertion;
+    expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
+  });
+
+  it('embedBatch throws after sidecar return when the signal aborted mid-flight', async () => {
+    const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+    const controller = new AbortController();
+    children.length = 0;
+    const pending = embedBatch(['x'], { signal: controller.signal });
+    await vi.waitFor(() => expect(forkMock).toHaveBeenCalled());
+    controller.abort();
+    await expect(pending).rejects.toThrow();
   });
 
   it('does not use worker_threads or import the embeddings barrel', () => {

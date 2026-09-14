@@ -111,6 +111,7 @@ import {
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingSidecarAbortMessage,
   isMissingLocalEmbeddingStackMessage,
 } from '../../core/embeddings/runtime-support.js';
 import {
@@ -1550,6 +1551,13 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+
+  /**
+   * Last vector-lane degradation that `semanticSearch` swallowed into `[]`.
+   * `query()` appends this to the agent-visible `warnings` array so missing
+   * stack / sidecar abort is not stderr-only.
+   */
+  private lastVectorDegradedReason: string | undefined;
 
   /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
@@ -3427,6 +3435,9 @@ export class LocalBackend {
           'Keyword results are unaffected.',
       );
     }
+    if (this.lastVectorDegradedReason) {
+      warnings.push(this.lastVectorDegradedReason);
+    }
     if (enrichmentDegraded) {
       warnings.push(
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
@@ -3570,6 +3581,7 @@ export class LocalBackend {
    * Semantic vector search helper
    */
   private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
+    this.lastVectorDegradedReason = undefined;
     // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
     // A local flag, not a re-read of the map: the map may still hold an earlier
     // call's width, and the catch below must only clear an entry it did not set.
@@ -3742,11 +3754,14 @@ export class LocalBackend {
       // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
       // fallback above). All other errors stay silent, as before.
       const message = err instanceof Error ? err.message : '';
-      if (
-        !this.warnedMissingEmbeddingStack &&
-        (isMissingLocalEmbeddingStackMessage(message) ||
-          isLocalEmbeddingRuntimeBlockerMessage(message))
-      ) {
+      const vectorDegraded =
+        isMissingLocalEmbeddingStackMessage(message) ||
+        isLocalEmbeddingRuntimeBlockerMessage(message) ||
+        isLocalEmbeddingSidecarAbortMessage(message);
+      if (vectorDegraded) {
+        this.lastVectorDegradedReason = message;
+      }
+      if (!this.warnedMissingEmbeddingStack && vectorDegraded) {
         this.warnedMissingEmbeddingStack = true;
         logger.warn(`GitNexus [query:vector]: ${message}`);
       }
@@ -9387,18 +9402,22 @@ export class LocalBackend {
   }
 
   async disconnect(): Promise<void> {
-    await closeLbug(); // close all connections
-    // Reap the embedding sidecar. Do not run ONNX dispose in this process
-    // (native dispose can SIGSEGV). Sidecar-client import does not load ONNX.
-    const { reapEmbeddingSidecar } =
-      await import('../../core/embeddings/embedding-sidecar-client.js');
     try {
-      reapEmbeddingSidecar();
-    } catch {
-      // Reap must not hide disconnect failures or delay process.exit.
+      await closeLbug(); // close all connections
+    } finally {
+      // Reap even when Ladybug close rejects. Do not run ONNX dispose in this
+      // process (native dispose can SIGSEGV). Sidecar-client import does not
+      // load ONNX.
+      try {
+        const { reapEmbeddingSidecar } =
+          await import('../../core/embeddings/embedding-sidecar-client.js');
+        reapEmbeddingSidecar();
+      } catch {
+        // Reap must not hide disconnect failures or delay process.exit.
+      }
+      this.repos.clear();
+      this.contextCache.clear();
+      this.initializedRepos.clear();
     }
-    this.repos.clear();
-    this.contextCache.clear();
-    this.initializedRepos.clear();
   }
 }

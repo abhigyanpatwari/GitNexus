@@ -11,7 +11,10 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HF_DOWNLOAD_TIMEOUT_MS, HF_MAX_ATTEMPTS, HF_MAX_ATTEMPTS_CAP } from './hf-env.js';
-import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
+} from './runtime-support.js';
 import type { EmbeddingConfig, ModelProgress } from './types.js';
 import type {
   EmbeddingSidecarDevice,
@@ -117,8 +120,16 @@ export class EmbeddingSidecarDeadError extends Error {
   }
 }
 
-const localUnavailableError = (): Error =>
-  new Error('Local embeddings are unavailable after the sidecar aborted');
+const NATIVE_ABORT_SIGNALS = new Set<NodeJS.Signals>(['SIGSEGV', 'SIGABRT', 'SIGBUS', 'SIGILL']);
+
+const localUnavailableError = (): Error => new Error(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD);
+
+const noteChildDeath = (signal?: NodeJS.Signals | null): void => {
+  deathSeen = true;
+  if (signal && NATIVE_ABORT_SIGNALS.has(signal)) {
+    localUnavailable = true;
+  }
+};
 
 const rejectAll = (error: Error): void => {
   for (const waiter of pending.values()) {
@@ -150,13 +161,13 @@ const attachChild = (proc: ChildProcess): void => {
     waiter.resolve(msg);
   });
   proc.on('close', (code, signal) => {
-    if (ready) deathSeen = true;
+    noteChildDeath(signal);
     child = null;
     ready = false;
     rejectAll(new EmbeddingSidecarDeadError(code, signal));
   });
   proc.on('error', (err) => {
-    if (ready) deathSeen = true;
+    noteChildDeath(null);
     child = null;
     ready = false;
     rejectAll(err instanceof Error ? err : new Error(String(err)));
