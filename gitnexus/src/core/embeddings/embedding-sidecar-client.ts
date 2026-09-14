@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { HF_DOWNLOAD_TIMEOUT_MS, HF_MAX_ATTEMPTS, HF_MAX_ATTEMPTS_CAP } from './hf-env.js';
+import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import type { EmbeddingConfig, ModelProgress } from './types.js';
 import type {
   EmbeddingSidecarDevice,
@@ -221,6 +222,10 @@ const spawnAndInit = async (options?: {
   embeddingConfig?: Partial<EmbeddingConfig>;
   forceDevice?: EmbeddingSidecarDevice;
 }): Promise<void> => {
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) {
+    throw new Error(runtimeBlocker);
+  }
   markUnavailableIfBudgetSpent();
   if (localUnavailable) throw localUnavailableError();
 

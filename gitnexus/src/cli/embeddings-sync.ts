@@ -34,7 +34,10 @@ import {
   isPrefixRuntimeLoadable,
   resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
-import { localEmbeddingPrefixUnloadableMessage } from '../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  localEmbeddingPrefixUnloadableMessage,
+} from '../core/embeddings/runtime-support.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -121,6 +124,10 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
     }
 
     if (!isHttpMode()) {
+      const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+      if (runtimeBlocker) {
+        throw new Error(runtimeBlocker);
+      }
       const resolved = resolveEmbeddingRuntime();
       if (
         !isPrefixRuntimeLoadable() &&

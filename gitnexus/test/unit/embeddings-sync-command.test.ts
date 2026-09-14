@@ -388,6 +388,21 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(releaseMock).toHaveBeenCalled();
   });
 
+  it('does not spawn npm on darwin/x64', async () => {
+    await store();
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    const orig = { platform: process.platform, arch: process.arch };
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    try {
+      await expect(run()).rejects.toThrow(/macOS Intel/);
+      expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
+    }
+  });
+
   it('auto-heals a missing stack without requesting CUDA binaries', async () => {
     await store();
     resolveEmbeddingRuntimeMock.mockReturnValue(null);

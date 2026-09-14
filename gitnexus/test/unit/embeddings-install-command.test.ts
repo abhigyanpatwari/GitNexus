@@ -40,6 +40,25 @@ describe('embeddingsInstallCommand outcomes (#2372)', () => {
     process.exitCode = undefined;
   });
 
+  it('refuses to spawn npm on darwin/x64', async () => {
+    const orig = { platform: process.platform, arch: process.arch };
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    try {
+      const cap = await run();
+      expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(
+        true,
+      );
+      cap.restore();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
+    }
+  });
+
   it('already-installed package source without --force: no install, "nothing to do"', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'package' });
     const cap = await run();

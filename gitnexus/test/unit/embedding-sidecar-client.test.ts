@@ -109,6 +109,21 @@ describe('embedding sidecar client', () => {
     expect(forkMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not fork on darwin/x64', async () => {
+    const orig = { platform: process.platform, arch: process.arch };
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    try {
+      const { ensureEmbeddingSidecar } =
+        await import('../../src/core/embeddings/embedding-sidecar-client.js');
+      await expect(ensureEmbeddingSidecar()).rejects.toThrow(/macOS Intel/);
+      expect(forkMock).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
+    }
+  });
+
   it('does not fork on an empty batch', async () => {
     const { sidecarEmbedBatch } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');

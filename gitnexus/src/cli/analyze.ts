@@ -69,6 +69,7 @@ import {
   safeUrl,
 } from '../core/embeddings/http-client.js';
 import {
+  getLocalEmbeddingRuntimeBlocker,
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
   localEmbeddingPrefixUnloadableMessage,
@@ -1135,6 +1136,14 @@ const analyzeCommandImpl = async (
   // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
   // before bar.start() like the sibling validations above.
   if (embeddingsEnabled && !isHttpMode()) {
+    const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+    if (runtimeBlocker) {
+      cliError(`  ${runtimeBlocker.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
+      process.exitCode = 1;
+      return;
+    }
     const resolved = resolveEmbeddingRuntime();
     // Resolved-but-unloadable (a populated prefix on a Node with no
     // module.registerHooks), or nothing installed on such a Node: fail fast with

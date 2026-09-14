@@ -6,7 +6,10 @@ import {
   isPrefixRuntimeLoadable,
   resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
-import { localEmbeddingPrefixUnloadableMessage } from '../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  localEmbeddingPrefixUnloadableMessage,
+} from '../core/embeddings/runtime-support.js';
 
 export interface EmbeddingsInstallOptions {
   cuda?: boolean;
@@ -23,6 +26,13 @@ export interface EmbeddingsInstallOptions {
 export const embeddingsInstallCommand = async (
   options: EmbeddingsInstallOptions = {},
 ): Promise<void> => {
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) {
+    cliError(`${runtimeBlocker}\n`, { recoveryHint: 'local-embedding-unsupported' });
+    process.exitCode = 1;
+    return;
+  }
+
   const resolved = resolveEmbeddingRuntime();
   if (resolved?.source === 'package' && !options.force) {
     cliInfo(

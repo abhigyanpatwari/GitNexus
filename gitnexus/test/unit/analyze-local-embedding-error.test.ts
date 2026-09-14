@@ -190,6 +190,30 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
   });
 
+  it('does not spawn npm on darwin/x64 even when the stack is missing', async () => {
+    const orig = { platform: process.platform, arch: process.arch };
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    isPrefixRuntimeLoadableMock.mockReturnValue(true);
+    try {
+      const { _captureLogger } = await import('../../src/core/logger.js');
+      const cap = _captureLogger();
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
+
+      expect(process.exitCode).toBe(1);
+      expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+      expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(
+        true,
+      );
+      cap.restore();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
+    }
+  });
+
   it('fails fast without installing when nothing is installed and the prefix is unloadable', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue(null);
     isPrefixRuntimeLoadableMock.mockReturnValue(false);
