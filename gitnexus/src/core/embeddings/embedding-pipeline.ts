@@ -1010,11 +1010,9 @@ export const semanticSearch = async (
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
-  const tableCheck = await executeQuery(
-    `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
-  );
-  const count = tableCheck[0]?.cnt ?? tableCheck[0]?.[0] ?? 0;
-  if (!tableCheck.length || count === 0) {
+  const tableCheck = await executeQuery(EMBEDDING_COUNT_CYPHER);
+  const embeddingCount = Number(tableCheck[0]?.cnt ?? tableCheck[0]?.[0] ?? 0);
+  if (!tableCheck.length || embeddingCount === 0) {
     return [];
   }
 
@@ -1063,12 +1061,9 @@ export const semanticSearch = async (
   }
 
   if (bestChunks.size === 0) {
-    // The Cypher only. NOT `measurePersistedEmbeddingCount`: its tri-state
-    // exists so a publisher never writes a fabricated 0, whereas here `?? 0`
-    // is the right answer — an unknown count simply skips the exact scan.
-    const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
-    const countRow = countRows[0];
-    const embeddingCount = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
+    // Reuse the empty-table probe count. NOT `measurePersistedEmbeddingCount`:
+    // its tri-state exists so a publisher never writes a fabricated 0, whereas
+    // here `?? 0` is the right answer — an unknown count simply skips the exact scan.
     const exactLimit = getExactScanLimit();
     if (embeddingCount > 0 && embeddingCount <= exactLimit) {
       const rows = await executeQuery(`

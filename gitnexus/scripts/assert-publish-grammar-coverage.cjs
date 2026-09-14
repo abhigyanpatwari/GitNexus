@@ -54,13 +54,7 @@ const SOURCE_BUILD_REL = [
  * then rely on prebuilds.
  */
 function filesShipsVendorSource(filesField) {
-  return (filesField || []).some((f) => {
-    const n = String(f)
-      .replace(/\\/g, '/')
-      .replace(/\/+$/, '')
-      .replace(/\/\*\*?$/, '');
-    return n === 'vendor';
-  });
+  return filesEntries(filesField).includes('vendor');
 }
 
 function normalizeFilesEntry(value) {
@@ -91,9 +85,7 @@ function filesCoverGrammarBindings(entries) {
 
 function filesCoverLeiden(entries) {
   if (entries.includes('vendor') || entries.includes('vendor/leiden')) return true;
-  return (
-    entries.includes('vendor/leiden/index.cjs') && entries.includes('vendor/leiden/utils.cjs')
-  );
+  return entries.includes('vendor/leiden/index.cjs') && entries.includes('vendor/leiden/utils.cjs');
 }
 
 /**

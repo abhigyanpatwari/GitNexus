@@ -31,13 +31,9 @@ import {
   getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
-  isPrefixRuntimeLoadable,
-  resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
-import {
-  getLocalEmbeddingRuntimeBlocker,
-  localEmbeddingPrefixUnloadableMessage,
-} from '../core/embeddings/runtime-support.js';
+import { assessLocalEmbeddingRuntime } from '../core/embeddings/runtime-support.js';
+import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -124,18 +120,11 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
     }
 
     if (!isHttpMode()) {
-      const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
-      if (runtimeBlocker) {
-        throw new Error(runtimeBlocker);
+      const assessment = assessLocalEmbeddingRuntime();
+      if (assessment.status === 'blocked' || assessment.status === 'prefix-unloadable') {
+        throw new Error(assessment.message);
       }
-      const resolved = resolveEmbeddingRuntime();
-      if (
-        !isPrefixRuntimeLoadable() &&
-        (resolved === null || resolved.source === 'runtime-prefix')
-      ) {
-        throw new Error(localEmbeddingPrefixUnloadableMessage());
-      }
-      if (resolved === null) {
+      if (assessment.status === 'needs-install') {
         cliInfo(`Local embedding runtime is not installed.`);
         cliInfo(`Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …`);
         await installEmbeddingRuntime(
@@ -225,13 +214,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       cliInfo(`Embeddings ready: ${embeddings}`);
     } finally {
       await closeLbug().catch(() => {});
-      try {
-        const { reapEmbeddingSidecar } =
-          await import('../core/embeddings/embedding-sidecar-client.js');
-        reapEmbeddingSidecar();
-      } catch {
-        // Reap failure must not hide a pipeline error.
-      }
+      await reapEmbeddingSidecarSafely();
     }
   } finally {
     lock.release();

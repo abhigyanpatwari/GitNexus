@@ -17,7 +17,7 @@
  * (The runtime-install import below only resolves paths — it never loads the
  * embedding stack.)
  */
-import { resolveEmbeddingRuntime } from './runtime-install.js';
+import { isPrefixRuntimeLoadable, resolveEmbeddingRuntime } from './runtime-install.js';
 
 /**
  * Stable lead line of the macOS-Intel blocker message. Also used to recognise
@@ -139,6 +139,27 @@ export const localEmbeddingPrefixUnloadableMessage = (): string =>
     '  - Run `gitnexus embeddings install` on a supported Node, then retry.',
   ].join('\n');
 
+export type LocalEmbeddingRuntimeAssessment =
+  | { status: 'blocked'; message: string }
+  | { status: 'prefix-unloadable'; message: string }
+  | { status: 'needs-install' }
+  | { status: 'ready' };
+
+/**
+ * Shared local-runtime preflight for analyze and embeddings-sync.
+ * Callers keep their own error routing (CLI vs thrown Error).
+ */
+export const assessLocalEmbeddingRuntime = (): LocalEmbeddingRuntimeAssessment => {
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) return { status: 'blocked', message: runtimeBlocker };
+  const resolved = resolveEmbeddingRuntime();
+  if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
+    return { status: 'prefix-unloadable', message: localEmbeddingPrefixUnloadableMessage() };
+  }
+  if (resolved === null) return { status: 'needs-install' };
+  return { status: 'ready' };
+};
+
 /** Module specifiers whose absence means the optional embedding stack was pruned. */
 const EMBEDDING_STACK_SPECIFIERS = ['@huggingface/transformers', 'onnxruntime-node'] as const;
 
@@ -185,6 +206,6 @@ export const isLocalEmbeddingSidecarAbortMessage = (message: string): boolean =>
  * either the normally-installed packages or the on-demand runtime prefix.
  * Resolution only — nothing is imported, so this is safe on every platform
  * (including macOS Intel, where *loading* onnxruntime-node would crash).
- * Used by `doctor` to surface a pruned optional install (#2370) up front.
+ * Used by `doctor` to surface a missing local stack (default install excludes it).
  */
 export const isLocalEmbeddingStackInstalled = (): boolean => resolveEmbeddingRuntime() !== null;

@@ -290,6 +290,14 @@ export const ensureEmbeddingSidecar = async (options?: {
   return { device };
 };
 
+const vectorsFromEmbedResponse = (response: SidecarResponse): Float32Array[] => {
+  if (response.type === 'error') throw new Error(response.message);
+  if (response.type !== 'vectors') {
+    throw new Error(`Unexpected sidecar response: ${response.type}`);
+  }
+  return response.vectors.map((row) => Float32Array.from(row));
+};
+
 export const sidecarEmbedBatch = async (texts: string[]): Promise<Float32Array[]> => {
   if (texts.length === 0) return [];
   if (localUnavailable) throw localUnavailableError();
@@ -299,20 +307,14 @@ export const sidecarEmbedBatch = async (texts: string[]): Promise<Float32Array[]
   }
 
   try {
-    const response = await request({ type: 'embed', texts }, sidecarEmbedTimeoutMs());
-    if (response.type === 'error') throw new Error(response.message);
-    if (response.type !== 'vectors') {
-      throw new Error(`Unexpected sidecar response: ${response.type}`);
-    }
-    return response.vectors.map((row) => Float32Array.from(row));
+    return vectorsFromEmbedResponse(
+      await request({ type: 'embed', texts }, sidecarEmbedTimeoutMs()),
+    );
   } catch (err) {
     if (!(err instanceof EmbeddingSidecarDeadError)) throw err;
     await ensureEmbeddingSidecar();
-    const response = await request({ type: 'embed', texts }, sidecarEmbedTimeoutMs());
-    if (response.type === 'error') throw new Error(response.message);
-    if (response.type !== 'vectors') {
-      throw new Error(`Unexpected sidecar response: ${response.type}`);
-    }
-    return response.vectors.map((row) => Float32Array.from(row));
+    return vectorsFromEmbedResponse(
+      await request({ type: 'embed', texts }, sidecarEmbedTimeoutMs()),
+    );
   }
 };

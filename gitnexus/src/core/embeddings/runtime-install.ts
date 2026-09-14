@@ -142,7 +142,15 @@ export interface EmbeddingRuntimeResolution {
 export const isPrefixRuntimeLoadable = (): boolean => typeof getRegisterHooks() === 'function';
 
 /** Resolution anchored inside the runtime prefix (`<dir>/node_modules`). */
-const prefixRequire = () => createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+let cachedPrefixRequire: { dir: string; req: ReturnType<typeof createRequire> } | null = null;
+
+const prefixRequire = (): ReturnType<typeof createRequire> => {
+  const dir = getEmbeddingRuntimeDir();
+  if (cachedPrefixRequire?.dir === dir) return cachedPrefixRequire.req;
+  const req = createRequire(join(dir, 'noop.js'));
+  cachedPrefixRequire = { dir, req };
+  return req;
+};
 
 /**
  * True when BOTH load-bearing stack packages resolve from `req`. Probing

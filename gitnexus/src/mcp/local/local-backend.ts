@@ -62,6 +62,7 @@ import {
 } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
+import { reapEmbeddingSidecarSafely } from '../../core/embeddings/embedding-sidecar-reap.js';
 import {
   DEFAULT_MCP_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
@@ -3747,8 +3748,8 @@ export class LocalBackend {
       // the width IS still the live one). Clearing only in the former case
       // keeps the recorded width a fact rather than a leftover (#2798).
       if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
-      // Embeddings disabled is the common, silent case. But a pruned or
-      // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
+      // Embeddings disabled is the common, silent case. But a missing or
+      // Node-unloadable local stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
       // (the exact silent-degradation mode #2370 exists to fix). Emitted once per
       // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
@@ -9406,15 +9407,8 @@ export class LocalBackend {
       await closeLbug(); // close all connections
     } finally {
       // Reap even when Ladybug close rejects. Do not run ONNX dispose in this
-      // process (native dispose can SIGSEGV). Sidecar-client import does not
-      // load ONNX.
-      try {
-        const { reapEmbeddingSidecar } =
-          await import('../../core/embeddings/embedding-sidecar-client.js');
-        reapEmbeddingSidecar();
-      } catch {
-        // Reap must not hide disconnect failures or delay process.exit.
-      }
+      // process (native dispose can SIGSEGV). The reap helper does not load ONNX.
+      await reapEmbeddingSidecarSafely();
       this.repos.clear();
       this.contextCache.clear();
       this.initializedRepos.clear();

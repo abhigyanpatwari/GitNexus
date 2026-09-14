@@ -69,10 +69,9 @@ import {
   safeUrl,
 } from '../core/embeddings/http-client.js';
 import {
-  getLocalEmbeddingRuntimeBlocker,
+  assessLocalEmbeddingRuntime,
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
-  localEmbeddingPrefixUnloadableMessage,
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import {
@@ -80,8 +79,6 @@ import {
   getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
-  isPrefixRuntimeLoadable,
-  resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
@@ -1129,22 +1126,18 @@ const analyzeCommandImpl = async (
     );
   }
 
-  // On-demand embedding runtime (#2370): when the optional stack was pruned at
-  // install time (proxy-blocked NuGet download in onnxruntime-node's
-  // postinstall), heal it here instead of failing later in the pipeline. The
-  // install goes through the user's npm registry config (mirrors/proxies
-  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
-  // before bar.start() like the sibling validations above.
+  // Local embeddings: refuse Intel Mac / unloadable prefix before any registry
+  // download, then auto-heal a missing stack. Analyze uses a short install
+  // timeout so a blackholed proxy cannot stall the index run.
   if (embeddingsEnabled && !isHttpMode()) {
-    const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
-    if (runtimeBlocker) {
-      cliError(`  ${runtimeBlocker.replace(/\n/g, '\n  ')}\n`, {
+    const assessment = assessLocalEmbeddingRuntime();
+    if (assessment.status === 'blocked') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'local-embedding-unsupported',
       });
       process.exitCode = 1;
       return;
     }
-    const resolved = resolveEmbeddingRuntime();
     // Resolved-but-unloadable (a populated prefix on a Node with no
     // module.registerHooks), or nothing installed on such a Node: fail fast with
     // capability guidance instead of dying mid-pipeline over an unusable prefix
@@ -1152,28 +1145,20 @@ const analyzeCommandImpl = async (
     // never needs the hook, so it is excluded. --embeddings was explicitly
     // requested and this failure is deterministic, so fail fast rather than
     // silently degrading to BM25 (distinct from a transient install timeout).
-    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
-      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+    if (assessment.status === 'prefix-unloadable') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'local-embedding-stack-missing',
       });
       process.exitCode = 1;
       return;
     }
-    // On-demand embedding runtime (#2370): when the optional stack was pruned at
-    // install time (proxy-blocked NuGet download in onnxruntime-node's
-    // postinstall), heal it here instead of failing later in the pipeline. The
-    // install goes through the user's npm registry config (mirrors/proxies
-    // apply) with --ignore-scripts, so no NuGet download is attempted.
-    if (resolved === null) {
+    if (assessment.status === 'needs-install') {
       console.log(
         `  Local embedding runtime is not installed.\n` +
           `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
           `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
       );
       try {
-        // Short deadline (env override still wins): analyze is interactive, so a
-        // blackholed proxy must not stall the whole index run for the 10-minute
-        // default — fail over to the guidance below instead.
         await installEmbeddingRuntime(
           {},
           getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),

@@ -52,6 +52,7 @@ import {
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
+import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
 import { isTerminalJobStatus, JobManager, type AnalyzeJobPartialOutcome } from './analyze-job.js';
@@ -2329,13 +2330,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
-      try {
-        const { reapEmbeddingSidecar } =
-          await import('../core/embeddings/embedding-sidecar-client.js');
-        reapEmbeddingSidecar();
-      } catch {
-        // Shutdown must still exit; sidecar may already be gone.
-      }
+      await reapEmbeddingSidecarSafely();
       const { flushLoggerSync } = await import('../core/logger.js');
       flushLoggerSync();
       process.exit(0);

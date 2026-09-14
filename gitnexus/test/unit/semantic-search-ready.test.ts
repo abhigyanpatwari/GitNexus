@@ -30,7 +30,7 @@ describe('semanticSearch ready-check (KTD11)', () => {
     isEmbedderReadyMock.mockReturnValue(true);
     embedTextMock.mockResolvedValue(new Float32Array(384));
     const executeQuery = vi.fn(async (cypher: string) => {
-      if (cypher.includes('RETURN COUNT(*) AS cnt LIMIT 1')) return [{ cnt: 2 }];
+      if (cypher.includes('count(e) AS cnt')) return [{ cnt: 2 }];
       if (cypher.includes('COUNT(*)')) return [{ cnt: 0 }];
       return [];
     });
@@ -45,7 +45,7 @@ describe('semanticSearch ready-check (KTD11)', () => {
     isEmbedderReadyMock.mockReturnValue(true);
     embedTextMock.mockResolvedValue(new Float32Array(384));
     const executeQuery = vi.fn(async (cypher: string) => {
-      if (cypher.includes('RETURN COUNT(*) AS cnt LIMIT 1')) return [{ cnt: 0 }];
+      if (cypher.includes('count(e) AS cnt')) return [{ cnt: 0 }];
       return [];
     });
 

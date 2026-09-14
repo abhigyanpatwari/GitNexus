@@ -11,7 +11,13 @@ if (!process.env.ORT_LOG_LEVEL) {
 }
 
 import type { FeatureExtractionPipeline, ProgressInfo } from '@huggingface/transformers';
-import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import {
+  DEFAULT_EMBEDDING_CONFIG,
+  type EmbeddingConfig,
+  type ModelProgress,
+  type ModelProgressCallback,
+} from './types.js';
+import type { EmbeddingSidecarDevice } from './embedding-sidecar-protocol.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import {
@@ -29,16 +35,25 @@ import { logger } from '../logger.js';
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
-let currentDevice: 'dml' | 'cuda' | 'cpu' | 'wasm' | null = null;
+let currentDevice: EmbeddingSidecarDevice | null = null;
 
-export type ModelProgressCallback = (progress: ModelProgress) => void;
+const formatDeviceLabel = (device: EmbeddingSidecarDevice): string => {
+  switch (device) {
+    case 'dml':
+      return 'GPU (DirectML/DirectX12)';
+    case 'cuda':
+      return 'GPU (CUDA)';
+    default:
+      return device.toUpperCase();
+  }
+};
 
-export const getCurrentDevice = (): 'dml' | 'cuda' | 'cpu' | 'wasm' | null => currentDevice;
+export const getCurrentDevice = (): EmbeddingSidecarDevice | null => currentDevice;
 
 export const initLocalEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
-  forceDevice?: 'dml' | 'cuda' | 'cpu' | 'wasm',
+  forceDevice?: EmbeddingSidecarDevice,
 ): Promise<FeatureExtractionPipeline> => {
   const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
   if (runtimeBlocker) {
@@ -95,10 +110,10 @@ export const initLocalEmbedder = async (
           }
         : undefined;
 
-      const devicesToTry: Array<'dml' | 'cuda' | 'cpu' | 'wasm'> =
+      const devicesToTry: EmbeddingSidecarDevice[] =
         requestedDevice === 'dml' || requestedDevice === 'cuda'
           ? [requestedDevice, 'cpu']
-          : [requestedDevice as 'cpu' | 'wasm'];
+          : [requestedDevice];
 
       for (const device of devicesToTry) {
         try {
@@ -138,13 +153,7 @@ export const initLocalEmbedder = async (
           currentDevice = device;
 
           if (isDev) {
-            const label =
-              device === 'dml'
-                ? 'GPU (DirectML/DirectX12)'
-                : device === 'cuda'
-                  ? 'GPU (CUDA)'
-                  : device.toUpperCase();
-            logger.info(`✅ Using ${label} backend`);
+            logger.info(`✅ Using ${formatDeviceLabel(device)} backend`);
             logger.info('✅ Embedding model loaded successfully');
           }
 
@@ -183,8 +192,6 @@ export const initLocalEmbedder = async (
 
   return initPromise;
 };
-
-export const isLocalEmbedderReady = (): boolean => embedderInstance !== null;
 
 export const getLocalEmbedder = (): FeatureExtractionPipeline => {
   if (!embedderInstance) {

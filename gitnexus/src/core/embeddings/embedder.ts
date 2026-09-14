@@ -7,7 +7,11 @@
  * Ladybug writes.
  */
 
-import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
+import {
+  DEFAULT_EMBEDDING_CONFIG,
+  type EmbeddingConfig,
+  type ModelProgressCallback,
+} from './types.js';
 import {
   isHttpMode,
   getHttpDimensions,
@@ -24,7 +28,7 @@ import {
 } from './embedding-sidecar-client.js';
 import type { EmbeddingSidecarDevice } from './embedding-sidecar-protocol.js';
 
-export type ModelProgressCallback = (progress: ModelProgress) => void;
+export type { ModelProgressCallback } from './types.js';
 
 export interface EmbeddingSidecarHandle {
   readonly source: 'sidecar';
