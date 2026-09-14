@@ -87,37 +87,31 @@ export const isLocalEmbeddingRuntimeBlockerMessage = (message: string): boolean 
  * line (see {@link isMissingLocalEmbeddingStackMessage}).
  */
 const LOCAL_EMBEDDING_STACK_MISSING_LEAD =
-  'Local semantic embeddings are unavailable: the optional embedding stack is not installed.';
+  'Local semantic embeddings are unavailable: the local embedding stack is not installed.';
 
 /**
- * The full guidance shown when the optional local embedding stack
- * (`@huggingface/transformers` → `onnxruntime-node`) is missing at runtime.
- *
- * Both packages are `optionalDependencies` (#2370): `onnxruntime-node`'s
- * postinstall downloads CUDA support binaries from api.nuget.org, which fails
- * behind HTTP proxies and regional firewalls (its `global-agent` proxy layer
- * ignores the standard HTTP_PROXY/HTTPS_PROXY vars and rejects 302 redirects).
- * npm then skips the optional subtree instead of failing the whole install —
- * every GitNexus feature except local embeddings keeps working.
+ * Guidance when transformers / onnxruntime-node are not resolvable.
+ * Default npm install no longer fetches those packages. Primary heal is
+ * `gitnexus embeddings install`. A leftover 1.6.12 package-first tree in
+ * gitnexus node_modules is residual until a clean reinstall; `--force`
+ * only refreshes the prefix overrides.
  */
 export const localEmbeddingStackMissingMessage = (): string =>
   [
     LOCAL_EMBEDDING_STACK_MISSING_LEAD,
-    'npm skipped the optional packages @huggingface/transformers / onnxruntime-node',
-    "during install — usually because onnxruntime-node's postinstall could not",
-    'download its CUDA support binaries from api.nuget.org (common behind HTTP',
-    'proxies and regional firewalls, #2370). Everything except local embeddings',
-    'still works.',
+    '@huggingface/transformers and onnxruntime-node are not part of a default',
+    'gitnexus install. Everything except local embeddings still works.',
     '',
     'To enable local embeddings:',
-    '  - Run `gitnexus embeddings install` — fetches the stack on demand through',
-    '    your npm registry config (mirrors and proxies apply; no NuGet download).',
-    '    `gitnexus analyze --embeddings` does this automatically.',
+    '  - Run `gitnexus embeddings install` — fetches the stack through your npm',
+    '    registry config into ~/.gitnexus/embedding-runtime (mirrors and proxies',
+    '    apply; no NuGet download). `gitnexus analyze --embeddings` and',
+    '    `gitnexus embeddings sync` do this automatically.',
     '    Add --cuda on CUDA GPU hosts (behind a proxy, also set',
     '    GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> for the NuGet download).',
-    '  - Or reinstall with the CUDA download skipped (CPU embeddings need no CUDA):',
-    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
-    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+    '  - A leftover 1.6.12 install that still has those packages under',
+    '    gitnexus node_modules is residual. `--force` only refreshes prefix',
+    '    overrides; remove leftover packages with a clean reinstall.',
     '  - Or point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
     '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
   ].join('\n');
@@ -142,9 +136,7 @@ export const localEmbeddingPrefixUnloadableMessage = (): string =>
     'The runtime prefix loads via module.registerHooks, which needs Node',
     '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Either:',
     '  - Upgrade Node to a build that has module.registerHooks, or',
-    '  - Reinstall the packages normally (works on every supported Node):',
-    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
-    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+    '  - Run `gitnexus embeddings install` on a supported Node, then retry.',
   ].join('\n');
 
 /** Module specifiers whose absence means the optional embedding stack was pruned. */

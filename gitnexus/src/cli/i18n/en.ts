@@ -183,7 +183,7 @@ export const en = {
     'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. The stack is not part of a default npm install. Downloads only from your configured npm registry — mirrors and proxies apply.',
   'help.command.clean.description': 'Delete GitNexus index for current repo',
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',

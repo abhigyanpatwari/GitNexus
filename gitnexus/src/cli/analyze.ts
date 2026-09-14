@@ -1166,7 +1166,7 @@ const analyzeCommandImpl = async (
     // apply) with --ignore-scripts, so no NuGet download is attempted.
     if (resolved === null) {
       console.log(
-        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+        `  Local embedding runtime is not installed.\n` +
           `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
           `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
       );

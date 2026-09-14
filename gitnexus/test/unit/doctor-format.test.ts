@@ -179,15 +179,16 @@ describe('doctor embedding-runtime support status', () => {
     expect(detail).toBeNull();
   });
 
-  it('flags a pruned optional embedding stack with reinstall guidance (#2370)', () => {
+  it('flags a missing local embedding stack with install guidance', () => {
     const { status, detail } = localEmbeddingDoctorStatus({
       httpMode: false,
       platform: 'linux',
       arch: 'x64',
       resolution: null,
     });
-    expect(status).toBe('✗ optional embedding stack not installed');
-    expect(detail).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+    expect(status).toBe('✗ local embedding stack not installed');
+    expect(detail).toContain('gitnexus embeddings install');
+    expect(detail).not.toContain('ONNXRUNTIME_NODE_INSTALL=skip');
   });
 
   it('reports a package-sourced stack as supported regardless of Node loadability', () => {

@@ -177,7 +177,7 @@ export const zhCN = {
     '通过 npm 全局安装最新发布的 GitNexus（`npm i -g gitnexus@<x.y.z>`）。',
   'help.command.embeddings.description': '管理按需安装的本地嵌入运行时',
   'help.command.embeddings.install.description':
-    '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。修复 npm 跳过可选包的安装（例如在 HTTP 代理后，#2370）。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',
+    '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。默认 npm 安装不包含该组件。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',
   'help.command.clean.description': '删除当前仓库的 GitNexus 索引',
   'help.command.remove.description':
     '删除已注册仓库的 GitNexus 索引（按别名、名称或绝对路径）。与 `clean` 不同，不要求位于仓库内；未知目标会幂等处理。',

@@ -59,6 +59,13 @@ describe('embeddingsInstallCommand outcomes (#2372)', () => {
     }
   });
 
+  it('package-sourced --force still installs so prefix overrides refresh', async () => {
+    resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'package' });
+    const cap = await run({ force: true });
+    expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
+    cap.restore();
+  });
+
   it('already-installed package source without --force: no install, "nothing to do"', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'package' });
     const cap = await run();

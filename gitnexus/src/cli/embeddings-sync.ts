@@ -136,9 +136,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
         throw new Error(localEmbeddingPrefixUnloadableMessage());
       }
       if (resolved === null) {
-        cliInfo(
-          `Local embedding runtime is not installed (optional packages were skipped at install time).`,
-        );
+        cliInfo(`Local embedding runtime is not installed.`);
         cliInfo(`Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …`);
         await installEmbeddingRuntime(
           {},
