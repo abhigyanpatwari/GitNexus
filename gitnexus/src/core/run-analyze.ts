@@ -1438,15 +1438,23 @@ async function runFullAnalysisInner(
       progress('fts', 85, 'Repairing search indexes...');
       // Restamp before CREATE so a second native abort still has in-place
       // FTS dirty evidence after persist cleared the first stamp.
-      const latestBeforeCreate = (await loadMeta(metaDir)) ?? existingMeta;
-      await saveMeta(metaDir, {
-        ...latestBeforeCreate,
-        incrementalInProgress: buildFtsDirtyStamp({
-          prior: latestBeforeCreate.incrementalInProgress,
-          writePlan: 'in-place',
-          checkpointSucceeded: true,
-        }),
-      });
+      try {
+        const latestBeforeCreate = (await loadMeta(metaDir)) ?? existingMeta;
+        await saveMeta(metaDir, {
+          ...latestBeforeCreate,
+          incrementalInProgress: buildFtsDirtyStamp({
+            prior: latestBeforeCreate.incrementalInProgress,
+            writePlan: 'in-place',
+            checkpointSucceeded: true,
+          }),
+        });
+      } catch (err) {
+        log(
+          `FTS dirty restamp write failed (non-critical, continuing with repair${
+            err instanceof Error ? `: ${err.message}` : ''
+          }).`,
+        );
+      }
       const repairFailures = await createSearchFTSIndexes({
         indexes: ftsIndexes,
         onIndexStart: options.verbose
