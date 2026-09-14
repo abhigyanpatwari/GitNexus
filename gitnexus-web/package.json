@@ -49,7 +49,7 @@
     "react-i18next": "^17.0.13",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
-    "react-zoom-pan-pinch": "^4.0.3",
+    "react-zoom-pan-pinch": "^4.2.0",
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.3",
     "tailwindcss": "^4.3.3",
