@@ -156,6 +156,14 @@ vi.mock('../../../src/core/lbug/sidecar-recovery.js', () => ({
   quarantineWalForMissingShadow: vi.fn().mockResolvedValue(''),
   renameFailureMessage: vi.fn((p: string) => `rename failed for ${p}`),
   statIfExists: vi.fn().mockResolvedValue(null),
+  assertReadOnlyFtsCrashSafe: vi.fn().mockResolvedValue(undefined),
+  FtsReaderUnrepairableError: class FtsReaderUnrepairableError extends Error {
+    readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+    constructor(dbPath = '') {
+      super(dbPath);
+      this.name = 'FtsReaderUnrepairableError';
+    }
+  },
 }));
 
 // The registry read happens in syncGroup's else branch; resolveRepoHandle is

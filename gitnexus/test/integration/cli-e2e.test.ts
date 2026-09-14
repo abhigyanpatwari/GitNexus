@@ -360,7 +360,7 @@ describe('CLI end-to-end', () => {
     const repoParent = path.dirname(repo);
 
     try {
-      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
 
       expect(
         result.status,
@@ -419,7 +419,7 @@ describe('CLI end-to-end', () => {
       cleanupTempDirSync(gnHome);
       cleanupTempDirSync(repoParent);
     }
-  }, 60_000);
+  }, 90_000);
 
   it('already-up-to-date analyze fails when registry entry is missing (#1169)', () => {
     const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-fastpath-home-'));

@@ -457,6 +457,17 @@ describe('MCP output budgets', () => {
 // ─── Tool handler error handling ──────────────────────────────────────
 
 describe('server error handling', () => {
+  it('includes string Error.code in tool error text', async () => {
+    const err = Object.assign(new Error('reader refuse'), { code: 'FTS_READER_UNREPAIRABLE' });
+    const backend = createMockBackend({
+      callTool: vi.fn().mockRejectedValue(err),
+    });
+    const { text, isError } = await callToolThroughServer(backend, 'context', { name: 'auth' });
+    expect(isError).toBe(true);
+    expect(text).toContain('FTS_READER_UNREPAIRABLE');
+    expect(text).toContain('reader refuse');
+  });
+
   it('createMCPServer does not throw for valid backend', () => {
     const backend = createMockBackend();
     expect(() => createMCPServer(backend)).not.toThrow();
