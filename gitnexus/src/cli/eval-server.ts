@@ -42,7 +42,6 @@ import {
   type RepoListing,
   type ListReposPagination,
 } from '../mcp/local/local-backend.js';
-import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
@@ -860,7 +859,6 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     idleTimer = setTimeout(async () => {
       logger.info({ idleTimeoutSec }, 'GitNexus eval-server: idle timeout reached, shutting down');
       await backend.disconnect();
-      await reapEmbeddingSidecarSafely();
       process.exit(0);
     }, idleTimeoutSec * 1000);
   }
@@ -906,7 +904,6 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         res.end(JSON.stringify({ status: 'shutting_down' }));
         setTimeout(async () => {
           await backend.disconnect();
-          await reapEmbeddingSidecarSafely();
           server.close();
           process.exit(0);
         }, 100);
@@ -1069,7 +1066,6 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const shutdown = async () => {
     logger.info('GitNexus eval-server: shutting down...');
     await backend.disconnect();
-    await reapEmbeddingSidecarSafely();
     server.close();
     process.exit(0);
   };

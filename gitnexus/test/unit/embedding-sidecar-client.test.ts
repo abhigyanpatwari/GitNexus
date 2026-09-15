@@ -109,7 +109,7 @@ describe('embedding sidecar client', () => {
       stdio: unknown;
     };
     expect(opts.env.GITNEXUS_EMBEDDING_URL).toBeUndefined();
-    expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe', 'ipc']);
+    expect(opts.stdio).toEqual(['ignore', 'ignore', 'pipe', 'ipc']);
   });
 
   it('reports no sidecar device until init is ready', async () => {

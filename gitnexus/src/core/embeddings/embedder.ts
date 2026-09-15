@@ -29,11 +29,6 @@ import type { EmbeddingSidecarDevice } from './embedding-sidecar-protocol.js';
 
 export type { ModelProgressCallback } from './types.js';
 
-export interface EmbeddingSidecarHandle {
-  readonly source: 'sidecar';
-  readonly device: EmbeddingSidecarDevice;
-}
-
 export const getCurrentDevice = (): EmbeddingSidecarDevice | null => {
   if (isHttpMode()) return null;
   return getSidecarDevice();
@@ -43,7 +38,7 @@ export const initEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
   forceDevice?: EmbeddingSidecarDevice,
-): Promise<EmbeddingSidecarHandle> => {
+): Promise<{ device: EmbeddingSidecarDevice }> => {
   if (isHttpMode()) {
     throw new Error(
       'initEmbedder() should not be called in HTTP mode. ' +
@@ -56,12 +51,11 @@ export const initEmbedder = async (
     throw new Error(runtimeBlocker);
   }
 
-  const { device } = await ensureEmbeddingSidecar({
+  return ensureEmbeddingSidecar({
     onProgress,
     embeddingConfig: config,
     forceDevice,
   });
-  return { source: 'sidecar', device };
 };
 
 export const getEmbedder = (): never => {

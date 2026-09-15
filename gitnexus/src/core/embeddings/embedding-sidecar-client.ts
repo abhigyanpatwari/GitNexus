@@ -18,6 +18,7 @@ import {
   HF_MAX_TIMEOUT_MS,
 } from './hf-env.js';
 import {
+  EMBEDDING_SIDECAR_DIED_LEAD,
   getLocalEmbeddingRuntimeBlocker,
   LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
 } from './runtime-support.js';
@@ -126,7 +127,7 @@ export class EmbeddingSidecarDeadError extends Error {
 
   constructor(code: number | null, signal: NodeJS.Signals | null) {
     const detail = signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`;
-    super(`Embedding sidecar died (${detail})`);
+    super(`${EMBEDDING_SIDECAR_DIED_LEAD} (${detail})`);
     this.name = 'EmbeddingSidecarDeadError';
     this.code = code;
     this.signal = signal;
@@ -153,9 +154,6 @@ const rejectAll = (error: Error): void => {
 };
 
 const attachChild = (proc: ChildProcess): void => {
-  proc.stdout?.on('data', () => {
-    // Discard — never inherit parent stdout (MCP JSON-RPC).
-  });
   proc.stderr?.on('data', (chunk: Buffer | string) => {
     logger.debug({ sidecar: true }, String(chunk).trimEnd());
   });
@@ -206,7 +204,7 @@ const request = (msg: SidecarRequestBody, timeoutMs: number): Promise<SidecarRes
 const spawnSidecar = (): ChildProcess => {
   const proc = forkImpl(sidecarScriptPath(), [], {
     execArgv: tsxHookArgs(),
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     env: childEnv(),
   });
   if (!exitHooked) {
@@ -254,11 +252,13 @@ export const reapEmbeddingSidecarAndWait = async (timeoutMs = 5_000): Promise<vo
   }
 };
 
-export const isEmbeddingSidecarReady = (): boolean => ready && child !== null;
-
-export const isLocalEmbeddingsUnavailable = (): boolean => localUnavailable;
-
 export const getSidecarDevice = (): EmbeddingSidecarDevice | null => (ready ? device : null);
+
+type EnsureSidecarOptions = {
+  onProgress?: (progress: ModelProgress) => void;
+  embeddingConfig?: Partial<EmbeddingConfig>;
+  forceDevice?: EmbeddingSidecarDevice;
+};
 
 const markUnavailableIfBudgetSpent = (): void => {
   if (deathSeen && recreatesUsed >= MAX_RECREATES) {
@@ -266,11 +266,7 @@ const markUnavailableIfBudgetSpent = (): void => {
   }
 };
 
-const spawnAndInit = async (options?: {
-  onProgress?: (progress: ModelProgress) => void;
-  embeddingConfig?: Partial<EmbeddingConfig>;
-  forceDevice?: EmbeddingSidecarDevice;
-}): Promise<void> => {
+const spawnAndInit = async (options?: EnsureSidecarOptions): Promise<void> => {
   const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
   if (runtimeBlocker) {
     throw new Error(runtimeBlocker);
@@ -281,8 +277,6 @@ const spawnAndInit = async (options?: {
   if (deathSeen) {
     recreatesUsed += 1;
     deathSeen = false;
-    markUnavailableIfBudgetSpent();
-    if (localUnavailable) throw localUnavailableError();
   }
 
   child = spawnSidecar();
@@ -319,11 +313,9 @@ const rejectConflictingForceDevice = (forceDevice?: EmbeddingSidecarDevice): voi
   }
 };
 
-export const ensureEmbeddingSidecar = async (options?: {
-  onProgress?: (progress: ModelProgress) => void;
-  embeddingConfig?: Partial<EmbeddingConfig>;
-  forceDevice?: EmbeddingSidecarDevice;
-}): Promise<{ device: EmbeddingSidecarDevice }> => {
+export const ensureEmbeddingSidecar = async (
+  options?: EnsureSidecarOptions,
+): Promise<{ device: EmbeddingSidecarDevice }> => {
   if (localUnavailable) throw localUnavailableError();
   if (ready && child) {
     rejectConflictingForceDevice(options?.forceDevice);

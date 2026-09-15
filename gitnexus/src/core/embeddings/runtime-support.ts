@@ -196,13 +196,16 @@ export const isMissingLocalEmbeddingStackMessage = (message: string): boolean =>
 export const LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD =
   'Local embeddings are unavailable after the sidecar aborted';
 
+/** Lead of `EmbeddingSidecarDeadError` — native abort / unexpected child exit. */
+export const EMBEDDING_SIDECAR_DIED_LEAD = 'Embedding sidecar died';
+
 /**
  * True when `message` is a sidecar-abort or sidecar-dead error. MCP `query()`
  * must treat these like a missing stack so agents see the degradation.
  */
 export const isLocalEmbeddingSidecarAbortMessage = (message: string): boolean =>
   message.includes(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD) ||
-  message.includes('Embedding sidecar died');
+  message.includes(EMBEDDING_SIDECAR_DIED_LEAD);
 
 /**
  * True when the optional local embedding stack resolves from this install —

@@ -29,11 +29,11 @@ vi.mock('@huggingface/transformers', () => {
 });
 
 /**
- * Spy for the CUDA-13 build-matching resolver hook. Both local embedders must
- * call this before importing transformers.js — mocked (rather than exercising
- * the real resolver's env/subprocess probing) to keep this suite fast and
- * platform-independent; `onnxruntime-node-resolver.test.ts` covers the
- * resolver's own decision logic.
+ * Spy for the CUDA-13 build-matching resolver hook. Child `initLocalEmbedder`
+ * must call this before importing transformers.js — mocked (rather than
+ * exercising the real resolver's env/subprocess probing) to keep this suite
+ * fast and platform-independent; `onnxruntime-node-resolver.test.ts` covers
+ * the resolver's own decision logic.
  */
 const { resolverHookInstalled } = vi.hoisted(() => ({ resolverHookInstalled: vi.fn() }));
 
@@ -47,8 +47,6 @@ vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
   getSidecarDevice: () => 'cpu',
   reapEmbeddingSidecar: vi.fn(),
   sidecarEmbedBatch: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
-  isEmbeddingSidecarReady: () => false,
-  isLocalEmbeddingsUnavailable: () => false,
 }));
 
 /**

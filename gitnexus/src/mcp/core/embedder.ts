@@ -17,7 +17,7 @@ import { httpEmbedQuery, isHttpMode } from '../../core/embeddings/http-client.js
 
 export const initEmbedder = initCoreEmbedder;
 
-export const isEmbedderReady = (): boolean => isCoreEmbedderReady();
+export const isEmbedderReady = isCoreEmbedderReady;
 
 export const embedQuery = async (query: string): Promise<number[]> => {
   if (isHttpMode()) {

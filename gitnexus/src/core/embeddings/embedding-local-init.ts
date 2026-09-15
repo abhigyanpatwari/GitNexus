@@ -33,7 +33,6 @@ import {
 import { logger } from '../logger.js';
 
 let embedderInstance: FeatureExtractionPipeline | null = null;
-let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 let currentDevice: EmbeddingSidecarDevice | null = null;
 let activeDimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
@@ -65,11 +64,9 @@ export const initLocalEmbedder = async (
     return embedderInstance;
   }
 
-  if (isInitializing && initPromise) {
+  if (initPromise) {
     return initPromise;
   }
-
-  isInitializing = true;
 
   const finalConfig = resolveEmbeddingConfig(config);
   const gpuDevice: EmbeddingSidecarDevice = isEffectiveCudaAvailable()
@@ -187,32 +184,20 @@ export const initLocalEmbedder = async (
 
       throw new Error('No suitable device found for embedding model');
     } catch (error) {
-      isInitializing = false;
       initPromise = null;
       embedderInstance = null;
       throw error;
-    } finally {
-      isInitializing = false;
     }
   })();
 
   return initPromise;
 };
 
-export const getLocalEmbedder = (): FeatureExtractionPipeline => {
+const getLocalEmbedder = (): FeatureExtractionPipeline => {
   if (!embedderInstance) {
     throw new Error('Embedder not initialized. Call initLocalEmbedder() first.');
   }
   return embedderInstance;
-};
-
-export const localEmbedText = async (text: string): Promise<Float32Array> => {
-  const embedder = getLocalEmbedder();
-  const result = await embedder(text, {
-    pooling: 'mean',
-    normalize: true,
-  });
-  return new Float32Array(result.data as ArrayLike<number>);
 };
 
 export const localEmbedBatch = async (texts: string[]): Promise<Float32Array[]> => {
@@ -239,22 +224,4 @@ export const localEmbedBatch = async (texts: string[]): Promise<Float32Array[]> 
   }
 
   return embeddings;
-};
-
-/**
- * Child-only. Parent façades must never call this — ONNX dispose can SIGSEGV
- * the process that loaded the binding. The parent reaps the child instead.
- */
-export const disposeLocalEmbedder = async (): Promise<void> => {
-  if (embedderInstance) {
-    try {
-      if ('dispose' in embedderInstance && typeof embedderInstance.dispose === 'function') {
-        await embedderInstance.dispose();
-      }
-    } catch {
-      // Ignore disposal errors
-    }
-    embedderInstance = null;
-    initPromise = null;
-  }
 };

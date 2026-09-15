@@ -3753,14 +3753,14 @@ export class LocalBackend {
       // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
       // fallback above). All other errors stay silent, as before.
       const message = err instanceof Error ? err.message : '';
-      const vectorDegraded =
+      const isDegradedVectorError =
         isMissingLocalEmbeddingStackMessage(message) ||
         isLocalEmbeddingRuntimeBlockerMessage(message) ||
         isLocalEmbeddingSidecarAbortMessage(message);
-      if (vectorDegraded) {
+      if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
       }
-      if (!this.warnedMissingEmbeddingStack && vectorDegraded) {
+      if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
         logger.warn(`GitNexus [query:vector]: ${message}`);
       }
