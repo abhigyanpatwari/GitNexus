@@ -257,6 +257,68 @@ describe('embedding sidecar client', () => {
     expect(children[0].kill).not.toHaveBeenCalled();
   });
 
+  it('lets a joining caller abort without cancelling shared sidecar init', async () => {
+    let releaseInit: (() => void) | undefined;
+    forkMock.mockImplementation(() => {
+      const child = new FakeChild();
+      children.push(child);
+      child.send = vi.fn((msg: SidecarRequest) => {
+        if (msg.type === 'init') {
+          releaseInit = () => child.emit('message', { id: msg.id, type: 'ready', device: 'cpu' });
+          return true;
+        }
+        queueMicrotask(() => {
+          const response = child.respond(msg);
+          if (response) child.emit('message', response);
+        });
+        return true;
+      });
+      return child as unknown as ChildProcess;
+    });
+    const { ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const first = ensureEmbeddingSidecar();
+    await vi.waitFor(() => expect(releaseInit).toBeDefined());
+    const joining = new AbortController();
+    const second = ensureEmbeddingSidecar({ signal: joining.signal });
+    joining.abort();
+    await expect(second).rejects.toThrow();
+    releaseInit!();
+    await expect(first).resolves.toEqual({ device: 'cpu' });
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel shared sidecar init when the first waiter aborts', async () => {
+    let releaseInit: (() => void) | undefined;
+    forkMock.mockImplementation(() => {
+      const child = new FakeChild();
+      children.push(child);
+      child.send = vi.fn((msg: SidecarRequest) => {
+        if (msg.type === 'init') {
+          releaseInit = () => child.emit('message', { id: msg.id, type: 'ready', device: 'cpu' });
+          return true;
+        }
+        queueMicrotask(() => {
+          const response = child.respond(msg);
+          if (response) child.emit('message', response);
+        });
+        return true;
+      });
+      return child as unknown as ChildProcess;
+    });
+    const { ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    const firstAbort = new AbortController();
+    const first = ensureEmbeddingSidecar({ signal: firstAbort.signal });
+    await vi.waitFor(() => expect(releaseInit).toBeDefined());
+    const second = ensureEmbeddingSidecar();
+    firstAbort.abort();
+    await expect(first).rejects.toThrow();
+    releaseInit!();
+    await expect(second).resolves.toEqual({ device: 'cpu' });
+    expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects an aborted embed wait without killing the sidecar', async () => {
     const { sidecarEmbedBatch } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');

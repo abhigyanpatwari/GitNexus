@@ -329,7 +329,6 @@ const spawnAndInit = async (options?: EnsureSidecarOptions): Promise<void> => {
         forceDevice: persisted.forceDevice,
       },
       sidecarInitTimeoutMs(),
-      options?.signal,
     );
     if (response.type === 'error') throw new Error(response.message);
     if (response.type !== 'ready') {
@@ -354,6 +353,36 @@ const rejectConflictingForceDevice = (forceDevice?: EmbeddingSidecarDevice): voi
   }
 };
 
+const raceAbort = async <T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> => {
+  if (!signal) return promise;
+  try {
+    signal.throwIfAborted();
+  } catch (err) {
+    return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      try {
+        signal.throwIfAborted();
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(err);
+      },
+    );
+  });
+};
+
 export const ensureEmbeddingSidecar = async (
   options?: EnsureSidecarOptions,
 ): Promise<{ device: EmbeddingSidecarDevice }> => {
@@ -364,11 +393,12 @@ export const ensureEmbeddingSidecar = async (
   }
 
   if (!ensureChain) {
-    ensureChain = spawnAndInit(options).finally(() => {
+    const { signal: _ignored, ...initOptions } = options ?? {};
+    ensureChain = spawnAndInit(initOptions).finally(() => {
       ensureChain = null;
     });
   }
-  await ensureChain;
+  await raceAbort(ensureChain, options?.signal);
   rejectConflictingForceDevice(options?.forceDevice);
   return { device };
 };
