@@ -14,12 +14,13 @@
  * Module identity: Swift has no in-source `package X` marker. Module
  * membership is the SPM target *subtree* (`Sources/<Target>/…`), threaded
  * in via the SPM target map (`resolutionConfig` → `coerceSwiftTargets`)
- * and grouped by `groupSwiftFilesBySpmTarget` — replicating legacy
- * `groupSwiftFilesByTarget`. With no scanned source dir the map is null
- * and all files form one `__default__` module (single-Xcode-project
- * assumption). Every pair of distinct `.swift` files in the same module
- * gets a directed IMPORTS edge in both directions (whole-module
- * visibility is symmetric).
+ * and grouped by `groupSwiftFilesBySpmTarget`. The helper preserves the
+ * legacy `groupSwiftFilesByTarget` bucketing contract for ordinary layouts
+ * while intentionally fixing #2931's repeated-prefix edge case. With no
+ * scanned source dir the map is null and all files form one `__default__`
+ * module (single-Xcode-project assumption). Every pair of distinct `.swift`
+ * files in the same module gets a directed IMPORTS edge in both directions
+ * (whole-module visibility is symmetric).
  *
  * Node identity + edge construction mirror the generic `emitImportEdges`
  * convention (`graph-bridge/imports-to-edges.ts`): `generateId('File', path)`
