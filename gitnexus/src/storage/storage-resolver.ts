@@ -690,6 +690,20 @@ export const requireDeletableStoragePath = async (entry: {
 
   const expectedStoragePath = defaultStoragePath(repoPath);
   const storageIsLocal = isRepositoryLocalStoragePath(repoPath, actualStoragePath);
+  // Lookup may normalize extended-length paths, but deletion keeps the legacy
+  // fail-closed rule for a local registry entry with mixed namespace spellings.
+  if (
+    process.platform === 'win32' &&
+    storageIsLocal &&
+    expectedStoragePath.startsWith('\\\\?\\') !== actualStoragePath.startsWith('\\\\?\\')
+  ) {
+    throw new StorageDeletionError(
+      expectedStoragePath,
+      actualStoragePath,
+      undefined,
+      'repository-local storage must use the same extended-length path spelling as the repository',
+    );
+  }
   const comparableStorage = comparablePath(actualStoragePath);
   const comparableRepo = comparablePath(repoPath);
   const comparableRoot = comparablePath(path.parse(actualStoragePath).root);
