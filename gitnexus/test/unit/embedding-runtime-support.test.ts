@@ -46,6 +46,7 @@ vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
   ensureEmbeddingSidecar: vi.fn(async () => ({ device: 'cpu' })),
   getSidecarDevice: () => 'cpu',
   reapEmbeddingSidecar: vi.fn(),
+  reapEmbeddingSidecarAndWait: vi.fn(async () => {}),
   sidecarEmbedBatch: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
 }));
 

@@ -241,6 +241,42 @@ describe('embedding sidecar client', () => {
     await expect(pending).rejects.toThrow();
   });
 
+  it('rejects an aborted embed wait without killing the sidecar', async () => {
+    const { sidecarEmbedBatch } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await sidecarEmbedBatch(['warmup']);
+    children[0].send = vi.fn(() => true);
+    const controller = new AbortController();
+    const pending = sidecarEmbedBatch(['stalled'], { signal: controller.signal });
+    await vi.waitFor(() => expect(children[0].send).toHaveBeenCalled());
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(children[0].kill).not.toHaveBeenCalled();
+  });
+
+  it('respawns a dead sidecar with the last init embeddingConfig and forceDevice', async () => {
+    const { ensureEmbeddingSidecar, sidecarEmbedBatch } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await ensureEmbeddingSidecar({
+      embeddingConfig: { dimensions: 768 },
+      forceDevice: 'cpu',
+    });
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(children[0].send.mock.calls[0][0]).toMatchObject({
+      type: 'init',
+      embeddingConfig: { dimensions: 768 },
+      forceDevice: 'cpu',
+    });
+    children[0].emit('close', 1, null);
+    await sidecarEmbedBatch(['again']);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(children[1].send.mock.calls[0][0]).toMatchObject({
+      type: 'init',
+      embeddingConfig: { dimensions: 768 },
+      forceDevice: 'cpu',
+    });
+  });
+
   it('does not use worker_threads or import the embeddings barrel', () => {
     const clientSrc = readFileSync(path.join(embeddingsDir, 'embedding-sidecar-client.ts'), 'utf8');
     const façadeSrc = readFileSync(path.join(embeddingsDir, 'embedder.ts'), 'utf8');
@@ -284,6 +320,12 @@ describe('embedding sidecar client', () => {
     process.env.HF_DOWNLOAD_TIMEOUT_MS = String(60 * 60 * 1_000);
     process.env.HF_MAX_ATTEMPTS = '1';
     expect(sidecarInitTimeoutMs()).toBe(30 * 60 * 1_000 + SIDECAR_INIT_IPC_SLACK_MS);
+
+    process.env.HF_DOWNLOAD_TIMEOUT_MS = '120000';
+    process.env.HF_MAX_ATTEMPTS = '9.5';
+    expect(sidecarInitTimeoutMs()).toBe(
+      120_000 * 9 + 2_000 * (2 ** 8 - 1) + SIDECAR_INIT_IPC_SLACK_MS,
+    );
   });
 
   it('clears the reap wait timeout once the child closes', async () => {
