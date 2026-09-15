@@ -267,8 +267,15 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       expect(content).toContain('commitsBehind');
       // #3256: the field gained `status`, and the `diverged` arm carries no
       // count — the reason an agent has to read `status` before the number.
-      expect(content).toContain('{ status, commitsBehind?, hint? }');
+      // #3291: it also gained the indexed ref, and is now emitted for every
+      // status rather than suppressed when the index is current — without the
+      // ref, `current` cannot distinguish an index of the default branch from
+      // one of a feature branch.
+      expect(content).toContain(
+        '{ status, branch?, lastCommit, indexedAt, measuredAgainst, commitsBehind?, hint? }',
+      );
       expect(content).toContain('"status": "diverged"');
+      expect(content).toContain('"measuredAgainst": "HEAD"');
     }
   });
 
