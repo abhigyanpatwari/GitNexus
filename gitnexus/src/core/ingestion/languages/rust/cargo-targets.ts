@@ -7,10 +7,10 @@ import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { readRepoControlFile } from '../../../../config/repo-control-file.js';
 import { rustModuleFiles } from './cargo-module-files.js';
 
 const MAX_FILES = 100_000;
-const MAX_SOURCE_BYTES = 1024 * 1024;
 type Table = Record<string, unknown>;
 const table = (value: unknown): value is Table =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -192,9 +192,11 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
         throw new Error('Cargo module outside repository');
       }
       if (absolute !== requested) throw new Error('Cargo module alias has unknown membership');
-      const stat = await fs.stat(absolute);
-      if (!stat.isFile() || stat.size > MAX_SOURCE_BYTES) throw new Error('Unbounded Cargo source');
-      return fs.readFile(absolute, 'utf8');
+      // Validate and read the same opened inode. The shared reader also bounds
+      // streamed bytes if a file grows, and rejects replacements/symlinks.
+      const content = await readRepoControlFile(root, file);
+      if (content === null) throw new Error('Cargo source disappeared');
+      return content;
     };
     const contents = new Map<string, string>();
     const workspaceEditions = new Map<string, string>();

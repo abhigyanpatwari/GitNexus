@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import {
 const PACKAGE = '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n';
 const temporary: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const dir of temporary.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 function fixture(files: Record<string, string>): string {
@@ -339,5 +340,36 @@ describe('Rust module membership', () => {
     expect(
       rustFilesShareCargoTarget(await loadRustCargoTargets(dir), 'src/lib.rs', 'tests/helper.rs'),
     ).toBeUndefined();
+  });
+
+  it('discards membership when a checked source is replaced before the read', async () => {
+    const dir = fixture({ 'Cargo.toml': PACKAGE, 'src/lib.rs': '', 'tests/helper.rs': '' });
+    const source = path.join(dir, 'src/lib.rs');
+    const originalStat = fs.statSync(source);
+    let replaced = false;
+    const replace = (stat: fs.Stats) => {
+      if (!replaced && stat.dev === originalStat.dev && stat.ino === originalStat.ino) {
+        replaced = true;
+        fs.renameSync(source, `${source}.old`);
+        fs.writeFileSync(source, `// ${'x'.repeat(1024 * 1024)}\n`);
+      }
+    };
+    // Exercise the same replacement against the old path-stat/read sequence
+    // and the descriptor-based reader. Neither may accept the unchecked file.
+    const pathStat = fs.promises.stat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'stat').mockImplementation(async (...args) => {
+      const stat = await pathStat(...args);
+      replace(stat as fs.Stats);
+      return stat;
+    });
+    const descriptorStat = fs.fstatSync.bind(fs);
+    vi.spyOn(fs, 'fstatSync').mockImplementation((...args) => {
+      const stat = descriptorStat(...args);
+      replace(stat as fs.Stats);
+      return stat;
+    });
+    const config = await loadRustCargoTargets(dir);
+    expect(replaced).toBe(true);
+    expect(rustFilesShareCargoTarget(config, 'src/lib.rs', 'tests/helper.rs')).toBeUndefined();
   });
 });
