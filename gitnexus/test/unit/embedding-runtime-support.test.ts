@@ -8,6 +8,7 @@ import {
   isMissingLocalEmbeddingStackMessage,
   LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
   localEmbeddingStackMissingMessage,
+  localEmbeddingPrefixUnloadableMessage,
 } from '../../src/core/embeddings/runtime-support.js';
 
 /**
@@ -129,8 +130,8 @@ describe('getLocalEmbeddingRuntimeBlocker', () => {
     // Safe alternatives
     expect(text).toMatch(/without --embeddings/);
     expect(text).toContain('GITNEXUS_EMBEDDING_URL');
-    expect(text).toMatch(/Linux or in Docker/);
-    expect(text).toMatch(/Apple Silicon/);
+    expect(text).toMatch(/Linux or Apple Silicon/);
+    expect(text).toMatch(/Official CLI Docker images no longer/);
     // Addresses the GitNexus device knob too, not only ONNX_WEB_BACKEND (R3 / #1987)
     expect(text).toContain('GITNEXUS_EMBEDDING_DEVICE');
   });
@@ -222,6 +223,7 @@ describe('getMissingLocalEmbeddingStackMessage (#2370 pruned optional stack)', (
   it('produces guidance naming every recovery path', () => {
     const msg = localEmbeddingStackMissingMessage();
     expect(msg).toContain('gitnexus embeddings install');
+    expect(msg).toContain('GITNEXUS_EMBEDDING_RUNTIME_DIR');
     expect(msg).not.toContain('ONNXRUNTIME_NODE_INSTALL=skip');
     expect(msg).toContain('GLOBAL_AGENT_HTTPS_PROXY');
     expect(msg).toContain('GITNEXUS_EMBEDDING_URL');
@@ -229,6 +231,16 @@ describe('getMissingLocalEmbeddingStackMessage (#2370 pruned optional stack)', (
     // Must not trip analyze.ts's generic "installation may be corrupt" branch.
     expect(msg).not.toMatch(/Cannot find (module|package)/);
     expect(msg).not.toContain('MODULE_NOT_FOUND');
+  });
+});
+
+describe('localEmbeddingPrefixUnloadableMessage', () => {
+  it('tells the user to upgrade this Node, not to install from another Node and retry', () => {
+    const msg = localEmbeddingPrefixUnloadableMessage();
+    expect(msg).toContain('module.registerHooks');
+    expect(msg).toContain('Upgrade this');
+    expect(msg).toContain('cannot add that API here');
+    expect(msg).not.toMatch(/then retry/i);
   });
 });
 

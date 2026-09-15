@@ -27,10 +27,15 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 interface SemanticSearchable {
-  semanticSearch(repo: { lbugPath: string }, query: string, limit: number): Promise<unknown[]>;
+  semanticSearch(
+    repo: { lbugPath: string },
+    query: string,
+    limit: number,
+    degraded?: { reason?: string },
+  ): Promise<unknown[]>;
 }
-const callSemanticSearch = (b: LocalBackend): Promise<unknown[]> =>
-  (b as unknown as SemanticSearchable).semanticSearch({ lbugPath: '/tmp/x' }, 'q', 5);
+const callSemanticSearch = (b: LocalBackend, degraded?: { reason?: string }): Promise<unknown[]> =>
+  (b as unknown as SemanticSearchable).semanticSearch({ lbugPath: '/tmp/x' }, 'q', 5, degraded);
 
 const stackWarns = (cap: LoggerCapture): number =>
   cap
@@ -52,13 +57,14 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
     embedQueryMock.mockRejectedValue(new Error(localEmbeddingStackMissingMessage()));
     const backend = new LocalBackend();
     const cap = _captureLogger();
+    const first = { reason: undefined as string | undefined };
+    const second = { reason: undefined as string | undefined };
     try {
-      expect(await callSemanticSearch(backend)).toEqual([]);
-      expect(await callSemanticSearch(backend)).toEqual([]);
+      expect(await callSemanticSearch(backend, first)).toEqual([]);
+      expect(await callSemanticSearch(backend, second)).toEqual([]);
       expect(stackWarns(cap)).toBe(1); // once per LocalBackend instance
-      expect(
-        (backend as unknown as { lastVectorDegradedReason?: string }).lastVectorDegradedReason,
-      ).toContain('local embedding stack is not installed');
+      expect(first.reason).toContain('local embedding stack is not installed');
+      expect(second.reason).toContain('local embedding stack is not installed');
     } finally {
       cap.restore();
     }
@@ -68,11 +74,10 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
     embedQueryMock.mockRejectedValue(new Error(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD));
     const backend = new LocalBackend();
     const cap = _captureLogger();
+    const degraded = { reason: undefined as string | undefined };
     try {
-      expect(await callSemanticSearch(backend)).toEqual([]);
-      expect(
-        (backend as unknown as { lastVectorDegradedReason?: string }).lastVectorDegradedReason,
-      ).toBe(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD);
+      expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+      expect(degraded.reason).toBe(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD);
       expect(
         cap.records().some((r) => typeof r.msg === 'string' && r.msg.includes('sidecar aborted')),
       ).toBe(true);

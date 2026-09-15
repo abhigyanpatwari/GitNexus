@@ -184,6 +184,6 @@ export const hybridSearch = async (
   } catch {
     // FTS unavailable — continue with semantic-only search
   }
-  const semanticResults = await semanticSearch(executeQuery, query, limit);
+  const semanticResults = await semanticSearch(executeQuery, query, limit).catch(() => []);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

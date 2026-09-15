@@ -63,8 +63,9 @@ export const getLocalEmbeddingRuntimeBlocker = (
       '  - Run analyze without --embeddings (all other indexing still works).',
       '  - Point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
       '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
-      '  - Run GitNexus on Linux or in Docker, where the native binding ships.',
-      '  - Run GitNexus on Apple Silicon (darwin/arm64), which ships a binding.',
+      '  - Run GitNexus on Linux or Apple Silicon (darwin/arm64), then',
+      '    `gitnexus embeddings install`. Official CLI Docker images no longer',
+      '    ship onnxruntime-node; bind-mount a prefix or use HTTP.',
       '  - Use a future GitNexus build that restores darwin/x64 ONNX support.',
     ].join('\n');
   }
@@ -104,7 +105,8 @@ export const localEmbeddingStackMissingMessage = (): string =>
     '',
     'To enable local embeddings:',
     '  - Run `gitnexus embeddings install` — fetches the stack through your npm',
-    '    registry config into ~/.gitnexus/embedding-runtime (mirrors and proxies',
+    '    registry config into ~/.gitnexus/embedding-runtime (or',
+    '    GITNEXUS_EMBEDDING_RUNTIME_DIR when set; mirrors and proxies',
     '    apply; no NuGet download). `gitnexus analyze --embeddings` and',
     '    `gitnexus embeddings sync` do this automatically.',
     '    Add --cuda on CUDA GPU hosts (behind a proxy, also set',
@@ -134,9 +136,10 @@ export const localEmbeddingPrefixUnloadableMessage = (): string =>
   [
     LOCAL_EMBEDDING_PREFIX_UNLOADABLE_LEAD,
     'The runtime prefix loads via module.registerHooks, which needs Node',
-    '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Either:',
-    '  - Upgrade Node to a build that has module.registerHooks, or',
-    '  - Run `gitnexus embeddings install` on a supported Node, then retry.',
+    '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Upgrade this',
+    'Node to a build that has module.registerHooks. Installing the prefix from',
+    'another Node cannot add that API here. A leftover 1.6.12 package-first',
+    'tree still loads without the hook; the prefix path does not.',
   ].join('\n');
 
 export type LocalEmbeddingRuntimeAssessment =

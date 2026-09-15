@@ -36,6 +36,7 @@ let embedderInstance: FeatureExtractionPipeline | null = null;
 let isInitializing = false;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 let currentDevice: EmbeddingSidecarDevice | null = null;
+let activeDimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
 
 const formatDeviceLabel = (device: EmbeddingSidecarDevice): string => {
   switch (device) {
@@ -71,7 +72,11 @@ export const initLocalEmbedder = async (
   isInitializing = true;
 
   const finalConfig = resolveEmbeddingConfig(config);
-  const gpuDevice = isEffectiveCudaAvailable() ? 'cuda' : 'cpu';
+  const gpuDevice: EmbeddingSidecarDevice = isEffectiveCudaAvailable()
+    ? 'cuda'
+    : process.platform === 'win32'
+      ? 'dml'
+      : 'cpu';
   const requestedDevice =
     forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
@@ -151,6 +156,7 @@ export const initLocalEmbedder = async (
             },
           );
           currentDevice = device;
+          activeDimensions = finalConfig.dimensions;
 
           if (isDev) {
             logger.info(`✅ Using ${formatDeviceLabel(device)} backend`);
@@ -221,7 +227,9 @@ export const localEmbedBatch = async (texts: string[]): Promise<Float32Array[]> 
   });
 
   const data = result.data as ArrayLike<number>;
-  const dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
+  const dims = (result as { dims?: number[] }).dims;
+  const dimensions =
+    typeof dims?.[dims.length - 1] === 'number' ? dims[dims.length - 1] : activeDimensions;
   const embeddings: Float32Array[] = [];
 
   for (let i = 0; i < texts.length; i++) {

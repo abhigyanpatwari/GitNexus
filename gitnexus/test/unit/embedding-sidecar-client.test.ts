@@ -112,6 +112,26 @@ describe('embedding sidecar client', () => {
     expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe', 'ipc']);
   });
 
+  it('reports no sidecar device until init is ready', async () => {
+    const { getSidecarDevice, ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    expect(getSidecarDevice()).toBeNull();
+    await ensureEmbeddingSidecar();
+    expect(getSidecarDevice()).toBe('cpu');
+  });
+
+  it('rejects a forceDevice that conflicts with the initialized sidecar', async () => {
+    const { ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await expect(ensureEmbeddingSidecar()).resolves.toEqual({ device: 'cpu' });
+    await expect(ensureEmbeddingSidecar({ forceDevice: 'cuda' })).rejects.toThrow(
+      /already initialized on cpu; cannot switch to cuda/,
+    );
+    await expect(ensureEmbeddingSidecar({ forceDevice: 'cpu' })).resolves.toEqual({
+      device: 'cpu',
+    });
+  });
+
   it('forks once for two batches', async () => {
     const { sidecarEmbedBatch } =
       await import('../../src/core/embeddings/embedding-sidecar-client.js');
@@ -226,21 +246,24 @@ describe('embedding sidecar client', () => {
     const façadeSrc = readFileSync(path.join(embeddingsDir, 'embedder.ts'), 'utf8');
     const importLines = clientSrc
       .split('\n')
-      .filter((line) => /^\s*import\b/.test(line) || /^\s*\} from /.test(line))
+      .filter(
+        (line) =>
+          /^\s*import\b/.test(line) || /^\s*\} from /.test(line) || /import\s*\(/.test(line),
+      )
       .join('\n');
     expect(clientSrc).not.toMatch(/worker_threads/);
     expect(clientSrc).not.toMatch(/new Worker\b/);
     expect(importLines).not.toContain('embedding-pipeline');
     expect(importLines).not.toContain('embedding-identity');
     expect(importLines).not.toContain('./index.js');
-    const façadeImports = façadeSrc
-      .split('\n')
-      .filter((line) => /^\s*import\b/.test(line) || /^\s*\} from /.test(line))
-      .join('\n');
-    expect(façadeImports).not.toContain('@huggingface/transformers');
-    expect(façadeImports).not.toContain('onnxruntime-node');
-    expect(façadeImports).not.toContain('onnxruntime-common-resolver');
-    expect(façadeImports).not.toContain('embedding-local-init');
+    expect(façadeSrc).not.toMatch(/from\s+['"]@huggingface\/transformers['"]/);
+    expect(façadeSrc).not.toMatch(/import\s*\(\s*['"]@huggingface\/transformers['"]/);
+    expect(façadeSrc).not.toMatch(/from\s+['"]onnxruntime-node['"]/);
+    expect(façadeSrc).not.toMatch(/import\s*\(\s*['"]onnxruntime-node['"]/);
+    expect(façadeSrc).not.toMatch(/from\s+['"].*onnxruntime-common-resolver['"]/);
+    expect(façadeSrc).not.toMatch(/import\s*\(\s*['"].*onnxruntime-common-resolver['"]/);
+    expect(façadeSrc).not.toMatch(/from\s+['"].*embedding-local-init['"]/);
+    expect(façadeSrc).not.toMatch(/import\s*\(\s*['"].*embedding-local-init['"]/);
   });
 
   it('sizes the init deadline from the HF download budget, not a 15s process lifetime', async () => {

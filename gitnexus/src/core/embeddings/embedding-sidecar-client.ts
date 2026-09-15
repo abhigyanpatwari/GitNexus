@@ -258,7 +258,7 @@ export const isEmbeddingSidecarReady = (): boolean => ready && child !== null;
 
 export const isLocalEmbeddingsUnavailable = (): boolean => localUnavailable;
 
-export const getSidecarDevice = (): EmbeddingSidecarDevice => device;
+export const getSidecarDevice = (): EmbeddingSidecarDevice | null => (ready ? device : null);
 
 const markUnavailableIfBudgetSpent = (): void => {
   if (deathSeen && recreatesUsed >= MAX_RECREATES) {
@@ -311,13 +311,24 @@ const spawnAndInit = async (options?: {
   }
 };
 
+const rejectConflictingForceDevice = (forceDevice?: EmbeddingSidecarDevice): void => {
+  if (forceDevice && forceDevice !== device) {
+    throw new Error(
+      `Embedding sidecar already initialized on ${device}; cannot switch to ${forceDevice}`,
+    );
+  }
+};
+
 export const ensureEmbeddingSidecar = async (options?: {
   onProgress?: (progress: ModelProgress) => void;
   embeddingConfig?: Partial<EmbeddingConfig>;
   forceDevice?: EmbeddingSidecarDevice;
 }): Promise<{ device: EmbeddingSidecarDevice }> => {
   if (localUnavailable) throw localUnavailableError();
-  if (ready && child) return { device };
+  if (ready && child) {
+    rejectConflictingForceDevice(options?.forceDevice);
+    return { device };
+  }
 
   if (!ensureChain) {
     ensureChain = spawnAndInit(options).finally(() => {
@@ -325,6 +336,7 @@ export const ensureEmbeddingSidecar = async (options?: {
     });
   }
   await ensureChain;
+  rejectConflictingForceDevice(options?.forceDevice);
   return { device };
 };
 

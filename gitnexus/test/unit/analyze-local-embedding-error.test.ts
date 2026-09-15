@@ -196,9 +196,9 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     resolveEmbeddingRuntimeMock.mockReturnValue(null);
     isPrefixRuntimeLoadableMock.mockReturnValue(true);
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
     try {
-      const { _captureLogger } = await import('../../src/core/logger.js');
-      const cap = _captureLogger();
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
       await analyzeCommand(undefined, { embeddings: true });
 
@@ -207,8 +207,8 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
       expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(
         true,
       );
-      cap.restore();
     } finally {
+      cap.restore();
       Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
       Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
     }

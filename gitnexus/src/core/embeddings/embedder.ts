@@ -18,8 +18,7 @@ import {
   httpEmbed,
   type EmbeddingRequestOptions,
 } from './http-client.js';
-import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
-import { resolveEmbeddingRuntime } from './runtime-install.js';
+import { assessLocalEmbeddingRuntime, getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import {
   ensureEmbeddingSidecar,
   getSidecarDevice,
@@ -77,11 +76,13 @@ export const getEmbedder = (): never => {
 };
 
 /**
- * Ready when HTTP embeddings are configured, or the local stack resolves
- * without importing ONNX (KTD11). Sidecar liveness is not required.
+ * Ready when HTTP embeddings are configured, or local runtime assessment
+ * is `ready` (blocker / prefix-unloadable / missing-stack are not ready).
+ * Sidecar liveness is not required. Resolution alone is not enough: a leftover
+ * 1.6.12 package-first tree on darwin/x64 still resolves, then embedText throws.
  */
 export const isEmbedderReady = (): boolean => {
-  return isHttpMode() || resolveEmbeddingRuntime() !== null;
+  return isHttpMode() || assessLocalEmbeddingRuntime().status === 'ready';
 };
 
 export const getEmbeddingDimensions = (): number => {

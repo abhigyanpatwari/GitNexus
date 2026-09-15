@@ -959,7 +959,7 @@ docker compose --env-file .env up -d
 Files:
 
 - [Dockerfile.web](Dockerfile.web) — builds `gitnexus-shared` and `gitnexus-web`, then serves the production frontend.
-- [Dockerfile.cli](Dockerfile.cli) — builds the CLI/server (with its native deps) and runs `gitnexus serve --host 0.0.0.0`.
+- [Dockerfile.cli](Dockerfile.cli) — builds the CLI/server (with its native deps) and runs `gitnexus serve --host 0.0.0.0`. Local embeddings are **not** in the image (`onnxruntime-node` is opt-in; runtime npm is stripped). Bind-mount a prefix or set `GITNEXUS_EMBEDDING_URL`.
 - [docker-compose.yaml](docker-compose.yaml) — starts both signed images side by side.
 - [.env.example](.env.example) — overrides for image names, container names, ports, and the workspace mount.
 

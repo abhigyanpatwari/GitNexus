@@ -1554,13 +1554,6 @@ export class LocalBackend {
   private warnedMissingEmbeddingStack = false;
 
   /**
-   * Last vector-lane degradation that `semanticSearch` swallowed into `[]`.
-   * `query()` appends this to the agent-visible `warnings` array so missing
-   * stack / sidecar abort is not stderr-only.
-   */
-  private lastVectorDegradedReason: string | undefined;
-
-  /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
    * by `lbugPath` (like `lastObservedPoolState`, and for the same reason: branch
    * handles are rebuilt by `applyBranchScope` on every `resolveRepo`, so state
@@ -2971,9 +2964,10 @@ export class LocalBackend {
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+    const vectorDegraded = { reason: undefined as string | undefined };
     const [bm25SearchResult, semanticResults] = await Promise.all([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
-      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
+      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
 
     // Guard against undefined results (#1489) — when FTS is entirely
@@ -3436,8 +3430,8 @@ export class LocalBackend {
           'Keyword results are unaffected.',
       );
     }
-    if (this.lastVectorDegradedReason) {
-      warnings.push(this.lastVectorDegradedReason);
+    if (vectorDegraded.reason) {
+      warnings.push(vectorDegraded.reason);
     }
     if (enrichmentDegraded) {
       warnings.push(
@@ -3581,8 +3575,12 @@ export class LocalBackend {
   /**
    * Semantic vector search helper
    */
-  private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
-    this.lastVectorDegradedReason = undefined;
+  private async semanticSearch(
+    repo: RepoHandle,
+    query: string,
+    limit: number,
+    degraded?: { reason?: string },
+  ): Promise<any[]> {
     // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
     // A local flag, not a re-read of the map: the map may still hold an earlier
     // call's width, and the catch below must only clear an entry it did not set.
@@ -3760,7 +3758,7 @@ export class LocalBackend {
         isLocalEmbeddingRuntimeBlockerMessage(message) ||
         isLocalEmbeddingSidecarAbortMessage(message);
       if (vectorDegraded) {
-        this.lastVectorDegradedReason = message;
+        if (degraded) degraded.reason = message;
       }
       if (!this.warnedMissingEmbeddingStack && vectorDegraded) {
         this.warnedMissingEmbeddingStack = true;
