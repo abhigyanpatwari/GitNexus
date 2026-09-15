@@ -534,7 +534,7 @@ for a quiet registry.
 
 ### `Cannot destructure property 'package' of 'node.target' as it is null`
 
-This error comes from **npm 11.x's arborist** while installing gitnexus (often via `npx`), before gitnexus code runs. It is triggered by platform-filtered `optionalDependencies` in native packages such as `onnxruntime-node` / `@huggingface/transformers` (used when indexing with `--embeddings`). GitNexus cannot catch it at runtime — use one of these workarounds:
+This error comes from **npm 11.x's arborist** while installing a package with platform-filtered `optionalDependencies` (often via `npx`), before gitnexus code runs. Default `npm install` / `npx gitnexus` no longer fetch `@huggingface/transformers` or `onnxruntime-node`; those packages appear only if you run `gitnexus embeddings install` (or you still have a leftover 1.6.12 package-first tree). Other native optionals can still trigger the same arborist crash. GitNexus cannot catch it at runtime — use one of these workarounds:
 
 ```bash
 pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter dlx gitnexus@latest analyze       # auto-selected when pnpm + npm 11+
@@ -648,7 +648,7 @@ npm install -g gitnexus
 
 `onnxruntime-node`'s postinstall downloads optional CUDA GPU binaries from `api.nuget.org` — outside the npm registry, so registry mirrors don't cover it, and its proxy layer (`global-agent`) ignores the standard `HTTP_PROXY`/`HTTPS_PROXY` variables and rejects 302 redirects ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)).
 
-Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. The stack then **self-heals on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`.
+Default `npm install -g gitnexus` no longer fetches the embedding stack. **Opt in on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`. A leftover 1.6.12 package-first tree in gitnexus `node_modules` is residual until a clean reinstall; `--force` only refreshes prefix overrides.
 
 ```bash
 # heal a proxy-degraded install manually (CPU embeddings; registry-only)
@@ -663,7 +663,7 @@ GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> gitnexus embeddings install --cuda
 
 The prefix defaults to `~/.gitnexus/embedding-runtime`; set `GITNEXUS_EMBEDDING_RUNTIME_DIR` to install it elsewhere (e.g. a writable path in a container).
 
-> **Node requirement for the on-demand prefix:** the self-heal loads the prefixed packages via `module.registerHooks`, available on Node **≥ 22.15** (on the 22.x line) or **≥ 23.5** (on the 23.x line). On an older Node the packages install but can't be loaded from the prefix — reinstall them into the install itself instead (works on every supported Node): `ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus` (Windows: `set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus`). Skipping only the CUDA download keeps full CPU embeddings (CPU embeddings don't need it). Check the result any time with `gitnexus doctor` (Embeddings → Support line).
+> **Node requirement for the on-demand prefix:** the prefix loads via `module.registerHooks`, available on Node **≥ 22.15** (on the 22.x line) or **≥ 23.5** (on the 23.x line). On an older Node the packages install but can't be loaded from the prefix — upgrade Node, then run `gitnexus embeddings install`. Check the result any time with `gitnexus doctor` (Embeddings → Support line).
 
 ### Analyze warns about unavailable FTS or VECTOR extensions
 

@@ -3,9 +3,12 @@ import {
   getLocalEmbeddingRuntimeBlocker,
   getMissingLocalEmbeddingStackMessage,
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingSidecarAbortMessage,
   isLocalEmbeddingStackInstalled,
   isMissingLocalEmbeddingStackMessage,
+  LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD,
   localEmbeddingStackMissingMessage,
+  localEmbeddingPrefixUnloadableMessage,
 } from '../../src/core/embeddings/runtime-support.js';
 
 /**
@@ -26,17 +29,25 @@ vi.mock('@huggingface/transformers', () => {
 });
 
 /**
- * Spy for the CUDA-13 build-matching resolver hook. Both local embedders must
- * call this before importing transformers.js — mocked (rather than exercising
- * the real resolver's env/subprocess probing) to keep this suite fast and
- * platform-independent; `onnxruntime-node-resolver.test.ts` covers the
- * resolver's own decision logic.
+ * Spy for the CUDA-13 build-matching resolver hook. Child `initLocalEmbedder`
+ * must call this before importing transformers.js — mocked (rather than
+ * exercising the real resolver's env/subprocess probing) to keep this suite
+ * fast and platform-independent; `onnxruntime-node-resolver.test.ts` covers
+ * the resolver's own decision logic.
  */
 const { resolverHookInstalled } = vi.hoisted(() => ({ resolverHookInstalled: vi.fn() }));
 
 vi.mock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
   ensureOnnxRuntimeNodeMatchesSystem: () => resolverHookInstalled(),
   isEffectiveCudaAvailable: () => false,
+}));
+
+vi.mock('../../src/core/embeddings/embedding-sidecar-client.js', () => ({
+  ensureEmbeddingSidecar: vi.fn(async () => ({ device: 'cpu' })),
+  getSidecarDevice: () => 'cpu',
+  reapEmbeddingSidecar: vi.fn(),
+  reapEmbeddingSidecarAndWait: vi.fn(async () => {}),
+  sidecarEmbedBatch: vi.fn(async (texts: string[]) => texts.map(() => new Float32Array(384))),
 }));
 
 /**
@@ -118,8 +129,8 @@ describe('getLocalEmbeddingRuntimeBlocker', () => {
     // Safe alternatives
     expect(text).toMatch(/without --embeddings/);
     expect(text).toContain('GITNEXUS_EMBEDDING_URL');
-    expect(text).toMatch(/Linux or in Docker/);
-    expect(text).toMatch(/Apple Silicon/);
+    expect(text).toMatch(/Linux or Apple Silicon/);
+    expect(text).toMatch(/Official CLI Docker images no longer/);
     // Addresses the GitNexus device knob too, not only ONNX_WEB_BACKEND (R3 / #1987)
     expect(text).toContain('GITNEXUS_EMBEDDING_DEVICE');
   });
@@ -211,13 +222,24 @@ describe('getMissingLocalEmbeddingStackMessage (#2370 pruned optional stack)', (
   it('produces guidance naming every recovery path', () => {
     const msg = localEmbeddingStackMissingMessage();
     expect(msg).toContain('gitnexus embeddings install');
-    expect(msg).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+    expect(msg).toContain('GITNEXUS_EMBEDDING_RUNTIME_DIR');
+    expect(msg).not.toContain('ONNXRUNTIME_NODE_INSTALL=skip');
     expect(msg).toContain('GLOBAL_AGENT_HTTPS_PROXY');
     expect(msg).toContain('GITNEXUS_EMBEDDING_URL');
-    expect(msg).toContain('#2370');
+    expect(msg).toContain('1.6.12');
     // Must not trip analyze.ts's generic "installation may be corrupt" branch.
     expect(msg).not.toMatch(/Cannot find (module|package)/);
     expect(msg).not.toContain('MODULE_NOT_FOUND');
+  });
+});
+
+describe('localEmbeddingPrefixUnloadableMessage', () => {
+  it('tells the user to upgrade this Node, not to install from another Node and retry', () => {
+    const msg = localEmbeddingPrefixUnloadableMessage();
+    expect(msg).toContain('module.registerHooks');
+    expect(msg).toContain('Upgrade this');
+    expect(msg).toContain('cannot add that API here');
+    expect(msg).not.toMatch(/then retry/i);
   });
 });
 
@@ -231,10 +253,19 @@ describe('isMissingLocalEmbeddingStackMessage', () => {
   });
 });
 
+describe('isLocalEmbeddingSidecarAbortMessage', () => {
+  it('recognises sidecar abort and sidecar-dead text', () => {
+    expect(isLocalEmbeddingSidecarAbortMessage(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD)).toBe(true);
+    expect(isLocalEmbeddingSidecarAbortMessage('Embedding sidecar died (signal SIGSEGV)')).toBe(
+      true,
+    );
+    expect(isLocalEmbeddingSidecarAbortMessage(localEmbeddingStackMissingMessage())).toBe(false);
+  });
+});
+
 describe('isLocalEmbeddingStackInstalled', () => {
-  it('resolves the optional stack in the dev workspace without importing it', () => {
-    expect(isLocalEmbeddingStackInstalled()).toBe(true);
-    // Resolution only — the transformers.js import spy must not fire.
+  it('probes stack resolution without importing transformers.js', () => {
+    isLocalEmbeddingStackInstalled();
     expect(transformersImported).not.toHaveBeenCalled();
   });
 });
@@ -386,46 +417,40 @@ describe('MCP embedQuery on darwin/x64', () => {
 });
 
 describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)', () => {
-  // Regression guard for the two local embedders drifting apart (gitnexus PR #2341
-  // follow-up): both `core/embeddings/embedder.ts` and `mcp/core/embedder.ts` must
-  // install the CUDA-build-matching redirect during a successful local init. (The
-  // source itself places the call before `await import('@huggingface/transformers')`
-  // — not re-asserted here via mock call-order, since the hoisted `@huggingface/
-  // transformers` mock's factory only fires once per file run for this external
-  // package, making a second per-test "called fresh" assertion on it unreliable.)
-  it('core embedder installs the resolver hook on a successful local init', async () => {
+  // Parent façade must not install CUDA / transformers hooks; only the
+  // sidecar child local-init path does.
+  it('core embedder does not install the resolver hook in the parent on local init', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
 
-      expect(resolverHookInstalled).toHaveBeenCalled();
+      expect(resolverHookInstalled).not.toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
     } finally {
       restore();
     }
   });
 
-  it('MCP embedder installs the resolver hook on a successful local init', async () => {
+  it('MCP embedder does not install the resolver hook in the parent on local init', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/mcp/core/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
 
-      expect(resolverHookInstalled).toHaveBeenCalled();
+      expect(resolverHookInstalled).not.toHaveBeenCalled();
+      expect(transformersImported).not.toHaveBeenCalled();
     } finally {
       restore();
     }
   });
 
-  it('registers the runtime-prefix fallback through the mocked registerHooks, not the real global API (#2372)', async () => {
-    // The whole point of the node:module mock: a successful local init exercises
-    // ensureEmbeddingStackResolvable's registration via the spy, so no real
-    // process-global resolution hook leaks into other tests in the worker.
+  it('does not register process-global resolution hooks in the parent on local init (#2372)', async () => {
     const restore = stubPlatform('linux', 'x64');
     try {
       const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
       await expect(initEmbedder()).resolves.toBeDefined();
-      expect(registerHooksSpy).toHaveBeenCalled();
+      expect(registerHooksSpy).not.toHaveBeenCalled();
     } finally {
       restore();
     }

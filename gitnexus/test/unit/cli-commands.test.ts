@@ -109,7 +109,8 @@ describe('CLI commands', () => {
       // (vendored-grammars.ts), so postinstall no longer materializes anything.
       expect(pkg.default.scripts.postinstall).not.toContain('materialize-vendor-grammars.cjs');
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(pkg.default.files).toContain('vendor');
+      expect(pkg.default.files).toContain('vendor/**/prebuilds/**');
+      expect(pkg.default.files).not.toContain('vendor');
     });
 
     it('declares node-gyp-build/node-addon-api as regular dependencies (runtime-load contract)', async () => {

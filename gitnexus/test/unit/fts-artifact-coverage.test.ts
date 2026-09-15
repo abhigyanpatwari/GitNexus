@@ -102,7 +102,9 @@ describe('real repo pairing (guards against a silent core bump)', () => {
     ) as { coreVersion: string; extensionVersion: string };
     expect(pkg.dependencies['@ladybugdb/core']).toBe(manifest.coreVersion);
     expect(manifest.extensionVersion).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(pkg.files).toContain('vendor');
+    expect(filesCoverFtsArtifacts(pkg.files)).toBe(true);
+    expect(pkg.files).toContain('vendor/**/prebuilds/**');
+    expect(pkg.files).not.toContain('vendor');
   });
 });
 
