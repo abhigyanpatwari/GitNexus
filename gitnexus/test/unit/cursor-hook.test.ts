@@ -470,8 +470,8 @@ describe('Cursor hook npx fallback host budget', () => {
     expect(fnBody).toContain('timeout: npxTimeout');
     expect(fnBody).not.toMatch(/timeout:\s*timeout\s*\+\s*5000/);
     // npx grandchild is killed outright so it cannot keep the DB lock
-    expect(fnBody).toContain('"-s"');
-    expect(fnBody).toContain('KILL');
+    expect(fnBody).toMatch(/['"]-s['"]/);
+    expect(fnBody).toMatch(/['"]KILL['"]/);
   });
 
   it('reads the shipped timeout value, not a detached literal', () => {
