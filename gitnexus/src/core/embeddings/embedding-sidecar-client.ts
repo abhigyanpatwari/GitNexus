@@ -224,7 +224,13 @@ const request = (
       onAbort();
       return;
     }
-    child!.send({ ...msg, id } as SidecarRequest);
+    try {
+      child!.send({ ...msg, id } as SidecarRequest);
+    } catch (err) {
+      finish(() => {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    }
   });
 };
 

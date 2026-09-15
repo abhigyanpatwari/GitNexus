@@ -231,14 +231,30 @@ describe('embedding sidecar client', () => {
     expect(children[0].kill).toHaveBeenCalledWith('SIGKILL');
   });
 
-  it('embedBatch throws after sidecar return when the signal aborted mid-flight', async () => {
+  it('rejects embedBatch when aborted while waiting on an outstanding embed request', async () => {
     const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+    await embedBatch(['warmup']);
+    children[0].send = vi.fn(() => true);
     const controller = new AbortController();
-    children.length = 0;
-    const pending = embedBatch(['x'], { signal: controller.signal });
-    await vi.waitFor(() => expect(forkMock).toHaveBeenCalled());
+    const pending = embedBatch(['stalled'], { signal: controller.signal });
+    await vi.waitFor(() => expect(children[0].send).toHaveBeenCalled());
     controller.abort();
     await expect(pending).rejects.toThrow();
+  });
+
+  it('cleans up a pending waiter when IPC send throws', async () => {
+    process.env.GITNEXUS_EMBEDDING_SIDECAR_TIMEOUT_MS = '50';
+    const { sidecarEmbedBatch } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await sidecarEmbedBatch(['warmup']);
+    vi.useFakeTimers();
+    children[0].send = vi.fn(() => {
+      throw new Error('Channel closed');
+    });
+    await expect(sidecarEmbedBatch(['x'])).rejects.toThrow(/Channel closed/);
+    expect(children[0].kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+    expect(children[0].kill).not.toHaveBeenCalled();
   });
 
   it('rejects an aborted embed wait without killing the sidecar', async () => {

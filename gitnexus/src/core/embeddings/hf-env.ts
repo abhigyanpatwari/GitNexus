@@ -30,12 +30,12 @@ export const resolveHfEnvTimeoutMs = (): number => {
     : HF_DOWNLOAD_TIMEOUT_MS;
 };
 
-/** Attempt count from `HF_MAX_ATTEMPTS` (finite positives are floored), else the default. */
+/** Attempt count from `HF_MAX_ATTEMPTS` (finite values that floor to ≥1), else the default. */
 export const resolveHfEnvMaxAttempts = (): number => {
   const envMaxAttempts = Number(process.env.HF_MAX_ATTEMPTS);
-  return Number.isFinite(envMaxAttempts) && envMaxAttempts > 0
-    ? Math.min(Math.floor(envMaxAttempts), HF_MAX_ATTEMPTS_CAP)
-    : HF_MAX_ATTEMPTS;
+  if (!Number.isFinite(envMaxAttempts)) return HF_MAX_ATTEMPTS;
+  const attempts = Math.floor(envMaxAttempts);
+  return attempts >= 1 ? Math.min(attempts, HF_MAX_ATTEMPTS_CAP) : HF_MAX_ATTEMPTS;
 };
 
 /**
@@ -238,8 +238,8 @@ export async function withHfDownloadRetry<T>(
   // Upper bounds are clamped to prevent accidental runaway configuration:
   //   - timeoutMs is capped at HF_MAX_TIMEOUT_MS (30 min)
   //   - maxAttempts is floored (fractional values → integer) and capped at
-  //     HF_MAX_ATTEMPTS_CAP (10).  Values ≤ 0, NaN, or Infinity fall back to
-  //     the built-in defaults.
+  //     HF_MAX_ATTEMPTS_CAP (10).  Values that floor below 1, NaN, or Infinity
+  //     fall back to the built-in defaults.
   const {
     maxAttempts = resolveHfEnvMaxAttempts(),
     baseDelayMs = HF_BASE_DELAY_MS,
