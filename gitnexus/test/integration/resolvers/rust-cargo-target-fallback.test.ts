@@ -5,6 +5,48 @@ import path from 'node:path';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 
 describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
+  it('an unrelated import cannot revive a rejected crate-root candidate', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-unrelated-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n',
+        'src/lib.rs': 'use crate::helper; use std::fmt; pub fn caller() { helper(); }',
+        'src/main.rs': 'pub fn helper() {}',
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(result.graph.getNode('Function:src/main.rs:helper')).toBeDefined();
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it.each(['use target_boundary::helper;', 'use target_boundary::*;'])(
+    'preserves an explicit library import from an integration target: %s',
+    async (source) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-library-'));
+      try {
+        writeFixtureRepo(dir, {
+          'Cargo.toml': '[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n',
+          'src/lib.rs': 'pub fn helper() {}',
+          'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
+        });
+        const result = await runPipelineFromRepo(dir, () => {});
+        const calls = getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        );
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.targetFilePath).toBe('src/lib.rs');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    },
+  );
+
   it.each([
     'tests/helper.rs',
     'benches/helper.rs',

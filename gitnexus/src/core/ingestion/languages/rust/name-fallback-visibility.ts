@@ -158,12 +158,11 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       )
         continue;
     }
-    if (candidateModule === '') return true;
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
     if (imp.kind === 'wildcard') {
-      if (modulePathReaches(usePath, candidateModule)) return true;
+      if (candidateModule === '' || modulePathReaches(usePath, candidateModule)) return true;
       continue;
     }
     if (!('localName' in imp) || imp.localName !== ctx.site.name) continue;
@@ -173,7 +172,10 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // parent-path match used to accept every item of `a` on its strength.
     // An alias authorizes only the local spelling checked above.
     if (importedNameOf(imp) !== candidateName) continue;
-    if (modulePathReaches(usePath, candidateModule)) return true;
+    // A different target may import the library crate's root exports. Even
+    // when that root has no path segment to compare, a named import must name
+    // THIS callable: `use std::fmt` cannot revive a rejected `crate::helper`.
+    if (candidateModule === '' || modulePathReaches(usePath, candidateModule)) return true;
     const parent = usePath.slice(0, Math.max(0, usePath.lastIndexOf('::')));
     if (parent !== '' && modulePathReaches(parent, candidateModule)) return true;
   }
