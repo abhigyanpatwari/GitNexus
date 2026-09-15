@@ -16,6 +16,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 3. **Follow the skill's workflow and checklist**
 
 > If step 1 warns the index is stale, run `node .gitnexus/run.cjs analyze` in the terminal first.
+> On `query` / `context` / `impact` / `cypher`, read `staleness.status` and `staleness.branch`/`lastCommit` before using the answer. Re-analyze only for `behind` or `diverged`.
 
 ## Skills
 
