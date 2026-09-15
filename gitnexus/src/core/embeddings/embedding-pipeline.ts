@@ -1010,6 +1010,8 @@ export const semanticSearch = async (
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
+  // determinism: probe — existence only. Only `exists.length` is read; which
+  // row LIMIT 1 returns cannot change whether the table is empty.
   const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
   if (!exists.length) {
     return [];
