@@ -169,6 +169,56 @@ describe('HTTP embedding backend', () => {
       expect(result.length).toBe(1024);
     });
 
+    it('uses output_dimension for Voyage document batches', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'https://api.voyageai.com/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'voyage-code-3';
+      process.env.GITNEXUS_EMBEDDING_API_KEY = 'test-key';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '2048';
+
+      const vec2048 = Array.from({ length: 2048 }, (_, i) => i / 2048);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec2048 }] }),
+        }),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const result = await embedText('test text');
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body).toMatchObject({
+        input: ['test text'],
+        model: 'voyage-code-3',
+        output_dimension: 2048,
+      });
+      expect(body.dimensions).toBeUndefined();
+      expect(result.length).toBe(2048);
+    });
+
+    it('does not treat a voyageai.com lookalike host as Voyage', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'https://voyageai.com.example/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '512';
+
+      const vec512 = Array.from({ length: 512 }, (_, i) => i / 512);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec512 }] }),
+        }),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      await embedText('test text');
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.dimensions).toBe(512);
+      expect(body.output_dimension).toBeUndefined();
+    });
+
     it('can validate custom dims without forwarding dimensions to strict backends', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'bge-m3';
@@ -213,6 +263,30 @@ describe('HTTP embedding backend', () => {
       const body = JSON.parse((fetch as any).mock.calls[0][1].body);
       expect(body.dimensions).toBe(512);
       expect(result.length).toBe(512);
+    });
+
+    it('uses output_dimension for Voyage on the single-query path', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'https://voyageai.com/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'voyage-code-3';
+      process.env.GITNEXUS_EMBEDDING_API_KEY = 'test-key';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '2048';
+
+      const vec2048 = Array.from({ length: 2048 }, (_, i) => i / 2048);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec2048 }] }),
+        }),
+      );
+
+      const mod = await import('../../src/mcp/core/embedder.js');
+      const result = await mod.embedQuery('query text');
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.output_dimension).toBe(2048);
+      expect(body.dimensions).toBeUndefined();
+      expect(result.length).toBe(2048);
     });
 
     it('can omit dimensions on the single-query path while validating custom dims', async () => {
