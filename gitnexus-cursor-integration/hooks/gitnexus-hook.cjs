@@ -339,6 +339,16 @@ function resolveCliPath() {
   }
 }
 
+// The Cursor host enforces hooks.json's postToolUse `timeout` (10s) against
+// the whole hook process. The npx fallback used to add a flat +5s on top of
+// the inner budget (7000 → 12000ms), past the host deadline, so Cursor killed
+// the hook before the child finished and the augmentation was always lost on
+// cold-start machines — the exact scenario the fallback exists for. Cap the
+// fallback under the host budget, leaving headroom for node startup and the
+// final stdout write.
+const CURSOR_HOST_BUDGET_MS = 10000;
+const CURSOR_NPX_HEADROOM_MS = 2000;
+
 function runGitNexusCli(cliPath, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
   if (cliPath) {
@@ -350,9 +360,13 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
+  const npxTimeout = Math.min(
+    timeout + 5000,
+    CURSOR_HOST_BUDGET_MS - CURSOR_NPX_HEADROOM_MS,
+  );
   return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
     encoding: 'utf-8',
-    timeout: timeout + 5000,
+    timeout: npxTimeout,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
