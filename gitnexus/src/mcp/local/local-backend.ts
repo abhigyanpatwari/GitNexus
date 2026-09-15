@@ -62,6 +62,7 @@ import {
 } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
+import { reapEmbeddingSidecarSafely } from '../../core/embeddings/embedding-sidecar-reap.js';
 import {
   DEFAULT_MCP_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
@@ -111,6 +112,7 @@ import {
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingSidecarAbortMessage,
   isMissingLocalEmbeddingStackMessage,
 } from '../../core/embeddings/runtime-support.js';
 import {
@@ -2962,9 +2964,10 @@ export class LocalBackend {
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+    const vectorDegraded = { reason: undefined as string | undefined };
     const [bm25SearchResult, semanticResults] = await Promise.all([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
-      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
+      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
 
     // Guard against undefined results (#1489) — when FTS is entirely
@@ -3427,6 +3430,9 @@ export class LocalBackend {
           'Keyword results are unaffected.',
       );
     }
+    if (vectorDegraded.reason) {
+      warnings.push(vectorDegraded.reason);
+    }
     if (enrichmentDegraded) {
       warnings.push(
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
@@ -3569,7 +3575,12 @@ export class LocalBackend {
   /**
    * Semantic vector search helper
    */
-  private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
+  private async semanticSearch(
+    repo: RepoHandle,
+    query: string,
+    limit: number,
+    degraded?: { reason?: string },
+  ): Promise<any[]> {
     // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
     // A local flag, not a re-read of the map: the map may still hold an earlier
     // call's width, and the catch below must only clear an entry it did not set.
@@ -3735,18 +3746,21 @@ export class LocalBackend {
       // the width IS still the live one). Clearing only in the former case
       // keeps the recorded width a fact rather than a leftover (#2798).
       if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
-      // Embeddings disabled is the common, silent case. But a pruned or
-      // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
+      // Embeddings disabled is the common, silent case. But a missing or
+      // Node-unloadable local stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
       // (the exact silent-degradation mode #2370 exists to fix). Emitted once per
       // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
       // fallback above). All other errors stay silent, as before.
       const message = err instanceof Error ? err.message : '';
-      if (
-        !this.warnedMissingEmbeddingStack &&
-        (isMissingLocalEmbeddingStackMessage(message) ||
-          isLocalEmbeddingRuntimeBlockerMessage(message))
-      ) {
+      const isDegradedVectorError =
+        isMissingLocalEmbeddingStackMessage(message) ||
+        isLocalEmbeddingRuntimeBlockerMessage(message) ||
+        isLocalEmbeddingSidecarAbortMessage(message);
+      if (isDegradedVectorError) {
+        if (degraded) degraded.reason = message;
+      }
+      if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
         logger.warn(`GitNexus [query:vector]: ${message}`);
       }
@@ -9387,14 +9401,15 @@ export class LocalBackend {
   }
 
   async disconnect(): Promise<void> {
-    await closeLbug(); // close all connections
-    // Note: we intentionally do NOT call disposeEmbedder() here.
-    // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
-    // and importing the embedder module on Node v24+ crashes if onnxruntime
-    // was never loaded during the session. Since process.exit(0) follows
-    // immediately after disconnect(), the OS reclaims everything. See #38, #89.
-    this.repos.clear();
-    this.contextCache.clear();
-    this.initializedRepos.clear();
+    try {
+      await closeLbug(); // close all connections
+    } finally {
+      // Reap even when Ladybug close rejects. Do not run ONNX dispose in this
+      // process (native dispose can SIGSEGV). The reap helper does not load ONNX.
+      await reapEmbeddingSidecarSafely();
+      this.repos.clear();
+      this.contextCache.clear();
+      this.initializedRepos.clear();
+    }
   }
 }
