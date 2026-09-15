@@ -441,7 +441,10 @@ describe('LocalBackend.callTool', () => {
         direction: 'upstream',
       });
 
-      expect(result).toEqual({ status: 'normalized' });
+      // toMatchObject, not toEqual: since #3291 every hot-read-tool response
+      // also carries the `staleness` ref field. This test is about parameter
+      // normalization, so it pins the payload it cares about and ignores it.
+      expect(result).toMatchObject({ status: 'normalized' });
       const dispatched = impactSpy.mock.calls[0][1] as Record<string, unknown>;
       expect(dispatched.target).toBe('validate');
       expect(dispatched).not.toHaveProperty('name');
@@ -459,7 +462,8 @@ describe('LocalBackend.callTool', () => {
       file: ' src/auth.ts ',
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     const dispatched = contextSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(dispatched.file_path).toBe('src/auth.ts');
     expect(dispatched).not.toHaveProperty('file');
@@ -476,7 +480,8 @@ describe('LocalBackend.callTool', () => {
       file: undefined,
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
   });
 
@@ -5295,11 +5300,20 @@ describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
       branch: 'x',
     });
 
-    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
-    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
-    // Branch index (different lbugPath + lastCommit) is current; it must NOT
-    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
-    expect(branchRes).not.toHaveProperty('staleness');
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> counted gap reported.
+    expect(flatRes).toMatchObject({
+      staleness: { status: 'behind', commitsBehind: 5, lastCommit: 'FLATSHA' },
+    });
+    // Branch index (different lbugPath + lastCommit) is current. Since #3291 the
+    // field rides on every response, so absence can no longer be the proof; what
+    // shows the flat handle's cached entry was NOT reused (the pre-fix
+    // repoPath-keyed bug) is that this one reports its OWN commit and its own
+    // status, with no trace of the flat handle's counted gap.
+    expect(branchRes).toMatchObject({
+      staleness: { status: 'current', lastCommit: 'BRANCHSHA' },
+    });
+    const branchStaleness = (branchRes as { staleness: { commitsBehind?: number } }).staleness;
+    expect(branchStaleness.commitsBehind).toBeUndefined();
   });
 });
 

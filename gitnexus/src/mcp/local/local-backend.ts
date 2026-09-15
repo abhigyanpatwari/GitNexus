@@ -105,6 +105,7 @@ import {
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import {
   stalenessPayload,
+  type IndexedRef,
   type StalenessInfo,
   type StalenessPayload,
 } from '../../core/staleness-status.js';
@@ -1461,18 +1462,29 @@ function canCarryStaleness(result: unknown): result is Record<string, unknown> {
 }
 
 /**
- * #2655: attach a non-blocking `staleness` signal to a tool result when the
- * index is not at HEAD, in the same {@link stalenessPayload} shape `list_repos`
- * returns. Only ever ADDS a field to a carryable object result (see
- * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ * #2655: attach a non-blocking `staleness` signal to a tool result. Only ever
+ * ADDS a field to a carryable object result (see {@link canCarryStaleness}) —
+ * it never changes an existing result's shape.
  *
- * `diverged` is attached: it is a positive finding that the index is not at
- * HEAD, only uncountable. `unknown` is not — these are the hot read tools, and a
- * `--skip-git` folder has no history to measure, so it would ride on every
- * response as noise rather than signal (#3256).
+ * #3291: `ref` names the index the answer came from. Supplying it switches the
+ * payload to the ref-carrying form, which reports every status — including
+ * `current` and `unknown` — because that one added key is the only place a tool
+ * result can say WHICH index answered. Absence used to be the freshness signal
+ * here; it could not distinguish a current index of the default branch from a
+ * current index of some feature branch, since `current` is a statement about a
+ * ref rather than about the repository.
+ *
+ * With no `ref` the pre-#3291 behaviour is unchanged: absent for `current`,
+ * `diverged` attached as a positive finding that the index is not at HEAD, and
+ * `unknown` withheld as noise (#3256). A missing `info` still attaches nothing
+ * either way, which is what keeps a failed freshness probe non-fatal.
  */
-export function attachToolStaleness(result: unknown, info: StalenessInfo | undefined): unknown {
-  const staleness = stalenessPayload(info);
+export function attachToolStaleness(
+  result: unknown,
+  info: StalenessInfo | undefined,
+  ref?: IndexedRef,
+): unknown {
+  const staleness = stalenessPayload(info, ref ? { ref } : {});
   if (!staleness || !canCarryStaleness(result)) {
     return result;
   }
@@ -2667,15 +2679,27 @@ export class LocalBackend {
    * skipping the `git` spawn entirely for results that can't carry it (error
    * envelopes, arrays, non-objects — see {@link canCarryStaleness}) so an
    * error-returning call pays nothing.
+   *
+   * #3291: the ref comes straight off the already-resolved handle, so naming
+   * the index costs no extra I/O — no git spawn, no metadata read, and the
+   * `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
+   * and is legitimately absent for a detached HEAD or a legacy index; the
+   * always-present `lastCommit` is what identifies the index in that case.
    */
   private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
     // evict-on-reject in `stalenessForTool`, a transient failure also can't
-    // poison the TTL cache entry (#2655 review F1).
+    // poison the TTL cache entry (#2655 review F1). A rejection leaves `info`
+    // undefined, and the builder returns nothing for that even with a ref, so
+    // the degraded path still attaches no field.
     const staleness = await this.stalenessForTool(repo).catch(() => undefined);
-    return attachToolStaleness(result, staleness);
+    return attachToolStaleness(result, staleness, {
+      branch: repo.branch,
+      lastCommit: repo.lastCommit,
+      indexedAt: repo.indexedAt,
+    });
   }
 
   /**
