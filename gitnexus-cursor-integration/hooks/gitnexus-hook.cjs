@@ -360,10 +360,7 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  const npxTimeout = Math.min(
-    timeout + 5000,
-    CURSOR_HOST_BUDGET_MS - CURSOR_NPX_HEADROOM_MS,
-  );
+  const npxTimeout = Math.min(timeout + 5000, CURSOR_HOST_BUDGET_MS - CURSOR_NPX_HEADROOM_MS);
   return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
     encoding: 'utf-8',
     timeout: npxTimeout,
