@@ -151,6 +151,19 @@ describe('getActiveProviderConfig', () => {
     expect(config!.provider).toBe('deepseek');
   });
 
+  it('returns config for orcarouter when API key is set', () => {
+    const settings = loadSettings();
+    settings.activeProvider = 'orcarouter';
+    settings.orcarouter = { ...settings.orcarouter, apiKey: 'sk-orca-123' };
+    saveSettings(settings);
+
+    const config = getActiveProviderConfig();
+    expect(config).not.toBeNull();
+    expect(config!.provider).toBe('orcarouter');
+    expect(config!.baseUrl).toBe('https://api.orcarouter.ai/v1');
+    expect(config!.model).toBe('orcarouter/auto');
+  });
+
   it('returns the regional endpoint and thinking mode for MiniMax', () => {
     const settings = loadSettings();
     settings.activeProvider = 'minimax';
@@ -175,6 +188,15 @@ describe('getActiveProviderConfig', () => {
     const settings = loadSettings();
     settings.activeProvider = 'openrouter';
     settings.openrouter = { ...settings.openrouter, apiKey: '  ' };
+    saveSettings(settings);
+
+    expect(getActiveProviderConfig()).toBeNull();
+  });
+
+  it('returns null for orcarouter with empty API key', () => {
+    const settings = loadSettings();
+    settings.activeProvider = 'orcarouter';
+    settings.orcarouter = { ...settings.orcarouter, apiKey: '  ' };
     saveSettings(settings);
 
     expect(getActiveProviderConfig()).toBeNull();
@@ -207,6 +229,7 @@ describe('getProviderDisplayName', () => {
     expect(getProviderDisplayName('ollama')).toBe('Ollama (Local)');
     expect(getProviderDisplayName('openrouter')).toBe('OpenRouter');
     expect(getProviderDisplayName('deepseek')).toBe('DeepSeek');
+    expect(getProviderDisplayName('orcarouter')).toBe('OrcaRouter');
   });
 });
 
@@ -217,6 +240,7 @@ describe('getAvailableModels', () => {
     expect(getAvailableModels('anthropic')).toContain('claude-sonnet-4-20250514');
     expect(getAvailableModels('deepseek')).toContain('deepseek-v4-flash');
     expect(getAvailableModels('minimax')).toEqual([...MINIMAX_MODEL_IDS]);
+    expect(getAvailableModels('orcarouter')).toContain('orcarouter/auto');
   });
 
   it('describes MiniMax model input and thinking capabilities', () => {
