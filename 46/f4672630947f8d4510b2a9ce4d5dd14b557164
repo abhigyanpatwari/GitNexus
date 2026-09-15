@@ -1,0 +1,22 @@
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_0632e66b8ff4eb 1,14,344-373
+  s_fdbdebc2260a4a::t_9455b80d74cf7d 374
+gitnexus/src/core/ingestion/languages/rust/cargo-targets.ts
+  s_fdbdebc2260a4a::t_0632e66b8ff4eb 10,195-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "46f4672630947f8d4510b2a9ce4d5dd14b557164",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
