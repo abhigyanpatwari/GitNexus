@@ -18,7 +18,6 @@ import * as pool from '../../src/core/lbug/pool-adapter.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import * as ftsIndexes from '../../src/core/search/fts-indexes.js';
-import * as checkpoints from '../../src/core/lbug/wal-checkpoint-driver.js';
 import { batchInsertEmbeddings } from '../../src/core/embeddings/embedding-pipeline.js';
 import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 
@@ -31,6 +30,87 @@ afterEach(async () => {
 });
 
 describe('persisted XAML declarations (#3202)', () => {
+  it('bounds incremental COPY threads and restores the setting without dropping untouched FTS indexes', async () => {
+    const repo = await setupMiniRepo();
+    const home = await createTempDir();
+    fixtures.push(repo, home);
+    vi.stubEnv('GITNEXUS_HOME', home.dbPath);
+    const file = path.join(repo.dbPath, 'Threaded.xaml');
+    const document = (name: string) =>
+      `<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="${name}" />`;
+    await fs.writeFile(file, document('OriginalThreadedView'));
+    const options = { skipAgentsMd: true, registryName: 'copy-thread-fixture' };
+    const originalCopy = adapter.loadGraphToLbug;
+    const copyThreads: number[] = [];
+    vi.spyOn(adapter, 'loadGraphToLbug').mockImplementation(async (...args) => {
+      const rows = await adapter.executeQuery("CALL current_setting('threads') RETURN *");
+      copyThreads.push(Number(rows[0].threads));
+      return originalCopy(...args);
+    });
+    await runFullAnalysis(repo.dbPath, options, { onProgress() {} });
+    const statements = vi.spyOn(adapter, 'executeQuery');
+    const drops = vi.spyOn(ftsIndexes, 'dropSearchFTSIndexes');
+    await fs.writeFile(file, document('ChangedThreadedView'));
+    const result = await runFullAnalysis(repo.dbPath, options, { onProgress() {} });
+    expect(result.incrementalStats?.writeMode).toBe('incremental');
+    expect(result.ftsSkipped).toBe(false);
+    expect(copyThreads).toEqual([expect.any(Number), 1]);
+    expect(copyThreads[0]).toBeGreaterThan(0);
+    expect(
+      statements.mock.calls
+        .map(([query]) => query)
+        .filter((query) => query.startsWith('CALL threads=')),
+    ).toEqual(['CALL threads=1', `CALL threads=${copyThreads[0]}`]);
+    expect(drops).toHaveBeenCalledOnce();
+    const tables = drops.mock.calls[0][2];
+    expect(tables).toBeDefined();
+    expect(tables?.has('Section')).toBe(true);
+    expect(tables?.has('Function')).toBe(false);
+    const { lbugPath } = getStoragePaths(repo.dbPath);
+    await initLbug(lbugPath);
+    expect((await searchFTSFromLbug('ChangedThreadedView')).results).toEqual(
+      expect.arrayContaining([expect.objectContaining({ filePath: 'Threaded.xaml' })]),
+    );
+    expect((await searchFTSFromLbug('OriginalThreadedView')).results).toEqual([]);
+    const rows = await adapter.executeQuery('CALL SHOW_INDEXES() RETURN *');
+    expect(rows.some((row) => adapter.indexRowName(row) === 'function_fts')).toBe(true);
+  }, 180_000);
+
+  it('closes the capped COPY connection and preserves the dirty receipt on failure', async () => {
+    const repo = await setupMiniRepo();
+    const home = await createTempDir();
+    fixtures.push(repo, home);
+    vi.stubEnv('GITNEXUS_HOME', home.dbPath);
+    const file = path.join(repo.dbPath, 'CopyFailure.xaml');
+    await fs.writeFile(
+      file,
+      '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BeforeFailure" />',
+    );
+    const options = { skipAgentsMd: true, registryName: 'copy-thread-failure-fixture' };
+    await runFullAnalysis(repo.dbPath, options, { onProgress() {} });
+    const { storagePath } = getStoragePaths(repo.dbPath);
+    const before = await loadMeta(storagePath);
+    expect(before).not.toBeNull();
+    const failure = new Error('Injected incremental COPY failure');
+    const copy = vi.spyOn(adapter, 'loadGraphToLbug').mockImplementationOnce(async () => {
+      const rows = await adapter.executeQuery("CALL current_setting('threads') RETURN *");
+      expect(Number(rows[0].threads)).toBe(1);
+      throw failure;
+    });
+    await fs.writeFile(
+      file,
+      '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="AfterFailure" />',
+    );
+    await expect(runFullAnalysis(repo.dbPath, options, { onProgress() {} })).rejects.toBe(failure);
+    expect(copy).toHaveBeenCalledOnce();
+    expect(adapter.isLbugReady()).toBe(false);
+    expect(await loadMeta(storagePath)).toMatchObject({
+      incrementalInProgress: { phase: 'load-graph' },
+      indexedAt: before?.indexedAt,
+      fileHashes: before?.fileHashes,
+    });
+  }, 180_000);
+
   it.each(['node-id', 'file-path'])(
     'preserves existing code symbol types through %s lookup',
     async (lookup) => {
@@ -88,7 +168,7 @@ describe('persisted XAML declarations (#3202)', () => {
     180_000,
   );
 
-  it('keeps graph and embedding rows intact when the post-drop checkpoint fails', async () => {
+  it('keeps graph and embedding rows intact when dropping FTS indexes fails', async () => {
     const repo = await setupMiniRepo();
     const home = await createTempDir();
     fixtures.push(repo, home);
@@ -132,15 +212,11 @@ describe('persisted XAML declarations (#3202)', () => {
 
     const originalDrop = ftsIndexes.dropSearchFTSIndexes;
     let dropped = false;
+    const failure = new Error('Injected FTS index drop failure');
     vi.spyOn(ftsIndexes, 'dropSearchFTSIndexes').mockImplementation(async (...args) => {
       await originalDrop(...args);
       dropped = true;
-    });
-    const failure = new Error('Injected post-drop checkpoint failure');
-    const originalCheckpoint = checkpoints.checkpointOnce;
-    vi.spyOn(checkpoints, 'checkpointOnce').mockImplementation(async () => {
-      if (dropped) throw failure;
-      await originalCheckpoint();
+      throw failure;
     });
     const deletes = vi.spyOn(adapter, 'deleteNodesForFiles');
     const copies = vi.spyOn(adapter, 'loadGraphToLbug');

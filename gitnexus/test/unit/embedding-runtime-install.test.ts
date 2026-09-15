@@ -3,6 +3,17 @@ import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
+
+const { mkdirSyncMock, writeFileSyncMock } = vi.hoisted(() => ({
+  mkdirSyncMock: vi.fn(),
+  writeFileSyncMock: vi.fn(),
+}));
+
+vi.mock('node:fs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs')>()),
+  mkdirSync: (...args: unknown[]) => mkdirSyncMock(...args),
+  writeFileSync: (...args: unknown[]) => writeFileSyncMock(...args),
+}));
 import {
   ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
   buildEmbeddingInstallCommand,
@@ -43,6 +54,8 @@ const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 
 beforeEach(() => {
   for (const key of ENV_KEYS) delete process.env[key];
+  mkdirSyncMock.mockReset();
+  writeFileSyncMock.mockReset();
 });
 
 afterEach(() => {
@@ -76,16 +89,23 @@ describe('getEmbeddingRuntimeDir', () => {
 });
 
 describe('getEmbeddingStackSpecs', () => {
-  it('mirrors the optionalDependencies manifest exactly (drift guard, #2370)', () => {
+  it('mirrors gitnexusEmbeddingStack exactly and keeps the packages off optionalDependencies', () => {
     const manifest = require('../../package.json') as {
-      optionalDependencies: Record<string, string>;
+      gitnexusEmbeddingStack: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+      dependencies: Record<string, string>;
+      overrides: Record<string, unknown>;
     };
     expect(getEmbeddingStackSpecs()).toEqual({
-      '@huggingface/transformers': manifest.optionalDependencies['@huggingface/transformers'],
-      'onnxruntime-node': manifest.optionalDependencies['onnxruntime-node'],
+      '@huggingface/transformers': manifest.gitnexusEmbeddingStack['@huggingface/transformers'],
+      'onnxruntime-node': manifest.gitnexusEmbeddingStack['onnxruntime-node'],
     });
-    expect(manifest.optionalDependencies['@huggingface/transformers']).toBeDefined();
-    expect(manifest.optionalDependencies['onnxruntime-node']).toBeDefined();
+    expect(manifest.gitnexusEmbeddingStack['@huggingface/transformers']).toBeDefined();
+    expect(manifest.gitnexusEmbeddingStack['onnxruntime-node']).toBeDefined();
+    expect(manifest.optionalDependencies?.['@huggingface/transformers']).toBeUndefined();
+    expect(manifest.optionalDependencies?.['onnxruntime-node']).toBeUndefined();
+    expect(manifest.dependencies['onnxruntime-common']).toBeDefined();
+    expect(JSON.stringify(manifest.overrides)).not.toContain('$onnxruntime-node');
   });
 });
 
@@ -121,9 +141,18 @@ describe('buildEmbeddingInstallCommand', () => {
 });
 
 describe('resolveEmbeddingRuntime', () => {
-  it('finds the normally-installed stack (package source wins over the prefix)', () => {
+  it('returns package when the leftover tree is present, otherwise null on a clean prefix', () => {
     process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/nonexistent/for/this/test';
-    expect(resolveEmbeddingRuntime()).toEqual({ source: 'package' });
+    // After U4 a default install has no stack. A leftover 1.6.12 package-first
+    // tree in this workspace's node_modules still wins until a clean reinstall.
+    let leftoverPackageTree = true;
+    try {
+      require.resolve('@huggingface/transformers');
+      require.resolve('onnxruntime-node');
+    } catch {
+      leftoverPackageTree = false;
+    }
+    expect(resolveEmbeddingRuntime()).toEqual(leftoverPackageTree ? { source: 'package' } : null);
   });
 });
 
@@ -188,6 +217,37 @@ describe('quoteWin32Arg', () => {
   it('composeWin32NpmCommand leaves npm unquoted and quotes the args', () => {
     const line = composeWin32NpmCommand(['install', '--prefix', 'C:\\a b\\rt']);
     expect(line).toBe('npm install --prefix "C:\\a b\\rt"');
+  });
+});
+
+describe('installEmbeddingRuntime prefix manifest', () => {
+  it('writes pins and overrides to prefix package.json before npm spawn', async () => {
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = resolve('/custom/runtime');
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const pending = installEmbeddingRuntime({}, 10_000);
+    expect(mkdirSyncMock).toHaveBeenCalled();
+    expect(writeFileSyncMock).toHaveBeenCalled();
+    const [pathArg, body] = writeFileSyncMock.mock.calls[0] as [string, string];
+    expect(pathArg).toBe(join(resolve('/custom/runtime'), 'package.json'));
+    const written = JSON.parse(body) as {
+      dependencies: Record<string, string>;
+      overrides: {
+        'adm-zip': string;
+        sharp: string;
+        '@huggingface/transformers': { 'onnxruntime-node': string };
+      };
+    };
+    const specs = getEmbeddingStackSpecs();
+    expect(written.dependencies).toEqual(specs);
+    expect(written.overrides['adm-zip']).toBe('>=0.6.0');
+    expect(written.overrides.sharp).toBe('>=0.35.0');
+    expect(written.overrides['@huggingface/transformers']['onnxruntime-node']).toBe(
+      specs['onnxruntime-node'],
+    );
+    expect(spawnMock).toHaveBeenCalled();
+    child.emit('close', 0, null);
+    await pending;
   });
 });
 

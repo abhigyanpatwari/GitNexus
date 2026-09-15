@@ -318,6 +318,8 @@ export interface ModelProgress {
   total?: number;
 }
 
+export type ModelProgressCallback = (progress: ModelProgress) => void;
+
 export interface ChunkSearchRow {
   nodeId: string;
   chunkIndex: number;

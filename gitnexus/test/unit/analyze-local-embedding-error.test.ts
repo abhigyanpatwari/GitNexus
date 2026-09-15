@@ -15,6 +15,17 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { getLocalEmbeddingRuntimeBlocker } from '../../src/core/embeddings/runtime-support.js';
+import type { LoggerCapture } from '../../src/core/logger.js';
+
+async function withCapturedLogger<T>(fn: (cap: LoggerCapture) => Promise<T>): Promise<T> {
+  const { _captureLogger } = await import('../../src/core/logger.js');
+  const cap = _captureLogger();
+  try {
+    return await fn(cap);
+  } finally {
+    cap.restore();
+  }
+}
 
 const runFullAnalysisMock = vi.fn();
 // Controllable so the dual-match scenario can force the network heuristic to
@@ -101,38 +112,32 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
   it('routes the blocker to a clean local-embedding-unsupported message (exit 1)', async () => {
     runFullAnalysisMock.mockRejectedValue(new Error(blockerMessage));
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    await analyzeCommand(undefined, { embeddings: true });
+      expect(process.exitCode).toBe(1);
 
-    expect(process.exitCode).toBe(1);
-
-    const records = cap.records();
-    const blockerRecord = records.find((r) => r.recoveryHint === 'local-embedding-unsupported');
-    expect(blockerRecord).toBeDefined();
-    expect(typeof blockerRecord?.msg === 'string' && blockerRecord.msg).toMatch(/macOS Intel/);
-
-    cap.restore();
+      const records = cap.records();
+      const blockerRecord = records.find((r) => r.recoveryHint === 'local-embedding-unsupported');
+      expect(blockerRecord).toBeDefined();
+      expect(typeof blockerRecord?.msg === 'string' && blockerRecord.msg).toMatch(/macOS Intel/);
+    });
   });
 
   it('does NOT fall through to the module-not-found "installation may be corrupt" hint', async () => {
     runFullAnalysisMock.mockRejectedValue(new Error(blockerMessage));
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    await analyzeCommand(undefined, { embeddings: true });
-
-    const records = cap.records();
-    const corruptRecord = records.find(
-      (r) => typeof r.msg === 'string' && r.msg.includes('installation may be corrupt'),
-    );
-    expect(corruptRecord).toBeUndefined();
-
-    cap.restore();
+      const records = cap.records();
+      const corruptRecord = records.find(
+        (r) => typeof r.msg === 'string' && r.msg.includes('installation may be corrupt'),
+      );
+      expect(corruptRecord).toBeUndefined();
+    });
   });
 
   it('wins over the HF-download branch even when isHfDownloadFailure also matches (R4 ordering)', async () => {
@@ -142,20 +147,17 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
     isHfDownloadFailureMock.mockReturnValue(true);
     runFullAnalysisMock.mockRejectedValue(new Error(blockerMessage));
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    await analyzeCommand(undefined, { embeddings: true });
+      expect(process.exitCode).toBe(1);
 
-    expect(process.exitCode).toBe(1);
-
-    const records = cap.records();
-    expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(true);
-    // The HF-download branch must NOT have fired.
-    expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
-
-    cap.restore();
+      const records = cap.records();
+      expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(true);
+      // The HF-download branch must NOT have fired.
+      expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
+    });
   });
 
   it('does NOT route unrelated errors through the local-embedding branch', async () => {
@@ -163,18 +165,15 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
       new Error('Some unexpected failure unrelated to embeddings'),
     );
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    await analyzeCommand(undefined, { embeddings: true });
+      expect(process.exitCode).toBe(1);
 
-    expect(process.exitCode).toBe(1);
-
-    const records = cap.records();
-    expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(false);
-
-    cap.restore();
+      const records = cap.records();
+      expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(false);
+    });
   });
 });
 
@@ -190,37 +189,58 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
   });
 
+  it('does not spawn npm on darwin/x64 even when the stack is missing', async () => {
+    const orig = { platform: process.platform, arch: process.arch };
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    isPrefixRuntimeLoadableMock.mockReturnValue(true);
+    try {
+      await withCapturedLogger(async (cap) => {
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        await analyzeCommand(undefined, { embeddings: true });
+
+        expect(process.exitCode).toBe(1);
+        expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+        expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(
+          true,
+        );
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: orig.platform, configurable: true });
+      Object.defineProperty(process, 'arch', { value: orig.arch, configurable: true });
+    }
+  });
+
   it('fails fast without installing when nothing is installed and the prefix is unloadable', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue(null);
     isPrefixRuntimeLoadableMock.mockReturnValue(false);
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(undefined, { embeddings: true });
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    expect(process.exitCode).toBe(1);
-    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
-    const record = cap.records().find((r) => r.recoveryHint === 'local-embedding-stack-missing');
-    expect(typeof record?.msg === 'string' && record.msg).toMatch(/module\.registerHooks/);
-    cap.restore();
+      expect(process.exitCode).toBe(1);
+      expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+      const record = cap.records().find((r) => r.recoveryHint === 'local-embedding-stack-missing');
+      expect(typeof record?.msg === 'string' && record.msg).toMatch(/module\.registerHooks/);
+    });
   });
 
   it('fails fast on a resolved-but-unloadable prefix (the previously-uncaught state)', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'runtime-prefix' });
     isPrefixRuntimeLoadableMock.mockReturnValue(false);
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(undefined, { embeddings: true });
+    await withCapturedLogger(async (cap) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    expect(process.exitCode).toBe(1);
-    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
-    expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-stack-missing')).toBe(
-      true,
-    );
-    cap.restore();
+      expect(process.exitCode).toBe(1);
+      expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+      expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-stack-missing')).toBe(
+        true,
+      );
+    });
   });
 
   it('installs with a shorter-than-default timeout when nothing is installed and the prefix is loadable', async () => {
@@ -229,18 +249,17 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
     // Reject afterwards so analyze bails right after the install, isolating the gate.
     runFullAnalysisMock.mockRejectedValue(new Error('stop after install'));
 
-    const { _captureLogger } = await import('../../src/core/logger.js');
-    const cap = _captureLogger();
-    const { ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS } =
-      await import('../../src/core/embeddings/runtime-install.js');
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(undefined, { embeddings: true });
+    await withCapturedLogger(async () => {
+      const { ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS } =
+        await import('../../src/core/embeddings/runtime-install.js');
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+      await analyzeCommand(undefined, { embeddings: true });
 
-    expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
-    // analyze must pass the shorter deadline so a blackholed proxy can't stall
-    // the run for the 10-minute default.
-    const timeoutArg = installEmbeddingRuntimeMock.mock.calls[0][1] as number;
-    expect(timeoutArg).toBe(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS);
-    cap.restore();
+      expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
+      // analyze must pass the shorter deadline so a blackholed proxy can't stall
+      // the run for the 10-minute default.
+      const timeoutArg = installEmbeddingRuntimeMock.mock.calls[0][1] as number;
+      expect(timeoutArg).toBe(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS);
+    });
   });
 });
