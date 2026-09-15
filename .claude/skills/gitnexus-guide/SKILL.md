@@ -116,11 +116,16 @@ When the index is behind that HEAD, the count and hint ride along:
 
 ```jsonc
 { /* …the tool's normal result… */
-  "staleness": { "status": "diverged", "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update." }
+  "staleness": {
+    "status": "diverged", "branch": "main",
+    "lastCommit": "a0c945022d06b8815f93ffd8838df9ed5c08cbc0",
+    "indexedAt": "2026-09-04T20:45:47.481Z", "measuredAgainst": "HEAD",
+    "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update."
+  }
 }
 ```
 
-So: **read `status` before using `commitsBehind`**, and read `branch`/`lastCommit` before assuming which ref the answer describes. `status: "unknown"` means the freshness check could not run at all (a `--skip-git` folder has no history to measure) — the ref is still reported, because which index answered is knowable even when its freshness is not. The field is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When `status` is anything other than `current`, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
+So: **read `status` before using `commitsBehind`**, and read `branch`/`lastCommit` before assuming which ref the answer describes. `status: "unknown"` means the freshness check could not run at all (a `--skip-git` folder has no history to measure) — the ref is still reported, because which index answered is knowable even when its freshness is not. The field is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). Re-run `analyze` only for `behind` or `diverged` — those mean the index is not at this clone's HEAD. `unknown` is unmeasurable, not stale; analyze cannot make it `current` unless git history exists.
 
 `list_repos` and the HTTP repo routes are unchanged: they omit `staleness` entirely for a current index and report the ref through their own top-level `branch` / `lastCommit` / `indexedAt` fields.
 

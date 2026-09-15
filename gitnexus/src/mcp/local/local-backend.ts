@@ -2149,6 +2149,8 @@ export class LocalBackend {
           indexedAt: summary.indexedAt,
           lastCommit: summary.lastCommit,
           stats: summary.stats,
+          // The handle now represents the pin, not the flat slot (#3291).
+          branch: summary.branch,
         };
       }
       // Stale summary (sub-index adopted/deleted): refresh so later calls see

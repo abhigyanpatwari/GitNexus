@@ -5045,6 +5045,28 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(path.basename(handle.lbugPath)).toBe('lbug');
     // The branch handle reports the branch's own commit, not the primary's.
     expect(handle.lastCommit).toBe('featsha');
+    // #3291: the pin's label, not the flat/primary slot — withToolStaleness
+    // copies handle.branch onto the hot-tool payload.
+    expect(handle.branch).toBe('feature/x');
+  });
+
+  it('a pinned-branch tool result names the pin in staleness.branch (#3291)', async () => {
+    // beforeEach clearAllMocks() drops the module-level git-staleness factory
+    // impl; restore a resolving current so withToolStaleness attaches the ref.
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: false,
+      commitsBehind: 0,
+      status: 'current',
+    });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ ok: true });
+    const result = (await backend.callTool('impact', {
+      target: 'doWork',
+      repo: 'multi',
+      branch: 'feature/x',
+    })) as { staleness: { branch?: string; lastCommit?: string } };
+    expect(result.staleness.branch).toBe('feature/x');
+    expect(result.staleness.lastCommit).toBe('featsha');
   });
 
   it('an un-indexed branch throws a clear error', async () => {

@@ -151,7 +151,9 @@ describe('#3291 — tool staleness names the indexed ref', () => {
     // Precondition, measured rather than assumed: the feature-branch clone is
     // freshly analyzed at its own head, and that head is genuinely two commits
     // short of the mainline. Without this the test would pass vacuously.
-    const behindMain = Number(git(branchClone, 'rev-list', '--count', `${branchHead}..origin/main`));
+    const behindMain = Number(
+      git(branchClone, 'rev-list', '--count', `${branchHead}..origin/main`),
+    );
     expect(behindMain).toBe(2);
 
     const resolve = vi.spyOn(backend, 'selectToolRepository');
