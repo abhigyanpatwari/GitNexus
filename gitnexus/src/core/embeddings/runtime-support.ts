@@ -17,7 +17,7 @@
  * (The runtime-install import below only resolves paths — it never loads the
  * embedding stack.)
  */
-import { resolveEmbeddingRuntime } from './runtime-install.js';
+import { isPrefixRuntimeLoadable, resolveEmbeddingRuntime } from './runtime-install.js';
 
 /**
  * Stable lead line of the macOS-Intel blocker message. Also used to recognise
@@ -63,8 +63,9 @@ export const getLocalEmbeddingRuntimeBlocker = (
       '  - Run analyze without --embeddings (all other indexing still works).',
       '  - Point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
       '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
-      '  - Run GitNexus on Linux or in Docker, where the native binding ships.',
-      '  - Run GitNexus on Apple Silicon (darwin/arm64), which ships a binding.',
+      '  - Run GitNexus on Linux or Apple Silicon (darwin/arm64), then',
+      '    `gitnexus embeddings install`. Official CLI Docker images no longer',
+      '    ship onnxruntime-node; bind-mount a prefix or use HTTP.',
       '  - Use a future GitNexus build that restores darwin/x64 ONNX support.',
     ].join('\n');
   }
@@ -87,37 +88,32 @@ export const isLocalEmbeddingRuntimeBlockerMessage = (message: string): boolean 
  * line (see {@link isMissingLocalEmbeddingStackMessage}).
  */
 const LOCAL_EMBEDDING_STACK_MISSING_LEAD =
-  'Local semantic embeddings are unavailable: the optional embedding stack is not installed.';
+  'Local semantic embeddings are unavailable: the local embedding stack is not installed.';
 
 /**
- * The full guidance shown when the optional local embedding stack
- * (`@huggingface/transformers` → `onnxruntime-node`) is missing at runtime.
- *
- * Both packages are `optionalDependencies` (#2370): `onnxruntime-node`'s
- * postinstall downloads CUDA support binaries from api.nuget.org, which fails
- * behind HTTP proxies and regional firewalls (its `global-agent` proxy layer
- * ignores the standard HTTP_PROXY/HTTPS_PROXY vars and rejects 302 redirects).
- * npm then skips the optional subtree instead of failing the whole install —
- * every GitNexus feature except local embeddings keeps working.
+ * Guidance when transformers / onnxruntime-node are not resolvable.
+ * Default npm install no longer fetches those packages. Primary heal is
+ * `gitnexus embeddings install`. A leftover 1.6.12 package-first tree in
+ * gitnexus node_modules is residual until a clean reinstall; `--force`
+ * only refreshes the prefix overrides.
  */
 export const localEmbeddingStackMissingMessage = (): string =>
   [
     LOCAL_EMBEDDING_STACK_MISSING_LEAD,
-    'npm skipped the optional packages @huggingface/transformers / onnxruntime-node',
-    "during install — usually because onnxruntime-node's postinstall could not",
-    'download its CUDA support binaries from api.nuget.org (common behind HTTP',
-    'proxies and regional firewalls, #2370). Everything except local embeddings',
-    'still works.',
+    '@huggingface/transformers and onnxruntime-node are not part of a default',
+    'gitnexus install. Everything except local embeddings still works.',
     '',
     'To enable local embeddings:',
-    '  - Run `gitnexus embeddings install` — fetches the stack on demand through',
-    '    your npm registry config (mirrors and proxies apply; no NuGet download).',
-    '    `gitnexus analyze --embeddings` does this automatically.',
+    '  - Run `gitnexus embeddings install` — fetches the stack through your npm',
+    '    registry config into ~/.gitnexus/embedding-runtime (or',
+    '    GITNEXUS_EMBEDDING_RUNTIME_DIR when set; mirrors and proxies',
+    '    apply; no NuGet download). `gitnexus analyze --embeddings` and',
+    '    `gitnexus embeddings sync` do this automatically.',
     '    Add --cuda on CUDA GPU hosts (behind a proxy, also set',
     '    GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> for the NuGet download).',
-    '  - Or reinstall with the CUDA download skipped (CPU embeddings need no CUDA):',
-    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
-    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+    '  - A leftover 1.6.12 install that still has those packages under',
+    '    gitnexus node_modules is residual. `--force` only refreshes prefix',
+    '    overrides; remove leftover packages with a clean reinstall.',
     '  - Or point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
     '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
   ].join('\n');
@@ -140,12 +136,32 @@ export const localEmbeddingPrefixUnloadableMessage = (): string =>
   [
     LOCAL_EMBEDDING_PREFIX_UNLOADABLE_LEAD,
     'The runtime prefix loads via module.registerHooks, which needs Node',
-    '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Either:',
-    '  - Upgrade Node to a build that has module.registerHooks, or',
-    '  - Reinstall the packages normally (works on every supported Node):',
-    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
-    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+    '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Upgrade this',
+    'Node to a build that has module.registerHooks. Installing the prefix from',
+    'another Node cannot add that API here. A leftover 1.6.12 package-first',
+    'tree still loads without the hook; the prefix path does not.',
   ].join('\n');
+
+export type LocalEmbeddingRuntimeAssessment =
+  | { status: 'blocked'; message: string }
+  | { status: 'prefix-unloadable'; message: string }
+  | { status: 'needs-install' }
+  | { status: 'ready' };
+
+/**
+ * Shared local-runtime preflight for analyze and embeddings-sync.
+ * Callers keep their own error routing (CLI vs thrown Error).
+ */
+export const assessLocalEmbeddingRuntime = (): LocalEmbeddingRuntimeAssessment => {
+  const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
+  if (runtimeBlocker) return { status: 'blocked', message: runtimeBlocker };
+  const resolved = resolveEmbeddingRuntime();
+  if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
+    return { status: 'prefix-unloadable', message: localEmbeddingPrefixUnloadableMessage() };
+  }
+  if (resolved === null) return { status: 'needs-install' };
+  return { status: 'ready' };
+};
 
 /** Module specifiers whose absence means the optional embedding stack was pruned. */
 const EMBEDDING_STACK_SPECIFIERS = ['@huggingface/transformers', 'onnxruntime-node'] as const;
@@ -176,11 +192,26 @@ export const getMissingLocalEmbeddingStackMessage = (err: unknown): string | nul
 export const isMissingLocalEmbeddingStackMessage = (message: string): boolean =>
   message.includes(LOCAL_EMBEDDING_STACK_MISSING_LEAD);
 
+/** Lead line when the embedding sidecar has been marked permanently unavailable. */
+export const LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD =
+  'Local embeddings are unavailable after the sidecar aborted';
+
+/** Lead of `EmbeddingSidecarDeadError` — native abort / unexpected child exit. */
+export const EMBEDDING_SIDECAR_DIED_LEAD = 'Embedding sidecar died';
+
+/**
+ * True when `message` is a sidecar-abort or sidecar-dead error. MCP `query()`
+ * must treat these like a missing stack so agents see the degradation.
+ */
+export const isLocalEmbeddingSidecarAbortMessage = (message: string): boolean =>
+  message.includes(LOCAL_EMBEDDING_SIDECAR_ABORT_LEAD) ||
+  message.includes(EMBEDDING_SIDECAR_DIED_LEAD);
+
 /**
  * True when the optional local embedding stack resolves from this install —
  * either the normally-installed packages or the on-demand runtime prefix.
  * Resolution only — nothing is imported, so this is safe on every platform
  * (including macOS Intel, where *loading* onnxruntime-node would crash).
- * Used by `doctor` to surface a pruned optional install (#2370) up front.
+ * Used by `doctor` to surface a missing local stack (default install excludes it).
  */
 export const isLocalEmbeddingStackInstalled = (): boolean => resolveEmbeddingRuntime() !== null;

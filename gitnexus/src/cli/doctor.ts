@@ -108,12 +108,10 @@ export function localEmbeddingDoctorStatus(opts: {
   if (blocker) {
     return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
   }
-  // The stack is an optionalDependency — npm prunes it when onnxruntime-node's
-  // postinstall can't download its CUDA binaries (proxy/firewall, #2370).
   const resolution = opts.resolution !== undefined ? opts.resolution : resolveEmbeddingRuntime();
   if (resolution === null) {
     return {
-      status: '✗ optional embedding stack not installed',
+      status: '✗ local embedding stack not installed',
       detail: localEmbeddingStackMissingMessage(),
     };
   }

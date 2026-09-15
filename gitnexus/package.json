@@ -35,8 +35,16 @@
     "hooks",
     "scripts",
     "skills",
-    "vendor",
-    "web"
+    "web",
+    "vendor/**/prebuilds/**",
+    "vendor/**/bindings/node/index.js",
+    "vendor/**/src/node-types.json",
+    "vendor/**/package.json",
+    "vendor/**/LICENSE",
+    "vendor/**/README.md",
+    "vendor/leiden/index.cjs",
+    "vendor/leiden/utils.cjs",
+    "vendor/lbug-fts/manifest.json"
   ],
   "scripts": {
     "build": "node scripts/build.js",
@@ -97,7 +105,7 @@
     "tree-sitter-typescript": "^0.23.2",
     "uuid": "^14.0.0"
   },
-  "optionalDependencies": {
+  "gitnexusEmbeddingStack": {
     "@huggingface/transformers": "^4.1.0",
     "onnxruntime-node": "^1.24.0"
   },
@@ -125,10 +133,7 @@
   },
   "overrides": {
     "adm-zip": ">=0.6.0",
-    "sharp": ">=0.35.0",
-    "@huggingface/transformers": {
-      "onnxruntime-node": "$onnxruntime-node"
-    }
+    "sharp": ">=0.35.0"
   },
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
