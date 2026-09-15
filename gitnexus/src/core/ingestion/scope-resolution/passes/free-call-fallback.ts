@@ -74,6 +74,7 @@ export function emitFreeCallFallback(
     /** Per-language veto on a name guess — see
      *  `ScopeResolver.isGlobalNameFallbackPlausible`. */
     readonly isGlobalNameFallbackPlausible?: ScopeResolver['isGlobalNameFallbackPlausible'];
+    readonly resolutionConfig?: unknown;
     /** Raw source lookup handed to `isGlobalNameFallbackPlausible` (optional). */
     readonly sourceTextOf?: (filePath: string) => string | undefined;
     /** When true, `Type(...)` constructor calls link to the Class def
@@ -650,6 +651,7 @@ export function emitFreeCallFallback(
           options.isGlobalNameFallbackPlausible?.({
             callerParsed: parsed,
             candidate: vetoCandidate,
+            resolutionConfig: options.resolutionConfig,
             parsedFileOf: parsedFileByPath(),
             sourceTextOf: options.sourceTextOf,
             site: {
