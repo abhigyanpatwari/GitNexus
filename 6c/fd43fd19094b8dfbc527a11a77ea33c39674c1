@@ -1,0 +1,61 @@
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_fdbdebc2260a4a::t_82a5d3fd831e6a 23,96,111-113
+  s_fdbdebc2260a4a::t_688e6ff3d27e53 114-115,119,150,153-159,161
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_d7c35e997a7e8d 5-9,27-37,46-50,58-62,68-72,85-86,89,94-99,102-106,113-124,126-127,134-136,163-165,185-186,190-196,216-220,223-225,229-236,241-243,245-251,256-261,268-275,279,283-290,294,300-311,314-318,320-322
+  s_fdbdebc2260a4a::t_badc6daf5caf9b 1-4,10-26,38-45,51-57,63-67,73-76,91-93,100-101,107-112,125,128-133,137-143,157-162,181-184,187-189,197-198,215,221-222,226-228,237-240,244,298-299,312-313,319,323-324
+  s_fdbdebc2260a4a::t_5f2e93e2fbd5fa 77-84,87-88,90,178-180
+  s_fdbdebc2260a4a::t_1680e598e48a59 144-145,151,155-156,201-202,206-212
+  s_fdbdebc2260a4a::t_a9a814580d9760 146-150,152-154,166-177
+  s_fdbdebc2260a4a::t_f698d5d309fc4a 199-200,203-205,213-214,252-255,262-267,276-278,280-282,291-293,295-297
+  s_fdbdebc2260a4a::t_ef52260ae8e243 325-343
+gitnexus/src/core/ingestion/languages/rust/scope-resolver.ts
+  s_fdbdebc2260a4a::t_e78e61a52796fa 23,161
+gitnexus/package.json
+  s_fdbdebc2260a4a::t_e78e61a52796fa 95
+gitnexus/src/core/ingestion/languages/rust/cargo-targets.ts
+  s_fdbdebc2260a4a::t_5931782099c3f5 9,35,37-45,50-51,55-59,61-67,147-151,205-209,240
+  s_fdbdebc2260a4a::t_151c17e87978b7 23,36,46-49,199-200,202-204,210-215
+  s_fdbdebc2260a4a::t_5f2e93e2fbd5fa 86-88
+  s_fdbdebc2260a4a::t_badc6daf5caf9b 95,188-189,194
+  s_fdbdebc2260a4a::t_1680e598e48a59 159-161,183-186
+  s_fdbdebc2260a4a::t_6f1048cbffaa7e 220,242-243
+  s_fdbdebc2260a4a::t_a9a814580d9760 162-182,222-224,227,231-234,241
+  s_fdbdebc2260a4a::t_7cdecb396e98b5 145-146,152
+  s_fdbdebc2260a4a::t_82a5d3fd831e6a 1-8,10-22,24-34,52-54,60,68-85,89-94,96-144,153-158,187,190-193,195-198,201,216-219,221,225-226,228-230,235-239,244-254
+gitnexus/test/integration/resolvers/rust-cargo-target-fallback.test.ts
+  s_fdbdebc2260a4a::t_02a627cf1b16b8 1-7,10-13,15,17-18,20-23,67-71
+  s_fdbdebc2260a4a::t_0f861f015a749e 8-9,14,16,19,24-66
+  s_fdbdebc2260a4a::t_785bc2cd7d3875 72-92
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_fdbdebc2260a4a::t_e78e61a52796fa 1105
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_fdbdebc2260a4a::t_e78e61a52796fa 923-924
+gitnexus/src/core/ingestion/languages/rust/cargo-module-files.ts
+  s_fdbdebc2260a4a::t_a9a814580d9760 50,52,56,58,106-109,123-125
+  s_fdbdebc2260a4a::t_8e540c4f74dcb3 79-82,88-91
+  s_fdbdebc2260a4a::t_82a5d3fd831e6a 1-6,31-49,51,53-54,57,59-72,77-78,92-100,103-105,110-112,120-122,126-129
+  s_fdbdebc2260a4a::t_d7c35e997a7e8d 7-30,55,73-76,83-87,113-119
+  s_fdbdebc2260a4a::t_f698d5d309fc4a 101-102
+  s_fdbdebc2260a4a::t_273b8353f7763e 130-131
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_fdbdebc2260a4a::t_e78e61a52796fa 77,654
+gitnexus/package-lock.json
+  s_fdbdebc2260a4a::t_6d63fcf2c6bca4 40,4188-4199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "6cfd43fd19094b8dfbc527a11a77ea33c39674c1",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
