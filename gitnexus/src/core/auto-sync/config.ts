@@ -37,6 +37,8 @@ const REMOTE_PATH_SEGMENT_PATTERN = REMOTE_REPO_NAME_PATTERN;
 export interface AutoSyncProjectConfig {
   localPath: string;
   groupName?: string;
+  /** Explicit opt-in/out. Omitted legacy configs preserve the index's current mode. */
+  pdg?: boolean;
   overwriteLocalChanges: boolean;
   branches: string[];
   remoteUrls: string[];
@@ -159,7 +161,7 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
     );
   }
 
-  const maxAnalyzeTimeoutMs =
+  const defaultAnalyzeTimeoutMs =
     Number.isInteger(interval) &&
     interval >= MIN_SYNC_INTERVAL_MINUTES &&
     interval <= MAX_SYNC_INTERVAL_MINUTES
@@ -167,14 +169,12 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
       : undefined;
   const analyzeTimeoutMs =
     raw.analyze_timeout === undefined
-      ? (maxAnalyzeTimeoutMs ?? 0)
+      ? (defaultAnalyzeTimeoutMs ?? 0)
       : parseDurationMs(raw.analyze_timeout);
   if (!Number.isInteger(analyzeTimeoutMs) || analyzeTimeoutMs <= 0) {
     errors.push('analyze_timeout must be a positive duration such as 30m');
-  } else if (maxAnalyzeTimeoutMs !== undefined && analyzeTimeoutMs > maxAnalyzeTimeoutMs) {
-    errors.push(
-      `analyze_timeout must not exceed half of sync_interval_minutes (${maxAnalyzeTimeoutMs / 60_000}m)`,
-    );
+  } else if (analyzeTimeoutMs > MAX_TIMER_DELAY_MS) {
+    errors.push(`analyze_timeout must not exceed ${MAX_TIMER_DELAY_MS}ms`);
   }
 
   const analyzeFailureThreshold =
@@ -256,10 +256,15 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
         errors.push(`projects[${index}].overwrite_local_changes must be a boolean`);
       }
 
+      if (project.pdg !== undefined && typeof project.pdg !== 'boolean') {
+        errors.push(`projects[${index}].pdg must be a boolean`);
+      }
+
       if (localPath && remoteUrls.length > 0 && branches.length > 0) {
         projects.push({
           localPath,
           groupName,
+          ...(typeof project.pdg === 'boolean' ? { pdg: project.pdg } : {}),
           overwriteLocalChanges: overwriteLocalChanges === true,
           branches,
           remoteUrls,
