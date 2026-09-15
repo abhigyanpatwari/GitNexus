@@ -20,6 +20,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { rustFilesShareCargoTarget } from './cargo-targets.js';
 import {
   modulePathReaches,
   stripExtension,
@@ -92,6 +93,7 @@ function rustUsePathOf(targetRaw: string, callerFilePath: string): string {
 export function rustIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
+  readonly resolutionConfig?: unknown;
   readonly site: {
     readonly name: string;
     readonly rawQualifiedName?: string;
@@ -106,10 +108,15 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   if (ctx.site.rawQualifiedName !== undefined) return true;
 
   const candidateModule = rustModulePathOf(ctx.candidate.filePath);
+  const sharesTarget = rustFilesShareCargoTarget(
+    ctx.resolutionConfig,
+    ctx.callerParsed.filePath,
+    ctx.candidate.filePath,
+  );
   // A candidate whose file maps to no module path (a crate root reduced to '')
   // is not something this rule can speak about; allow the labeled edge rather
   // than refuse on an unanswered question.
-  if (candidateModule === '') return true;
+  if (candidateModule === '' && sharesTarget !== false) return true;
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
   // Imports are lexical evidence, not a file-wide allowlist. Legacy/synthetic
@@ -140,10 +147,18 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // `crate::` is the caller's crate. A same trailing module in another
     // workspace crate is a different item and cannot authorize the guess.
     if (imp.targetRaw === 'crate' || imp.targetRaw.startsWith('crate::')) {
+      if (sharesTarget === false) continue;
       const callerRoot = rustCrateRootOf(ctx.callerParsed.filePath);
       const candidateRoot = rustCrateRootOf(ctx.candidate.filePath);
-      if (callerRoot !== '' && candidateRoot !== '' && callerRoot !== candidateRoot) continue;
+      if (
+        sharesTarget === undefined &&
+        callerRoot !== '' &&
+        candidateRoot !== '' &&
+        callerRoot !== candidateRoot
+      )
+        continue;
     }
+    if (candidateModule === '') return true;
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
