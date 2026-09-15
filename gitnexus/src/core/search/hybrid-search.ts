@@ -177,13 +177,16 @@ export const hybridSearch = async (
   // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
   // If FTS fails (e.g. extension not loaded in MCP process), fall back to
   // semantic-only search instead of crashing with "bm25Results is not iterable".
-  let bm25Results: BM25SearchResult[] = [];
-  try {
-    const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
-    bm25Results = ftsResponse?.results ?? [];
-  } catch {
-    // FTS unavailable — continue with semantic-only search
-  }
-  const semanticResults = await semanticSearch(executeQuery, query, limit);
+  const [bm25Results, semanticResults] = await Promise.all([
+    (async (): Promise<BM25SearchResult[]> => {
+      try {
+        const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
+        return ftsResponse?.results ?? [];
+      } catch {
+        return [];
+      }
+    })(),
+    semanticSearch(executeQuery, query, limit).catch(() => []),
+  ]);
   return mergeWithRRF(bm25Results, semanticResults, limit);
 };

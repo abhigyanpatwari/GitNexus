@@ -74,8 +74,10 @@ jobs:
           - name: gitnexus-web
             dockerfile: Dockerfile.web
             slug: gitnexus-web
-          # CLI / `gitnexus serve` backend. Heavy native deps (tree-sitter,
-          # onnxruntime-node) live only in this image.
+          # CLI / `gitnexus serve` backend. Tree-sitter natives live in this
+          # image. onnxruntime-node is opt-in (`gitnexus embeddings install` or
+          # a bind-mounted prefix / GITNEXUS_EMBEDDING_URL); npm is stripped
+          # at runtime so the image cannot auto-heal the embedding stack.
           - name: gitnexus
             dockerfile: Dockerfile.cli
             slug: gitnexus

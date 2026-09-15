@@ -2,20 +2,19 @@
 /**
  * Publish guard: every vendored tree-sitter grammar must ship a loadable binding.
  *
- * The npm tarball includes gitnexus/vendor/ (package.json `files`). A grammar is
- * "covered" on a platform-arch tuple if EITHER a prebuild ships for it OR the
- * grammar's full source-build set ships (so the install can source-build it,
- * toolchain permitting). A future lean publish — dropping the ~50 MB of generated
- * source to ship prebuilds only — is safe ONLY once every grammar has all six
- * prebuilds; doing it while any grammar still lacks a prebuild would ship a
- * grammar with NO loadable binding (neither prebuild nor buildable source) → that
- * language is silently dead for users.
+ * The npm tarball ships a lean vendor/ allow-list (package.json `files`):
+ * prebuilds, the bindings entry, node-types.json, and package metadata — not
+ * generated parser.c. A grammar is "covered" on a platform-arch tuple if EITHER
+ * a prebuild ships for it OR the grammar's full source-build set ships (so the
+ * install can source-build it, toolchain permitting). Lean publish is safe ONLY
+ * when every grammar has all six prebuilds; dropping source while any grammar
+ * still lacks a prebuild would ship a grammar with NO loadable binding.
  *
  * HOW SOURCE INCLUSION IS DECIDED. The `files` allow-list OVERRIDES `.npmignore`
  * for the vendored subtree (verified: an active "vendor/(star-star)/src/parser.c"
  * in .npmignore does NOT drop it from `npm pack`). So `.npmignore` can never
  * exclude vendored source — the ONLY lever is the `files` field. A broad `vendor`
- * ships the whole subtree (source + prebuilds); a lean publish narrows `files` to
+ * ships the whole subtree (source + prebuilds); lean publish narrows `files` to
  * non-source subpaths. This guard therefore reads `files` directly rather than
  * shelling out to `npm pack` (which, in prepack, would re-enter this guard and,
  * on npm versions that don't honor --ignore-scripts for prepare/prepack, run the
@@ -55,13 +54,75 @@ const SOURCE_BUILD_REL = [
  * then rely on prebuilds.
  */
 function filesShipsVendorSource(filesField) {
-  return (filesField || []).some((f) => {
-    const n = String(f)
-      .replace(/\\/g, '/')
-      .replace(/\/+$/, '')
-      .replace(/\/\*\*?$/, '');
-    return n === 'vendor';
-  });
+  return filesEntries(filesField).includes('vendor');
+}
+
+function normalizeFilesEntry(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/, '')
+    .replace(/\/\*\*?$/, '');
+}
+
+function filesEntries(filesField) {
+  return (filesField || []).map(normalizeFilesEntry);
+}
+
+function filesCoverGrammarPrebuilds(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/prebuilds')) return true;
+  return (
+    entries.includes(`vendor/${grammarName}/prebuilds`) || entries.includes(`vendor/${grammarName}`)
+  );
+}
+
+function filesCoverGrammarBindings(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/bindings/node/index.js')) {
+    return true;
+  }
+  return (
+    entries.includes(`vendor/${grammarName}/bindings/node/index.js`) ||
+    entries.includes(`vendor/${grammarName}`)
+  );
+}
+
+function filesCoverGrammarPackageJson(entries, grammarName) {
+  if (entries.includes('vendor') || entries.includes('vendor/**/package.json')) return true;
+  return (
+    entries.includes(`vendor/${grammarName}/package.json`) ||
+    entries.includes(`vendor/${grammarName}`)
+  );
+}
+
+function filesCoverLeiden(entries) {
+  if (entries.includes('vendor') || entries.includes('vendor/leiden')) return true;
+  return entries.includes('vendor/leiden/index.cjs') && entries.includes('vendor/leiden/utils.cjs');
+}
+
+/**
+ * Packed-tarball coverage from `files` globs — not on-disk prebuild counts.
+ * Lean publish can leave 6/6 `.node` files in the checkout while omitting
+ * them from the pack list.
+ */
+function findPackedFilesProblems({ filesField, grammarNames }) {
+  const entries = filesEntries(filesField);
+  const problems = [];
+  for (const name of grammarNames || []) {
+    if (!filesCoverGrammarPrebuilds(entries, name)) {
+      problems.push(`${name}: package.json files does not cover vendor/${name}/prebuilds`);
+    }
+    if (!filesCoverGrammarBindings(entries, name)) {
+      problems.push(
+        `${name}: package.json files does not cover vendor/${name}/bindings/node/index.js`,
+      );
+    }
+    if (!filesCoverGrammarPackageJson(entries, name)) {
+      problems.push(`${name}: package.json files does not cover vendor/${name}/package.json`);
+    }
+  }
+  if (!filesCoverLeiden(entries)) {
+    problems.push('package.json files does not cover vendor/leiden/index.cjs and utils.cjs');
+  }
+  return problems;
 }
 
 /** The on-disk source-build inputs for a grammar (relative paths). */
@@ -171,7 +232,13 @@ function main() {
     process.exit(1);
   }
 
-  const problems = findCoverageProblems({ grammars });
+  const problems = [
+    ...findCoverageProblems({ grammars }),
+    ...findPackedFilesProblems({
+      filesField: pkg.files,
+      grammarNames: grammars.map((g) => g.name),
+    }),
+  ];
   if (problems.length > 0) {
     console.error('[publish-guard] Refusing to publish — a vendored grammar would ship unusable:');
     for (const p of problems) console.error(`  - ${p}`);
@@ -193,8 +260,13 @@ if (require.main === module) main();
 
 module.exports = {
   findCoverageProblems,
+  findPackedFilesProblems,
   findStrayBuildArtifacts,
   filesShipsVendorSource,
+  filesCoverGrammarPrebuilds,
+  filesCoverGrammarBindings,
+  filesCoverGrammarPackageJson,
+  filesCoverLeiden,
   isBuildableFromSource,
   sourceBuildSet,
   countPrebuiltTuples,

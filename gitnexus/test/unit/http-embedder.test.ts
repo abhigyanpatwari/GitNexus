@@ -61,8 +61,13 @@ describe('HTTP embedding backend', () => {
       expect(getEmbeddingDims()).toBe(384);
     });
 
-    it('returns false before initialization', () => {
-      expect(isEmbedderReady()).toBe(false);
+    it('is ready from HTTP mode or a ready local runtime, not resolution alone', async () => {
+      const { isHttpMode } = await import('../../src/core/embeddings/http-client.js');
+      const { assessLocalEmbeddingRuntime } =
+        await import('../../src/core/embeddings/runtime-support.js');
+      expect(isEmbedderReady()).toBe(
+        isHttpMode() || assessLocalEmbeddingRuntime().status === 'ready',
+      );
     });
 
     it('returns true when HTTP environment variables are set', async () => {
