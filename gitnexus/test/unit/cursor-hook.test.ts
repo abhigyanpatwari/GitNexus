@@ -441,6 +441,25 @@ describe('Cursor hook debug logging', () => {
   });
 });
 
+// ─── Source code regression: npx fallback stays under the host budget ─────
+
+describe('Cursor hook npx fallback host budget', () => {
+  const source = fs.readFileSync(CURSOR_HOOK, 'utf-8');
+
+  it('caps the npx fallback timeout below the hooks.json postToolUse budget', () => {
+    // hooks.json grants postToolUse 10s. The fallback branch adds +5s on top
+    // of the inner 7s budget, which used to reach 12s — past the host
+    // deadline, so Cursor killed the hook and cold-start users never saw
+    // augmentation. Assert the cap wiring exists and the effective fallback
+    // budget (7000 + 5000, clamped by 10000 - 2000) can never exceed the
+    // host budget again.
+    expect(source).toContain('CURSOR_HOST_BUDGET_MS = 10000');
+    expect(source).toContain('CURSOR_NPX_HEADROOM_MS = 2000');
+    expect(source).toContain('Math.min(');
+    expect(source).not.toMatch(/timeout:\s*timeout \+ 5000/);
+  });
+});
+
 // ─── Source code regression: concurrency guard (#1486) ─────────────
 
 describe('Cursor hook concurrency guard', () => {
