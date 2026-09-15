@@ -5,7 +5,7 @@
       {
         "matcher": "Shell|Read|Grep",
         "command": "node ./hooks/gitnexus-hook.cjs",
-        "timeout": 10
+        "timeout": 60
       }
     ]
   }

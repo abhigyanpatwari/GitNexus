@@ -445,18 +445,40 @@ describe('Cursor hook debug logging', () => {
 
 describe('Cursor hook npx fallback host budget', () => {
   const source = fs.readFileSync(CURSOR_HOOK, 'utf-8');
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(path.dirname(CURSOR_HOOK), 'hooks.json'), 'utf-8'),
+  );
 
-  it('caps the npx fallback timeout below the hooks.json postToolUse budget', () => {
-    // hooks.json grants postToolUse 10s. The fallback branch adds +5s on top
-    // of the inner 7s budget, which used to reach 12s — past the host
-    // deadline, so Cursor killed the hook and cold-start users never saw
-    // augmentation. Assert the cap wiring exists and the effective fallback
-    // budget (7000 + 5000, clamped by 10000 - 2000) can never exceed the
-    // host budget again.
-    expect(source).toContain('CURSOR_HOST_BUDGET_MS = 10000');
-    expect(source).toContain('CURSOR_NPX_HEADROOM_MS = 2000');
-    expect(source).toContain('Math.min(');
-    expect(source).not.toMatch(/timeout:\s*timeout \+ 5000/);
+  it('ships a postToolUse timeout with room for a cold npx install', () => {
+    // Cold `npx -y gitnexus` has to download + install the package; the
+    // original 10s budget killed the hook before the child could ever
+    // finish. The existing manifest test only pins (0, 120).
+    const seconds = manifest.hooks.postToolUse[0].timeout;
+    expect(seconds).toBeGreaterThanOrEqual(30);
+    expect(seconds).toBeLessThan(120);
+  });
+
+  it('sizes the npx timeout from the host budget with headroom', () => {
+    // Extract runGitNexusCli so the assertions are tied to the actual
+    // spawn wiring, not just to unrelated substrings elsewhere.
+    const fnStart = source.indexOf('function runGitNexusCli');
+    const fnBody = source.slice(fnStart, source.indexOf('\n}\n', fnStart));
+
+    // budget comes from hooks.json (seconds → ms), with headroom applied
+    expect(fnBody).toContain('resolveCursorHostBudgetMs() - CURSOR_NPX_HEADROOM_MS - elapsed');
+    // the computed budget is what reaches spawnSync (not a bare +5000)
+    expect(fnBody).toContain('timeout: npxTimeout');
+    expect(fnBody).not.toMatch(/timeout:\s*timeout\s*\+\s*5000/);
+    // npx grandchild is killed outright so it cannot keep the DB lock
+    expect(fnBody).toContain('"-s"');
+    expect(fnBody).toContain('KILL');
+  });
+
+  it('reads the shipped timeout value, not a detached literal', () => {
+    // resolveCursorHostBudgetMs must parse hooks.json so changing the
+    // manifest cannot silently desync from the hook budget.
+    expect(source).toContain('postToolUse[0].timeout');
+    expect(source).toContain('return seconds * 1000;');
   });
 });
 

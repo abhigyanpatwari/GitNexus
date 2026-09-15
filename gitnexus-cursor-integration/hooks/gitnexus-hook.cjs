@@ -339,15 +339,66 @@ function resolveCliPath() {
   }
 }
 
-// The Cursor host enforces hooks.json's postToolUse `timeout` (10s) against
-// the whole hook process. The npx fallback used to add a flat +5s on top of
-// the inner budget (7000 → 12000ms), past the host deadline, so Cursor killed
-// the hook before the child finished and the augmentation was always lost on
-// cold-start machines — the exact scenario the fallback exists for. Cap the
-// fallback under the host budget, leaving headroom for node startup and the
-// final stdout write.
-const CURSOR_HOST_BUDGET_MS = 10000;
-const CURSOR_NPX_HEADROOM_MS = 2000;
+// The Cursor host enforces hooks.json's postToolUse `timeout` (seconds)
+// against the whole hook process. hooks.json ships 60s so a cold
+// `npx -y gitnexus` (package download + install) can actually finish; the
+// npx fallback budget is then sized from the remaining host budget minus
+// headroom for node startup and the final stdout write, instead of a flat
+// inner+5s that could overshoot or undercut the deadline.
+const CURSOR_NPX_HEADROOM_MS = 5000;
+const CURSOR_HOOK_START_MS = Date.now();
+const HOOK_ENV = process['env'];
+
+function resolveCursorHostBudgetMs() {
+  try {
+    // hooks.json ships next to this hook script
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'hooks.json'), 'utf-8'));
+    const seconds = manifest.hooks.postToolUse[0].timeout;
+    if (typeof seconds === 'number' && seconds > 0) {
+      return seconds * 1000;
+    }
+  } catch {
+    /* fall through to the shipped default */
+  }
+  return 60000;
+}
+
+// Resolve a coreutils/BSD `timeout` binary for the npx arm. The CLI behind
+// npx is a grandchild (npx -> gitnexus), so the wrap leads with `-s KILL`:
+// a plain SIGTERM would kill only the obedient npx parent and let the
+// grandchild keep holding the LadybugDB lock after this hook released its
+// slot. Mirrors the Claude adapter's wrapped npx arm; Windows stays
+// unwrapped (npx is a .cmd script there).
+function resolveUnixGuardTimeout() {
+  if (process.platform === 'win32') return null;
+  const override = HOOK_ENV.GITNEXUS_HOOK_TIMEOUT_PATH;
+  if (override === 'disabled') return null;
+  const candidates = [];
+  if (override && override.trim()) candidates.push(override.trim());
+  candidates.push(
+    '/usr/bin/timeout',
+    '/usr/local/bin/timeout',
+    '/opt/homebrew/bin/timeout',
+    '/usr/bin/gtimeout',
+  );
+  for (const candidate of candidates) {
+    try {
+      if (candidate.includes('/') && fs.existsSync(candidate)) return candidate;
+      const probe = spawnSync('which', [candidate], {
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+      if (probe.status === 0 && String(probe.stdout).trim()) {
+        return String(probe.stdout).trim();
+      }
+    } catch {
+      /* keep probing */
+    }
+  }
+  return null;
+}
 
 function runGitNexusCli(cliPath, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
@@ -360,7 +411,39 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  const npxTimeout = Math.min(timeout + 5000, CURSOR_HOST_BUDGET_MS - CURSOR_NPX_HEADROOM_MS);
+  const elapsed = Date.now() - CURSOR_HOOK_START_MS;
+  const npxTimeout = Math.max(
+    1000,
+    Math.min(timeout + 5000, resolveCursorHostBudgetMs() - CURSOR_NPX_HEADROOM_MS - elapsed),
+  );
+  const guard = resolveUnixGuardTimeout();
+  if (guard) {
+    const wrapped = spawnSync(
+      guard,
+      [
+        '-s',
+        'KILL',
+        '-k',
+        '1',
+        String(Math.ceil(npxTimeout / 1000) + 1),
+        'npx',
+        '-y',
+        'gitnexus',
+        ...args,
+      ],
+      {
+        encoding: 'utf-8',
+        timeout: npxTimeout + 2000,
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    if (!wrapped.error || wrapped.error.code !== 'ENOENT') {
+      return wrapped;
+    }
+    // guard vanished between probe and spawn: fall through unwrapped
+  }
   return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
     encoding: 'utf-8',
     timeout: npxTimeout,
