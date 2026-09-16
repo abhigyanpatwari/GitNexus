@@ -449,6 +449,45 @@ describe('Rust module membership', () => {
     ).toBe(true);
   });
 
+  it('does not treat derive or expression-position std macros as unknown expansion', async () => {
+    const dir = fixture({
+      'Cargo.toml': PACKAGE,
+      'src/lib.rs':
+        '#[derive(Debug)] struct S;\n#[test] #[should_panic] fn t() { println!("hi"); assert_eq!(1, 1); let _ = vec![1]; let _ = format!("{}", 1); }',
+      'tests/helper.rs': '',
+    });
+    expect(
+      rustFilesShareCargoTarget(await loadRustCargoTargets(dir), 'src/lib.rs', 'tests/helper.rs'),
+    ).toBe(false);
+  });
+
+  it('keeps a library module whose path segment is named target', async () => {
+    const dir = fixture({
+      'Cargo.toml': PACKAGE,
+      'src/lib.rs': 'mod target;',
+      'src/target/mod.rs': '',
+      'tests/helper.rs': '',
+    });
+    const config = await loadRustCargoTargets(dir);
+    expect(rustFilesShareCargoTarget(config, 'src/lib.rs', 'src/target/mod.rs')).toBe(true);
+    expect(rustFilesShareCargoTarget(config, 'src/lib.rs', 'tests/helper.rs')).toBe(false);
+  });
+
+  it('keeps an explicit [lib] path under target/', async () => {
+    const dir = fixture({
+      'Cargo.toml': `${PACKAGE}[lib]\npath = "target/entry.rs"\n`,
+      'target/entry.rs': '',
+      'tests/helper.rs': '',
+    });
+    expect(
+      rustFilesShareCargoTarget(
+        await loadRustCargoTargets(dir),
+        'target/entry.rs',
+        'tests/helper.rs',
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     'include!("generated.rs");',
     'extern crate self as api;',

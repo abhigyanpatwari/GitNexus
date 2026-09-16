@@ -88,3 +88,16 @@ describe('F72 — macro invocations (capture layer)', () => {
     expect(macroDecls[0]['@declaration.name'].text).toBe('greet');
   });
 });
+
+describe('restricted visibility use is not a re-export', () => {
+  it.each([
+    ['pub use foo::helper;', 'reexport'],
+    ['pub(crate) use foo::helper;', 'named'],
+    ['pub(super) use foo::helper;', 'named'],
+    ['use foo::helper;', 'named'],
+  ])('%s', (src, kind) => {
+    const matches = emitRustScopeCaptures(src, 'test.rs') as CaptureMatch[];
+    const imps = matches.filter((m) => m['@import.kind']);
+    expect(imps.map((m) => m['@import.kind']?.text)).toEqual([kind]);
+  });
+});

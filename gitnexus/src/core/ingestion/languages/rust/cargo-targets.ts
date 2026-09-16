@@ -301,15 +301,28 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       follow: false,
       posix: true,
       dot: true,
-      ignore: ['**/.git/**', '**/node_modules/**', '**/target/**', '**/.gitnexus/**'],
+      ignore: [
+        '**/.git/**',
+        '**/node_modules/**',
+        '**/.gitnexus/**',
+        '**/target/debug/**',
+        '**/target/release/**',
+        '**/target/incremental/**',
+        '**/target/doc/**',
+        '**/target/tmp/**',
+        '**/target/.fingerprint/**',
+        '**/target/CACHEDIR.TAG',
+      ],
     })) {
       if (files.size >= MAX_FILES) return undefined;
       files.add(entry);
       manifests.push(entry);
     }
     if (manifests.length === 0) return undefined;
-    // Artifact pruning must not erase an auto-target named e.g. "target"
-    // (src/bin/target/main.rs). Inspect Cargo's target slots without that filter.
+    // Artifact-layout pruning (`target/debug`, `target/release`, …) must not
+    // erase a source path whose segment is named `target` (`src/target/mod.rs`,
+    // `[lib] path = "target/entry.rs"`, `src/bin/target/main.rs`). Re-scan
+    // Cargo's auto-target slots without that filter.
     for (const manifest of manifests) {
       for await (const entry of glob.iterate(
         [

@@ -347,4 +347,43 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
+
+  it('refuses a crate-root helper from another target on typical derive/assert_eq source', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-derive-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="demo"\nversion="0.1.0"\nedition="2021"\n',
+        'src/lib.rs':
+          '#[derive(Debug)] struct S;\npub fn helper() {}\nfn t() { assert_eq!(1, 1); }\n',
+        'tests/caller.rs': 'pub fn caller() { helper(); }\n',
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it('does not treat pub(crate) use as a public re-export for integration targets', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-pub-crate-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="demo"\nedition="2021"\n',
+        'src/lib.rs': 'pub mod nested { pub fn helper() {} } pub(crate) use nested::helper;',
+        'tests/caller.rs': 'use demo::*; pub fn caller() { helper(); }',
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
 });

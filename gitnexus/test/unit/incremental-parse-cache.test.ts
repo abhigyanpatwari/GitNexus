@@ -277,7 +277,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 98 -> 99 for #3190: lexical import provenance and corrected export
   // evidence. origin/main took 98 for #3219 and 99 for #3190.
   // Moved 99 -> 100 for #3253: retain absolute Rust import qualifiers.
-  // Moved 100 -> 101 for #3294 review: retain crate/self/super glob paths.
+  // Moved 100 -> 101 for #3294 review: retain keyword glob paths and distinguish
+  // restricted pub(...) imports from unrestricted reexports.
   it('pins SCHEMA_BUMP to 101 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(101);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);

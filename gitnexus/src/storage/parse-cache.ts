@@ -767,7 +767,8 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // the extern prelude. Old warm captures erase it and cannot distinguish an
 // absolute library import from a same-named local module. Reparse both stores.
 // v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
-// instead of replaying an empty target path from warm cached ParsedImports.
+// instead of an empty target path; restricted pub(...) imports are no longer
+// captured as unrestricted reexports. Re-extract both facts on warm indexes.
 const SCHEMA_BUMP = 101;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
