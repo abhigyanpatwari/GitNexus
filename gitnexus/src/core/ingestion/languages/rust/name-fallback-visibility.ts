@@ -25,6 +25,7 @@ import {
   rustImportNamesCargoRoot,
   rustIsExclusiveCargoRoot,
   rustImportReachesCargoTarget,
+  rustCargoPubliclyReexports,
 } from './cargo-targets.js';
 import {
   modulePathReaches,
@@ -132,14 +133,15 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   const separateRoot =
     sharesTarget === false &&
     rustIsExclusiveCargoRoot(ctx.resolutionConfig, ctx.candidate.filePath);
-  // A candidate whose file maps to no module path (a crate root reduced to '')
-  // is not something this rule can speak about; allow the labeled edge rather
-  // than refuse on an unanswered question.
+  // Preserve the legacy labeled guess for same-target or unknown membership.
+  // Proven disjoint Cargo targets must pass import identity checks below,
+  // including when the old file-path heuristic reduces a root to ''.
   if (candidateModule === '' && sharesTarget !== false) return true;
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
   const exportModules = new Set([(ctx.candidate.namespacePrefix ?? '').replaceAll('.', '::')]);
-  const candidateParsed = separateRoot ? ctx.parsedFileOf?.(ctx.candidate.filePath) : undefined;
+  const candidateParsed =
+    sharesTarget === false ? ctx.parsedFileOf?.(ctx.candidate.filePath) : undefined;
   if (candidateParsed !== undefined) {
     const moduleByScope = new Map<ScopeId, string>();
     const moduleScopes = new Set<ScopeId>();
@@ -154,8 +156,8 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     }
     // Follow same-file re-exports without confusing the defining module with
     // the module an importer sees. Each iteration adds a known module scope,
-    // so cycles terminate. Wildcard captures lack public/private provenance;
-    // a matching wildcard remains plausible rather than proving invisibility.
+    // so cycles terminate. Cargo's AST snapshot supplies public visibility,
+    // which the coarse parsed reexport/wildcard kind does not preserve.
     let changed = true;
     while (changed) {
       changed = false;
@@ -170,6 +172,17 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
           continue;
         if (imp.targetRaw.startsWith('::')) continue;
         const owner = moduleByScope.get(imp.declaredAtScope)!;
+        if (
+          !rustCargoPubliclyReexports(
+            ctx.resolutionConfig,
+            ctx.candidate.filePath,
+            owner,
+            imp.targetRaw,
+            imp.kind,
+            imp.kind === 'wildcard' ? '*' : imp.localName,
+          )
+        )
+          continue;
         const parts = imp.targetRaw.split('::').filter(Boolean);
         if (imp.kind !== 'wildcard') parts.pop();
         const base =
@@ -211,7 +224,7 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       visibleScopes.has(imp.declaredAtScope),
   );
   const scopeRanks = new Map([...(visibleScopes ?? [])].map((scope, rank) => [scope, rank]));
-  const namesCandidateRoot = (module: string, entryOnly: boolean): boolean => {
+  const namesCandidateRoot = (module: string, entryOnly: boolean): 'root' | 'module' | false => {
     const pending = [module];
     const seen = new Set<string>();
     while (pending.length > 0) {
@@ -263,20 +276,32 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       }
       // A root FILE can also contain inline modules. Its Cargo identity names
       // the crate, while the scope model supplies the member's module suffix.
-      if (entryOnly && !exportModules.has(parts.slice(1).join('::'))) continue;
       if (
-        (entryOnly ? rustImportNamesCargoRoot : rustImportReachesCargoTarget)(
+        rustImportNamesCargoRoot(
           ctx.resolutionConfig,
           ctx.callerParsed.filePath,
           ctx.candidate.filePath,
-          entryOnly ? head! : name,
+          head!,
+        )
+      ) {
+        if (exportModules.has(parts.slice(1).join('::'))) return 'root';
+        continue;
+      }
+      if (
+        !entryOnly &&
+        rustImportReachesCargoTarget(
+          ctx.resolutionConfig,
+          ctx.callerParsed.filePath,
+          ctx.candidate.filePath,
+          name,
         )
       )
-        return true;
+        return 'module';
     }
     return false;
   };
   for (const imp of visibleImports) {
+    let importedRoot = false;
     // `crate::` is the caller's crate. A same trailing module in another
     // workspace crate is a different item and cannot authorize the guess.
     if (imp.targetRaw === 'crate' || imp.targetRaw.startsWith('crate::')) {
@@ -296,13 +321,15 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
         imp.kind === 'wildcard'
           ? imp.targetRaw
           : imp.targetRaw.slice(0, Math.max(0, imp.targetRaw.lastIndexOf('::')));
-      if (!namesCandidateRoot(module, separateRoot)) continue;
+      const reached = namesCandidateRoot(module, separateRoot);
+      if (!reached) continue;
+      importedRoot = reached === 'root';
     }
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
     if (imp.kind === 'wildcard') {
-      if (separateRoot || candidateModule === '' || modulePathReaches(usePath, candidateModule))
+      if (importedRoot || candidateModule === '' || modulePathReaches(usePath, candidateModule))
         return true;
       continue;
     }
@@ -317,7 +344,7 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // when that root has no path segment to compare, a named import must name
     // THIS callable: `use std::fmt` cannot revive a rejected `crate::helper`.
     const parent = usePath.slice(0, Math.max(0, usePath.lastIndexOf('::')));
-    if (separateRoot || candidateModule === '') return true;
+    if (importedRoot || candidateModule === '') return true;
     if (modulePathReaches(usePath, candidateModule)) return true;
     if (parent !== '' && modulePathReaches(parent, candidateModule)) return true;
   }

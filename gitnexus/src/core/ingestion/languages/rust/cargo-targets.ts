@@ -1,14 +1,14 @@
 /** Cargo target evidence for the name-guess veto, never a directory heuristic. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { glob } from 'glob';
+import { glob, escape } from 'glob';
 import { parse } from 'smol-toml';
 import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { readRepoControlFile } from '../../../../config/repo-control-file.js';
-import { rustModuleFiles } from './cargo-module-files.js';
+import { rustModuleFiles, rustPublicUses } from './cargo-module-files.js';
 
 const MAX_FILES = 100_000;
 type Table = Record<string, unknown>;
@@ -37,9 +37,7 @@ export function cargoTargetRoots(
   let edition: unknown = pkg.edition ?? '2015';
   if (table(edition) && edition.workspace === true) {
     let workspace =
-      typeof pkg.workspace === 'string'
-        ? path.posix.normalize(path.posix.join(dir, pkg.workspace))
-        : dir;
+      typeof pkg.workspace === 'string' ? path.posix.join(dir, pkg.workspace, '.') : dir;
     while (
       !workspaceEditions?.has(workspace) &&
       typeof pkg.workspace !== 'string' &&
@@ -121,7 +119,23 @@ class RustCargoTargets {
   constructor(
     readonly targetsByFile: ReadonlyMap<string, ReadonlySet<string>>,
     readonly rootImports: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>,
+    readonly publicUsesByFile: ReadonlyMap<string, ReadonlySet<string>>,
   ) {}
+}
+
+/** Exact public-use evidence, independent of the capture's coarse reexport kind. */
+export function rustCargoPubliclyReexports(
+  config: unknown,
+  file: string,
+  module: string,
+  target: string,
+  kind: string,
+  name: string,
+): boolean {
+  return (
+    config instanceof RustCargoTargets &&
+    config.publicUsesByFile.get(file)?.has(JSON.stringify([module, target, kind, name])) === true
+  );
 }
 
 /** Positive evidence that this import names this library's ROOT, not a module
@@ -197,7 +211,7 @@ function cargoRootImports(
     const dir = path.posix.dirname(manifest);
     let workspace =
       typeof data.package.workspace === 'string'
-        ? path.posix.join(dir, data.package.workspace)
+        ? path.posix.join(dir, data.package.workspace, '.')
         : dir;
     while (
       !table(manifests.get(path.posix.join(workspace, 'Cargo.toml'))?.workspace) &&
@@ -279,7 +293,7 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
     const root = await fs.realpath(repoPath);
     const files = new Set<string>();
     const manifests: string[] = [];
-    for await (const entry of glob.iterate(['**/Cargo.toml', '**/*.rs'], {
+    for await (const entry of glob.iterate('**/Cargo.toml', {
       // Cargo metadata must include targets the graph scanner omits (notably
       // src/bin). An omitted target can share a source file with another crate.
       cwd: root,
@@ -291,7 +305,7 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
     })) {
       if (files.size >= MAX_FILES) return undefined;
       files.add(entry);
-      if (entry.endsWith('Cargo.toml')) manifests.push(entry);
+      manifests.push(entry);
     }
     if (manifests.length === 0) return undefined;
     // Artifact pruning must not erase an auto-target named e.g. "target"
@@ -330,8 +344,8 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
         throw new Error('Cargo module outside repository');
       }
       if (absolute !== requested) throw new Error('Cargo module alias has unknown membership');
-      // Validate and read the same opened inode. The shared reader also bounds
-      // streamed bytes if a file grows, and rejects replacements/symlinks.
+      // The shared reader validates its opened descriptor and bounds streamed
+      // bytes; the outer realpath check is a separate containment/alias guard.
       const content = await readRepoControlFile(root, file);
       if (content === null) throw new Error('Cargo source disappeared');
       return content;
@@ -343,6 +357,22 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       const content = await read(manifest);
       contents.set(manifest, content);
       const data = parse(content);
+      // A dependency alias can replace a std/core/alloc extern-prelude entry.
+      // In that case the module walker cannot identify standard macros safely.
+      const sections = [
+        data,
+        ...(table(data.target) ? Object.values(data.target).filter(table) : []),
+      ];
+      if (
+        sections.some((section) =>
+          ['dependencies', 'dev-dependencies', 'build-dependencies'].some(
+            (kind) =>
+              table(section[kind]) &&
+              ['std', 'core', 'alloc'].some((name) => Object.hasOwn(section[kind], name)),
+          ),
+        )
+      )
+        return undefined;
       manifestData.set(manifest, data);
       if (
         table(data.workspace) &&
@@ -351,6 +381,53 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       ) {
         workspaceEditions.set(path.posix.dirname(manifest), data.workspace.package.edition);
       }
+    }
+    // Manifest discovery prunes artifacts, but explicit source paths and mod
+    // declarations are authoritative candidates even beneath a `target` folder.
+    // Probe only those literal paths; never crawl the artifact tree recursively.
+    const discover = async (candidates: Iterable<string>): Promise<void> => {
+      const patterns = [...candidates].map((file) => {
+        if (
+          path.posix.isAbsolute(file) ||
+          file === '..' ||
+          file.startsWith('../') ||
+          file.includes('\\')
+        )
+          throw new Error('Cargo source outside repository');
+        if (
+          !file.endsWith('.rs') ||
+          file
+            .split('/')
+            .some((part) => ['.git', '.gitnexus', 'node_modules'].includes(part.toLowerCase()))
+        )
+          throw new Error('Cargo source excluded from inventory');
+        return escape(file);
+      });
+      for await (const entry of glob.iterate(patterns, {
+        cwd: root,
+        nodir: true,
+        follow: false,
+        posix: true,
+        dot: true,
+      })) {
+        if (files.size >= MAX_FILES) throw new Error('Cargo file limit');
+        files.add(entry);
+      }
+    };
+    for (const [manifest, data] of manifestData) {
+      const explicit = [
+        data.lib,
+        ...['bin', 'test', 'bench', 'example'].flatMap((kind) =>
+          Array.isArray(data[kind]) ? data[kind] : [],
+        ),
+      ];
+      const paths = explicit
+        .filter(table)
+        .map((entry) => entry.path)
+        .filter((value): value is string => typeof value === 'string');
+      if (table(data.package) && typeof data.package.build === 'string')
+        paths.push(data.package.build);
+      await discover(paths.map((file) => path.posix.join(path.posix.dirname(manifest), file)));
     }
     const roots = new Set<string>();
     const targetsByManifest = new Map<string, readonly string[]>();
@@ -363,6 +440,7 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
     const parser = new Parser();
     parser.setLanguage(getLanguageGrammar(SupportedLanguages.Rust));
     const targetsByFile = new Map<string, Set<string>>();
+    const publicUsesByFile = new Map<string, ReadonlySet<string>>();
     // A file may be reached conventionally AND through #[path]. Those have
     // different submodule bases, so cache and visit both contexts separately.
     const childrenByFile = new Map<string, NonNullable<ReturnType<typeof rustModuleFiles>>>();
@@ -373,7 +451,7 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       while (pending.length > 0) {
         if (++visits > MAX_FILES) return undefined;
         const { file, ownsDirectory } = pending.pop()!;
-        const key = `${ownsDirectory ? 'owned' : 'module'}:${file}`;
+        const key = `${file === target ? 'root' : ownsDirectory ? 'owned' : 'module'}:${file}`;
         if (visited.has(key)) continue;
         visited.add(key);
         let owners = targetsByFile.get(file);
@@ -382,15 +460,39 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
         let children = childrenByFile.get(key);
         if (!children) {
           const tree = parseSourceSafe(parser, await read(file));
-          const result = rustModuleFiles(tree.rootNode, file, ownsDirectory, files);
+          const missing = new Set<string>();
+          let result = rustModuleFiles(
+            tree.rootNode,
+            file,
+            ownsDirectory,
+            files,
+            missing,
+            file === target,
+          );
+          if (result === undefined && missing.size > 0) {
+            await discover(missing);
+            result = rustModuleFiles(
+              tree.rootNode,
+              file,
+              ownsDirectory,
+              files,
+              undefined,
+              file === target,
+            );
+          }
           if (result === undefined) return undefined;
+          publicUsesByFile.set(file, rustPublicUses(tree.rootNode));
           children = result;
           childrenByFile.set(key, children);
         }
         pending.push(...children);
       }
     }
-    return new RustCargoTargets(targetsByFile, cargoRootImports(manifestData, targetsByManifest));
+    return new RustCargoTargets(
+      targetsByFile,
+      cargoRootImports(manifestData, targetsByManifest),
+      publicUsesByFile,
+    );
   } catch {
     // I/O, parse or containment failure cannot establish target separation.
     return undefined;

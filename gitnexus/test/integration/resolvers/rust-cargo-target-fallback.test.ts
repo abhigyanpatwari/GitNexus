@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
+import { loadRustCargoTargets } from '../../../src/core/ingestion/languages/rust/cargo-targets.js';
 
 describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
   it.each([
@@ -176,7 +177,6 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
     'use target_boundary::helper;',
     'use target_boundary::*;',
     'use target_boundary as api; use api::*;',
-    'extern crate target_boundary as api; use api::*;',
   ])('preserves an explicit library import from an integration target: %s', async (source) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-library-'));
     try {
@@ -185,6 +185,7 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
         'src/lib.rs': 'pub fn helper() {}',
         'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
       });
+      expect(await loadRustCargoTargets(dir)).toBeDefined();
       const result = await runPipelineFromRepo(dir, () => {});
       const calls = getRelationships(result, 'CALLS').filter(
         (edge) => edge.source === 'caller' && edge.target === 'helper',
@@ -219,9 +220,11 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
         'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
       });
       const result = await runPipelineFromRepo(dir, () => {});
-      expect(
-        getRelationships(result, 'CALLS').filter((edge) => edge.target === 'helper'),
-      ).toHaveLength(allowed ? 1 : 0);
+      const calls = getRelationships(result, 'CALLS').filter((edge) => edge.target === 'helper');
+      expect(calls).toHaveLength(allowed ? 1 : 0);
+      expect(calls.map((edge) => edge.source)).toEqual(
+        allowed ? [source.includes('fn allowed()') ? 'allowed' : 'caller'] : [],
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
@@ -319,6 +322,11 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
       '[package]\nname="unknown"\nversion="0.1.0"\nedition="2021"\n',
       'include!("generated.rs");',
     ],
+    [
+      'unmodeled extern-crate alias',
+      '[package]\nname="unknown"\nversion="0.1.0"\nedition="2021"\n',
+      'extern crate self as api;',
+    ],
   ])('preserves a labeled guess with %s', async (_name, manifest, prefix) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-unknown-'));
     try {
@@ -327,6 +335,7 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
         'src/lib.rs': `${prefix}\nuse crate::helper; pub fn caller() { helper(); }`,
         'tests/helper.rs': 'pub fn helper() {}',
       });
+      expect(await loadRustCargoTargets(dir)).toBeUndefined();
       const result = await runPipelineFromRepo(dir, () => {});
       const calls = getRelationships(result, 'CALLS').filter(
         (edge) => edge.source === 'caller' && edge.target === 'helper',

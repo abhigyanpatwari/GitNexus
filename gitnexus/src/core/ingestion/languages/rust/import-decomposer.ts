@@ -176,7 +176,7 @@ function buildWildcardPath(node: SyntaxNode): string {
     const child = node.child(i);
     if (child === null) continue;
     if (child.type === 'scoped_identifier') return buildScopedPath(child);
-    if (child.type === 'identifier') return child.text;
+    if (['identifier', 'crate', 'self', 'super'].includes(child.type)) return child.text;
   }
   return '';
 }

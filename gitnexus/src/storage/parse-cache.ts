@@ -766,7 +766,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v100 (#3253): Rust import captures preserve the leading `::` that selects
 // the extern prelude. Old warm captures erase it and cannot distinguish an
 // absolute library import from a same-named local module. Reparse both stores.
-const SCHEMA_BUMP = 100;
+// v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
+// instead of replaying an empty target path from warm cached ParsedImports.
+const SCHEMA_BUMP = 101;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

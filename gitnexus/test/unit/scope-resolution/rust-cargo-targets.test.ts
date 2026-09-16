@@ -8,6 +8,8 @@ import {
   rustFilesShareCargoTarget,
   rustImportNamesCargoRoot,
 } from '../../../src/core/ingestion/languages/rust/cargo-targets.js';
+import { emitRustScopeCaptures } from '../../../src/core/ingestion/languages/rust/captures.js';
+import { interpretRustImport } from '../../../src/core/ingestion/languages/rust/interpret.js';
 
 const PACKAGE = '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n';
 const temporary: string[] = [];
@@ -26,6 +28,12 @@ function fixture(files: Record<string, string>): string {
 }
 
 describe('Cargo manifest target metadata', () => {
+  it.each(['crate', 'self', 'super'])('preserves the %s keyword in a glob import', (keyword) => {
+    const imports = emitRustScopeCaptures(`use ${keyword}::*;`, 'fixture.rs')
+      .map(interpretRustImport)
+      .filter((entry) => entry !== null);
+    expect(imports).toEqual([{ kind: 'wildcard', targetRaw: keyword }]);
+  });
   const files = new Set([
     'src/lib.rs',
     'src/main.rs',
@@ -61,6 +69,14 @@ describe('Cargo manifest target metadata', () => {
     const roots = cargoTargetRoots('Cargo.toml', `${PACKAGE}${key} = false\n`, files);
     expect(roots).toBeDefined();
     expect(roots).not.toContain(absent);
+    expect(roots).toContain(key === 'autolib' ? 'src/main.rs' : 'src/lib.rs');
+  });
+
+  it('uses an explicit build-script path instead of the default', () => {
+    const roots = cargoTargetRoots('Cargo.toml', `${PACKAGE}build="custom/entry.rs"\n`, files);
+    expect(roots).toContain('custom/entry.rs');
+    expect(roots).toContain('src/lib.rs');
+    expect(roots).not.toContain('build.rs');
   });
 
   it('explicit paths override auto-discovered targets of the same name', () => {
@@ -132,12 +148,107 @@ describe('Cargo manifest target metadata', () => {
     `${PACKAGE}\n[[test]]\npath="missing.rs"\n`,
     `${PACKAGE}autotests="false"\n`,
     `${PACKAGE}build=1\n`,
+    `${PACKAGE}[[bin]]\npath="custom/entry.rs"\n`,
+    `${PACKAGE}[[test]]\npath="custom/entry.rs"\n`,
   ])('does not manufacture evidence from malformed metadata', (manifest) => {
     expect(cargoTargetRoots('Cargo.toml', manifest, files)).toBeUndefined();
   });
 });
 
 describe('Rust module membership', () => {
+  it.each([
+    '.env',
+    '.git/hidden.rs',
+    '.GiT/hidden.rs',
+    '.gitnexus/hidden.rs',
+    'node_modules/pkg/hidden.rs',
+  ])('does not restore excluded non-source/control paths: %s', async (hidden) => {
+    const dir = fixture({
+      'Cargo.toml': PACKAGE,
+      'src/lib.rs': `#[path="../${hidden}"] mod hidden;`,
+      [hidden]: 'pub fn helper() {}',
+    });
+    const realpath = vi.spyOn(fs.promises, 'realpath');
+    expect(await loadRustCargoTargets(dir)).toBeUndefined();
+    expect(realpath.mock.calls.some(([file]) => String(file) === path.join(dir, hidden))).toBe(
+      false,
+    );
+  });
+
+  it('does not interpret a Cargo std alias as the standard library', async () => {
+    const dir = fixture({
+      'Cargo.toml': `${PACKAGE}[dependencies]\nstd={package="custom",version="1"}\n`,
+      'src/lib.rs': 'use std::*; fn f(){ println!(); }',
+    });
+    expect(await loadRustCargoTargets(dir)).toBeUndefined();
+  });
+  it('retains path dependencies from conditional target sections', async () => {
+    const dir = fixture({
+      'Cargo.toml': `${PACKAGE}[target.'cfg(unix)'.dependencies]\nother={path="other"}\n`,
+      'src/lib.rs': '',
+      'other/Cargo.toml': '[package]\nname="other"\nedition="2021"\n',
+      'other/src/lib.rs': '',
+    });
+    const config = await loadRustCargoTargets(dir);
+    expect(config).toBeDefined();
+    expect(rustImportNamesCargoRoot(config, 'src/lib.rs', 'other/src/lib.rs', 'other')).toBe(true);
+  });
+  it.each(['../..', '../../'])(
+    'resolves a directory-form workspace pointer: %s',
+    async (workspace) => {
+      const dir = fixture({
+        'Cargo.toml':
+          '[workspace]\nmembers=["crates/a", "crates/b"]\n[workspace.package]\nedition="2021"\n[workspace.dependencies]\nb={path="crates/b"}\n',
+        'crates/a/Cargo.toml': `[package]\nname="a"\nworkspace="${workspace}"\nedition.workspace=true\n[dependencies]\nb.workspace=true\n`,
+        'crates/a/src/lib.rs': '',
+        'crates/a/tests/helper.rs': '',
+        'crates/b/Cargo.toml': '[package]\nname="b"\nedition="2021"\n',
+        'crates/b/src/lib.rs': '',
+      });
+      const config = await loadRustCargoTargets(dir);
+      expect(config).toBeDefined();
+      expect(
+        rustFilesShareCargoTarget(config, 'crates/a/src/lib.rs', 'crates/a/tests/helper.rs'),
+      ).toBe(false);
+      expect(
+        rustImportNamesCargoRoot(config, 'crates/a/src/lib.rs', 'crates/b/src/lib.rs', 'b'),
+      ).toBe(true);
+    },
+  );
+
+  it('rejects a manifest filename as workspace pointer, as Cargo does', async () => {
+    const dir = fixture({
+      'Cargo.toml': '[workspace]\nmembers=["crates/a"]\n[workspace.package]\nedition="2021"\n',
+      'crates/a/Cargo.toml':
+        '[package]\nname="a"\nworkspace="../../Cargo.toml"\nedition.workspace=true\n',
+      'crates/a/src/lib.rs': '',
+    });
+    expect(await loadRustCargoTargets(dir)).toBeUndefined();
+  });
+
+  it.each([
+    '#[derive(Custom)] struct T;',
+    'use custom::Debug; #[derive(Debug)] struct T;',
+    'macro_rules! println { () => { #[path="../tests/helper.rs"] mod shared; } } fn f() { println!(); }',
+    'use custom::println; fn f() { println!(); }',
+    'use custom::*; fn f() { println!(); }',
+    'fn f() { println!("{}", { #[path="../tests/helper.rs"] mod shared; 1 }); }',
+    'fn f() { println!("{}", include!("generated.rs")); }',
+    '#[tokio::test] async fn f() {}',
+  ])('does not mistake unknown or shadowed expansion for a builtin: %s', async (source) => {
+    const dir = fixture({ 'Cargo.toml': PACKAGE, 'src/lib.rs': source, 'tests/helper.rs': '' });
+    expect(await loadRustCargoTargets(dir)).toBeUndefined();
+  });
+
+  it('does not assume a child-module macro is std when its parent shadows that name', async () => {
+    const dir = fixture({
+      'Cargo.toml': PACKAGE,
+      'src/lib.rs': 'macro_rules! println { () => { mod generated; } } mod child;',
+      'src/child.rs': 'fn f() { println!(); }',
+      'tests/helper.rs': '',
+    });
+    expect(await loadRustCargoTargets(dir)).toBeUndefined();
+  });
   it('keeps build dependencies separate while retaining unit-test dependencies', async () => {
     const dir = fixture({
       'Cargo.toml': `${PACKAGE}[dependencies]\nnormal={path="normal"}\n[dev-dependencies]\ndev={path="dev"}\n[build-dependencies]\nbuilder={path="builder"}\n`,
@@ -458,7 +569,7 @@ describe('Rust module membership', () => {
       if (!replaced && stat.dev === originalStat.dev && stat.ino === originalStat.ino) {
         replaced = true;
         fs.renameSync(source, `${source}.old`);
-        fs.writeFileSync(source, `// ${'x'.repeat(1024 * 1024)}\n`);
+        fs.writeFileSync(source, 'pub fn replacement() {}');
       }
     };
     // Exercise the same replacement against the old path-stat/read sequence

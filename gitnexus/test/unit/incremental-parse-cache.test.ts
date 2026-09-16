@@ -275,9 +275,11 @@ describe('PARSE_CACHE_VERSION', () => {
   // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
   // silently un-fixed on exactly the incremental path most users are on.
   // Moved 98 -> 99 for #3190: lexical import provenance and corrected export
-  // evidence. origin/main took 98 for #3219; 99 is the next free value.
-  it('pins SCHEMA_BUMP to 100 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(100);
+  // evidence. origin/main took 98 for #3219 and 99 for #3190.
+  // Moved 99 -> 100 for #3253: retain absolute Rust import qualifiers.
+  // Moved 100 -> 101 for #3294 review: retain crate/self/super glob paths.
+  it('pins SCHEMA_BUMP to 101 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(101);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -285,7 +287,7 @@ describe('PARSE_CACHE_VERSION', () => {
     // Every nearby historical or in-flight value is rejected.
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
