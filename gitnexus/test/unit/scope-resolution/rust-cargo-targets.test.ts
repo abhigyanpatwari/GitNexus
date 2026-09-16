@@ -44,6 +44,13 @@ describe('Cargo manifest target metadata', () => {
     );
   });
 
+  it('accepts Cargo build=true and declines overlapping build and library roles', () => {
+    expect(cargoTargetRoots('Cargo.toml', `${PACKAGE}build=true\n`, files)).toContain('build.rs');
+    expect(
+      cargoTargetRoots('Cargo.toml', `${PACKAGE}[lib]\npath="build.rs"\n`, files),
+    ).toBeUndefined();
+  });
+
   it.each([
     ['autolib', 'src/lib.rs'],
     ['autobins', 'src/bin/tool.rs'],
@@ -124,12 +131,38 @@ describe('Cargo manifest target metadata', () => {
     '[package',
     `${PACKAGE}\n[[test]]\npath="missing.rs"\n`,
     `${PACKAGE}autotests="false"\n`,
+    `${PACKAGE}build=1\n`,
   ])('does not manufacture evidence from malformed metadata', (manifest) => {
     expect(cargoTargetRoots('Cargo.toml', manifest, files)).toBeUndefined();
   });
 });
 
 describe('Rust module membership', () => {
+  it('keeps build dependencies separate while retaining unit-test dependencies', async () => {
+    const dir = fixture({
+      'Cargo.toml': `${PACKAGE}[dependencies]\nnormal={path="normal"}\n[dev-dependencies]\ndev={path="dev"}\n[build-dependencies]\nbuilder={path="builder"}\n`,
+      'src/lib.rs': '',
+      'build.rs': 'fn main() {}',
+      ...Object.fromEntries(
+        ['normal', 'dev', 'builder'].flatMap((name) => [
+          [`${name}/Cargo.toml`, `[package]\nname="${name}"\nedition="2021"\n`],
+          [`${name}/src/lib.rs`, ''],
+        ]),
+      ),
+    });
+    const config = await loadRustCargoTargets(dir);
+    expect(config).toBeDefined();
+    for (const name of ['normal', 'dev', 'builder']) {
+      expect(rustImportNamesCargoRoot(config, 'src/lib.rs', `${name}/src/lib.rs`, name)).toBe(
+        name !== 'builder',
+      );
+      expect(rustImportNamesCargoRoot(config, 'build.rs', `${name}/src/lib.rs`, name)).toBe(
+        name === 'builder',
+      );
+    }
+    expect(rustImportNamesCargoRoot(config, 'build.rs', 'src/lib.rs', 'demo')).toBe(false);
+  });
+
   it.each([false, true])(
     'uses the correct import name for a custom library (package explicit: %s)',
     async (explicit) => {

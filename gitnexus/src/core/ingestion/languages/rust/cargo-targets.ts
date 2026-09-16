@@ -31,6 +31,8 @@ export function cargoTargetRoots(
   if (!table(data.package)) return table(data.workspace) ? [] : undefined;
   const pkg = data.package;
   if (typeof pkg.name !== 'string') return undefined;
+  if (pkg.build !== undefined && typeof pkg.build !== 'string' && typeof pkg.build !== 'boolean')
+    return undefined;
   const dir = path.posix.dirname(manifest);
   let edition: unknown = pkg.edition ?? '2015';
   if (table(edition) && edition.workspace === true) {
@@ -106,8 +108,10 @@ export function cargoTargetRoots(
   if (typeof pkg.build === 'string') {
     const file = relative(pkg.build);
     if (!files.has(file)) return undefined;
+    if (roots.has(file)) return undefined; // Multiple target roles need separate identities.
     roots.add(file);
   } else if (pkg.build !== false && files.has(relative('build.rs'))) {
+    if (roots.has(relative('build.rs'))) return undefined;
     roots.add(relative('build.rs'));
   }
   return [...roots];
@@ -133,6 +137,33 @@ export function rustImportNamesCargoRoot(
   if (segments.length !== 1) return false;
   for (const target of config.targetsByFile.get(caller) ?? []) {
     if (config.rootImports.get(target)?.get(segments[0]!)?.has(candidate)) return true;
+  }
+  return false;
+}
+
+/** Every known membership must identify this file as the entry point. A file
+ *  shared as a module in another target does not have a single root role. */
+export function rustIsExclusiveCargoRoot(config: unknown, file: string): boolean {
+  if (!(config instanceof RustCargoTargets)) return false;
+  const targets = config.targetsByFile.get(file);
+  return targets?.size === 1 && targets.has(file);
+}
+
+/** Establish crate identity before the existing module-path plausibility test. */
+export function rustImportReachesCargoTarget(
+  config: unknown,
+  caller: string,
+  candidate: string,
+  importedModule: string,
+): boolean {
+  if (!(config instanceof RustCargoTargets)) return false;
+  const name = importedModule.split('::').filter(Boolean)[0];
+  if (!name) return false;
+  const candidates = config.targetsByFile.get(candidate);
+  for (const target of config.targetsByFile.get(caller) ?? []) {
+    for (const imported of config.rootImports.get(target)?.get(name) ?? []) {
+      if (candidates?.has(imported)) return true;
+    }
   }
   return false;
 }
@@ -190,11 +221,18 @@ function cargoRootImports(
         roots.add(root);
       };
       const own = libraries.get(manifest);
-      if (own) add(own.name, own.root);
+      const buildRoot = path.posix.join(
+        dir,
+        typeof data.package.build === 'string' ? data.package.build : 'build.rs',
+      );
+      const isBuild = data.package.build !== false && target === buildRoot;
+      if (own && !isBuild) add(own.name, own.root);
       for (const section of sections) {
-        // Sources can compile in multiple target/cfg contexts. This identifies
-        // the imported root; it does not prove linkage or item visibility.
-        for (const kind of ['dependencies', 'dev-dependencies', 'build-dependencies']) {
+        // Libraries/binaries can also compile as unit-test targets, so retain
+        // dev dependencies across cfg modes. Build scripts have their own
+        // dependency namespace and cannot import the package's own library.
+        const kinds = isBuild ? ['build-dependencies'] : ['dependencies', 'dev-dependencies'];
+        for (const kind of kinds) {
           const deps = section[kind];
           if (!table(deps)) continue;
           for (const [key, declared] of Object.entries(deps)) {

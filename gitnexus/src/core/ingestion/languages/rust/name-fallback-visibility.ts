@@ -20,7 +20,12 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { rustFilesShareCargoTarget, rustImportNamesCargoRoot } from './cargo-targets.js';
+import {
+  rustFilesShareCargoTarget,
+  rustImportNamesCargoRoot,
+  rustIsExclusiveCargoRoot,
+  rustImportReachesCargoTarget,
+} from './cargo-targets.js';
 import {
   modulePathReaches,
   stripExtension,
@@ -104,6 +109,7 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
   readonly resolutionConfig?: unknown;
+  readonly parsedFileOf?: (filePath: string) => ParsedFile | undefined;
   readonly site: {
     readonly name: string;
     readonly rawQualifiedName?: string;
@@ -123,12 +129,63 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     ctx.callerParsed.filePath,
     ctx.candidate.filePath,
   );
+  const separateRoot =
+    sharesTarget === false &&
+    rustIsExclusiveCargoRoot(ctx.resolutionConfig, ctx.candidate.filePath);
   // A candidate whose file maps to no module path (a crate root reduced to '')
   // is not something this rule can speak about; allow the labeled edge rather
   // than refuse on an unanswered question.
   if (candidateModule === '' && sharesTarget !== false) return true;
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
+  const exportModules = new Set([(ctx.candidate.namespacePrefix ?? '').replaceAll('.', '::')]);
+  const candidateParsed = separateRoot ? ctx.parsedFileOf?.(ctx.candidate.filePath) : undefined;
+  if (candidateParsed !== undefined) {
+    const moduleByScope = new Map<ScopeId, string>();
+    const moduleScopes = new Set<ScopeId>();
+    for (const scope of candidateParsed.scopes) {
+      const parent = scope.parent === null ? '' : (moduleByScope.get(scope.parent) ?? '');
+      const own =
+        scope.kind === 'Namespace'
+          ? scope.ownedDefs.find((def) => def.type === 'Namespace')?.qualifiedName
+          : undefined;
+      moduleByScope.set(scope.id, [parent, own].filter(Boolean).join('::'));
+      if (scope.kind === 'Namespace' || scope.kind === 'Module') moduleScopes.add(scope.id);
+    }
+    // Follow same-file re-exports without confusing the defining module with
+    // the module an importer sees. Each iteration adds a known module scope,
+    // so cycles terminate. Wildcard captures lack public/private provenance;
+    // a matching wildcard remains plausible rather than proving invisibility.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const imp of candidateParsed.parsedImports) {
+        if (imp.declaredAtScope === undefined || !moduleScopes.has(imp.declaredAtScope)) continue;
+        if (
+          imp.kind !== 'wildcard' &&
+          (imp.kind !== 'reexport' ||
+            imp.localName !== candidateName ||
+            imp.importedName !== candidateName)
+        )
+          continue;
+        if (imp.targetRaw.startsWith('::')) continue;
+        const owner = moduleByScope.get(imp.declaredAtScope)!;
+        const parts = imp.targetRaw.split('::').filter(Boolean);
+        if (imp.kind !== 'wildcard') parts.pop();
+        const base =
+          parts[0] === 'self' || parts[0] === 'super' ? owner.split('::').filter(Boolean) : [];
+        if (parts[0] === 'crate' || parts[0] === 'self') parts.shift();
+        while (parts[0] === 'super') {
+          base.pop();
+          parts.shift();
+        }
+        if (exportModules.has([...base, ...parts].join('::')) && !exportModules.has(owner)) {
+          exportModules.add(owner);
+          changed = true;
+        }
+      }
+    }
+  }
   // Imports are lexical evidence, not a file-wide allowlist. Legacy/synthetic
   // imports without a scope receipt retain the previous conservative behavior.
   let visibleScopes: Set<ScopeId> | undefined;
@@ -154,15 +211,18 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       visibleScopes.has(imp.declaredAtScope),
   );
   const scopeRanks = new Map([...(visibleScopes ?? [])].map((scope, rank) => [scope, rank]));
-  const namesCandidateRoot = (module: string): boolean => {
+  const namesCandidateRoot = (module: string, entryOnly: boolean): boolean => {
     const pending = [module];
     const seen = new Set<string>();
     while (pending.length > 0) {
       const name = pending.pop()!;
-      if (seen.has(name)) continue;
-      seen.add(name);
+      const parts = name.split('::').filter(Boolean);
+      const head = parts[0];
+      const bindingName = name.startsWith('::') ? name : head;
+      if (!bindingName || seen.has(bindingName)) continue;
+      seen.add(bindingName);
       const aliases = visibleImports.filter(
-        (imported) => 'localName' in imported && imported.localName === name,
+        (imported) => 'localName' in imported && imported.localName === bindingName,
       );
       const rank = (imported: (typeof visibleImports)[number]) =>
         imported.declaredAtScope === undefined
@@ -171,7 +231,10 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       const nearest = aliases.length > 0 ? Math.min(...aliases.map(rank)) : Infinity;
       let localTypeRank = Infinity;
       for (const [scopeId, depth] of scopeRanks) {
-        const bindings = scopeLookupByFile.get(ctx.callerParsed)?.get(scopeId)?.bindings.get(name);
+        const bindings = scopeLookupByFile
+          .get(ctx.callerParsed)
+          ?.get(scopeId)
+          ?.bindings.get(bindingName);
         if (
           bindings?.some(
             (binding) =>
@@ -193,17 +256,20 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
         );
         if (destinations.size !== 1) continue;
         const destination = [...destinations][0]!;
-        if (destination !== name) {
-          pending.push(destination);
+        if (destination !== bindingName) {
+          pending.push([destination, ...parts.slice(1)].join('::'));
           continue;
         }
       }
+      // A root FILE can also contain inline modules. Its Cargo identity names
+      // the crate, while the scope model supplies the member's module suffix.
+      if (entryOnly && !exportModules.has(parts.slice(1).join('::'))) continue;
       if (
-        rustImportNamesCargoRoot(
+        (entryOnly ? rustImportNamesCargoRoot : rustImportReachesCargoTarget)(
           ctx.resolutionConfig,
           ctx.callerParsed.filePath,
           ctx.candidate.filePath,
-          name,
+          entryOnly ? head! : name,
         )
       )
         return true;
@@ -225,15 +291,18 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       )
         continue;
     }
+    if (sharesTarget === false) {
+      const module =
+        imp.kind === 'wildcard'
+          ? imp.targetRaw
+          : imp.targetRaw.slice(0, Math.max(0, imp.targetRaw.lastIndexOf('::')));
+      if (!namesCandidateRoot(module, separateRoot)) continue;
+    }
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
     if (imp.kind === 'wildcard') {
-      if (
-        candidateModule === ''
-          ? namesCandidateRoot(imp.targetRaw)
-          : modulePathReaches(usePath, candidateModule)
-      )
+      if (separateRoot || candidateModule === '' || modulePathReaches(usePath, candidateModule))
         return true;
       continue;
     }
@@ -248,10 +317,7 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // when that root has no path segment to compare, a named import must name
     // THIS callable: `use std::fmt` cannot revive a rejected `crate::helper`.
     const parent = usePath.slice(0, Math.max(0, usePath.lastIndexOf('::')));
-    if (candidateModule === '') {
-      if (namesCandidateRoot(parent)) return true;
-      continue;
-    }
+    if (separateRoot || candidateModule === '') return true;
     if (modulePathReaches(usePath, candidateModule)) return true;
     if (parent !== '' && modulePathReaches(parent, candidateModule)) return true;
   }
