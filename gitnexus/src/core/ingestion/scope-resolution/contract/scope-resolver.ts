@@ -920,6 +920,8 @@ export interface ScopeResolver {
   readonly isGlobalNameFallbackPlausible?: (ctx: {
     readonly callerParsed: ParsedFile;
     readonly candidate: SymbolDefinition;
+    /** Opaque workspace metadata from this provider's loadResolutionConfig. */
+    readonly resolutionConfig?: unknown;
     readonly parsedFileOf: (filePath: string) => ParsedFile | undefined;
     /**
      * Raw source of any parsed file, for languages whose visibility rule needs
