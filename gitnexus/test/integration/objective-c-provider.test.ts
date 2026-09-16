@@ -104,6 +104,18 @@ function normalizeContext(value: unknown): Record<string, unknown> {
   };
 }
 
+/** Drop analyze-time `indexedAt` so incremental vs force surfaces can compare graph fields. */
+function withoutVolatileStaleness(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  const staleness = record.staleness;
+  if (staleness === undefined || typeof staleness !== 'object' || staleness === null) {
+    return record;
+  }
+  const { indexedAt: _indexedAt, ...stableStaleness } = staleness as Record<string, unknown>;
+  return { ...record, staleness: stableStaleness };
+}
+
 async function readPersistedObjectiveCSurface(repoRoot: string): Promise<Record<string, unknown>> {
   const backend = new LocalBackend();
   try {
@@ -186,10 +198,10 @@ async function readPersistedObjectiveCSurface(repoRoot: string): Promise<Record<
       candidateEvidenceContext: normalizeContext(candidateEvidenceContext),
       categoryContext: normalizeContext(categoryContext),
       queryDefinitions: normalizeRows(queryResult.definitions),
-      protocolAndCategoryResult,
-      categoryHostResult,
-      protocolCandidateResult,
-      unresolvedReasonResult,
+      protocolAndCategoryResult: withoutVolatileStaleness(protocolAndCategoryResult),
+      categoryHostResult: withoutVolatileStaleness(categoryHostResult),
+      protocolCandidateResult: withoutVolatileStaleness(protocolCandidateResult),
+      unresolvedReasonResult: withoutVolatileStaleness(unresolvedReasonResult),
     };
   } finally {
     await backend.disconnect();
@@ -763,6 +775,25 @@ describe('Objective-C provider integration', () => {
 });
 
 describe('Objective-C provider persisted index behavior', () => {
+  it('drops analyze-time indexedAt from hot-tool staleness so increment vs force can compare', () => {
+    expect(
+      withoutVolatileStaleness({
+        markdown: 'ok',
+        row_count: 1,
+        staleness: {
+          status: 'current',
+          lastCommit: 'abc',
+          indexedAt: '2026-09-15T00:00:00Z',
+          measuredAgainst: 'HEAD',
+        },
+      }),
+    ).toEqual({
+      markdown: 'ok',
+      row_count: 1,
+      staleness: { status: 'current', lastCommit: 'abc', measuredAgainst: 'HEAD' },
+    });
+  });
+
   it('surfaces query/context semantics and keeps incremental results aligned with force rebuild', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-objc-provider-index-'));
     try {

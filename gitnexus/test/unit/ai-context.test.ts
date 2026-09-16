@@ -297,6 +297,9 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
+    expect(content).toContain(
+      'On query/context/impact/cypher object results, read staleness.status and branch/lastCommit',
+    );
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -337,15 +340,18 @@ describe('generateAIContextFiles', () => {
     // clause (previously hand-added inside the committed docs instead of this
     // template, so a real `gitnexus analyze` silently deleted them on every
     // regeneration — moving them into the template is the fix, and they are
-    // unconditional text load-bearing enough to warrant the budget) — each time
-    // with the same argument, that the added line is load-bearing and the block
-    // is still meaningfully smaller than the original. That is a ratchet with no
-    // ratchet: an absolute cap can only ever fail on the PR that adds the
-    // character, and the fix is always to nudge the number. Assert the invariant
-    // the justifications actually appeal to — the RATIO to the pre-trim size —
-    // so a legitimate clause fits without ceremony while a genuine re-pad fails.
-    // (The structural guard is the sibling test asserting the six #856 section
-    // headers stay deleted; this one bounds bulk.)
+    // unconditional text load-bearing enough to warrant the budget), then
+    // 0.65 → 0.70 for the #3291 always-on `staleness` blockquote line (a second
+    // `>` line, not a new Always-Do bullet — the cheaper durable slot; the
+    // 0.65 band had ~3 chars of headroom so any useful line required a bump) —
+    // each time with the same argument, that the added line is load-bearing and
+    // the block is still meaningfully smaller than the original. That is a
+    // ratchet with no ratchet: an absolute cap can only ever fail on the PR
+    // that adds the character, and the fix is always to nudge the number.
+    // Assert the invariant the justifications actually appeal to — the RATIO
+    // to the pre-trim size — so a legitimate clause fits without ceremony
+    // while a genuine re-pad fails. (The structural guard is the sibling test
+    // asserting the six #856 section headers stay deleted; this one bounds bulk.)
     const PRE_TRIM_BLOCK_CHARS = 5465;
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
@@ -355,7 +361,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.65);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.7);
   });
 
   it('handles empty stats', async () => {
