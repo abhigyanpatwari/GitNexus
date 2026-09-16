@@ -146,7 +146,9 @@ function buildScopedPath(node: SyntaxNode): string {
   if (node.type === 'scoped_identifier') {
     const parts: string[] = [];
     collectScopedParts(node, parts);
-    return parts.join('::');
+    // An absolute extern-prelude path bypasses a same-named local module.
+    // Keep that evidence when flattening the AST into an import specifier.
+    return `${node.text.startsWith('::') ? '::' : ''}${parts.join('::')}`;
   }
   return node.text;
 }

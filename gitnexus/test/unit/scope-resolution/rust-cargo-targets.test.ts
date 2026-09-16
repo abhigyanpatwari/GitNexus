@@ -6,6 +6,7 @@ import {
   cargoTargetRoots,
   loadRustCargoTargets,
   rustFilesShareCargoTarget,
+  rustImportNamesCargoRoot,
 } from '../../../src/core/ingestion/languages/rust/cargo-targets.js';
 
 const PACKAGE = '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n';
@@ -129,6 +130,78 @@ describe('Cargo manifest target metadata', () => {
 });
 
 describe('Rust module membership', () => {
+  it.each([false, true])(
+    'uses the correct import name for a custom library (package explicit: %s)',
+    async (explicit) => {
+      const dir = fixture({
+        'Cargo.toml': `${PACKAGE}[lib]\nname="public_api"\n`,
+        'src/lib.rs': '',
+        'consumer/Cargo.toml': `[package]\nname="consumer"\nedition="2021"\n[dependencies]\ndemo={${explicit ? 'package="demo",' : ''}path=".."}\n`,
+        'consumer/src/lib.rs': '',
+      });
+      const config = await loadRustCargoTargets(dir);
+      expect(
+        rustImportNamesCargoRoot(
+          config,
+          'consumer/src/lib.rs',
+          'src/lib.rs',
+          explicit ? 'demo' : 'public_api',
+        ),
+      ).toBe(true);
+      expect(
+        rustImportNamesCargoRoot(
+          config,
+          'consumer/src/lib.rs',
+          'src/lib.rs',
+          explicit ? 'public_api' : 'demo',
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it('a dependency alias in another package is not import evidence for this caller', async () => {
+    const dir = fixture({
+      'Cargo.toml': PACKAGE,
+      'src/lib.rs': '',
+      'a/Cargo.toml':
+        '[package]\nname="a"\nedition="2021"\n[dependencies]\napi={package="demo",path=".."}\n',
+      'a/src/lib.rs': '',
+      'b/Cargo.toml': '[package]\nname="b"\nedition="2021"\n',
+      'b/src/lib.rs': '',
+    });
+    const config = await loadRustCargoTargets(dir);
+    expect(rustImportNamesCargoRoot(config, 'a/src/lib.rs', 'src/lib.rs', 'api')).toBe(true);
+    expect(rustImportNamesCargoRoot(config, 'b/src/lib.rs', 'src/lib.rs', 'api')).toBe(false);
+  });
+
+  it('uses Cargo library metadata rather than the entry file name', async () => {
+    const dir = fixture({
+      'Cargo.toml': `${PACKAGE}[lib]\npath="src/main.rs"\nname="api"\n`,
+      'src/main.rs': '',
+      'tests/caller.rs': '',
+    });
+    expect(
+      rustImportNamesCargoRoot(
+        await loadRustCargoTargets(dir),
+        'tests/caller.rs',
+        'src/main.rs',
+        'api',
+      ),
+    ).toBe(true);
+    fs.writeFileSync(
+      path.join(dir, 'Cargo.toml'),
+      `${PACKAGE}autolib=false\n[[bin]]\nname="api"\npath="src/main.rs"\n`,
+    );
+    expect(
+      rustImportNamesCargoRoot(
+        await loadRustCargoTargets(dir),
+        'tests/caller.rs',
+        'src/main.rs',
+        'api',
+      ),
+    ).toBe(false);
+  });
+
   it('distinguishes all package targets even though directory prefixes overlap', async () => {
     const paths = [
       'src/lib.rs',
@@ -234,6 +307,7 @@ describe('Rust module membership', () => {
 
   it.each([
     'include!("generated.rs");',
+    'extern crate self as api;',
     '#[cfg_attr(feature="x", path="elsewhere.rs")] mod helper;',
     '#[custom_macro] mod helper;',
     'mod missing;',

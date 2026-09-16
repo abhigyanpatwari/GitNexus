@@ -5,6 +5,29 @@ import path from 'node:path';
 import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
 
 describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
+  it.each(['use std::fmt::*;', 'use target_boundary::nested::*;', 'use std::helper;'])(
+    'an unrelated import cannot reach a binary-root helper: %s',
+    async (source) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-unrelated-glob-'));
+      try {
+        writeFixtureRepo(dir, {
+          'Cargo.toml': '[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n',
+          'src/lib.rs': `${source} pub fn caller() { helper(); }`,
+          'src/main.rs': 'pub fn helper() {}',
+        });
+        const result = await runPipelineFromRepo(dir, () => {});
+        expect(result.graph.getNode('Function:src/main.rs:helper')).toBeDefined();
+        expect(
+          getRelationships(result, 'CALLS').filter(
+            (edge) => edge.source === 'caller' && edge.target === 'helper',
+          ),
+        ).toEqual([]);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    },
+  );
+
   it('an unrelated import cannot revive a rejected crate-root candidate', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-unrelated-'));
     try {
@@ -25,15 +48,75 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
     }
   });
 
-  it.each(['use target_boundary::helper;', 'use target_boundary::*;'])(
-    'preserves an explicit library import from an integration target: %s',
-    async (source) => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-library-'));
+  it.each([
+    'use target_boundary::helper;',
+    'use target_boundary::*;',
+    'use target_boundary as api; use api::*;',
+    'extern crate target_boundary as api; use api::*;',
+  ])('preserves an explicit library import from an integration target: %s', async (source) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-library-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n',
+        'src/lib.rs': 'pub fn helper() {}',
+        'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'caller' && edge.target === 'helper',
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.targetFilePath).toBe('src/lib.rs');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it.each([
+    ['mod target_boundary {} use target_boundary::*;', '', false],
+    ['mod target_boundary {} use ::target_boundary::*;', '', true],
+    ['fn target_boundary() {} use target_boundary::*;', '', true],
+    ['mod api {} fn allowed() { use target_boundary as api; use api::*; helper(); }', '', true],
+    ['use std::*;', '', false],
+    ['use target_boundary::nested::*;', '', false],
+    ['use public_api::*;', '[lib]\nname="public_api"\n', true],
+    ['use target_boundary::*;', '[lib]\nname="public_api"\n', false],
+    [
+      'use target_boundary as api; fn denied() { use std::fmt as api; use api::*; helper(); }',
+      '',
+      false,
+    ],
+  ] as const)('requires the actual library root for %s', async (source, lib, allowed) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-root-name-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': `[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n${lib}`,
+        'src/lib.rs': 'pub fn helper() {}',
+        'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter((edge) => edge.target === 'helper'),
+      ).toHaveLength(allowed ? 1 : 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it.each([false, true])(
+    'recognizes a renamed path dependency (workspace inherited: %s)',
+    async (inherited) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-dep-alias-'));
       try {
         writeFixtureRepo(dir, {
-          'Cargo.toml': '[package]\nname="target-boundary"\nversion="0.1.0"\nedition="2021"\n',
+          'Cargo.toml':
+            '[package]\nname="root-lib"\nversion="0.1.0"\nedition="2021"\n[workspace]\nmembers=["consumer"]\n' +
+            (inherited ? '[workspace.dependencies]\nrenamed={package="root-lib",path="."}\n' : ''),
           'src/lib.rs': 'pub fn helper() {}',
-          'tests/caller.rs': `${source} pub fn caller() { helper(); }`,
+          'consumer/Cargo.toml':
+            '[package]\nname="consumer"\nversion="0.1.0"\nedition="2021"\n[dependencies]\n' +
+            (inherited ? 'renamed={workspace=true}\n' : 'renamed={package="root-lib",path=".."}\n'),
+          'consumer/src/lib.rs': 'use renamed::*; pub fn caller() { helper(); }',
         });
         const result = await runPipelineFromRepo(dir, () => {});
         const calls = getRelationships(result, 'CALLS').filter(

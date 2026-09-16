@@ -114,7 +114,107 @@ export function cargoTargetRoots(
 }
 
 class RustCargoTargets {
-  constructor(readonly targetsByFile: ReadonlyMap<string, ReadonlySet<string>>) {}
+  constructor(
+    readonly targetsByFile: ReadonlyMap<string, ReadonlySet<string>>,
+    readonly rootImports: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>,
+  ) {}
+}
+
+/** Positive evidence that this import names this library's ROOT, not a module
+ *  elsewhere (or a binary/test entry point that cannot be imported as a lib). */
+export function rustImportNamesCargoRoot(
+  config: unknown,
+  caller: string,
+  candidate: string,
+  importedModule: string,
+): boolean {
+  if (!(config instanceof RustCargoTargets)) return false;
+  const segments = importedModule.split('::').filter(Boolean);
+  if (segments.length !== 1) return false;
+  for (const target of config.targetsByFile.get(caller) ?? []) {
+    if (config.rootImports.get(target)?.get(segments[0]!)?.has(candidate)) return true;
+  }
+  return false;
+}
+
+/** Import names are target/package-relative. A dependency alias in another
+ *  package must not authorize a guess here merely because its spelling matches. */
+function cargoRootImports(
+  manifests: ReadonlyMap<string, Table>,
+  targets: ReadonlyMap<string, readonly string[]>,
+): Map<string, Map<string, Set<string>>> {
+  const libraries = new Map<string, { root: string; name: string }>();
+  for (const [manifest, data] of manifests) {
+    if (!table(data.package)) continue;
+    const lib = table(data.lib) ? data.lib : undefined;
+    if (!lib && data.package.autolib === false) continue;
+    const root = path.posix.join(
+      path.posix.dirname(manifest),
+      typeof lib?.path === 'string' ? lib.path : 'src/lib.rs',
+    );
+    const name = lib?.name ?? data.package.name;
+    if (typeof name === 'string' && targets.get(manifest)?.includes(root)) {
+      libraries.set(manifest, {
+        root,
+        name: name.replaceAll('-', '_'),
+      });
+    }
+  }
+  const result = new Map<string, Map<string, Set<string>>>();
+  for (const [manifest, data] of manifests) {
+    if (!table(data.package)) continue;
+    const dir = path.posix.dirname(manifest);
+    let workspace =
+      typeof data.package.workspace === 'string'
+        ? path.posix.join(dir, data.package.workspace)
+        : dir;
+    while (
+      !table(manifests.get(path.posix.join(workspace, 'Cargo.toml'))?.workspace) &&
+      typeof data.package.workspace !== 'string' &&
+      workspace !== '.'
+    )
+      workspace = path.posix.dirname(workspace);
+    const workspaceData = manifests.get(path.posix.join(workspace, 'Cargo.toml'))?.workspace;
+    const workspaceDeps =
+      table(workspaceData) && table(workspaceData.dependencies) ? workspaceData.dependencies : {};
+    const sections = [
+      data,
+      ...(table(data.target) ? Object.values(data.target).filter(table) : []),
+    ];
+    for (const target of targets.get(manifest) ?? []) {
+      let imports = result.get(target);
+      if (!imports) result.set(target, (imports = new Map()));
+      const add = (name: string, root: string) => {
+        let roots = imports.get(name);
+        if (!roots) imports.set(name, (roots = new Set()));
+        roots.add(root);
+      };
+      const own = libraries.get(manifest);
+      if (own) add(own.name, own.root);
+      for (const section of sections) {
+        // Sources can compile in multiple target/cfg contexts. This identifies
+        // the imported root; it does not prove linkage or item visibility.
+        for (const kind of ['dependencies', 'dev-dependencies', 'build-dependencies']) {
+          const deps = section[kind];
+          if (!table(deps)) continue;
+          for (const [key, declared] of Object.entries(deps)) {
+            const inherited = table(declared) && declared.workspace === true;
+            const dep = inherited ? workspaceDeps[key] : declared;
+            if (!table(dep) || typeof dep.path !== 'string') continue;
+            const dependency = libraries.get(
+              path.posix.join(inherited ? workspace : dir, dep.path, 'Cargo.toml'),
+            );
+            if (!dependency) continue;
+            // Cargo uses the dependency key whenever `package` is explicit,
+            // even if it equals the package name and [lib].name differs.
+            const renamed = typeof dep.package === 'string';
+            add(renamed ? key.replaceAll('-', '_') : dependency.name, dependency.root);
+          }
+        }
+      }
+    }
+  }
+  return result;
 }
 
 /** Undefined means no complete membership proof; never interpret it as disjoint. */
@@ -199,11 +299,13 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       return content;
     };
     const contents = new Map<string, string>();
+    const manifestData = new Map<string, Table>();
     const workspaceEditions = new Map<string, string>();
     for (const manifest of manifests) {
       const content = await read(manifest);
       contents.set(manifest, content);
       const data = parse(content);
+      manifestData.set(manifest, data);
       if (
         table(data.workspace) &&
         table(data.workspace.package) &&
@@ -213,9 +315,11 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
       }
     }
     const roots = new Set<string>();
+    const targetsByManifest = new Map<string, readonly string[]>();
     for (const [manifest, content] of contents) {
       const targets = cargoTargetRoots(manifest, content, files, workspaceEditions);
       if (targets === undefined) return undefined;
+      targetsByManifest.set(manifest, targets);
       for (const target of targets) roots.add(target);
     }
     const parser = new Parser();
@@ -248,7 +352,7 @@ export async function loadRustCargoTargets(repoPath: string): Promise<unknown> {
         pending.push(...children);
       }
     }
-    return new RustCargoTargets(targetsByFile);
+    return new RustCargoTargets(targetsByFile, cargoRootImports(manifestData, targetsByManifest));
   } catch {
     // I/O, parse or containment failure cannot establish target separation.
     return undefined;

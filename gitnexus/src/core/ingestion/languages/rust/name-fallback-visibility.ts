@@ -20,7 +20,7 @@
  */
 
 import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
-import { rustFilesShareCargoTarget } from './cargo-targets.js';
+import { rustFilesShareCargoTarget, rustImportNamesCargoRoot } from './cargo-targets.js';
 import {
   modulePathReaches,
   stripExtension,
@@ -35,6 +35,16 @@ const RUST_CRATE_ROOT_DIRS: ReadonlySet<string> = new Set(['src', 'tests', 'benc
 
 /** Path prefixes of a `use` that name a root rather than a module segment. */
 const RUST_USE_ROOT_PREFIXES: ReadonlySet<string> = new Set(['crate', '$crate']);
+const RUST_TYPE_NAMESPACE_KINDS: ReadonlySet<string> = new Set([
+  'Namespace',
+  'Class',
+  'Struct',
+  'Enum',
+  'Trait',
+  'Interface',
+  'TypeAlias',
+  'Union',
+]);
 
 // One scope lookup per immutable parsed-file snapshot, not per fallback site.
 // Weak keys release both the snapshot and its index at the end of ingestion.
@@ -137,13 +147,70 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
       current = scope.parent;
     }
   }
-  for (const imp of ctx.callerParsed.parsedImports) {
-    if (
-      imp.declaredAtScope !== undefined &&
-      visibleScopes !== undefined &&
-      !visibleScopes.has(imp.declaredAtScope)
-    )
-      continue;
+  const visibleImports = ctx.callerParsed.parsedImports.filter(
+    (imp) =>
+      imp.declaredAtScope === undefined ||
+      visibleScopes === undefined ||
+      visibleScopes.has(imp.declaredAtScope),
+  );
+  const scopeRanks = new Map([...(visibleScopes ?? [])].map((scope, rank) => [scope, rank]));
+  const namesCandidateRoot = (module: string): boolean => {
+    const pending = [module];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const name = pending.pop()!;
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const aliases = visibleImports.filter(
+        (imported) => 'localName' in imported && imported.localName === name,
+      );
+      const rank = (imported: (typeof visibleImports)[number]) =>
+        imported.declaredAtScope === undefined
+          ? Infinity
+          : (scopeRanks.get(imported.declaredAtScope) ?? Infinity);
+      const nearest = aliases.length > 0 ? Math.min(...aliases.map(rank)) : Infinity;
+      let localTypeRank = Infinity;
+      for (const [scopeId, depth] of scopeRanks) {
+        const bindings = scopeLookupByFile.get(ctx.callerParsed)?.get(scopeId)?.bindings.get(name);
+        if (
+          bindings?.some(
+            (binding) =>
+              binding.origin === 'local' && RUST_TYPE_NAMESPACE_KINDS.has(binding.def.type),
+          )
+        ) {
+          localTypeRank = depth;
+          break;
+        }
+      }
+      // A local module/type shadows the extern prelude, but a nearer import
+      // can shadow that declaration. Value-namespace functions do not block it.
+      if (localTypeRank !== Infinity && localTypeRank <= nearest) continue;
+      if (aliases.length > 0) {
+        const destinations = new Set(
+          aliases
+            .filter((imported) => rank(imported) === nearest)
+            .map((imported) => imported.targetRaw),
+        );
+        if (destinations.size !== 1) continue;
+        const destination = [...destinations][0]!;
+        if (destination !== name) {
+          pending.push(destination);
+          continue;
+        }
+      }
+      if (
+        rustImportNamesCargoRoot(
+          ctx.resolutionConfig,
+          ctx.callerParsed.filePath,
+          ctx.candidate.filePath,
+          name,
+        )
+      )
+        return true;
+    }
+    return false;
+  };
+  for (const imp of visibleImports) {
     // `crate::` is the caller's crate. A same trailing module in another
     // workspace crate is a different item and cannot authorize the guess.
     if (imp.targetRaw === 'crate' || imp.targetRaw.startsWith('crate::')) {
@@ -162,7 +229,12 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
     if (imp.kind === 'wildcard') {
-      if (candidateModule === '' || modulePathReaches(usePath, candidateModule)) return true;
+      if (
+        candidateModule === ''
+          ? namesCandidateRoot(imp.targetRaw)
+          : modulePathReaches(usePath, candidateModule)
+      )
+        return true;
       continue;
     }
     if (!('localName' in imp) || imp.localName !== ctx.site.name) continue;
@@ -175,8 +247,12 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
     // A different target may import the library crate's root exports. Even
     // when that root has no path segment to compare, a named import must name
     // THIS callable: `use std::fmt` cannot revive a rejected `crate::helper`.
-    if (candidateModule === '' || modulePathReaches(usePath, candidateModule)) return true;
     const parent = usePath.slice(0, Math.max(0, usePath.lastIndexOf('::')));
+    if (candidateModule === '') {
+      if (namesCandidateRoot(parent)) return true;
+      continue;
+    }
+    if (modulePathReaches(usePath, candidateModule)) return true;
     if (parent !== '' && modulePathReaches(parent, candidateModule)) return true;
   }
   return false;

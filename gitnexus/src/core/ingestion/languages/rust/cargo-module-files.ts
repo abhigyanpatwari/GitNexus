@@ -72,6 +72,11 @@ export function rustModuleFiles(
       }
       const attrs = attributes;
       attributes = [];
+      // The current scope captures do not carry extern-crate aliases. Do not
+      // certify a negative import-root proof from an incomplete namespace view.
+      if (node.type === 'extern_crate_declaration' && node.childForFieldName('alias') !== null) {
+        return undefined;
+      }
       if (
         node.type === 'macro_invocation' ||
         (node.type === 'expression_statement' && node.namedChildren[0]?.type === 'macro_invocation')
