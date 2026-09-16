@@ -427,6 +427,11 @@ export interface AnalyzeOptions {
    * scope-resolution (BasicBlock/CFG emit gate). Off by default.
    */
   pdg?: boolean;
+  /**
+   * Internal auto-sync mode: resolve `pdg` from the live index metadata only
+   * after acquiring its writer lock. An explicit `pdg` value always wins.
+   */
+  preserveExistingPdg?: boolean;
   /** Per-function source-line cap for worker-side CFG construction (#2081 M1).
    *  Forwarded to `PipelineOptions.pdgMaxFunctionLines`. No CLI flag in M1 —
    *  programmatic / server analyze-worker path only; the worker applies
@@ -1275,6 +1280,28 @@ async function runFullAnalysisInner(
   }
 
   const loadedMeta = await loadMeta(metaDir);
+  if (options.preserveExistingPdg && options.pdg === undefined) {
+    if (loadedMeta) {
+      options = { ...options, pdg: loadedMeta.pdg !== undefined };
+    } else {
+      try {
+        await fs.stat(lbugPath);
+      } catch (error: unknown) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          options = { ...options, pdg: false };
+        } else {
+          throw error;
+        }
+      }
+      if (options.pdg === undefined) {
+        throw new Error(
+          `Cannot determine whether the existing index at ${lbugPath} contains PDG data; ` +
+            'refusing to analyze so the live graph is preserved.',
+        );
+      }
+    }
+  }
   const previousFtsDisabledReason = getFtsDisabledReason(loadedMeta?.capabilities?.fts);
   // Flag and env are equivalent disablements. Only a true enable↔disable flip
   // needs a write plan; a discriminator-only change restamps on the
