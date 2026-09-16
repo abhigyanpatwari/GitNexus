@@ -116,6 +116,14 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('query, context, impact, and cypher descriptions mention always-on staleness (#3291)', () => {
+    for (const name of ['query', 'context', 'impact', 'cypher'] as const) {
+      const tool = GITNEXUS_TOOLS.find((t) => t.name === name)!;
+      expect(tool.description).toContain('staleness');
+      expect(tool.description).toMatch(/lastCommit|branch/);
+    }
+  });
+
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
     expect(queryTool.inputSchema.required).toContain('search_query');
