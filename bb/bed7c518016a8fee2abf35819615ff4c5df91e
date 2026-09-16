@@ -1,0 +1,26 @@
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_fdbdebc2260a4a::t_2ffbdc43b25635 136-138
+gitnexus/test/integration/resolvers/rust-cargo-review-regressions.test.ts
+  s_fdbdebc2260a4a::t_ff0d03164cb97b 36-43
+  s_fdbdebc2260a4a::t_615e3fa3b3f959 44-47
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_fdbdebc2260a4a::t_475c4d003c40dc 6-10
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_475c4d003c40dc 238-241
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "bbbed7c518016a8fee2abf35819615ff4c5df91e",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
