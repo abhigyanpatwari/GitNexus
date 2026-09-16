@@ -65,6 +65,7 @@ See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.m
 This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 relationships, 918 execution flows).
 
 > Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
+> On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
 
 ## Always Do
 

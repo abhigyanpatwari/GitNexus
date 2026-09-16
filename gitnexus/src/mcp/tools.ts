@@ -88,6 +88,10 @@ const CWD_AWARE_REPO_OMISSION =
 const MUTATING_REPO_OMISSION =
   'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
 
+/** Always-on identity+freshness field on query/context/impact/cypher object results (#3291). */
+const HOT_READ_STALENESS_NOTE =
+  'Object results attach `staleness` even when current. Read `staleness.branch`/`lastCommit` for which index answered and `status` for freshness. Re-analyze only for `behind` or `diverged` — `current` is this clone\'s HEAD, not necessarily the default branch; `unknown` is unmeasurable, not stale. Field is only on object results (not raw-array cypher, error envelopes, or `@group` calls).';
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -143,7 +147,9 @@ Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank
 
 GROUP MODE: set "repo" to "@<groupName>" to search all member repos in that group (merged via RRF), or "@<groupName>/<groupRepoPath>" to run against a single member (same path keys as in group.yaml). If you use "@<groupName>" only, the member repo defaults to the lexicographically first key in group.yaml "repos". Prefer resources for contracts/status (see migration from legacy group_* tools).
 
-SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.`,
+SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). When "repo" starts with "@", only processes whose symbols fall under that prefix are included. For a normal indexed repo name (no leading @), this field is currently ignored by the server.
+
+${HOT_READ_STALENESS_NOTE}`,
     annotations: QUERY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -254,7 +260,9 @@ TIPS:
 - Community = auto-detected functional area (Leiden algorithm). Properties: heuristicLabel, cohesion, symbolCount, keywords, description, enrichedBy
 - Process = execution flow trace from entry point to terminal. Properties: heuristicLabel, processType, stepCount, communities, entryPointId, terminalId
 - Use heuristicLabel (not label) for human-readable community/process names
-- PDG layers (only when indexed with \`--pdg\`): BasicBlock nodes + CFG / CDG (control dependence, branch sense 'T'|'F' in reason) / REACHING_DEF (def→use, variable in reason) edges, all BasicBlock→BasicBlock. Prefer the \`pdg_query\` tool — it anchors + bounds these for you (raw \`[:CDG*]\`/\`[:REACHING_DEF*]\` path scans are unindexed and unbounded).`,
+- PDG layers (only when indexed with \`--pdg\`): BasicBlock nodes + CFG / CDG (control dependence, branch sense 'T'|'F' in reason) / REACHING_DEF (def→use, variable in reason) edges, all BasicBlock→BasicBlock. Prefer the \`pdg_query\` tool — it anchors + bounds these for you (raw \`[:CDG*]\`/\`[:REACHING_DEF*]\` path scans are unindexed and unbounded).
+
+${HOT_READ_STALENESS_NOTE}`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -307,7 +315,9 @@ REQUIRES RE-INDEX: causes.scopeExtractionFiles, causes.receiverTyping, causes.ex
 
 GROUP MODE: set "repo" to "@<groupName>" to run context in each member repo (aggregated list), or "@<groupName>/<groupRepoPath>" for one member. If you use "@<groupName>" only, the member defaults to the lexicographically first key in group.yaml "repos".
 
-SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.`,
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", prefix-matches resolved symbol file paths; when a hit is outside the prefix, that member returns an empty payload for the symbol. Ignored for a normal indexed repo name.
+
+${HOT_READ_STALENESS_NOTE}`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -521,7 +531,9 @@ Confidence: 1.0 = certain, <0.8 = fuzzy match
 
 GROUP MODE: set "repo" to "@<groupName>" for cross-repo impact anchored at the default member (lexicographically first key in group.yaml "repos"), or "@<groupName>/<groupRepoPath>" to choose the member (same path keys as in group.yaml). Phase-1 walk runs in that member; cross-boundary fan-out uses the group bridge. A cross entry with fanout_status:"not_attempted" proves the declared repository boundary, but its far endpoint has no graph symbol; do not interpret empty by_depth or affected_processes on that entry as a completed zero-impact walk. The fan-out attempts at most 50 neighbour crossings, strongest-confidence first. Any short answer carries truncated:true, truncatedRepos, riskEpistemic:"lower-bound" AND a truncationReason — dropping a crossing can only move risk DOWN, so treat that risk as a floor, never as a verdict. truncated:true does NOT always mean the fan-out ran out of room, so branch on truncationReason: the remedy differs. 'timeout' (the fan-out's wall-clock budget expired) and 'partial' (a neighbour crossing, or the local walk, was cut short) are runtime limits — the same query can return more on a retry or with a larger timeoutMs. 'incomplete-sync' is structural: the group bridge was built by a sync that could not say which repos it read, or that could not read an in-scope repo, so those repos' contracts are absent from EVERY query against this bridge, and truncatedRepos names them even when ZERO crossings to them were attempted. Retrying returns the same floor — run group_sync (\`gitnexus group sync\`) and query again. 'suppressed-stage' is also structural but has a DIFFERENT remedy: the sync was asked to skip a matching stage (\`--exact-only\` / exactOnly), so cross-links that stage would have found are absent BY REQUEST. Re-running the sync unchanged returns the same floor — re-run it WITHOUT that flag. Do not report a repo as broken for this reason; nothing failed to read.
 
-SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.`,
+SERVICE: optional monorepo path prefix (case-sensitive path segments). When "repo" starts with "@", scopes the local impact walk and cross-repo symbol paths to files under that prefix; ignored for a normal indexed repo name.
+
+${HOT_READ_STALENESS_NOTE}`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
