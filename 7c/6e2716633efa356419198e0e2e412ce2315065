@@ -1,0 +1,45 @@
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_fdbdebc2260a4a::t_82c25b5d95cb16 136-139
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_fdbdebc2260a4a::t_78c7ee6810dc9e 280-281
+gitnexus/src/core/ingestion/languages/rust/cargo-module-files.ts
+  s_fdbdebc2260a4a::t_98a52e5b105049 20-22
+gitnexus/src/storage/parse-cache.ts
+  s_fdbdebc2260a4a::t_78c7ee6810dc9e 770-771
+gitnexus/scripts/cross-platform-tests.ts
+  s_fdbdebc2260a4a::t_1a9eada7628dec 308-310
+.github/workflows/ci-tests.yml
+  s_fdbdebc2260a4a::t_71829c3865391c 611-620
+gitnexus/bench/rust-cargo-targets/baselines.json
+  s_fdbdebc2260a4a::t_fc0e719f6b529f 1-31
+gitnexus/bench/rust-cargo-targets/measure.mjs
+  s_fdbdebc2260a4a::t_edd09ab4428a17 1-311
+gitnexus/src/core/ingestion/languages/rust/cargo-targets.ts
+  s_fdbdebc2260a4a::t_64d3e09362a393 304-315,322-325
+gitnexus/src/core/ingestion/languages/rust/import-decomposer.ts
+  s_fdbdebc2260a4a::t_8bffc4d80f61e6 13,20,22-25
+gitnexus/test/integration/resolvers/rust-cargo-target-fallback.test.ts
+  s_fdbdebc2260a4a::t_94fe3e9c72f168 350-388
+gitnexus/test/integration/resolvers/rust-coverage.test.ts
+  s_fdbdebc2260a4a::t_35f8eed34e27d0 91-103
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_fdbdebc2260a4a::t_72ac1915193487 441,448-457
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_61b65da963b37b 452-490
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "7c6e2716633efa356419198e0e2e412ce2315065",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
