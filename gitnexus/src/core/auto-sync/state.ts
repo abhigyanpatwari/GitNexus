@@ -9,7 +9,10 @@ export interface AutoSyncCommitStateEntry {
   codeCommitId: string;
   analyzedCommitId?: string;
   lastAnalyzeStatus?: AutoSyncAnalyzeStatus;
-  /** PDG mode requested by the most recent analysis attempt. */
+  /**
+   * PDG mode from the most recent successful sync result. Written even when
+   * analysis was threshold-skipped and `runAnalysis` did not run.
+   */
   requestedPdg?: boolean;
   analyzeConsecutiveFailures?: number;
   lastAnalyzeError?: string;

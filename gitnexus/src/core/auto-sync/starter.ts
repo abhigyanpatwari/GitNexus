@@ -158,6 +158,7 @@ export async function startAutoSyncWatch(
         return;
       }
       const startedAt = new Date();
+      let deferFollowUp = false;
       stderr.write(`[auto-sync] Watch loop started at ${startedAt.toISOString()}.\n`);
       const abortController = new AbortController();
       const run = runOnce(loaded.config, {
@@ -172,6 +173,7 @@ export async function startAutoSyncWatch(
         },
       })
         .then((result) => {
+          deferFollowUp = result.abandonedAnalysisWorker === true;
           stderr.write(
             `[auto-sync] Watch loop finished: synced=${result.synced} analyzed=${result.analyzed} skipped=${result.skippedAnalysis} failed=${result.failed}.\n`,
           );
@@ -190,7 +192,15 @@ export async function startAutoSyncWatch(
           if (!stopping) {
             await updateStatus('running').catch(reportStatusWriteFailure);
           }
-          if (runAgain && !stopping && !activeRun) runSafely();
+          if (runAgain && !stopping && !activeRun) {
+            if (deferFollowUp) {
+              stderr.write(
+                '[auto-sync] Previous run left an analyze worker running; deferring the coalesced follow-up to the next interval.\n',
+              );
+            } else {
+              runSafely();
+            }
+          }
         });
       activeRun = run;
       activeAbortController = abortController;

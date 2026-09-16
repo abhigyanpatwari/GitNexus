@@ -311,6 +311,7 @@ describe('CLI help surface', () => {
       expect(config).toContain('analyze_failure_threshold: 3');
       expect(config).toContain('analyze_timeout: 5m');
       expect(config).toContain('pdg: false');
+      expect(config).toContain('omit = preserve live index mode');
       expect(config).toContain('overwrite_local_changes: false');
       expect(config).toContain(`local_path: ${path.join(home, 'repos')}`);
       expect(config).not.toContain('/abs/path/to/repos');

@@ -26,7 +26,11 @@ import {
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
 import { validateAutoSyncRemoteUrl } from './config.js';
-import { runAutoSyncAnalysis, type AutoSyncAnalysisRunner } from './analysis-worker-launch.js';
+import {
+  AutoSyncAnalysisError,
+  runAutoSyncAnalysis,
+  type AutoSyncAnalysisRunner,
+} from './analysis-worker-launch.js';
 
 export interface AutoSyncLogger {
   info(message: string): void;
@@ -56,6 +60,8 @@ export interface AutoSyncRunResult {
   analyzed: number;
   skippedAnalysis: number;
   failed: number;
+  /** True when a timed-out analyze worker was left running and may still hold the index lock. */
+  abandonedAnalysisWorker?: boolean;
 }
 
 const _require = createRequire(import.meta.url);
@@ -123,6 +129,7 @@ export async function runAutoSyncOnce(
   const groupsToSync = new Set<string>();
   const groupStateKeys = new Map<string, string[]>();
   const result: AutoSyncRunResult = { synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 };
+  let abandonedAnalysisWorker = false;
   const commitInfoEntries: ProjectCommitInfoEntry[] = [];
   const actualConcurrency = resolveActualConcurrency(
     config.maxConcurrency,
@@ -261,11 +268,18 @@ export async function runAutoSyncOnce(
           } catch (err: unknown) {
             if (options.signal?.aborted) throw err;
             analyzeStatus = 'failed';
-            analyzeConsecutiveFailures += 1;
             lastAnalyzeError = shortErrorMessage(err);
-            logger.error(
-              `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
-            );
+            if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
+            if (isRetryableAnalyzeContention(err)) {
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${lastAnalyzeError}`,
+              );
+            } else {
+              analyzeConsecutiveFailures += 1;
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
+              );
+            }
           }
         } else {
           logger.info(`[auto-sync] Skip analysis for ${targetDir}; commit and PDG mode unchanged.`);
@@ -444,12 +458,29 @@ export async function runAutoSyncOnce(
     }
   }
   if (groupStateChanged) await deps.saveState(state);
+  if (abandonedAnalysisWorker) result.abandonedAnalysisWorker = true;
   return result;
 }
 
 function shortErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   return message.replace(/\s+/g, ' ').slice(0, 240);
+}
+
+const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';
+
+function isAbandonedAnalyzeWorkerError(err: unknown): boolean {
+  if (err instanceof AutoSyncAnalysisError && err.abandonedWorker) return true;
+  return err instanceof Error && err.message.includes(ABANDONED_WORKER_MARKER);
+}
+
+function isRetryableAnalyzeContention(err: unknown): boolean {
+  if (isAbandonedAnalyzeWorkerError(err)) return true;
+  return (
+    err instanceof AutoSyncAnalysisError &&
+    err.code === 'index-lock-timeout' &&
+    err.retryable === true
+  );
 }
 
 export function getConfiguredRepoPath(
