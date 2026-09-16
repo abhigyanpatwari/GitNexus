@@ -133,10 +133,9 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   const separateRoot =
     sharesTarget === false &&
     rustIsExclusiveCargoRoot(ctx.resolutionConfig, ctx.candidate.filePath);
-  // Same-target crate roots have an answered identity. Unknown or separate
-  // targets still need a covering import — unanswered membership must not
-  // import-free-allow every crate-root unique name (#3253).
-  if (candidateModule === '' && sharesTarget === true) return true;
+  // Cargo membership does not establish cross-file lexical visibility.
+  // Root candidates must also pass the import checks below; same-file and
+  // explicitly qualified calls have already been handled above.
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
   const exportModules = new Set([(ctx.candidate.namespacePrefix ?? '').replaceAll('.', '::')]);

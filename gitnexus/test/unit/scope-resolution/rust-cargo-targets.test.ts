@@ -235,6 +235,10 @@ describe('Rust module membership', () => {
     'fn f() { println!("{}", { #[path="../tests/helper.rs"] mod shared; 1 }); }',
     'fn f() { println!("{}", include!("generated.rs")); }',
     '#[tokio::test] async fn f() {}',
+    '#[some_macro::cfg] fn f() {}',
+    '#[some_macro::allow] fn f() {}',
+    'fn f() { custom::println!(); }',
+    'println!("item position");',
   ])('does not mistake unknown or shadowed expansion for a builtin: %s', async (source) => {
     const dir = fixture({ 'Cargo.toml': PACKAGE, 'src/lib.rs': source, 'tests/helper.rs': '' });
     expect(await loadRustCargoTargets(dir)).toBeUndefined();

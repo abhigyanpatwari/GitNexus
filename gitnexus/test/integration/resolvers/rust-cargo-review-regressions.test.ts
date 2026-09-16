@@ -33,6 +33,18 @@ async function check(files: Record<string, string>, expectedCalls: number, compl
 }
 
 describe('Cargo review regressions (#3294)', () => {
+  it.each(['', 'use crate::helper;', 'use super::helper;', 'use crate::*;', 'use super::*;'])(
+    'requires lexical import evidence within the same Cargo target: %s',
+    async (imported) => {
+      await check(
+        {
+          'src/lib.rs': 'fn helper() {} mod child;',
+          'src/child.rs': `${imported} pub fn caller() { helper(); }`,
+        },
+        imported === '' ? 0 : 1,
+      );
+    },
+  );
   it.each([
     '#[derive(Debug, Clone)] pub struct T;',
     'fn noisy() { println!("x"); assert_eq!(1, 1); let _v = vec![1, 2]; }',
