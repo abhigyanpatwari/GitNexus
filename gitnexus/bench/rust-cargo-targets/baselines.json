@@ -1,0 +1,31 @@
+{
+  "_what": "Baselines for bench/rust-cargo-targets/measure.mjs --check. Guards Cargo target membership after #3253: typical-Rust completeness, include!-abort, src/target and explicit target/entry.rs survival. Same approach as bench/parse-dispatch-rounds/baselines.json — exact floors and a fingerprint first; the only timing arm is a ratio.",
+  "_triage": "READ THIS BEFORE RE-RUNNING. packages, rust_files, typical_complete, include_unknown, explicit_disjoint, disjoint_false, shared_nested, shared_target_module and layout_fingerprint are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green. load_scaling_ratio is the only timing arm; runner contention dominates it, so re-run on an idle machine before investigating and read the reported `reps` first. If exactly one arm fails and it is that one, suspect the machine.",
+
+  "packages": 8,
+  "rust_files": 32,
+  "_shape_note": "THE FLOOR. Without these two, every arm below is a ceiling over nothing. typical_complete only asserts something while the corpus still walks many crates. Shrink it to one happy-path package and typical_complete still reads 1 and still passes, asserting a property the corpus no longer has.",
+
+  "typical_complete": 1,
+  "include_unknown": 1,
+  "explicit_disjoint": 1,
+  "disjoint_false": 8,
+  "shared_nested": 8,
+  "shared_target_module": 8,
+  "_membership_note": "Exact membership counts. typical_complete=1 pins that #[derive]/println!/assert_eq! do not abort the snapshot. include_unknown=1 pins item-position include! still aborts. explicit_disjoint=1 pins [lib] path = target/entry.rs against tests/helper.rs as a complete negative proof. disjoint_false=8 is each crate's lib vs tests/helper. shared_nested=8 and shared_target_module=8 pin src/nested.rs and src/target/mod.rs as library modules — the latter is the glob that would drop every path segment named target.",
+
+  "layout_fingerprint": "1f85812c93302dc4c5089b284c6c395379efc146bfc11b886de499417ec1ae01",
+  "_layout_fingerprint_note": "sha256 over sorted caller|candidate|share rows on the typical corpus. A change here is a BEHAVIOUR change — the loader returned a different membership set. Explain it, never re-baseline it alone.",
+
+  "load_scaling_budget": 1.6,
+  "_load_scaling_note": "(t_4n / t_n) / 4 for loadRustCargoTargets over the typical corpus; ~1.0 is linear. A RATIO rather than a millisecond ceiling, deliberately: wall-clock is runner-speed-dependent, and this repo has already been bitten by a fixed ms budget. Budget is 1.6, matching parse-dispatch-rounds' pack_scaling_budget. min-of-15 estimator.",
+
+  "_measured": {
+    "load_scaling_ratio": 0.924,
+    "load_scaling_ratio_samples": [0.681, 0.859, 0.798, 0.834, 0.924],
+    "small_ms": 24.43,
+    "large_ms_4x": 75.08,
+    "reps": 15
+  },
+  "_measured_note": "Maxima (and sample lists) over 5 consecutive local runs using the min-of-15 estimator from parse-dispatch-rounds. Milliseconds are diagnostic context only — nothing gates on them."
+}

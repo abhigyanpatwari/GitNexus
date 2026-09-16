@@ -306,6 +306,9 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // Cargo membership uses path normalization, descriptor validation, symlinks,
+  // and Rust native parsing (including long Windows source strings).
+  'test/unit/scope-resolution/rust-cargo-targets.test.ts',
   // The durable ParsedFile store's prune tolerates a chunk directory it cannot
   // delete (#3204). The failures that motivate it — held handles, read-only
   // mounts — are Windows- and macOS-flavored, and the permission-based case
