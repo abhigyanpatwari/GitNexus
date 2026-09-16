@@ -249,26 +249,25 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
-  // #2899: the "Inline staleness signal" section was deleted from the
-  // canonical `.claude/` copy by an unrelated commit while the plugin mirror
-  // kept it — the same silent-deletion shape as the UNKNOWN-risk guard above,
-  // just for a hand-authored section instead of the machine-managed block.
-  // Scoped to canonical + plugin only: at the time of writing the npm mirror
-  // (gitnexus/skills/gitnexus-guide.md) already lacks this section as
-  // pre-existing, unrelated drift, so folding it into the loop above would
-  // fail on that unrelated copy instead of guarding this regression.
-  it('keeps the inline-staleness-signal section in the canonical and plugin guide copies', () => {
-    for (const file of [
-      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-guide', 'SKILL.md'),
-      path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills', 'gitnexus-guide', 'SKILL.md'),
-    ]) {
+  // #2899 / #3291: every gitnexus-guide distribution documents the with-ref
+  // hot-tool field. A copy that drops the section (or stays on the pre-#3291
+  // "absent when current" contract) ships a silent disagreement about identity.
+  it('keeps the inline-staleness-signal section in every gitnexus-guide copy', () => {
+    for (const file of standardSkillCopies('gitnexus-guide')) {
       const content = fs.readFileSync(file, 'utf-8');
       expect(content).toContain('### Inline staleness signal');
       expect(content).toContain('commitsBehind');
       // #3256: the field gained `status`, and the `diverged` arm carries no
       // count — the reason an agent has to read `status` before the number.
-      expect(content).toContain('{ status, commitsBehind?, hint? }');
+      // #3291: it also gained the indexed ref, and is now emitted for every
+      // status rather than suppressed when the index is current — without the
+      // ref, `current` cannot distinguish an index of the default branch from
+      // one of a feature branch.
+      expect(content).toContain(
+        '{ status, branch?, lastCommit, indexedAt, measuredAgainst, commitsBehind?, hint? }',
+      );
       expect(content).toContain('"status": "diverged"');
+      expect(content).toContain('"measuredAgainst": "HEAD"');
     }
   });
 
@@ -300,6 +299,8 @@ describe('intended standard-skill improvements stay in every applicable copy', (
         'repo: "my-app"',
 
         'bind repo; explicit repo when >1 indexed, ask if ambiguous',
+
+        'Re-analyze only for `behind` or `diverged`',
       ];
       const copies = standardSkillCopies(name);
       expect(copies.length).toBeGreaterThan(1);
