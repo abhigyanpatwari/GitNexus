@@ -13,6 +13,13 @@ const NON_EXPANDING_ATTRIBUTES = new Set([
   'expect',
   'doc',
   'test',
+  'should_panic',
+  'ignore',
+  'derive',
+  'automatically_derived',
+  'proc_macro',
+  'proc_macro_derive',
+  'proc_macro_attribute',
   'inline',
   'cold',
   'no_mangle',
@@ -29,6 +36,35 @@ const NON_EXPANDING_ATTRIBUTES = new Set([
   'recursion_limit',
   'type_length_limit',
 ]);
+
+// Expression-position std macros cannot introduce `mod` items. Item-position
+// `include!` / unknown macros still abort the membership proof.
+const NON_EXPANDING_MACROS = new Set([
+  'print',
+  'println',
+  'eprint',
+  'eprintln',
+  'dbg',
+  'assert',
+  'assert_eq',
+  'assert_ne',
+  'vec',
+  'format',
+  'format_args',
+  'write',
+  'writeln',
+  'panic',
+  'todo',
+  'unimplemented',
+  'unreachable',
+]);
+
+function identName(node: Parser.SyntaxNode | undefined): string | undefined {
+  if (!node) return undefined;
+  if (node.type === 'identifier') return node.text;
+  if (node.type === 'scoped_identifier') return node.childForFieldName('name')?.text;
+  return undefined;
+}
 
 /** Decode a literal path without mistaking strings/comments for Rust syntax. */
 function literalPath(text: string): string | undefined {
@@ -65,7 +101,7 @@ export function rustModuleFiles(
       if (node.type === 'line_comment' || node.type === 'block_comment') continue;
       if (node.type === 'attribute_item' || node.type === 'inner_attribute_item') {
         const attribute = node.namedChildren[0];
-        const name = attribute?.namedChildren[0]?.text;
+        const name = identName(attribute?.namedChildren[0]);
         if (!name || !NON_EXPANDING_ATTRIBUTES.has(name)) return undefined;
         if (node.type === 'attribute_item') attributes.push(node);
         continue;
@@ -77,11 +113,18 @@ export function rustModuleFiles(
       if (node.type === 'extern_crate_declaration' && node.childForFieldName('alias') !== null) {
         return undefined;
       }
-      if (
-        node.type === 'macro_invocation' ||
-        (node.type === 'expression_statement' && node.namedChildren[0]?.type === 'macro_invocation')
-      ) {
-        return undefined;
+      const invocation =
+        node.type === 'macro_invocation'
+          ? node
+          : node.type === 'expression_statement' &&
+              node.namedChildren[0]?.type === 'macro_invocation'
+            ? node.namedChildren[0]
+            : undefined;
+      if (invocation) {
+        const name = identName(
+          invocation.childForFieldName('macro') ?? invocation.namedChildren[0],
+        );
+        if (!name || !NON_EXPANDING_MACROS.has(name)) return undefined;
       }
       if (node.type !== 'mod_item') {
         // Items (including external #[path] modules) can also occur in blocks.

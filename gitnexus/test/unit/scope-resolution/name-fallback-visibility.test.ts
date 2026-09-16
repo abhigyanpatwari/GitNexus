@@ -438,11 +438,21 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
-  it('does not refuse when the candidate file maps to no module path', () => {
+  it('REFUSES a crate-root candidate without cargo identity or a covering use', () => {
     expect(
       rustIsGlobalNameFallbackPlausible({
         site: BARE_SITE,
         callerParsed: mkCaller('src/b.rs'),
+        candidate: mkCandidate('lib.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(false);
+  });
+
+  it('allows a crate-root candidate when a covering use names it', () => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [{ kind: 'wildcard', targetRaw: 'crate' }]),
         candidate: mkCandidate('lib.rs', 'unique_helper_xyz'),
       }),
     ).toBe(true);
