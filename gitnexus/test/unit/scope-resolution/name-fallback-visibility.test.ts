@@ -3,11 +3,11 @@
  * shared path arithmetic they are built on.
  *
  * These hooks decide whether a UNIQUE-NAME GUESS is allowed to become a labeled
- * CALLS edge or must be dropped as impossible. The asymmetry matters for how
- * these tests are written: a wrong `false` deletes a real edge, so every case
- * that the language cannot decide is asserted to return `true`. "Refuses when
- * impossible" and "does not refuse when merely unproven" are therefore BOTH
- * requirements, and both are tested per language.
+ * CALLS edge or must be dropped by a language visibility rule. A wrong `false`
+ * deletes a real edge, so uncertainty alone must not invent a refusal. It also
+ * must not bypass an independent rule: Rust cross-file bare calls still need
+ * a visible use path, whether Cargo membership is known or unknown. Tests pin
+ * both required refusals and permitted guesses under incomplete evidence.
  *
  * Pure functions over synthetic stubs — no pipeline, no fixtures.
  */
@@ -438,11 +438,21 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
-  it('does not refuse when the candidate file maps to no module path', () => {
+  it('REFUSES a crate-root candidate without cargo identity or a covering use', () => {
     expect(
       rustIsGlobalNameFallbackPlausible({
         site: BARE_SITE,
         callerParsed: mkCaller('src/b.rs'),
+        candidate: mkCandidate('lib.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(false);
+  });
+
+  it('allows a crate-root candidate when a covering use names it', () => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [{ kind: 'wildcard', targetRaw: 'crate' }]),
         candidate: mkCandidate('lib.rs', 'unique_helper_xyz'),
       }),
     ).toBe(true);

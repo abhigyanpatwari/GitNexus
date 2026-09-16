@@ -763,7 +763,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // #3190. Old durable ParsedFiles lack the facts needed for scoped binding;
 // invalidate both stores so warm indexing actually applies the correction.
 // origin/main took 98 for #3219; 99 is the next free value.
-const SCHEMA_BUMP = 99;
+// v100 (#3253): Rust import captures preserve the leading `::` that selects
+// the extern prelude. Old warm captures erase it and cannot distinguish an
+// absolute library import from a same-named local module. Reparse both stores.
+// v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
+// instead of an empty target path; restricted pub(...) imports are no longer
+// captured as unrestricted reexports. Re-extract both facts on warm indexes.
+const SCHEMA_BUMP = 101;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

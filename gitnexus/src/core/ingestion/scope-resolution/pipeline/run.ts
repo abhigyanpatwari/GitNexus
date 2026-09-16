@@ -1102,6 +1102,7 @@ export function runScopeResolution(
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
           language: provider.language,
           isGlobalNameFallbackPlausible: provider.isGlobalNameFallbackPlausible,
+          resolutionConfig,
           sourceTextOf:
             provider.isGlobalNameFallbackPlausible !== undefined
               ? (filePath: string) => getFileContents().get(filePath)

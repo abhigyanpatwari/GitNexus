@@ -42,6 +42,7 @@ diagnosis.
 ```
 
 > If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
+> Hot-tool `staleness` names which index answered (`branch`/`lastCommit`) and how fresh it is (`status`). Re-analyze only for `behind` or `diverged` — `current` is identity, `unknown` is unmeasurable.
 
 ## Checklist
 
