@@ -211,9 +211,7 @@ try {
   console.log(
     `typical_complete       : ${typicalComplete}  (expect ${baselines.typical_complete})`,
   );
-  console.log(
-    `include_unknown        : ${includeUnknown}  (expect ${baselines.include_unknown})`,
-  );
+  console.log(`include_unknown        : ${includeUnknown}  (expect ${baselines.include_unknown})`);
   console.log(
     `explicit_disjoint      : ${explicitDisjoint}  (expect ${baselines.explicit_disjoint})`,
   );
