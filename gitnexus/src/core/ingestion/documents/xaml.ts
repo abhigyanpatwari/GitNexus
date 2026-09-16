@@ -68,10 +68,14 @@ export function extractXamlDeclarations(source: string): DocumentDeclaration[] {
         !DIRECTIVES.has(parts[1])
       )
         continue;
-      if (typeof value !== 'string' || !value.trim() || /[{}&]/.test(value)) continue;
+      if (typeof value !== 'string' || value.includes('&')) continue;
+      // A leading {} escapes the entire remaining value, including further braces.
+      const escaped = value.startsWith('{}');
+      const name = escaped ? value.slice(2) : value;
+      if (!name.trim() || (!escaped && /[{}]/.test(name))) continue;
       if (span?.startIndex === undefined || span.endIndex === undefined) continue;
       declarations.push({
-        name: value,
+        name,
         description: `${tag} x:${parts[1]} declaration`,
         startIndex: span.startIndex,
         startLine: lineAt(span.startIndex),

@@ -58,13 +58,39 @@ describe('XAML document declarations (#3202)', () => {
     expect(
       extractXamlDeclarations(`<Grid xmlns:x="${NS}">
       <Button Content="{Binding User}" Click="Save" />
-      <Style x:Key="{x:Type Button}" /><Style x:Key="{}escaped" />
+      <Style x:Key="{x:Type Button}" />
       <Button x:Name="" /><Style x:Key="A&amp;B" />
       <![CDATA[<Button x:Name="Fake" />]]>
     </Grid>`),
     ).toEqual([]);
     expect(extractXamlDeclarations('<Button x:Name="Undeclared" />')).toEqual([]);
   });
+
+  it.each([
+    ['{}escaped', 'escaped'],
+    ['{}{x:Type Button}', '{x:Type Button}'],
+    ['{}{}nested', '{}nested'],
+    ['{}left{right}', 'left{right}'],
+  ])('indexes escaped literal resource key %s as %s', (value, name) => {
+    const source = `<Style xmlns:q="${NS}" q:Key="${value}" />`;
+    expect(extractXamlDeclarations(source)).toEqual([
+      {
+        name,
+        description: 'Style x:Key declaration',
+        startIndex: 0,
+        startLine: 0,
+        endLine: 0,
+        level: 1,
+      },
+    ]);
+  });
+
+  it.each(['{}', '{}   ', '{}A&amp;B', '{}&#123;key'])(
+    'does not index empty or unresolved entity values after an escape: %s',
+    (value) => {
+      expect(extractXamlDeclarations(`<Style xmlns:x="${NS}" x:Key="${value}" />`)).toEqual([]);
+    },
+  );
 
   it('keeps duplicate names distinct and preserves Unicode names', () => {
     const declarations = extractXamlDeclarations(

@@ -87,12 +87,21 @@ describe('persisted XAML declarations (#3202)', () => {
       '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="BeforeFailure" />',
     );
     const options = { skipAgentsMd: true, registryName: 'copy-thread-failure-fixture' };
+    let initialThreads = 0;
+    const originalCopy = adapter.loadGraphToLbug;
+    const copy = vi.spyOn(adapter, 'loadGraphToLbug').mockImplementationOnce(async (...args) => {
+      const rows = await adapter.executeQuery("CALL current_setting('threads') RETURN *");
+      initialThreads = Number(rows[0].threads);
+      return originalCopy(...args);
+    });
     await runFullAnalysis(repo.dbPath, options, { onProgress() {} });
+    expect(initialThreads).toBeGreaterThan(0);
+    copy.mockClear();
     const { storagePath } = getStoragePaths(repo.dbPath);
     const before = await loadMeta(storagePath);
     expect(before).not.toBeNull();
     const failure = new Error('Injected incremental COPY failure');
-    const copy = vi.spyOn(adapter, 'loadGraphToLbug').mockImplementationOnce(async () => {
+    copy.mockImplementationOnce(async () => {
       const rows = await adapter.executeQuery("CALL current_setting('threads') RETURN *");
       expect(Number(rows[0].threads)).toBe(1);
       throw failure;
@@ -109,6 +118,51 @@ describe('persisted XAML declarations (#3202)', () => {
       indexedAt: before?.indexedAt,
       fileHashes: before?.fileHashes,
     });
+    copy.mockImplementationOnce(async (...args) => {
+      const rows = await adapter.executeQuery("CALL current_setting('threads') RETURN *");
+      expect(Number(rows[0].threads)).toBe(initialThreads);
+      return originalCopy(...args);
+    });
+    await runFullAnalysis(repo.dbPath, options, { onProgress() {} });
+    expect(copy).toHaveBeenCalledTimes(2);
+    expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
+    await initLbug(getStoragePaths(repo.dbPath).lbugPath);
+    expect((await searchFTSFromLbug('AfterFailure')).results).toEqual(
+      expect.arrayContaining([expect.objectContaining({ filePath: 'CopyFailure.xaml' })]),
+    );
+  }, 180_000);
+
+  it('persists and searches escaped literal resource keys without the escape prefix', async () => {
+    const repo = await setupMiniRepo();
+    const home = await createTempDir();
+    fixtures.push(repo, home);
+    vi.stubEnv('GITNEXUS_HOME', home.dbPath);
+    await fs.writeFile(
+      path.join(repo.dbPath, 'Escaped.xaml'),
+      '<Grid xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">' +
+        '<Style x:Key="{}EscapedResource" />' +
+        '<Style x:Key="{}{LiteralResource}" />' +
+        '<Style x:Key="{x:Type Button}" /></Grid>',
+    );
+    await runFullAnalysis(
+      repo.dbPath,
+      { skipAgentsMd: true, registryName: 'escaped-key-fixture' },
+      { onProgress() {} },
+    );
+    await initLbug(getStoragePaths(repo.dbPath).lbugPath);
+    const rows = await executePrepared(
+      'MATCH (n:Section) WHERE n.filePath = $file RETURN n.id AS id, n.name AS name ORDER BY name',
+      { file: 'Escaped.xaml' },
+    );
+    expect(rows).toEqual([
+      { id: expect.any(String), name: 'EscapedResource' },
+      { id: expect.any(String), name: '{LiteralResource}' },
+    ]);
+    for (const [index, term] of ['EscapedResource', 'LiteralResource'].entries()) {
+      expect((await searchFTSFromLbug(term)).results.flatMap((hit) => hit.nodeIds ?? [])).toContain(
+        rows[index].id,
+      );
+    }
   }, 180_000);
 
   it.each(['node-id', 'file-path'])(

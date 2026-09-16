@@ -17,7 +17,7 @@ describe('XAML pipeline documents (#3202)', () => {
     fixtures.push(repo);
     await fs.writeFile(
       path.join(repo.dbPath, 'Home.XAML'),
-      `<Page xmlns:x="${NS}" x:Class="App.Home">\n<Button x:Name="Save" Click="SaveClicked" />\n<Style x:Key="Accent" />\n</Page>`,
+      `<Page xmlns:x="${NS}" x:Class="App.Home">\n<Button x:Name="Save" Click="SaveClicked" />\n<Style x:Key="Accent" />\n<Style x:Key="{}EscapedAccent" />\n<Style x:Key="{}{x:Type Button}" />\n<Style x:Key="{x:Type Button}" />\n</Page>`,
     );
     await fs.writeFile(
       path.join(repo.dbPath, 'Broken.xaml'),
@@ -35,7 +35,9 @@ describe('XAML pipeline documents (#3202)', () => {
     expect(declarations.map((node) => node.properties.name).sort()).toEqual([
       'Accent',
       'App.Home',
+      'EscapedAccent',
       'Save',
+      '{x:Type Button}',
     ]);
     expect(declarations.find((node) => node.properties.name === 'Save')?.properties.startLine).toBe(
       1,
