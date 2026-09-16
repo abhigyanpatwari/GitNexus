@@ -1,0 +1,44 @@
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_fdbdebc2260a4a::t_0d9b642be964f4 279
+  s_fdbdebc2260a4a::t_537da54a4d2775 280,288
+gitnexus/src/core/ingestion/languages/rust/cargo-targets.ts
+  s_fdbdebc2260a4a::t_16f946e10b83e5 117-145,147-150,155-156,161-166,177,184-192,194,198-203,207,211-217,302,308,318,322,355
+  s_fdbdebc2260a4a::t_e20ba0b29c9700 146,208-210
+  s_fdbdebc2260a4a::t_e11fc32b677548 151-154,157-160,167-176,178-183,193,195-197,204-206
+gitnexus/src/core/ingestion/languages/rust/cargo-module-files.ts
+  s_fdbdebc2260a4a::t_dec00316576461 75-79
+gitnexus/test/integration/resolvers/rust-cargo-target-fallback.test.ts
+  s_fdbdebc2260a4a::t_aa8360a23927b4 8,11-19,25-30
+  s_fdbdebc2260a4a::t_44b2fd885ee153 9-10,20-24,51,58-59,61-64,70-74,91-92,94,96-97,101-104
+  s_fdbdebc2260a4a::t_dec00316576461 52-57,60,65-69,75-90,93,95,98-100,105-109,112-114,116-119
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_fdbdebc2260a4a::t_16f946e10b83e5 23,150-156,188,198-201
+  s_fdbdebc2260a4a::t_31ed6e85eb7a7b 157-159,177-181
+  s_fdbdebc2260a4a::t_dec00316576461 38-40,160-175
+  s_fdbdebc2260a4a::t_44b2fd885ee153 176,182-187,189-197,208,213
+  s_fdbdebc2260a4a::t_295057c09b24a8 41-47,202-207,209-212,232-237,251-255
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_e11fc32b677548 9,162-165,168-179,182,203-204
+  s_fdbdebc2260a4a::t_e20ba0b29c9700 161,166-167,180-181,183-202
+  s_fdbdebc2260a4a::t_dec00316576461 133-160,310
+gitnexus/src/storage/parse-cache.ts
+  s_fdbdebc2260a4a::t_0d9b642be964f4 766-769
+gitnexus/src/core/ingestion/languages/rust/import-decomposer.ts
+  s_fdbdebc2260a4a::t_fe34735e166247 149-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "b78e538c01bca91364181627c50db470eb56bac6",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
