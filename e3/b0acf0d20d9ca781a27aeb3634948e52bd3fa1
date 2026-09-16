@@ -1,0 +1,59 @@
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_fdbdebc2260a4a::t_a407ee4efe5c8e 28,136-138,143-144,159-160,175-185,227,280-292,296,299,304,324-325
+  s_fdbdebc2260a4a::t_2378428ed6d91a 326,332,347
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_fdbdebc2260a4a::t_86a2c22c275510 280-282,290
+  s_fdbdebc2260a4a::t_b5d876b0312dc7 278-279
+gitnexus/test/integration/resolvers/rust-cargo-review-regressions.test.ts
+  s_fdbdebc2260a4a::t_63208e0bad6e8c 39,96-98
+  s_fdbdebc2260a4a::t_8e18fe09d9f265 1-5,10-20,24,28-38,42-43,51-53,62-64,73-75,86,108-109,124-129,143-144,169-170
+  s_fdbdebc2260a4a::t_a87cdfa45628a3 6-9,21-23,25-27,40-41,44-50,54-61,65-72,77-83,87-95,99-107,110-123,130-142,145-154,159-166
+  s_fdbdebc2260a4a::t_c9e0a078588be0 155-158,167-168
+  s_fdbdebc2260a4a::t_a00cf11b9bdb41 76,84-85
+README.md
+  s_fdbdebc2260a4a::t_b5d876b0312dc7 665
+gitnexus/README.md
+  s_fdbdebc2260a4a::t_b5d876b0312dc7 434
+gitnexus/src/storage/parse-cache.ts
+  s_fdbdebc2260a4a::t_86a2c22c275510 769-771
+gitnexus/src/core/ingestion/languages/rust/cargo-module-files.ts
+  s_fdbdebc2260a4a::t_a87cdfa45628a3 37-70,95-102,104-111,139,145,158,163-164,166-191,218,230,237-244,256-261,263,276
+  s_fdbdebc2260a4a::t_19abc2d0d14317 3,17-19,71-94,103,112-118,138,142-144,146-151,155-157,159-162,165,192-210,227,229,245,262,274-275,277
+  s_fdbdebc2260a4a::t_63208e0bad6e8c 152-154
+  s_fdbdebc2260a4a::t_fc301549244017 228,231-236,264-273,278-280,324-329,336
+gitnexus/test/integration/resolvers/rust-cargo-target-fallback.test.ts
+  s_fdbdebc2260a4a::t_b5d876b0312dc7 6,188,325-329,338
+  s_fdbdebc2260a4a::t_c9e0a078588be0 223-227
+gitnexus/test/unit/scope-resolution/rust-cargo-targets.test.ts
+  s_fdbdebc2260a4a::t_63208e0bad6e8c 239-248,250
+  s_fdbdebc2260a4a::t_b5d876b0312dc7 151-152,192,215-218,221-238
+  s_fdbdebc2260a4a::t_a00cf11b9bdb41 72-79,182-191
+  s_fdbdebc2260a4a::t_a87cdfa45628a3 167-168,172-175,180-181,193-214,219-220
+  s_fdbdebc2260a4a::t_0bf91b7d2279b4 33-34,159-166,169-171,176-179
+  s_fdbdebc2260a4a::t_86a2c22c275510 11-12,31-32,35-36
+  s_fdbdebc2260a4a::t_e0cbfb3af7a526 249,251,572
+gitnexus/src/core/ingestion/languages/rust/cargo-targets.ts
+  s_fdbdebc2260a4a::t_63208e0bad6e8c 296,308,385
+  s_fdbdebc2260a4a::t_a87cdfa45628a3 40,127-138,360-361,390-396,404-410,416-427,491-493
+  s_fdbdebc2260a4a::t_bc5e1b9de7c4eb 4,11,122,126,139-140,214,347-348,386-389,402-403,411-415,428,470-471,480-482
+  s_fdbdebc2260a4a::t_0bf91b7d2279b4 362-375,397-401,463-469,472-479
+  s_fdbdebc2260a4a::t_5847cfedd80749 429-431,443,454,484,494-495
+gitnexus/src/core/ingestion/languages/rust/import-decomposer.ts
+  s_fdbdebc2260a4a::t_86a2c22c275510 179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "e3b0acf0d20d9ca781a27aeb3634948e52bd3fa1",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
