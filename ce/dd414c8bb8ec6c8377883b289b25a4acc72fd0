@@ -1,0 +1,19 @@
+gitnexus/bench/rust-cargo-targets/measure.mjs
+  s_fdbdebc2260a4a::t_9872797db4597e 214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "cedd414c8bb8ec6c8377883b289b25a4acc72fd0",
+  "prompts": {},
+  "sessions": {
+    "s_fdbdebc2260a4a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0a552-c259-7e23-8155-159cd0d73ccb",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
