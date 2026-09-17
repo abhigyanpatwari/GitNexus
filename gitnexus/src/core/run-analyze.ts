@@ -3662,11 +3662,10 @@ async function runFullAnalysisInner(
     //      delete outcome) and this process holds the exclusive DB lock (no
     //      concurrent writer).
     // Materialize runs outside the insert catch so a spill I/O failure is not
-    // treated as a benign PK conflict. Failed restore batches are omitted from
-    // the Phase 4 skip map so those nodes can be re-embedded.
+    // treated as a benign PK conflict. Any node with a failed restore batch is
+    // marked stale in the Phase 4 map so leftover chunks are deleted and rembedded.
     let restoredEmbeddingCount = 0;
-    const restoredEmbeddingNodeIds = new Set<string>();
-    const restoreAttemptedNodeIds = new Set<string>();
+    const restoreFailedNodeIds = new Set<string>();
     if (cacheRowCount(cachedSnapshot) > 0) {
       const cachedDims = snapshotEmbeddingDims(cachedSnapshot);
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -3698,7 +3697,6 @@ async function runFullAnalysisInner(
         let spillReader: EmbeddingSpillReader | undefined;
         try {
           for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
-            for (const row of batch) restoreAttemptedNodeIds.add(row.nodeId);
             let materialized;
             try {
               if (!spillReader && cachedSnapshot.spill && cachedSnapshot.embeddings.length === 0) {
@@ -3706,6 +3704,7 @@ async function runFullAnalysisInner(
               }
               materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
             } catch (err) {
+              for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
                   `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
@@ -3715,8 +3714,8 @@ async function runFullAnalysisInner(
             try {
               await batchInsert(executeWithReusedStatement, materialized);
               restoredEmbeddingCount += batch.length;
-              for (const row of batch) restoredEmbeddingNodeIds.add(row.nodeId);
             } catch (err) {
+              for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
               log(
                 `Warning: could not restore ${batch.length} cached embedding(s) ` +
                   `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
@@ -4025,7 +4024,11 @@ async function runFullAnalysisInner(
       if (cachedSnapshot.embeddingNodeIds.size > 0) {
         existingEmbeddings = new Map<string, string>();
         for (const e of cachedSnapshot.rows) {
-          if (restoreAttemptedNodeIds.has(e.nodeId) && !restoredEmbeddingNodeIds.has(e.nodeId)) {
+          if (restoreFailedNodeIds.has(e.nodeId)) {
+            // Any failed batch for this node: mark stale so Phase 4 DELETEs
+            // leftover chunks and re-embeds. Omitting the id would treat the
+            // node as new and PK-conflict on rows that already restored.
+            existingEmbeddings.set(e.nodeId, STALE_HASH_SENTINEL);
             continue;
           }
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);

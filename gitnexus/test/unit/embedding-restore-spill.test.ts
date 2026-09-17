@@ -168,8 +168,19 @@ describe('embedding-restore-spill (#3306)', () => {
     ).toThrow(/dim mismatch/);
     abortCachedEmbeddingsBuilder(builder);
 
+    const shortPath = path.join(os.tmpdir(), `gitnexus-embed-restore-short-${process.pid}.bin`);
+    writeFileSync(shortPath, Buffer.from('NOPE'));
+    spills.push({ path: shortPath });
+    expect(() => readSpillVectors({ path: shortPath, dims: DIMS, rowCount: 1 }, [0])).toThrow(
+      /invalid embedding spill header/,
+    );
+
+    const badMagic = Buffer.alloc(12);
+    badMagic.write('NOPE', 0, 4, 'ascii');
+    badMagic.writeUInt8(1, 4);
+    badMagic.writeUInt32LE(DIMS, 5);
     const badPath = path.join(os.tmpdir(), `gitnexus-embed-restore-bad-${process.pid}.bin`);
-    writeFileSync(badPath, Buffer.from('NOPE'));
+    writeFileSync(badPath, badMagic);
     spills.push({ path: badPath });
     expect(() => readSpillVectors({ path: badPath, dims: DIMS, rowCount: 1 }, [0])).toThrow(
       /invalid embedding spill header/,
