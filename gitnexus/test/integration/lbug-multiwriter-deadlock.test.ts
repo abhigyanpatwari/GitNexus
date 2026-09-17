@@ -108,15 +108,17 @@ async function writeWithRetry(
 }
 
 // Bounded timeout so a genuine deadlock fails the test instead of hanging CI
-// (mirrors the convention in parse-impl-large-fixture.test.ts). 60s is far
-// above the ~2.5s this run takes locally on Linux — deliberately generous
-// margin since native LadybugDB operations are slower on Windows CI and this
-// test is registered into the Windows-inclusive LBUG_NATIVE group. A timeout
-// here is a genuine deadlock regression signal, not routine flake — if
-// Windows CI shows this margin is too tight (or too loose to catch a real
-// regression promptly), tighten/loosen this constant based on observed
-// LBUG_NATIVE run times rather than guessing again.
-const DEADLOCK_TIMEOUT_MS = 60_000;
+// (mirrors the convention in parse-impl-large-fixture.test.ts). Linux local
+// and ubuntu/macOS CI finish in ~3–8s, so 60s stays a hang detector there.
+// Windows CI typical is ~14–16s, but the native checkpoint-vs-reader stress
+// has a long tail: same-day windows-latest 3/3 jobs completed in 13803ms /
+// 15488ms / 15658ms typical and 56518ms on the slow tail — 4s under the
+// previous 60s budget. That budget therefore false-positives under Windows
+// runner load (PR #3290 job 104765024772: both vitest retries timed out at
+// 60s while Ubuntu/macOS and this PR's prior Windows 3/3 at 15.7s passed).
+// win32 uses 180s (~3× the observed tail) and still fails a hang that never
+// completes. Do not skip Windows; this test is in LBUG_NATIVE for a reason.
+const DEADLOCK_TIMEOUT_MS = process.platform === 'win32' ? 180_000 : 60_000;
 
 // Unlike lbug-core-adapter.test.ts / lbug-close-handle-release.test.ts /
 // lbug-orphan-sidecar-recovery.test.ts, this test never closes and reopens

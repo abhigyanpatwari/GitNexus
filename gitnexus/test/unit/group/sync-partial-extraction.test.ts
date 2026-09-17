@@ -4,7 +4,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import ts from 'typescript';
+import * as t from '@babel/types';
+import {
+  type AstNode,
+  collectDescendants,
+  lineAt,
+  nodeStart,
+  nodeText,
+  parseTypeScript,
+  staticMemberName,
+} from '../../helpers/parse-typescript-source.js';
 import type {
   ContractRegistry,
   ExtractedContract,
@@ -182,65 +191,63 @@ describe('syncGroup when one extractor fails partway through a repo', () => {
  */
 const SYNC_SOURCE_PATH = fileURLToPath(new URL('../../../src/core/group/sync.ts', import.meta.url));
 
-/** Every node under `node`, in source order. No branching, so nothing is skippable. */
-function descendants(node: ts.Node): ts.Node[] {
-  const out: ts.Node[] = [];
-  const visit = (n: ts.Node): void => {
-    out.push(n);
-    n.forEachChild(visit);
-  };
-  node.forEachChild(visit);
-  return out;
-}
-
 /** `const <name>: StoredContract[] = []` — the per-repo staging buffer. */
-function isStagingBufferDeclaration(node: ts.Node): node is ts.VariableDeclaration {
+function isStagingBufferDeclaration(node: t.Node): node is t.VariableDeclarator {
+  if (!t.isVariableDeclarator(node) || !t.isIdentifier(node.id)) return false;
+  const annotation = node.id.typeAnnotation;
+  if (
+    !annotation ||
+    !t.isTSTypeAnnotation(annotation) ||
+    !t.isTSArrayType(annotation.typeAnnotation)
+  ) {
+    return false;
+  }
+  const elementType = annotation.typeAnnotation.elementType;
   return (
-    ts.isVariableDeclaration(node) &&
-    node.type !== undefined &&
-    ts.isArrayTypeNode(node.type) &&
-    ts.isTypeReferenceNode(node.type.elementType) &&
-    ts.isIdentifier(node.type.elementType.typeName) &&
-    node.type.elementType.typeName.text === 'StoredContract' &&
-    node.initializer !== undefined &&
-    ts.isArrayLiteralExpression(node.initializer) &&
-    node.initializer.elements.length === 0 &&
-    ts.isVariableDeclarationList(node.parent) &&
-    (node.parent.flags & ts.NodeFlags.Const) !== 0
+    t.isTSTypeReference(elementType) &&
+    t.isIdentifier(elementType.typeName) &&
+    elementType.typeName.name === 'StoredContract' &&
+    node.init !== undefined &&
+    node.init !== null &&
+    t.isArrayExpression(node.init) &&
+    node.init.elements.length === 0 &&
+    t.isVariableDeclaration((node as AstNode).parent) &&
+    ((node as AstNode).parent as t.VariableDeclaration).kind === 'const'
   );
 }
 
 /** `x.apply(dest, args)` — an argument-limited append in non-spread clothing. */
-function isApplyCall(call: ts.CallExpression): boolean {
-  return ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'apply';
+function isApplyCall(call: t.CallExpression): boolean {
+  return (
+    (t.isMemberExpression(call.callee) || t.isOptionalMemberExpression(call.callee)) &&
+    staticMemberName(call.callee) === 'apply'
+  );
 }
 
-function describeCall(sourceFile: ts.SourceFile, call: ts.CallExpression): string {
-  const { line } = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile));
-  return `${line + 1}: ${call.getText(sourceFile).replace(/\s+/g, ' ')}`;
+function describeCall(source: string, call: t.CallExpression): string {
+  const line = lineAt(source, nodeStart(call));
+  return `${line}: ${nodeText(source, call).replace(/\s+/g, ' ')}`;
 }
 
 describe('the per-repo staging append in sync.ts', () => {
   it('appends the staged contracts without spreading them into a call', () => {
     const source = fs.readFileSync(SYNC_SOURCE_PATH, 'utf-8');
-    const sourceFile = ts.createSourceFile(
-      SYNC_SOURCE_PATH,
-      source,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS,
-    );
+    const { ast } = parseTypeScript(SYNC_SOURCE_PATH, source);
 
-    const allNodes = descendants(sourceFile);
+    const allNodes = collectDescendants(ast);
     const stagingBuffers = allNodes.filter(isStagingBufferDeclaration);
     // One staging buffer, or this gate no longer knows which code it guards.
-    expect(stagingBuffers.map((d) => d.name.getText(sourceFile))).toHaveLength(1);
-    const stagingNames = stagingBuffers.map((d) => d.name.getText(sourceFile));
+    const stagingNames = stagingBuffers.map((d) =>
+      t.isIdentifier(d.id) ? d.id.name : nodeText(source, d.id),
+    );
+    expect(stagingNames).toHaveLength(1);
 
     // The block the buffer is declared in — the per-repo loop body.
+    // VariableDeclarator → VariableDeclaration → BlockStatement (Babel has no
+    // extra VariableStatement wrapper).
     const declaringBlocks = stagingBuffers
-      .map((d) => d.parent.parent.parent) // declaration → list → statement → block
-      .filter(ts.isBlock);
+      .map((d) => (d as AstNode).parent?.parent)
+      .filter((node): node is t.BlockStatement => t.isBlockStatement(node));
     expect(declaringBlocks).toHaveLength(1);
 
     // The extractor try-block: a DIRECT statement of that block whose `try` reads
@@ -249,22 +256,22 @@ describe('the per-repo staging append in sync.ts', () => {
     // ancestor reads the buffer too. Widening to "any try that mentions it" pulls
     // in the entire function body, manifest-window spreads and all.
     const extractorTryBlocks = declaringBlocks.flatMap((block) =>
-      block.statements
-        .filter(ts.isTryStatement)
+      block.body
+        .filter((statement): statement is t.TryStatement => t.isTryStatement(statement))
         .filter((statement) =>
-          descendants(statement.tryBlock).some(
-            (n) => ts.isIdentifier(n) && stagingNames.includes(n.text),
+          collectDescendants(statement.block).some(
+            (n) => t.isIdentifier(n) && stagingNames.includes(n.name),
           ),
         )
-        .map((statement) => statement.tryBlock),
+        .map((statement) => statement.block),
     );
     expect(extractorTryBlocks).toHaveLength(1);
 
     const unboundedAppends = extractorTryBlocks.flatMap((block) =>
-      descendants(block)
-        .filter(ts.isCallExpression)
-        .filter((call) => call.arguments.some(ts.isSpreadElement) || isApplyCall(call))
-        .map((call) => describeCall(sourceFile, call)),
+      collectDescendants(block)
+        .filter((node): node is t.CallExpression => t.isCallExpression(node))
+        .filter((call) => call.arguments.some((arg) => t.isSpreadElement(arg)) || isApplyCall(call))
+        .map((call) => describeCall(source, call)),
     );
 
     // Every staged contract must reach `autoContracts` through a bounded loop:

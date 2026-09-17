@@ -104,6 +104,7 @@ describe('auto-sync', () => {
         'projects:',
         '  - local_path: /tmp/repos',
         '    group_name: back_end',
+        '    pdg: true',
         '    overwrite_local_changes: true',
         '    branches: [test, master, test]',
         '    remote_urls:',
@@ -124,6 +125,7 @@ describe('auto-sync', () => {
     expect(loaded.config.projects[0]).toMatchObject({
       localPath: '/tmp/repos',
       groupName: 'back_end',
+      pdg: true,
       overwriteLocalChanges: true,
       branches: ['test', 'master'],
       remoteUrls: ['git@gitee.com:qts_server/qts_account.git'],
@@ -153,6 +155,7 @@ describe('auto-sync', () => {
     expect(loaded.config.maxConcurrency).toBe(1);
     expect(loaded.config.analyzeFailureThreshold).toBe(3);
     expect(loaded.config.projects[0].groupName).toBeUndefined();
+    expect(loaded.config.projects[0].pdg).toBeUndefined();
     expect(loaded.config.projects[0].overwriteLocalChanges).toBe(false);
   });
 
@@ -209,12 +212,12 @@ describe('auto-sync', () => {
     expect(() => parseAutoSyncConfig(config('600000ms'), '/tmp/watch_config.yml')).not.toThrow();
   });
 
-  it('rejects analyze_timeout values above half the sync interval', async () => {
+  it('allows a 30 minute analysis timeout with 5 minute polling', async () => {
     await fs.writeFile(
       path.join(gitnexusHome, 'watch_config.yml'),
       [
-        'sync_interval_minutes: 10',
-        'analyze_timeout: 6m',
+        'sync_interval_minutes: 5',
+        'analyze_timeout: 30m',
         'projects:',
         '  - local_path: /tmp/repos',
         '    branch: master',
@@ -225,11 +228,43 @@ describe('auto-sync', () => {
 
     const loaded = await loadAutoSyncConfig();
 
-    expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
-    expect(loaded.message).toContain(
-      'analyze_timeout must not exceed half of sync_interval_minutes (5m)',
-    );
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) throw new Error('expected valid config');
+    expect(loaded.config.analyzeTimeoutMs).toBe(1_800_000);
+  });
+
+  it('rejects analyze_timeout values above the Node timer limit', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 5',
+          'analyze_timeout: 2147483648ms',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('analyze_timeout must not exceed 2147483647ms');
+  });
+
+  it('rejects non-boolean per-project pdg configuration', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    pdg: yes',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('projects[0].pdg must be a boolean');
   });
 
   it('rejects invalid analyze_failure_threshold values', async () => {
@@ -608,6 +643,7 @@ describe('auto-sync', () => {
           codeCommitId: 'abc',
           analyzedCommitId: 'abc',
           lastAnalyzeStatus: 'success',
+          requestedPdg: true,
           analyzeConsecutiveFailures: 2,
           lastAnalyzeError: 'old error',
           lastSyncTime: '2026-06-30T00:00:00.000Z',
@@ -624,6 +660,7 @@ describe('auto-sync', () => {
         codeCommitId: 'abc',
         analyzedCommitId: 'abc',
         lastAnalyzeStatus: 'success',
+        requestedPdg: true,
         analyzeConsecutiveFailures: 2,
         lastAnalyzeError: 'old error',
         lastSyncTime: '2026-06-30T00:00:00.000Z',
@@ -669,6 +706,11 @@ describe('auto-sync', () => {
           codeCommitId: 123,
           analyzeConsecutiveFailures: -1,
           lastSyncTime: null,
+        },
+        '/tmp/repos/invalid-pdg|main': {
+          codeCommitId: 'abc',
+          requestedPdg: 'true',
+          lastSyncTime: '2026-06-30T00:00:00.000Z',
         },
       }),
     );

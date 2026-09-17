@@ -508,6 +508,10 @@ analyze_timeout: 5m
 projects:
   - local_path: /absolute/path/to/clones
     branches: [main, master]
+    # pdg: omit = preserve live index mode; true = keep PDG current;
+    # false = init default (warns, then strips PDG on the next successful rebuild).
+    # Do not paste pdg: false onto an existing watch file unless you intend to drop PDG.
+    pdg: false
     overwrite_local_changes: false
     remote_urls:
       - git@github.com:owner/repo.git
@@ -516,7 +520,8 @@ projects:
 - `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
 - Remote URLs must use SSH SCP form and are limited to GitHub, GitLab, or Gitee.
 - `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
-- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
+- Set per-project `pdg: true` to keep the full control-flow, control/data-dependence, and taint layers current. Untouched configs that omit `pdg` preserve an existing index's mode and cannot silently strip PDG data. Do not paste `pdg: false` from this example onto an existing watch file unless you intend to drop PDG; an explicit `false` opt-out logs a warning before removing existing PDG data. Auto-sync requests atomic incremental publication where supported, so readers keep using the previous graph until a successful update is ready and a failed staged analysis leaves it intact; unsupported paths retain the analyzer's existing in-place behavior.
+- Analysis runs in an isolated worker; `analyze_timeout` defaults to half of `sync_interval_minutes`, but may be longer (for example, a `30m` analysis timeout with `5` minute polling) up to Node's timer limit. If a polling tick arrives while analysis is active, it is coalesced into one immediate follow-up run using the newest commit. If the parent times out and leaves that worker running, the follow-up is deferred to the next interval so a leftover lock holder is not counted as a hard analyze failure. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
 - Add `group_name` only after creating that group with `gitnexus group create <name>`. Partial clone output is isolated and removed after 14 days.
 
 See the [full auto-sync configuration and runtime reference](gitnexus/README.md#gitnexus-auto-sync) for concurrency, timeouts, failure thresholds, and runtime files.
@@ -897,9 +902,10 @@ The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAs
 
 ```bash
 git clone https://github.com/abhigyanpatwari/gitnexus.git
-cd gitnexus/gitnexus-shared && npm install && npm run build
-cd ../gitnexus-web && npm install
-npm run dev
+cd gitnexus/gitnexus-web && npm install
+# Compile sibling gitnexus-shared with this package's TypeScript 7 (do not npm ci shared).
+cd ../gitnexus-shared && node ../gitnexus-web/node_modules/typescript/lib/tsc.js
+cd ../gitnexus-web && npm run dev
 # Then in another terminal, start the backend the frontend connects to:
 npx gitnexus@latest serve
 ```
