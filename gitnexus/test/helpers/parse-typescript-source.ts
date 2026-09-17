@@ -8,12 +8,16 @@
 import { parse } from '@babel/parser';
 import {
   VISITOR_KEYS,
+  isBinaryExpression,
   isNode,
+  isStringLiteral,
+  isTemplateLiteral,
   type Comment,
   type File,
   type MemberExpression,
   type Node,
   type OptionalMemberExpression,
+  type TemplateLiteral,
 } from '@babel/types';
 
 export type AstNode = Node & { parent?: AstNode };
@@ -61,6 +65,24 @@ export function staticMemberName(
   node: MemberExpression | OptionalMemberExpression,
 ): string | undefined {
   return node.computed || node.property.type !== 'Identifier' ? undefined : node.property.name;
+}
+
+function templateLiteralText(node: TemplateLiteral): string | undefined {
+  if (node.expressions.length > 0) return undefined;
+  return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join('');
+}
+
+/** Compile-time string from a literal, template without holes, or `+` chain. */
+export function staticStringValue(node: Node | undefined | null): string | undefined {
+  if (!node) return undefined;
+  if (isStringLiteral(node)) return node.value;
+  if (isTemplateLiteral(node)) return templateLiteralText(node);
+  if (isBinaryExpression(node) && node.operator === '+') {
+    const left = staticStringValue(node.left);
+    const right = staticStringValue(node.right);
+    if (left !== undefined && right !== undefined) return `${left}${right}`;
+  }
+  return undefined;
 }
 
 function attachParents(node: AstNode, parent?: AstNode): void {

@@ -8,6 +8,7 @@ import { runWebBuild, shouldBuildWeb, shouldPreserveWebOutput } from '../../scri
 
 /** Default prepare/build stay CLI-only; the web UI ships only via prepack --web. */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const CLI_TSC_JS = 'node ../gitnexus/node_modules/typescript/lib/tsc.js';
 const WEB_TSC_JS = 'node ../gitnexus-web/node_modules/typescript/lib/tsc.js';
 const PACKAGE_JSON = JSON.parse(
   readFileSync(path.join(REPO_ROOT, 'gitnexus/package.json'), 'utf8'),
@@ -284,7 +285,7 @@ describe('workflows that need the web UI install it themselves', () => {
 describe('setup-gitnexus job budget', () => {
   it('does not npm-ci gitnexus-shared (TypeScript 7 optional-platform install stalls CI)', () => {
     const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
-    expect(String(shared?.run)).toBe('node ../gitnexus/node_modules/typescript/lib/tsc.js');
+    expect(String(shared?.run)).toBe(CLI_TSC_JS);
     expect(String(shared?.run)).not.toContain('.bin');
     expect(shared?.if).toContain("lifecycle-scripts == 'false'");
     expect(
@@ -326,9 +327,13 @@ describe('setup-gitnexus job budget', () => {
       readFileSync(path.join(REPO_ROOT, 'gitnexus-web/vercel.json'), 'utf8'),
     ) as { installCommand?: string };
     const install = String(vercel.installCommand);
-    expect(install).toContain('npm ci');
+    // Vercel runs installCommand with NODE_ENV=production, so npm ci drops
+    // typescript unless --include=dev is on that install (not a later step).
+    expect(install).toContain('npm ci --include=dev');
     expect(install).toContain('gitnexus-shared');
-    expect(install.indexOf('npm ci')).toBeLessThan(install.indexOf('gitnexus-shared'));
+    expect(install.indexOf('npm ci --include=dev')).toBeLessThan(
+      install.indexOf('gitnexus-shared'),
+    );
     expect(install).toContain(WEB_TSC_JS);
     expect(install).not.toMatch(/gitnexus-shared[^&]*npm (?:ci|install)/);
   });

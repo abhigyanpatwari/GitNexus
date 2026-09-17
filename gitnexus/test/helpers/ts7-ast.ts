@@ -6,7 +6,7 @@
  * same Checker methods against the Go compiler, and `typescript/unstable/ast`
  * is the matching syntax tree.
  */
-export { NodeFlags, SyntaxKind } from 'typescript/unstable/ast';
+export { SyntaxKind } from 'typescript/unstable/ast';
 export type {
   CallExpression,
   Expression,

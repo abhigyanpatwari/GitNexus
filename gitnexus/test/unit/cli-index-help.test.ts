@@ -10,6 +10,7 @@ import {
   forEachChild,
   parseTypeScript,
   staticMemberName,
+  staticStringValue,
 } from '../helpers/parse-typescript-source.js';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
@@ -73,23 +74,6 @@ const allHelpCommands = [
   ['group', 'query'],
   ['group', 'contracts'],
 ];
-
-function templateLiteralText(node: t.TemplateLiteral): string | undefined {
-  if (node.expressions.length > 0) return undefined;
-  return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join('');
-}
-
-function staticStringValue(node: t.Node | undefined | null): string | undefined {
-  if (!node) return undefined;
-  if (t.isStringLiteral(node)) return node.value;
-  if (t.isTemplateLiteral(node)) return templateLiteralText(node);
-  if (t.isBinaryExpression(node) && node.operator === '+') {
-    const left = staticStringValue(node.left);
-    const right = staticStringValue(node.right);
-    if (left !== undefined && right !== undefined) return `${left}${right}`;
-  }
-  return undefined;
-}
 
 function extractRegisteredHelpDescriptions(): string[] {
   const descriptions = new Set<string>();

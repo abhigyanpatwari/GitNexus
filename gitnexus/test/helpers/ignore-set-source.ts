@@ -4,19 +4,14 @@
  * Those sets are module-private, and exporting them purely to be testable would
  * widen a production surface to satisfy a test — the call
  * `receiver-twin-list-drift.test.ts` documents. So the guards read the source
- * instead, through a TypeScript parser already in the CLI's dependencies
- * (`@babel/parser`). The same Babel walk is used by
- * `query-determinism-guard.test.ts`, `cli-index-help.test.ts`, and
- * `sync-partial-extraction.test.ts`. Mode 2/4 grammar-literal collection in
- * `literal-collectors.ts` uses the TypeScript 7 unstable AST (`ts7-ast.ts`),
- * not this helper.
+ * instead, through `@babel/parser` (`parse-typescript-source.ts`).
  *
- * Using a real TypeScript parser is what makes the guards trustworthy. A text
- * scanner has to decide whether a delimiter opens a comment or sits inside a
- * string, and it gets that wrong in both directions here: the ignore-list
- * comments quote paths and carry an apostrophe (`Next.js's`), while a glob
- * string such as `'** / *'` contains a comment-open sequence. It also has to
- * guess which bracket belongs to the declaration rather than to a type
+ * Using an AST parser for TypeScript syntax is what makes the guards
+ * trustworthy. A text scanner has to decide whether a delimiter opens a comment
+ * or sits inside a string, and it gets that wrong in both directions here: the
+ * ignore-list comments quote paths and carry an apostrophe (`Next.js's`), while
+ * a glob string such as `'** / *'` contains a comment-open sequence. It also
+ * has to guess which bracket belongs to the declaration rather than to a type
  * annotation. Each of those is a way to silently read fewer members — and a
  * guard that quietly stops seeing members is the exact defect these guards
  * exist to catch.
@@ -62,7 +57,7 @@ export const readSource = (file: string): string => readFileSync(file, 'utf8');
 export const setEntries = (source: string, setName: string): string[] => {
   const { ast } = parseTypeScript('ignore-set-source.ts', source);
 
-  let elements: Array<t.Expression | t.SpreadElement | t.ArgumentPlaceholder | null> | undefined;
+  let elements: t.ArrayExpression['elements'] | undefined;
   const visit = (node: t.Node): void => {
     if (
       elements === undefined &&
