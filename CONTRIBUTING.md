@@ -16,14 +16,19 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 **Prerequisites:** Node.js — `gitnexus/` requires `^22.18.0 || >=24.11.0` and `gitnexus-web/` requires `^20.19.0 || >=22.12.0` (enforced via the `engines` field in each package). Use `nvm install` to match the local version.
 
 1. Clone the repository.
-2. **Shared package:** `cd gitnexus-shared && npm install && npm run build`
-3. **CLI / MCP package:** `cd ../gitnexus && npm install && npm run build`
-4. **Web UI (if needed):** `cd ../gitnexus-web && npm install`
-5. Run tests as described in [TESTING.md](TESTING.md).
+2. **CLI / MCP package:** `cd gitnexus && npm install && npm run build`
+   `prepare` / `scripts/build.js` compiles `gitnexus-shared` with
+   `node …/typescript/lib/tsc.js` from this package. Do not `npm install` or
+   `npm ci` inside `gitnexus-shared/` — that is a second TypeScript 7
+   optional-platform install and is not what `setup-gitnexus` does.
+3. **Web UI (if needed):** `cd gitnexus-web && npm install`
+   If you skipped step 2, compile shared with the web compiler first:
+   `cd gitnexus-shared && node ../gitnexus-web/node_modules/typescript/lib/tsc.js`
+4. Run tests as described in [TESTING.md](TESTING.md).
 
-The CLI build imports `gitnexus-shared`, so a fresh clone must install and build
-the shared package before running `npm install` in `gitnexus/`. This is the same
-order used by the repository's `setup-gitnexus` CI action.
+The CLI build imports `gitnexus-shared`, so `gitnexus-shared/dist` must exist
+before `gitnexus` typecheck. That emit uses a parent package's TypeScript 7
+`lib/tsc.js`, matching `setup-gitnexus`, `setup-gitnexus-web`, and Vercel.
 
 ### Containerized development (optional)
 
@@ -70,7 +75,7 @@ Commits within a PR may use any style — only the **merged PR title** shows up 
 ## Before you open a PR
 
 - [ ] Tests pass for the packages you touched (`gitnexus` and/or `gitnexus-web`).
-- [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`.
+- [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`. Those commands use TypeScript 7. The web app tsconfig lists `lib` `DOM`/`DOM.Iterable` and `jsx: react-jsx` so React/JSX typecheck on 7; Vite/`vitest` keep `@vitejs/plugin-react` with the automatic JSX runtime. Build `gitnexus-shared/dist` first with a parent `lib/tsc.js` (a `gitnexus` install/`npm run build` does this). Repo ESLint stays syntax-only on a TypeScript 5.x peer until typescript-eslint supports 7.
 - [ ] No secrets, tokens, or machine-specific paths committed.
 - [ ] Documentation updated if behavior or public CLI/MCP contract changes.
 - [ ] Every new `GITNEXUS_*` environment variable has a row in the **Environment variables** table in [README.md](README.md) — variable, default, effect, and when to tune it.

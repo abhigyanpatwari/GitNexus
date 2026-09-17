@@ -72,7 +72,7 @@
     "@vitest/coverage-v8": "^4.1.11",
     "jsdom": "^30.0.1",
     "tree-sitter-wasms": "^0.1.13",
-    "typescript": "^5.4.5",
+    "typescript": "^7.0.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10",
     "wait-on": "^9.1.0"

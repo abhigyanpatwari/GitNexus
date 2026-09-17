@@ -4,8 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
-import * as ts from 'typescript';
+import * as t from '@babel/types';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  forEachChild,
+  parseTypeScript,
+  staticMemberName,
+  staticStringValue,
+} from '../helpers/parse-typescript-source.js';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
@@ -69,17 +75,6 @@ const allHelpCommands = [
   ['group', 'contracts'],
 ];
 
-function staticStringValue(node: ts.Node | undefined): string | undefined {
-  if (!node) return undefined;
-  if (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = staticStringValue(node.left);
-    const right = staticStringValue(node.right);
-    if (left !== undefined && right !== undefined) return `${left}${right}`;
-  }
-  return undefined;
-}
-
 function extractRegisteredHelpDescriptions(): string[] {
   const descriptions = new Set<string>();
   const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts'];
@@ -87,27 +82,30 @@ function extractRegisteredHelpDescriptions(): string[] {
   for (const relativePath of sourceFiles) {
     const filePath = path.join(repoRoot, relativePath);
     const source = fs.readFileSync(filePath, 'utf8');
-    const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+    const { ast } = parseTypeScript(filePath, source);
 
-    function visit(node: ts.Node): void {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-        const method = node.expression.name.text;
-        const description =
-          method === 'description'
-            ? staticStringValue(node.arguments[0])
-            : method === 'option' || method === 'requiredOption'
-              ? staticStringValue(node.arguments[1])
-              : undefined;
+    function visit(node: t.Node): void {
+      if (
+        t.isCallExpression(node) &&
+        (t.isMemberExpression(node.callee) || t.isOptionalMemberExpression(node.callee))
+      ) {
+        const method = staticMemberName(node.callee);
+        let description: string | undefined;
+        if (method === 'description') {
+          description = staticStringValue(node.arguments[0]);
+        } else if (method === 'option' || method === 'requiredOption') {
+          description = staticStringValue(node.arguments[1]);
+        }
 
         if (description && /[A-Za-z]/.test(description)) {
           descriptions.add(description.replace(/\s+/g, ' ').trim());
         }
       }
 
-      ts.forEachChild(node, visit);
+      forEachChild(node, visit);
     }
 
-    visit(sourceFile);
+    visit(ast);
   }
 
   return [...descriptions].filter((description) => description.length > 0).sort();
