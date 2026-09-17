@@ -128,3 +128,9 @@ updates:
       include: scope
     labels:
       - dependencies
+    ignore:
+      # Keep shared on the same TypeScript major as CLI/web. A shared-only
+      # major bump reintroduces a compiler split this repo unified.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major

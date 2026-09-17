@@ -70,7 +70,7 @@ Commits within a PR may use any style — only the **merged PR title** shows up 
 ## Before you open a PR
 
 - [ ] Tests pass for the packages you touched (`gitnexus` and/or `gitnexus-web`).
-- [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`.
+- [ ] Typecheck passes: `npx tsc --noEmit` in `gitnexus/` and `npx tsc -b --noEmit` in `gitnexus-web/`. Those commands use TypeScript 7. Build `gitnexus-shared/dist` first (parent `lib/tsc.js` or a local shared build). Repo ESLint stays syntax-only on a TypeScript 6 peer.
 - [ ] No secrets, tokens, or machine-specific paths committed.
 - [ ] Documentation updated if behavior or public CLI/MCP contract changes.
 - [ ] Every new `GITNEXUS_*` environment variable has a row in the **Environment variables** table in [README.md](README.md) — variable, default, effect, and when to tune it.

@@ -113,7 +113,7 @@ Run the commands relevant to the touched area. If something cannot be run in the
 
 ### 4.1 Build ordering
 
-- [ ] `gitnexus-shared/` dist is built before consuming packages are typechecked or tested (CI uses the `setup-gitnexus` action for this — local runs must match).
+- [ ] `gitnexus-shared/` dist is built before consuming packages are typechecked or tested (CI uses the `setup-gitnexus` action, which compiles shared with the parent TypeScript 7 `lib/tsc.js` — local runs must match).
 
 ### 4.2 If `gitnexus/` changed
 
