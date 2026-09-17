@@ -5,8 +5,11 @@
  * widen a production surface to satisfy a test — the call
  * `receiver-twin-list-drift.test.ts` documents. So the guards read the source
  * instead, through a TypeScript parser already in the CLI's dependencies
- * (`@babel/parser`). The same shape is used by `literal-collectors.ts`,
- * `query-determinism-guard.test.ts`, and `cli-index-help.test.ts`.
+ * (`@babel/parser`). The same Babel walk is used by
+ * `query-determinism-guard.test.ts`, `cli-index-help.test.ts`, and
+ * `sync-partial-extraction.test.ts`. Mode 2/4 grammar-literal collection in
+ * `literal-collectors.ts` uses the TypeScript 7 unstable AST (`ts7-ast.ts`),
+ * not this helper.
  *
  * Using a real TypeScript parser is what makes the guards trustworthy. A text
  * scanner has to decide whether a delimiter opens a comment or sits inside a

@@ -902,9 +902,10 @@ The web UI uses the same indexing pipeline as the CLI but runs entirely in WebAs
 
 ```bash
 git clone https://github.com/abhigyanpatwari/gitnexus.git
-cd gitnexus/gitnexus-shared && npm install && npm run build
-cd ../gitnexus-web && npm install
-npm run dev
+cd gitnexus/gitnexus-web && npm install
+# Compile sibling gitnexus-shared with this package's TypeScript 7 (do not npm ci shared).
+cd ../gitnexus-shared && node ../gitnexus-web/node_modules/typescript/lib/tsc.js
+cd ../gitnexus-web && npm run dev
 # Then in another terminal, start the backend the frontend connects to:
 npx gitnexus@latest serve
 ```

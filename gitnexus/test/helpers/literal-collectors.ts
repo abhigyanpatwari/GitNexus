@@ -9,7 +9,7 @@
  * FOUR modes (plan KTD3):
  *   1. Config reflection — import `*-extractors/configs/*.ts`, read each
  *      config-shaped export's node-type-array keys. Exact `config.language`.
- *   2. AST scan (TypeScript 7 syntax tree, no type-checker) over the EXTRACTION
+ *   2. AST scan (TypeScript 7 program SourceFile; no Checker gating) over the EXTRACTION
  *      surface — `*-extractors/**`, every `languages/<lang>/captures.ts`, and
  *      `export-detection.ts`. Collected BY CONSUMPTION SITE: `<n>.type === '..'`,
  *      `childForFieldName('..')` (capturing the receiver node type when an

@@ -129,7 +129,7 @@ Run the commands relevant to the touched area. If something cannot be run in the
 
 ### 4.4 If `gitnexus-shared/` changed
 
-- [ ] Shared package builds cleanly (`npm run build` in `gitnexus-shared/`)
+- [ ] Shared package builds cleanly from a parent TypeScript 7 shim after that parent is installed (`cd gitnexus-shared && node ../gitnexus/node_modules/typescript/lib/tsc.js`, or `node ../gitnexus-web/node_modules/typescript/lib/tsc.js` after a web install). Do not `npm install` / `npm ci` in `gitnexus-shared/` for this check.
 - [ ] Dependent packages still typecheck and test after the shared change — verify both CLI and web consumers together
 
 ### 4.5 If CI workflows or release pipelines changed
