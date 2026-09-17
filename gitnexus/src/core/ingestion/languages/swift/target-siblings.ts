@@ -23,8 +23,9 @@
  * finalize and must not be mutated.
  */
 
-import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
 
 export function populateSwiftTargetSiblings(
@@ -47,7 +48,8 @@ export function populateSwiftTargetSiblings(
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
   for (const [, group] of filesByTarget) {
-    if (group.length < 2) continue; // no siblings to share
+    populateNestedTypeFragments(group, indexes, augmentations);
+    if (group.length < 2) continue; // no file siblings to share
     const siblings = group.map((parsed) => ({
       filePath: parsed.filePath,
       defs: [...parsed.localDefs] as SymbolDefinition[],
@@ -68,6 +70,81 @@ export function populateSwiftTargetSiblings(
       }
     }
   }
+}
+
+/**
+ * A Swift extension is a second lexical fragment of its extended type. Make
+ * nested types declared by the primary fragment visible from every same-target
+ * fragment with the same logical owner. Keeping this on class scopes preserves
+ * lexical precedence when an unrelated top-level type has the same simple name.
+ */
+function populateNestedTypeFragments(
+  group: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+): void {
+  const scopesByOwner = new Map<string, ScopeId[]>();
+  for (const parsed of group) {
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Class') continue;
+      const key = scopeOwnerKey(scope);
+      if (key === undefined) continue;
+      const scopes = scopesByOwner.get(key) ?? [];
+      if (!scopesByOwner.has(key)) scopesByOwner.set(key, scopes);
+      scopes.push(scope.id);
+    }
+  }
+
+  for (const parsed of group) {
+    for (const def of parsed.localDefs) {
+      if (!isClassLike(def.type) || def.ownerId === undefined) continue;
+      const owner = indexes.defs.byId.get(def.ownerId);
+      if (owner === undefined) continue;
+      const targetScopes = scopesByOwner.get(logicalOwnerKey(owner));
+      if (targetScopes === undefined) continue;
+      const name = simpleName(def);
+      if (name === '') continue;
+      for (const scopeId of targetScopes) {
+        const bucket = getAugmentationBucket(augmentations, scopeId, name);
+        if (bucket.some((binding) => binding.def.nodeId === def.nodeId)) continue;
+        bucket.push({ def, origin: 'namespace' });
+      }
+    }
+  }
+}
+
+function scopeOwnerKey(scope: Scope): string | undefined {
+  const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
+  if (owner !== undefined) return logicalOwnerKey(owner);
+
+  // Extension scopes carry no synthetic class def. Their locally bound
+  // members are already qualified with the extended type (`Container.f`).
+  let inferredOwner: string | undefined;
+  for (const refs of scope.bindings.values()) {
+    for (const { def } of refs) {
+      const qualifiedName = def.qualifiedName;
+      if (qualifiedName === undefined) continue;
+      const separator = qualifiedName.lastIndexOf('.');
+      if (separator <= 0) continue;
+      const candidate = logicalOwnerKey({
+        ...def,
+        qualifiedName: qualifiedName.slice(0, separator),
+      });
+      if (inferredOwner !== undefined && inferredOwner !== candidate) return undefined;
+      inferredOwner = candidate;
+    }
+  }
+  return inferredOwner;
+}
+
+function logicalOwnerKey(def: SymbolDefinition): string {
+  const qualifiedName = def.qualifiedName ?? def.nodeId;
+  const namespacePrefix = def.namespacePrefix ?? '';
+  return `${namespacePrefix.length}:${namespacePrefix}:${qualifiedName}`;
+}
+
+function simpleName(def: SymbolDefinition): string {
+  return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
 }
 
 function getAugmentationBucket(

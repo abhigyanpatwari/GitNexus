@@ -1252,6 +1252,33 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
 });
 
 // ---------------------------------------------------------------------------
+// A bare constructor inside an extension must prefer a nested type owned by
+// the extended type over an unrelated top-level type with the same short name.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift nested constructor lookup in an extension (#3262)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-nested-constructor-extension'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves Entry(id:text:) to Container.Entry and not the top-level Entry', () => {
+    const entryCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'makeEntry' && call.target === 'Entry',
+    );
+
+    expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
+    expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
+      false,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // F75: protocol property requirements (`var title: String { get }`) are
 // extracted as Property symbols owned by the protocol. Before the fix these
 // protocol_property_declaration nodes were dropped (the structure query and
