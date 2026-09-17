@@ -1312,7 +1312,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
     }
   });
 
-  it('keeps swallowed restore rows in the Phase 4 skip-set (KTD7)', async () => {
+  it('omits failed restore rows from the Phase 4 skip-set so they can be re-embedded', async () => {
     const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
     const CACHED_HASH = 'cached-stable-hash';
     const stubNode = {
@@ -1409,11 +1409,17 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
         stats: { embeddings: 1 },
       });
 
+      const logs: string[] = [];
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(tmpRepo.dbPath, { force: true }, { onProgress: () => {} });
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
 
       expect(runEmbeddingPipeline).toHaveBeenCalled();
-      expect(existingEmbeddings?.get(RESTORED_NODE_ID)).toBe(CACHED_HASH);
+      expect(existingEmbeddings?.has(RESTORED_NODE_ID)).toBe(false);
+      expect(logs.some((m) => m.includes('Warning: could not restore'))).toBe(true);
     } finally {
       await tmpRepo.cleanup();
     }

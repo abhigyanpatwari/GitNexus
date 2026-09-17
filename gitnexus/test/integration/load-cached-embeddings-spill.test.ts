@@ -64,32 +64,39 @@ describe('loadCachedEmbeddings streaming (#3306)', () => {
       expect(cached.embeddings).toEqual([]);
       expect(cached.spill?.rowCount).toBe(12);
       expect(cached.rows).toHaveLength(12);
+      const wanted = new Set([rows[0]!.nodeId, rows[5]!.nodeId, rows[10]!.nodeId]);
       const subset = materializeCachedEmbeddings(
         cached,
-        cached.rows.filter((_, i) => i % 5 === 0),
+        cached.rows.filter((meta) => wanted.has(meta.nodeId)),
       );
       expect(subset).toHaveLength(3);
-      expect(subset[0]?.embedding[0]).toBe(1);
-      expect(subset[1]?.embedding[0]).toBe(6);
-      expect(subset[2]?.embedding[0]).toBe(11);
-      expect(subset[0]?.contentHash).toBe(rows[0]!.contentHash);
+      const byId = new Map(subset.map((row) => [row.nodeId, row]));
+      expect(byId.get(rows[0]!.nodeId)?.embedding[0]).toBe(1);
+      expect(byId.get(rows[5]!.nodeId)?.embedding[0]).toBe(6);
+      expect(byId.get(rows[10]!.nodeId)?.embedding[0]).toBe(11);
+      expect(byId.get(rows[0]!.nodeId)?.contentHash).toBe(rows[0]!.contentHash);
     } finally {
       disposeEmbeddingSpill(cached.spill);
     }
   });
 
   it('flips from RAM to spill once a non-zero in-memory limit is crossed', async () => {
-    const { adapter } = await seedDb(8);
+    const { adapter, rows } = await seedDb(8);
     const cached = await adapter.loadCachedEmbeddings({ inMemoryRowLimit: 4 });
     try {
       expect(cached.embeddings).toEqual([]);
       expect(cached.spill?.rowCount).toBe(8);
       expect(cached.rows).toHaveLength(8);
       expect(fs.statSync(cached.spill!.path).size).toBe(12 + 8 * EMBEDDING_DIMS * 4);
-      const subset = materializeCachedEmbeddings(cached, cached.rows.slice(2, 4));
+      const wanted = new Set([rows[2]!.nodeId, rows[3]!.nodeId]);
+      const subset = materializeCachedEmbeddings(
+        cached,
+        cached.rows.filter((meta) => wanted.has(meta.nodeId)),
+      );
       expect(subset).toHaveLength(2);
-      expect(subset[0]?.embedding[0]).toBe(3);
-      expect(subset[1]?.embedding[0]).toBe(4);
+      const byId = new Map(subset.map((row) => [row.nodeId, row]));
+      expect(byId.get(rows[2]!.nodeId)?.embedding[0]).toBe(3);
+      expect(byId.get(rows[3]!.nodeId)?.embedding[0]).toBe(4);
     } finally {
       disposeEmbeddingSpill(cached.spill);
     }

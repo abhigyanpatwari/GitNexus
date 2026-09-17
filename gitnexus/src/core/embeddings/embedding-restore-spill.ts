@@ -10,7 +10,7 @@
  * spill. Restore materializes only the rows that Phase 3.5 will re-insert,
  * in the existing 200-row batches.
  */
-import { closeSync, existsSync, openSync, readSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, openSync, readSync, unlinkSync, writeSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,7 +61,8 @@ export interface LoadCachedEmbeddingsOptions {
 export interface CachedEmbeddingsBuilder {
   embeddingNodeIds: Set<string>;
   rows: CachedEmbeddingMeta[];
-  inMemory: CachedEmbedding[] | null;
+  /** Float32 vectors kept in RAM until the in-memory row limit is exceeded. */
+  inMemory: Float32Array[] | null;
   inMemoryRowLimit: number;
   writer: EmbeddingSpillWriter;
 }
@@ -124,9 +125,7 @@ export function coerceEmbeddingToFloat32(embedding: unknown): Float32Array | nul
   if (ArrayBuffer.isView(embedding) && !(embedding instanceof DataView)) {
     const view = embedding as Exclude<ArrayBufferView, DataView> & { length: number };
     if (view.length === 0) return null;
-    const out = new Float32Array(view.length);
-    for (let i = 0; i < view.length; i++) out[i] = Number(view[i]);
-    return out;
+    return Float32Array.from({ length: view.length }, (_, i) => Number(view[i]));
   }
   if (
     typeof embedding === 'object' &&
@@ -136,9 +135,7 @@ export function coerceEmbeddingToFloat32(embedding: unknown): Float32Array | nul
       ? (embedding as unknown[])
       : Array.from(embedding as Iterable<unknown>);
     if (arr.length === 0) return null;
-    const out = new Float32Array(arr.length);
-    for (let i = 0; i < arr.length; i++) out[i] = Number(arr[i]);
-    return out;
+    return Float32Array.from(arr, (value) => Number(value));
   }
   return null;
 }
@@ -147,6 +144,57 @@ export function float32ToNumberArray(vec: Float32Array): number[] {
   const out = new Array<number>(vec.length);
   for (let i = 0; i < vec.length; i++) out[i] = vec[i]!;
   return out;
+}
+
+/**
+ * `fs.writeSync` can return a short byte count. Loop until the whole buffer
+ * lands, matching `sync-csv-writer.ts`, so a partial write never advances
+ * `rowCount` on a truncated vector.
+ */
+function writeAllSync(fd: number, data: Uint8Array): void {
+  let offset = 0;
+  while (offset < data.length) {
+    const n = writeSync(fd, data, offset, data.length - offset);
+    if (n <= 0) {
+      throw new Error(`embedding spill short write: wrote ${n} of ${data.length - offset} bytes`);
+    }
+    offset += n;
+  }
+}
+
+function unlinkBestEffort(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+  } catch {
+    /* ENOENT or already removed */
+  }
+}
+
+const liveSpillPaths = new Set<string>();
+let spillExitHookInstalled = false;
+
+function trackLiveSpillPath(filePath: string): void {
+  liveSpillPaths.add(filePath);
+  if (!spillExitHookInstalled) {
+    spillExitHookInstalled = true;
+    process.on('exit', () => {
+      for (const spillPath of liveSpillPaths) {
+        unlinkBestEffort(spillPath);
+      }
+    });
+  }
+}
+
+function untrackLiveSpillPath(filePath: string): void {
+  liveSpillPaths.delete(filePath);
+}
+
+/** Best-effort unlink of every tracked spill. Safe to call more than once. */
+export function discardLiveEmbeddingSpills(): void {
+  for (const spillPath of [...liveSpillPaths]) {
+    unlinkBestEffort(spillPath);
+    liveSpillPaths.delete(spillPath);
+  }
 }
 
 export class EmbeddingSpillWriter {
@@ -170,17 +218,18 @@ export class EmbeddingSpillWriter {
     if (this.fd === null) {
       this.dims = vec.length;
       this.fd = openSync(this.path, 'wx', 0o600);
+      trackLiveSpillPath(this.path);
       const header = Buffer.alloc(SPILL_HEADER_BYTES);
       header.write(SPILL_MAGIC, 0, 4, 'ascii');
       header.writeUInt8(SPILL_VERSION, 4);
       header.writeUInt32LE(this.dims, 5);
-      writeSync(this.fd, header);
+      writeAllSync(this.fd, header);
     } else if (vec.length !== this.dims) {
       throw new Error(
         `embedding dim mismatch while spilling: got ${vec.length}, expected ${this.dims}`,
       );
     }
-    writeSync(this.fd, Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
+    writeAllSync(this.fd, Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
     this.rowCount++;
   }
 
@@ -198,6 +247,7 @@ export class EmbeddingSpillWriter {
   }
 
   abort(): void {
+    const opened = this.fd !== null;
     if (this.fd !== null) {
       try {
         closeSync(this.fd);
@@ -207,15 +257,74 @@ export class EmbeddingSpillWriter {
       this.fd = null;
     }
     this.closed = true;
-    this.unlinkQuiet();
+    if (opened || this.rowCount > 0) {
+      this.unlinkQuiet();
+    }
   }
 
   private unlinkQuiet(): void {
+    unlinkBestEffort(this.path);
+    untrackLiveSpillPath(this.path);
+  }
+}
+
+/** Validates the spill header once and reads vectors without reopening the file. */
+export class EmbeddingSpillReader {
+  private fd: number | null = null;
+  private readonly bytesPerVec: number;
+  readonly dims: number;
+  readonly rowCount: number;
+
+  constructor(spill: EmbeddingVectorSpill) {
+    this.rowCount = spill.rowCount;
+    const fd = openSync(spill.path, 'r');
     try {
-      unlinkSync(this.path);
-    } catch {
-      /* ENOENT or already removed */
+      const header = Buffer.alloc(SPILL_HEADER_BYTES);
+      const headerRead = readSync(fd, header, 0, SPILL_HEADER_BYTES, 0);
+      if (headerRead !== SPILL_HEADER_BYTES || header.toString('ascii', 0, 4) !== SPILL_MAGIC) {
+        throw new Error(`invalid embedding spill header: ${spill.path}`);
+      }
+      if (header.readUInt8(4) !== SPILL_VERSION) {
+        throw new Error(`unsupported embedding spill version in ${spill.path}`);
+      }
+      const dims = header.readUInt32LE(5);
+      if (dims !== spill.dims) {
+        throw new Error(`embedding spill dim mismatch: file ${dims}, expected ${spill.dims}`);
+      }
+      this.dims = dims;
+      this.bytesPerVec = dims * 4;
+      this.fd = fd;
+    } catch (err) {
+      closeSync(fd);
+      throw err;
     }
+  }
+
+  read(indices: readonly number[]): Float32Array[] {
+    if (this.fd === null) {
+      throw new Error('embedding spill reader already closed');
+    }
+    const out: Float32Array[] = [];
+    for (const index of indices) {
+      if (!Number.isInteger(index) || index < 0 || index >= this.rowCount) {
+        throw new Error(`embedding spill index out of range: ${index}`);
+      }
+      const offset = SPILL_HEADER_BYTES + index * this.bytesPerVec;
+      const copy = new Float32Array(this.dims);
+      const bytes = new Uint8Array(copy.buffer, copy.byteOffset, this.bytesPerVec);
+      const n = readSync(this.fd, bytes, 0, this.bytesPerVec, offset);
+      if (n !== this.bytesPerVec) {
+        throw new Error(`short embedding spill read at index ${index}`);
+      }
+      out.push(copy);
+    }
+    return out;
+  }
+
+  close(): void {
+    if (this.fd === null) return;
+    closeSync(this.fd);
+    this.fd = null;
   }
 }
 
@@ -223,49 +332,18 @@ export function readSpillVectors(
   spill: EmbeddingVectorSpill,
   indices: readonly number[],
 ): Float32Array[] {
-  const fd = openSync(spill.path, 'r');
+  const reader = new EmbeddingSpillReader(spill);
   try {
-    const header = Buffer.alloc(SPILL_HEADER_BYTES);
-    const headerRead = readSync(fd, header, 0, SPILL_HEADER_BYTES, 0);
-    if (headerRead !== SPILL_HEADER_BYTES || header.toString('ascii', 0, 4) !== SPILL_MAGIC) {
-      throw new Error(`invalid embedding spill header: ${spill.path}`);
-    }
-    if (header.readUInt8(4) !== SPILL_VERSION) {
-      throw new Error(`unsupported embedding spill version in ${spill.path}`);
-    }
-    const dims = header.readUInt32LE(5);
-    if (dims !== spill.dims) {
-      throw new Error(`embedding spill dim mismatch: file ${dims}, expected ${spill.dims}`);
-    }
-    const bytesPerVec = dims * 4;
-    const out: Float32Array[] = [];
-    const buf = Buffer.alloc(bytesPerVec);
-    for (const index of indices) {
-      if (!Number.isInteger(index) || index < 0 || index >= spill.rowCount) {
-        throw new Error(`embedding spill index out of range: ${index}`);
-      }
-      const offset = SPILL_HEADER_BYTES + index * bytesPerVec;
-      const n = readSync(fd, buf, 0, bytesPerVec, offset);
-      if (n !== bytesPerVec) {
-        throw new Error(`short embedding spill read at index ${index}`);
-      }
-      const copy = new Float32Array(dims);
-      Buffer.from(copy.buffer).set(buf);
-      out.push(copy);
-    }
-    return out;
+    return reader.read(indices);
   } finally {
-    closeSync(fd);
+    reader.close();
   }
 }
 
 export function disposeEmbeddingSpill(spill?: EmbeddingVectorSpill): void {
   if (!spill?.path) return;
-  try {
-    if (existsSync(spill.path)) unlinkSync(spill.path);
-  } catch {
-    /* best-effort */
-  }
+  unlinkBestEffort(spill.path);
+  untrackLiveSpillPath(spill.path);
 }
 
 export function createCachedEmbeddingsBuilder(
@@ -307,21 +385,13 @@ export function ingestCachedEmbeddingRow(
   builder.rows.push(meta);
 
   if (builder.inMemory && builder.rows.length <= builder.inMemoryRowLimit) {
-    builder.inMemory.push({
-      nodeId: meta.nodeId,
-      chunkIndex: meta.chunkIndex,
-      startLine: meta.startLine,
-      endLine: meta.endLine,
-      contentHash: meta.contentHash,
-      embedding: float32ToNumberArray(f32),
-    });
+    builder.inMemory.push(f32);
     return;
   }
 
   if (builder.inMemory) {
-    for (const cached of builder.inMemory) {
-      const prior = coerceEmbeddingToFloat32(cached.embedding);
-      if (prior) builder.writer.append(prior);
+    for (const prior of builder.inMemory) {
+      builder.writer.append(prior);
     }
     builder.inMemory = null;
   }
@@ -331,11 +401,19 @@ export function ingestCachedEmbeddingRow(
 export function finalizeCachedEmbeddingsSnapshot(
   builder: CachedEmbeddingsBuilder,
 ): CachedEmbeddingsSnapshot {
-  if (builder.inMemory) {
+  const inMemory = builder.inMemory;
+  if (inMemory) {
     builder.writer.abort();
     return {
       embeddingNodeIds: builder.embeddingNodeIds,
-      embeddings: builder.inMemory,
+      embeddings: builder.rows.map((meta, i) => ({
+        nodeId: meta.nodeId,
+        chunkIndex: meta.chunkIndex,
+        startLine: meta.startLine,
+        endLine: meta.endLine,
+        contentHash: meta.contentHash,
+        embedding: float32ToNumberArray(inMemory[i]!),
+      })),
       rows: builder.rows,
     };
   }
@@ -354,13 +432,14 @@ export function abortCachedEmbeddingsBuilder(builder: CachedEmbeddingsBuilder): 
 export function materializeCachedEmbeddings(
   snapshot: CachedEmbeddingsSnapshot,
   metas: readonly CachedEmbeddingMeta[],
+  spillReader?: EmbeddingSpillReader,
 ): CachedEmbedding[] {
   if (metas.length === 0) return [];
   if (snapshot.spill && snapshot.embeddings.length === 0) {
-    const vectors = readSpillVectors(
-      snapshot.spill,
-      metas.map((meta) => meta.vectorIndex),
-    );
+    const indices = metas.map((meta) => meta.vectorIndex);
+    const vectors = spillReader
+      ? spillReader.read(indices)
+      : readSpillVectors(snapshot.spill, indices);
     return metas.map((meta, i) => ({
       nodeId: meta.nodeId,
       chunkIndex: meta.chunkIndex,

@@ -223,8 +223,10 @@ import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
 import {
   cacheRowCount,
+  discardLiveEmbeddingSpills,
   disposeEmbeddingSpill,
   emptyCachedEmbeddingsSnapshot,
+  EmbeddingSpillReader,
   materializeCachedEmbeddings,
   normalizeCachedEmbeddings,
   snapshotEmbeddingDims,
@@ -1225,6 +1227,7 @@ export async function runFullAnalysis(
       runnerIdentityAtBootstrap,
     );
   } finally {
+    discardLiveEmbeddingSpills();
     lock.release();
   }
 }
@@ -2209,16 +2212,13 @@ async function runFullAnalysisInner(
   // The default-preserve branch is what makes a routine `analyze` (e.g. a
   // post-commit hook) safe: a multi-minute embedding pass is no longer
   // silently dropped just because the caller omitted `--embeddings`.
-  let cachedEmbeddingNodeIds = new Set<string>();
   let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
   const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
     cachedSnapshot = normalizeCachedEmbeddings(raw);
-    cachedEmbeddingNodeIds = cachedSnapshot.embeddingNodeIds;
   };
   const discardCachedEmbeddings = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
     cachedSnapshot = emptyCachedEmbeddingsSnapshot();
-    cachedEmbeddingNodeIds = new Set();
   };
   const discardCachedEmbeddingSpill = (): void => {
     disposeEmbeddingSpill(cachedSnapshot.spill);
@@ -2262,9 +2262,6 @@ async function runFullAnalysisInner(
   // silently dropping embeddings on a mispredicted run. The re-insert
   // step gates itself on the actual `isIncremental` value to avoid
   // PK-conflicts when the incremental writeback path keeps the rows.
-  //
-  // Vectors stream to a temp spill (#3306) so a large table cannot OOM the
-  // V8 heap during "Caching embeddings..."; only metadata stays in RAM.
   //
   // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
   // On a dirty-recovery run it happens only after the sidecar quarantine
@@ -3002,7 +2999,7 @@ async function runFullAnalysisInner(
       // while rows survive ⇒ `hasExisting` false ⇒ `shouldLoadCache` false), i.e.
       // it would fix the wipe by deleting the safeguard. Covers
       // `--drop-embeddings --embeddings` too — the rescue repopulates
-      // `cachedEmbeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
+      // `cachedSnapshot.embeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
       // the already-embedded set, so the very nodes the user asked to REGENERATE
       // would be skipped.
       if (
@@ -3020,11 +3017,10 @@ async function runFullAnalysisInner(
         // extension. Rows whose owning node is gone are dropped by Phase 3.5's
         // live-graph filter, exactly as on any other wiped path.
         try {
-          const rescued = normalizeCachedEmbeddings(await loadCachedEmbeddings());
-          if (cacheRowCount(rescued) > 0) {
-            adoptCachedEmbeddings(rescued);
+          adoptCachedEmbeddings(await loadCachedEmbeddings());
+          if (cacheRowCount(cachedSnapshot) > 0) {
             log(
-              `Preserving ${cacheRowCount(rescued)} embedding row(s) across the forced rebuild ` +
+              `Preserving ${cacheRowCount(cachedSnapshot)} embedding row(s) across the forced rebuild ` +
                 `(the index metadata did not account for them).`,
             );
           }
@@ -3660,9 +3656,12 @@ async function runFullAnalysisInner(
     //      propagates errors (a completed writeback means a deterministic
     //      delete outcome) and this process holds the exclusive DB lock (no
     //      concurrent writer).
-    // The per-batch try/catch stays as a last-resort guard only — it no
-    // longer fires on the happy path.
+    // Materialize runs outside the insert catch so a spill I/O failure is not
+    // treated as a benign PK conflict. Failed restore batches are omitted from
+    // the Phase 4 skip map so those nodes can be re-embedded.
     let restoredEmbeddingCount = 0;
+    const restoredEmbeddingNodeIds = new Set<string>();
+    const restoreAttemptedNodeIds = new Set<string>();
     if (cacheRowCount(cachedSnapshot) > 0) {
       const cachedDims = snapshotEmbeddingDims(cachedSnapshot);
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -3691,16 +3690,36 @@ async function runFullAnalysisInner(
               });
         progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
-        for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
-          try {
-            await batchInsert(
-              executeWithReusedStatement,
-              materializeCachedEmbeddings(cachedSnapshot, batch),
-            );
-            restoredEmbeddingCount += batch.length;
-          } catch {
-            /* last-resort guard — conflict-free by construction above */
+        let spillReader: EmbeddingSpillReader | undefined;
+        try {
+          for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
+            for (const row of batch) restoreAttemptedNodeIds.add(row.nodeId);
+            let materialized;
+            try {
+              if (!spillReader && cachedSnapshot.spill && cachedSnapshot.embeddings.length === 0) {
+                spillReader = new EmbeddingSpillReader(cachedSnapshot.spill);
+              }
+              materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
+            } catch (err) {
+              log(
+                `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
+                  `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
+              );
+              continue;
+            }
+            try {
+              await batchInsert(executeWithReusedStatement, materialized);
+              restoredEmbeddingCount += batch.length;
+              for (const row of batch) restoredEmbeddingNodeIds.add(row.nodeId);
+            } catch (err) {
+              log(
+                `Warning: could not restore ${batch.length} cached embedding(s) ` +
+                  `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
+              );
+            }
           }
+        } finally {
+          spillReader?.close();
         }
 
         // Legacy-orphan sweep (FIX 3, finder B): the live-graph filter's
@@ -3998,9 +4017,12 @@ async function runFullAnalysisInner(
       const embeddingIdentity = embeddingIdentityForRun;
       // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
       let existingEmbeddings: Map<string, string> | undefined;
-      if (cachedEmbeddingNodeIds.size > 0) {
+      if (cachedSnapshot.embeddingNodeIds.size > 0) {
         existingEmbeddings = new Map<string, string>();
         for (const e of cachedSnapshot.rows) {
+          if (restoreAttemptedNodeIds.has(e.nodeId) && !restoredEmbeddingNodeIds.has(e.nodeId)) {
+            continue;
+          }
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
@@ -4077,7 +4099,7 @@ async function runFullAnalysisInner(
           progress('embeddings', scaled, label);
         },
         {},
-        cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+        cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
         existingEmbeddings,
         {
           forceReembedNodeIds: pendingEmbeddingNodeIds,
@@ -4703,7 +4725,6 @@ async function runFullAnalysisInner(
     progress('done', 100, 'Done');
 
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
-    discardCachedEmbeddingSpill();
 
     return {
       repoName: projectName,

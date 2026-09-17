@@ -7,7 +7,9 @@ import {
   cacheRowCount,
   createCachedEmbeddingsBuilder,
   DEFAULT_EMBEDDING_CACHE_IN_MEMORY_ROW_LIMIT,
+  discardLiveEmbeddingSpills,
   disposeEmbeddingSpill,
+  EmbeddingSpillReader,
   finalizeCachedEmbeddingsSnapshot,
   ingestCachedEmbeddingRow,
   materializeCachedEmbeddings,
@@ -169,5 +171,66 @@ describe('embedding-restore-spill (#3306)', () => {
     expect(() => readSpillVectors({ path: badPath, dims: DIMS, rowCount: 1 }, [0])).toThrow(
       /invalid embedding spill header/,
     );
+  });
+
+  it('reuses an open spill reader across materialize batches', () => {
+    const builder = createCachedEmbeddingsBuilder({
+      inMemoryRowLimit: 0,
+      spillDir: os.tmpdir(),
+    });
+    for (let i = 0; i < 4; i++) {
+      ingestCachedEmbeddingRow(builder, row(`n${i}`, i + 1), true);
+    }
+    const snapshot = finalizeCachedEmbeddingsSnapshot(builder);
+    if (snapshot.spill) spills.push(snapshot.spill);
+    const reader = new EmbeddingSpillReader(snapshot.spill!);
+    try {
+      const first = materializeCachedEmbeddings(snapshot, snapshot.rows.slice(0, 2), reader);
+      const second = materializeCachedEmbeddings(snapshot, snapshot.rows.slice(2, 4), reader);
+      expect(first[0]?.embedding[0]).toBeCloseTo(1);
+      expect(second[1]?.embedding[0]).toBeCloseTo(4);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('unlinks a finished spill that was not disposed', () => {
+    const builder = createCachedEmbeddingsBuilder({
+      inMemoryRowLimit: 0,
+      spillDir: os.tmpdir(),
+    });
+    ingestCachedEmbeddingRow(builder, row('n1', 1), true);
+    const snapshot = finalizeCachedEmbeddingsSnapshot(builder);
+    expect(snapshot.spill).toBeDefined();
+    expect(existsSync(snapshot.spill!.path)).toBe(true);
+    discardLiveEmbeddingSpills();
+    expect(existsSync(snapshot.spill!.path)).toBe(false);
+  });
+
+  it('throws when materializing a meta row with no matching vector', () => {
+    const snapshot = normalizeCachedEmbeddings({
+      embeddings: [
+        {
+          nodeId: 'Function:a:foo',
+          chunkIndex: 0,
+          startLine: 0,
+          endLine: 3,
+          embedding: vector(0.1),
+          contentHash: 'stub',
+        },
+      ],
+    });
+    expect(() =>
+      materializeCachedEmbeddings(snapshot, [
+        {
+          nodeId: 'Function:missing:bar',
+          chunkIndex: 0,
+          startLine: 0,
+          endLine: 1,
+          contentHash: 'x',
+          vectorIndex: 99,
+        },
+      ]),
+    ).toThrow(/missing cached embedding Function:missing:bar:0/);
   });
 });
