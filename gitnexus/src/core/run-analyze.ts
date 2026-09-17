@@ -223,8 +223,9 @@ import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
 import {
   cacheRowCount,
-  discardLiveEmbeddingSpills,
+  discardScopedEmbeddingSpills,
   disposeEmbeddingSpill,
+  withEmbeddingSpillScope,
   emptyCachedEmbeddingsSnapshot,
   EmbeddingSpillReader,
   materializeCachedEmbeddings,
@@ -1176,60 +1177,64 @@ export async function runFullAnalysis(
 
   let writeTarget = await resolveWriteTarget(repoPath, options);
   let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
-  try {
-    requireExclusiveIndexLock(
-      lock,
-      `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
-    );
-    // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
-    // during which git HEAD/branch — and thus the resolved write slot — may
-    // change (a commit lands, a branch is switched, or another writer adopts the
-    // flat slot). The pre-wait snapshot must NOT be reused: re-resolve UNDER the
-    // lock so the freshness check (`existingMeta.lastCommit === currentCommit`)
-    // and the meta stamps see current git state, honoring the module's "re-check
-    // freshness after acquiring" contract. If the slot itself moved we hold the
-    // WRONG lock — release and re-acquire the correct one. Bounded so a
-    // pathologically churning checkout can't loop forever; after the cap we
-    // proceed on the current lock. The loop is INSIDE the try so a re-resolve
-    // that throws (e.g. a `--branch` that stopped matching the now-switched
-    // checkout) still releases the held lock via `finally` (no leak).
-    const MAX_RELOCK = 3;
-    for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
-      // Never pass the pre-lock storagePath as already-validated: requireStoragePath
-      // must run again under the lock so a now-foreign slot aborts (and finally
-      // still releases the lock).
-      const fresh = await resolveWriteTarget(repoPath, options);
-      if (fresh.metaDir === writeTarget.metaDir) {
-        writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
-        break;
-      }
-      log(
-        `Index write target moved while waiting for the lock ` +
-          `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
-      );
-      lock.release();
-      writeTarget = fresh;
-      lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+  return withEmbeddingSpillScope(async () => {
+    try {
       requireExclusiveIndexLock(
         lock,
-        `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
+        `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
       );
-      if (attempt === MAX_RELOCK - 1) {
-        log('Index write target still moving after repeated re-acquire; proceeding on this lock.');
+      // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
+      // during which git HEAD/branch — and thus the resolved write slot — may
+      // change (a commit lands, a branch is switched, or another writer adopts the
+      // flat slot). The pre-wait snapshot must NOT be reused: re-resolve UNDER the
+      // lock so the freshness check (`existingMeta.lastCommit === currentCommit`)
+      // and the meta stamps see current git state, honoring the module's "re-check
+      // freshness after acquiring" contract. If the slot itself moved we hold the
+      // WRONG lock — release and re-acquire the correct one. Bounded so a
+      // pathologically churning checkout can't loop forever; after the cap we
+      // proceed on the current lock. The loop is INSIDE the try so a re-resolve
+      // that throws (e.g. a `--branch` that stopped matching the now-switched
+      // checkout) still releases the held lock via `finally` (no leak).
+      const MAX_RELOCK = 3;
+      for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
+        // Never pass the pre-lock storagePath as already-validated: requireStoragePath
+        // must run again under the lock so a now-foreign slot aborts (and finally
+        // still releases the lock).
+        const fresh = await resolveWriteTarget(repoPath, options);
+        if (fresh.metaDir === writeTarget.metaDir) {
+          writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
+          break;
+        }
+        log(
+          `Index write target moved while waiting for the lock ` +
+            `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
+        );
+        lock.release();
+        writeTarget = fresh;
+        lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+        requireExclusiveIndexLock(
+          lock,
+          `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
+        );
+        if (attempt === MAX_RELOCK - 1) {
+          log(
+            'Index write target still moving after repeated re-acquire; proceeding on this lock.',
+          );
+        }
       }
+      return await runFullAnalysisInner(
+        repoPath,
+        options,
+        callbacks,
+        writeTarget,
+        contentRetention,
+        runnerIdentityAtBootstrap,
+      );
+    } finally {
+      discardScopedEmbeddingSpills();
+      lock.release();
     }
-    return await runFullAnalysisInner(
-      repoPath,
-      options,
-      callbacks,
-      writeTarget,
-      contentRetention,
-      runnerIdentityAtBootstrap,
-    );
-  } finally {
-    discardLiveEmbeddingSpills();
-    lock.release();
-  }
+  });
 }
 
 async function runFullAnalysisInner(

@@ -8,6 +8,7 @@ import {
   createCachedEmbeddingsBuilder,
   DEFAULT_EMBEDDING_CACHE_IN_MEMORY_ROW_LIMIT,
   discardLiveEmbeddingSpills,
+  discardScopedEmbeddingSpills,
   disposeEmbeddingSpill,
   EmbeddingSpillReader,
   finalizeCachedEmbeddingsSnapshot,
@@ -17,6 +18,7 @@ import {
   readSpillVectors,
   resolveEmbeddingCacheInMemoryRowLimit,
   snapshotEmbeddingDims,
+  withEmbeddingSpillScope,
 } from '../../src/core/embeddings/embedding-restore-spill.js';
 
 const DIMS = 8;
@@ -129,6 +131,7 @@ describe('embedding-restore-spill (#3306)', () => {
 
   it('defaults the in-memory row limit to 2048 and honors GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', () => {
     expect(DEFAULT_EMBEDDING_CACHE_IN_MEMORY_ROW_LIMIT).toBe(2048);
+    vi.stubEnv('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', '');
     expect(resolveEmbeddingCacheInMemoryRowLimit()).toBe(2048);
     vi.stubEnv('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', '0');
     expect(resolveEmbeddingCacheInMemoryRowLimit()).toBe(0);
@@ -192,6 +195,30 @@ describe('embedding-restore-spill (#3306)', () => {
     } finally {
       reader.close();
     }
+  });
+
+  it('scoped discard unlinks only spills created in that analyze run', async () => {
+    const other = createCachedEmbeddingsBuilder({
+      inMemoryRowLimit: 0,
+      spillDir: os.tmpdir(),
+    });
+    ingestCachedEmbeddingRow(other, row('other', 1), true);
+    const otherSnapshot = finalizeCachedEmbeddingsSnapshot(other);
+    if (otherSnapshot.spill) spills.push(otherSnapshot.spill);
+    expect(existsSync(otherSnapshot.spill!.path)).toBe(true);
+
+    await withEmbeddingSpillScope(async () => {
+      const builder = createCachedEmbeddingsBuilder({
+        inMemoryRowLimit: 0,
+        spillDir: os.tmpdir(),
+      });
+      ingestCachedEmbeddingRow(builder, row('scoped', 2), true);
+      const snapshot = finalizeCachedEmbeddingsSnapshot(builder);
+      expect(existsSync(snapshot.spill!.path)).toBe(true);
+      discardScopedEmbeddingSpills();
+      expect(existsSync(snapshot.spill!.path)).toBe(false);
+      expect(existsSync(otherSnapshot.spill!.path)).toBe(true);
+    });
   });
 
   it('unlinks a finished spill that was not disposed', () => {

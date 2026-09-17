@@ -11,6 +11,7 @@
  * in the existing 200-row batches.
  */
 import { closeSync, openSync, readSync, unlinkSync, writeSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -171,10 +172,12 @@ function unlinkBestEffort(filePath: string): void {
 }
 
 const liveSpillPaths = new Set<string>();
+const spillScope = new AsyncLocalStorage<Set<string>>();
 let spillExitHookInstalled = false;
 
 function trackLiveSpillPath(filePath: string): void {
   liveSpillPaths.add(filePath);
+  spillScope.getStore()?.add(filePath);
   if (!spillExitHookInstalled) {
     spillExitHookInstalled = true;
     process.on('exit', () => {
@@ -194,6 +197,22 @@ export function discardLiveEmbeddingSpills(): void {
   for (const spillPath of [...liveSpillPaths]) {
     unlinkBestEffort(spillPath);
     liveSpillPaths.delete(spillPath);
+  }
+}
+
+/** Run `fn` so later {@link discardScopedEmbeddingSpills} only unlinks this run. */
+export function withEmbeddingSpillScope<T>(fn: () => T): T {
+  return spillScope.run(new Set(), fn);
+}
+
+/** Unlink spills created inside the current {@link withEmbeddingSpillScope}. */
+export function discardScopedEmbeddingSpills(): void {
+  const owned = spillScope.getStore();
+  if (!owned) return;
+  for (const spillPath of [...owned]) {
+    unlinkBestEffort(spillPath);
+    liveSpillPaths.delete(spillPath);
+    owned.delete(spillPath);
   }
 }
 
