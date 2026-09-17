@@ -320,6 +320,16 @@ describe('setup-gitnexus job budget', () => {
     expect(webInstall?.env?.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe('1');
   });
 
+  it('Vercel installs web first and compiles shared with the web TypeScript', () => {
+    const vercel = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, 'gitnexus-web/vercel.json'), 'utf8'),
+    ) as { installCommand?: string };
+    const install = String(vercel.installCommand);
+    expect(install.indexOf('npm ci')).toBeLessThan(install.indexOf('gitnexus-shared'));
+    expect(install).toContain('node ../gitnexus-web/node_modules/typescript/lib/tsc.js');
+    expect(install).not.toMatch(/gitnexus-shared[^&]*npm (?:ci|install)/);
+  });
+
   it('quality typecheck skips prepare/postinstall so tsc --noEmit fits in 10 minutes', () => {
     const job = qualityJobs.typecheck;
     const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
