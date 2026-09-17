@@ -493,7 +493,8 @@ exit 1`);
     expect(
       evolveJob?.steps?.some(
         (step) =>
-          step['working-directory'] === 'gitnexus-shared' && String(step.run ?? '').includes('npm ci'),
+          step['working-directory'] === 'gitnexus-shared' &&
+          String(step.run ?? '').includes('npm ci'),
       ),
     ).toBe(false);
   });
