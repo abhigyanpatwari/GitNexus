@@ -16,6 +16,7 @@ function parsedFile(
   classOwnedDefs: readonly SymbolDefinition[],
   classBindings: ReadonlyMap<string, readonly { def: SymbolDefinition; origin: 'local' }[]>,
   localDefs: readonly SymbolDefinition[],
+  classRange = { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
 ): ParsedFile {
   return {
     filePath,
@@ -25,7 +26,7 @@ function parsedFile(
         id: moduleId(filePath),
         parent: null,
         kind: 'Module',
-        range: { start: { line: 1, column: 0 }, end: { line: 10, column: 0 } },
+        range: { startLine: 1, startCol: 0, endLine: 10, endCol: 0 },
         filePath,
         bindings: new Map(),
         ownedDefs: [],
@@ -36,7 +37,7 @@ function parsedFile(
         id: classId(filePath),
         parent: moduleId(filePath),
         kind: 'Class',
-        range: { start: { line: 1, column: 0 }, end: { line: 10, column: 0 } },
+        range: classRange,
         filePath,
         bindings: classBindings,
         ownedDefs: classOwnedDefs,
@@ -162,5 +163,67 @@ describe('Swift target sibling visibility', () => {
     });
 
     expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toBeUndefined();
+  });
+
+  it('preserves the qualified owner of a nested-type extension', () => {
+    const inner: SymbolDefinition = {
+      nodeId: 'def:Types.swift:Outer.Inner',
+      filePath: 'Types.swift',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner',
+    };
+    const entry: SymbolDefinition = {
+      nodeId: 'def:Types.swift:Outer.Inner.Entry',
+      filePath: 'Types.swift',
+      type: 'Class',
+      qualifiedName: 'Outer.Inner.Entry',
+      ownerId: inner.nodeId,
+    };
+    // Swift capture generation intentionally retains only the trailing owner
+    // on extension members, so source text must recover `Outer.Inner`.
+    const makeEntry: SymbolDefinition = {
+      nodeId: 'def:Builder.swift:Inner.makeEntry',
+      filePath: 'Builder.swift',
+      type: 'Method',
+      qualifiedName: 'Inner.makeEntry',
+    };
+    const declaration = parsedFile(
+      'Types.swift',
+      [inner],
+      new Map([['Entry', [{ def: entry, origin: 'local' }]]]),
+      [inner, entry],
+    );
+    const extensionSource = 'extension Outer.Inner {\n  static func makeEntry() {}\n}\n';
+    const extension = parsedFile(
+      'Builder.swift',
+      [],
+      new Map([['makeEntry', [{ def: makeEntry, origin: 'local' }]]]),
+      [makeEntry],
+      {
+        startLine: 1,
+        startCol: 0,
+        endLine: 3,
+        endCol: 1,
+      },
+    );
+    const bindingAugmentations = new Map();
+    const indexes = {
+      defs: buildDefIndex([inner, entry, makeEntry]),
+      moduleScopes: {
+        byFilePath: new Map([
+          ['Types.swift', moduleId('Types.swift')],
+          ['Builder.swift', moduleId('Builder.swift')],
+        ]),
+      },
+      bindingAugmentations,
+    } as unknown as ScopeResolutionIndexes;
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', extensionSource]]),
+    });
+
+    expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toEqual([
+      { def: entry, origin: 'namespace' },
+    ]);
   });
 });

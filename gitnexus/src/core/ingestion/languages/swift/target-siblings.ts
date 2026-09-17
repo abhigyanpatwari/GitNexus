@@ -48,7 +48,7 @@ export function populateSwiftTargetSiblings(
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
 
   for (const [, group] of filesByTarget) {
-    populateNestedTypeFragments(group, indexes, augmentations);
+    populateNestedTypeFragments(group, indexes, augmentations, ctx.fileContents);
     if (group.length < 2) continue; // no file siblings to share
     const siblings = group.map((parsed) => ({
       filePath: parsed.filePath,
@@ -82,12 +82,13 @@ function populateNestedTypeFragments(
   group: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
   augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  fileContents: ReadonlyMap<string, string>,
 ): void {
   const scopesByOwner = new Map<string, ScopeId[]>();
   for (const parsed of group) {
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
-      const key = scopeOwnerKey(scope);
+      const key = scopeOwnerKey(scope, fileContents.get(parsed.filePath));
       if (key === undefined) continue;
       const scopes = scopesByOwner.get(key) ?? [];
       if (!scopesByOwner.has(key)) scopesByOwner.set(key, scopes);
@@ -113,12 +114,21 @@ function populateNestedTypeFragments(
   }
 }
 
-function scopeOwnerKey(scope: Scope): string | undefined {
+function scopeOwnerKey(scope: Scope, source: string | undefined): string | undefined {
   const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
   if (owner !== undefined) return logicalOwnerKey(owner);
 
-  // Extension scopes carry no synthetic class def. Their locally bound
-  // members are already qualified with the extended type (`Container.f`).
+  // Extension scopes carry no synthetic class def. Capture generation keeps
+  // only the trailing owner on members (`Inner.f` for `extension Outer.Inner`),
+  // so recover the full owner from this scope's declaration text first.
+  const representative = firstBoundDefinition(scope);
+  const sourceOwner = source === undefined ? undefined : swiftExtensionOwner(source, scope);
+  if (representative !== undefined && sourceOwner !== undefined) {
+    return logicalOwnerKey({ ...representative, qualifiedName: sourceOwner });
+  }
+
+  // Hand-built fixtures and old cached shapes may have no source text. Keep
+  // the conservative member-prefix fallback, rejecting inconsistent owners.
   let inferredOwner: string | undefined;
   for (const refs of scope.bindings.values()) {
     for (const { def } of refs) {
@@ -135,6 +145,29 @@ function scopeOwnerKey(scope: Scope): string | undefined {
     }
   }
   return inferredOwner;
+}
+
+function firstBoundDefinition(scope: Scope): SymbolDefinition | undefined {
+  for (const refs of scope.bindings.values()) {
+    const first = refs[0]?.def;
+    if (first !== undefined) return first;
+  }
+  return undefined;
+}
+
+/** Read `extension Outer.Inner` from the exact class-scope source range. */
+function swiftExtensionOwner(source: string, scope: Scope): string | undefined {
+  const starts = [0, 0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\n') starts.push(index + 1);
+  }
+  const start = starts[scope.range.startLine];
+  if (start === undefined) return undefined;
+  const declaration = source.slice(start + scope.range.startCol);
+  const match = /^\s*extension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
+    declaration,
+  );
+  return match?.[1]?.replace(/\s+/g, '');
 }
 
 function logicalOwnerKey(def: SymbolDefinition): string {
