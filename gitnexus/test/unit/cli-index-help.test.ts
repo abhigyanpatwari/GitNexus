@@ -4,8 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
-import * as ts from '@typescript/typescript6';
+import * as t from '@babel/types';
 import { afterEach, describe, expect, it } from 'vitest';
+import { forEachChild, parseTypeScript } from '../helpers/parse-typescript-source.js';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
@@ -69,15 +70,25 @@ const allHelpCommands = [
   ['group', 'contracts'],
 ];
 
-function staticStringValue(node: ts.Node | undefined): string | undefined {
+function templateLiteralText(node: t.TemplateLiteral): string | undefined {
+  if (node.expressions.length > 0) return undefined;
+  return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join('');
+}
+
+function staticStringValue(node: t.Node | undefined | null): string | undefined {
   if (!node) return undefined;
-  if (ts.isStringLiteralLike(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+  if (t.isStringLiteral(node)) return node.value;
+  if (t.isTemplateLiteral(node)) return templateLiteralText(node);
+  if (t.isBinaryExpression(node) && node.operator === '+') {
     const left = staticStringValue(node.left);
     const right = staticStringValue(node.right);
     if (left !== undefined && right !== undefined) return `${left}${right}`;
   }
   return undefined;
+}
+
+function memberName(node: t.MemberExpression | t.OptionalMemberExpression): string | undefined {
+  return t.isIdentifier(node.property) && !node.computed ? node.property.name : undefined;
 }
 
 function extractRegisteredHelpDescriptions(): string[] {
@@ -87,11 +98,14 @@ function extractRegisteredHelpDescriptions(): string[] {
   for (const relativePath of sourceFiles) {
     const filePath = path.join(repoRoot, relativePath);
     const source = fs.readFileSync(filePath, 'utf8');
-    const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true);
+    const { ast } = parseTypeScript(filePath, source);
 
-    function visit(node: ts.Node): void {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
-        const method = node.expression.name.text;
+    function visit(node: t.Node): void {
+      if (
+        t.isCallExpression(node) &&
+        (t.isMemberExpression(node.callee) || t.isOptionalMemberExpression(node.callee))
+      ) {
+        const method = memberName(node.callee);
         const description =
           method === 'description'
             ? staticStringValue(node.arguments[0])
@@ -104,10 +118,10 @@ function extractRegisteredHelpDescriptions(): string[] {
         }
       }
 
-      ts.forEachChild(node, visit);
+      forEachChild(node, visit);
     }
 
-    visit(sourceFile);
+    visit(ast);
   }
 
   return [...descriptions].filter((description) => description.length > 0).sort();

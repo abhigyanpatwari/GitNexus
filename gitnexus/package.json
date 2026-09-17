@@ -126,7 +126,6 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.0.0",
     "@types/proxy-addr": "^2.0.3",
-    "@typescript/typescript6": "^6.0.2",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
