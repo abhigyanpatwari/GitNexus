@@ -965,6 +965,11 @@ export interface ScopeResolver {
    */
   readonly freeCallsRequireInstanceOwnership?: boolean;
 
+  /** Whether an unqualified call inside a type may dispatch to an inherited
+   * instance method. Languages such as Swift allow implicit-self lookup,
+   * while Python/JavaScript/PHP require an explicit receiver. */
+  readonly implicitThisWalksMro?: boolean;
+
   /**
    * When true, a constructor-form call `Type(...)` links to the Class def
    * itself rather than its explicit Constructor def. Default

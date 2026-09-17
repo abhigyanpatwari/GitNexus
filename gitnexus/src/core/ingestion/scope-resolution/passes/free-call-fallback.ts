@@ -121,6 +121,7 @@ export function emitFreeCallFallback(
      *  contains the method's owner. See
      *  `ScopeResolver.freeCallsRequireInstanceOwnership`. */
     readonly freeCallsRequireInstanceOwnership?: boolean;
+    readonly implicitThisWalksMro?: boolean;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     /** Call sites owned by a later precise pass (for example callable-value-flow). */
     readonly skipSites?: ReadonlySet<string>;
@@ -314,6 +315,7 @@ export function emitFreeCallFallback(
           conversionRankFn: options.conversionRankFn,
           conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
           constraintCompatibility: options.constraintCompatibility,
+          implicitThisWalksMro: options.implicitThisWalksMro,
         });
         fnDefFromImplicitThis = fnDef !== undefined;
       }
@@ -1191,6 +1193,7 @@ export function pickImplicitThisOverload(
     readonly conversionRankFn?: ConversionRankFn;
     readonly conversionOnlyArgTypePrefixes?: readonly string[];
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    readonly implicitThisWalksMro?: boolean;
   },
 ): SymbolDefinition | undefined {
   // Find the enclosing Class scope by walking parents.
@@ -1218,7 +1221,7 @@ export function pickImplicitThisOverload(
   // reachable only through this inherited surface; falling through to the
   // global name lookup makes their target depend on file order.
   let overloads = model.methods.lookupAllByOwner(classDefId, site.name);
-  if (overloads.length === 0) {
+  if (overloads.length === 0 && hookCtx?.implicitThisWalksMro === true) {
     for (const ownerId of scopes.methodDispatch.mroFor(classDefId)) {
       const inherited = model.methods.lookupAllByOwner(ownerId, site.name);
       if (inherited.length === 0) continue;

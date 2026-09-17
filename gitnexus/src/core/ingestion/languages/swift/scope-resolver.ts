@@ -101,6 +101,7 @@ const swiftScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => swiftArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildSwiftMro(graph, parsedFiles, nodeLookup),
+  implicitThisWalksMro: true,
 
   // Methods/properties/init are owned by their enclosing class/struct/
   // extension(→extended type)/protocol. Extension members hoist for free
