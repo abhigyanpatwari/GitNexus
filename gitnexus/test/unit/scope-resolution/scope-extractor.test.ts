@@ -869,6 +869,55 @@ describe('Pass 6: callable-value-flow facts', () => {
   });
 });
 
+describe('Pass 7: call-result assignment identity', () => {
+  it('keeps same-name calls isolated by exact call-expression position', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 10, 0, 40, 0),
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            20,
+            14,
+            20,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 20, 6, 20, 11, 'store'),
+        },
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            21,
+            14,
+            21,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 21, 6, 21, 11, 'other'),
+        },
+      ],
+      'a.swift',
+      mockProvider(),
+    );
+
+    const fnScope = result.scopes.find((scope) => scope.kind === 'Function')!;
+    expect(result.callResultAssignmentSites).toEqual([
+      {
+        callSite: { startLine: 20, startCol: 14, endLine: 20, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'store',
+      },
+      {
+        callSite: { startLine: 21, startCol: 14, endLine: 21, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'other',
+      },
+    ]);
+  });
+});
+
 // ─── §End-to-end fixture ──────────────────────────────────────────────────
 
 describe('end-to-end fixture (all 5 passes together)', () => {
