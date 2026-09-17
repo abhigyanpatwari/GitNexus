@@ -34,7 +34,16 @@ import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
-import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
+import { EMBEDDABLE_LABELS } from '../embeddings/types.js';
+import {
+  abortCachedEmbeddingsBuilder,
+  createCachedEmbeddingsBuilder,
+  emptyCachedEmbeddingsSnapshot,
+  finalizeCachedEmbeddingsSnapshot,
+  ingestCachedEmbeddingRow,
+  type CachedEmbeddingsSnapshot,
+  type LoadCachedEmbeddingsOptions,
+} from '../embeddings/embedding-restore-spill.js';
 import {
   extensionManager,
   getFtsCapability,
@@ -2069,28 +2078,31 @@ export const getLbugStats = async (): Promise<{
 
 /**
  * Load cached embeddings from LadybugDB before a rebuild.
- * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
- * avoiding expensive re-embedding of unchanged nodes.
+ *
+ * Streams `CodeEmbedding` rows with `hasNext`/`getNext` under `withConnLock`
+ * (#2264, #3306). Vectors are spilled to a temp Float32 file once the table
+ * exceeds the in-memory row limit so incremental analyze cannot OOM the V8
+ * heap by materializing every `number[]` up front. Small tables still return
+ * in-RAM `embeddings` for existing callers/tests.
  *
  * Detects old schema (no chunkIndex column) and returns empty cache to trigger rebuild.
  */
-export const loadCachedEmbeddings = async (): Promise<{
-  embeddingNodeIds: Set<string>;
-  embeddings: CachedEmbedding[];
-}> => {
+export const loadCachedEmbeddings = async (
+  options?: LoadCachedEmbeddingsOptions,
+): Promise<CachedEmbeddingsSnapshot> => {
   const c = conn;
   if (!c) {
-    return { embeddingNodeIds: new Set(), embeddings: [] };
+    return emptyCachedEmbeddingsSnapshot();
   }
 
   // The whole read runs inside the connection lock (#2264 review P2). It's safe
   // today only by call-ordering (loadCachedEmbeddings runs before the WAL driver
   // starts), but the lock makes it robust to future reordering — a concurrent
   // CHECKPOINT on the singleton connection is the documented corruption trigger.
-  // Leaf read: no nested withConnLock-wrapped helpers inside.
+  // Leaf read: no nested withConnLock-wrapped helpers inside. Do NOT call
+  // `streamQuery` here — that path is unlocked and would race a CHECKPOINT.
   return withConnLock(async () => {
-    const embeddingNodeIds = new Set<string>();
-    const embeddings: CachedEmbedding[] = [];
+    const builder = createCachedEmbeddingsBuilder(options);
     try {
       // Schema migration detection: query with new columns to verify schema version.
       // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
@@ -2104,51 +2116,46 @@ export const loadCachedEmbeddings = async (): Promise<{
         );
         await readQueryRows(check);
       } catch {
-        return { embeddingNodeIds: new Set(), embeddings: [] };
+        abortCachedEmbeddingsBuilder(builder);
+        return emptyCachedEmbeddingsSnapshot();
       }
 
-      // Try to read contentHash alongside chunk columns
-      let rows: any;
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       let hasContentHash = true;
       try {
-        rows = await c.query(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
-        );
-      } catch (err: any) {
-        // Fallback for legacy DBs without contentHash column
-        const msg = err?.message ?? '';
-        if (isMissingColumnOrTableError(msg)) {
-          hasContentHash = false;
-          rows = await c.query(
-            `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+        try {
+          queryResult = await c.query(
+            `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
           );
-        } else {
-          throw err;
+        } catch (err: any) {
+          // Fallback for legacy DBs without contentHash column
+          const msg = err?.message ?? '';
+          if (isMissingColumnOrTableError(msg)) {
+            hasContentHash = false;
+            queryResult = await c.query(
+              `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+            );
+          } else {
+            throw err;
+          }
         }
-      }
-      for (const row of await readQueryRows(rows)) {
-        const nodeId = String(row.nodeId ?? row[0] ?? '');
-        if (!nodeId) continue;
-        embeddingNodeIds.add(nodeId);
-        const embedding = row.embedding ?? row[4];
-        if (embedding) {
-          embeddings.push({
-            nodeId,
-            chunkIndex: Number(row.chunkIndex ?? row[1] ?? 0),
-            startLine: Number(row.startLine ?? row[2] ?? 0),
-            endLine: Number(row.endLine ?? row[3] ?? 0),
-            embedding: Array.isArray(embedding)
-              ? embedding.map(Number)
-              : Array.from(embedding as any).map(Number),
-            contentHash: hasContentHash ? (row.contentHash ?? row[5] ?? undefined) : undefined,
-          });
+        const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+        const result = results[0];
+        while (await result.hasNext()) {
+          const row = await result.getNext();
+          ingestCachedEmbeddingRow(builder, row, hasContentHash);
         }
+        return finalizeCachedEmbeddingsSnapshot(builder);
+      } catch (err) {
+        abortCachedEmbeddingsBuilder(builder);
+        throw err;
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
       }
-    } catch {
-      /* embedding table may not exist */
+    } catch (err) {
+      abortCachedEmbeddingsBuilder(builder);
+      throw err;
     }
-
-    return { embeddingNodeIds, embeddings };
   });
 };
 
