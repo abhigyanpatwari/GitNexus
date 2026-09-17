@@ -306,6 +306,37 @@ describe.skipIf(!swiftAvailable)('Swift extension deduplication', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Protocol-extension implicit self (issue #3273): a conforming type may call
+// default implementation methods without an explicit receiver. Resolution
+// must traverse the protocol's extension surface instead of falling back to
+// unrelated same-named private methods elsewhere in the module.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-protocol-extension-implicit-self'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves unqualified helper calls to the protocol extension', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    for (const target of ['makeStore', 'makeValue', 'insertItem']) {
+      const call = calls.find((c) => c.target === target);
+      expect(call?.targetFilePath).toBe('Support.swift');
+    }
+  });
+
+  it('keeps unrelated private same-name methods unreachable', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    expect(calls.some((c) => c.targetFilePath === 'AUnrelated.swift')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Constructor fallback: Swift constructors look like free function calls
 // (no `new` keyword). The resolver retries with constructor form when
 // free-form finds no callable but the name resolves to a Class/Struct.

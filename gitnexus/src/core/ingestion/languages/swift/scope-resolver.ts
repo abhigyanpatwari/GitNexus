@@ -46,7 +46,7 @@
  *   4. **`@_exported import` re-exports** are treated as plain imports.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { loadSwiftPackageConfig } from '../../language-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
@@ -107,6 +107,13 @@ const swiftScopeResolver: ScopeResolver = {
   // because captures.ts re-keys the extension to a Class def named after
   // the extended type.
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+
+  // An extension has its own Class scope but deliberately does not mint a
+  // second type def. Its members therefore leave the per-file owner walk with
+  // a qualified name (`ExtendedType.member`) but no ownerId. Reconcile those
+  // members after all files are available so extensions declared in sibling
+  // files work as well as extensions beside the original type.
+  populateWorkspaceOwners: populateSwiftExtensionOwners,
 
   // `super.method()` dispatches through the superclass chain.
   isSuperReceiver: (text) => text.trim() === 'super',
@@ -207,6 +214,30 @@ function buildSwiftMro(
   }
 
   return mro;
+}
+
+function populateSwiftExtensionOwners(parsedFiles: readonly ParsedFile[]): void {
+  const ownersByName = new Map<string, SymbolDefinition[]>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (!isClassLike(def.type) || def.qualifiedName === undefined) continue;
+      const bucket = ownersByName.get(def.qualifiedName);
+      if (bucket === undefined) ownersByName.set(def.qualifiedName, [def]);
+      else bucket.push(def);
+    }
+  }
+
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
+      const dot = def.qualifiedName.lastIndexOf('.');
+      if (dot <= 0) continue;
+      const owners = ownersByName.get(def.qualifiedName.slice(0, dot));
+      if (owners?.length === 1) {
+        (def as { ownerId?: string }).ownerId = owners[0].nodeId;
+      }
+    }
+  }
 }
 
 function closeProtocols(

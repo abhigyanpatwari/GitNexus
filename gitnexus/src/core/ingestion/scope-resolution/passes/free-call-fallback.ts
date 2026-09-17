@@ -1211,7 +1211,21 @@ export function pickImplicitThisOverload(
   const classDefId = workspaceIndex.classScopeIdToDefId.get(classScopeId);
   if (classDefId === undefined) return undefined;
 
-  const overloads = model.methods.lookupAllByOwner(classDefId, site.name);
+  // Bare calls in an instance method use the same implicit receiver as
+  // `self.member()`. Prefer declarations on the enclosing type, then stop at
+  // the first MRO owner that contributes the name so an override still
+  // shadows inherited implementations. Swift protocol-extension defaults are
+  // reachable only through this inherited surface; falling through to the
+  // global name lookup makes their target depend on file order.
+  let overloads = model.methods.lookupAllByOwner(classDefId, site.name);
+  if (overloads.length === 0) {
+    for (const ownerId of scopes.methodDispatch.mroFor(classDefId)) {
+      const inherited = model.methods.lookupAllByOwner(ownerId, site.name);
+      if (inherited.length === 0) continue;
+      overloads = inherited;
+      break;
+    }
+  }
   if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 
