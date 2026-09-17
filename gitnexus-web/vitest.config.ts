@@ -7,7 +7,7 @@ const _require = createRequire(import.meta.url);
 const gitnexusPkg = _require('../gitnexus/package.json');
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react({ jsxRuntime: 'automatic' })],
   define: {
     __REQUIRED_NODE_VERSION__: JSON.stringify(gitnexusPkg.engines.node.replace(/[>=^~\s]/g, '')),
   },
