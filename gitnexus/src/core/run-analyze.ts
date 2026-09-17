@@ -221,7 +221,15 @@ import {
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
-import type { CachedEmbedding } from './embeddings/types.js';
+import {
+  cacheRowCount,
+  disposeEmbeddingSpill,
+  emptyCachedEmbeddingsSnapshot,
+  materializeCachedEmbeddings,
+  normalizeCachedEmbeddings,
+  snapshotEmbeddingDims,
+  type CachedEmbeddingsSnapshot,
+} from './embeddings/embedding-restore-spill.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import {
@@ -2202,7 +2210,20 @@ async function runFullAnalysisInner(
   // post-commit hook) safe: a multi-minute embedding pass is no longer
   // silently dropped just because the caller omitted `--embeddings`.
   let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: CachedEmbedding[] = [];
+  let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
+  const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
+    cachedSnapshot = normalizeCachedEmbeddings(raw);
+    cachedEmbeddingNodeIds = cachedSnapshot.embeddingNodeIds;
+  };
+  const discardCachedEmbeddings = (): void => {
+    disposeEmbeddingSpill(cachedSnapshot.spill);
+    cachedSnapshot = emptyCachedEmbeddingsSnapshot();
+    cachedEmbeddingNodeIds = new Set();
+  };
+  const discardCachedEmbeddingSpill = (): void => {
+    disposeEmbeddingSpill(cachedSnapshot.spill);
+    cachedSnapshot = { ...cachedSnapshot, spill: undefined };
+  };
 
   const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
   const {
@@ -2237,10 +2258,13 @@ async function runFullAnalysisInner(
   // of the predicted `willTryIncremental`). The post-pipeline branch may
   // disagree with the prediction (e.g. when the pipeline produces zero
   // File nodes, `isIncremental` flips false and the full-rebuild path
-  // wipes the DB) — loading unconditionally is cheap insurance against
+  // wipes the DB) — loading unconditionally is insurance against
   // silently dropping embeddings on a mispredicted run. The re-insert
   // step gates itself on the actual `isIncremental` value to avoid
   // PK-conflicts when the incremental writeback path keeps the rows.
+  //
+  // Vectors stream to a temp spill (#3306) so a large table cannot OOM the
+  // V8 heap during "Caching embeddings..."; only metadata stays in RAM.
   //
   // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
   // On a dirty-recovery run it happens only after the sidecar quarantine
@@ -2251,9 +2275,7 @@ async function runFullAnalysisInner(
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
-      const cached = await loadCachedEmbeddings();
-      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
-      cachedEmbeddings = cached.embeddings;
+      adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
       // Surface cache-load failures explicitly: silently swallowing here would
@@ -2264,8 +2286,7 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      cachedEmbeddingNodeIds = new Set<string>();
-      cachedEmbeddings = [];
+      discardCachedEmbeddings();
       try {
         await closeLbug();
       } catch {
@@ -2378,6 +2399,7 @@ async function runFullAnalysisInner(
       },
     );
   } catch (err) {
+    discardCachedEmbeddingSpill();
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     throw err;
   }
@@ -2614,6 +2636,7 @@ async function runFullAnalysisInner(
     try {
       await wipeLbugDbFiles(buildPath);
     } catch (error) {
+      discardCachedEmbeddingSpill();
       if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
       throw error;
     }
@@ -2642,6 +2665,7 @@ async function runFullAnalysisInner(
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
+    discardCachedEmbeddingSpill();
     if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
     throw error;
   }
@@ -2963,7 +2987,7 @@ async function runFullAnalysisInner(
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
-      // destroy them. `--drop-embeddings` deliberately leaves `cachedEmbeddings`
+      // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`
       // empty (`deriveEmbeddingMode` returns `shouldLoadCache: false` for it by
       // construction — see the four-mode comment at the cache-load site), and its
       // `options.force = true` conversion sits INSIDE
@@ -2981,9 +3005,13 @@ async function runFullAnalysisInner(
       // `cachedEmbeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
       // the already-embedded set, so the very nodes the user asked to REGENERATE
       // would be skipped.
-      if (extensionForcedRebuild && !options.dropEmbeddings && cachedEmbeddings.length === 0) {
+      if (
+        extensionForcedRebuild &&
+        !options.dropEmbeddings &&
+        cacheRowCount(cachedSnapshot) === 0
+      ) {
         // The escalation below WIPES the DB files, and Phase 3.5 restores
-        // embedding rows from `cachedEmbeddings` — which is only populated when
+        // embedding rows from `cachedSnapshot` — which is only populated when
         // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
         // under-reports its embeddings (meta restored from an older run, or a
         // count that never got stamped) would therefore have every vector
@@ -2991,14 +3019,22 @@ async function runFullAnalysisInner(
         // while the DB is still intact — a plain MATCH, which needs no VECTOR
         // extension. Rows whose owning node is gone are dropped by Phase 3.5's
         // live-graph filter, exactly as on any other wiped path.
-        const rescued = await loadCachedEmbeddings();
-        if (rescued.embeddings.length > 0) {
-          cachedEmbeddings = rescued.embeddings;
-          cachedEmbeddingNodeIds = rescued.embeddingNodeIds;
+        try {
+          const rescued = normalizeCachedEmbeddings(await loadCachedEmbeddings());
+          if (cacheRowCount(rescued) > 0) {
+            adoptCachedEmbeddings(rescued);
+            log(
+              `Preserving ${cacheRowCount(rescued)} embedding row(s) across the forced rebuild ` +
+                `(the index metadata did not account for them).`,
+            );
+          }
+        } catch (err: any) {
           log(
-            `Preserving ${rescued.embeddings.length} embedding row(s) across the forced rebuild ` +
-              `(the index metadata did not account for them).`,
+            `Warning: could not load cached embeddings ` +
+              `(${err?.message ?? String(err)}). ` +
+              `Embeddings will not be preserved on this run.`,
           );
+          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -3627,23 +3663,22 @@ async function runFullAnalysisInner(
     // The per-batch try/catch stays as a last-resort guard only — it no
     // longer fires on the happy path.
     let restoredEmbeddingCount = 0;
-    if (cachedEmbeddings.length > 0) {
-      const cachedDims = cachedEmbeddings[0].embedding.length;
+    if (cacheRowCount(cachedSnapshot) > 0) {
+      const cachedDims = snapshotEmbeddingDims(cachedSnapshot);
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
-      if (cachedDims !== EMBEDDING_DIMS) {
+      if (cachedDims !== undefined && cachedDims !== EMBEDDING_DIMS) {
         // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
         log(
           `Embedding dimensions changed (${cachedDims}d -> ${EMBEDDING_DIMS}d), discarding cache`,
         );
-        cachedEmbeddings = [];
-        cachedEmbeddingNodeIds = new Set();
+        discardCachedEmbeddings();
       } else {
         const { batchInsertEmbeddings: batchInsert } =
           await import('./embeddings/embedding-pipeline.js');
         // (1) Live-graph filter — the FULL pipeline graph (always produced),
         // NOT the incremental subgraph, or unchanged files' rows would be
         // dropped from the restore set.
-        const liveEmbeddings = cachedEmbeddings.filter(
+        const liveEmbeddings = cachedSnapshot.rows.filter(
           (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
         );
         // (2) Restore-scope filter (see the discipline note above).
@@ -3658,7 +3693,10 @@ async function runFullAnalysisInner(
         const EMBED_BATCH = 200;
         for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
           try {
-            await batchInsert(executeWithReusedStatement, batch);
+            await batchInsert(
+              executeWithReusedStatement,
+              materializeCachedEmbeddings(cachedSnapshot, batch),
+            );
             restoredEmbeddingCount += batch.length;
           } catch {
             /* last-resort guard — conflict-free by construction above */
@@ -3679,7 +3717,7 @@ async function runFullAnalysisInner(
         // sweep failure must never fail a completed writeback, so the whole
         // sweep warns-and-continues.
         if (deletedFilePathsForRestore !== null) {
-          const orphanRowIds = cachedEmbeddings
+          const orphanRowIds = cachedSnapshot.rows
             .filter((e) => pipelineResult.graph.getNode(e.nodeId) === undefined)
             .map((e) => `${e.nodeId}:${e.chunkIndex}`);
           if (orphanRowIds.length > 0) {
@@ -3708,6 +3746,9 @@ async function runFullAnalysisInner(
         }
       }
     }
+    // Vectors are on disk only to survive the wipe/delete. After restore,
+    // drop the spill so Phase 4 does not keep a multi-GB temp file open.
+    discardCachedEmbeddingSpill();
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
@@ -3959,7 +4000,7 @@ async function runFullAnalysisInner(
       let existingEmbeddings: Map<string, string> | undefined;
       if (cachedEmbeddingNodeIds.size > 0) {
         existingEmbeddings = new Map<string, string>();
-        for (const e of cachedEmbeddings) {
+        for (const e of cachedSnapshot.rows) {
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
@@ -4662,6 +4703,7 @@ async function runFullAnalysisInner(
     progress('done', 100, 'Done');
 
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    discardCachedEmbeddingSpill();
 
     return {
       repoName: projectName,
@@ -4718,6 +4760,7 @@ async function runFullAnalysisInner(
       }
     }
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    discardCachedEmbeddingSpill();
     if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.
