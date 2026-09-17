@@ -198,6 +198,23 @@ export function emitSwiftScopeCaptures(
       continue;
     }
 
+    // The query deliberately recognizes the compact `lhs = call()` shape;
+    // enforce "untyped lhs" here because tree-sitter queries cannot express
+    // absence of Swift's sibling type_annotation robustly. A typed declaration
+    // remains authoritative and must never enter return-type replay.
+    if (grouped['@call-result-assignment.call'] !== undefined) {
+      const callNode = nodeIfType(nodeMap['@call-result-assignment.call'], 'call_expression');
+      const property = callNode?.parent;
+      if (
+        property?.type !== 'property_declaration' ||
+        property.namedChildren.some((child) => child.type === 'type_annotation')
+      ) {
+        continue;
+      }
+      out.push(grouped);
+      continue;
+    }
+
     // ── Field accesses: a `navigation_expression` (`obj.field`) is one of
     // three things. Drop it when it's a call's callee (`u.save` in
     // `u.save()` — the @reference.call.member query already covers that).

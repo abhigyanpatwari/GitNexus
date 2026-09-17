@@ -334,6 +334,12 @@ describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)
     const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
     expect(calls.some((c) => c.targetFilePath === 'AUnrelated.swift')).toBe(false);
   });
+
+  it('preserves the downstream call through the extension helper return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const execute = calls.find((c) => c.source === 'run' && c.target === 'execute');
+    expect(execute?.targetFilePath).toBe('Support.swift');
+  });
 });
 
 // ---------------------------------------------------------------------------

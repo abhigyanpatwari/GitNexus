@@ -80,6 +80,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  CallResultAssignmentSite,
   Capture,
   CaptureMatch,
   ImportEdge,
@@ -240,6 +241,15 @@ export function extract(
   const callableFlowSites: CallableFlowSite[] = [];
   pass6CollectCallableFlows(partitioned.callableFlow, positionIndex, filePath, callableFlowSites);
 
+  // ── Pass 7: preserve call-result assignment identity ───────────────
+  const callResultAssignmentSites: CallResultAssignmentSite[] = [];
+  pass7CollectCallResultAssignments(
+    partitioned.callResultAssignment,
+    positionIndex,
+    filePath,
+    callResultAssignmentSites,
+  );
+
   // Freeze Scope drafts into final shape and return.
   const frozenScopes = scopeDrafts.map(draftToScope);
   return Object.freeze({
@@ -251,6 +261,9 @@ export function extract(
     referenceSites: Object.freeze(referenceSites.slice()),
     ...(callableFlowSites.length > 0
       ? { callableFlowSites: Object.freeze(callableFlowSites.slice()) }
+      : {}),
+    ...(callResultAssignmentSites.length > 0
+      ? { callResultAssignmentSites: Object.freeze(callResultAssignmentSites.slice()) }
       : {}),
   });
 }
@@ -264,6 +277,7 @@ interface Partitioned {
   readonly typeBinding: readonly CaptureMatch[];
   readonly reference: readonly CaptureMatch[];
   readonly callableFlow: readonly CaptureMatch[];
+  readonly callResultAssignment: readonly CaptureMatch[];
 }
 
 /**
@@ -283,6 +297,7 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
   const typeBinding: CaptureMatch[] = [];
   const reference: CaptureMatch[] = [];
   const callableFlow: CaptureMatch[] = [];
+  const callResultAssignment: CaptureMatch[] = [];
 
   for (const match of matches) {
     for (const topic of topicsOf(match)) {
@@ -305,14 +320,32 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
         case 'callable-flow':
           callableFlow.push(match);
           break;
+        case 'call-result-assignment':
+          callResultAssignment.push(match);
+          break;
       }
     }
   }
 
-  return { scope, declaration, import_, typeBinding, reference, callableFlow };
+  return {
+    scope,
+    declaration,
+    import_,
+    typeBinding,
+    reference,
+    callableFlow,
+    callResultAssignment,
+  };
 }
 
-type Topic = 'scope' | 'declaration' | 'import' | 'type-binding' | 'reference' | 'callable-flow';
+type Topic =
+  | 'scope'
+  | 'declaration'
+  | 'import'
+  | 'type-binding'
+  | 'reference'
+  | 'callable-flow'
+  | 'call-result-assignment';
 
 function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
   const topics = new Set<Topic>();
@@ -323,6 +356,7 @@ function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
     else if (name.startsWith('@type-binding.')) topics.add('type-binding');
     else if (name.startsWith('@reference.')) topics.add('reference');
     else if (name.startsWith('@callable-flow.')) topics.add('callable-flow');
+    else if (name.startsWith('@call-result-assignment.')) topics.add('call-result-assignment');
   }
   return topics;
 }
@@ -1649,6 +1683,24 @@ function pass6CollectCallableFlows(
         break;
       }
     }
+  }
+}
+
+// ─── Pass 7: collect call-result assignment identity ──────────────────────
+
+function pass7CollectCallResultAssignments(
+  matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
+  out: CallResultAssignmentSite[],
+): void {
+  for (const match of matches) {
+    const call = match['@call-result-assignment.call'];
+    const lhs = match['@call-result-assignment.lhs'];
+    if (call === undefined || lhs === undefined || !nonEmpty(lhs.text)) continue;
+    const inScope = positionIndex.atPosition(filePath, call.range.startLine, call.range.startCol);
+    if (inScope === undefined) continue;
+    out.push({ callSite: call.range, inScope, lhs: lhs.text });
   }
 }
 

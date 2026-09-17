@@ -24,6 +24,7 @@
  */
 
 import type { ParsedFile, RegistryProviders } from 'gitnexus-shared';
+import type { TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { lookupOwnedMembersByOwner } from '../../model/owned-members-lookup.js';
@@ -84,6 +85,7 @@ import {
 import { emitReturnShapeMemberAccesses } from '../passes/return-shape-members.js';
 import { emitImportedValueReferences } from '../passes/imported-value-refs.js';
 import {
+  calleeIdPosKey,
   createCalleeIdAccumulator,
   type CalleeIdAccumulator,
 } from '../graph-bridge/callee-id-sink.js';
@@ -103,6 +105,58 @@ import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
 import { parseTruthyEnv } from '../../utils/env.js';
+
+/**
+ * Join extraction-time assignment identity to Phase-4's exact resolved callee.
+ * Ambiguous dispatch and missing return annotations deliberately produce no
+ * binding. Extraction emits these facts only for untyped declarations, so an
+ * existing entry here is necessarily inference/mirroring and may be corrected;
+ * explicit annotations never enter this join.
+ */
+export function applyPreciseCallResultBindings(
+  parsedFiles: readonly ParsedFile[],
+  indexes: ReturnType<typeof finalizeScopeModel>,
+  workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
+  calleeIds: CalleeIdAccumulator,
+  nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+): number {
+  let updated = 0;
+  const returnTypeByGraphId = new Map<string, TypeRef>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      const returnType = workspaceIndex.declaredReturnTypeByCallableId.get(def.nodeId);
+      if (returnType === undefined) continue;
+      const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
+      if (graphId !== undefined) returnTypeByGraphId.set(graphId, returnType);
+    }
+  }
+  for (const parsed of parsedFiles) {
+    const resolvedByPosition = calleeIds.get(parsed.filePath);
+    if (resolvedByPosition === undefined) continue;
+    for (const assignment of parsed.callResultAssignmentSites ?? []) {
+      const targets = resolvedByPosition.get(
+        calleeIdPosKey(assignment.callSite.startLine, assignment.callSite.startCol),
+      );
+      if (targets === undefined || targets.size !== 1) continue;
+      const targetId = targets.values().next().value as string | undefined;
+      if (targetId === undefined) continue;
+      const returnType = returnTypeByGraphId.get(targetId);
+      if (returnType === undefined) continue;
+      const scope = indexes.scopeTree.getScope(assignment.inScope);
+      if (scope === undefined) continue;
+      (scope.typeBindings as Map<string, TypeRef>).set(assignment.lhs, {
+        rawName: returnType.rawName,
+        ...(returnType.declaredSpelling !== undefined
+          ? { declaredSpelling: returnType.declaredSpelling }
+          : {}),
+        declaredAtScope: assignment.inScope,
+        source: 'assignment-inferred',
+      });
+      updated++;
+    }
+  }
+  return updated;
+}
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
@@ -1011,6 +1065,12 @@ export function runScopeResolution(
   const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
   const deferredIndirectSites = deferredIndirectCollection.sites;
   const callableArgumentSites = new Set<string>();
+  const callResultAssignmentSites = new Set<string>();
+  for (const parsed of emitParsedFiles) {
+    for (const site of parsed.callResultAssignmentSites ?? []) {
+      callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+    }
+  }
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
       for (const site of parsed.callableFlowSites ?? []) {
@@ -1025,11 +1085,14 @@ export function runScopeResolution(
   // propagation. Populated below at every CALLS emit path before dedup; the CFG
   // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
-    input.pdg === true || deferredIndirectSites.size > 0
+    input.pdg === true || deferredIndirectSites.size > 0 || callResultAssignmentSites.size > 0
       ? createCalleeIdAccumulator(
           input.pdg === true
             ? undefined
-            : (filePath, line, col) => callableArgumentSites.has(`${filePath}:${line}:${col}`),
+            : (filePath, line, col) => {
+                const key = `${filePath}:${line}:${col}`;
+                return callableArgumentSites.has(key) || callResultAssignmentSites.has(key);
+              },
         )
       : undefined;
   const receiverBound = callableFlowOnly
@@ -1060,7 +1123,7 @@ export function runScopeResolution(
           heritageTypeArguments,
         },
       );
-  const receiverExtras = receiverBound.emitted;
+  let receiverExtras = receiverBound.emitted;
   if (receiverBound.dispatchFanoutSkipped > 0) {
     // Never drop dispatch coverage silently (#2829) — same contract as the
     // property-dispatch cap below. An interface member over the cap loses real
@@ -1124,6 +1187,34 @@ export function runScopeResolution(
           skipSites: deferredIndirectSites,
         },
       );
+  const replayedCallResultBindings =
+    callableFlowOnly || calleeIdAccumulator === undefined
+      ? 0
+      : applyPreciseCallResultBindings(
+          emitParsedFiles,
+          indexes,
+          workspaceIndex,
+          calleeIdAccumulator,
+          postHeritageNodeLookup,
+        );
+  if (replayedCallResultBindings > 0) {
+    receiverExtras += emitReceiverBoundCalls(
+      graph,
+      indexes,
+      emitParsedFiles,
+      postHeritageNodeLookup,
+      handledSites,
+      provider,
+      workspaceIndex,
+      readonlyModel,
+      {
+        recordResolutionOutcome,
+        calleeIdSink: calleeIdAccumulator,
+        isBuiltInName: provider.languageProvider.isBuiltInName,
+        heritageTypeArguments,
+      },
+    ).emitted;
+  }
   const referenceSkipSites = new Set(handledSites);
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
   const { emitted, skipped } = callableFlowOnly
