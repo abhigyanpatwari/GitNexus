@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 import * as t from '@babel/types';
 import {
   type AstNode,
-  forEachChild,
+  collectDescendants,
   lineAt,
   nodeStart,
   nodeText,
   parseTypeScript,
+  staticMemberName,
 } from '../../helpers/parse-typescript-source.js';
 import type {
   ContractRegistry,
@@ -190,17 +191,6 @@ describe('syncGroup when one extractor fails partway through a repo', () => {
  */
 const SYNC_SOURCE_PATH = fileURLToPath(new URL('../../../src/core/group/sync.ts', import.meta.url));
 
-/** Every node under `node`, in source order. No branching, so nothing is skippable. */
-function descendants(node: t.Node): t.Node[] {
-  const out: t.Node[] = [];
-  const visit = (n: t.Node): void => {
-    out.push(n);
-    forEachChild(n, visit);
-  };
-  forEachChild(node, visit);
-  return out;
-}
-
 /** `const <name>: StoredContract[] = []` — the per-repo staging buffer. */
 function isStagingBufferDeclaration(node: t.Node): node is t.VariableDeclarator {
   if (!t.isVariableDeclarator(node) || !t.isIdentifier(node.id)) return false;
@@ -230,9 +220,7 @@ function isStagingBufferDeclaration(node: t.Node): node is t.VariableDeclarator 
 function isApplyCall(call: t.CallExpression): boolean {
   return (
     (t.isMemberExpression(call.callee) || t.isOptionalMemberExpression(call.callee)) &&
-    t.isIdentifier(call.callee.property) &&
-    !call.callee.computed &&
-    call.callee.property.name === 'apply'
+    staticMemberName(call.callee) === 'apply'
   );
 }
 
@@ -246,15 +234,13 @@ describe('the per-repo staging append in sync.ts', () => {
     const source = fs.readFileSync(SYNC_SOURCE_PATH, 'utf-8');
     const { ast } = parseTypeScript(SYNC_SOURCE_PATH, source);
 
-    const allNodes = descendants(ast);
+    const allNodes = collectDescendants(ast);
     const stagingBuffers = allNodes.filter(isStagingBufferDeclaration);
     // One staging buffer, or this gate no longer knows which code it guards.
-    expect(
-      stagingBuffers.map((d) => (t.isIdentifier(d.id) ? d.id.name : nodeText(source, d.id))),
-    ).toHaveLength(1);
     const stagingNames = stagingBuffers.map((d) =>
       t.isIdentifier(d.id) ? d.id.name : nodeText(source, d.id),
     );
+    expect(stagingNames).toHaveLength(1);
 
     // The block the buffer is declared in — the per-repo loop body.
     // VariableDeclarator → VariableDeclaration → BlockStatement (Babel has no
@@ -273,7 +259,7 @@ describe('the per-repo staging append in sync.ts', () => {
       block.body
         .filter((statement): statement is t.TryStatement => t.isTryStatement(statement))
         .filter((statement) =>
-          descendants(statement.block).some(
+          collectDescendants(statement.block).some(
             (n) => t.isIdentifier(n) && stagingNames.includes(n.name),
           ),
         )
@@ -282,7 +268,7 @@ describe('the per-repo staging append in sync.ts', () => {
     expect(extractorTryBlocks).toHaveLength(1);
 
     const unboundedAppends = extractorTryBlocks.flatMap((block) =>
-      descendants(block)
+      collectDescendants(block)
         .filter((node): node is t.CallExpression => t.isCallExpression(node))
         .filter((call) => call.arguments.some((arg) => t.isSpreadElement(arg)) || isApplyCall(call))
         .map((call) => describeCall(source, call)),

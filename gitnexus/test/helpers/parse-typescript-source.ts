@@ -6,7 +6,15 @@
  * CLI dependency) rather than spawning the native TypeScript 7 program API.
  */
 import { parse } from '@babel/parser';
-import { VISITOR_KEYS, type Comment, type File, type Node } from '@babel/types';
+import {
+  VISITOR_KEYS,
+  isNode,
+  type Comment,
+  type File,
+  type MemberExpression,
+  type Node,
+  type OptionalMemberExpression,
+} from '@babel/types';
 
 export type AstNode = Node & { parent?: AstNode };
 
@@ -24,10 +32,6 @@ const PARSE_PLUGINS: NonNullable<Parameters<typeof parse>[1]>['plugins'] = [
   ['decorators', { decoratorsBeforeExport: true }],
 ];
 
-function isNode(value: unknown): value is AstNode {
-  return !!value && typeof value === 'object' && typeof (value as Node).type === 'string';
-}
-
 export function forEachChild(node: Node, visit: (child: AstNode) => void): void {
   const keys = VISITOR_KEYS[node.type] ?? [];
   for (const key of keys) {
@@ -40,6 +44,23 @@ export function forEachChild(node: Node, visit: (child: AstNode) => void): void 
       visit(value);
     }
   }
+}
+
+/** Direct descendants in source order (does not include `node` itself). */
+export function collectDescendants(node: Node): AstNode[] {
+  const out: AstNode[] = [];
+  const visit = (child: AstNode): void => {
+    out.push(child);
+    forEachChild(child, visit);
+  };
+  forEachChild(node, visit);
+  return out;
+}
+
+export function staticMemberName(
+  node: MemberExpression | OptionalMemberExpression,
+): string | undefined {
+  return node.computed || node.property.type !== 'Identifier' ? undefined : node.property.name;
 }
 
 function attachParents(node: AstNode, parent?: AstNode): void {
@@ -72,13 +93,32 @@ export function nodeText(source: string, node: Node): string {
   return source.slice(nodeStart(node), nodeEnd(node));
 }
 
+let lineAtSource = '';
+let lineAtStarts: number[] = [0];
+
+function lineStarts(source: string): number[] {
+  if (source === lineAtSource) return lineAtStarts;
+  const starts = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] === '\n') starts.push(i + 1);
+  }
+  lineAtSource = source;
+  lineAtStarts = starts;
+  return starts;
+}
+
 export function lineAt(source: string, position: number): number {
   if (position <= 0) return 1;
-  let line = 1;
-  for (let i = 0; i < position && i < source.length; i++) {
-    if (source[i] === '\n') line++;
+  const starts = lineStarts(source);
+  const pos = Math.min(position, source.length);
+  let lo = 0;
+  let hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= pos) lo = mid;
+    else hi = mid - 1;
   }
-  return line;
+  return lo + 1;
 }
 
 export interface CommentRange {

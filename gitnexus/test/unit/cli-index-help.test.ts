@@ -6,7 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
 import * as t from '@babel/types';
 import { afterEach, describe, expect, it } from 'vitest';
-import { forEachChild, parseTypeScript } from '../helpers/parse-typescript-source.js';
+import {
+  forEachChild,
+  parseTypeScript,
+  staticMemberName,
+} from '../helpers/parse-typescript-source.js';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
@@ -87,10 +91,6 @@ function staticStringValue(node: t.Node | undefined | null): string | undefined 
   return undefined;
 }
 
-function memberName(node: t.MemberExpression | t.OptionalMemberExpression): string | undefined {
-  return t.isIdentifier(node.property) && !node.computed ? node.property.name : undefined;
-}
-
 function extractRegisteredHelpDescriptions(): string[] {
   const descriptions = new Set<string>();
   const sourceFiles = ['src/cli/index.ts', 'src/cli/group.ts'];
@@ -105,13 +105,13 @@ function extractRegisteredHelpDescriptions(): string[] {
         t.isCallExpression(node) &&
         (t.isMemberExpression(node.callee) || t.isOptionalMemberExpression(node.callee))
       ) {
-        const method = memberName(node.callee);
-        const description =
-          method === 'description'
-            ? staticStringValue(node.arguments[0])
-            : method === 'option' || method === 'requiredOption'
-              ? staticStringValue(node.arguments[1])
-              : undefined;
+        const method = staticMemberName(node.callee);
+        let description: string | undefined;
+        if (method === 'description') {
+          description = staticStringValue(node.arguments[0]);
+        } else if (method === 'option' || method === 'requiredOption') {
+          description = staticStringValue(node.arguments[1]);
+        }
 
         if (description && /[A-Za-z]/.test(description)) {
           descriptions.add(description.replace(/\s+/g, ' ').trim());

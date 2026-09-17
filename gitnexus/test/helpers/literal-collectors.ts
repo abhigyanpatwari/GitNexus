@@ -449,10 +449,12 @@ function receiverNodeTypeOf(call: ts.CallExpression, sf: ts.SourceFile): string 
   return receiverMutatedIn(recvText, scope) ? undefined : found;
 }
 
-function scanFile(file: string): ScanResult {
+function scanFile(
+  file: string,
+  built: { program: ts.Program; checker: ts.Checker } | null,
+): ScanResult {
   const relPath = rel(file);
   const langs = fileLanguages(relPath);
-  const built = buildProgram();
   const empty: ScanResult = { nodeTypes: [], fields: [] };
   if (!built) return empty;
   const sf = programSourceFile(built.program, file);
@@ -561,8 +563,9 @@ function scanFile(file: string): ScanResult {
 function collectInCodeLiterals(): ScanResult {
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
+  const built = buildProgram();
   for (const file of mode2Files()) {
-    const r = scanFile(file);
+    const r = scanFile(file, built);
     nodeTypes.push(...r.nodeTypes);
     fields.push(...r.fields);
   }
@@ -574,7 +577,7 @@ function collectInCodeLiterals(): ScanResult {
 // binding/interpret/arity/import-decomposer/...), the production path for
 // migrated languages. These files mix SyntaxNode `.type` (grammar nodes) with
 // resolved-symbol `.type` (kinds like 'Class'); a naive scan would false-
-// positive on the latter. So this mode uses the TS TypeChecker to collect a
+// positive on the latter. So this mode uses the TypeScript 7 Checker to collect a
 // literal ONLY when its `.type` receiver / childForFieldName target resolves to
 // a tree-sitter SyntaxNode. Per-language dir => grammar (no cross-lang ambiguity).
 // ---------------------------------------------------------------------------
@@ -634,8 +637,13 @@ function buildProgram(): { program: ts.Program; checker: ts.Checker } | null {
   }
 }
 
+const sourceFileByPath = new Map<string, ts.SourceFile | undefined>();
+
 function programSourceFile(program: ts.Program, file: string): ts.SourceFile | undefined {
-  return program.getSourceFile(file) ?? program.getSourceFile(realpathSync(file));
+  if (sourceFileByPath.has(file)) return sourceFileByPath.get(file);
+  const sf = program.getSourceFile(file) ?? program.getSourceFile(realpathSync(file));
+  sourceFileByPath.set(file, sf);
+  return sf;
 }
 
 /** True when `node`'s resolved type is (or includes) a tree-sitter SyntaxNode. */

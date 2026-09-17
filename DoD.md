@@ -123,7 +123,7 @@ Run the commands relevant to the touched area. If something cannot be run in the
 
 ### 4.3 If `gitnexus-web/` changed
 
-- [ ] `cd gitnexus-web && npx tsc -b --noEmit`
+- [ ] `cd gitnexus-web && npx tsc -b --noEmit` (TypeScript 7 typechecks React/JSX: `jsx: react-jsx`, `lib` includes `DOM`)
 - [ ] `cd gitnexus-web && npm test`
 - [ ] `cd gitnexus-web && npm run test:e2e` when browser flows or user-facing UI behavior changed
 
