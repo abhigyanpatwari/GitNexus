@@ -35,7 +35,7 @@
  *
  * Test-only file: allowed to name languages.
  */
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

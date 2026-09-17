@@ -47,7 +47,7 @@
  * and `detect-changes-local-id-stability.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
-import ts from 'typescript';
+import ts from '@typescript/typescript6';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
