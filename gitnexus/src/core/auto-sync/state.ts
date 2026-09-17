@@ -9,6 +9,11 @@ export interface AutoSyncCommitStateEntry {
   codeCommitId: string;
   analyzedCommitId?: string;
   lastAnalyzeStatus?: AutoSyncAnalyzeStatus;
+  /**
+   * PDG mode from the most recent successful sync result. Written even when
+   * analysis was threshold-skipped and `runAnalysis` did not run.
+   */
+  requestedPdg?: boolean;
   analyzeConsecutiveFailures?: number;
   lastAnalyzeError?: string;
   groupSyncPending?: boolean;
@@ -105,6 +110,7 @@ function isAutoSyncCommitStateEntry(value: unknown): value is AutoSyncCommitStat
       entry.lastAnalyzeStatus === 'failed' ||
       entry.lastAnalyzeStatus === 'skipped' ||
       entry.lastAnalyzeStatus === 'threshold_skipped') &&
+    (entry.requestedPdg === undefined || typeof entry.requestedPdg === 'boolean') &&
     (entry.analyzeConsecutiveFailures === undefined ||
       (typeof entry.analyzeConsecutiveFailures === 'number' &&
         Number.isInteger(entry.analyzeConsecutiveFailures) &&

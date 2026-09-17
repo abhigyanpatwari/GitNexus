@@ -6,7 +6,10 @@ vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
   autoHeapCapMb: autoHeapCapMbMock,
 }));
 
-import { createAutoSyncAnalysisRunner } from '../../src/core/auto-sync/analysis-worker-launch.js';
+import {
+  AutoSyncAnalysisError,
+  createAutoSyncAnalysisRunner,
+} from '../../src/core/auto-sync/analysis-worker-launch.js';
 
 function createChild() {
   return Object.assign(new EventEmitter(), {
@@ -72,6 +75,29 @@ describe('auto-sync analysis worker', () => {
     child.emit('exit', 1, null);
 
     await expect(result).rejects.toThrow('parser crashed');
+  });
+
+  it('preserves worker index-lock-timeout code and retryable on the parent error', async () => {
+    const child = createChild();
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    child.emit('message', {
+      type: 'error',
+      message: 'waited for the index lock',
+      code: 'index-lock-timeout',
+      retryable: true,
+    });
+    child.emit('exit', 1, null);
+
+    await expect(result).rejects.toMatchObject({
+      name: 'AutoSyncAnalysisError',
+      message: 'waited for the index lock',
+      code: 'index-lock-timeout',
+      retryable: true,
+      abandonedWorker: false,
+    });
+    await expect(result).rejects.toBeInstanceOf(AutoSyncAnalysisError);
   });
 
   it('requests cancellation after timeout, reports it, and waits for exit', async () => {
@@ -211,6 +237,11 @@ describe('auto-sync analysis worker', () => {
     timers[1]!();
 
     await expect(result).rejects.toThrow('did not exit within');
+    await expect(result).rejects.toMatchObject({
+      name: 'AutoSyncAnalysisError',
+      abandonedWorker: true,
+      retryable: true,
+    });
     // The parent stops waiting; the child is released, never killed.
     expect(child.channel.unref).toHaveBeenCalled();
     expect(child.unref).toHaveBeenCalled();

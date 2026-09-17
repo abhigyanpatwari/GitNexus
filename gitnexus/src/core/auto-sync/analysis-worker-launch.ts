@@ -32,6 +32,27 @@ interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
  */
 const AUTO_SYNC_CANCEL_GRACE_MS = 5_000;
 
+export class AutoSyncAnalysisError extends Error {
+  readonly code?: 'index-lock-timeout';
+  readonly retryable?: boolean;
+  readonly abandonedWorker: boolean;
+
+  constructor(
+    message: string,
+    options: {
+      code?: 'index-lock-timeout';
+      retryable?: boolean;
+      abandonedWorker?: boolean;
+    } = {},
+  ) {
+    super(message);
+    this.name = 'AutoSyncAnalysisError';
+    this.code = options.code;
+    this.retryable = options.retryable;
+    this.abandonedWorker = options.abandonedWorker === true;
+  }
+}
+
 export interface AutoSyncAnalysisLaunchDeps {
   forkWorker: (workerPath: string, execArgv: string[]) => AnalysisWorker;
   setTimeoutFn: typeof setTimeout;
@@ -144,9 +165,10 @@ export function createAutoSyncAnalysisRunner(
           if (settled) return;
           releaseChild();
           settle(
-            new Error(
+            new AutoSyncAnalysisError(
               `${error.message} The analyze worker did not exit within ${deps.cancelGraceMs}ms; ` +
                 'it was left running so its native work is not interrupted.',
+              { abandonedWorker: true, retryable: true },
             ),
           );
         }, deps.cancelGraceMs);
@@ -186,7 +208,12 @@ export function createAutoSyncAnalysisRunner(
           return;
         }
         if (terminalOutcome?.type === 'error') {
-          settle(new Error(terminalOutcome.message));
+          settle(
+            new AutoSyncAnalysisError(terminalOutcome.message, {
+              code: terminalOutcome.code,
+              retryable: terminalOutcome.retryable,
+            }),
+          );
           return;
         }
         settle(

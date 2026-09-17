@@ -4,7 +4,13 @@ import { createRequire } from 'node:module';
 import { loadGroupConfig } from '../group/config-parser.js';
 import { getDefaultGitnexusDir, getGroupDir } from '../group/storage.js';
 import { syncGroup } from '../group/sync.js';
-import { registerRepo, resolveBranchPlacement, type RepoMeta } from '../../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  registerRepo,
+  resolveBranchPlacement,
+  type RepoMeta,
+} from '../../storage/repo-manager.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -20,7 +26,11 @@ import {
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
 import { validateAutoSyncRemoteUrl } from './config.js';
-import { runAutoSyncAnalysis, type AutoSyncAnalysisRunner } from './analysis-worker-launch.js';
+import {
+  AutoSyncAnalysisError,
+  runAutoSyncAnalysis,
+  type AutoSyncAnalysisRunner,
+} from './analysis-worker-launch.js';
 
 export interface AutoSyncLogger {
   info(message: string): void;
@@ -32,6 +42,7 @@ export interface AutoSyncRunDeps {
   cloneOrPull: typeof cloneOrPull;
   getCurrentBranch: (repoPath: string, timeoutMs: number) => Promise<string | undefined>;
   getCurrentCommit: (repoPath: string, timeoutMs: number) => Promise<string>;
+  getExistingPdgMode: (repoPath: string, branch: string) => Promise<boolean>;
   runAnalysis: AutoSyncAnalysisRunner;
   registerRepo: typeof registerRepo;
   resolveBranchPlacement: typeof resolveBranchPlacement;
@@ -49,6 +60,8 @@ export interface AutoSyncRunResult {
   analyzed: number;
   skippedAnalysis: number;
   failed: number;
+  /** True when a timed-out analyze worker was left running and may still hold the index lock. */
+  abandonedAnalysisWorker?: boolean;
 }
 
 const _require = createRequire(import.meta.url);
@@ -68,6 +81,23 @@ const DEFAULT_DEPS: AutoSyncRunDeps = {
   },
   getCurrentCommit: async (repoPath, timeoutMs) =>
     (await runGit(['rev-parse', 'HEAD'], repoPath, { timeoutMs })).trim(),
+  getExistingPdgMode: async (repoPath, branch) => {
+    const placement = await resolveBranchPlacement(repoPath, branch);
+    const paths = getStoragePaths(repoPath, placement.branch);
+    const meta = await loadMeta(path.dirname(paths.metaPath));
+    if (meta) return meta.pdg !== undefined;
+
+    try {
+      await fs.stat(paths.lbugPath);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      throw error;
+    }
+    throw new Error(
+      `Cannot determine whether the existing index at ${paths.lbugPath} contains PDG data because its metadata is missing or unreadable.`,
+    );
+  },
   runAnalysis: runAutoSyncAnalysis,
   registerRepo,
   resolveBranchPlacement,
@@ -99,6 +129,7 @@ export async function runAutoSyncOnce(
   const groupsToSync = new Set<string>();
   const groupStateKeys = new Map<string, string[]>();
   const result: AutoSyncRunResult = { synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 };
+  let abandonedAnalysisWorker = false;
   const commitInfoEntries: ProjectCommitInfoEntry[] = [];
   const actualConcurrency = resolveActualConcurrency(
     config.maxConcurrency,
@@ -155,6 +186,23 @@ export async function runAutoSyncOnce(
         const currentCommit = await deps.getCurrentCommit(targetDir, config.repoGitTimeoutMs);
         const stateKey = buildStateKey(targetDir, currentBranch);
         const previous = state[stateKey];
+        let existingPdg: boolean | undefined;
+        try {
+          existingPdg = await deps.getExistingPdgMode(targetDir, currentBranch);
+        } catch (error: unknown) {
+          if (item.project.pdg === undefined) {
+            throw new Error(
+              `${error instanceof Error ? error.message : String(error)} ` +
+                'Refusing to analyze so the live graph is preserved.',
+            );
+          }
+          logger.warn(
+            `[auto-sync] Existing PDG mode could not be determined for ${targetDir}; ` +
+              `applying explicit pdg=${item.project.pdg}.`,
+          );
+        }
+        const requestedPdg = item.project.pdg ?? existingPdg!;
+        const pdgModeChanged = existingPdg === undefined || requestedPdg !== existingPdg;
         let analyzeStatus: AutoSyncAnalyzeStatus = 'skipped';
         let analyzedCommitId = previous?.analyzedCommitId;
         let analyzeConsecutiveFailures = previous?.analyzeConsecutiveFailures ?? 0;
@@ -162,9 +210,23 @@ export async function runAutoSyncOnce(
         const groupSyncPending = previous?.groupSyncPending === true;
         let stats: RepoMeta['stats'] | undefined;
 
-        if (previous && previous.codeCommitId !== currentCommit) {
+        const previousRequestedPdg = previous?.requestedPdg ?? existingPdg;
+        if (
+          previous &&
+          (previous.codeCommitId !== currentCommit || previousRequestedPdg !== requestedPdg)
+        ) {
           analyzeConsecutiveFailures = 0;
           lastAnalyzeError = undefined;
+        }
+
+        if (item.project.pdg === undefined && existingPdg) {
+          logger.info(
+            `[auto-sync] Preserving existing PDG mode for ${targetDir}; project configuration does not set pdg.`,
+          );
+        } else if (item.project.pdg === false && existingPdg) {
+          logger.warn(
+            `[auto-sync] PDG is explicitly disabled for ${targetDir}; the next successful rebuild will remove existing PDG data.`,
+          );
         }
 
         if (analyzeConsecutiveFailures >= config.analyzeFailureThreshold) {
@@ -173,6 +235,7 @@ export async function runAutoSyncOnce(
             `[auto-sync] Skip analysis for ${targetDir}; analyze consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold} reached threshold. Fix the repository or clear auto-sync state before retrying.`,
           );
         } else if (
+          pdgModeChanged ||
           shouldAnalyzeCommit({
             currentCommit,
             previousAnalyzedCommit: previous?.analyzedCommitId,
@@ -182,7 +245,15 @@ export async function runAutoSyncOnce(
           try {
             const analysis = await deps.runAnalysis(
               targetDir,
-              { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+              {
+                branch: currentBranch,
+                skipAgentsMd: true,
+                skipSkills: true,
+                ...(item.project.pdg === undefined
+                  ? { preserveExistingPdg: true }
+                  : { pdg: requestedPdg }),
+                atomicIncremental: true,
+              },
               config.analyzeTimeoutMs,
               options.signal,
               options.onAnalysisCancellationRequested,
@@ -197,14 +268,21 @@ export async function runAutoSyncOnce(
           } catch (err: unknown) {
             if (options.signal?.aborted) throw err;
             analyzeStatus = 'failed';
-            analyzeConsecutiveFailures += 1;
             lastAnalyzeError = shortErrorMessage(err);
-            logger.error(
-              `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
-            );
+            if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
+            if (isRetryableAnalyzeContention(err)) {
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${lastAnalyzeError}`,
+              );
+            } else {
+              analyzeConsecutiveFailures += 1;
+              logger.error(
+                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
+              );
+            }
           }
         } else {
-          logger.info(`[auto-sync] Skip analysis for ${targetDir}; commit unchanged.`);
+          logger.info(`[auto-sync] Skip analysis for ${targetDir}; commit and PDG mode unchanged.`);
         }
         throwIfAborted(options.signal);
 
@@ -220,6 +298,7 @@ export async function runAutoSyncOnce(
           analyzeStatus,
           analyzeConsecutiveFailures,
           lastAnalyzeError,
+          requestedPdg,
           groupSyncPending,
           stats,
           stateKey,
@@ -303,6 +382,7 @@ export async function runAutoSyncOnce(
       codeCommitId: repoResult.currentCommit,
       analyzedCommitId,
       lastAnalyzeStatus: analyzeStatus,
+      requestedPdg: repoResult.requestedPdg,
       analyzeConsecutiveFailures,
       lastAnalyzeError,
       groupSyncPending: repoResult.groupSyncPending,
@@ -378,12 +458,29 @@ export async function runAutoSyncOnce(
     }
   }
   if (groupStateChanged) await deps.saveState(state);
+  if (abandonedAnalysisWorker) result.abandonedAnalysisWorker = true;
   return result;
 }
 
 function shortErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
   return message.replace(/\s+/g, ' ').slice(0, 240);
+}
+
+const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';
+
+function isAbandonedAnalyzeWorkerError(err: unknown): boolean {
+  if (err instanceof AutoSyncAnalysisError && err.abandonedWorker) return true;
+  return err instanceof Error && err.message.includes(ABANDONED_WORKER_MARKER);
+}
+
+function isRetryableAnalyzeContention(err: unknown): boolean {
+  if (isAbandonedAnalyzeWorkerError(err)) return true;
+  return (
+    err instanceof AutoSyncAnalysisError &&
+    err.code === 'index-lock-timeout' &&
+    err.retryable === true
+  );
 }
 
 export function getConfiguredRepoPath(
