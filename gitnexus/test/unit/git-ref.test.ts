@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   InvalidBranchError,
+  formatRejectedBranchForLog,
   sanitizeDetectedBranch,
   validateBranchName,
 } from '../../src/core/git-ref.js';
@@ -34,5 +35,12 @@ describe('core/git-ref', () => {
     expect(sanitizeDetectedBranch('main`evil')).toBeUndefined();
     expect(sanitizeDetectedBranch('HEAD')).toBeUndefined();
     expect(() => sanitizeDetectedBranch('feat`x')).not.toThrow();
+  });
+
+  it('formatRejectedBranchForLog keeps backticks visible and escapes bidi and quotes', () => {
+    expect(formatRejectedBranchForLog('feat`x')).toBe('feat`x');
+    expect(formatRejectedBranchForLog('a"b')).toBe('a\\"b');
+    expect(formatRejectedBranchForLog(`ok${'\u202e'}bad`)).toBe('ok\\u202ebad');
+    expect(formatRejectedBranchForLog(`zw${'\u200b'}sp`)).toBe('zw\\u200bsp');
   });
 });

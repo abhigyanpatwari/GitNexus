@@ -234,7 +234,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { sanitizeDetectedBranch } from './git-ref.js';
+import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
   EMBEDDING_DIMS,
@@ -1230,7 +1230,7 @@ export async function runFullAnalysis(
       }
       if (writeTarget.rejectedDetectedBranch) {
         log(
-          `Warning: checkout "${writeTarget.rejectedDetectedBranch}" is not a usable index label; continuing.`,
+          `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
       return await runFullAnalysisInner(
