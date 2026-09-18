@@ -33,8 +33,10 @@ import path from 'node:path';
 import { readRepoControlFile } from '../config/repo-control-file.js';
 import {
   InvalidBranchError,
+  sanitizeDetectedBranch,
   validateBranchName as validateBranchNameCore,
 } from '../core/git-ref.js';
+export { sanitizeDetectedBranch };
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
@@ -173,20 +175,6 @@ export function validateBranchName(value: string, source: string): string {
       throw new GitNexusRcError(err.message);
     }
     throw err;
-  }
-}
-
-/**
- * Best-effort validation for an auto-detected branch (from git). Never throws —
- * returns `undefined` for anything unusable so the resolver falls back to the
- * next precedence tier.
- */
-export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    return validateBranchName(value, 'detected branch');
-  } catch {
-    return undefined;
   }
 }
 
