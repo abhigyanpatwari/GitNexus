@@ -1,11 +1,21 @@
 // gitnexus/src/core/ingestion/method-extractors/configs/elixir.ts
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { MethodExtractionConfig, ParameterInfo, MethodVisibility } from '../../method-types.js';
+import type {
+  MethodExtractionConfig,
+  ParameterInfo,
+  MethodVisibility,
+} from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 const ELIXIR_DEF_KEYWORDS = new Set([
-  'def', 'defp', 'defmacro', 'defmacrop', 'defguard', 'defguardp', 'defdelegate',
+  'def',
+  'defp',
+  'defmacro',
+  'defmacrop',
+  'defguard',
+  'defguardp',
+  'defdelegate',
 ]);
 
 const ELIXIR_PRIVATE_KEYWORDS = new Set(['defp', 'defmacrop', 'defguardp']);
