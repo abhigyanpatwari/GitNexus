@@ -46,7 +46,7 @@ export function interpretSwiftTypeBinding(captures: CaptureMatch): ParsedTypeBin
   //   `[User]`                    → User   (array sugar)
   //   `Array<User>` / `Optional<User>` → User (single-arg generic)
   //   `Foundation.URL`            → URL    (qualifier)
-  const rawType = stripQualifier(stripGeneric(stripArraySugar(stripOptional(typeCap.text.trim()))));
+  const rawType = normalizeSwiftTypeName(typeCap.text);
 
   let source: TypeRef['source'] = 'parameter-annotation';
   if (captures['@type-binding.self'] !== undefined) source = 'self';
@@ -56,6 +56,10 @@ export function interpretSwiftTypeBinding(captures: CaptureMatch): ParsedTypeBin
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
 
   return { boundName: nameCap.text, rawTypeName: rawType, source };
+}
+
+export function normalizeSwiftTypeName(text: string): string {
+  return stripQualifier(stripGeneric(stripArraySugar(stripOptional(text.trim()))));
 }
 
 /** `User?` / `User!` → `User`. */

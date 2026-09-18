@@ -95,6 +95,32 @@ def helper() -> int:
 });
 
 describe('declaredReturnTypeByCallableId — exact callable identity', () => {
+  it('keeps same-file methods and parameter names from overwriting callable returns', () => {
+    const parsed = parseSwift(
+      `
+struct AResult {}
+struct BResult {}
+struct OtherStore {}
+struct Store {}
+struct A {
+  func make() -> AResult { AResult() }
+}
+struct B {
+  func make() -> BResult { BResult() }
+}
+func makeStore(makeStore: OtherStore) -> Store { Store() }
+`,
+      'Collisions.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const callableDefs = parsed.localDefs.filter((def) => def.returnType !== undefined);
+    expect(
+      callableDefs
+        .map((def) => index.declaredReturnTypeByCallableId.get(def.nodeId)?.rawName)
+        .sort(),
+    ).toEqual(['AResult', 'BResult', 'Store']);
+  });
+
   it('keeps extension and decoy return types separate despite the same method name', () => {
     const extension = parseSwift(
       `
@@ -156,7 +182,7 @@ func run() {
     expect(assignments.map(({ callSite }) => `${callSite.startLine}:${callSite.startCol}`)).toEqual(
       callAnchors,
     );
-    expect(new Set(assignments.map(({ inScope }) => inScope))).toHaveLength(1);
+    expect(new Set(assignments.map(({ inScope }) => inScope)).size).toBe(1);
   });
 
   it('does not emit replay facts for explicitly typed declarations', () => {
@@ -169,6 +195,19 @@ func run() {
       'Typed.swift',
     );
     expect(parsed.callResultAssignmentSites).toBeUndefined();
+  });
+
+  it('unwraps await and try expressions to the exact call position', () => {
+    const parsed = parseSwift(
+      `
+func run() async throws {
+  let awaited = await makeStore()
+  let tried = try makeStore()
+}
+`,
+      'Wrapped.swift',
+    );
+    expect(parsed.callResultAssignmentSites?.map(({ lhs }) => lhs)).toEqual(['awaited', 'tried']);
   });
 });
 

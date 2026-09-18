@@ -49,6 +49,7 @@ import type {
 } from 'gitnexus-shared';
 import type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 import { isClassLike } from './scope/walkers.js';
+import { normalizeSwiftTypeName } from '../languages/swift/interpret.js';
 
 /** The index *shape* lives in the leaf `./workspace-index-types.js` so
  *  `scope/walkers.ts` — which this builder calls into — can type against it
@@ -157,6 +158,16 @@ export function buildWorkspaceResolutionIndex(
       if (scope.kind === 'Function' && scope.parent !== null) {
         for (const def of scope.ownedDefs) {
           if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+            continue;
+          }
+          if (def.returnType !== undefined) {
+            const rawName = normalizeSwiftTypeName(def.returnType);
+            declaredReturnTypeByCallableId.set(def.nodeId, {
+              rawName,
+              ...(rawName !== def.returnType ? { declaredSpelling: def.returnType } : {}),
+              declaredAtScope: scope.id,
+              source: 'return-annotation',
+            });
             continue;
           }
           const name = simpleDefName(def);

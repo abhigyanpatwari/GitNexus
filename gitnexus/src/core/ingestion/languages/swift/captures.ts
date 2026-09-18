@@ -48,6 +48,7 @@ import {
   synthesizeSwiftReceiverBinding,
 } from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
+import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
 import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -204,7 +205,10 @@ export function emitSwiftScopeCaptures(
     // remains authoritative and must never enter return-type replay.
     if (grouped['@call-result-assignment.call'] !== undefined) {
       const callNode = nodeIfType(nodeMap['@call-result-assignment.call'], 'call_expression');
-      const property = callNode?.parent;
+      let property = callNode?.parent;
+      while (property?.type === 'await_expression' || property?.type === 'try_expression') {
+        property = property.parent;
+      }
       if (
         property?.type !== 'property_declaration' ||
         property.namedChildren.some((child) => child.type === 'type_annotation')
@@ -331,7 +335,17 @@ export function emitSwiftScopeCaptures(
           nodeMap['@declaration.constructor'],
         ...FUNCTION_NODE_TYPES,
       );
-      if (fnNodeForArity !== null) attachArityMetadata(grouped, fnNodeForArity);
+      if (fnNodeForArity !== null) {
+        attachArityMetadata(grouped, fnNodeForArity);
+        const returnType = swiftMethodConfig.extractReturnType?.(fnNodeForArity);
+        if (returnType !== undefined && returnType !== '') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNodeForArity,
+            returnType,
+          );
+        }
+      }
       // Structural receiver chain for a call whose receiver is itself an
       // expression, so resolution can type it by folding over structure
       // instead of re-parsing the receiver's source text. Self-gating: a
@@ -355,7 +369,17 @@ export function emitSwiftScopeCaptures(
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
       const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
-      if (fnNode !== null) attachArityMetadata(grouped, fnNode);
+      if (fnNode !== null) {
+        attachArityMetadata(grouped, fnNode);
+        const returnType = swiftMethodConfig.extractReturnType?.(fnNode);
+        if (returnType !== undefined && returnType !== '') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            returnType,
+          );
+        }
+      }
     }
 
     // ── Constructor calls: Swift has no `new`, so `Foo()` is a free call

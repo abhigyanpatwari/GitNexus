@@ -27,7 +27,11 @@
 
 export { emitSwiftScopeCaptures } from './captures.js';
 export { getSwiftCaptureCacheStats, resetSwiftCaptureCacheStats } from './cache-stats.js';
-export { interpretSwiftImport, interpretSwiftTypeBinding } from './interpret.js';
+export {
+  interpretSwiftImport,
+  interpretSwiftTypeBinding,
+  normalizeSwiftTypeName,
+} from './interpret.js';
 export { swiftMergeBindings } from './merge-bindings.js';
 export { swiftArityCompatibility } from './arity.js';
 export { resolveSwiftImportTarget, type SwiftResolveContext } from './import-target.js';
