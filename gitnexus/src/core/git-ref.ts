@@ -146,14 +146,20 @@ export function sanitizeDetectedBranch(value: string | null | undefined): string
 /**
  * Render a rejected checkout name for `onLog`. Hidden / bidi / control code
  * points become `\uXXXX` so a git-legal U+202E name cannot reverse the
- * warning in a terminal. ASCII `"` is escaped; other characters (including
- * backticks) stay visible.
+ * warning in a terminal. LINE/PARAGRAPH SEPARATOR (U+2028/U+2029) are git-legal
+ * and fail {@link validateBranchName} as whitespace, but they are not in
+ * {@link isHiddenOrControl}; escape them the same way so the warning stays one
+ * line. ASCII `"` is escaped; other characters (including backticks) stay
+ * visible.
  */
 export function formatRejectedBranchForLog(value: string): string {
   let out = '';
   for (const ch of value) {
     const cp = ch.codePointAt(0);
-    if (cp !== undefined && isHiddenOrControl(cp)) {
+    if (
+      cp !== undefined &&
+      (isHiddenOrControl(cp) || cp === 0x2028 || cp === 0x2029)
+    ) {
       out += `\\u${cp.toString(16).padStart(4, '0')}`;
       continue;
     }

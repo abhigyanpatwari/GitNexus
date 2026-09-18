@@ -37,10 +37,17 @@ describe('core/git-ref', () => {
     expect(() => sanitizeDetectedBranch('feat`x')).not.toThrow();
   });
 
-  it('formatRejectedBranchForLog keeps backticks visible and escapes bidi and quotes', () => {
+  it('formatRejectedBranchForLog keeps backticks visible and escapes bidi, quotes, and line separators', () => {
     expect(formatRejectedBranchForLog('feat`x')).toBe('feat`x');
     expect(formatRejectedBranchForLog('a"b')).toBe('a\\"b');
     expect(formatRejectedBranchForLog(`ok${'\u202e'}bad`)).toBe('ok\\u202ebad');
     expect(formatRejectedBranchForLog(`zw${'\u200b'}sp`)).toBe('zw\\u200bsp');
+    expect(formatRejectedBranchForLog(`foo${'\u2028'}bar`)).toBe('foo\\u2028bar');
+    expect(formatRejectedBranchForLog(`foo${'\u2029'}bar`)).toBe('foo\\u2029bar');
+  });
+
+  it('sanitizeDetectedBranch rejects git-legal U+2028/U+2029 as whitespace', () => {
+    expect(sanitizeDetectedBranch(`foo${'\u2028'}bar`)).toBeUndefined();
+    expect(sanitizeDetectedBranch(`foo${'\u2029'}bar`)).toBeUndefined();
   });
 });

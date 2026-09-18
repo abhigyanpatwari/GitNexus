@@ -1052,6 +1052,8 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
  * directory (#2658). `metaDir` — not `getStoragePaths(repoPath, options.branch)`
  * — is the lock scope: a `--branch X` that owns the flat slot resolves to the
  * flat `.gitnexus`, so scoping off the raw option would lock the wrong dir.
+ * `rejectedDetectedBranch` is log-only (the detect-reject warning after lock
+ * settle); it does not change placement.
  */
 interface WriteTarget {
   storagePath: string;

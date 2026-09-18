@@ -1206,6 +1206,52 @@ describe('run-analyze module', () => {
       await tmpRepo.cleanup();
     }
   }, 180_000);
+
+  it('keeps the detect-reject warning on one line for U+2028 checkout names', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-detect-reject-ls-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execFileSync('git', ['branch', '-M', 'foo\u2028bar'], {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      const warnings = logs.filter(isDetectRejectWarning);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('\\u2028');
+      expect(warnings[0]).not.toContain('\u2028');
+      expect(warnings[0].split(/\n|\r|\u2028|\u2029/)).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Warning:.*continuing\.$/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 180_000);
 });
 
 describe('collectBranchCacheKeys (#2106 R6)', () => {
