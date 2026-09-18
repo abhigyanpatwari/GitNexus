@@ -177,7 +177,9 @@ export const toProcessDetectionStamp = (
   maxEntryPointCandidates: resolved.maxEntryPointCandidates,
 });
 
-const isCompleteStamp = (recorded: ProcessDetectionStamp | undefined): recorded is ProcessDetectionStamp =>
+const isCompleteStamp = (
+  recorded: ProcessDetectionStamp | undefined,
+): recorded is ProcessDetectionStamp =>
   recorded !== undefined &&
   (recorded.maxProcesses === null ||
     (typeof recorded.maxProcesses === 'number' && Number.isInteger(recorded.maxProcesses))) &&

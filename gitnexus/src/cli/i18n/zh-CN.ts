@@ -237,10 +237,8 @@ export const zhCN = {
     '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
   'help.option.analyze.maxProcesses':
     '流程检测的流程数量上限（正整数）。覆盖动态的 symbols/10 公式。默认：动态。',
-  'help.option.analyze.maxProcessBranching':
-    '流程检测的单节点分支上限（正整数）。默认：4。',
-  'help.option.analyze.maxProcessTraceDepth':
-    '流程检测的 DFS 深度上限（正整数）。默认：10。',
+  'help.option.analyze.maxProcessBranching': '流程检测的单节点分支上限（正整数）。默认：4。',
+  'help.option.analyze.maxProcessTraceDepth': '流程检测的 DFS 深度上限（正整数）。默认：10。',
   'help.option.analyze.maxEntryPointCandidates':
     '排序后的入口点候选池（正整数）。默认：200。整条流程缺失时，通常先把该上限翻倍。',
   'help.option.analyze.embeddingThreads': '限制本地 ONNX 嵌入 CPU 线程数',

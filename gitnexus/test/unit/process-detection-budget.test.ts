@@ -137,10 +137,7 @@ describe('processDetectionBudgetMismatch (KTD4)', () => {
   it('mismatches when a present stamp differs', () => {
     const recorded = toProcessDetectionStamp(defaults);
     expect(
-      processDetectionBudgetMismatch(
-        { ...recorded, maxEntryPointCandidates: 400 },
-        defaults,
-      ),
+      processDetectionBudgetMismatch({ ...recorded, maxEntryPointCandidates: 400 }, defaults),
     ).toBe(true);
   });
 
@@ -152,7 +149,10 @@ describe('processDetectionBudgetMismatch (KTD4)', () => {
   });
 
   it('matches an identical present stamp', () => {
-    const resolved = resolveProcessDetectionBudget({ maxProcesses: 25, maxEntryPointCandidates: 400 }, {});
+    const resolved = resolveProcessDetectionBudget(
+      { maxProcesses: 25, maxEntryPointCandidates: 400 },
+      {},
+    );
     expect(processDetectionBudgetMismatch(toProcessDetectionStamp(resolved), resolved)).toBe(false);
   });
 });

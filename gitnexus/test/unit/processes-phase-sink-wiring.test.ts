@@ -344,7 +344,8 @@ describe('processes phase — truncation is disclosed proportionately (#2899)', 
     const graph = createKnowledgeGraph();
     for (let c = 0; c < 210; c++) {
       for (let i = 0; i < 3; i++) addFn(graph, `func:ae6_${c}_${i}`);
-      for (let i = 0; i < 2; i++) addCallEdge(graph, `func:ae6_${c}_${i}`, `func:ae6_${c}_${i + 1}`);
+      for (let i = 0; i < 2; i++)
+        addCallEdge(graph, `func:ae6_${c}_${i}`, `func:ae6_${c}_${i + 1}`);
     }
     // 210 chains × 3 = 630 symbols. Dynamic maxProcesses needs ≥ 210, so pad.
     for (let i = 0; i < 1470; i++) addFn(graph, `func:pad_${i}`);
