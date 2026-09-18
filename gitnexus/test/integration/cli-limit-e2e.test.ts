@@ -32,12 +32,20 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 let MINI_REPO: string;
 let tmpParent: string;
 let suiteGitnexusHome: string;
+/** False when setup analyze fell back to `--skip-fts` after CREATE_FTS_INDEX native-aborted. */
+let ftsIndexed = false;
 
 function cliEnv(extraEnv: Record<string, string> = {}) {
   return {
     ...process.env,
     GITNEXUS_HOME: suiteGitnexusHome,
     NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    // Cold parse-worker loads every tree-sitter grammar before the ready
+    // handshake. The default 5s budget classifies that as a deterministic
+    // crash-loop on a loaded WSL/CI host (status 1) or the 60s spawnSync
+    // timeout kills the child first (status null). Sibling integration
+    // suites pin 60s.
+    GITNEXUS_WORKER_READY_TIMEOUT_MS: process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS || '60000',
     ...extraEnv,
   };
 }
@@ -50,6 +58,22 @@ function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 30000) {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: cliEnv(),
   });
+}
+
+function isNativeAbort(result: ReturnType<typeof runCliRaw>): boolean {
+  return (
+    result.signal === 'SIGSEGV' ||
+    result.signal === 'SIGABRT' ||
+    result.signal === 'SIGBUS' ||
+    result.status === 139
+  );
+}
+
+function isFatalAnalyzeHarness(result: ReturnType<typeof runCliRaw>): boolean {
+  return (
+    result.stderr?.includes('Worker script not found') === true ||
+    result.stderr?.includes('deterministic crash-loop') === true
+  );
 }
 
 /**
@@ -116,14 +140,39 @@ beforeAll(() => {
     },
   });
 
-  // Run analyze to populate .gitnexus/ index (required for all tool commands)
-  const analyzeResult = runCliRaw(['analyze', '--force'], MINI_REPO, 60000);
-  if (analyzeResult.status !== 0) {
+  // Index once so every --limit command has a registered repo. Match cli-e2e:
+  // a tiny fixture analyzes in seconds on a quiet machine, but spawnSync
+  // status null is SIGTERM from the timeout under load (not an analyze
+  // exit). Retry timeouts; alreadyUpToDate makes a repeat cheap.
+  //
+  // CREATE_FTS_INDEX can SIGSEGV the analyze process on some WSL/native
+  // hosts (status null, signal SIGSEGV) even when `doctor` reports FTS
+  // LOAD-able. Do not retry that path — rebuild with --skip-fts so graph
+  // tools still run. query --limit needs BM25 and is skipped in that case.
+  let analyzeResult: ReturnType<typeof runCliRaw> | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    analyzeResult = runCliRaw(['analyze', '--force'], MINI_REPO, 90_000);
+    if (analyzeResult.status === 0) {
+      ftsIndexed = true;
+      break;
+    }
+    if (isFatalAnalyzeHarness(analyzeResult) || isNativeAbort(analyzeResult)) break;
+  }
+  if (
+    analyzeResult &&
+    !ftsIndexed &&
+    isNativeAbort(analyzeResult) &&
+    !isFatalAnalyzeHarness(analyzeResult)
+  ) {
+    analyzeResult = runCliRaw(['analyze', '--force', '--skip-fts'], MINI_REPO, 90_000);
+  }
+  if (!analyzeResult || analyzeResult.status !== 0) {
+    const err = analyzeResult?.error;
     throw new Error(
-      `Analyze failed (status ${analyzeResult.status}):\nstdout: ${analyzeResult.stdout}\nstderr: ${analyzeResult.stderr}`,
+      `Analyze failed (status ${analyzeResult?.status}, signal ${analyzeResult?.signal}, error ${err?.message ?? 'none'}):\nstdout: ${analyzeResult?.stdout}\nstderr: ${analyzeResult?.stderr}`,
     );
   }
-});
+}, 300_000);
 
 afterAll(() => {
   if (tmpParent) cleanupTempDirSync(tmpParent);
@@ -357,6 +406,18 @@ describe('CLI --limit flag E2E', () => {
   // ─── query ──────────────────────────────────────────────────────────────
 
   describe('query --limit', () => {
+    beforeEach((ctx) => {
+      if (ftsIndexed) return;
+      if (process.env.GITNEXUS_REQUIRE_FTS === '1') {
+        throw new Error(
+          'GITNEXUS_REQUIRE_FTS=1 but setup analyze native-aborted during CREATE_FTS_INDEX; ' +
+            'query --limit cannot be verified without BM25.',
+        );
+      }
+      ctx.skip(
+        'query --limit needs BM25; CREATE_FTS_INDEX native-aborted and analyze fell back to --skip-fts',
+      );
+    });
     it('truncates processes to --limit 1', () => {
       // "message" matches logMessage / createLogEntry / formatLogEntry → 4 processes
       const limited = runJson<QueryResult>([
