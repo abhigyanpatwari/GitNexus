@@ -1219,8 +1219,10 @@ export function pickImplicitThisOverload(
 
   // Bare calls in an instance method use the same implicit receiver as
   // `self.member()`. Prefer declarations on the enclosing type; when the
-  // language opts into MRO implicit-this, union inherited owners and
-  // arity-narrow. Falling through to the global name lookup makes inherited
+  // language opts into MRO implicit-this, walk inherited owners
+  // nearest-first and arity-narrow per owner. Compatible-but-ambiguous
+  // on a nearer ancestor fail-closes — do not fall through to a farther
+  // override. Falling through to the global name lookup makes inherited
   // defaults depend on file order.
   const own = model.methods.lookupAllByOwner(classDefId, site.name);
   const ownPicked = pickUniqueImplicitThisCandidate(own, site, hookCtx, workspaceIndex);
@@ -1236,11 +1238,26 @@ export function pickImplicitThisOverload(
   }
   if (hookCtx?.implicitThisWalksMro !== true) return undefined;
 
-  const inherited: SymbolDefinition[] = [];
   for (const ownerId of scopes.methodDispatch?.mroFor(classDefId) ?? []) {
-    inherited.push(...model.methods.lookupAllByOwner(ownerId, site.name));
+    const inherited = model.methods.lookupAllByOwner(ownerId, site.name);
+    const inheritedPicked = pickUniqueImplicitThisCandidate(
+      inherited,
+      site,
+      hookCtx,
+      workspaceIndex,
+    );
+    if (inheritedPicked !== undefined) return inheritedPicked;
+    if (inherited.length > 0) {
+      const inheritedCompatible = narrowOverloadCandidates(inherited, site.arity, site.argumentTypes, {
+        argumentTypeClasses: site.argumentTypeClasses,
+        conversionRankFn: hookCtx?.conversionRankFn,
+        conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
+        constraintCompatibility: hookCtx?.constraintCompatibility,
+      });
+      if (inheritedCompatible.length > 0) return undefined;
+    }
   }
-  return pickUniqueImplicitThisCandidate(inherited, site, hookCtx, workspaceIndex);
+  return undefined;
 }
 
 function pickUniqueImplicitThisCandidate(

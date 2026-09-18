@@ -221,6 +221,38 @@ describe('pickImplicitThisOverload — inherited implicit-this', () => {
     expect(result?.nodeId).toBe('m:B.foo');
   });
 
+  it('picks the nearest inherited override when two MRO ancestors share a signature', () => {
+    const MID = 'def:Mid.swift:Mid';
+    const GRAND = 'def:Grand.swift:Grand';
+    const midFoo = mkMethod({
+      nodeId: 'm:Mid.foo',
+      ownerId: MID,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const grandFoo = mkMethod({
+      nodeId: 'm:Grand.foo',
+      ownerId: GRAND,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [MID, GRAND]]]));
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${MID}::foo`, [midFoo]],
+        [`${GRAND}::foo`, [grandFoo]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:Mid.foo');
+  });
+
   it('prefers a protocol-extension default over the protocol requirement of the same arity', () => {
     const requirement = mkMethod({
       nodeId: 'm:P.req',

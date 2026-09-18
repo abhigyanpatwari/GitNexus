@@ -156,8 +156,43 @@ protocol Foo {}
     });
     const added = app.localDefs.find((d) => d.qualifiedName?.split('.').at(-1) === 'added');
     const appFoo = app.localDefs.find((d) => d.qualifiedName === 'Foo');
+    expect(added).toBeDefined();
+    expect(appFoo).toBeDefined();
     expect(added?.ownerId).toBe(appFoo?.nodeId);
     const libFoo = lib.localDefs.find((d) => d.qualifiedName === 'Foo');
     expect(added?.ownerId).not.toBe(libFoo?.nodeId);
+  });
+
+  it('stamps a one-line extension whose synthetic class shares the Class start line', () => {
+    const parsed = parseSwift(
+      `
+struct Foo {}
+extension Foo { func added() {} }
+`,
+      'OneLine.swift',
+    );
+    const added = parsed.localDefs.find((d) => d.qualifiedName?.split('.').at(-1) === 'added');
+    const foo = parsed.localDefs.find(
+      (d) => d.qualifiedName === 'Foo' && (d.type === 'Struct' || d.type === 'Class'),
+    );
+    expect(added).toBeDefined();
+    expect(foo).toBeDefined();
+    expect(added?.ownerId).toBeUndefined();
+    stamp([parsed]);
+    expect(added?.ownerId).toBe(foo?.nodeId);
+  });
+
+  it('stamps a cross-file extension onto the real type, not the synthetic class', () => {
+    const typeFile = parseSwift('struct Foo {}', 'Foo.swift');
+    const extFile = parseSwift('extension Foo { func added() {} }', 'Foo+Added.swift');
+    const added = extFile.localDefs.find((d) => d.qualifiedName?.split('.').at(-1) === 'added');
+    const foo = typeFile.localDefs.find(
+      (d) => d.qualifiedName === 'Foo' && (d.type === 'Struct' || d.type === 'Class'),
+    );
+    expect(added).toBeDefined();
+    expect(foo).toBeDefined();
+    expect(added?.ownerId).toBeUndefined();
+    stamp([typeFile, extFile]);
+    expect(added?.ownerId).toBe(foo?.nodeId);
   });
 });
