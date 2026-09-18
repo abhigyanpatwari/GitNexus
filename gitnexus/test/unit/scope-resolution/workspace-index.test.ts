@@ -156,6 +156,23 @@ struct OtherScenario {
     ).toBe('OtherStore');
     expect(index.declaredReturnTypeByCallableId.has('makeStore')).toBe(false);
   });
+
+  it('does not infer a return type from a same-named parameter', () => {
+    const parsed = parseSwift(
+      `
+struct OtherStore {}
+func makeStore(makeStore: OtherStore) {}
+`,
+      'Unannotated.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const makeStore = parsed.localDefs.find(
+      (def) => def.qualifiedName?.split('.').at(-1) === 'makeStore',
+    );
+
+    expect(makeStore).toBeDefined();
+    expect(index.declaredReturnTypeByCallableId.has(makeStore!.nodeId)).toBe(false);
+  });
 });
 
 describe('Swift call-result assignment extraction', () => {
@@ -208,11 +225,14 @@ func run() async throws {
 `,
       'Wrapped.swift',
     );
-    expect(parsed.callResultAssignmentSites?.map(({ lhs }) => lhs)).toEqual([
-      'awaited',
-      'tried',
-      'triedAwaited',
-    ]);
+    const assignments = parsed.callResultAssignmentSites ?? [];
+    expect(assignments.map(({ lhs }) => lhs)).toEqual(['awaited', 'tried', 'triedAwaited']);
+    const callAnchors = parsed.referenceSites
+      .filter((site) => site.name === 'makeStore')
+      .map(({ atRange }) => `${atRange.startLine}:${atRange.startCol}`);
+    expect(assignments.map(({ callSite }) => `${callSite.startLine}:${callSite.startCol}`)).toEqual(
+      callAnchors,
+    );
   });
 });
 

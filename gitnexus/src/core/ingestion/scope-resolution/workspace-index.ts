@@ -57,13 +57,6 @@ import { normalizeSwiftTypeName } from '../languages/swift/interpret.js';
  *  importing the type and the builder from one place. */
 export type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 
-const simpleDefName = (def: SymbolDefinition): string | undefined => {
-  const qualified = def.qualifiedName;
-  if (qualified === undefined || qualified.length === 0) return undefined;
-  const dot = qualified.lastIndexOf('.');
-  return dot === -1 ? qualified : qualified.slice(dot + 1);
-};
-
 /**
  * A `ReadonlyMap<K, Scope>` view backed by a `K → ScopeId` map plus a
  * `ScopeTree`, holding **no `Scope` objects of its own** — `.get` fetches via
@@ -169,17 +162,6 @@ export function buildWorkspaceResolutionIndex(
               source: 'return-annotation',
             });
             continue;
-          }
-          const name = simpleDefName(def);
-          if (name === undefined) continue;
-          let current: Scope | undefined = scope;
-          while (current !== undefined) {
-            const returnType = current.typeBindings.get(name);
-            if (returnType !== undefined) {
-              declaredReturnTypeByCallableId.set(def.nodeId, returnType);
-              break;
-            }
-            current = current.parent === null ? undefined : scopeById.get(current.parent);
           }
         }
       }
