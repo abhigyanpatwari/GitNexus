@@ -56,6 +56,12 @@ describe('resolveProcessDetectionBudget (#3313)', () => {
     expect(formatInvalidProcessDetectionOverride('--max-processes', '0')).toContain(
       'next source (env, then the built-in default)',
     );
+    expect(formatInvalidProcessDetectionOverride('GITNEXUS_MAX_PROCESSES', '0')).toContain(
+      'the built-in default',
+    );
+    expect(formatInvalidProcessDetectionOverride('GITNEXUS_MAX_PROCESSES', '0')).not.toContain(
+      'next source (env, then the built-in default)',
+    );
   });
 
   it('lets explicit options beat env (AE3 remainder)', () => {

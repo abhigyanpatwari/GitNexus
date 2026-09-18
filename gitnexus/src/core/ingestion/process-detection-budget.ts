@@ -94,8 +94,12 @@ export type ProcessDetectionEffectiveLimits = {
 export type InvalidBudgetHandler = (knob: string, raw: string) => void;
 
 /** Operator copy when a CLI/rc/env token is rejected. Next precedence still applies. */
-export const formatInvalidProcessDetectionOverride = (knob: string, raw: string): string =>
-  `${knob} must be a positive integer (got ${JSON.stringify(raw)}); ignoring it so the next source (env, then the built-in default) applies.`;
+export const formatInvalidProcessDetectionOverride = (knob: string, raw: string): string => {
+  const next = knob.startsWith('GITNEXUS_')
+    ? 'the built-in default'
+    : 'the next source (env, then the built-in default)';
+  return `${knob} must be a positive integer (got ${JSON.stringify(raw)}); ignoring it so ${next} applies.`;
+};
 
 export const parsePositiveIntegerOverride = (
   raw: string | number | undefined | null,
