@@ -17,6 +17,7 @@ import { CommunityMembership } from './community-processor.js';
 import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isDev } from './utils/env.js';
+import { PROCESS_DETECTION_BUDGET_DEFAULTS } from './process-detection-budget.js';
 
 import { logger } from '../logger.js';
 // ============================================================================
@@ -31,12 +32,12 @@ export interface ProcessDetectionConfig {
   maxEntryPointCandidates: number; // Ranked entry-point pool (default: 200)
 }
 
-const DEFAULT_CONFIG: ProcessDetectionConfig = {
-  maxTraceDepth: 10,
-  maxBranching: 4,
+export const DEFAULT_CONFIG: ProcessDetectionConfig = {
+  maxTraceDepth: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+  maxBranching: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
   maxProcesses: 75,
-  minSteps: 3, // 3+ steps = genuine multi-hop flow (2-step is just "A calls B")
-  maxEntryPointCandidates: 200,
+  minSteps: PROCESS_DETECTION_BUDGET_DEFAULTS.minSteps, // 3+ steps = genuine multi-hop flow (2-step is just "A calls B")
+  maxEntryPointCandidates: PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
 };
 
 // ============================================================================
@@ -512,7 +513,7 @@ const findEntryPoints = (
    * to unwrap a counter to ask for entry points.
    */
   truncation?: ProcessTruncationStats,
-  maxEntryPointCandidates: number = 200,
+  maxEntryPointCandidates: number = DEFAULT_CONFIG.maxEntryPointCandidates,
 ): string[] => {
   const symbolTypes = new Set<NodeLabel>(['Function', 'Method']);
   const entryPointCandidates: {

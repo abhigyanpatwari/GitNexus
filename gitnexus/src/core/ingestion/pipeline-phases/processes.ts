@@ -85,10 +85,6 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
-    let symbolCount = 0;
-    ctx.graph.forEachNode((n) => {
-      if (n.label !== 'File') symbolCount++;
-    });
     const resolvedBudget = resolveProcessDetectionBudget(
       {
         maxProcesses: ctx.options?.maxProcesses,
@@ -101,6 +97,12 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       // the host environment.
       {},
     );
+    let symbolCount = 0;
+    if (resolvedBudget.maxProcesses === undefined) {
+      ctx.graph.forEachNode((n) => {
+        if (n.label !== 'File') symbolCount++;
+      });
+    }
     const detectionConfig = buildProcessDetectionPhaseConfig(
       resolvedBudget,
       symbolCount,
@@ -165,8 +167,8 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     // "unexplored entry points mean whole flows are missing, while a
     // depth-capped trace means a flow is present but shorter than it really is"
     // — and it is what keeps the line worth reading. Warning on every counter
-    // meant warning on every run: this phase overrides only `maxProcesses`, so
-    // at the shipped defaults (`maxBranching: 4`, `maxTraceDepth: 10`,
+    // meant warning on every run: at the shipped defaults (`maxBranching: 4`,
+    // `maxTraceDepth: 10`,
     // per-entry trace budget 12) `calleesDropped` fires for any function with
     // five callees, `tracesDepthCapped` for any chain deeper than ten, and
     // `walksCutByBudget` for any entry point with twelve paths under it. All
