@@ -452,8 +452,8 @@ export const runPipelineFromRepo = async (
   const propertyInference = scopeResolutionOutput.propertyInference;
 
   // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
-  // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
-  // too), and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
+  // any `enabledWhen` predicate (`skipGraphPhases` drops communities/processes),
+  // and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
   // off the options flag alone made every filtered-out combination crash here
   // rather than return undefined results.
   if (results.has('communities') && results.has('processes')) {

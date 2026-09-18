@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import fs from 'fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getStoragePaths,
   loadMeta,
@@ -23,7 +23,10 @@ import { resolveAnalysisFeatureVersions } from '../../src/core/analysis-features
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { EMBEDDING_DIMS, SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
-import { PROCESS_DETECTION_BUDGET_DEFAULTS } from '../../src/core/ingestion/process-detection-budget.js';
+import {
+  PROCESS_DETECTION_BUDGET_DEFAULTS,
+  PROCESS_DETECTION_ENV,
+} from '../../src/core/ingestion/process-detection-budget.js';
 import { getSearchFTSCjkSegmentation } from '../../src/core/search/cjk-segmentation.js';
 import {
   FTS_DIRTY_PHASE,
@@ -303,6 +306,11 @@ describe('FTS crash-marker policy (characterization)', () => {
 });
 
 describe('runFullAnalysis FTS crash marker', () => {
+  beforeEach(() => {
+    for (const key of Object.values(PROCESS_DETECTION_ENV)) {
+      vi.stubEnv(key, undefined);
+    }
+  });
   afterEach(() => {
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
     vi.doUnmock('../../src/core/search/fts-indexes.js');
@@ -391,6 +399,7 @@ describe('runFullAnalysis FTS crash marker', () => {
   });
 
   it('stamps processDetection.uncertified before in-place FTS when the budget mismatched', async () => {
+    const sequence: string[] = [];
     let midBuild: RepoMeta | null = null;
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
@@ -402,7 +411,10 @@ describe('runFullAnalysis FTS crash marker', () => {
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       missingSearchFTSIndexTables: vi.fn(async () => []),
       dropSearchFTSIndexes: vi.fn(async () => undefined),
-      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+      buildSearchIndexesOrDegrade: vi.fn(async () => {
+        sequence.push('build');
+        return { ok: true };
+      }),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
@@ -416,6 +428,7 @@ describe('runFullAnalysis FTS crash marker', () => {
         ...actual,
         saveMeta: async (...args: Parameters<typeof actual.saveMeta>) => {
           if (args[1].incrementalInProgress?.phase === FTS_DIRTY_PHASE) {
+            sequence.push('stamp-fts');
             midBuild = args[1];
           }
           return actual.saveMeta(...args);
@@ -441,6 +454,9 @@ describe('runFullAnalysis FTS crash marker', () => {
         uncertified: true,
         maxProcesses: null,
       });
+      expect(sequence.indexOf('stamp-fts')).toBeGreaterThan(-1);
+      expect(sequence.indexOf('build')).toBeGreaterThan(-1);
+      expect(sequence.indexOf('stamp-fts')).toBeLessThan(sequence.indexOf('build'));
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
       expect(finalMeta?.processDetection?.maxProcesses).toBe(25);
@@ -1087,9 +1103,11 @@ describe('runFullAnalysis FTS crash marker', () => {
 
   it('re-detects flows after FTS park when processDetection is uncertified', async () => {
     const wipeLbugDbFiles = vi.fn(async () => undefined);
+    const runDeferredDerivedPhases = vi.fn(async () => undefined);
     const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
       repoPath,
       graph: fileGraph(),
+      runDeferredDerivedPhases,
     }));
     vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
       ...(await mockLbugAdapter()),
@@ -1133,6 +1151,7 @@ describe('runFullAnalysis FTS crash marker', () => {
 
       expect(result.alreadyUpToDate).not.toBe(true);
       expect(runPipelineFromRepo).toHaveBeenCalled();
+      expect(runDeferredDerivedPhases).toHaveBeenCalled();
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
     } finally {

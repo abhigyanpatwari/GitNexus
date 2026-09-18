@@ -177,7 +177,7 @@ program
   )
   .option(
     '--max-entry-point-candidates <n>',
-    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise then.',
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise.',
   )
   .option(
     '--spring-actuator <path>',
