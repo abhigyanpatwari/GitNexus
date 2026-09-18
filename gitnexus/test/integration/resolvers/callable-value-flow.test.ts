@@ -36,8 +36,8 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
   [SupportedLanguages.Zig]: 'matrix',
-  // Elixir captures and anonymous functions are resolved by its provider-owned
-  // semantic graph rather than the generic callable-value-flow pass.
+  // Elixir has no generic callable-value-flow capture protocol. Its provider
+  // models direct captures separately, but does not resolve value dispatch.
   [SupportedLanguages.Elixir]: 'not-applicable',
   // Objective-C message sends are resolved by its ScopeResolver. The provider
   // does not emit callable-value-flow captures in this MVP.

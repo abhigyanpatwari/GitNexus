@@ -1087,8 +1087,9 @@ describe('Tree-sitter multi-language parsing', () => {
         createNode,
         'lib/my_app/user.ex',
         provider.resolveEnclosingOwner,
-        provider.isClassContainerNode,
-        provider.extractEnclosingClassInfo,
+        undefined,
+        provider.resolveFileTypeOwner,
+        provider.resolveContainerTypeOwner,
       );
       expect(owner?.className).toBe('MyApp.User');
     });

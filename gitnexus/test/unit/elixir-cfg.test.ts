@@ -61,13 +61,11 @@ describe('Elixir CFG visitor', () => {
     const cfg = createElixirCfgVisitor().buildFunctionCfg(root.namedChildren[0]!, 'taint.ex')!;
     const matches = matchFunctionSites(cfg, ELIXIR_TAINT_MODEL, buildTaintImportIndex([]));
     const result = computeTaintFlows(cfg, computeReachingDefs(cfg), matches);
-    expect(result.findings.map((finding) => finding.sink.entryName).sort()).toEqual([
-      'eval_string',
-      'query!',
-    ]);
-    expect(result.findings.map((finding) => finding.sinkKind).sort()).toEqual([
-      'code-injection',
-      'sql-injection',
+    expect(
+      result.findings.map((finding) => [finding.sink.entryName, finding.sinkKind]).sort(),
+    ).toEqual([
+      ['eval_string', 'code-injection'],
+      ['query!', 'sql-injection'],
     ]);
   });
 
@@ -95,6 +93,76 @@ describe('Elixir CFG visitor', () => {
     expect(result.findings.filter((finding) => finding.sinkKind === 'sql-injection')).toHaveLength(
       2,
     );
+  });
+
+  it('keeps every anonymous-function clause and matches bare Kernel.apply', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'closure-taint.ex');
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const root = parser.parse(`def f(params) do
+      code = params["code"]
+      fn :eval -> code = params["code"]; apply(code, [], []); value -> Code.eval_string(code) end
+    end`).rootNode;
+    const cfg = collectFunctionCfgs(root, createElixirCfgVisitor(), 'closure-taint.ex').cfgs.find(
+      (candidate) => candidate.blocks.some((block) => block.text.includes('apply(code')),
+    )!;
+    const findings = computeTaintFlows(
+      cfg,
+      computeReachingDefs(cfg),
+      matchFunctionSites(cfg, ELIXIR_TAINT_MODEL, buildTaintImportIndex([])),
+    ).findings;
+    expect(cfg.blocks.some((block) => block.text.includes('Code.eval_string'))).toBe(true);
+    expect(findings.map((finding) => finding.sink.entryName).sort()).toEqual([
+      'apply',
+      'eval_string',
+    ]);
+  });
+
+  it('does not flow taint sequentially between anonymous-function clauses', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'closure-branches.ex');
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const root = parser.parse(`def f(params) do
+      fn :source -> code = params["code"]; :ok
+         :sink -> Code.eval_string(code)
+      end
+    end`).rootNode;
+    const cfg = collectFunctionCfgs(
+      root,
+      createElixirCfgVisitor(),
+      'closure-branches.ex',
+    ).cfgs.find((candidate) =>
+      candidate.blocks.some((block) => block.text.includes('Code.eval_string')),
+    )!;
+    const findings = computeTaintFlows(
+      cfg,
+      computeReachingDefs(cfg),
+      matchFunctionSites(cfg, ELIXIR_TAINT_MODEL, buildTaintImportIndex([])),
+    ).findings;
+    expect(findings.map((finding) => finding.sink.entryName)).not.toContain('eval_string');
+  });
+
+  it('binds guarded default formals by pattern with zero-based indexes only', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'guarded-defaults.ex');
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const def = parser.parse(
+      'def f(value \\\\ @fallback, other) when is_binary(value) do\n  value <> other\nend',
+    ).rootNode.namedChildren[0]!;
+    const cfg = createElixirCfgVisitor().buildFunctionCfg(def, 'guarded-defaults.ex')!;
+    expect(cfg.bindings.filter((binding) => binding.kind === 'param')).toEqual([
+      expect.objectContaining({ name: 'value', formalIndex: 0 }),
+      expect.objectContaining({ name: 'other', formalIndex: 1 }),
+    ]);
+    expect(
+      cfg.bindings.filter((binding) => binding.kind === 'param').map((binding) => binding.name),
+    ).not.toContain('fallback');
   });
 
   it('models the structured grammar forms as local control flow', async () => {

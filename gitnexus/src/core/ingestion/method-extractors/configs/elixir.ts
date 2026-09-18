@@ -67,7 +67,8 @@ function extractElixirName(node: SyntaxNode): string | undefined {
 
 /**
  * Extract parameters from the inner function-signature call inside a def node.
- * Captures simple identifier parameters; skips pattern-match and default-value nodes.
+ * Captures simple identifier parameters and their default values; skips
+ * pattern-match nodes and other complex destructuring.
  */
 function extractElixirParameters(node: SyntaxNode): ParameterInfo[] {
   const args = findArguments(node);
@@ -119,20 +120,14 @@ function extractElixirVisibility(node: SyntaxNode): MethodVisibility {
  * Returns undefined for top-level functions (no parent defmodule).
  */
 function extractElixirOwnerName(node: SyntaxNode): string | undefined {
-  let cur = node.parent;
+  let cur: SyntaxNode | null | undefined = node;
   while (cur) {
-    if (cur.type === 'do_block') {
-      const parent = cur.parent;
-      if (parent?.type === 'call') {
-        const kw = callKeyword(parent);
-        if (kw === 'defmodule') {
-          const pArgs = findArguments(parent);
-          if (pArgs) {
-            for (let i = 0; i < pArgs.namedChildCount; i++) {
-              const a = pArgs.namedChild(i);
-              if (a?.type === 'alias') return a.text;
-            }
-          }
+    if (cur.type === 'call' && callKeyword(cur) === 'defmodule') {
+      const pArgs = findArguments(cur);
+      if (pArgs) {
+        for (let i = 0; i < pArgs.namedChildCount; i++) {
+          const a = pArgs.namedChild(i);
+          if (a?.type === 'alias') return a.text;
         }
       }
     }
