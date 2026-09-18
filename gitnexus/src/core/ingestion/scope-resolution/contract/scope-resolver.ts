@@ -692,7 +692,10 @@ export interface ScopeResolver {
    */
   readonly populateWorkspaceOwners?: (
     parsedFiles: readonly ParsedFile[],
-    ctx: { readonly fileContents: ReadonlyMap<string, string> },
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
+    },
   ) => void;
 
   /**

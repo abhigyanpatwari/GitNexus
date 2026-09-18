@@ -173,6 +173,50 @@ func makeStore(makeStore: OtherStore) {}
     expect(makeStore).toBeDefined();
     expect(index.declaredReturnTypeByCallableId.has(makeStore!.nodeId)).toBe(false);
   });
+
+  it('does not peel array return types without a language stripper', () => {
+    const parsed = parseSwift(
+      `
+struct User {}
+func makeUsers() -> [User] { [] }
+`,
+      'Peel.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const makeUsers = parsed.localDefs.find(
+      (def) => def.qualifiedName?.split('.').at(-1) === 'makeUsers',
+    );
+    expect(makeUsers?.returnType).toBeDefined();
+    expect(index.declaredReturnTypeByCallableId.get(makeUsers!.nodeId)?.rawName).toBe(
+      makeUsers!.returnType,
+    );
+  });
+
+  it('applies stripTypePreservingDecoration to optional returns only', () => {
+    const parsed = parseSwift(
+      `
+struct Store {}
+func makeStore() -> Store? { nil }
+func makeUsers() -> [User] { [] }
+`,
+      'Optional.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed], undefined, {
+      stripTypePreservingDecoration: (typeName) =>
+        typeName.trim().endsWith('?') ? typeName.trim().slice(0, -1).trim() : undefined,
+    });
+    const byName = new Map(
+      parsed.localDefs
+        .filter((def) => def.returnType !== undefined)
+        .map((def) => [def.qualifiedName?.split('.').at(-1), def]),
+    );
+    expect(index.declaredReturnTypeByCallableId.get(byName.get('makeStore')!.nodeId)?.rawName).toBe(
+      'Store',
+    );
+    expect(index.declaredReturnTypeByCallableId.get(byName.get('makeUsers')!.nodeId)?.rawName).toBe(
+      byName.get('makeUsers')!.returnType,
+    );
+  });
 });
 
 describe('Swift call-result assignment extraction', () => {

@@ -1215,35 +1215,80 @@ export function pickImplicitThisOverload(
   if (classDefId === undefined) return undefined;
 
   // Bare calls in an instance method use the same implicit receiver as
-  // `self.member()`. Prefer declarations on the enclosing type, then stop at
-  // the first MRO owner that contributes the name so an override still
-  // shadows inherited implementations. Swift protocol-extension defaults are
-  // reachable only through this inherited surface; falling through to the
-  // global name lookup makes their target depend on file order.
-  let overloads = model.methods.lookupAllByOwner(classDefId, site.name);
-  if (overloads.length === 0 && hookCtx?.implicitThisWalksMro === true) {
-    for (const ownerId of scopes.methodDispatch.mroFor(classDefId)) {
-      const inherited = model.methods.lookupAllByOwner(ownerId, site.name);
-      if (inherited.length === 0) continue;
-      overloads = inherited;
-      break;
-    }
+  // `self.member()`. Prefer declarations on the enclosing type; when the
+  // language opts into MRO implicit-this, union inherited owners and
+  // arity-narrow. Falling through to the global name lookup makes inherited
+  // defaults depend on file order.
+  const own = model.methods.lookupAllByOwner(classDefId, site.name);
+  const ownPicked = pickUniqueImplicitThisCandidate(own, site, hookCtx, workspaceIndex);
+  if (ownPicked !== undefined) return ownPicked;
+  if (own.length > 0) {
+    const ownCompatible = narrowOverloadCandidates(own, site.arity, site.argumentTypes, {
+      argumentTypeClasses: site.argumentTypeClasses,
+      conversionRankFn: hookCtx?.conversionRankFn,
+      conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
+      constraintCompatibility: hookCtx?.constraintCompatibility,
+    });
+    if (ownCompatible.length > 0) return undefined;
   }
-  if (overloads.length === 0) return undefined;
-  if (overloads.length === 1) return overloads[0];
+  if (hookCtx?.implicitThisWalksMro !== true) return undefined;
 
-  // Narrow on arity + argument types. Require a UNIQUE survivor —
-  // ambiguous narrowing (multiple compatible candidates with no
-  // disambiguating signal) leaves the call unresolved rather than
-  // routing to an arbitrary first overload by registration order.
+  const inherited: SymbolDefinition[] = [];
+  for (const ownerId of scopes.methodDispatch?.mroFor(classDefId) ?? []) {
+    inherited.push(...model.methods.lookupAllByOwner(ownerId, site.name));
+  }
+  return pickUniqueImplicitThisCandidate(inherited, site, hookCtx, workspaceIndex);
+}
+
+function pickUniqueImplicitThisCandidate(
+  overloads: readonly SymbolDefinition[],
+  site: {
+    readonly arity?: number;
+    readonly argumentTypes?: readonly string[];
+    readonly argumentTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
+  },
+  hookCtx:
+    | {
+        readonly conversionRankFn?: ConversionRankFn;
+        readonly conversionOnlyArgTypePrefixes?: readonly string[];
+        readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+      }
+    | undefined,
+  workspaceIndex: WorkspaceResolutionIndex,
+): SymbolDefinition | undefined {
+  if (overloads.length === 0) return undefined;
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
     conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });
-  if (candidates.length !== 1) return undefined;
-  return candidates[0];
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  const witnesses = preferExtensionWitnesses(candidates, workspaceIndex);
+  return witnesses.length === 1 ? witnesses[0] : undefined;
+}
+
+function preferExtensionWitnesses(
+  candidates: readonly SymbolDefinition[],
+  workspaceIndex: WorkspaceResolutionIndex,
+): readonly SymbolDefinition[] {
+  const onOwnerType: SymbolDefinition[] = [];
+  const extensionWitnesses: SymbolDefinition[] = [];
+  for (const def of candidates) {
+    const ownerId = def.ownerId;
+    if (ownerId === undefined) {
+      extensionWitnesses.push(def);
+      continue;
+    }
+    const ownerScope = workspaceIndex.classScopeByDefId?.get(ownerId);
+    const livesOnOwner =
+      ownerScope?.ownedDefs.some((owned) => owned.nodeId === def.nodeId) === true;
+    if (livesOnOwner) onOwnerType.push(def);
+    else extensionWitnesses.push(def);
+  }
+  if (extensionWitnesses.length > 0 && onOwnerType.length > 0) return extensionWitnesses;
+  return candidates;
 }
 
 /**

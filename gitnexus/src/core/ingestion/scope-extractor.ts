@@ -4,7 +4,7 @@
  * (RFC §5.3 + §3.2 Phase 1; Ring 2 PKG #919).
  *
  * Exactly one entry point: `extract(matches, filePath, provider) → ParsedFile`.
- * Runs a five-pass pipeline over the matches. Each pass is internal; the
+ * Runs a seven-pass pipeline over the matches. Each pass is internal; the
  * public contract is the output `ParsedFile`.
  *
  * ## Design principles
@@ -22,7 +22,7 @@
  *     don't overlap) are enforced by `buildScopeTree` from Ring 2 SHARED
  *     (#912). Malformed inputs throw `ScopeTreeInvariantError`.
  *
- * ## The five passes
+ * ## The seven passes
  *
  *   1. **Build scope tree.** Walk `@scope.*` matches. For each, consult
  *      `provider.resolveScopeKind` (default: suffix of the capture name).
@@ -60,6 +60,10 @@
  *      one `ReferenceSite` per match. Classify call form via
  *      `provider.classifyCallForm` (default: the capture's sub-tag if
  *      present; else `'free'`).
+ *   6. **Collect callable-value-flow facts.** Independent of Pass 5 so
+ *      existing reference-site extraction stays byte-identical.
+ *   7. **Preserve call-result assignment identity.** Untyped
+ *      `let lhs = call()` facts used by exact-callee return-type replay.
  *
  * ## What gets attached where
  *
@@ -135,7 +139,7 @@ export type ScopeExtractorHooks = Pick<
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 /**
- * Drive the five extraction passes and return a `ParsedFile`.
+ * Drive the seven extraction passes and return a `ParsedFile`.
  *
  * Throws `ScopeTreeInvariantError` (from #912) when the provider emits
  * captures that violate structural scope invariants (e.g., overlapping

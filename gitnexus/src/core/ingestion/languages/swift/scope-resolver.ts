@@ -14,7 +14,8 @@
  *     re-keys an `extension Foo { … }` to a `class_declaration`-style def
  *     named `Foo`, so its members land on `Foo`'s scope and the shared
  *     `populateClassOwnedMembers` stamps them with `Foo`'s ownerId — the
- *     same mechanism C# uses for `partial class`. No separate hoist pass.
+ *     same mechanism C# uses for `partial class`. Cross-file extensions
+ *     that mint no type def are reconciled by `populateWorkspaceOwners`.
  *   - **Labeled arguments** narrow by ARITY only (count-primary, labels
  *     soft) — see `arity.ts`. Label-precise dispatch is deferred to the
  *     type-binding layer.
@@ -66,6 +67,8 @@ import {
   mirrorSwiftSiblingTypeBindings,
   type SwiftResolveContext,
 } from './index.js';
+import { stripSwiftTypePreservingDecoration } from './interpret.js';
+import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
@@ -102,6 +105,7 @@ const swiftScopeResolver: ScopeResolver = {
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildSwiftMro(graph, parsedFiles, nodeLookup),
   implicitThisWalksMro: true,
+  stripTypePreservingDecoration: stripSwiftTypePreservingDecoration,
 
   // Methods/properties/init are owned by their enclosing class/struct/
   // extension(→extended type)/protocol. Extension members hoist for free
@@ -217,7 +221,21 @@ function buildSwiftMro(
   return mro;
 }
 
-function populateSwiftExtensionOwners(parsedFiles: readonly ParsedFile[]): void {
+function populateSwiftExtensionOwners(
+  parsedFiles: readonly ParsedFile[],
+  ctx?: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
+): void {
+  const filesByTarget = groupSwiftFilesBySpmTarget(
+    parsedFiles,
+    (parsed) => parsed.filePath,
+    coerceSwiftTargets(ctx?.resolutionConfig),
+  );
+  for (const files of filesByTarget.values()) {
+    stampSwiftExtensionOwnersInTarget(files);
+  }
+}
+
+function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): void {
   const ownersByName = new Map<string, SymbolDefinition[]>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -228,17 +246,50 @@ function populateSwiftExtensionOwners(parsedFiles: readonly ParsedFile[]): void 
     }
   }
 
+  // Extension members are Function-owned defs whose parent Class minted no
+  // type def. Nested locals are Function-owned defs whose parent is another
+  // Function — leave those ownerless so they cannot enter implicit-self CALLS.
   for (const parsed of parsedFiles) {
-    for (const def of parsed.localDefs) {
-      if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
-      const dot = def.qualifiedName.lastIndexOf('.');
-      if (dot <= 0) continue;
-      const owners = ownersByName.get(def.qualifiedName.slice(0, dot));
-      if (owners?.length === 1) {
-        (def as { ownerId?: string }).ownerId = owners[0].nodeId;
+    const byId = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Function') continue;
+      const parent = scope.parent === null ? undefined : byId.get(scope.parent);
+      if (parent?.kind !== 'Class') continue;
+      if (parent.ownedDefs.some((d) => isClassLike(d.type))) continue;
+      for (const def of scope.ownedDefs) {
+        if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
+        const dot = def.qualifiedName.lastIndexOf('.');
+        if (dot <= 0) continue;
+        const owner = uniqueOwnerForExtensionPrefix(ownersByName, def.qualifiedName.slice(0, dot));
+        if (owner !== undefined) {
+          (def as { ownerId?: string }).ownerId = owner.nodeId;
+        }
       }
     }
   }
+}
+
+function uniqueOwnerForExtensionPrefix(
+  ownersByName: ReadonlyMap<string, readonly SymbolDefinition[]>,
+  prefix: string,
+): SymbolDefinition | undefined {
+  const seen = new Set<string>();
+  const matches: SymbolDefinition[] = [];
+  const consider = (defs: readonly SymbolDefinition[] | undefined): void => {
+    if (defs === undefined) return;
+    for (const def of defs) {
+      if (seen.has(def.nodeId)) continue;
+      seen.add(def.nodeId);
+      matches.push(def);
+    }
+  };
+  consider(ownersByName.get(prefix));
+  if (!prefix.includes('.')) {
+    for (const [qn, defs] of ownersByName) {
+      if (qn !== prefix && qn.endsWith('.' + prefix)) consider(defs);
+    }
+  }
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function closeProtocols(

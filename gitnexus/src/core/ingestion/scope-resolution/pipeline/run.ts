@@ -691,7 +691,10 @@ export function runScopeResolution(
     'sr-extract-end',
     `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
   );
-  provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  provider.populateWorkspaceOwners?.(parsedFiles, {
+    fileContents: getFileContents(),
+    resolutionConfig: input.resolutionConfig,
+  });
   provider.populateWorkspaceReferences?.(parsedFiles, {
     fileContents: getFileContents(),
     treeCache,
@@ -897,7 +900,9 @@ export function runScopeResolution(
   // views that delegate to it (out-of-core scope index) — the index pins no Scope objects, so the
   // disk seal can reclaim them. Byte-identical: the view returns the same Scope
   // the resident tree holds (or a value-identical revived one in disk mode).
-  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree);
+  const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree, {
+    stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+  });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 
   // Cross-file implicit-namespace visibility (C#). Must run before

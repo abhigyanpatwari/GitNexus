@@ -49,7 +49,6 @@ import type {
 } from 'gitnexus-shared';
 import type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 import { isClassLike } from './scope/walkers.js';
-import { normalizeSwiftTypeName } from '../languages/swift/interpret.js';
 
 /** The index *shape* lives in the leaf `./workspace-index-types.js` so
  *  `scope/walkers.ts` — which this builder calls into — can type against it
@@ -115,6 +114,9 @@ class ScopeByKeyView<K> implements ReadonlyMap<K, Scope> {
 export function buildWorkspaceResolutionIndex(
   parsedFiles: readonly ParsedFile[],
   scopeTree?: ScopeTree,
+  options?: {
+    readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  },
 ): WorkspaceResolutionIndex {
   const classScopeIdByDefId = new Map<string, ScopeId>();
   const classScopeIdToDefId = new Map<ScopeId, string>();
@@ -153,7 +155,8 @@ export function buildWorkspaceResolutionIndex(
             continue;
           }
           if (def.returnType !== undefined) {
-            const rawName = normalizeSwiftTypeName(def.returnType);
+            const stripped = options?.stripTypePreservingDecoration?.(def.returnType);
+            const rawName = stripped ?? def.returnType;
             declaredReturnTypeByCallableId.set(def.nodeId, {
               rawName,
               ...(rawName !== def.returnType ? { declaredSpelling: def.returnType } : {}),

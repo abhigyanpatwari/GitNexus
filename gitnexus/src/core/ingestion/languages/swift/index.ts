@@ -31,6 +31,7 @@ export {
   interpretSwiftImport,
   interpretSwiftTypeBinding,
   normalizeSwiftTypeName,
+  stripSwiftTypePreservingDecoration,
 } from './interpret.js';
 export { swiftMergeBindings } from './merge-bindings.js';
 export { swiftArityCompatibility } from './arity.js';
