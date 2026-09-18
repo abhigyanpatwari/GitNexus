@@ -156,10 +156,7 @@ export function formatRejectedBranchForLog(value: string): string {
   let out = '';
   for (const ch of value) {
     const cp = ch.codePointAt(0);
-    if (
-      cp !== undefined &&
-      (isHiddenOrControl(cp) || cp === 0x2028 || cp === 0x2029)
-    ) {
+    if (cp !== undefined && (isHiddenOrControl(cp) || cp === 0x2028 || cp === 0x2029)) {
       out += `\\u${cp.toString(16).padStart(4, '0')}`;
       continue;
     }
