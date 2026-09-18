@@ -29,10 +29,7 @@ function toSnakeCase(segment: string): string {
  * Elixir.MyApp.User → elixir/my_app/user (Erlang-namespaced modules)
  */
 function moduleToRelPath(moduleName: string): string {
-  return moduleName
-    .split('.')
-    .map(toSnakeCase)
-    .join('/');
+  return moduleName.split('.').map(toSnakeCase).join('/');
 }
 
 const ELIXIR_EXTS = ['.ex', '.exs'];
