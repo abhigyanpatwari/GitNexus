@@ -164,6 +164,22 @@ program
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
   .option(
+    '--max-processes <n>',
+    'Process-detection process cap (positive integer). Replaces the dynamic symbols/10 formula. Default: dynamic.',
+  )
+  .option(
+    '--max-process-branching <n>',
+    'Process-detection per-node branching cap (positive integer). Default: 4.',
+  )
+  .option(
+    '--max-process-trace-depth <n>',
+    'Process-detection DFS depth cap (positive integer). Default: 10.',
+  )
+  .option(
+    '--max-entry-point-candidates <n>',
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Doubling is the usual first raise when whole flows are missing.',
+  )
+  .option(
     '--spring-actuator <path>',
     'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
       'configprops, env). Explicit opt-in; disabled by default.',

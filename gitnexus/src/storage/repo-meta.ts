@@ -617,6 +617,20 @@ export interface RepoMeta {
      */
     hasCallSummary?: boolean;
   };
+  /**
+   * The process-detection budget this index's Community/Process rows were
+   * built under (#3313). Compared on the next analyze so a budget-only
+   * config change re-detects flows without `--force`. `maxProcesses: null`
+   * means the dynamic `symbols / 10` formula. Absent on pre-#3313 metas:
+   * that absence matches default/dynamic knobs (backfill) and mismatches
+   * any explicit override.
+   */
+  processDetection?: {
+    maxProcesses: number | null;
+    maxProcessBranching: number;
+    maxProcessTraceDepth: number;
+    maxEntryPointCandidates: number;
+  };
 }
 
 /**

@@ -245,6 +245,8 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
+gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic symbols/10)
+gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; double first)
 gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
@@ -298,7 +300,8 @@ installation. Run a one-shot `gitnexus analyze` when those generated files need
 updating. Stop watch mode with Ctrl+C.
 
 Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
-`--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--max-file-size`, `--max-processes`, `--max-process-branching`,
+`--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
 embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
 `--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
@@ -763,6 +766,22 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+### Process detection reports missing flows
+
+On a large repository, `analyze` may warn that `[processes] … whole flows are MISSING`. That means ranked entry points or completed flows were sampled away by the analyze-time detection budget — not that the code path is absent, and not the query-time `IMPACT_MAX_CHUNKS` cap.
+
+Defaults stay in place when nothing is set: dynamic `maxProcesses = max(20, round(non-File symbols / 10))`, branching `4`, trace depth `10`, entry-point candidate pool `200`. Raise a knob only when the warning names it:
+
+```bash
+# Usual first move when entryPointCandidatesDropped is the loud counter
+npx gitnexus analyze --max-entry-point-candidates 400
+
+# When ranked entry points were never traced, or flows were dropped at maxProcesses
+npx gitnexus analyze --max-processes 80
+```
+
+Equivalent `.gitnexusrc` keys: `maxProcesses`, `maxProcessBranching`, `maxProcessTraceDepth`, `maxEntryPointCandidates`. Equivalent env vars: `GITNEXUS_MAX_PROCESSES`, `GITNEXUS_MAX_PROCESS_BRANCHING`, `GITNEXUS_MAX_PROCESS_TRACE_DEPTH`, `GITNEXUS_MAX_ENTRY_POINT_CANDIDATES`. Precedence is CLI > `.gitnexusrc` > env > default. `0` is invalid, not unlimited. Changing these knobs re-runs process detection on the next `analyze` without `--force`. Raising them increases CPU and memory; this is not a heap-OOM fix.
 
 ### Analyze reports a worker timeout
 

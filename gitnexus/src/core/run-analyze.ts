@@ -198,6 +198,11 @@ import {
   nodeTablesForIncrementalDelete,
   shouldPreservePersistedDerivedGraph,
 } from './incremental/derived-writeback.js';
+import {
+  processDetectionBudgetMismatch,
+  resolveProcessDetectionBudget,
+  toProcessDetectionStamp,
+} from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
   loadParseCache,
@@ -528,6 +533,16 @@ export interface AnalyzeOptions {
    * removed); `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
+  /**
+   * Process-detection budget overrides (#3313). Threaded to
+   * `PipelineOptions` without mutating `process.env`. Unset fields fall
+   * back to `GITNEXUS_*` env, then shipped defaults / the dynamic
+   * `maxProcesses` formula.
+   */
+  maxProcesses?: number;
+  maxProcessBranching?: number;
+  maxProcessTraceDepth?: number;
+  maxEntryPointCandidates?: number;
   /**
    * Extra fetch-wrapper function names to treat as HTTP consumers, forwarded to
    * `PipelineOptions.fetchWrappers` (#1589/#1852 residual). Sourced from the CLI
@@ -2053,13 +2068,39 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Process-detection budget (#3313). Resolve CLI/options then env here so
+  // MCP/server jobs honor GITNEXUS_* without a CLI merge. Compare against
+  // the persisted stamp BEFORE the already-up-to-date fast path: a clean
+  // same-commit raise must re-detect flows rather than return the sampled
+  // index. Does NOT set force — incremental empty-diff + skip derived
+  // preserve is enough.
+  const processDetectionBudget = resolveProcessDetectionBudget(
+    {
+      maxProcesses: options.maxProcesses,
+      maxProcessBranching: options.maxProcessBranching,
+      maxProcessTraceDepth: options.maxProcessTraceDepth,
+      maxEntryPointCandidates: options.maxEntryPointCandidates,
+    },
+    process.env,
+    (knob, raw) => {
+      log(
+        `${knob}=${JSON.stringify(raw)} is not a positive integer; using the built-in process-detection default.`,
+      );
+    },
+  );
+  const processDetectionMismatch = processDetectionBudgetMismatch(
+    existingMeta?.processDetection,
+    processDetectionBudget,
+  );
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
     !existingMeta.embeddingCheckpoint &&
     !options.force &&
     existingMeta.lastCommit === currentCommit &&
-    !ftsModeChanged
+    !ftsModeChanged &&
+    !processDetectionMismatch
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
@@ -2157,7 +2198,12 @@ async function runFullAnalysisInner(
           // documented Docker :ro workflow (#1549) — degrades to a warning.
           try {
             await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
-            await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              branch: branchLabel,
+              processDetection:
+                existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget),
+            });
           } catch (err) {
             // EACCES/EPERM also arise from ownership problems and transient
             // Windows locks, so keep the real error visible alongside the
@@ -2170,10 +2216,25 @@ async function runFullAnalysisInner(
           // Discriminator-only restamp (flag↔env). `existingMeta` already
           // carries the folded skipReason; persist it without a write plan.
           try {
-            await saveMeta(metaDir, existingMeta);
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              processDetection:
+                existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget),
+            });
           } catch (err) {
             log(
               `Warning: could not restamp the FTS skip reason (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
+            );
+          }
+        } else if (!existingMeta.processDetection) {
+          try {
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              processDetection: toProcessDetectionStamp(processDetectionBudget),
+            });
+          } catch (err) {
+            log(
+              `Warning: could not backfill the process-detection stamp (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
             );
           }
         }
@@ -2362,6 +2423,16 @@ async function runFullAnalysisInner(
       {
         parseCache,
         workerPoolSize: options.workerPoolSize,
+        maxProcesses: processDetectionBudget.maxProcesses,
+        maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
+          ? processDetectionBudget.maxProcessBranching
+          : undefined,
+        maxProcessTraceDepth: processDetectionBudget.overridden.maxProcessTraceDepth
+          ? processDetectionBudget.maxProcessTraceDepth
+          : undefined,
+        maxEntryPointCandidates: processDetectionBudget.overridden.maxEntryPointCandidates
+          ? processDetectionBudget.maxEntryPointCandidates
+          : undefined,
         // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
         // build gate (workerData.pdg) and the scope-resolution emit gate.
         pdg: options.pdg === true,
@@ -2493,7 +2564,8 @@ async function runFullAnalysisInner(
     skipDerivedGraphPhases &&
     isIncremental &&
     !!hashDiff &&
-    shouldPreservePersistedDerivedGraph(hashDiff);
+    shouldPreservePersistedDerivedGraph(hashDiff) &&
+    !processDetectionMismatch;
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
@@ -4516,6 +4588,7 @@ async function runFullAnalysisInner(
       // stamp after an on→off flip; the next pdgModeMismatch then compares
       // off==off and incremental eligibility is restored.
       pdg: resolvePdgConfig(options),
+      processDetection: toProcessDetectionStamp(processDetectionBudget),
     };
     // Re-resolve at the commit boundary. Long analyses can overlap an npm
     // upgrade, rebuilt dist tree, or native dependency replacement; stamping

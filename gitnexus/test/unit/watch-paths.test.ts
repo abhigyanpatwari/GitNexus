@@ -171,6 +171,29 @@ describe('watch path selection', () => {
     }
   });
 
+  it('applies process-detection budget keys from rc and CLI without throwing (#3313)', async () => {
+    await fs.writeFile(
+      path.join(repoPath, '.gitnexusrc'),
+      JSON.stringify({ maxProcesses: '40', maxEntryPointCandidates: 400 }),
+    );
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    await expect(resolveWatchOptions(repoPath, {}, baseline)).resolves.toMatchObject({
+      maxProcesses: 40,
+      maxEntryPointCandidates: 400,
+    });
+    await expect(
+      resolveWatchOptions(repoPath, { maxProcesses: '25' }, baseline),
+    ).resolves.toMatchObject({
+      maxProcesses: 25,
+      maxEntryPointCandidates: 400,
+    });
+    await expect(
+      resolveWatchOptions(repoPath, { maxProcesses: '0' }, baseline),
+    ).resolves.toMatchObject({
+      maxEntryPointCandidates: 400,
+    });
+  });
+
   it('rejects a watch file-size threshold above the parser ceiling', async () => {
     await expect(
       resolveWatchOptions(

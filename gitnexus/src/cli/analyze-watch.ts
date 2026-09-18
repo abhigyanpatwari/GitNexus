@@ -22,6 +22,7 @@ import {
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
+import { parseProcessDetectionBudgetStrings } from '../core/ingestion/process-detection-budget.js';
 import {
   WATCH_FULL_REFRESH_PATH,
   WatchRefreshQueue,
@@ -164,6 +165,19 @@ export async function resolveWatchOptions(
   const workerPoolSize = positiveInteger(merged.workers, '--workers');
   const workerTimeoutSeconds = positiveInteger(merged.workerTimeout, 'workerTimeout');
   const maxFileSize = positiveInteger(merged.maxFileSize, 'maxFileSize', MAX_FILE_SIZE_KB);
+  const processDetection = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: merged.maxProcesses,
+      maxProcessBranching: merged.maxProcessBranching,
+      maxProcessTraceDepth: merged.maxProcessTraceDepth,
+      maxEntryPointCandidates: merged.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(
+        `${flag}=${JSON.stringify(raw)} is not a positive integer; using the built-in process-detection default.`,
+      );
+    },
+  );
 
   setEnvironment(
     'GITNEXUS_MAX_FILE_SIZE',
@@ -183,6 +197,10 @@ export async function resolveWatchOptions(
     registryName: merged.name,
     allowDuplicateName: merged.allowDuplicateName,
     workerPoolSize,
+    maxProcesses: processDetection.maxProcesses,
+    maxProcessBranching: processDetection.maxProcessBranching,
+    maxProcessTraceDepth: processDetection.maxProcessTraceDepth,
+    maxEntryPointCandidates: processDetection.maxEntryPointCandidates,
     fetchWrappers: merged.fetchWrappers,
     skipAgentsMd: true,
     skipSkills: true,
