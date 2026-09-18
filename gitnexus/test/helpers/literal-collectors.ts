@@ -87,6 +87,7 @@ const DIR_LANG: Record<string, SupportedLanguages> = {
   kotlin: SupportedLanguages.Kotlin,
   swift: SupportedLanguages.Swift,
   dart: SupportedLanguages.Dart,
+  elixir: SupportedLanguages.Elixir,
   vue: SupportedLanguages.Vue,
   zig: SupportedLanguages.Zig,
 };
@@ -98,6 +99,7 @@ const BASENAME_LANGS: Record<string, SupportedLanguages[]> = {
   'typescript-javascript': [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript],
   csharp: [SupportedLanguages.CSharp],
   dart: [SupportedLanguages.Dart],
+  elixir: [SupportedLanguages.Elixir],
   go: [SupportedLanguages.Go],
   php: [SupportedLanguages.PHP],
   python: [SupportedLanguages.Python],

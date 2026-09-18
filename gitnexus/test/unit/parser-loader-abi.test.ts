@@ -124,6 +124,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'fun main() {}\n',
     rootType: 'source_file',
   },
+  [SupportedLanguages.Elixir]: {
+    language: SupportedLanguages.Elixir,
+    snippet: 'defmodule Smoke do\nend\n',
+    rootType: 'source',
+  },
   [SupportedLanguages.Zig]: {
     language: SupportedLanguages.Zig,
     snippet: 'pub fn main() void {}\n',

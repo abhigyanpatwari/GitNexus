@@ -1010,6 +1010,18 @@ export const findEnclosingClassInfo = (
         };
       }
     }
+    // Provider-owned containers may use grammar nodes outside the generic
+    // class list (Elixir's `defmodule` is a call). Returning null preserves
+    // every existing provider's fallback behavior.
+    if (resolveContainerTypeOwner !== undefined) {
+      const containerOwner = resolveContainerTypeOwner(current, filePath);
+      if (containerOwner !== null) {
+        return {
+          classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
+          className: containerOwner.name,
+        };
+      }
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Delegate language-specific container remapping to the provider hook.
       if (resolveEnclosingOwner) {
@@ -1031,19 +1043,6 @@ export const findEnclosingClassInfo = (
           // Provider remapped to a different node — re-evaluate from there.
           current = resolved;
           continue;
-        }
-      }
-
-      // A container the PROVIDER names from context (binding wrapper,
-      // enclosing callable, anonymous ordinal — Zig). The name is what the
-      // class-like node is minted under, so owner id == node id.
-      if (resolveContainerTypeOwner !== undefined) {
-        const containerOwner = resolveContainerTypeOwner(current, filePath);
-        if (containerOwner !== null) {
-          return {
-            classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
-            className: containerOwner.name,
-          };
         }
       }
 

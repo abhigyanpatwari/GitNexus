@@ -1,4 +1,5 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import {
   boundCallableStartPosition,
   localIdentity,
@@ -44,6 +45,7 @@ import type {
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
+const _require = createRequire(import.meta.url);
 
 // ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
 // The worker maintains its own grammar table (the guarded vendored-grammar
