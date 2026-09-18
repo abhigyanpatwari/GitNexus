@@ -9,13 +9,14 @@
  * unlimited.
  */
 
-import type { ProcessDetectionConfig } from './process-processor.js';
-import type { ProcessTruncationStats } from './process-processor.js';
+import type { ProcessDetectionConfig, ProcessTruncationStats } from './process-processor.js';
+import { parsePositiveIntEnv } from './utils/env.js';
 
 export const PROCESS_DETECTION_BUDGET_DEFAULTS = {
   maxProcessBranching: 4,
   maxProcessTraceDepth: 10,
   maxEntryPointCandidates: 200,
+  minSteps: 3,
 } as const;
 
 export const PROCESS_DETECTION_ENV = {
@@ -88,21 +89,18 @@ export type ProcessDetectionEffectiveLimits = {
 
 export type InvalidBudgetHandler = (knob: string, raw: string) => void;
 
+/** Operator copy when a CLI/rc/env token is rejected. Next precedence still applies. */
+export const formatInvalidProcessDetectionOverride = (knob: string, raw: string): string =>
+  `${knob} must be a positive integer (got ${JSON.stringify(raw)}); ignoring it so the next source (env, then the built-in default) applies.`;
+
 export const parsePositiveIntegerOverride = (
   raw: string | number | undefined | null,
   onInvalid?: (raw: string) => void,
 ): number | undefined => {
   if (raw === undefined || raw === null) return undefined;
-  const text = typeof raw === 'number' ? String(raw) : raw.trim();
-  if (text === '') {
-    onInvalid?.(text);
-    return undefined;
-  }
-  const parsed = Number(text);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    onInvalid?.(text);
-    return undefined;
-  }
+  const text = typeof raw === 'number' ? String(raw) : raw;
+  const parsed = parsePositiveIntEnv(text);
+  if (parsed === undefined) onInvalid?.(typeof raw === 'number' ? text : text.trim());
   return parsed;
 };
 
@@ -219,7 +217,7 @@ export const buildProcessDetectionPhaseConfig = (
   maxBranching: resolved.maxProcessBranching,
   maxTraceDepth: resolved.maxProcessTraceDepth,
   maxEntryPointCandidates: resolved.maxEntryPointCandidates,
-  minSteps: 3,
+  minSteps: PROCESS_DETECTION_BUDGET_DEFAULTS.minSteps,
 });
 
 export const processDetectionEffectiveLimits = (

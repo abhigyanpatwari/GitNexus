@@ -55,6 +55,7 @@ import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import {
+  formatInvalidProcessDetectionOverride,
   formatProcessDetectionBudgetBanner,
   parseProcessDetectionBudgetStrings,
   resolveProcessDetectionBudget,
@@ -960,9 +961,7 @@ const analyzeCommandImpl = async (
       maxEntryPointCandidates: options.maxEntryPointCandidates,
     },
     (flag, raw) => {
-      cliWarn(
-        `  ${flag} must be a positive integer (got ${JSON.stringify(raw)}); using the built-in default.\n`,
-      );
+      cliWarn(`  ${formatInvalidProcessDetectionOverride(flag, raw)}\n`);
     },
   );
 

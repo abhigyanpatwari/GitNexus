@@ -105,9 +105,13 @@ describe('analyzeCommand process-detection budget (#3313)', () => {
         expect.any(Object),
       );
       expect(
-        cap
-          .records()
-          .some((r) => String(r.msg ?? '').includes('--max-processes must be a positive integer')),
+        cap.records().some((r) => {
+          const msg = String(r.msg ?? '');
+          return (
+            msg.includes('--max-processes must be a positive integer') &&
+            msg.includes('next source (env, then the built-in default)')
+          );
+        }),
       ).toBe(true);
       cap.restore();
     },

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildProcessDetectionPhaseConfig,
+  formatInvalidProcessDetectionOverride,
   formatProcessDetectionBudgetBanner,
   formatWholeFlowsMissingRemedies,
   parsePositiveIntegerOverride,
@@ -41,6 +42,20 @@ describe('resolveProcessDetectionBudget (#3313)', () => {
       maxProcessTraceDepth: false,
       maxEntryPointCandidates: false,
     });
+  });
+
+  it('lets an invalid option fall through to env instead of claiming a hard default', () => {
+    const invalid: Array<[string, string]> = [];
+    const resolved = resolveProcessDetectionBudget(
+      { maxProcesses: 0 },
+      { GITNEXUS_MAX_PROCESSES: '80' },
+      (knob, raw) => invalid.push([knob, raw]),
+    );
+    expect(resolved.maxProcesses).toBe(80);
+    expect(invalid).toEqual([['--max-processes', '0']]);
+    expect(formatInvalidProcessDetectionOverride('--max-processes', '0')).toContain(
+      'next source (env, then the built-in default)',
+    );
   });
 
   it('lets explicit options beat env (AE3 remainder)', () => {

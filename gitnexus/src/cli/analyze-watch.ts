@@ -22,7 +22,10 @@ import {
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
-import { parseProcessDetectionBudgetStrings } from '../core/ingestion/process-detection-budget.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  parseProcessDetectionBudgetStrings,
+} from '../core/ingestion/process-detection-budget.js';
 import {
   WATCH_FULL_REFRESH_PATH,
   WatchRefreshQueue,
@@ -173,9 +176,7 @@ export async function resolveWatchOptions(
       maxEntryPointCandidates: merged.maxEntryPointCandidates,
     },
     (flag, raw) => {
-      cliWarn(
-        `${flag}=${JSON.stringify(raw)} is not a positive integer; using the built-in process-detection default.`,
-      );
+      cliWarn(formatInvalidProcessDetectionOverride(flag, raw));
     },
   );
 

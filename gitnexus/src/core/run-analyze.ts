@@ -199,6 +199,7 @@ import {
   shouldPreservePersistedDerivedGraph,
 } from './incremental/derived-writeback.js';
 import {
+  formatInvalidProcessDetectionOverride,
   processDetectionBudgetMismatch,
   resolveProcessDetectionBudget,
   toProcessDetectionStamp,
@@ -2083,9 +2084,7 @@ async function runFullAnalysisInner(
     },
     process.env,
     (knob, raw) => {
-      log(
-        `${knob}=${JSON.stringify(raw)} is not a positive integer; using the built-in process-detection default.`,
-      );
+      log(formatInvalidProcessDetectionOverride(knob, raw));
     },
   );
   const processDetectionMismatch = processDetectionBudgetMismatch(
@@ -2147,6 +2146,8 @@ async function runFullAnalysisInner(
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
       if (!dirty && !healUnregistered) {
+        const processDetectionStamp =
+          existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
@@ -2201,8 +2202,7 @@ async function runFullAnalysisInner(
             await saveMeta(metaDir, {
               ...existingMeta,
               branch: branchLabel,
-              processDetection:
-                existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget),
+              processDetection: processDetectionStamp,
             });
           } catch (err) {
             // EACCES/EPERM also arise from ownership problems and transient
@@ -2218,8 +2218,7 @@ async function runFullAnalysisInner(
           try {
             await saveMeta(metaDir, {
               ...existingMeta,
-              processDetection:
-                existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget),
+              processDetection: processDetectionStamp,
             });
           } catch (err) {
             log(
@@ -2230,7 +2229,7 @@ async function runFullAnalysisInner(
           try {
             await saveMeta(metaDir, {
               ...existingMeta,
-              processDetection: toProcessDetectionStamp(processDetectionBudget),
+              processDetection: processDetectionStamp,
             });
           } catch (err) {
             log(
