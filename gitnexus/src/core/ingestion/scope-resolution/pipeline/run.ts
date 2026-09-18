@@ -605,7 +605,6 @@ export function runScopeResolution(
   const undecidedSatisfaction: UndecidedSatisfaction[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
     resolutionOutcomes.push(outcome);
-    input.recordResolutionOutcome?.(outcome);
   };
   const PROF = process.env.PROF_SCOPE_RESOLUTION === '1';
   const tStart = PROF ? process.hrtime.bigint() : 0n;
@@ -1198,6 +1197,7 @@ export function runScopeResolution(
           postHeritageNodeLookup,
         );
   if (replayedCallResultBindings > 0) {
+    const handledBeforeReplay = new Set(handledSites);
     receiverExtras += emitReceiverBoundCalls(
       graph,
       indexes,
@@ -1208,12 +1208,27 @@ export function runScopeResolution(
       workspaceIndex,
       readonlyModel,
       {
-        recordResolutionOutcome,
         calleeIdSink: calleeIdAccumulator,
         isBuiltInName: provider.languageProvider.isBuiltInName,
         heritageTypeArguments,
       },
     ).emitted;
+    const resolvedOnReplay = new Set<string>();
+    for (const key of handledSites) {
+      if (!handledBeforeReplay.has(key)) resolvedOnReplay.add(key);
+    }
+    if (resolvedOnReplay.size > 0) {
+      for (let i = resolutionOutcomes.length - 1; i >= 0; i--) {
+        const outcome = resolutionOutcomes[i];
+        if (
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
+        ) {
+          resolutionOutcomes.splice(i, 1);
+        }
+      }
+    }
   }
   const referenceSkipSites = new Set(handledSites);
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
@@ -1779,6 +1794,8 @@ export function runScopeResolution(
   }
 
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
+
+  for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
 
   return {
     filesProcessed: parsedFiles.length,
