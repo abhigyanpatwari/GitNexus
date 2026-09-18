@@ -15,7 +15,6 @@ All notable changes to GitNexus will be documented in this file.
 ### Fixed
 
 - **In-place FTS native-abort after a process-detection rewrite recertifies the rewritten rows** — the in-place FTS dirty stamp persists `processDetection.uncertified` before `CREATE_FTS_INDEX` when the budget mismatched. Missing stamp + shipped defaults is a match, so a flagless retry after park would otherwise keep the rewritten Community/Process layer. Staging never stamps. A successful analyze writes a certified stamp without the flag (#3322)
-- **POSIX atomic-incremental / watch budget refresh must not stamp live `incrementalInProgress` before swap**, so a crash cannot force-rebuild an untouched live index (#3324)
 
 ## [1.6.12] - 2026-09-12
 
