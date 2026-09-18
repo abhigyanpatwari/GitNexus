@@ -203,11 +203,16 @@ func run() {
 func run() async throws {
   let awaited = await makeStore()
   let tried = try makeStore()
+  let triedAwaited = try await makeStore()
 }
 `,
       'Wrapped.swift',
     );
-    expect(parsed.callResultAssignmentSites?.map(({ lhs }) => lhs)).toEqual(['awaited', 'tried']);
+    expect(parsed.callResultAssignmentSites?.map(({ lhs }) => lhs)).toEqual([
+      'awaited',
+      'tried',
+      'triedAwaited',
+    ]);
   });
 });
 
