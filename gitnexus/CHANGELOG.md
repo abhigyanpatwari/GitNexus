@@ -4,17 +4,9 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **Process-detection budget overrides** — `--max-processes`, `--max-process-branching`, `--max-process-trace-depth`, and `--max-entry-point-candidates` (plus matching `.gitnexusrc` keys and `GITNEXUS_*` env vars) raise or lower analyze-time flow-detection ceilings without changing shipped defaults. An explicit `maxProcesses` replaces the dynamic `max(20, round(symbols/10))` formula. Changing the resolved budget re-detects Community/Process rows on the next `analyze` without `--force`. The `[processes] … whole flows are MISSING` warning names the matching knob; shape-only caps stay at debug. Distinct from query-time `IMPACT_MAX_CHUNKS` (#3313)
-
 ### Changed
 
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
-
-### Fixed
-
-- **In-place FTS native-abort after a process-detection rewrite recertifies the rewritten rows** — the in-place FTS dirty stamp persists `processDetection.uncertified` before `CREATE_FTS_INDEX` when the budget mismatched. Missing stamp + shipped defaults is a match, so a flagless retry after park would otherwise keep the rewritten Community/Process layer. Staging never stamps. A successful analyze writes a certified stamp without the flag (#3322)
 
 ## [1.6.12] - 2026-09-12
 
