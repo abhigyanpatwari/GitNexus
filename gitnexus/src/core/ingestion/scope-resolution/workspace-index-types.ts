@@ -38,7 +38,7 @@ export interface WorkspaceResolutionIndex {
   readonly exportedCallableByName: ReadonlyMap<string, SymbolDefinition>;
 
   /** Exact callable def `nodeId` → its declared return type binding.
-   * Built by walking from the callable's Function scope through its ancestors, so methods
+   * Built from definitions owned by each callable's Function scope, so methods
    * declared in extension/partial scopes remain addressable even when those
    * scopes deliberately own no separate class-like definition. */
   readonly declaredReturnTypeByCallableId: ReadonlyMap<string, TypeRef>;

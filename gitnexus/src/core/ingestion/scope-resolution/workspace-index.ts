@@ -126,7 +126,6 @@ export function buildWorkspaceResolutionIndex(
   const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
 
   for (const parsed of parsedFiles) {
-    const scopeById = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope !== undefined) {
       moduleScopeIdByFile.set(parsed.filePath, moduleScope.id);

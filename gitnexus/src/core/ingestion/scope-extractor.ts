@@ -632,10 +632,11 @@ function pass2AttachDeclarations(
     // fact is the failure mode this subsystem rejects everywhere else.
     //
     // Copying the field onto BOTH twins makes the outcome identical whichever
-    // one wins. Deliberately narrow — only `typeParameters`, the one field with
-    // an asymmetric twin today. Widening this to "merge all metadata" would
-    // change what every existing duplicate resolves to, which is a different
-    // change with a different blast radius and no evidence behind it yet.
+    // one wins. Deliberately narrow — only metadata whose asymmetric twins have
+    // executable regressions (`typeParameters` and `returnType`). Widening this
+    // to "merge all metadata" would change what every existing duplicate
+    // resolves to, which is a different change with a different blast radius
+    // and no evidence behind it yet.
     const first = firstDefByNodeId.get(def.nodeId);
     if (first === undefined) {
       firstDefByNodeId.set(def.nodeId, def);
