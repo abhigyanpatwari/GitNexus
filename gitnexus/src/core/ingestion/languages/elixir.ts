@@ -643,8 +643,8 @@ function emitElixirScopeCaptures(
         const target = args.namedChild(0);
         const only = keywordValue(node, 'only');
         const except = keywordValue(node, 'except');
-        if (target?.type === 'alias' && only) {
-          const allowed = only.namedChildren
+        if (target?.type === 'alias' && (only || /\bonly:/.test(node.text))) {
+          const allowed = (only?.namedChildren ?? [])
             .flatMap((entry) => (entry.type === 'keywords' ? entry.namedChildren : [entry]))
             .flatMap((pair) => {
               const name = pair.namedChild(0)?.text.trim().replace(/:$/, '');
@@ -653,9 +653,18 @@ function emitElixirScopeCaptures(
                 ? [{ name, arity }]
                 : [];
             });
+          const category = /\bonly:\s*:(functions|macros)\b/.exec(node.text)?.[1];
+          // Category selectors need a lexical import scope, but filtering is
+          // deferred until public declarations are available workspace-wide.
+          if (category === 'functions' || category === 'macros')
+            add('@import.statement', node, {
+              '@import.source': target,
+              '@import.wildcard': target,
+            });
           recordElixirImportOnly(_file, {
             target: target.text,
             allowed,
+            ...(category === 'functions' || category === 'macros' ? { category } : {}),
             startLine: node.startPosition.row + 1,
             startCol: node.startPosition.column,
           });

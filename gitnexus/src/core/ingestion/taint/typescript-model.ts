@@ -147,7 +147,7 @@ export const BUILTIN_TAINT_MODELS = {
 export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
 
 /**
- * Register the built-in models for Java, TypeScript, JavaScript, and Python.
+ * Register the built-in models for Java, TypeScript, JavaScript, Python, and Elixir.
  * Explicit init seam for the U4 emit path (call before the pdg window
  * consumes the registry); idempotent. Other language ids remain unregistered
  * until they have a dedicated model.

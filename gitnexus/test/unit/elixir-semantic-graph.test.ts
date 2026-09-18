@@ -57,9 +57,8 @@ describe('Elixir semantic graph', () => {
     );
     const hidden = graph.nodes.find((node) => node.properties.qualifiedName === 'M.hidden');
     expect(hidden?.properties).toMatchObject({ visibility: 'private', isExported: false });
-    expect(graph.nodes.map((node) => node.properties.qualifiedName)).not.toEqual(
-      expect.arrayContaining(['M.generated', 'Generated', 'Generated.run']),
-    );
+    for (const name of ['M.generated', 'Generated', 'Generated.run'])
+      expect(graph.nodes.map((node) => node.properties.qualifiedName)).not.toContain(name);
   });
 
   it('emits canonical zero-arity ordinary and guarded declarations', async () => {
@@ -162,6 +161,14 @@ describe('Elixir semantic graph', () => {
         }),
       ]),
     );
+    const contract = graph.nodes.find(
+      (node) => node.properties.qualifiedName === 'WorkerBehaviour',
+    )!;
+    expect(
+      graph.symbols.find((symbol) => symbol.qualifiedName === 'WorkerBehaviour.run'),
+    ).toMatchObject({
+      ownerId: contract.id,
+    });
   });
 
   it('records literal Mix metadata without evaluating the project file', async () => {

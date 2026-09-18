@@ -778,7 +778,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v105: Elixir lexical alias captures encode position-sensitive resolution.
 // v106: Alias captures now respect nested lexical-container visibility.
 // v107: Quoted Elixir captures are excluded from runtime call facts.
-const SCHEMA_BUMP = 107;
+// v108: Elixir import-category facts and CFG formal/anonymous-clause captures
+// change persisted worker output, so warm shards must be re-parsed.
+const SCHEMA_BUMP = 108;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

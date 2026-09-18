@@ -10,6 +10,8 @@ export interface ElixirImportExceptFact {
 export interface ElixirImportOnlyFact {
   readonly target: string;
   readonly allowed: readonly { readonly name: string; readonly arity: number }[];
+  /** Category selectors (`only: :functions` / `:macros`) stay distinct from an empty list. */
+  readonly category?: 'functions' | 'macros';
   readonly startLine: number;
   readonly startCol: number;
 }

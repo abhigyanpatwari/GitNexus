@@ -16,6 +16,8 @@ export const ELIXIR_TAINT_MODEL: SourceSinkSanitizerSpec = {
     { name: 'eval_string', kind: 'code-injection', args: [0], receivers: ['Code'] },
     { name: 'eval_quoted', kind: 'code-injection', args: [0], receivers: ['Code'] },
     { name: 'apply', kind: 'code-injection', args: [0], receivers: ['erlang', ':erlang'] },
+    { name: 'apply', kind: 'code-injection', args: [0], receivers: ['Kernel'] },
+    { name: 'apply', kind: 'code-injection', args: [0], global: true },
     // Raw SQL/query APIs only: parameterized Repo.query(sql, params) is not a
     // finding for params, because only SQL text (argument zero) is modelled.
     { name: 'query', kind: 'sql-injection', args: [0], receivers: ['Repo'] },

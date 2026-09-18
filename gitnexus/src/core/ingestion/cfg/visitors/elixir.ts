@@ -29,10 +29,9 @@ function isFunction(node: SyntaxNode): boolean {
 function bodyOf(node: SyntaxNode): SyntaxNode | undefined {
   const doBlock = node.namedChildren.find((child) => child.type === 'do_block');
   if (doBlock) return doBlock;
-  if (node.type === 'anonymous_function')
-    return node.namedChildren
-      .find((child) => child.type === 'stab_clause')
-      ?.namedChildren.find((child) => child.type === 'body');
+  // Keep every `fn` clause in the closure CFG. Picking the first stab clause
+  // silently drops calls and taint sites in later pattern-match alternatives.
+  if (node.type === 'anonymous_function') return node;
   // `def f(x), do: expr` has no do_block; its keyword pair is still a distinct
   // clause body and must receive its own CFG.
   return node.namedChildren
@@ -54,29 +53,33 @@ class ElixirHarvester {
 
   constructor(fn: SyntaxNode) {
     const args = fn.namedChildren.find((n) => n.type === 'arguments');
-    // The `arguments` node for a guarded definition also contains the callable
-    // head (`f(...) when guard`); only identifiers physically inside the first
-    // parenthesized pattern list are formal bindings.
-    const open = fn.text.indexOf('(');
-    if (args && open >= 0) {
-      const firstParamColumn = fn.startPosition.column + open;
+    // The definition arguments hold a signature call (`def f(value)`), whose
+    // own arguments are the formal bindings. A guarded head wraps that call
+    // in a binary operator.
+    if (args) {
+      let formalIndex = 0;
       for (const child of args.namedChildren) {
-        if (
-          child.startPosition.row === fn.startPosition.row &&
-          child.startPosition.column <= firstParamColumn
-        )
-          continue;
-        if (child.type === 'binary_operator' && /\bwhen\b/.test(child.text)) {
-          const patternCall = child.namedChildren.find((n) => n.type === 'call');
-          const patterns = patternCall?.namedChildren.find((n) => n.type === 'arguments');
-          if (patterns)
-            for (const name of this.identifiers(patterns)) this.bind(name, patterns, 'param');
-        } else for (const name of this.identifiers(child)) this.bind(name, child, 'param');
+        const signature =
+          child.type === 'call'
+            ? child
+            : child.type === 'binary_operator' && /\bwhen\b/.test(child.text)
+              ? child.namedChildren.find((node) => node.type === 'call')
+              : undefined;
+        const patterns = signature?.namedChildren.find((node) => node.type === 'arguments');
+        for (const pattern of patterns?.namedChildren ?? []) {
+          this.declareFormalPattern(pattern, formalIndex);
+          formalIndex++;
+        }
       }
     }
   }
 
-  private bind(name: string, node: SyntaxNode, kind: BindingEntry['kind'] = 'var'): number {
+  private bind(
+    name: string,
+    node: SyntaxNode,
+    kind: BindingEntry['kind'] = 'var',
+    formalIndex?: number,
+  ): number {
     const existing = this.byName.get(name);
     if (existing !== undefined) return existing;
     const idx = this.bindings.length;
@@ -85,9 +88,38 @@ class ElixirHarvester {
       kind,
       declLine: start(node),
       declColumn: node.startPosition.column,
+      ...(formalIndex === undefined ? {} : { formalIndex }),
     });
     this.byName.set(name, idx);
     return idx;
+  }
+
+  declareClauseParams(clause: SyntaxNode): void {
+    const body = clause.namedChildren.find((child) => child.type === 'body');
+    let formalIndex = 0;
+    for (const pattern of clause.namedChildren) {
+      if (pattern === body) continue;
+      this.declareFormalPattern(pattern, formalIndex);
+      formalIndex++;
+    }
+  }
+
+  /** Bind the pattern side of a formal only; defaults and guards are expressions. */
+  private declareFormalPattern(pattern: SyntaxNode, formalIndex: number): void {
+    const bindPattern = (node: SyntaxNode): void => {
+      if (node.type === 'identifier') {
+        if (node.text !== '_') this.bind(node.text, node, 'param', formalIndex);
+        return;
+      }
+      // Defaults bind only their left pattern; never their RHS expression.
+      if (node.type === 'binary_operator' && node.text.includes('\\')) {
+        const left = node.childForFieldName?.('left') ?? node.namedChild(0);
+        if (left) bindPattern(left as SyntaxNode);
+        return;
+      }
+      for (const child of node.namedChildren) bindPattern(child);
+    };
+    bindPattern(pattern);
   }
 
   private read(name: string, node: SyntaxNode): number {
@@ -100,7 +132,8 @@ class ElixirHarvester {
       if (n !== node && isFunction(n)) return;
       if (n.type === 'identifier' && n.text !== '_' && !/^(do|end|when)$/.test(n.text))
         out.push(n.text);
-      for (const c of n.namedChildren) walk(c);
+      const callTarget = n.type === 'call' ? n.childForFieldName?.('target') : undefined;
+      for (const c of n.namedChildren) if (c !== callTarget) walk(c);
     };
     walk(node);
     return out;
@@ -114,7 +147,12 @@ class ElixirHarvester {
       /^\s*(=|<-)\s*$/.test(node.children.find((c) => !c.isNamed)?.text ?? '');
     const left = match ? node.namedChildren[0] : undefined;
     if (left) for (const name of this.identifiers(left)) defs.push(this.bind(name, left));
+    const bareCallee =
+      node.type === 'call' && node.childForFieldName?.('target')?.type === 'identifier'
+        ? node.childForFieldName('target')!.text
+        : undefined;
     for (const name of this.identifiers(node)) {
+      if (name === bareCallee) continue;
       if (left && this.identifiers(left).includes(name)) continue;
       uses.push(this.read(name, node));
     }
@@ -332,6 +370,25 @@ function buildFunctionCfg(fn: SyntaxNode, filePath: string): FunctionCfg | undef
     builder.edge(entry, guard, 'cond-true');
     builder.edge(entry, builder.exitIndex, 'cond-false');
     entry = guard;
+  }
+  if (fn.type === 'anonymous_function') {
+    const clauses = fn.namedChildren.filter((child) => child.type === 'stab_clause');
+    if (clauses.length) {
+      let fallback = builder.entryIndex;
+      const join = builder.newBlock(end(fn), end(fn), '', 'normal');
+      for (const clause of clauses) {
+        harvest.declareClauseParams(clause);
+        const guard = block(clause);
+        builder.edge(fallback, guard, 'cond-false');
+        builder.edge(builder.entryIndex, guard, 'cond-true');
+        const clauseExits = visitSeq(clauseBody(clause), [guard]);
+        builder.connect(clauseExits, join, 'seq');
+        fallback = guard;
+      }
+      builder.edge(fallback, join, 'cond-false');
+      builder.edge(join, builder.exitIndex, 'seq');
+      return builder.finish(harvest.all);
+    }
   }
   const exits = visitSeq(statementsOf(body), [entry]);
   builder.connect(exits, builder.exitIndex, 'seq');

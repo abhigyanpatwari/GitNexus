@@ -336,6 +336,7 @@ export function extractElixirSemanticGraph(
       confidence: 1,
       reason: 'elixir semantic declaration',
     });
+    const ownerId = owner ? moduleIds.get(owner) : undefined;
     symbols.push({
       filePath,
       name,
@@ -345,7 +346,7 @@ export function extractElixirSemanticGraph(
       ...(label === 'Function' || label === 'Macro'
         ? { parameterCount, requiredParameterCount, visibility }
         : {}),
-      ...(owner ? { ownerId: generateId('Class', `${filePath}:Class:${owner}`) } : {}),
+      ...(ownerId ? { ownerId } : {}),
     });
     if (label === 'Class' || label === 'Interface') moduleIds.set(qualifiedName, id);
   };

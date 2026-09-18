@@ -34,34 +34,49 @@ function moduleToRelPath(moduleName: string): string {
 
 const ELIXIR_EXTS = ['.ex', '.exs'];
 
+function expandGroupedAlias(moduleName: string): readonly string[] {
+  const grouped = /^(.*)\.\{([^}]+)\}$/.exec(moduleName);
+  if (!grouped) return [moduleName];
+  const [, prefix, members] = grouped;
+  return members
+    .split(',')
+    .map((member) => member.trim())
+    .filter(Boolean)
+    .map((member) => `${prefix}.${member}`);
+}
+
 /** Elixir module alias → file path strategy. */
 const elixirModuleStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const moduleName = rawImportPath.trim();
 
-  // Must start with a capital letter (Elixir module alias convention)
-  if (!moduleName || !/^[A-Z]/.test(moduleName)) return null;
-
-  const relPath = moduleToRelPath(moduleName);
+  const moduleNames = expandGroupedAlias(moduleName);
+  // Must start with a capital letter (Elixir module alias convention).
+  if (!moduleName || moduleNames.some((name) => !/^[A-Z]/.test(name))) return null;
 
   // Try common Elixir project roots: lib/, test/, apps/*/lib/, apps/*/test/
   const prefixes = ['lib/', 'test/', ''];
   const files: string[] = [];
 
-  for (const prefix of prefixes) {
-    for (const ext of ELIXIR_EXTS) {
-      const candidate = `${prefix}${relPath}${ext}`;
-      for (const fp of ctx.allFileList) {
-        if (fp === candidate || fp.endsWith(`/${candidate}`)) {
-          files.push(fp);
-          break;
+  for (const name of moduleNames) {
+    const relPath = moduleToRelPath(name);
+    const resolvedAt = files.length;
+    for (const prefix of prefixes) {
+      for (const ext of ELIXIR_EXTS) {
+        const candidate = `${prefix}${relPath}${ext}`;
+        for (const fp of ctx.allFileList) {
+          if (fp === candidate || fp.endsWith(`/${candidate}`)) {
+            files.push(fp);
+            break;
+          }
         }
       }
-      if (files.length > 0) return { kind: 'files', files };
+      // Preserve the existing root-priority rule for each expanded alias.
+      if (files.length > resolvedAt) break;
     }
   }
 
   // No local file found — likely an external hex dependency
-  return { kind: 'files', files: [] };
+  return { kind: 'files', files: [...new Set(files)] };
 };
 
 export const elixirImportConfig: ImportResolutionConfig = {

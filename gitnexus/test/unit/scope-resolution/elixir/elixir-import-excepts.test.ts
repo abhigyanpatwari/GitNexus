@@ -112,6 +112,89 @@ describe('Elixir import except augmentation', () => {
     ).toEqual([2]);
   });
 
+  it('filters category-only imports by exported Function or Macro kind', () => {
+    const importer = {
+      filePath: 'importer.ex',
+      moduleScope: importerScope,
+      parsedImports: [{ kind: 'wildcard', targetRaw: 'Filtered', declaredAtScope: importerScope }],
+      localDefs: [],
+      referenceSites: [],
+      scopes: [],
+      captureSideChannel: {
+        kind: 'elixir',
+        importExcepts: [],
+        importOnly: [
+          { target: 'Filtered', allowed: [], category: 'functions', startLine: 1, startCol: 0 },
+        ],
+      },
+    } as unknown as ParsedFile;
+    const target = {
+      filePath: 'filtered.ex',
+      moduleScope: targetScope,
+      parsedImports: [],
+      referenceSites: [],
+      scopes: [],
+      localDefs: [
+        { ...callable('Filtered', 0), type: 'Class', qualifiedName: 'Filtered' },
+        callable('function', 0),
+        { ...callable('macro', 0), type: 'Macro' },
+      ],
+    } as unknown as ParsedFile;
+    const augmentations = new Map();
+    elixirScopeResolver.populateNamespaceSiblings!(
+      [importer, target],
+      { bindingAugmentations: augmentations } as never,
+      { fileContents: new Map() },
+    );
+    expect([...augmentations.get(importerScope)!.keys()]).toEqual(['function']);
+  });
+
+  it('imports only macros for only: :macros and imports nothing for only: []', () => {
+    const importer = (only: {
+      allowed: readonly { name: string; arity: number }[];
+      category?: 'functions' | 'macros';
+    }) =>
+      ({
+        filePath: 'importer.ex',
+        moduleScope: importerScope,
+        parsedImports: [
+          { kind: 'wildcard', targetRaw: 'Filtered', declaredAtScope: importerScope },
+        ],
+        localDefs: [],
+        referenceSites: [],
+        scopes: [],
+        captureSideChannel: {
+          kind: 'elixir',
+          importExcepts: [],
+          importOnly: [{ target: 'Filtered', startLine: 1, startCol: 0, ...only }],
+        },
+      }) as unknown as ParsedFile;
+    const target = {
+      filePath: 'filtered.ex',
+      moduleScope: targetScope,
+      parsedImports: [],
+      referenceSites: [],
+      scopes: [],
+      localDefs: [
+        { ...callable('Filtered', 0), type: 'Class', qualifiedName: 'Filtered' },
+        callable('function', 0),
+        { ...callable('macro', 0), type: 'Macro' },
+      ],
+    } as unknown as ParsedFile;
+    for (const [only, expected] of [
+      [{ allowed: [], category: 'macros' as const }, ['macro']],
+      [{ allowed: [] }, []],
+    ] as const) {
+      const augmentations = new Map();
+      elixirScopeResolver.populateNamespaceSiblings!(
+        [importer(only), target],
+        { bindingAugmentations: augmentations } as never,
+        { fileContents: new Map() },
+      );
+      expect([...(augmentations.get(importerScope)?.keys() ?? [])]).toEqual(expected);
+    }
+  });
+
   it('leaves an ambiguous module target unresolved', () => {
     const importer = {
       filePath: 'importer.ex',
