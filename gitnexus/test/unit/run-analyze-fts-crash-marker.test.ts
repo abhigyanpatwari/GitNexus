@@ -107,7 +107,9 @@ const mockLbugAdapter = async () => {
     initLbug: vi.fn(async () => undefined),
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
-    executeQuery: vi.fn(async () => []),
+    executeQuery: vi.fn(async (query: string) =>
+      query === "CALL current_setting('threads') RETURN *" ? [{ threads: '4' }] : [],
+    ),
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),

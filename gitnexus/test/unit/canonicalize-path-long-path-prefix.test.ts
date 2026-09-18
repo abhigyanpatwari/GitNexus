@@ -74,6 +74,7 @@ import {
   type RegistryEntry,
 } from '../../src/storage/repo-manager.js';
 import { resolveRegisteredRepoEntry } from '../../src/server/api.js';
+import { requireDeletableStoragePath } from '../../src/storage/storage-resolver.js';
 
 /**
  * The lookup every registry consumer performs — `resolveRegistryEntry`,
@@ -164,6 +165,19 @@ describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
       assertSafeStoragePath({ ...base, storagePath: 'D:\\Projects\\repo\\.gitnexus' }),
     ).rejects.toThrow();
   });
+
+  itOnWindows.each([
+    ['D:\\Projects\\repo', '\\\\?\\D:\\Projects\\repo\\.gitnexus'],
+    ['\\\\server\\share\\repo', '\\\\?\\UNC\\server\\share\\repo\\.gitnexus'],
+    ['\\\\?\\UNC\\server\\share\\repo', '\\\\server\\share\\repo\\.gitnexus'],
+  ])(
+    'rejects mixed namespace spellings in the shared deletion guard: %s',
+    async (repoPath, storagePath) => {
+      await expect(requireDeletableStoragePath({ path: repoPath, storagePath })).rejects.toThrow(
+        'same extended-length path spelling',
+      );
+    },
+  );
 });
 
 // The consumer surface the fix exists for: an MCP `repo` argument or an

@@ -3542,7 +3542,7 @@ export class LocalBackend {
               `
               MATCH (n)
               WHERE n.id IN $nodeIds
-              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
             `,
               { nodeIds },
@@ -3557,7 +3557,7 @@ export class LocalBackend {
               MATCH (n)
               WHERE n.filePath = $filePath
                 AND NOT n.id STARTS WITH 'BasicBlock:'
-              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              RETURN n.id AS id, n.name AS name, labels(n) AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
               LIMIT 3
             `,
