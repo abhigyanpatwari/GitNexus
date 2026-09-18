@@ -1,10 +1,10 @@
 /**
  * Git ref-name validation used by both the CLI and the HTTP analyze route.
  *
- * Lives in `core/` so `server/api.ts` does not import `cli/analyze-config`
- * (that import closed a cli → server → cli cycle: `cli/serve.ts` already
- * imports `createServer`). The CLI keeps a thin wrapper that rethrows
- * {@link InvalidBranchError} as `GitNexusRcError`.
+ * Lives in `core/` so `server/api.ts` and `run-analyze.ts` do not import
+ * `cli/analyze-config` (that import closed a cli → server → cli cycle:
+ * `cli/serve.ts` already imports `createServer`). The CLI keeps a thin
+ * wrapper that rethrows {@link InvalidBranchError} as `GitNexusRcError`.
  */
 
 /** Git refs longer than this are almost certainly a mistake / injection attempt. */
@@ -125,4 +125,19 @@ export function validateBranchName(value: string, source: string): string {
     );
   }
   return trimmed;
+}
+
+/**
+ * Best-effort validation for an auto-detected branch (from git). Never throws —
+ * returns `undefined` for anything unusable so callers fall back to the next
+ * precedence tier or leave the index unlabeled.
+ */
+export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return validateBranchName(value, 'detected branch');
+  } catch (err) {
+    if (err instanceof InvalidBranchError) return undefined;
+    throw err;
+  }
 }
