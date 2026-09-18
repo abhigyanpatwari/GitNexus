@@ -128,9 +128,10 @@ export function validateBranchName(value: string, source: string): string {
 }
 
 /**
- * Best-effort validation for an auto-detected branch (from git). Never throws —
- * returns `undefined` for anything unusable so callers fall back to the next
- * precedence tier or leave the index unlabeled.
+ * Best-effort validation for an auto-detected branch (from git). Returns the
+ * trimmed name, or `undefined` for anything unusable so callers fall back to
+ * the next precedence tier or leave the index unlabeled. Swallows
+ * {@link InvalidBranchError} only; unexpected errors are rethrown.
  */
 export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
@@ -140,4 +141,27 @@ export function sanitizeDetectedBranch(value: string | null | undefined): string
     if (err instanceof InvalidBranchError) return undefined;
     throw err;
   }
+}
+
+/**
+ * Render a rejected checkout name for `onLog`. Hidden / bidi / control code
+ * points become `\uXXXX` so a git-legal U+202E name cannot reverse the
+ * warning in a terminal. ASCII `"` is escaped; other characters (including
+ * backticks) stay visible.
+ */
+export function formatRejectedBranchForLog(value: string): string {
+  let out = '';
+  for (const ch of value) {
+    const cp = ch.codePointAt(0);
+    if (cp !== undefined && isHiddenOrControl(cp)) {
+      out += `\\u${cp.toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    if (ch === '"') {
+      out += '\\"';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
