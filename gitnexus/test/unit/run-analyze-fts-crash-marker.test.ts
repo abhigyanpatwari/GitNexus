@@ -17,6 +17,7 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { computeFileHash } from '../../src/storage/file-hash.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 import { resolveAnalysisFeatureVersions } from '../../src/core/analysis-features.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
@@ -500,6 +501,123 @@ describe('runFullAnalysis FTS crash marker', () => {
       }
     },
   );
+
+  it.skipIf(process.platform === 'win32')(
+    'does not persist live incrementalInProgress when atomic incremental dies during staging copy',
+    async () => {
+      vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
+      vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+        ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+        initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+        missingSearchFTSIndexTables: vi.fn(async () => []),
+        dropSearchFTSIndexes: vi.fn(async () => undefined),
+        buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+      }));
+      vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+        runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+          repoPath,
+          graph: fileGraph(),
+        })),
+      }));
+
+      const tmpRepo = await createTempDir('gitnexus-atomic-incr-copy-crash-');
+      try {
+        await seedGitFile(tmpRepo.dbPath);
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        await fs.mkdir(storagePath, { recursive: true });
+        const fileHash = await computeFileHash(path.join(tmpRepo.dbPath, REL_FILE));
+        await saveMeta(storagePath, {
+          ...incrementalMeta(tmpRepo.dbPath),
+          lastCommit: headCommit(tmpRepo.dbPath),
+          fileHashes: { [REL_FILE]: fileHash! },
+          processDetection: {
+            maxProcesses: 80,
+            maxProcessBranching: 4,
+            maxProcessTraceDepth: 10,
+            maxEntryPointCandidates: 200,
+          },
+        });
+        await createPlaceholderGraphStore(lbugPath);
+
+        const originalCopyFile: typeof fs.copyFile = fs.copyFile.bind(fs);
+        const copyFile = vi.spyOn(fs, 'copyFile').mockImplementation(async (src, dest, mode) => {
+          if (String(dest).includes('.staging.')) {
+            throw new Error('simulated staging copy crash');
+          }
+          return originalCopyFile(src, dest, mode);
+        });
+
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        await expect(
+          runFullAnalysis(
+            tmpRepo.dbPath,
+            { atomicIncremental: true, maxProcesses: 25, skipAgentsMd: true, skipSkills: true },
+            { onProgress: () => {}, onLog: () => {} },
+          ),
+        ).rejects.toThrow('simulated staging copy crash');
+        expect(copyFile).toHaveBeenCalled();
+
+        const liveMeta = await loadMeta(storagePath);
+        expect(liveMeta?.incrementalInProgress).toBeUndefined();
+        expect(liveMeta?.processDetection?.maxProcesses).toBe(80);
+        expect(liveMeta?.processDetection?.uncertified).toBeUndefined();
+      } finally {
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it('stamps phase pre-write on live meta before in-place incremental writeback', async () => {
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: fileGraph(),
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => {
+      const actual = await importActual<typeof import('../../src/storage/repo-manager.js')>();
+      return {
+        ...actual,
+        saveMeta: async (...args: Parameters<typeof actual.saveMeta>) => {
+          const result = await actual.saveMeta(...args);
+          if (args[1].incrementalInProgress?.phase === 'pre-write') {
+            throw new Error('stop after in-place dirty stamp');
+          }
+          return result;
+        },
+      };
+    });
+
+    const tmpRepo = await createTempDir('gitnexus-inplace-pre-write-stamp-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {}, onLog: () => {} },
+        ),
+      ).rejects.toThrow('stop after in-place dirty stamp');
+
+      const liveMeta = await loadMeta(storagePath);
+      expect(liveMeta?.incrementalInProgress).toMatchObject({ phase: 'pre-write' });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
 
   it('clears the FTS phase on the degrade path as well as on success', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);

@@ -196,10 +196,13 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('外部索引根目录');
     expect(result.stdout).toContain('GITNEXUS_CONTENT_RETENTION=full');
     expect(result.stdout).toContain('源码文本保留策略');
-    expect(result.stdout).toContain('当参数和对应环境变量同时提供时，参数优先。');
+    expect(result.stdout).toContain(
+      'CLI 参数优先于 `.gitnexusrc`，后者优先于环境变量，环境变量优先于内置默认值。',
+    );
     expect(result.stdout).toContain('提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。');
     expect(result.stdout).not.toContain('Environment variables:');
     expect(result.stdout).not.toContain('Flags override the corresponding env vars');
+    expect(result.stdout).not.toContain('当参数和对应环境变量同时提供时，参数优先。');
   });
 
   it('analyze help documents the external storage root layout', () => {
@@ -213,6 +216,10 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('GITNEXUS_CONTENT_RETENTION=full');
     expect(result.stdout).toContain('Source-text retention profile');
     expect(result.stdout).toContain('<repo-basename>-<canonical-path-hash>/');
+    expect(result.stdout).toContain(
+      'CLI flags take precedence over `.gitnexusrc`, which takes precedence over env vars, which take precedence over built-in defaults.',
+    );
+    expect(result.stdout).not.toContain('Flags override the corresponding env vars');
   });
 
   it('query help keeps advanced search options without importing analyze deps', () => {
