@@ -115,6 +115,14 @@ export interface AnalyzeOptions {
   walCheckpointThreshold?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
+  /** Process-detection process cap. Positive integer string; `0` is invalid. */
+  maxProcesses?: string;
+  /** Process-detection per-node branching cap. Positive integer string. */
+  maxProcessBranching?: string;
+  /** Process-detection DFS depth cap. Positive integer string. */
+  maxProcessTraceDepth?: string;
+  /** Ranked entry-point candidate pool. Positive integer string. */
+  maxEntryPointCandidates?: string;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;

@@ -8,6 +8,8 @@ import { runWebBuild, shouldBuildWeb, shouldPreserveWebOutput } from '../../scri
 
 /** Default prepare/build stay CLI-only; the web UI ships only via prepack --web. */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
+const CLI_TSC_JS = 'node ../gitnexus/node_modules/typescript/lib/tsc.js';
+const WEB_TSC_JS = 'node ../gitnexus-web/node_modules/typescript/lib/tsc.js';
 const PACKAGE_JSON = JSON.parse(
   readFileSync(path.join(REPO_ROOT, 'gitnexus/package.json'), 'utf8'),
 ) as { scripts?: Record<string, string> };
@@ -283,7 +285,7 @@ describe('workflows that need the web UI install it themselves', () => {
 describe('setup-gitnexus job budget', () => {
   it('does not npm-ci gitnexus-shared (TypeScript 7 optional-platform install stalls CI)', () => {
     const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
-    expect(String(shared?.run)).toBe('node ../gitnexus/node_modules/typescript/lib/tsc.js');
+    expect(String(shared?.run)).toBe(CLI_TSC_JS);
     expect(String(shared?.run)).not.toContain('.bin');
     expect(shared?.if).toContain("lifecycle-scripts == 'false'");
     expect(
@@ -314,10 +316,26 @@ describe('setup-gitnexus job budget', () => {
     expect(String(setupNode?.with?.['cache-dependency-path'])).toBe(
       'gitnexus-web/package-lock.json',
     );
-    expect(String(shared?.run)).toBe('node ../gitnexus-web/node_modules/typescript/lib/tsc.js');
+    expect(String(shared?.run)).toBe(WEB_TSC_JS);
     expect(String(shared?.run)).not.toContain('.bin');
     expect(String(shared?.run)).not.toContain('npm ci');
     expect(webInstall?.env?.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe('1');
+  });
+
+  it('Vercel installs web first and compiles shared with the web TypeScript', () => {
+    const vercel = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, 'gitnexus-web/vercel.json'), 'utf8'),
+    ) as { installCommand?: string };
+    const install = String(vercel.installCommand);
+    // Vercel runs installCommand with NODE_ENV=production, so npm ci drops
+    // typescript unless --include=dev is on that install (not a later step).
+    expect(install).toContain('npm ci --include=dev');
+    expect(install).toContain('gitnexus-shared');
+    expect(install.indexOf('npm ci --include=dev')).toBeLessThan(
+      install.indexOf('gitnexus-shared'),
+    );
+    expect(install).toContain(WEB_TSC_JS);
+    expect(install).not.toMatch(/gitnexus-shared[^&]*npm (?:ci|install)/);
   });
 
   it('quality typecheck skips prepare/postinstall so tsc --noEmit fits in 10 minutes', () => {
@@ -325,6 +343,28 @@ describe('setup-gitnexus job budget', () => {
     const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
     expect(job?.['timeout-minutes']).toBe(10);
     expect(setup?.with?.['lifecycle-scripts']).toBe('false');
+  });
+
+  it('web app tsconfig typechecks React JSX on TypeScript 7 without baseUrl', () => {
+    const tsconfig = JSON.parse(
+      readFileSync(path.join(REPO_ROOT, 'gitnexus-web/tsconfig.app.json'), 'utf8'),
+    ) as {
+      compilerOptions?: {
+        baseUrl?: string;
+        jsx?: string;
+        jsxImportSource?: string;
+        lib?: string[];
+        rootDir?: string;
+        types?: string[];
+      };
+    };
+    const options = tsconfig.compilerOptions ?? {};
+    expect(options.baseUrl).toBeUndefined();
+    expect(options.jsx).toBe('react-jsx');
+    expect(options.jsxImportSource).toBe('react');
+    expect(options.lib).toEqual(expect.arrayContaining(['ESNext', 'DOM', 'DOM.Iterable']));
+    expect(options.rootDir).toBe('./src');
+    expect(options.types).toEqual(['vite/client']);
   });
 
   it('quality typecheck-web can finish a cold web install instead of canceling before cache save', () => {

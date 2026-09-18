@@ -129,7 +129,7 @@
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
-    "typescript": "^5.4.5",
+    "typescript": "^7.0.2",
     "vitest": "^4.0.18"
   },
   "overrides": {
