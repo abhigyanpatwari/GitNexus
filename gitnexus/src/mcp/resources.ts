@@ -10,6 +10,11 @@ import { checkStaleness } from './staleness.js';
 import { loadMeta } from '../storage/repo-manager.js';
 import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
 
 export interface ResourceDefinition {
   uri: string;
@@ -362,9 +367,18 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   // receipt intact lets agents compare every identity field without parsing a
   // lossy human rendering; null explicitly means legacy/unknown provenance.
   lines.push('');
+  const contentRetention = contentRetentionFromMeta(freshMeta);
+  const sourceAvailable = isFullSourceAvailable(
+    contentRetention,
+    repo.repoPath ? await checkoutIsDirectory(repo.repoPath) : false,
+  );
+
   lines.push('index:');
   lines.push(`  commit: ${JSON.stringify(lastCommit)}`);
   lines.push(`  indexed_at: ${JSON.stringify(freshMeta?.indexedAt ?? null)}`);
+  lines.push(`  storage_path: ${JSON.stringify(repo.storagePath)}`);
+  lines.push(`  content_retention: ${JSON.stringify(contentRetention)}`);
+  lines.push(`  source_available: ${JSON.stringify(sourceAvailable)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
   lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);

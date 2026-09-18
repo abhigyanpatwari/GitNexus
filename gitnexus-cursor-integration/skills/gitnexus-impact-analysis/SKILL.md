@@ -53,6 +53,7 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 ```
 
 > If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
+> Hot-tool `staleness` names which index answered (`branch`/`lastCommit`) and how fresh it is (`status`). Re-analyze only for `behind` or `diverged` — `current` is identity, `unknown` is unmeasurable.
 > If `.gitnexus/run.cjs` is missing, replace `node .gitnexus/run.cjs` with `npx gitnexus` in the fallback commands.
 
 ## Checklist

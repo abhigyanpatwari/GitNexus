@@ -9,8 +9,10 @@ import {
   type AnalyzeOptions as CoreAnalyzeOptions,
   type AnalyzeResult,
 } from '../core/run-analyze.js';
+import { isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
+import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { GITNEXUS_DIR } from '../storage/repo-meta.js';
 import {
   loadAnalyzeConfigStrict,
@@ -20,6 +22,10 @@ import {
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  parseProcessDetectionBudgetStrings,
+} from '../core/ingestion/process-detection-budget.js';
 import {
   WATCH_FULL_REFRESH_PATH,
   WatchRefreshQueue,
@@ -162,6 +168,17 @@ export async function resolveWatchOptions(
   const workerPoolSize = positiveInteger(merged.workers, '--workers');
   const workerTimeoutSeconds = positiveInteger(merged.workerTimeout, 'workerTimeout');
   const maxFileSize = positiveInteger(merged.maxFileSize, 'maxFileSize', MAX_FILE_SIZE_KB);
+  const processDetection = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: merged.maxProcesses,
+      maxProcessBranching: merged.maxProcessBranching,
+      maxProcessTraceDepth: merged.maxProcessTraceDepth,
+      maxEntryPointCandidates: merged.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(formatInvalidProcessDetectionOverride(flag, raw));
+    },
+  );
 
   setEnvironment(
     'GITNEXUS_MAX_FILE_SIZE',
@@ -181,6 +198,10 @@ export async function resolveWatchOptions(
     registryName: merged.name,
     allowDuplicateName: merged.allowDuplicateName,
     workerPoolSize,
+    maxProcesses: processDetection.maxProcesses,
+    maxProcessBranching: processDetection.maxProcessBranching,
+    maxProcessTraceDepth: processDetection.maxProcessTraceDepth,
+    maxEntryPointCandidates: processDetection.maxEntryPointCandidates,
     fetchWrappers: merged.fetchWrappers,
     skipAgentsMd: true,
     skipSkills: true,
@@ -242,6 +263,9 @@ export function shouldStopAfterWatchRefreshFailure(
   error: unknown,
   paths: readonly string[],
 ): boolean {
+  if (isIndexLockGuardTimeout(error)) {
+    return true;
+  }
   return (
     paths.length > 0 &&
     !(error instanceof WatchControlReloadError) &&
@@ -410,6 +434,13 @@ export async function watchCommandWithRunnerIdentity(
     return;
   }
   const repoPath = await fs.realpath(requestedRepoPath);
+  try {
+    await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    cliError(`  ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+    return;
+  }
   const baselineEnvironment: WatchEnvironmentBaseline = {
     maxFileSize: process.env.GITNEXUS_MAX_FILE_SIZE,
     workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,
@@ -517,9 +548,15 @@ export async function watchCommandWithRunnerIdentity(
             const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
+              const guardTimeout = isIndexLockGuardTimeout(error);
               cliError(
                 `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  'Watch mode is stopping because the live index may have been updated in place.',
+                  (guardTimeout
+                    ? 'Watch mode is stopping because the acquisition guard needs quiesced recovery; see RUNBOOK.md.'
+                    : 'Watch mode is stopping because the live index may have been updated in place.'),
+                guardTimeout
+                  ? { recoveryHint: 'index-lock-guard-recovery', guardPath: error.guardPath }
+                  : undefined,
               );
               stopWatching();
               return;

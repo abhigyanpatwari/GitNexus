@@ -16,13 +16,17 @@
 import path from 'path';
 import fs from 'fs/promises';
 import {
-  getStoragePaths,
-  INDEX_METADATA_FILE,
   loadMeta,
+  saveMeta,
   ensureGitNexusIgnored,
   registerRepo,
 } from '../storage/repo-manager.js';
 import { getGitRoot, getRemoteUrl, isGitRepo } from '../storage/git.js';
+import {
+  getIndexStorageRequirements,
+  requireStoragePath,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 
 export interface IndexOptions {
   force?: boolean;
@@ -69,46 +73,39 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
     return;
   }
 
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
-
-  // ── Verify index exists (metadata file, legacy metadata, or restorable DB) ─
-  let hasMetadataIndex = false;
-  let hasLegacyIndex = false;
-  let hasLbugIndex = false;
-
+  let storagePath: string;
   try {
-    await fs.access(path.join(storagePath, INDEX_METADATA_FILE));
-    hasMetadataIndex = true;
-  } catch {}
-
-  try {
-    await fs.access(path.join(storagePath, 'meta.json'));
-    hasLegacyIndex = true;
-  } catch {}
-
-  try {
-    await fs.access(lbugPath);
-    hasLbugIndex = true;
-  } catch {}
-
-  if (!hasMetadataIndex && !hasLegacyIndex && !hasLbugIndex) {
-    console.log(`  No GitNexus index found.`);
-    console.log(`  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${storagePath}`);
-    console.log('  Run `gitnexus analyze` to build the index first.\n');
-    process.exitCode = 1;
-    return;
-  }
-
-  // ── Verify lbug database exists ───────────────────────────────────
-  if (!hasLbugIndex) {
-    console.log(`  Index exists but contains no LadybugDB database.`);
-    console.log('  Run `gitnexus analyze` to build the index.\n');
+    storagePath = await requireStoragePath(repoPath, getIndexStorageRequirements(!!options?.force));
+  } catch (error) {
+    if (!(error instanceof StorageRequirementError)) {
+      console.log(`  ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const inspection = error.inspection;
+    if (inspection.state === 'missing' || inspection.state === 'empty') {
+      console.log(`  No GitNexus index found.`);
+      console.log(
+        `  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${inspection.storagePath}`,
+      );
+      console.log('  Run `gitnexus analyze` to build the index first.\n');
+    } else if (inspection.state === 'unowned' && !options?.force) {
+      console.log(`  gitnexus.json or .gitnexus/meta.json is missing.`);
+      console.log('  Use --force to register anyway (stats will be empty),');
+      console.log('  or run `gitnexus analyze` to rebuild properly.\n');
+    } else if (!inspection.hasCodeIndexDB) {
+      console.log(`  Index exists but contains no LadybugDB database.`);
+      console.log('  Run `gitnexus analyze` to build the index.\n');
+    } else {
+      console.log(`  ${error.message}\n`);
+    }
     process.exitCode = 1;
     return;
   }
 
   // ── Load or reconstruct meta ──────────────────────────────────────
   let meta = await loadMeta(storagePath);
+  let reconstructedMeta = false;
 
   if (!meta) {
     if (!options?.force) {
@@ -122,9 +119,27 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
     // --force: build a minimal meta so the repo can be registered
     meta = {
       repoPath,
+      storagePath,
       lastCommit: '',
       indexedAt: new Date().toISOString(),
     };
+    reconstructedMeta = true;
+  }
+
+  // `index --force` is the explicit adoption path for an existing external
+  // database whose legacy metadata predates storagePath binding, and for a
+  // repository-local slot whose metadata still names another checkout.
+  if (options?.force) {
+    const adoptedRepoPath = path.resolve(repoPath);
+    const adoptedStoragePath = path.resolve(storagePath);
+    const ownershipChanged =
+      path.resolve(meta.repoPath) !== adoptedRepoPath ||
+      meta.storagePath === undefined ||
+      path.resolve(meta.storagePath) !== adoptedStoragePath;
+    if (ownershipChanged) {
+      meta = { ...meta, repoPath: adoptedRepoPath, storagePath: adoptedStoragePath };
+      reconstructedMeta = true;
+    }
   }
 
   // ── Register in global registry ───────────────────────────────────
@@ -135,8 +150,11 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
   if (!meta.remoteUrl && isGitRepo(repoPath)) {
     meta.remoteUrl = getRemoteUrl(repoPath);
   }
-  await registerRepo(repoPath, meta);
-  await ensureGitNexusIgnored(repoPath);
+  if (reconstructedMeta) {
+    await saveMeta(storagePath, meta);
+  }
+  await registerRepo(repoPath, meta, { storagePath });
+  await ensureGitNexusIgnored(repoPath, storagePath);
 
   const projectName = path.basename(repoPath);
   const { stats } = meta;

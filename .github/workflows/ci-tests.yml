@@ -608,6 +608,16 @@ jobs:
         run: node --import tsx bench/python-workspace-import-scan/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Rust Cargo target membership guards (#3253)
+        if: ${{ !cancelled() }}
+        # Build-free: same baseline approach as parse-dispatch-rounds —
+        # exact membership floors plus a fingerprint, then ratio timing
+        # only (loadRustCargoTargets 4n/n). Pins typical-Rust completeness
+        # (derive / println!), include!-abort, and src/target vs Cargo
+        # artifact layouts. See bench/rust-cargo-targets/measure.mjs.
+        run: node --import tsx bench/rust-cargo-targets/measure.mjs --check
+        working-directory: gitnexus
+
       - name: MCP tools/list countRepos vs listRepos guards (#3259, #3184)
         if: ${{ !cancelled() }}
         # Build-free: exact registry cardinality + tool-roster + schema-flag

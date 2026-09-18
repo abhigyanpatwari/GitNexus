@@ -11,11 +11,20 @@ import {
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
 
-const nativeProbeState = vi.hoisted(() => ({ vectorLoaded: true }));
+const nativeProbeState = vi.hoisted(() => ({
+  vectorLoaded: true,
+  fts: { loaded: true } as {
+    loaded: boolean;
+    suppressed?: boolean;
+    reason?: string;
+  },
+}));
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({
   checkLbugNative: () => ({ ok: true, binaryPath: '/synthetic/lbugjs.node' }),
-  probeFtsExtensionLoad: async () => ({ loaded: true }),
+  ftsAvailabilityLabel: (probe: { loaded: boolean; suppressed?: boolean }) =>
+    probe.loaded ? 'available' : probe.suppressed ? 'suppressed' : 'unavailable',
+  probeFtsExtensionLoad: async () => nativeProbeState.fts,
   probeVectorExtensionLoad: async () =>
     nativeProbeState.vectorLoaded
       ? { loaded: true }
@@ -67,6 +76,7 @@ describe('doctor VECTOR capability claims', () => {
 
   afterEach(() => {
     nativeProbeState.vectorLoaded = true;
+    nativeProbeState.fts = { loaded: true };
     setCliLanguage(null);
     vi.restoreAllMocks();
     for (const key of ENV_KEYS) {
@@ -102,6 +112,38 @@ describe('doctor VECTOR capability claims', () => {
   });
 });
 
+describe('doctor FTS policy claims (U12)', () => {
+  afterEach(() => {
+    nativeProbeState.fts = { loaded: true };
+    setCliLanguage(null);
+    vi.restoreAllMocks();
+  });
+
+  it('reports suppressed-by-policy, not unavailable, when the probe is suppressed', async () => {
+    nativeProbeState.fts = {
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    };
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/Full-text search:\s+suppressed/);
+    expect(output).toContain('suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never');
+    expect(output).not.toMatch(/Full-text search:\s+unavailable/);
+  });
+
+  it('prints both serve/query and analyze extension install policies', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await doctorCommand();
+    const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+
+    expect(output).toMatch(/serve\/query=/);
+    expect(output).toMatch(/analyze=/);
+  });
+});
+
 describe('doctor embedding-runtime support status', () => {
   it('flags local embeddings as unavailable on macOS Intel (darwin/x64)', () => {
     const { status, detail } = localEmbeddingDoctorStatus({
@@ -121,7 +163,12 @@ describe('doctor embedding-runtime support status', () => {
       ['linux', 'x64'],
       ['win32', 'x64'],
     ] as Array<[NodeJS.Platform, NodeJS.Architecture]>) {
-      const { status, detail } = localEmbeddingDoctorStatus({ httpMode: false, platform, arch });
+      const { status, detail } = localEmbeddingDoctorStatus({
+        httpMode: false,
+        platform,
+        arch,
+        resolution: { source: 'package' },
+      });
       expect(status).toBe('✓ local embeddings supported');
       expect(detail).toBeNull();
     }
@@ -137,15 +184,16 @@ describe('doctor embedding-runtime support status', () => {
     expect(detail).toBeNull();
   });
 
-  it('flags a pruned optional embedding stack with reinstall guidance (#2370)', () => {
+  it('flags a missing local embedding stack with install guidance', () => {
     const { status, detail } = localEmbeddingDoctorStatus({
       httpMode: false,
       platform: 'linux',
       arch: 'x64',
       resolution: null,
     });
-    expect(status).toBe('✗ optional embedding stack not installed');
-    expect(detail).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+    expect(status).toBe('✗ local embedding stack not installed');
+    expect(detail).toContain('gitnexus embeddings install');
+    expect(detail).not.toContain('ONNXRUNTIME_NODE_INSTALL=skip');
   });
 
   it('reports a package-sourced stack as supported regardless of Node loadability', () => {

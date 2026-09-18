@@ -1,9 +1,9 @@
-import { render } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import type { GraphNode } from 'gitnexus-shared';
 import { CodeReferencesPanel } from '../../src/components/CodeReferencesPanel';
-import { readFile } from '../../src/services/backend-client';
+import { BackendError, readFile } from '../../src/services/backend-client';
 
 const fileNode: GraphNode = {
   id: 'File:src/foo.ts',
@@ -31,6 +31,15 @@ vi.mock('../../src/hooks/useAppState', () => ({
 
 vi.mock('../../src/services/backend-client', () => ({
   readFile: vi.fn(),
+  BackendError: class BackendError extends Error {
+    constructor(
+      message: string,
+      _status: number,
+      public readonly code: string,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock('react-syntax-highlighter', () => ({
@@ -69,5 +78,17 @@ describe('CodeReferencesPanel repo identity (#2420)', () => {
     render(<CodeReferencesPanel onFocusNode={vi.fn()} />);
 
     expect(readFile).toHaveBeenCalledWith('src/foo.ts', { repo: 'reels' });
+  });
+
+  it('renders the dedicated source-unavailable state for retained indexes without a checkout', async () => {
+    vi.mocked(readFile).mockRejectedValue(
+      new BackendError('source unavailable', 410, 'source_unavailable'),
+    );
+
+    render(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('graph:codePanel.sourceUnavailable')).toBeInTheDocument();
+    });
   });
 });

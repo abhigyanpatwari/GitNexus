@@ -2,7 +2,7 @@ import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
-import { acquireIndexLock } from '../storage/index-lock.js';
+import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../storage/repo-manager.js';
 import {
   closeLbug,
@@ -11,8 +11,6 @@ import {
   fetchExistingEmbeddingHashes,
   initLbug,
 } from '../core/lbug/lbug-adapter.js';
-import { runEmbeddingPipeline } from '../core/embeddings/embedding-pipeline.js';
-import { resolveEmbeddingIdentity } from '../core/embeddings/embedding-identity.js';
 import {
   decideEmbeddingResume,
   mintInterruptedCheckpoint,
@@ -27,6 +25,18 @@ import {
   measurePersistedEmbeddingCount,
   persistedEmbeddingCountOrUndefined,
 } from '../core/embedding-count.js';
+import { isHttpMode } from '../core/embeddings/http-client.js';
+import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+  getEmbeddingInstallTimeoutMs,
+  getEmbeddingRuntimeDir,
+  installEmbeddingRuntime,
+} from '../core/embeddings/runtime-install.js';
+import {
+  assessLocalEmbeddingRuntime,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
+import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -37,6 +47,10 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   const metaDir = path.dirname(metaPath);
   const lock = await acquireIndexLock(metaDir);
   try {
+    requireExclusiveIndexLock(
+      lock,
+      `Cannot acquire the index lock at ${metaDir}; refusing an unlocked embeddings sync.`,
+    );
     const meta = await loadMeta(metaDir);
     if (!meta)
       throw new Error(`No GitNexus index found for ${repoPath}. Run gitnexus analyze first.`);
@@ -58,6 +72,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       );
     }
 
+    const { resolveEmbeddingIdentity } = await import('../core/embeddings/embedding-identity.js');
     const identity = resolveEmbeddingIdentity();
     let forceReembedNodeIds: ReadonlySet<string> | undefined;
     let resumedFrom: EmbeddingCheckpoint | undefined;
@@ -107,6 +122,28 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       );
     }
 
+    if (!isHttpMode()) {
+      const assessment = assessLocalEmbeddingRuntime();
+      if (assessment.status === 'blocked' || assessment.status === 'prefix-unloadable') {
+        throw new Error(assessment.message);
+      }
+      if (assessment.status === 'needs-install') {
+        cliInfo(`Local embedding runtime is not installed.`);
+        cliInfo(`Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …`);
+        try {
+          await installEmbeddingRuntime(
+            {},
+            getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+          );
+        } catch (err) {
+          throw new Error(
+            `Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+              localEmbeddingStackMissingMessage(),
+          );
+        }
+      }
+    }
+
     await initLbug(lbugPath);
     try {
       const existing = await fetchExistingEmbeddingHashes(executeQuery);
@@ -135,6 +172,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       cliInfo(`Embedding ${repoPath}`);
       cliInfo(`Checkpointed nodes already present: ${existing?.size ?? 0}`);
 
+      const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
       const result = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -186,6 +224,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       cliInfo(`Embeddings ready: ${embeddings}`);
     } finally {
       await closeLbug().catch(() => {});
+      await reapEmbeddingSidecarSafely();
     }
   } finally {
     lock.release();

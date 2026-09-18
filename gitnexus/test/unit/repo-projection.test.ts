@@ -22,6 +22,8 @@ import type { StalenessInfo } from '../../src/core/git-staleness.js';
 import type { RegistryEntry } from '../../src/storage/repo-manager.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 
+const FULL_SOURCE = { contentRetention: 'full' as const, sourceAvailable: true };
+
 const FRESH: StalenessInfo = { isStale: false, commitsBehind: 0 };
 const BEHIND: StalenessInfo = {
   isStale: true,
@@ -92,6 +94,7 @@ describe('projectRepoListEntry — GET /api/repos', () => {
         branches: [{ branch: 'test', indexedAt: '2026-09-08T11:00:00.000Z', lastCommit: 'abc123' }],
       }) as RegistryEntry,
       FRESH,
+      FULL_SOURCE,
     );
     expect(out.branch).toBe('master');
     expect(out.branches).toHaveLength(1);
@@ -101,10 +104,11 @@ describe('projectRepoListEntry — GET /api/repos', () => {
     // A pinned analyze registers under its clone-directory name. Without
     // `branch`, these two are only tellable apart by parsing that slug — a
     // layout detail that is trimmed for long refs and absent for path entries.
-    const primary = projectRepoListEntry(entry({ branch: 'master' }), FRESH);
+    const primary = projectRepoListEntry(entry({ branch: 'master' }), FRESH, FULL_SOURCE);
     const pinned = projectRepoListEntry(
       entry({ name: 'Hello-World__test-9f86d081', branch: 'test' }),
       FRESH,
+      FULL_SOURCE,
     );
     expect([primary.branch, pinned.branch]).toEqual(['master', 'test']);
   });
@@ -112,48 +116,62 @@ describe('projectRepoListEntry — GET /api/repos', () => {
   it('keeps every field the route returned before, unchanged', () => {
     // Additive only: an existing client must not notice this change.
     const e = entry();
-    const out = projectRepoListEntry(e, FRESH);
+    const out = projectRepoListEntry(e, FRESH, FULL_SOURCE);
     expect(out).toMatchObject({
       name: e.name,
       path: e.path,
       repoPath: e.path,
+      storagePath: e.storagePath,
       indexedAt: e.indexedAt,
       lastCommit: e.lastCommit,
       stats: e.stats,
+      contentRetention: 'full',
+      sourceAvailable: true,
     });
   });
 
   it('leaves branch undefined for a legacy entry that never recorded one', () => {
-    const out = projectRepoListEntry(entry(), FRESH);
+    const out = projectRepoListEntry(entry(), FRESH, FULL_SOURCE);
     expect(out.branch).toBeUndefined();
     expect(out.branches).toBeUndefined();
   });
 
   it('carries staleness through for a behind index', () => {
-    expect(projectRepoListEntry(entry(), BEHIND).staleness).toEqual({
+    expect(projectRepoListEntry(entry(), BEHIND, FULL_SOURCE).staleness).toEqual({
       status: 'behind',
       commitsBehind: 3,
       hint: BEHIND.hint,
     });
   });
+
+  it('exposes storagePath, contentRetention, and sourceAvailable', () => {
+    const e = entry();
+    const out = projectRepoListEntry(e, FRESH, {
+      contentRetention: 'none',
+      sourceAvailable: false,
+    });
+    expect(out.storagePath).toBe(e.storagePath);
+    expect(out.contentRetention).toBe('none');
+    expect(out.sourceAvailable).toBe(false);
+  });
 });
 
 describe('projectRepoDetail — GET /api/repo', () => {
   it('returns lastCommit and branch, which the route used to drop', () => {
-    const out = projectRepoDetail(entry({ branch: 'master' }), null, FRESH);
+    const out = projectRepoDetail(entry({ branch: 'master' }), null, FRESH, FULL_SOURCE);
     expect(out.lastCommit).toBe(entry().lastCommit);
     expect(out.branch).toBe('master');
   });
 
   it('prefers on-disk metadata over the registry entry, as indexedAt already did', () => {
-    const out = projectRepoDetail(entry({ branch: 'master' }), meta(), FRESH);
+    const out = projectRepoDetail(entry({ branch: 'master' }), meta(), FRESH, FULL_SOURCE);
     expect(out.indexedAt).toBe('2026-09-08T12:00:00.000Z');
     expect(out.lastCommit).toBe('ffffffffffffffffffffffffffffffffffffffff');
     expect(out.branch).toBe('develop');
   });
 
   it('falls back to the entry when metadata cannot be read', () => {
-    const out = projectRepoDetail(entry({ branch: 'master' }), undefined, FRESH);
+    const out = projectRepoDetail(entry({ branch: 'master' }), undefined, FRESH, FULL_SOURCE);
     expect(out.indexedAt).toBe(entry().indexedAt);
     expect(out.lastCommit).toBe(entry().lastCommit);
     expect(out.branch).toBe('master');
@@ -161,7 +179,22 @@ describe('projectRepoDetail — GET /api/repo', () => {
 
   it('still returns an empty stats object rather than undefined', () => {
     // Pre-existing contract: the route returned `{}` when neither side had stats.
-    expect(projectRepoDetail(entry({ stats: undefined }), null, FRESH).stats).toEqual({});
+    expect(projectRepoDetail(entry({ stats: undefined }), null, FRESH, FULL_SOURCE).stats).toEqual(
+      {},
+    );
+  });
+
+  it('exposes storagePath, contentRetention, and sourceAvailable', () => {
+    const e = entry();
+    const out = projectRepoDetail(e, meta({ contentRetention: 'symbol' }), FRESH, {
+      contentRetention: 'symbol',
+      sourceAvailable: false,
+    });
+    expect(out).toMatchObject({
+      storagePath: e.storagePath,
+      contentRetention: 'symbol',
+      sourceAvailable: false,
+    });
   });
 });
 
@@ -171,7 +204,7 @@ describe('resolveLastCommit', () => {
     // commits-behind from another — a freshness number for a different index.
     const e = entry();
     const m = meta();
-    expect(resolveLastCommit(e, m)).toBe(projectRepoDetail(e, m, FRESH).lastCommit);
+    expect(resolveLastCommit(e, m)).toBe(projectRepoDetail(e, m, FRESH, FULL_SOURCE).lastCommit);
   });
 
   it('falls back to the registry entry with no metadata', () => {

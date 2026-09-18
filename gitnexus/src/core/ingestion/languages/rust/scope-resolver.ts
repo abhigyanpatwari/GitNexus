@@ -20,6 +20,7 @@ import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/gene
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { rustIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { loadRustCargoTargets } from './cargo-targets.js';
 
 /**
  * Emit Rust `S IMPLEMENTS T` edges from `impl T for S` trait implementations.
@@ -157,6 +158,7 @@ export const rustScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Rust,
   languageProvider: rustProvider,
   importEdgeReason: 'rust-scope: use',
+  loadResolutionConfig: loadRustCargoTargets,
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveRustImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),

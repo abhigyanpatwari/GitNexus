@@ -46,7 +46,6 @@ import {
 import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
-  cleanupOldKuzuFiles,
   canonicalizePath,
   getStoragePaths,
   loadMeta,
@@ -63,6 +62,7 @@ import {
 } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
+import { reapEmbeddingSidecarSafely } from '../../core/embeddings/embedding-sidecar-reap.js';
 import {
   DEFAULT_MCP_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
@@ -98,15 +98,22 @@ import {
   isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../../core/content-retention.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import {
   stalenessPayload,
+  type IndexedRef,
   type StalenessInfo,
   type StalenessPayload,
 } from '../../core/staleness-status.js';
 import { logger } from '../../core/logger.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingSidecarAbortMessage,
   isMissingLocalEmbeddingStackMessage,
 } from '../../core/embeddings/runtime-support.js';
 import {
@@ -172,6 +179,29 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
  * only truncation signal available when the COUNT leg fails.
  */
 const CANDIDATE_WINDOW = 20;
+
+/**
+ * `content` is an index capability rather than a promise that every symbol has
+ * text. Retention `none` intentionally omits it, while `symbol` retains only
+ * symbol spans. Keep this response additive and emit it only when requested so
+ * callers relying on the legacy response shape remain compatible.
+ */
+const requestedContentAvailability = (
+  requested: boolean,
+  meta: Awaited<ReturnType<typeof loadMeta>>,
+) => {
+  if (!requested) return undefined;
+  const profile = contentRetentionFromMeta(meta);
+  return {
+    requested: true as const,
+    profile,
+    available: profile !== 'none',
+    scope: profile,
+    ...(profile === 'none'
+      ? { reason: 'Source-derived content is not retained by this index.' }
+      : {}),
+  };
+};
 
 /**
  * The pieces every ambiguous-resolution payload shares, derived once.
@@ -1050,7 +1080,11 @@ interface RepoHandle {
   lastCommit: string;
   remoteUrl?: string;
   stats?: RegistryEntry['stats'];
-  /** Primary/flat branch name, when known (#2106). */
+  /**
+   * Branch this handle's index describes (#2106/#3291). The flat/workspace
+   * slot keeps the primary checkout name; `applyBranchScope` overwrites it
+   * with the pin when serving a `branches[]` sub-index.
+   */
   branch?: string;
   /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: BranchSummary[];
@@ -1348,6 +1382,9 @@ export interface RepoListing {
   branch?: string;
   /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: Array<Omit<BranchSummary, 'stats'>>;
+  storagePath?: string;
+  contentRetention?: 'full' | 'symbol' | 'none';
+  sourceAvailable?: boolean;
 }
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
@@ -1431,18 +1468,29 @@ function canCarryStaleness(result: unknown): result is Record<string, unknown> {
 }
 
 /**
- * #2655: attach a non-blocking `staleness` signal to a tool result when the
- * index is not at HEAD, in the same {@link stalenessPayload} shape `list_repos`
- * returns. Only ever ADDS a field to a carryable object result (see
- * {@link canCarryStaleness}) — it never changes an existing result's shape.
+ * #2655: attach a non-blocking `staleness` signal to a tool result. Only ever
+ * ADDS a field to a carryable object result (see {@link canCarryStaleness}) —
+ * it never changes an existing result's shape.
  *
- * `diverged` is attached: it is a positive finding that the index is not at
- * HEAD, only uncountable. `unknown` is not — these are the hot read tools, and a
- * `--skip-git` folder has no history to measure, so it would ride on every
- * response as noise rather than signal (#3256).
+ * #3291: `ref` names the index the answer came from. Supplying it switches the
+ * payload to the ref-carrying form, which reports every status — including
+ * `current` and `unknown` — because that one added key is the only place a tool
+ * result can say WHICH index answered. Absence used to be the freshness signal
+ * here; it could not distinguish a current index of the default branch from a
+ * current index of some feature branch, since `current` is a statement about a
+ * ref rather than about the repository.
+ *
+ * With no `ref` the pre-#3291 behaviour is unchanged: absent for `current`,
+ * `diverged` attached as a positive finding that the index is not at HEAD, and
+ * `unknown` withheld as noise (#3256). A missing `info` still attaches nothing
+ * either way, which is what keeps a failed freshness probe non-fatal.
  */
-export function attachToolStaleness(result: unknown, info: StalenessInfo | undefined): unknown {
-  const staleness = stalenessPayload(info);
+export function attachToolStaleness(
+  result: unknown,
+  info: StalenessInfo | undefined,
+  ref?: IndexedRef,
+): unknown {
+  const staleness = stalenessPayload(info, ref ? { ref } : {});
   if (!staleness || !canCarryStaleness(result)) {
     return result;
   }
@@ -1791,15 +1839,6 @@ export class LocalBackend {
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
 
-      // Clean up any leftover KuzuDB files from before the LadybugDB migration.
-      // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
-      const kuzu = await cleanupOldKuzuFiles(storagePath);
-      if (kuzu.found && kuzu.needsReindex) {
-        logger.error(
-          `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
-        );
-      }
-
       const handle: RepoHandle = {
         id,
         name: entry.name,
@@ -1843,7 +1882,7 @@ export class LocalBackend {
     // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
     for (const entry of entries) {
       for (const b of entry.branches ?? []) {
-        liveLbugPaths.add(getStoragePaths(entry.path, b.branch).lbugPath);
+        liveLbugPaths.add(getStoragePaths(entry.path, b.branch, entry.storagePath).lbugPath);
       }
     }
     // initializedRepos is the authoritative set of OPENED pool keys (flat AND
@@ -2095,7 +2134,7 @@ export class LocalBackend {
     const summary =
       handle.branch !== branch ? handle.branches?.find((b) => b.branch === branch) : undefined;
     if (summary) {
-      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch, handle.storagePath);
       // The lbug is the artifact the pool opens, so its presence is the
       // serviceability truth — a half-deleted dir can outlive its meta.json
       // while the lbug is gone, and vice versa (#2364 review F1 arm ii).
@@ -2114,6 +2153,8 @@ export class LocalBackend {
           indexedAt: summary.indexedAt,
           lastCommit: summary.lastCommit,
           stats: summary.stats,
+          // The handle now represents the pin, not the flat slot (#3291).
+          branch: summary.branch,
         };
       }
       // Stale summary (sub-index adopted/deleted): refresh so later calls see
@@ -2455,12 +2496,22 @@ export class LocalBackend {
     // Check staleness for all repos in parallel instead of sequentially.
     // Each check spawns an async `git rev-list` — with 200 repos the sync
     // variant took ~50 s; parallel async brings it under a second (#1363).
-    const stalenessResults = await Promise.all(
-      handles.map((h) => checkStalenessAsync(h.repoPath, h.lastCommit)),
+    const listing = await Promise.all(
+      handles.map(async (h) => {
+        const [stale, meta] = await Promise.all([
+          checkStalenessAsync(h.repoPath, h.lastCommit),
+          loadMeta(h.storagePath).catch(() => null),
+        ]);
+        const contentRetention = contentRetentionFromMeta(meta);
+        const sourceAvailable = isFullSourceAvailable(
+          contentRetention,
+          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false,
+        );
+        return { h, stale, source: { contentRetention, sourceAvailable } };
+      }),
     );
 
-    return handles.map((h, i) => {
-      const stale = stalenessResults[i];
+    return listing.map(({ h, stale, source }) => {
       const selfNorm = norm(h.repoPath);
       const siblings = h.remoteUrl
         ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
@@ -2490,6 +2541,9 @@ export class LocalBackend {
                 lastCommit: b.lastCommit,
               }))
             : undefined,
+        storagePath: h.storagePath,
+        contentRetention: source.contentRetention,
+        sourceAvailable: source.sourceAvailable,
       };
     });
   }
@@ -2633,15 +2687,27 @@ export class LocalBackend {
    * skipping the `git` spawn entirely for results that can't carry it (error
    * envelopes, arrays, non-objects — see {@link canCarryStaleness}) so an
    * error-returning call pays nothing.
+   *
+   * #3291: the ref comes straight off the already-resolved handle, so naming
+   * the index costs no extra I/O — no git spawn, no metadata read, and the
+   * `stalenessForTool` TTL cache is untouched. `branch` is passed through as-is
+   * and is legitimately absent for a detached HEAD or a legacy index; the
+   * always-present `lastCommit` is what identifies the index in that case.
    */
   private async withToolStaleness(repo: RepoHandle, result: unknown): Promise<unknown> {
     if (!canCarryStaleness(result)) return result;
     // Defensive: `checkStalenessAsync` self-catches today, but a rejection here
     // must never fail the tool — degrade to no-staleness. Paired with the
     // evict-on-reject in `stalenessForTool`, a transient failure also can't
-    // poison the TTL cache entry (#2655 review F1).
+    // poison the TTL cache entry (#2655 review F1). A rejection leaves `info`
+    // undefined, and the builder returns nothing for that even with a ref, so
+    // the degraded path still attaches no field.
     const staleness = await this.stalenessForTool(repo).catch(() => undefined);
-    return attachToolStaleness(result, staleness);
+    return attachToolStaleness(result, staleness, {
+      branch: repo.branch,
+      lastCommit: repo.lastCommit,
+      indexedAt: repo.indexedAt,
+    });
   }
 
   /**
@@ -2902,7 +2968,16 @@ export class LocalBackend {
 
     const processLimit = params.limit || 5;
     const maxSymbolsPerProcess = params.max_symbols || 10;
-    const includeContent = params.include_content ?? false;
+    const requestedContent = params.include_content ?? false;
+    // Do not trust a lingering graph property when the metadata contract says
+    // source-derived text is unavailable. A full rebuild normally removes the
+    // column values; this guard keeps a partially migrated/corrupt index from
+    // disclosing text merely because a caller asked for it. `query` already
+    // reads this metadata for CJK and embedding-dimension drift diagnostics,
+    // so keep that legacy read unconditional.
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
+    const contentAvailability = requestedContentAvailability(requestedContent, meta);
     const searchQuery = rawQuery.trim();
 
     // Per-phase timing instrumentation (#553). Records wall time for each
@@ -2918,11 +2993,11 @@ export class LocalBackend {
     // each so both get independent wall-time records without fighting
     // over a single `current` phase slot.
     const searchLimit = processLimit * maxSymbolsPerProcess; // fetch enough raw results
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
     const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+    const vectorDegraded = { reason: undefined as string | undefined };
     const [bm25SearchResult, semanticResults] = await Promise.all([
       timer.time('bm25', this.bm25Search(repo, searchQuery, searchLimit, ftsDisabledReason)),
-      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit)),
+      timer.time('vector', this.semanticSearch(repo, searchQuery, searchLimit, vectorDegraded)),
     ]);
 
     // Guard against undefined results (#1489) — when FTS is entirely
@@ -3385,6 +3460,9 @@ export class LocalBackend {
           'Keyword results are unaffected.',
       );
     }
+    if (vectorDegraded.reason) {
+      warnings.push(vectorDegraded.reason);
+    }
     if (enrichmentDegraded) {
       warnings.push(
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
@@ -3400,6 +3478,7 @@ export class LocalBackend {
       process_symbols: dedupedSymbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
+      ...(contentAvailability ? { contentAvailability } : {}),
       ...(warnings.length > 0 && { warning: warnings.join(' ') }),
       ...((enrichmentDegraded || ftsPartial) && { partial: true }),
     };
@@ -3526,7 +3605,12 @@ export class LocalBackend {
   /**
    * Semantic vector search helper
    */
-  private async semanticSearch(repo: RepoHandle, query: string, limit: number): Promise<any[]> {
+  private async semanticSearch(
+    repo: RepoHandle,
+    query: string,
+    limit: number,
+    degraded?: { reason?: string },
+  ): Promise<any[]> {
     // Whether THIS call produced a query vector — see `lastQueryEmbeddingDims`.
     // A local flag, not a re-read of the map: the map may still hold an earlier
     // call's width, and the catch below must only clear an entry it did not set.
@@ -3692,18 +3776,21 @@ export class LocalBackend {
       // the width IS still the live one). Clearing only in the former case
       // keeps the recorded width a fact rather than a leftover (#2798).
       if (embeddedDims === undefined) this.lastQueryEmbeddingDims.delete(repo.lbugPath);
-      // Embeddings disabled is the common, silent case. But a pruned or
-      // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
+      // Embeddings disabled is the common, silent case. But a missing or
+      // Node-unloadable local stack (#2370/#2372) also lands here — surface it
       // once so semantic search doesn't silently degrade to BM25 with no hint
       // (the exact silent-degradation mode #2370 exists to fix). Emitted once per
       // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
       // fallback above). All other errors stay silent, as before.
       const message = err instanceof Error ? err.message : '';
-      if (
-        !this.warnedMissingEmbeddingStack &&
-        (isMissingLocalEmbeddingStackMessage(message) ||
-          isLocalEmbeddingRuntimeBlockerMessage(message))
-      ) {
+      const isDegradedVectorError =
+        isMissingLocalEmbeddingStackMessage(message) ||
+        isLocalEmbeddingRuntimeBlockerMessage(message) ||
+        isLocalEmbeddingSidecarAbortMessage(message);
+      if (isDegradedVectorError) {
+        if (degraded) degraded.reason = message;
+      }
+      if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
         logger.warn(`GitNexus [query:vector]: ${message}`);
       }
@@ -4416,6 +4503,12 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const { name, uid, file_path, kind, include_content } = params;
+    const requestedContent = include_content ?? false;
+    // Content retention matters only to the opt-in content response. Avoid a
+    // metadata dependency for the long-standing default context operation.
+    const meta = requestedContent ? await loadMeta(path.dirname(repo.lbugPath)) : null;
+    const contentAvailability = requestedContentAvailability(requestedContent, meta);
+    const includeContent = requestedContent && contentRetentionFromMeta(meta) !== 'none';
 
     if (!name && !uid) {
       return { error: 'Either "name" or "uid" parameter is required.' };
@@ -4423,18 +4516,22 @@ export class LocalBackend {
 
     const outcome = await this.resolveSymbolCandidates(
       repo,
-      { uid, name, include_content },
+      { uid, name, include_content: includeContent },
       { file_path, kind },
     );
 
     if (outcome.kind === 'not_found') {
-      return { error: `Symbol '${name || uid}' not found` };
+      return {
+        error: `Symbol '${name || uid}' not found`,
+        ...(contentAvailability ? { contentAvailability } : {}),
+      };
     }
 
     if (outcome.kind === 'ambiguous') {
       const { atLeast, showing, fields } = ambiguityReport(outcome, outcome.candidates.length);
       return {
         status: 'ambiguous',
+        ...(contentAvailability ? { contentAvailability } : {}),
         message: `Found ${atLeast}${outcome.total} symbols matching '${name}'${showing}. Use uid, file_path, or kind to disambiguate.`,
         ...fields,
         candidates: outcome.candidates.map((c) => ({
@@ -4806,6 +4903,7 @@ export class LocalBackend {
 
     return {
       status: 'found',
+      ...(contentAvailability ? { contentAvailability } : {}),
       symbol: {
         uid: sym.id || sym[0],
         name: sym.name || sym[1],
@@ -4813,7 +4911,7 @@ export class LocalBackend {
         filePath: sym.filePath || sym[3],
         startLine: toDisplayLine(sym.startLine ?? sym[4]),
         endLine: toDisplayLine(sym.endLine ?? sym[5]),
-        ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
+        ...(includeContent && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
         ...(beanMetadata ? { bean: beanMetadata } : {}),
         ...(aopMetadata ? { aop: aopMetadata } : {}),
@@ -9333,14 +9431,15 @@ export class LocalBackend {
   }
 
   async disconnect(): Promise<void> {
-    await closeLbug(); // close all connections
-    // Note: we intentionally do NOT call disposeEmbedder() here.
-    // ONNX Runtime's native cleanup segfaults on macOS and some Linux configs,
-    // and importing the embedder module on Node v24+ crashes if onnxruntime
-    // was never loaded during the session. Since process.exit(0) follows
-    // immediately after disconnect(), the OS reclaims everything. See #38, #89.
-    this.repos.clear();
-    this.contextCache.clear();
-    this.initializedRepos.clear();
+    try {
+      await closeLbug(); // close all connections
+    } finally {
+      // Reap even when Ladybug close rejects. Do not run ONNX dispose in this
+      // process (native dispose can SIGSEGV). The reap helper does not load ONNX.
+      await reapEmbeddingSidecarSafely();
+      this.repos.clear();
+      this.contextCache.clear();
+      this.initializedRepos.clear();
+    }
   }
 }

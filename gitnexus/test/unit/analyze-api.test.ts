@@ -642,7 +642,7 @@ describe('POST /api/embed route wiring (#2790)', () => {
     // `stats.embeddings`, and the next CLI run's preserve-or-wipe decision
     // hangs on it.
     expect(region).toContain('const measuredEmbeddings = await countPersistedEmbeddings();');
-    expect(region).toContain('await saveMeta(entry.storagePath, embeddingMeta);');
+    expect(region).toContain('await saveMeta(storagePath, embeddingMeta);');
     // Ordering, without brittle character spans: flush → measure → decide →
     // write. Counting before the flush would describe rows still in the WAL.
     const flushed = region.lastIndexOf('await flushWAL();');
@@ -687,5 +687,24 @@ describe('POST /api/embed route wiring (#2790)', () => {
     // `ready` fires unconditionally before the route knows the outcome (#2790).
     expect(source).toMatch(/p\.phase === 'ready'\s*\?\s*'finalizing'/);
     expect(source).not.toMatch(/p\.phase === 'ready' \? 'complete'/);
+  });
+});
+
+describe('HTTP repo catalog validation', () => {
+  const readSource = () =>
+    fs.readFile(path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'), 'utf-8');
+
+  it('lists and resolves repos with validate: true, and maps StorageRequirementError', async () => {
+    const source = await readSource();
+    expect(source).toMatch(/const repos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/);
+    expect(source).toMatch(
+      /const freshRepos = await listRegisteredRepos\(\{\s*validate:\s*options\.validateStorage !== false,\s*\}\)/,
+    );
+    expect(source).toMatch(
+      /app\.get\('\/api\/repos'[\s\S]*listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
+    );
+    expect(source).toMatch(/sendStorageRequirementHttp\(err, res\)/);
+    expect(source).toMatch(/storageRequirementToHttp\(err\)/);
+    expect(source).toMatch(/code: 'index-unavailable'/);
   });
 });

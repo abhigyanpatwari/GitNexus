@@ -246,6 +246,15 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.delete\('\/api\/repo',\s*createRouteLimiter\(/);
   });
 
+  it('DELETE /api/repo resolves the registry row without pruning unusable storage', () => {
+    expect(apiSource).toMatch(
+      /resolveRepo\(repoName,\s*false,\s*undefined,\s*\{\s*validateStorage:\s*false\s*\}\)/,
+    );
+    expect(apiSource).toMatch(
+      /listRegisteredRepos\(\{\s*validate:\s*options\.validateStorage !== false,\s*\}\)/,
+    );
+  });
+
   it('GET /api/repo is wired with createRouteLimiter', () => {
     expect(apiSource).toMatch(/app\.get\('\/api\/repo',\s*createRouteLimiter\(/);
   });

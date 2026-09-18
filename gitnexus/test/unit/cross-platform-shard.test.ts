@@ -34,10 +34,11 @@ describe('cross-platform shard partition', () => {
     // in the scheduling table. Keep the observed profile independent of the
     // table so deleting a weight cannot make this regression pass again.
     const observed: Readonly<Record<string, number>> = {
-      'test/integration/skills-e2e.test.ts': 444,
+      'test/integration/skills-e2e.test.ts': 550,
       'test/unit/incremental-index-extension-dml-gate.test.ts': 414,
-      'test/integration/fts-extension-e2e.test.ts': 146,
+      'test/integration/fts-extension-e2e.test.ts': 380,
       'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
+      'test/integration/skip-fts.test.ts': 110,
     };
     const floor = weightOf('test/unmeasured.test.ts');
     const loads = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL).map((files) =>
@@ -54,6 +55,13 @@ describe('cross-platform shard partition', () => {
     ].map((file) => shards.findIndex((files) => files.includes(file)));
     expect(heavyweightLocations).not.toContain(-1);
     expect(new Set(heavyweightLocations).size).toBe(SHARD_TOTAL);
+    expect(
+      shards.filter(
+        (s) =>
+          s.includes('test/integration/skills-e2e.test.ts') &&
+          s.includes('test/integration/fts-extension-e2e.test.ts'),
+      ),
+    ).toEqual([]);
   });
 
   it('covers every file exactly once, with no overlap between shards', () => {

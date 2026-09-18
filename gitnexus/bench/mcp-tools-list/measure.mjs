@@ -131,7 +131,11 @@ function setupFixture() {
       lastCommit: git(repoPath, ['rev-parse', 'HEAD']),
       stats: { files: 1, nodes: 1, edges: 0, communities: 0, processes: 0 },
     });
-    writeFileSync(path.join(storagePath, 'gitnexus.json'), '{}\n');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'gitnexus.json'),
+      `${JSON.stringify({ repoPath, storagePath })}\n`,
+    );
   }
   writeFileSync(path.join(HOME, 'registry.json'), `${JSON.stringify(entries, null, 2)}\n`);
   writeFileSync(marker, `${N}\n`);

@@ -292,6 +292,14 @@ describe('LocalBackend.init', () => {
     await backend.init();
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('does not delete legacy Kuzu files while initializing a read backend', async () => {
+    setupSingleRepo();
+
+    await backend.init();
+
+    expect(cleanupOldKuzuFiles).not.toHaveBeenCalled();
+  });
 });
 
 describe('LocalBackend.countRepos', () => {
@@ -433,7 +441,10 @@ describe('LocalBackend.callTool', () => {
         direction: 'upstream',
       });
 
-      expect(result).toEqual({ status: 'normalized' });
+      // toMatchObject, not toEqual: since #3291 every hot-read-tool response
+      // also carries the `staleness` ref field. This test is about parameter
+      // normalization, so it pins the payload it cares about and ignores it.
+      expect(result).toMatchObject({ status: 'normalized' });
       const dispatched = impactSpy.mock.calls[0][1] as Record<string, unknown>;
       expect(dispatched.target).toBe('validate');
       expect(dispatched).not.toHaveProperty('name');
@@ -451,7 +462,8 @@ describe('LocalBackend.callTool', () => {
       file: ' src/auth.ts ',
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     const dispatched = contextSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(dispatched.file_path).toBe('src/auth.ts');
     expect(dispatched).not.toHaveProperty('file');
@@ -468,7 +480,8 @@ describe('LocalBackend.callTool', () => {
       file: undefined,
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
   });
 
@@ -791,6 +804,34 @@ describe('LocalBackend.callTool', () => {
 
     expect(result).toHaveProperty('warning');
     expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
+  });
+
+  it('redacts a space-containing vendor path from the MCP query warning', async () => {
+    const { extensionManager, resetExtensionState } =
+      await import('../../src/core/lbug/extension-loader.js');
+    const spaced = '/tmp/fts vendor/lbug-fts/prebuilds/linux-x64/libfts.lbug_extension';
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed to load library '${spaced}': invalid ELF header`)),
+      'fts',
+      'FTS',
+      { policy: 'load-only', vendorRoot: '/tmp/empty-vendor-root' },
+    );
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    try {
+      const result = await backend.callTool('query', { query: 'ProcessActivity' });
+      expect(result).toHaveProperty('warning');
+      expect(String((result as { warning?: string }).warning)).toContain('invalid ELF header');
+      expect(String((result as { warning?: string }).warning)).not.toMatch(
+        /fts vendor|\/tmp\/|C:\\Users\\/,
+      );
+    } finally {
+      resetExtensionState();
+    }
   });
 
   it('does not include warning when ftsAvailable is true with zero results', async () => {
@@ -1187,13 +1228,22 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either "name" or "uid"');
   });
 
-  it('context tool returns not-found for missing symbol', async () => {
+  it('context tool returns content availability with a missing symbol', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('context', { name: 'doesNotExist' });
+    const result = await backend.callTool('context', {
+      name: 'doesNotExist',
+      include_content: true,
+    });
     expect(result.error).toContain('not found');
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
   });
 
-  it('context tool returns disambiguation for multiple matches', async () => {
+  it('context tool returns content availability with ambiguous matches', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
         id: 'func:main:1',
@@ -1212,9 +1262,15 @@ describe('LocalBackend.callTool', () => {
         endLine: 5,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = await backend.callTool('context', { name: 'main', include_content: true });
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
 
     // #470: every candidate carries a relevance score in [0, 1] and the list
     // is sorted descending by score (with deterministic tiebreakers).
@@ -4989,6 +5045,28 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(path.basename(handle.lbugPath)).toBe('lbug');
     // The branch handle reports the branch's own commit, not the primary's.
     expect(handle.lastCommit).toBe('featsha');
+    // #3291: the pin's label, not the flat/primary slot — withToolStaleness
+    // copies handle.branch onto the hot-tool payload.
+    expect(handle.branch).toBe('feature/x');
+  });
+
+  it('a pinned-branch tool result names the pin in staleness.branch (#3291)', async () => {
+    // beforeEach clearAllMocks() drops the module-level git-staleness factory
+    // impl; restore a resolving current so withToolStaleness attaches the ref.
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: false,
+      commitsBehind: 0,
+      status: 'current',
+    });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ ok: true });
+    const result = (await backend.callTool('impact', {
+      target: 'doWork',
+      repo: 'multi',
+      branch: 'feature/x',
+    })) as { staleness: { branch?: string; lastCommit?: string } };
+    expect(result.staleness.branch).toBe('feature/x');
+    expect(result.staleness.lastCommit).toBe('featsha');
   });
 
   it('an un-indexed branch throws a clear error', async () => {
@@ -5244,11 +5322,20 @@ describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
       branch: 'x',
     });
 
-    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
-    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
-    // Branch index (different lbugPath + lastCommit) is current; it must NOT
-    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
-    expect(branchRes).not.toHaveProperty('staleness');
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> counted gap reported.
+    expect(flatRes).toMatchObject({
+      staleness: { status: 'behind', commitsBehind: 5, lastCommit: 'FLATSHA' },
+    });
+    // Branch index (different lbugPath + lastCommit) is current. Since #3291 the
+    // field rides on every response, so absence can no longer be the proof; what
+    // shows the flat handle's cached entry was NOT reused (the pre-fix
+    // repoPath-keyed bug) is that this one reports its OWN commit and its own
+    // status, with no trace of the flat handle's counted gap.
+    expect(branchRes).toMatchObject({
+      staleness: { status: 'current', lastCommit: 'BRANCHSHA' },
+    });
+    const branchStaleness = (branchRes as { staleness: { commitsBehind?: number } }).staleness;
+    expect(branchStaleness.commitsBehind).toBeUndefined();
   });
 });
 

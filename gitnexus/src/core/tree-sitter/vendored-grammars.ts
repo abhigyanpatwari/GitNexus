@@ -1,25 +1,10 @@
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { VENDOR_ROOT } from '../vendor-root.js';
 
 const _require = createRequire(import.meta.url);
 
-/**
- * Absolute path to the vendored grammar tree (`<pkg>/vendor`).
- *
- * This module compiles to `<pkg>/dist/core/tree-sitter/vendored-grammars.js`
- * and runs from `<pkg>/src/core/tree-sitter/...` under tsx in dev — both sit
- * three directories below the package root, and the build (`tsc`) never bundles,
- * so `import.meta.url` resolves the same way in both. `vendor/` ships in the
- * published package via package.json `files`.
- */
-export const VENDOR_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '..',
-  'vendor',
-);
+export { VENDOR_ROOT };
 
 /**
  * The tree-sitter grammars GitNexus vendors inside its own package (NOT npm

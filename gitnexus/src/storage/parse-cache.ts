@@ -250,7 +250,6 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // capture schemas would have shared one PARSE_CACHE_VERSION and the durable
 // ParsedFile store would have replayed pre-fix ParsedFiles verbatim for one of
 // them. Only comparing against origin/main at MERGE time surfaces it.
-// PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 // 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
 // `@reference.read.identifier` in value positions (call arguments,
@@ -664,6 +663,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+//
 // 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
 // each (no JSON/path/generation siblings). A v80 index still names `.json`
 // keys and would skip workers while scope-resolution found nothing — the
@@ -763,7 +763,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // #3190. Old durable ParsedFiles lack the facts needed for scoped binding;
 // invalidate both stores so warm indexing actually applies the correction.
 // origin/main took 98 for #3219; 99 is the next free value.
-const SCHEMA_BUMP = 99;
+// v100 (#3253): Rust import captures preserve the leading `::` that selects
+// the extern prelude. Old warm captures erase it and cannot distinguish an
+// absolute library import from a same-named local module. Reparse both stores.
+// v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
+// instead of an empty target path; restricted pub(...) imports are no longer
+// captured as unrestricted reexports. Re-extract both facts on warm indexes.
+const SCHEMA_BUMP = 101;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -896,6 +902,16 @@ export interface ParseCache {
    * Transient — never serialized to disk.
    */
   usedKeys: Set<string>;
+  /**
+   * Hashes this run decided it cannot vouch for — its durable generation could
+   * not be reset, or its chunk was worker-quarantined (#3204). `saveParseCache`
+   * refuses them, so neither a pre-existing `.v8` nor the chunk's durable
+   * directory survives into the next run. Kept separate from `usedKeys`
+   * because the orchestrator re-adds keys to that set after the parse phase
+   * (#2106 sibling fold), which would undo a deletion.
+   * Transient — never serialized to disk.
+   */
+  staleKeys?: Set<string>;
   /**
    * When set, chunk payloads are loaded from / flushed to sharded files on
    * demand instead of retaining every chunk in `entries` for the whole run
@@ -1125,6 +1141,24 @@ export const persistParseCacheChunk = async (
   cache.entries.set(chunkHash, slim);
 };
 
+/**
+ * Retire a chunk this run cannot vouch for — its durable ParsedFile generation
+ * could not be reset, or its chunk was worker-quarantined (#3204).
+ *
+ * `saveParseCache` refuses a stale key, so no pre-existing `.v8` is copied
+ * forward and the durable store — pruned to exactly the keys that save
+ * returns — drops the chunk in the same step. The two deletes matter because
+ * `loadParseCacheChunk` reads `entries` and `onDiskKeys` and does NOT consult
+ * `staleKeys`: without them a second lookup of the same hash inside this run
+ * would still serve the retired shard.
+ */
+export const markParseCacheChunkStale = (cache: ParseCache, chunkHash: string): void => {
+  cache.staleKeys ??= new Set<string>();
+  cache.staleKeys.add(chunkHash);
+  cache.entries.delete(chunkHash);
+  cache.onDiskKeys?.delete(chunkHash);
+};
+
 const loadLegacyParseCache = async (storagePath: string): Promise<ParseCache> => {
   const cachePath = getLegacyCachePath(storagePath);
   try {
@@ -1210,7 +1244,14 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   await fs.rm(tmpDir, { recursive: true, force: true });
   await fs.mkdir(tmpDir, { recursive: true });
 
-  const keys = [...cache.usedKeys].filter(isValidChunkCacheKey).sort();
+  // A stale key is dropped here rather than at the failure site: the
+  // orchestrator folds sibling-branch keys back into `usedKeys` after the parse
+  // phase (#2106), so this is the last point that sees the final key set. The
+  // exclusion also reaches the durable store, which prunes to the keys this
+  // function returns — both stores drop the chunk together (#3204).
+  const keys = [...cache.usedKeys]
+    .filter((key) => isValidChunkCacheKey(key) && !cache.staleKeys?.has(key))
+    .sort();
   // Track hashes whose shard was actually written/copied this save. A hash can
   // be in `usedKeys` without a backing shard — its in-memory serialize threw, or
   // its on-disk copy failed/was-absent (e.g. a worker-quarantined chunk added to

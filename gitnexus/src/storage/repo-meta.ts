@@ -3,8 +3,9 @@
  *
  * Holds the on-disk shape of a GitNexus index's metadata file
  * (`.gitnexus/gitnexus.json`, plus its legacy `meta.json` mirror) and the
- * read-side helpers that locate and parse it. Nothing here writes, and nothing
- * here knows about the global registry.
+ * read-side helpers that locate and parse it. Nothing here writes. Path
+ * lookup may consult configured or registered storage via `resolveStoragePath`;
+ * registry mutation stays in `repo-manager.ts`.
  *
  * Why it is its own module: `repo-manager.ts` owns the registry and the write
  * side, and `branch-index.ts` (#2106) owns the multi-branch slug/placement
@@ -30,14 +31,16 @@ import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
-/** The `.gitnexus` directory name, relative to a repo root. */
-export const GITNEXUS_DIR = '.gitnexus';
-export const INDEX_METADATA_FILE = 'gitnexus.json';
-// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
-// with consumers that only know the pre-rename filename (see MIGRATION.md).
-export const LEGACY_METADATA_FILE = 'meta.json';
+export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
+
+/** How much source text an index is allowed to persist. */
+export type ContentRetention = 'full' | 'symbol' | 'none';
+export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
+export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
 
 /**
  * Versioned receipt for the analyzer process that produced an index.
@@ -83,10 +86,28 @@ export interface AnalyzerRunnerIdentity {
   };
 }
 
+/**
+ * Hand-mirrored `FtsSkipReason` from core/search/fts-policy.ts so storage
+ * takes no core import. Change both declarations together.
+ */
+export type PersistedFtsSkipReason =
+  | 'extension-unavailable'
+  | 'build-failed'
+  | 'disabled-by-flag'
+  | 'disabled-by-env'
+  | 'native-abort'
+  | 'tuple-missing';
+
 export interface RepoMeta {
   repoPath: string;
+  /** Complete index directory selected for this successful analysis. */
+  storagePath?: string;
   lastCommit: string;
   indexedAt: string;
+  /** Missing on legacy metadata means the upstream-compatible `full` profile. */
+  contentRetention?: ContentRetention;
+  contentRetentionSchemaVersion?: number;
+  ftsProfile?: FtsProfile;
   /**
    * Runtime enrichment mode plus redacted scan exclusions. Payload data and
    * absolute/external paths are deliberately excluded from metadata.
@@ -175,17 +196,28 @@ export interface RepoMeta {
        *    `--repair-fts` or a content change addresses it.
        *  - `disabled-by-flag` / `disabled-by-env` — deliberate opt-out.
        *    A later analyze without the opt-out rebuilds FTS at the same commit.
+       *  - `native-abort` — inferred on the next run from an FTS-phase dirty
+       *    flag after the previous process died in the native FTS build.
+       *  - `tuple-missing` — no packaged artifact for this platform tuple.
+       *    The tuple itself is not persisted (closed enum; live messages name it).
        *
        * Collapsing both into `status: 'unavailable'` is exactly what made that
        * loop reachable. ABSENT on indexes written before #2841 and on the
        * `--repair-fts` stamp (which writes `status: 'available'`); `undefined`
        * therefore reads as "cause unknown" and keeps the pre-#2841 behaviour.
+       * No schema version: meta reads are unchecked casts. An older binary
+       * still sees the raw JSON string for an unknown member; it does not
+       * drop the field to `undefined` at parse time.
        */
-      skipReason?:
-        | 'extension-unavailable'
-        | 'build-failed'
-        | 'disabled-by-flag'
-        | 'disabled-by-env';
+      skipReason?: PersistedFtsSkipReason;
+      /**
+       * Write plan of the analyze that aborted, persisted with
+       * `skipReason: 'native-abort'` so readers can refuse a leftover live
+       * WAL after recovery clears `incrementalInProgress`. Staging persist
+       * also writes `native-abort` and must keep its live WAL. Absent on
+       * older indexes and on non-abort skips.
+       */
+      writePlan?: 'in-place' | 'staging';
     };
     vectorSearch: {
       provider: string;
@@ -394,8 +426,17 @@ export interface RepoMeta {
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
-    /** Last completed writeback phase before the process stopped. */
+    /**
+     * Last completed writeback phase before the process stopped.
+     * `'fts'` is the graph-boundary / FTS-build marker: recovery may act
+     * more narrowly than a bare dirty flag, and `--repair-fts` must not
+     * treat it as a half-written graph.
+     */
     phase?: string;
+    /** Settled write plan at the FTS boundary (in-place vs unpublished staging). */
+    writePlan?: 'in-place' | 'staging';
+    /** Whether the converged graph-boundary CHECKPOINT succeeded. */
+    checkpointSucceeded?: boolean;
     /** Directly changed/added files before importer expansion. */
     directWriteCount?: number;
     /** Extra files pulled into the writable set by importer BFS. */
@@ -576,14 +617,31 @@ export interface RepoMeta {
      */
     hasCallSummary?: boolean;
   };
+  /**
+   * The process-detection budget this index's Community/Process rows were
+   * built under (#3313). Compared on the next analyze so a budget-only
+   * config change re-detects flows without `--force`. `maxProcesses: null`
+   * means the dynamic `symbols / 10` formula. Absent on pre-#3313 metas:
+   * that absence matches default/dynamic knobs (backfill) and mismatches
+   * any explicit override.
+   */
+  processDetection?: {
+    maxProcesses: number | null;
+    maxProcessBranching: number;
+    maxProcessTraceDepth: number;
+    maxEntryPointCandidates: number;
+    /** Live Community/Process rows are not certified under this stamp (#3322). */
+    uncertified?: true;
+  };
 }
 
 /**
- * Get the .gitnexus storage path for a repository.
- * Used for local metadata and caches that are not committed.
+ * Resolve the configured storage path for a repository.
+ * This can be its repository-local `.gitnexus` directory, an external slot,
+ * or a previously registered storage path.
  */
 export const getStoragePath = (repoPath: string): string => {
-  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
+  return resolveStoragePath(repoPath);
 };
 
 /**

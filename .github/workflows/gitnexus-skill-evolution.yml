@@ -330,24 +330,20 @@ jobs:
           set -euo pipefail
           # The benchmark's task bindings sandbox-copy node_modules from the
           # monorepo root as well as gitnexus-shared and gitnexus (see the
-          # sandbox_copy entries in tasks.scenarios.yaml). The two steps below
-          # install the subpackage trees; the root tree needs its own install
-          # or capture_task_dependency_binding aborts at task binding on the
-          # missing root node_modules.
+          # sandbox_dependencies entries in tasks.scenarios.yaml). gitnexus
+          # npm ci plus build compiles shared through parent lib/tsc.js; do
+          # not npm ci gitnexus-shared (second TypeScript 7 optional install).
           npm ci
-
-      - name: Build pinned shared runtime
-        run: |
-          set -euo pipefail
-          npm ci
-          npm run build
-        working-directory: gitnexus-shared
 
       - name: Install and build pinned GitNexus runtime
         run: |
           set -euo pipefail
           npm ci
           npm run build
+          # Task YAML still mounts gitnexus-shared/node_modules. Keep an empty
+          # directory so capture_task_dependency_binding does not abort, without
+          # installing TypeScript 7 inside shared.
+          mkdir -p ../gitnexus-shared/node_modules
         working-directory: gitnexus
 
       - name: Point the benchmark task repo at the checkout
