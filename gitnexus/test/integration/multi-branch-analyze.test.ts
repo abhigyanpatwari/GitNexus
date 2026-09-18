@@ -220,7 +220,12 @@ describe('multi-branch analyze (#2106)', () => {
       execFileSync('git', ['branch', '-M', 'feat`x'], { cwd: repo, stdio: 'pipe' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const logs: string[] = [];
+      await runFullAnalysis(
+        repo,
+        {},
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
 
       // The forbidden ref was normalized to null → flat slot, no branch field,
       // and no branches/ sub-directory created for an unqueryable slug.
@@ -228,6 +233,11 @@ describe('multi-branch analyze (#2106)', () => {
       expect(existsSync(flat.lbugPath)).toBe(true);
       expect((await loadMeta(flat.storagePath))?.branch).toBeUndefined();
       expect(existsSync(path.join(flat.storagePath, 'branches'))).toBe(false);
+      const warnings = logs.filter((message) =>
+        /^Warning:.*not a usable index label.*continuing\.$/.test(message),
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('feat`x');
     } finally {
       await tmp.cleanup();
     }
