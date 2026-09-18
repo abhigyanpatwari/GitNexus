@@ -264,7 +264,7 @@ export const formatProcessDetectionBudgetBanner = (
   if (!hasProcessDetectionOverride(resolved)) return null;
   const maxProcesses = resolved.overridden.maxProcesses
     ? String(resolved.maxProcesses)
-    : 'dynamic (symbols/10)';
+    : 'dynamic (max(20, round(symbols/10)))';
   return (
     `  Process-detection budget: maxProcesses=${maxProcesses}, ` +
     `maxProcessBranching=${resolved.maxProcessBranching}, ` +

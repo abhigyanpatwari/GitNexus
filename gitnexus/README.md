@@ -245,8 +245,8 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
-gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic symbols/10)
-gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; double first)
+gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic max(20, round(symbols/10)))
+gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; raise when the warning names it)
 gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)

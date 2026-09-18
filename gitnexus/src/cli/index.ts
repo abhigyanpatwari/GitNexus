@@ -165,7 +165,7 @@ program
   )
   .option(
     '--max-processes <n>',
-    'Process-detection process cap (positive integer). Replaces the dynamic symbols/10 formula. Default: dynamic.',
+    'Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Default: dynamic.',
   )
   .option(
     '--max-process-branching <n>',
@@ -177,7 +177,7 @@ program
   )
   .option(
     '--max-entry-point-candidates <n>',
-    'Ranked entry-point candidate pool (positive integer). Default: 200. Doubling is the usual first raise when whole flows are missing.',
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise then.',
   )
   .option(
     '--spring-actuator <path>',

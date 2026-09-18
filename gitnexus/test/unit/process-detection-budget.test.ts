@@ -196,6 +196,11 @@ describe('warning copy and banner', () => {
     expect(
       formatProcessDetectionBudgetBanner(resolveProcessDetectionBudget({ maxProcesses: 25 }, {})),
     ).toContain('maxProcesses=25');
+    expect(
+      formatProcessDetectionBudgetBanner(
+        resolveProcessDetectionBudget({ maxProcessBranching: 6 }, {}),
+      ),
+    ).toContain('maxProcesses=dynamic (max(20, round(symbols/10)))');
   });
 
   it('parses CLI/rc numeric strings without treating 0 as unlimited', () => {

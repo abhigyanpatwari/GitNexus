@@ -454,8 +454,8 @@ gitnexus analyze --verbose       # Log skipped files when parsers are unavailabl
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16,
                                  # auto-sized to the repo). 0 is rejected — there is no sequential mode.
-gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic symbols/10)
-gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; double first)
+gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces dynamic max(20, round(symbols/10)))
+gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; raise when the warning names it)
 gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --asyncapi-spec ./docs/asyncapi  # Resolve broker addresses from AsyncAPI 3.x documents
 gitnexus analyze --wal-checkpoint-threshold 67108864  # LadybugDB WAL auto-checkpoint threshold in bytes

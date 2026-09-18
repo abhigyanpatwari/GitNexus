@@ -6,7 +6,7 @@ All notable changes to GitNexus will be documented in this file.
 
 ### Added
 
-- **Process-detection budget overrides** — `--max-processes`, `--max-process-branching`, `--max-process-trace-depth`, and `--max-entry-point-candidates` (plus matching `.gitnexusrc` keys and `GITNEXUS_*` env vars) raise or lower analyze-time flow-detection ceilings without changing shipped defaults. An explicit `maxProcesses` replaces the dynamic `symbols / 10` formula. Changing the resolved budget re-detects Community/Process rows on the next `analyze` without `--force`. The `[processes] … whole flows are MISSING` warning names the matching knob; shape-only caps stay at debug. Distinct from query-time `IMPACT_MAX_CHUNKS` (#3313)
+- **Process-detection budget overrides** — `--max-processes`, `--max-process-branching`, `--max-process-trace-depth`, and `--max-entry-point-candidates` (plus matching `.gitnexusrc` keys and `GITNEXUS_*` env vars) raise or lower analyze-time flow-detection ceilings without changing shipped defaults. An explicit `maxProcesses` replaces the dynamic `max(20, round(symbols/10))` formula. Changing the resolved budget re-detects Community/Process rows on the next `analyze` without `--force`. The `[processes] … whole flows are MISSING` warning names the matching knob; shape-only caps stay at debug. Distinct from query-time `IMPACT_MAX_CHUNKS` (#3313)
 
 ### Changed
 
