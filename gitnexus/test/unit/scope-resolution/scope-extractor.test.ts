@@ -261,6 +261,22 @@ describe('Pass 2: declarations + local bindings', () => {
     expect(result.localDefs[0]!.type).toBe('Function');
   });
 
+  it('backfills return types across duplicate declaration captures', () => {
+    const plain = declMatch('function', 'makeStore', 5, 0, 10, 0);
+    const annotated = declMatch('function', 'makeStore', 5, 0, 10, 0, {
+      '@declaration.return-type': cap('@declaration.return-type', 5, 0, 10, 0, 'Store'),
+    });
+    const result = extract(
+      [scopeMatch('module', 1, 0, 100, 0), scopeMatch('function', 5, 0, 10, 0), plain, annotated],
+      'Support.swift',
+      mockProvider(),
+    );
+
+    expect(result.localDefs).toHaveLength(2);
+    expect(new Set(result.localDefs.map((def) => def.nodeId)).size).toBe(1);
+    expect(result.localDefs.map((def) => def.returnType)).toEqual(['Store', 'Store']);
+  });
+
   it('preserves a synthetic declaration marker on the definition', () => {
     const result = extract(
       [

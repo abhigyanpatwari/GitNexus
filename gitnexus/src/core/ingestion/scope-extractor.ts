@@ -639,10 +639,17 @@ function pass2AttachDeclarations(
     const first = firstDefByNodeId.get(def.nodeId);
     if (first === undefined) {
       firstDefByNodeId.set(def.nodeId, def);
-    } else if (first.typeParameters === undefined && def.typeParameters !== undefined) {
-      first.typeParameters = def.typeParameters;
-    } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
-      def.typeParameters = first.typeParameters;
+    } else {
+      if (first.typeParameters === undefined && def.typeParameters !== undefined) {
+        first.typeParameters = def.typeParameters;
+      } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
+        def.typeParameters = first.typeParameters;
+      }
+      if (first.returnType === undefined && def.returnType !== undefined) {
+        first.returnType = def.returnType;
+      } else if (def.returnType === undefined && first.returnType !== undefined) {
+        def.returnType = first.returnType;
+      }
     }
 
     // Find the innermost scope that contains the declaration's anchor range.
