@@ -265,6 +265,25 @@ function kotlinParsedFile(filePath: string): ParsedFile {
   };
 }
 
+function elixirParsedFile(filePath: string): ParsedFile {
+  const name = filePath.includes('widget') ? 'Local.Widget' : 'App.Main';
+  const moduleScope = `module:${filePath}` as ScopeId;
+  const def: SymbolDefinition = {
+    nodeId: `Class:${filePath}:${name}`,
+    filePath,
+    type: 'Class',
+    qualifiedName: name,
+  };
+  return {
+    filePath,
+    moduleScope,
+    scopes: [],
+    parsedImports: [],
+    localDefs: [def],
+    referenceSites: [],
+  };
+}
+
 /**
  * `use function Vendor\Ghost\missing;` — the one PHP import shape that reaches
  * `filesByDirectory`. A `type` import (the default for `use X;`) returns before
@@ -306,6 +325,20 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       // The one build of `parsedFileByPath`, triggered by the single import
       // whose package probe resolves — the misses never get that far, and
       // every later resolver is a `Map.get` rather than another pass.
+      minimumParsedFileReads: 1,
+    },
+  ],
+  [
+    SupportedLanguages.Elixir,
+    {
+      files: ['lib/local/widget.ex', 'lib/app/main.ex'],
+      fromFile: 'lib/app/main.ex',
+      resolutionConfig: undefined,
+      missTarget: (i) => `External.Ghost${i}`,
+      hitTarget: 'Local.Widget',
+      parsedImport: IGNORES_CONTEXT,
+      parsedFile: elixirParsedFile,
+      minimumScans: 0,
       minimumParsedFileReads: 1,
     },
   ],

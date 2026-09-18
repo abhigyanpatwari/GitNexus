@@ -18,6 +18,7 @@ describe('filesystem-walker', () => {
     // Create test directory structure
     await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'src', 'components'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'src', 'deps', 'sample', 'lib'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'node_modules', 'lodash'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, '.git'), { recursive: true });
 
@@ -26,6 +27,10 @@ describe('filesystem-walker', () => {
     await fs.writeFile(
       path.join(tmpDir, 'src', 'components', 'Button.tsx'),
       'export const Button = () => <div/>',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'deps', 'sample', 'lib', 'sample.ex'),
+      'defmodule Sample do\nend\n',
     );
     await fs.writeFile(
       path.join(tmpDir, 'node_modules', 'lodash', 'index.js'),
@@ -65,6 +70,12 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths.every((p) => !p.includes('node_modules'))).toBe(true);
+    });
+
+    it('skips nested Mix dependency directories', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths.every((p) => !p.includes('/deps/') && !p.startsWith('deps/'))).toBe(true);
     });
 
     it('skips .git directory', async () => {

@@ -25,6 +25,7 @@ const DEFAULT_IGNORE_LIST = new Set([
 
   // Dependencies
   'node_modules',
+  'deps',
   'bower_components',
   'jspm_packages',
   'vendor', // PHP/Go

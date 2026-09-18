@@ -3002,13 +3002,13 @@ export const ELIXIR_QUERIES = `
   target: (identifier) @_def (#eq? @_def "defmacro")
   (arguments
     (call
-      target: (identifier) @name))) @definition.function
+      target: (identifier) @name))) @definition.macro
 
 (call
   target: (identifier) @_def (#eq? @_def "defguard")
   (arguments
     (call
-      target: (identifier) @name))) @definition.function
+      target: (identifier) @name))) @definition.macro
 
 (call
   target: (identifier) @_def (#eq? @_def "defdelegate")
@@ -3027,13 +3027,13 @@ export const ELIXIR_QUERIES = `
   target: (identifier) @_def (#eq? @_def "defmacrop")
   (arguments
     (call
-      target: (identifier) @name))) @definition.function
+      target: (identifier) @name))) @definition.macro
 
 (call
   target: (identifier) @_def (#eq? @_def "defguardp")
   (arguments
     (call
-      target: (identifier) @name))) @definition.function
+      target: (identifier) @name))) @definition.macro
 
 ; ── Imports: import/use/require ───────────────────────────────────────────────
 (call

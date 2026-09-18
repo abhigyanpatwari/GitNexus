@@ -143,6 +143,25 @@ function kotlinParsedFile(filePath: string): ParsedFile {
   };
 }
 
+function elixirParsedFile(filePath: string): ParsedFile {
+  const name = filePath.includes('widget') ? 'Local.Widget' : 'App.Main';
+  const moduleScope = `module:${filePath}` as ScopeId;
+  const def: SymbolDefinition = {
+    nodeId: `Class:${filePath}:${name}`,
+    filePath,
+    type: 'Class',
+    qualifiedName: name,
+  };
+  return {
+    filePath,
+    moduleScope,
+    scopes: [],
+    parsedImports: [],
+    localDefs: [def],
+    referenceSites: [],
+  };
+}
+
 const PHP_FUNCTION_IMPORT = (targetRaw: string): ParsedImport => ({
   kind: 'named',
   localName: 'imported',
@@ -161,6 +180,19 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       external: '@acme/telemetry/nest',
       decoy: 'packages/inner/src/nest/index.ts',
       reachesDecoy: '../../../packages/inner/src/nest',
+    },
+  ],
+  [
+    SupportedLanguages.Elixir,
+    {
+      files: ['lib/local/widget.ex', 'lib/app/main.ex'],
+      fromFile: 'lib/app/main.ex',
+      resolutionConfig: undefined,
+      external: 'External.Widget',
+      decoy: 'lib/local/widget.ex',
+      reachesDecoy: 'Local.Widget',
+      declare: () => {},
+      parsedFile: elixirParsedFile,
     },
   ],
   [

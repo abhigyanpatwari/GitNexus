@@ -766,6 +766,8 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v100 (#3253): Rust import captures preserve the leading `::` that selects
 // the extern prelude. Old warm captures erase it and cannot distinguish an
 // absolute library import from a same-named local module. Reparse both stores.
+// v102: Elixir tree-sitter captures and worker output are newly persisted.
+// Reparse unchanged Elixir chunks rather than replaying pre-provider output.
 // v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
 // instead of an empty target path; restricted pub(...) imports are no longer
 // captured as unrestricted reexports. Re-extract both facts on warm indexes.
@@ -778,7 +780,14 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
 // `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
 // capture set (anonymous arrows, no Function name), so both stores re-extract.
-const SCHEMA_BUMP = 104;
+// v105: Elixir provider-owned graph nodes now follow the graph's 0-based line
+// convention. Warm v104 entries otherwise retain 1-based declaration lines.
+// v106: Elixir scope captures now include defdelegates and relative captured
+// module calls. Warm v105 entries cannot resolve those edges correctly.
+// v107: Elixir lexical alias captures encode position-sensitive resolution.
+// v108: Alias captures now respect nested lexical-container visibility.
+// v109: Quoted Elixir captures are excluded from runtime call facts.
+const SCHEMA_BUMP = 109;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
