@@ -10,6 +10,7 @@ import {
   processDetectionEffectiveLimits,
   resolveProcessDetectionBudget,
   toProcessDetectionStamp,
+  uncertifyProcessDetectionStamp,
 } from '../../src/core/ingestion/process-detection-budget.js';
 
 describe('parsePositiveIntegerOverride', () => {
@@ -160,6 +161,14 @@ describe('processDetectionBudgetMismatch (KTD4)', () => {
       {},
     );
     expect(processDetectionBudgetMismatch(toProcessDetectionStamp(resolved), resolved)).toBe(false);
+  });
+
+  it('mismatches an uncertified stamp even when the numeric fields match defaults', () => {
+    const recorded = uncertifyProcessDetectionStamp(toProcessDetectionStamp(defaults));
+    expect(recorded.uncertified).toBe(true);
+    expect(recorded.maxProcesses).toBe(null);
+    expect(processDetectionBudgetMismatch(recorded, defaults)).toBe(true);
+    expect(processDetectionBudgetMismatch(toProcessDetectionStamp(defaults), defaults)).toBe(false);
   });
 });
 

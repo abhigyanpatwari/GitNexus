@@ -62,6 +62,13 @@ export type ProcessDetectionStamp = {
   maxProcessBranching: number;
   maxProcessTraceDepth: number;
   maxEntryPointCandidates: number;
+  /**
+   * In-place FTS park after a derived-layer rewrite (#3322). Missing stamp +
+   * defaults is a match, so recovery must persist a complete stamp that still
+   * mismatches until a successful analyze certifies the live Community/Process
+   * rows. Success writes omit this flag.
+   */
+  uncertified?: true;
 };
 
 export type ResolvedProcessDetectionBudget = {
@@ -185,6 +192,20 @@ export const toProcessDetectionStamp = (
   maxEntryPointCandidates: resolved.maxEntryPointCandidates,
 });
 
+/** Complete stamp that always mismatches until the next successful analyze. */
+export const uncertifyProcessDetectionStamp = (
+  recorded: ProcessDetectionStamp | undefined,
+): ProcessDetectionStamp => ({
+  maxProcesses: recorded?.maxProcesses ?? null,
+  maxProcessBranching:
+    recorded?.maxProcessBranching ?? PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
+  maxProcessTraceDepth:
+    recorded?.maxProcessTraceDepth ?? PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+  maxEntryPointCandidates:
+    recorded?.maxEntryPointCandidates ?? PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
+  uncertified: true,
+});
+
 const isCompleteStamp = (
   recorded: ProcessDetectionStamp | undefined,
 ): recorded is ProcessDetectionStamp =>
@@ -199,6 +220,7 @@ export const processDetectionBudgetMismatch = (
   recorded: ProcessDetectionStamp | undefined,
   resolved: ResolvedProcessDetectionBudget,
 ): boolean => {
+  if (recorded?.uncertified === true) return true;
   if (!isCompleteStamp(recorded)) {
     // Legacy meta: same defaults as today's shipped behavior stay a match so
     // an upgrade backfills the stamp instead of re-detecting. Any explicit

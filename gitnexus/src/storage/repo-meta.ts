@@ -630,6 +630,8 @@ export interface RepoMeta {
     maxProcessBranching: number;
     maxProcessTraceDepth: number;
     maxEntryPointCandidates: number;
+    /** Live Community/Process rows are not certified under this stamp (#3322). */
+    uncertified?: true;
   };
 }
 

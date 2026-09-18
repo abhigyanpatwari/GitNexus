@@ -22,6 +22,7 @@ import { resolveAnalysisFeatureVersions } from '../../src/core/analysis-features
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { EMBEDDING_DIMS, SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
+import { PROCESS_DETECTION_BUDGET_DEFAULTS } from '../../src/core/ingestion/process-detection-budget.js';
 import { getSearchFTSCjkSegmentation } from '../../src/core/search/cjk-segmentation.js';
 import {
   FTS_DIRTY_PHASE,
@@ -376,12 +377,72 @@ describe('runFullAnalysis FTS crash marker', () => {
         writePlan: 'in-place',
         checkpointSucceeded: true,
       });
+      expect(midBuild?.processDetection?.uncertified).toBeUndefined();
       expect(sequence.indexOf('checkpoint')).toBeLessThan(sequence.indexOf('stamp-fts'));
       expect(sequence.indexOf('stamp-fts')).toBeLessThan(sequence.indexOf('build'));
       expect(checkpointOnce).toHaveBeenCalled();
 
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.incrementalInProgress).toBeUndefined();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('stamps processDetection.uncertified before in-place FTS when the budget mismatched', async () => {
+    let midBuild: RepoMeta | null = null;
+    vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
+      checkpointOnce: vi.fn(async () => true),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', mockLbugAdapter);
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        graph: fileGraph(),
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => {
+      const actual = await importActual<typeof import('../../src/storage/repo-manager.js')>();
+      return {
+        ...actual,
+        saveMeta: async (...args: Parameters<typeof actual.saveMeta>) => {
+          if (args[1].incrementalInProgress?.phase === FTS_DIRTY_PHASE) {
+            midBuild = args[1];
+          }
+          return actual.saveMeta(...args);
+        },
+      };
+    });
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-uncertify-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, incrementalMeta(tmpRepo.dbPath));
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { maxProcesses: 25, skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(midBuild?.processDetection).toMatchObject({
+        uncertified: true,
+        maxProcesses: null,
+      });
+      const finalMeta = await loadMeta(storagePath);
+      expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
+      expect(finalMeta?.processDetection?.maxProcesses).toBe(25);
     } finally {
       await tmpRepo.cleanup();
     }
@@ -901,6 +962,61 @@ describe('runFullAnalysis FTS crash marker', () => {
         skipReason: 'native-abort',
         writePlan: 'in-place',
       });
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('re-detects flows after FTS park when processDetection is uncertified', async () => {
+    const wipeLbugDbFiles = vi.fn(async () => undefined);
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      graph: fileGraph(),
+    }));
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo }));
+
+    const tmpRepo = await createTempDir('gitnexus-fts-crash-uncertified-park-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        processDetection: {
+          maxProcesses: null,
+          maxProcessBranching: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
+          maxProcessTraceDepth: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+          maxEntryPointCandidates: PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
+          uncertified: true,
+        },
+        incrementalInProgress: ftsInPlaceDirty,
+      });
+      await fs.writeFile(lbugPath, GRAPH_BYTES);
+      await fs.writeFile(`${lbugPath}.wal`, WAL_PATTERN);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).not.toBe(true);
+      expect(runPipelineFromRepo).toHaveBeenCalled();
+      const finalMeta = await loadMeta(storagePath);
+      expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
     } finally {
       await tmpRepo.cleanup();
     }

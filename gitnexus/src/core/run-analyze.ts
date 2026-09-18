@@ -203,6 +203,7 @@ import {
   processDetectionBudgetMismatch,
   resolveProcessDetectionBudget,
   toProcessDetectionStamp,
+  uncertifyProcessDetectionStamp,
 } from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
@@ -3574,6 +3575,11 @@ async function runFullAnalysisInner(
         lastCommit: '',
         indexedAt: new Date().toISOString(),
       };
+      // #3322: persist uncertified *before* CREATE_FTS_INDEX. Park keeps this
+      // stamp; it must not invent one on every FTS-only crash. Missing stamp +
+      // shipped defaults is a match, so a budget-mismatch derived rewrite that
+      // dies in FTS would otherwise recertify the rewritten Community/Process
+      // rows on a flagless retry.
       await saveMeta(metaDir, {
         ...base,
         incrementalInProgress: buildFtsDirtyStamp({
@@ -3581,6 +3587,11 @@ async function runFullAnalysisInner(
           writePlan: 'in-place',
           checkpointSucceeded: boundaryCheckpointSucceeded,
         }),
+        ...(processDetectionMismatch
+          ? {
+              processDetection: uncertifyProcessDetectionStamp(base.processDetection),
+            }
+          : {}),
       });
     }
 

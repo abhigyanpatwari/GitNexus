@@ -93,27 +93,30 @@ describe('analyzeCommand process-detection budget (#3313)', () => {
     async (value) => {
       const { _captureLogger } = await import('../../src/core/logger.js');
       const cap = _captureLogger();
-      const { analyzeCommand } = await import('../../src/cli/analyze.js');
-      runFullAnalysisMock.mockResolvedValue(upToDate);
+      try {
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        runFullAnalysisMock.mockResolvedValue(upToDate);
 
-      await analyzeCommand(undefined, { maxProcesses: value });
+        await analyzeCommand(undefined, { maxProcesses: value });
 
-      expect(process.exitCode).toBeUndefined();
-      expect(runFullAnalysisMock).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.not.objectContaining({ maxProcesses: expect.any(Number) }),
-        expect.any(Object),
-      );
-      expect(
-        cap.records().some((r) => {
-          const msg = String(r.msg ?? '');
-          return (
-            msg.includes('--max-processes must be a positive integer') &&
-            msg.includes('next source (env, then the built-in default)')
-          );
-        }),
-      ).toBe(true);
-      cap.restore();
+        expect(process.exitCode).toBeUndefined();
+        expect(runFullAnalysisMock).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.not.objectContaining({ maxProcesses: expect.any(Number) }),
+          expect.any(Object),
+        );
+        expect(
+          cap.records().some((r) => {
+            const msg = String(r.msg ?? '');
+            return (
+              msg.includes('--max-processes must be a positive integer') &&
+              msg.includes('next source (env, then the built-in default)')
+            );
+          }),
+        ).toBe(true);
+      } finally {
+        cap.restore();
+      }
     },
   );
 

@@ -187,11 +187,9 @@ describe('watch path selection', () => {
       maxProcesses: 25,
       maxEntryPointCandidates: 400,
     });
-    await expect(
-      resolveWatchOptions(repoPath, { maxProcesses: '0' }, baseline),
-    ).resolves.toMatchObject({
-      maxEntryPointCandidates: 400,
-    });
+    const zeroBudget = await resolveWatchOptions(repoPath, { maxProcesses: '0' }, baseline);
+    expect(zeroBudget).toMatchObject({ maxEntryPointCandidates: 400 });
+    expect(zeroBudget.maxProcesses).toBeUndefined();
   });
 
   it('rejects a watch file-size threshold above the parser ceiling', async () => {
