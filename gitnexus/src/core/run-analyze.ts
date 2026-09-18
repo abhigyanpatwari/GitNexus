@@ -234,7 +234,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
+import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
   EMBEDDING_DIMS,
@@ -1052,12 +1052,16 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
  * directory (#2658). `metaDir` — not `getStoragePaths(repoPath, options.branch)`
  * — is the lock scope: a `--branch X` that owns the flat slot resolves to the
  * flat `.gitnexus`, so scoping off the raw option would lock the wrong dir.
+ * `rejectedDetectedBranch` is log-only (the detect-reject warning after lock
+ * settle); it does not change placement.
  */
 interface WriteTarget {
   storagePath: string;
   repoHasGit: boolean;
   currentCommit: string;
   checkedOutBranch: string | null;
+  /** Raw checkout name when git returned one the branch-name rules reject. */
+  rejectedDetectedBranch: string | null;
   branchLabel: string | null;
   placement: { branch?: string };
   lbugPath: string;
@@ -1089,9 +1093,12 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   // validated (#2106 R1): a git ref the branch-name rules forbid becomes `null`
   // → the flat slot, matching that a later `--branch <that-ref>` query would
   // also be rejected. A normal ref round-trips index-time/query-time labels.
-  const checkedOutBranch = repoHasGit
-    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
-    : null;
+  // Keep the raw rejected name so `runFullAnalysis` can warn once after the
+  // lock settles. Detached / non-git / empty detect stay `null` here and silent.
+  const rawDetectedBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  const checkedOutBranch = sanitizeDetectedBranch(rawDetectedBranch) ?? null;
+  const rejectedDetectedBranch =
+    rawDetectedBranch != null && checkedOutBranch === null ? rawDetectedBranch : null;
   // Analyze indexes the working tree, not an arbitrary ref. An explicit
   // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
   // content into X's slot, corrupting X (#2106). Refuse the mismatch. Detached
@@ -1112,6 +1119,7 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     repoHasGit,
     currentCommit,
     checkedOutBranch,
+    rejectedDetectedBranch,
     branchLabel,
     placement,
     lbugPath,
@@ -1221,6 +1229,11 @@ export async function runFullAnalysis(
             'Index write target still moving after repeated re-acquire; proceeding on this lock.',
           );
         }
+      }
+      if (writeTarget.rejectedDetectedBranch) {
+        log(
+          `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
+        );
       }
       return await runFullAnalysisInner(
         repoPath,
