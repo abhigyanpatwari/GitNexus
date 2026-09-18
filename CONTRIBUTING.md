@@ -15,6 +15,15 @@ This project uses the [PolyForm Noncommercial License 1.0.0](https://polyformpro
 
 **Prerequisites:** Node.js — `gitnexus/` requires `^22.18.0 || >=24.11.0` and `gitnexus-web/` requires `^20.19.0 || >=22.12.0` (enforced via the `engines` field in each package). Use `nvm install` to match the local version.
 
+One unit test (`gitnexus/test/unit/publish-rc-guard.test.ts`) also spawns a
+real `bash` to exercise the release-subject regex under `nocasematch`
+semantics. On Linux and macOS the PATH `bash` is used as-is. On Windows the
+test probes Git for Windows' `bash.exe` (both the Program Files and the
+per-user install) before falling back to the PATH entry, because the PATH
+`bash` is frequently the WSL launcher. The suite skips with an explicit
+message when no suitable bash is found; point `GITNEXUS_TEST_BASH` at a
+specific executable to override discovery.
+
 1. Clone the repository.
 2. **Shared package:** `cd gitnexus-shared && npm install && npm run build`
 3. **CLI / MCP package:** `cd ../gitnexus && npm install && npm run build`

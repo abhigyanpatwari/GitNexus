@@ -35,37 +35,105 @@ function subjectMatches(subject: string, regex: string): boolean {
     '[[ "$SUBJECT" =~ $REGEX ]] && echo MATCH || echo NO_MATCH',
     'shopt -u nocasematch',
   ].join('\n');
-  const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' }).trim();
+  const out = execFileSync(BASH, ['-c', script], { encoding: 'utf8' }).trim();
   return out === 'MATCH';
 }
 
-describe('rc-guard release-subject regex (publish.yml)', () => {
-  const regex = releaseSubjectRegex();
+// Probe script: only a real bash with nocasematch semantics (the behavior
+// this suite pins) prints BASH_OK. A Windows PATH `bash` that is actually
+// the WSL launcher exits with an error when no distribution is installed,
+// so it fails this probe instead of failing six unit tests.
+const BASH_PROBE = 'shopt -s nocasematch; [[ "Chore" =~ ^chore$ ]] && echo BASH_OK';
 
-  it('matches canonical release subjects', () => {
-    expect(subjectMatches('chore: release v1.6.4', regex)).toBe(true);
-    expect(subjectMatches('chore: release v10.20.30', regex)).toBe(true);
-  });
+function probeBash(candidate: string): boolean {
+  try {
+    const out = execFileSync(candidate, ['-c', BASH_PROBE], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return out === 'BASH_OK';
+  } catch {
+    return false;
+  }
+}
 
-  it('matches squash-merge subjects with the (#NNNN) suffix', () => {
-    expect(subjectMatches('chore: release v1.6.4 (#1474)', regex)).toBe(true);
-  });
+// Resolve a bash executable that can actually run the nocasematch ERE
+// semantics this suite extracts from publish.yml. Candidates are probed in
+// order; the first one that passes the nocasematch probe wins:
+//   1. GITNEXUS_TEST_BASH (explicit override for unusual installs)
+//   2. on win32, Git for Windows' bash.exe — probed before the PATH entry
+//      because the PATH `bash` on Windows is frequently the System32 WSL
+//      launcher (both the Program Files and the per-user install)
+//   3. plain `bash` from PATH (the POSIX default)
+// When no candidate passes, the suite below skips with an explicit reason
+// instead of failing: CONTRIBUTING lists Node.js as the prerequisite, so a
+// contributor without any suitable bash is supported, not broken.
+function resolveBash(): string | null {
+  const candidates: string[] = [];
+  const override = process.env['GITNEXUS_TEST_BASH'];
+  if (override) {
+    candidates.push(override);
+  }
+  if (process.platform === 'win32') {
+    const programFiles = process.env['ProgramFiles'];
+    const localAppData = process.env['LocalAppData'];
+    if (programFiles) {
+      candidates.push(path.join(programFiles, 'Git', 'bin', 'bash.exe'));
+    }
+    if (localAppData) {
+      candidates.push(path.join(localAppData, 'Programs', 'Git', 'bin', 'bash.exe'));
+    }
+  }
+  candidates.push('bash');
+  for (const candidate of candidates) {
+    if (probeBash(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
-  it('stays case-insensitive for IDE auto-capitalization', () => {
-    expect(subjectMatches('Chore: Release v1.2.3', regex)).toBe(true);
-  });
+const BASH = resolveBash();
 
-  it('does not match ordinary chore commits', () => {
-    expect(subjectMatches('chore: bump deps (#1500)', regex)).toBe(false);
-  });
+describe.skipIf(!BASH)(
+  `rc-guard release-subject regex (publish.yml)${BASH ? '' : ' — skipped: no bash with nocasematch semantics found (install Git for Windows or point GITNEXUS_TEST_BASH at one)'}`,
+  () => {
+    const regex = releaseSubjectRegex();
 
-  it('does not match release-like subjects with extra suffixes or prefixes', () => {
-    expect(subjectMatches('chore: release v1.6.4 hotfix', regex)).toBe(false);
-    expect(subjectMatches('revert: chore: release v1.6.4', regex)).toBe(false);
-  });
+    it('matches canonical release subjects', () => {
+      expect(subjectMatches('chore: release v1.6.4', regex)).toBe(true);
+      expect(subjectMatches('chore: release v10.20.30', regex)).toBe(true);
+    });
 
-  it('requires a full semver', () => {
-    expect(subjectMatches('chore: release v1.6', regex)).toBe(false);
-    expect(subjectMatches('chore: release v1.6.x', regex)).toBe(false);
+    it('matches squash-merge subjects with the (#NNNN) suffix', () => {
+      expect(subjectMatches('chore: release v1.6.4 (#1474)', regex)).toBe(true);
+    });
+
+    it('stays case-insensitive for IDE auto-capitalization', () => {
+      expect(subjectMatches('Chore: Release v1.2.3', regex)).toBe(true);
+    });
+
+    it('does not match ordinary chore commits', () => {
+      expect(subjectMatches('chore: bump deps (#1500)', regex)).toBe(false);
+    });
+
+    it('does not match release-like subjects with extra suffixes or prefixes', () => {
+      expect(subjectMatches('chore: release v1.6.4 hotfix', regex)).toBe(false);
+      expect(subjectMatches('revert: chore: release v1.6.4', regex)).toBe(false);
+    });
+
+    it('requires a full semver', () => {
+      expect(subjectMatches('chore: release v1.6', regex)).toBe(false);
+      expect(subjectMatches('chore: release v1.6.x', regex)).toBe(false);
+    });
+  },
+);
+
+// Runs on every platform, including machines where the suite above skips:
+// proves the capability probe actually rejects an unusable candidate instead
+// of silently treating every spawn failure as "bash found".
+describe('rc-guard bash resolution probe', () => {
+  it('rejects a candidate that cannot run the nocasematch probe', () => {
+    expect(probeBash('gitnexus-definitely-not-a-shell')).toBe(false);
   });
 });
