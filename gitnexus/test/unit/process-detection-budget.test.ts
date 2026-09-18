@@ -158,7 +158,7 @@ describe('processDetectionBudgetMismatch (KTD4)', () => {
 });
 
 describe('warning copy and banner', () => {
-  it('maps loud counters to the matching knobs and includes maxProcesses*2', () => {
+  it('maps loud counters to the matching knobs and names the pre-entry trace gate', () => {
     const limits = processDetectionEffectiveLimits(20, resolveProcessDetectionBudget({}, {}));
     expect(limits.maxProcessTraces).toBe(40);
     expect(
@@ -189,6 +189,13 @@ describe('warning copy and banner', () => {
         10,
       ),
     ).toContain('40');
+    expect(
+      formatWholeFlowsMissingRemedies(
+        { entryPointCandidatesDropped: 0, entryPointsUnexplored: 3, processesDropped: 1 },
+        limits,
+        10,
+      ),
+    ).toContain('next entry is skipped');
   });
 
   it('prints a banner only when an override is active', () => {

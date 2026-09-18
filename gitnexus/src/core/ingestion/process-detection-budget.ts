@@ -83,7 +83,11 @@ export type ProcessDetectionEffectiveLimits = {
   maxProcessBranching: number;
   maxProcessTraceDepth: number;
   maxEntryPointCandidates: number;
-  /** Trace-collection quota: `maxProcesses * 2`. */
+  /**
+   * Pre-entry gate: `processProcesses` does not start the next entry once
+   * collected traces already reach `maxProcesses * 2`. One started entry can
+   * still append every trace `traceFromEntryPoint` returns.
+   */
   maxProcessTraces: number;
 };
 
@@ -251,8 +255,8 @@ export const formatWholeFlowsMissingRemedies = (
   if (truncation.entryPointsUnexplored > 0 || truncation.processesDropped > 0) {
     parts.push(
       `${PROCESS_DETECTION_CLI_FLAGS.maxProcesses} ` +
-        `(this run used ${limits.maxProcesses}; trace-collection quota ` +
-        `${limits.maxProcessTraces})`,
+        `(this run used ${limits.maxProcesses}; next entry is skipped once ` +
+        `collected traces reach ${limits.maxProcessTraces})`,
     );
   }
   return parts.length === 0 ? '' : ` Raise ${parts.join('; ')}.`;
