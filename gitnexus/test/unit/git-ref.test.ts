@@ -46,6 +46,15 @@ describe('core/git-ref', () => {
     expect(formatRejectedBranchForLog(`foo${'\u2029'}bar`)).toBe('foo\\u2029bar');
   });
 
+  it('formatRejectedBranchForLog escapes NBSP, NEL, and other C1 as \\uXXXX', () => {
+    expect(formatRejectedBranchForLog(`foo${'\u00a0'}bar`)).toBe('foo\\u00a0bar');
+    const nelBacktick = formatRejectedBranchForLog(`feat${'\u0085'}\``);
+    expect(nelBacktick).toContain('\\u0085');
+    expect(nelBacktick).toContain('`');
+    expect(nelBacktick).not.toContain('\u0085');
+    expect(formatRejectedBranchForLog(`x${'\u009f'}y`)).toBe('x\\u009fy');
+  });
+
   it('sanitizeDetectedBranch rejects git-legal U+2028/U+2029 as whitespace', () => {
     expect(sanitizeDetectedBranch(`foo${'\u2028'}bar`)).toBeUndefined();
     expect(sanitizeDetectedBranch(`foo${'\u2029'}bar`)).toBeUndefined();

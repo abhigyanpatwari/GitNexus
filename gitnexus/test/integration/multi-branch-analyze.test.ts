@@ -5,6 +5,7 @@ import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getStoragePaths, loadMeta, listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { isDetectRejectWarning } from '../helpers/detect-reject-warning.js';
 
 /**
  * #2106/#2354 — branch handling end-to-end. Proves that a plain analyze
@@ -233,9 +234,7 @@ describe('multi-branch analyze (#2106)', () => {
       expect(existsSync(flat.lbugPath)).toBe(true);
       expect((await loadMeta(flat.storagePath))?.branch).toBeUndefined();
       expect(existsSync(path.join(flat.storagePath, 'branches'))).toBe(false);
-      const warnings = logs.filter((message) =>
-        /^Warning:.*not a usable index label.*continuing\.$/.test(message),
-      );
+      const warnings = logs.filter(isDetectRejectWarning);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('feat`x');
     } finally {

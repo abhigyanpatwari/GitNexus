@@ -21,6 +21,7 @@ import {
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { isDetectRejectWarning } from '../helpers/detect-reject-warning.js';
 import { readEmbeddingNodeIds } from '../helpers/embedding-seed.js';
 import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
@@ -33,9 +34,6 @@ const currentRunnerIdentity = () =>
   resolveAnalyzerRunnerIdentity(
     pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
   );
-
-const isDetectRejectWarning = (message: string): boolean =>
-  /^Warning:.*not a usable index label.*continuing\.$/.test(message);
 
 describe('run-analyze module', () => {
   it('exports runFullAnalysis as a function', async () => {
@@ -1246,6 +1244,99 @@ describe('run-analyze module', () => {
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain('\\u2028');
       expect(warnings[0]).not.toContain('\u2028');
+      expect(warnings[0].split(/\n|\r|\u2028|\u2029/)).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Warning:.*continuing\.$/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 180_000);
+
+  it('keeps the detect-reject warning on one line for NEL+backtick checkout names', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-detect-reject-nel-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execFileSync('git', ['branch', '-M', 'feat\u0085`'], {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      const warnings = logs.filter(isDetectRejectWarning);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('\\u0085');
+      expect(warnings[0]).not.toContain('\u0085');
+      expect(warnings[0]).toContain('`');
+      expect(warnings[0].split(/\n|\r|\u2028|\u2029/)).toHaveLength(1);
+      expect(warnings[0]).toMatch(/^Warning:.*continuing\.$/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 180_000);
+
+  it('keeps the detect-reject warning on one line for NBSP checkout names', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-detect-reject-nbsp-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execFileSync('git', ['branch', '-M', 'foo\u00a0bar'], {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const logs: string[] = [];
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      const warnings = logs.filter(isDetectRejectWarning);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('\\u00a0');
+      expect(warnings[0]).not.toContain('\u00a0');
       expect(warnings[0].split(/\n|\r|\u2028|\u2029/)).toHaveLength(1);
       expect(warnings[0]).toMatch(/^Warning:.*continuing\.$/);
     } finally {
