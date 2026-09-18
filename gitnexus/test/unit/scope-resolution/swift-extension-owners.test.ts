@@ -107,7 +107,29 @@ extension Foo.Bar {
     );
     stamp([parsed]);
     const added = parsed.localDefs.find((d) => d.qualifiedName?.split('.').at(-1) === 'added');
+    expect(added).toBeDefined();
     expect(added?.ownerId).toBeUndefined();
+  });
+
+  it('stamps extension members when the extension also declares a nested type', () => {
+    const parsed = parseSwift(
+      `
+struct Foo {}
+extension Foo {
+    struct Helper {}
+    func added() {}
+}
+`,
+      'NestedInExt.swift',
+    );
+    stamp([parsed]);
+    const added = parsed.localDefs.find((d) => d.qualifiedName?.split('.').at(-1) === 'added');
+    const foo = parsed.localDefs.find(
+      (d) => d.qualifiedName === 'Foo' && (d.type === 'Struct' || d.type === 'Class'),
+    );
+    expect(added).toBeDefined();
+    expect(foo).toBeDefined();
+    expect(added?.ownerId).toBe(foo?.nodeId);
   });
 
   it('does not let one target’s Foo own another target’s extension', () => {

@@ -1169,11 +1169,14 @@ export function pickUniqueGlobalClass(
  *  pick a method member by name with overload narrowing on arity +
  *  argument types. Returns undefined if there's no enclosing class,
  *  no matching method, OR narrowing leaves multiple compatible
- *  candidates — in the multi-candidate case, picking
- *  `candidates[0]` would emit a high-confidence CALLS edge whose
- *  target depends on registration order rather than a defensible
- *  resolution. Mirrors `pickUniqueGlobalCallable`'s uniqueness check
- *  in the same file (Codex PR #1497 review, finding 2).
+ *  candidates — except when those survivors are a protocol/interface
+ *  requirement plus exactly one extension witness, in which case the
+ *  witness (the default body) is returned. An inherited class, struct,
+ *  or enum member still wins over a protocol-extension default.
+ *  Picking `candidates[0]` would emit a high-confidence CALLS edge
+ *  whose target depends on registration order rather than a
+ *  defensible resolution. Mirrors `pickUniqueGlobalCallable`'s
+ *  uniqueness check in the same file (Codex PR #1497 review, finding 2).
  *
  *  Exported for unit testing — language-agnostic logic, exercised
  *  via synthetic stubs in `pick-implicit-this-overload.test.ts`. The
@@ -1287,8 +1290,23 @@ function preferExtensionWitnesses(
     if (livesOnOwner) onOwnerType.push(def);
     else extensionWitnesses.push(def);
   }
-  if (extensionWitnesses.length > 0 && onOwnerType.length > 0) return extensionWitnesses;
-  return candidates;
+  if (extensionWitnesses.length === 0 || onOwnerType.length === 0) return candidates;
+  const concrete = onOwnerType.filter((def) => !isProtocolLikeOwner(def.ownerId, workspaceIndex));
+  if (concrete.length > 0) return concrete;
+  return extensionWitnesses;
+}
+
+function isProtocolLikeOwner(
+  ownerId: string | undefined,
+  workspaceIndex: WorkspaceResolutionIndex,
+): boolean {
+  if (ownerId === undefined) return false;
+  const ownerScope = workspaceIndex.classScopeByDefId?.get(ownerId);
+  if (ownerScope === undefined) return false;
+  return ownerScope.ownedDefs.some(
+    (owned) =>
+      owned.nodeId === ownerId && (owned.type === 'Protocol' || owned.type === 'Interface'),
+  );
 }
 
 /**

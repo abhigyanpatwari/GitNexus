@@ -1203,7 +1203,7 @@ export function runScopeResolution(
         );
   if (replayedCallResultBindings > 0) {
     const handledBeforeReplay = new Set(handledSites);
-    receiverExtras += emitReceiverBoundCalls(
+    const replayedReceiverBound = emitReceiverBoundCalls(
       graph,
       indexes,
       emitParsedFiles,
@@ -1217,7 +1217,20 @@ export function runScopeResolution(
         isBuiltInName: provider.languageProvider.isBuiltInName,
         heritageTypeArguments,
       },
-    ).emitted;
+    );
+    receiverExtras += replayedReceiverBound.emitted;
+    if (replayedReceiverBound.dispatchFanoutSkipped > 0) {
+      logger.warn(
+        {
+          lang: provider.language,
+          dispatchFanoutSkipped: replayedReceiverBound.dispatchFanoutSkipped,
+          dispatchFanoutSkippedNames: replayedReceiverBound.dispatchFanoutSkippedNames,
+          fanoutCap: MAX_INTERFACE_DISPATCH_FANOUT,
+          replay: true,
+        },
+        'interface-dispatch: members over the fan-out cap dropped implementors (their CALLS edges were not emitted)',
+      );
+    }
     const resolvedOnReplay = new Set<string>();
     for (const key of handledSites) {
       if (!handledBeforeReplay.has(key)) resolvedOnReplay.add(key);

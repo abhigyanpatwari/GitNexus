@@ -19,6 +19,8 @@ import { describe, it, expect } from 'vitest';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { swiftScopeResolver } from '../../../src/core/ingestion/languages/swift/scope-resolver.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import {
   findExportedDef,
@@ -39,6 +41,8 @@ function parsePython(source: string, filePath: string) {
   if (parsed === undefined) throw new Error('scope extraction failed');
   return parsed;
 }
+
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
 
 function parseSwift(source: string, filePath: string) {
   const parsed = extractParsedFile(swiftScopeResolver.languageProvider, source, filePath, () => {});
@@ -94,7 +98,7 @@ def helper() -> int:
   });
 });
 
-describe('declaredReturnTypeByCallableId — exact callable identity', () => {
+describe.skipIf(!swiftAvailable)('declaredReturnTypeByCallableId — exact callable identity', () => {
   it('keeps same-file methods and parameter names from overwriting callable returns', () => {
     const parsed = parseSwift(
       `
@@ -219,7 +223,7 @@ func makeUsers() -> [User] { [] }
   });
 });
 
-describe('Swift call-result assignment extraction', () => {
+describe.skipIf(!swiftAvailable)('Swift call-result assignment extraction', () => {
   it('aligns each lhs with its own same-name call-resolution anchor', () => {
     const parsed = parseSwift(
       `

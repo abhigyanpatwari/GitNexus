@@ -242,7 +242,15 @@ describe('pickImplicitThisOverload — inherited implicit-this', () => {
       filePath: 'P.swift',
       bindings: new Map(),
       typeBindings: new Map(),
-      ownedDefs: [requirement],
+      ownedDefs: [
+        {
+          nodeId: PROTO_A,
+          filePath: 'P.swift',
+          type: 'Protocol',
+          qualifiedName: 'A',
+        } as SymbolDefinition,
+        requirement,
+      ],
     } as unknown as Scope;
     const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [PROTO_A]]]));
     const workspace = mkWorkspaceIndex(
@@ -261,6 +269,76 @@ describe('pickImplicitThisOverload — inherited implicit-this', () => {
       implicitThisWalksMro: true,
     });
     expect(result?.nodeId).toBe('m:P.ext');
+  });
+
+  it('does not prefer a protocol-extension witness over an inherited class member', () => {
+    const BASE = 'def:Base.swift:Base';
+    const baseType = {
+      nodeId: BASE,
+      filePath: 'Base.swift',
+      type: 'Class',
+      qualifiedName: 'Base',
+    } as SymbolDefinition;
+    const baseFoo = mkMethod({
+      nodeId: 'm:Base.foo',
+      ownerId: BASE,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const extFoo = mkMethod({
+      nodeId: 'm:P.ext',
+      ownerId: PROTO_A,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const baseScope = {
+      id: 'scope:Base.swift#1:1-20:1:Class' as ScopeId,
+      parent: null,
+      kind: 'Class',
+      range: { startLine: 1, startCol: 1, endLine: 20, endCol: 1 },
+      filePath: 'Base.swift',
+      bindings: new Map(),
+      typeBindings: new Map(),
+      ownedDefs: [baseType, baseFoo],
+    } as unknown as Scope;
+    const protocolScope = {
+      id: 'scope:P.swift#1:1-20:1:Class' as ScopeId,
+      parent: null,
+      kind: 'Class',
+      range: { startLine: 1, startCol: 1, endLine: 20, endCol: 1 },
+      filePath: 'P.swift',
+      bindings: new Map(),
+      typeBindings: new Map(),
+      ownedDefs: [
+        {
+          nodeId: PROTO_A,
+          filePath: 'P.swift',
+          type: 'Protocol',
+          qualifiedName: 'A',
+        } as SymbolDefinition,
+      ],
+    } as unknown as Scope;
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [BASE, PROTO_A]]]));
+    const workspace = mkWorkspaceIndex(
+      new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]),
+      new Map([
+        [BASE, baseScope],
+        [PROTO_A, protocolScope],
+      ]),
+    );
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${BASE}::foo`, [baseFoo]],
+        [`${PROTO_A}::foo`, [extFoo]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:Base.foo');
   });
 
   it('falls through to inherited when the enclosing type only has an arity-incompatible decoy', () => {

@@ -255,7 +255,12 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
       if (scope.kind !== 'Function') continue;
       const parent = scope.parent === null ? undefined : byId.get(scope.parent);
       if (parent?.kind !== 'Class') continue;
-      if (parent.ownedDefs.some((d) => isClassLike(d.type))) continue;
+      // A type-decl Class owns the type that opened it (same start line).
+      // Nested types inside an `extension` are also class-like and live on
+      // that Class scope — they are not the extended type, so they must
+      // not suppress stamping `func added` onto `Foo`.
+      if (parent.ownedDefs.some((d) => isClassLike(d.type) && defDeclaresThisClassScope(parent, d)))
+        continue;
       for (const def of scope.ownedDefs) {
         if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
         const dot = def.qualifiedName.lastIndexOf('.');
@@ -267,6 +272,15 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
       }
     }
   }
+}
+
+function defDeclaresThisClassScope(
+  parent: { readonly range: { readonly startLine: number } },
+  def: SymbolDefinition,
+): boolean {
+  const line = /#(\d+):/.exec(def.nodeId);
+  if (line === null) return true;
+  return Number(line[1]) === parent.range.startLine;
 }
 
 function uniqueOwnerForExtensionPrefix(
