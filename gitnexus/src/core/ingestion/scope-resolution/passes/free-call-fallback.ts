@@ -1248,12 +1248,17 @@ export function pickImplicitThisOverload(
     );
     if (inheritedPicked !== undefined) return inheritedPicked;
     if (inherited.length > 0) {
-      const inheritedCompatible = narrowOverloadCandidates(inherited, site.arity, site.argumentTypes, {
-        argumentTypeClasses: site.argumentTypeClasses,
-        conversionRankFn: hookCtx?.conversionRankFn,
-        conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
-        constraintCompatibility: hookCtx?.constraintCompatibility,
-      });
+      const inheritedCompatible = narrowOverloadCandidates(
+        inherited,
+        site.arity,
+        site.argumentTypes,
+        {
+          argumentTypeClasses: site.argumentTypeClasses,
+          conversionRankFn: hookCtx?.conversionRankFn,
+          conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
+          constraintCompatibility: hookCtx?.constraintCompatibility,
+        },
+      );
       if (inheritedCompatible.length > 0) return undefined;
     }
   }
