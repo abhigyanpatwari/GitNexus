@@ -120,9 +120,7 @@ describe.skipIf(!swiftAvailable)('interpretSwiftImport via emitSwiftScopeCapture
   });
 
   it('does not treat _exported inside an @available message as @_exported', () => {
-    expect(
-      importsOf('@available(*, deprecated, message: "_exported") import Models'),
-    ).toEqual([
+    expect(importsOf('@available(*, deprecated, message: "_exported") import Models')).toEqual([
       {
         kind: 'namespace',
         localName: 'Models',
