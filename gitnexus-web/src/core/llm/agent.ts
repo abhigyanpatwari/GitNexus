@@ -31,6 +31,7 @@ import type {
   MiniMaxConfig,
   GLMConfig,
   DeepSeekConfig,
+  OrcaRouterConfig,
   AgentStreamChunk,
   AgentHistoryMessage,
   MiniMaxThinkingMode,
@@ -41,7 +42,11 @@ import {
   buildDynamicSystemPrompt,
   CHAT_ONLY_PROMPT_NOTE,
 } from './context-builder';
-import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_ORCAROUTER_BASE_URL,
+} from '../../config/ui-constants';
 import {
   DeepSeekChatOpenAI,
   normalizeMessageContent,
@@ -266,6 +271,36 @@ export const createChatModel = (config: ProviderConfig): BaseChatModel => {
         configuration: {
           apiKey: openRouterConfig.apiKey, // Ensure client receives it
           baseURL: openRouterConfig.baseUrl ?? DEFAULT_OPENROUTER_BASE_URL,
+        },
+        streaming: true,
+      });
+    }
+
+    case 'orcarouter': {
+      const orcaRouterConfig = config as OrcaRouterConfig;
+
+      // Debug logging
+      if (import.meta.env.DEV) {
+        console.log('🐋 OrcaRouter config:', {
+          hasApiKey: !!orcaRouterConfig.apiKey,
+          model: orcaRouterConfig.model,
+          baseUrl: orcaRouterConfig.baseUrl,
+        });
+      }
+
+      if (!orcaRouterConfig.apiKey || orcaRouterConfig.apiKey.trim() === '') {
+        throw new Error('OrcaRouter API key is required but was not provided');
+      }
+
+      return new ChatOpenAI({
+        openAIApiKey: orcaRouterConfig.apiKey,
+        apiKey: orcaRouterConfig.apiKey, // Fallback for some versions
+        modelName: orcaRouterConfig.model,
+        temperature: orcaRouterConfig.temperature ?? 0.1,
+        maxTokens: orcaRouterConfig.maxTokens,
+        configuration: {
+          apiKey: orcaRouterConfig.apiKey, // Ensure client receives it
+          baseURL: orcaRouterConfig.baseUrl ?? DEFAULT_ORCAROUTER_BASE_URL,
         },
         streaming: true,
       });
