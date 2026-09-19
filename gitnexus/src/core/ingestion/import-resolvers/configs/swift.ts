@@ -13,25 +13,23 @@
  * every strategy invocation, per `import-processor`'s build-once
  * context). Lookup per import is then O(1).
  *
- * Behavior is preserved bit-for-bit: a file is attributed to a target
- * iff its **forward-slash (backslash-normalized), case-sensitive** path
- * starts with `<targetDir>/`, matching the old
- * `normalizedFileList[i].startsWith(targetDir + '/')` comparison
- * (`normalizedFileList` is only backslash→forward-slash normalized — NOT
- * lowercased — so the match is case-sensitive); the returned paths are
- * the original-case `allFileList` entries; and the per-target file ORDER
- * follows `allFileList`, so the emitted `{ kind: 'files', files }` set and
- * ordering are identical to the old scan.
+ * A file is attributed to a target iff its **forward-slash
+ * (backslash-normalized), case-sensitive** path matches at a
+ * **segment boundary**: it starts with `<targetDir>/` or contains
+ * `/<targetDir>/`. `normalizedFileList` is
+ * only backslash→forward-slash normalized — NOT lowercased — so the
+ * match is case-sensitive. The returned paths are the original-case
+ * `allFileList` entries, and the per-target file ORDER follows
+ * `allFileList`.
+ *
+ * Import-config fans a file to every matching declared target. Grouping
+ * (`groupSwiftFilesBySpmTarget`) is first-target-wins. That divergence
+ * is intentional.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { coerceDeclaredSwiftTargets } from '../../language-config.js';
 import type { ImportResolutionConfig, ImportResolverStrategy, ResolveCtx } from '../types.js';
-
-/** Keep aligned with `fileMatchesSwiftTargetDir` in languages/swift/target-grouping.ts. */
-function fileMatchesTargetDir(normalizedPath: string, targetDir: string): boolean {
-  const prefix = targetDir.replace(/\\/g, '/') + '/';
-  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
-}
 
 interface SwiftTargetIndex {
   /** Target name → original-case `.swift` file paths under that target dir. */
@@ -72,10 +70,10 @@ function getSwiftTargetIndex(
   // Pre-compute each target's directory prefix once (original case, to
   // match the legacy comparison against the forward-slash-normalized,
   // case-sensitive file list — see module docstring).
-  const targetPrefixes: { name: string; prefix: string }[] = [];
+  const targetDirs: { name: string; prefix: string }[] = [];
   const byTarget = new Map<string, string[]>();
   for (const [name, dir] of targets) {
-    targetPrefixes.push({ name, prefix: dir + '/' });
+    targetDirs.push({ name, prefix: dir.replace(/\\/g, '/') + '/' });
     byTarget.set(name, []);
   }
 
@@ -88,11 +86,10 @@ function getSwiftTargetIndex(
   for (let i = 0; i < ctx.allFileList.length; i++) {
     const norm = ctx.normalizedFileList[i];
     if (!norm.endsWith('.swift')) continue;
-    for (const { name, prefix } of targetPrefixes) {
-      const dir = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
-      if (fileMatchesTargetDir(norm, dir)) {
-        byTarget.get(name)!.push(ctx.allFileList[i]);
-      }
+    for (const { name, prefix } of targetDirs) {
+      if (!norm.startsWith(prefix) && !norm.includes(`/${prefix}`)) continue;
+      const bucket = byTarget.get(name);
+      if (bucket !== undefined) bucket.push(ctx.allFileList[i]);
     }
   }
 
@@ -101,20 +98,11 @@ function getSwiftTargetIndex(
   return index;
 }
 
-/** Declaration view — inlined copy of `coerceDeclaredSwiftTargets` (no `languages/` import). */
-function declaredSwiftTargets(
-  config: NonNullable<ResolveCtx['configs']['swiftPackageConfig']>,
-): ReadonlyMap<string, string> | null {
-  if (config.origin === 'directories') return null;
-  if (config.declaredTargets instanceof Map) return config.declaredTargets;
-  return config.targets;
-}
-
 /** Swift Package.swift target map resolution strategy. */
 export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
   if (swiftPackageConfig == null) return null;
-  const declared = declaredSwiftTargets(swiftPackageConfig);
+  const declared = coerceDeclaredSwiftTargets(swiftPackageConfig);
   if (declared == null) return null;
   const moduleName = rawImportPath.split('.')[0];
   if (moduleName === '' || !declared.has(moduleName)) {

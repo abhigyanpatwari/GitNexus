@@ -156,6 +156,14 @@ let package = Package(name: "Demo", targets: makeTargets())
     expect(parsed.complete).toBe(true);
     expect(parsed.targets.get('Models')).toBe('Sources/Models');
   });
+
+  it('does not treat https:// on the same line as a commented factory', () => {
+    const parsed = parseSwiftPackageManifest(
+      'let package = Package(name: "Demo", dependencies: [.package(url: "https://example.com/foo.git", from: "1.0.0")], targets: [.target(name: "T")])',
+    );
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('T')).toBe('Sources/T');
+  });
 });
 
 describe('loadSwiftPackageConfig', () => {
@@ -234,5 +242,17 @@ let package = Package(
   it('returns null when there is no manifest and no source folders', async () => {
     const root = repo({ 'README.md': '' });
     expect(await loadSwiftPackageConfig(root)).toBeNull();
+  });
+
+  it('declares a one-line manifest that includes an https:// dependency URL', async () => {
+    const root = repo({
+      'Package.swift':
+        'let package = Package(name: "Demo", dependencies: [.package(url: "https://example.com/foo.git", from: "1.0.0")], targets: [.target(name: "T")])',
+      'Sources/T/T.swift': '',
+    });
+    const cfg = await loadSwiftPackageConfig(root);
+    expect(cfg?.origin).toBe('package.swift');
+    expect(cfg!.declaredTargets?.get('T')).toBe('Sources/T');
+    expect(cfg!.targets.get('T')).toBe('Sources/T');
   });
 });

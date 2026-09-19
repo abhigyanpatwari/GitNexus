@@ -1,10 +1,10 @@
 /**
  * `resolveImportTarget` adapter for the Swift `ScopeResolver`.
  *
- * Hybrid (KTD1): a Package.swift declaration map (`origin: 'package.swift'`)
- * resolves only declared target names. Otherwise refuse well-known SDK
- * module names and fall back to the memoized directory-segment index so
- * local folder modules still resolve without a manifest (R7).
+ * A Package.swift declaration map (`origin: 'package.swift'`) resolves
+ * only declared target names. Otherwise refuse well-known SDK module
+ * names and fall back to the memoized directory-segment index so local
+ * folder modules still resolve without a manifest.
  *
  * Same-module visibility without `import` is `populateSwiftTargetSiblings`.
  * This adapter only resolves EXPLICIT cross-module `import`s.
@@ -12,7 +12,7 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { coerceDeclaredSwiftTargets, fileMatchesSwiftTargetDir } from './target-grouping.js';
+import { coerceDeclaredSwiftTargets } from '../../language-config.js';
 import { isSwiftSdkModule } from './sdk-modules.js';
 
 export interface SwiftResolveContext {
@@ -28,6 +28,11 @@ interface SwiftModuleIndex {
   /** Module (directory-segment) name → original-case `.swift` files
    *  whose path contains a `/<module>/` directory segment. */
   readonly byModule: Map<string, string[]>;
+}
+
+interface SwiftDeclaredFileIndex {
+  readonly declared: ReadonlyMap<string, string>;
+  readonly byName: ReadonlyMap<string, string[]>;
 }
 
 const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): SwiftModuleIndex => {
@@ -51,24 +56,62 @@ const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): Swif
   return { byModule };
 });
 
-function filesForDeclaredTarget(
+const SWIFT_DECLARED_INDEX = new WeakMap<ReadonlySet<string>, SwiftDeclaredFileIndex>();
+
+function getDeclaredFilesByName(
   allFilePaths: ReadonlySet<string>,
-  targetDir: string,
-  fromFile: string,
-): string[] {
-  const out: string[] = [];
+  declared: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string[]> {
+  const hit = SWIFT_DECLARED_INDEX.get(allFilePaths);
+  if (hit !== undefined && hit.declared === declared) return hit.byName;
+
+  const dirs = [...declared.entries()].map(([name, dir]) => ({
+    name,
+    prefix: dir.replace(/\\/g, '/') + '/',
+  }));
+  const byName = new Map<string, string[]>();
+  for (const { name } of dirs) byName.set(name, []);
+
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
     if (!norm.endsWith('.swift')) continue;
-    if (!fileMatchesSwiftTargetDir(norm, targetDir)) continue;
-    if (raw === fromFile) continue;
-    out.push(raw);
+    for (const { name, prefix } of dirs) {
+      if (!norm.startsWith(prefix) && !norm.includes(`/${prefix}`)) continue;
+      const bucket = byName.get(name);
+      if (bucket !== undefined) bucket.push(raw);
+    }
   }
-  return out;
+
+  const index = { declared, byName };
+  SWIFT_DECLARED_INDEX.set(allFilePaths, index);
+  return byName;
 }
+
+const getSwiftReexportFlag = perFileSet((parsedFiles: readonly ParsedFile[]): { hasReexport: boolean } => {
+  for (const parsed of parsedFiles) {
+    for (const imp of parsed.parsedImports) {
+      if (imp.kind === 'reexport') return { hasReexport: true };
+    }
+  }
+  return { hasReexport: false };
+});
+
+const getSwiftParsedByPath = perFileSet((parsedFiles: readonly ParsedFile[]): ReadonlyMap<string, ParsedFile> => {
+  const byPath = new Map<string, ParsedFile>();
+  for (const parsed of parsedFiles) {
+    byPath.set(parsed.filePath, parsed);
+  }
+  return byPath;
+});
 
 function excludeImporter(files: readonly string[], fromFile: string): string[] {
   return files.filter((f) => f !== fromFile);
+}
+
+function firstSwiftModuleSegment(targetRaw: string): string | null {
+  if (targetRaw === '') return null;
+  const moduleName = targetRaw.split('.')[0];
+  return moduleName === '' ? null : moduleName;
 }
 
 function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | null {
@@ -86,7 +129,7 @@ function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | nu
 }
 
 /** Module files only — no @_exported closure. Null means external / unknown. */
-export function resolveSwiftModuleFiles(
+function resolveSwiftModuleFiles(
   moduleName: string,
   ctx: SwiftResolveContext,
 ): string[] | null {
@@ -94,10 +137,11 @@ export function resolveSwiftModuleFiles(
 
   const declared = coerceDeclaredSwiftTargets(ctx.resolutionConfig);
   if (declared !== null) {
-    const dir = declared.get(moduleName);
-    if (dir === undefined) return null;
-    const files = filesForDeclaredTarget(ctx.allFilePaths, dir, ctx.fromFile);
-    return files.length > 0 ? files : null;
+    if (!declared.has(moduleName)) return null;
+    const files = getDeclaredFilesByName(ctx.allFilePaths, declared).get(moduleName);
+    if (files === undefined) return null;
+    const out = excludeImporter(files, ctx.fromFile);
+    return out.length > 0 ? out : null;
   }
 
   if (isSwiftSdkModule(moduleName)) return null;
@@ -109,24 +153,27 @@ export function resolveSwiftModuleFiles(
   return out.length > 0 ? out : null;
 }
 
-export function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveContext): string[] {
-  const parsedByPath = new Map((ctx.parsedFiles ?? []).map((pf) => [pf.filePath, pf]));
-  if (parsedByPath.size === 0) return [...seed];
+function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveContext): string[] {
+  const parsedFiles = ctx.parsedFiles;
+  if (parsedFiles === undefined || parsedFiles.length === 0) return [...seed];
+  if (!getSwiftReexportFlag(parsedFiles).hasReexport) return [...seed];
+  const byPath = getSwiftParsedByPath(parsedFiles);
 
   const seenModules = new Set<string>();
   const out = new Set(seed);
   const queue = [...seed];
+  let head = 0;
 
-  while (queue.length > 0) {
-    const file = queue.shift()!;
-    const parsed = parsedByPath.get(file);
+  while (head < queue.length) {
+    const file = queue[head++];
+    const parsed = byPath.get(file);
     if (parsed === undefined) continue;
     for (const imp of parsed.parsedImports) {
       if (imp.kind !== 'reexport') continue;
       const targetRaw = imp.targetRaw;
-      if (targetRaw === null || targetRaw === '') continue;
-      const moduleName = targetRaw.split('.')[0];
-      if (moduleName === '' || seenModules.has(moduleName)) continue;
+      if (targetRaw === null) continue;
+      const moduleName = firstSwiftModuleSegment(targetRaw);
+      if (moduleName === null || seenModules.has(moduleName)) continue;
       seenModules.add(moduleName);
       const more = resolveSwiftModuleFiles(moduleName, ctx);
       if (more === null) continue;
@@ -149,9 +196,9 @@ export function resolveSwiftImportTarget(
   if (ctx === null) return null;
 
   const targetRaw = parsedImport.targetRaw;
-  if (targetRaw === null || targetRaw === '') return null;
-  const moduleName = targetRaw.split('.')[0];
-  if (moduleName === '') return null;
+  if (targetRaw === null) return null;
+  const moduleName = firstSwiftModuleSegment(targetRaw);
+  if (moduleName === null) return null;
 
   const files = resolveSwiftModuleFiles(moduleName, ctx);
   if (files === null) return null;

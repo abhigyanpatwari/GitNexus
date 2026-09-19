@@ -23,17 +23,9 @@ export function interpretSwiftImport(captures: CaptureMatch): ParsedImport | nul
   const name = captures['@import.name']?.text ?? source;
   const kindText = captures['@import.kind']?.text;
 
-  if (kindText === 'reexport') {
+  if (kindText === 'reexport' || kindText === 'named') {
     return {
-      kind: 'reexport',
-      localName: name,
-      importedName: name,
-      targetRaw: source,
-    };
-  }
-  if (kindText === 'named') {
-    return {
-      kind: 'named',
+      kind: kindText,
       localName: name,
       importedName: name,
       targetRaw: source,

@@ -37,7 +37,6 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { generateId } from '../../../../lib/utils.js';
 import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
-import { expandSwiftReexportFiles } from './import-target.js';
 
 export function emitSwiftImplicitImportEdges(
   graph: KnowledgeGraph,
@@ -45,8 +44,6 @@ export function emitSwiftImplicitImportEdges(
   _nodeLookup: GraphNodeLookup,
   resolutionConfig?: unknown,
 ): void {
-  // Group files by SPM target subtree (the module). No-source-dir → all
-  // files in one `__default__` bucket.
   const targets = coerceSwiftTargets(resolutionConfig);
   const filesByTarget = groupSwiftFilesBySpmTarget(
     parsedFiles,
@@ -54,30 +51,16 @@ export function emitSwiftImplicitImportEdges(
     targets,
   );
 
-  const allFilePaths = new Set(parsedFiles.map((parsed) => parsed.filePath));
-
   for (const [, group] of filesByTarget) {
-    const reexported = expandSwiftReexportFiles(
-      group.map((parsed) => parsed.filePath),
-      {
-        fromFile: '',
-        allFilePaths,
-        resolutionConfig,
-        parsedFiles,
-      },
-    );
-    const visible = new Set(group.map((parsed) => parsed.filePath));
-    for (const dest of reexported) visible.add(dest);
-
-    if (visible.size < 2) continue;
+    if (group.length < 2) continue;
     for (const source of group) {
-      for (const dest of visible) {
-        if (source.filePath === dest) continue;
-        const dedupKey = `${source.filePath}->${dest}`;
+      for (const dest of group) {
+        if (source.filePath === dest.filePath) continue;
+        const dedupKey = `${source.filePath}->${dest.filePath}`;
         graph.addRelationship({
           id: generateId('IMPORTS', dedupKey),
           sourceId: generateId('File', source.filePath),
-          targetId: generateId('File', dest),
+          targetId: generateId('File', dest.filePath),
           type: 'IMPORTS',
           confidence: 1.0,
           reason: 'swift-scope: implicit module visibility',

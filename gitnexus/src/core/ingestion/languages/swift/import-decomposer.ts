@@ -66,16 +66,7 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
   if (segments.length === 0) {
     const raw = identifierNode.text.trim();
     if (raw === '') return null;
-    const parts = raw.split('.');
-    return {
-      source: parts[0],
-      memberName: parts.length > 1 ? parts[parts.length - 1] : parts[0],
-      fullPath: raw,
-      testable,
-      exported,
-      importKind,
-      atNode: node,
-    };
+    segments.push(...raw.split('.'));
   }
 
   return {

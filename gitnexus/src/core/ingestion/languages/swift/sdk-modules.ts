@@ -1,6 +1,6 @@
 /**
  * Well-known Apple / Swift SDK module names that must not bind to a
- * same-named in-repo folder on the no-manifest path (R7 / #2964).
+ * same-named in-repo folder on the no-manifest path (#2964).
  *
  * Modeled on `CSHARP_EXTERNAL_ROOTS`. A Package.swift target that uses
  * one of these names still wins — this set is only the inferred/null path.

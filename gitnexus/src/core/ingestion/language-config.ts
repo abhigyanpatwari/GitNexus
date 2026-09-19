@@ -200,6 +200,22 @@ export interface SwiftPackageConfig {
   declaredTargets?: Map<string, string>;
 }
 
+/**
+ * Declaration view for explicit import resolve. `origin: 'directories'`
+ * is grouping-only. A hand-built `{ targets }` with no origin stays a
+ * declaration so existing fixtures keep working.
+ */
+export function coerceDeclaredSwiftTargets(
+  resolutionConfig: unknown,
+): ReadonlyMap<string, string> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  if (config == null) return null;
+  if (config.origin === 'directories') return null;
+  if (config.declaredTargets instanceof Map) return config.declaredTargets;
+  if (config.targets instanceof Map) return config.targets;
+  return null;
+}
+
 /** Zig package config parsed from build.zig.zon and the root build.zig */
 export interface ZigBuildZonConfig {
   /**
@@ -636,15 +652,21 @@ async function collectDeclaredNamespaces(
   return structure.incomplete ? 'truncated' : 'ok';
 }
 
-const SWIFT_SOURCE_FACTORIES = new Set([
+const SWIFT_SOURCE_FACTORY_NAMES = [
   'target',
   'executableTarget',
   'testTarget',
   'macro',
-]);
-const SWIFT_SKIP_FACTORIES = new Set(['binaryTarget', 'plugin', 'systemLibrary']);
-const SWIFT_FACTORY_RE =
-  /\.(target|executableTarget|testTarget|macro|binaryTarget|plugin|systemLibrary)\s*\(/g;
+] as const;
+const SWIFT_SKIP_FACTORY_NAMES = ['binaryTarget', 'plugin', 'systemLibrary'] as const;
+const SWIFT_SKIP_FACTORIES = new Set<string>(SWIFT_SKIP_FACTORY_NAMES);
+const SWIFT_FACTORY_RE = new RegExp(
+  `\\.(${[...SWIFT_SOURCE_FACTORY_NAMES, ...SWIFT_SKIP_FACTORY_NAMES].join('|')})\\s*\\(`,
+  'g',
+);
+const SWIFT_NAME_FIELD_RE = /\bname\s*:\s*["']([^"']+)["']/;
+const SWIFT_PATH_FIELD_RE = /\bpath\s*:\s*["']([^"']+)["']/;
+const SWIFT_PATH_KEY_RE = /\bpath\s*:/;
 
 function extractBalancedParen(source: string, openIndex: number): string | null {
   let depth = 0;
@@ -677,9 +699,9 @@ function extractBalancedParen(source: string, openIndex: number): string | null 
   return null;
 }
 
-function swiftStringField(block: string, field: string): string | undefined {
-  const match = new RegExp(String.raw`\b${field}\s*:\s*["']([^"']+)["']`).exec(block);
-  return match?.[1];
+function swiftStringField(block: string, field: 'name' | 'path'): string | undefined {
+  const re = field === 'name' ? SWIFT_NAME_FIELD_RE : SWIFT_PATH_FIELD_RE;
+  return re.exec(block)?.[1];
 }
 
 function swiftManifestHasCompletenessHazard(source: string): boolean {
@@ -688,12 +710,13 @@ function swiftManifestHasCompletenessHazard(source: string): boolean {
 
 function swiftFactoryIsCommented(source: string, index: number): boolean {
   const lineStart = source.lastIndexOf('\n', index - 1) + 1;
-  return source.slice(lineStart, index).includes('//');
+  const before = source.slice(lineStart, index);
+  // `https://` / `http://` on a minified Package.swift line is not a comment.
+  return /(^|[^:])\/\//.test(before);
 }
 
-function swiftPathIsUnreadable(block: string): boolean {
-  if (!/\bpath\s*:/.test(block)) return false;
-  const customPath = swiftStringField(block, 'path');
+function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {
+  if (!hasPathKey) return false;
   return customPath === undefined || customPath === '' || customPath.includes('\\(');
 }
 
@@ -723,17 +746,16 @@ export function parseSwiftPackageManifest(source: string): {
     }
     covered.push([match.index, paren + 1 + block.length + 1]);
     if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
-    if (!SWIFT_SOURCE_FACTORIES.has(kind)) continue;
     const name = swiftStringField(block, 'name');
     if (name === undefined || name === '') {
       sawUnreadableFactory = true;
       continue;
     }
-    if (swiftPathIsUnreadable(block)) {
+    const customPath = swiftStringField(block, 'path');
+    if (swiftPathIsUnreadable(customPath, SWIFT_PATH_KEY_RE.test(block))) {
       sawUnreadableFactory = true;
       continue;
     }
-    const customPath = swiftStringField(block, 'path');
     const dir = customPath ?? (kind === 'testTarget' ? `Tests/${name}` : `Sources/${name}`);
     const existing = targets.get(name);
     if (existing === undefined) {
@@ -770,18 +792,23 @@ async function inferSwiftDirectoryTargets(repoRoot: string): Promise<Map<string,
 }
 
 export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  const inferred = await inferSwiftDirectoryTargets(repoRoot);
-
   try {
-    const manifestPath = path.join(repoRoot, 'Package.swift');
-    const source = await fs.readFile(manifestPath, 'utf-8');
+    const source = await fs.readFile(path.join(repoRoot, 'Package.swift'), 'utf-8');
     const parsed = parseSwiftPackageManifest(source);
     if (parsed.complete) {
       if (isDev) {
         logger.info(`📦 Loaded ${parsed.targets.size} Swift package targets from Package.swift`);
       }
+      if (parsed.targets.size > 0) {
+        return {
+          targets: parsed.targets,
+          origin: 'package.swift',
+          declaredTargets: parsed.targets,
+        };
+      }
+      const inferred = await inferSwiftDirectoryTargets(repoRoot);
       return {
-        targets: parsed.targets.size > 0 ? parsed.targets : inferred,
+        targets: inferred,
         origin: 'package.swift',
         declaredTargets: parsed.targets,
       };
@@ -790,6 +817,7 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
     // Missing or unreadable — fall through to inferred folders.
   }
 
+  const inferred = await inferSwiftDirectoryTargets(repoRoot);
   if (inferred.size > 0) {
     if (isDev) {
       logger.info(`📦 Inferred ${inferred.size} Swift source folders`);

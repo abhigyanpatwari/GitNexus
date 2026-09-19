@@ -13,14 +13,13 @@
  * (`loadSwiftPackageConfig` → `resolutionConfig` → these hooks); see
  * `scope-resolver.ts` and `scope-resolution/pipeline/run.ts`.
  *
- * NOTE: This intentionally differs from the import-config module's
- * leading-`startsWith` (`import-resolvers/configs/swift.ts`): that module
- * fans a file out to EVERY matching target (a nested file can belong to
- * multiple configured target dirs there), whereas module grouping assigns
- * each file to the FIRST matching target only — one bucket per file.
+ * Path matching is the same segment-boundary rule as import-config
+ * (`fileMatchesSwiftTargetDir`). Grouping assigns each file to the FIRST
+ * matching target; import-config fans a file out to every matching target.
  */
 
 import type { SwiftPackageConfig } from '../../language-config.js';
+export { coerceDeclaredSwiftTargets } from '../../language-config.js';
 
 const DEFAULT_TARGET = '__default__';
 
@@ -49,7 +48,6 @@ export function groupSwiftFilesBySpmTarget<T>(
     return new Map([[DEFAULT_TARGET, [...items]]]);
   }
 
-  // Pre-convert target dirs to normalized prefix format once.
   const targetPrefixes = [...targets.entries()].map(([name, dir]) => ({
     name,
     prefix: dir.replace(/\\/g, '/') + '/',
@@ -63,8 +61,7 @@ export function groupSwiftFilesBySpmTarget<T>(
     const normalized = rawPath.includes('\\') ? rawPath.replace(/\\/g, '/') : rawPath;
     let assigned = false;
     for (const { name, prefix } of targetPrefixes) {
-      const dir = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
-      if (fileMatchesSwiftTargetDir(normalized, dir)) {
+      if (pathMatchesTargetPrefix(normalized, prefix)) {
         let group = groups.get(name);
         if (group === undefined) {
           group = [];
@@ -99,24 +96,11 @@ export function coerceSwiftTargets(resolutionConfig: unknown): ReadonlyMap<strin
   return null;
 }
 
-/**
- * Declaration view for explicit import resolve. `origin: 'directories'`
- * is grouping-only. A hand-built `{ targets }` with no origin stays a
- * declaration so existing fixtures keep working.
- */
-export function coerceDeclaredSwiftTargets(
-  resolutionConfig: unknown,
-): ReadonlyMap<string, string> | null {
-  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
-  if (config == null) return null;
-  if (config.origin === 'directories') return null;
-  if (config.declaredTargets instanceof Map) return config.declaredTargets;
-  if (config.targets instanceof Map) return config.targets;
-  return null;
+function pathMatchesTargetPrefix(normalizedPath: string, prefix: string): boolean {
+  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
 }
 
 /** Segment-boundary membership used by grouping and declared import resolve. */
 export function fileMatchesSwiftTargetDir(normalizedPath: string, targetDir: string): boolean {
-  const prefix = targetDir.replace(/\\/g, '/') + '/';
-  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
+  return pathMatchesTargetPrefix(normalizedPath, targetDir.replace(/\\/g, '/') + '/');
 }

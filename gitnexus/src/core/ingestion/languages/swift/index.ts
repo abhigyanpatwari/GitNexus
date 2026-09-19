@@ -36,12 +36,7 @@ export {
 export { swiftMergeBindings } from './merge-bindings.js';
 export { swiftArityCompatibility } from './arity.js';
 export { resolveSwiftImportTarget, type SwiftResolveContext } from './import-target.js';
-export {
-  groupSwiftFilesBySpmTarget,
-  coerceSwiftTargets,
-  coerceDeclaredSwiftTargets,
-  fileMatchesSwiftTargetDir,
-} from './target-grouping.js';
+export { groupSwiftFilesBySpmTarget, coerceSwiftTargets } from './target-grouping.js';
 export { populateSwiftTargetSiblings } from './target-siblings.js';
 export { emitSwiftImplicitImportEdges } from './implicit-imports.js';
 export { mirrorSwiftSiblingTypeBindings } from './sibling-type-bindings.js';
