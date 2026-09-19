@@ -4,7 +4,7 @@
 // Removing it from here improves MCP server startup time significantly.
 
 import { Command } from 'commander';
-import { createRequire } from 'node:module';
+import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
   createLazyAction,
@@ -14,16 +14,16 @@ import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.j
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
+import { writeCommandBanner } from './command-banner.js';
+import { runProcessCliUpdateNotice } from './update-notice.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
 const program = new Command();
 
 function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), ...value.split(',')];
 }
 
-program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(packageVersion());
 
 program
   .command('setup')
@@ -45,6 +45,22 @@ program
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
 
+program
+  .command('auto-sync [action]')
+  .description(
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  )
+  .addHelpText('after', () => t('help.autoSync.details'))
+  .action(createLazyAction(() => import('./auto-sync.js'), 'autoSyncCommand'));
+
+program
+  .command('watch [action]')
+  .description(
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  )
+  .addHelpText('after', () => t('help.watch.details'))
+  .action(createLazyAction(() => import('./watch.js'), 'watchAmbiguousCommand'));
+
 // Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
 // before it overwrites the var, so the postAction hook can restore it. The
 // analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
@@ -59,8 +75,13 @@ program
   .description('Index a repository (full analysis)')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
-  .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
+  .option(
+    '--no-parse-cache',
+    'Re-parse every source file instead of replaying cached parser output',
+  )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+  .option('--skip-fts', 'Skip FTS extension loading and keyword search indexes')
   .option(
     '--embeddings [limit]',
     'Enable embedding generation for semantic search (off by default). ' +
@@ -76,7 +97,10 @@ program
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
   )
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-agents-md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+  )
   .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
@@ -138,6 +162,32 @@ program
   .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  )
+  .option(
+    '--max-processes <n>',
+    'Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Default: dynamic.',
+  )
+  .option(
+    '--max-process-branching <n>',
+    'Process-detection per-node branching cap (positive integer). Default: 4.',
+  )
+  .option(
+    '--max-process-trace-depth <n>',
+    'Process-detection DFS depth cap (positive integer). Default: 10.',
+  )
+  .option(
+    '--max-entry-point-candidates <n>',
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise.',
+  )
+  .option(
+    '--spring-actuator <path>',
+    'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
+      'configprops, env). Explicit opt-in; disabled by default.',
+  )
+  .option(
+    '--asyncapi-spec <path>',
+    'Read AsyncAPI 3.x documents from this directory or file and resolve broker ' +
+      'addresses from them. Explicit opt-in; disabled by default.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
@@ -256,7 +306,8 @@ program
 
 program
   .command('status')
-  .description('Show index status for current repo')
+  .description('Show index status for the current repo or a registered index')
+  .option('-r, --repo <name>', 'Registered repository alias or path (works after checkout removal)')
   .option('--json', 'Emit machine-readable index and analyzer provenance')
   .addHelpText('after', () => t('help.identityCache.environment'))
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
@@ -267,14 +318,17 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('update')
+  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
+  .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
+
+const embeddings = program
   .command('embeddings')
-  .description('Manage the on-demand local embedding runtime')
+  .description(t('help.command.embeddings.description'));
+
+embeddings
   .command('install')
-  .description(
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
-      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
-      'Downloads only from your configured npm registry — mirrors and proxies apply.',
-  )
+  .description(t('help.command.embeddings.install.description'))
   .option(
     '--cuda',
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
@@ -282,6 +336,12 @@ program
   )
   .option('--force', 'Install into the runtime prefix even when the stack already resolves')
   .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
+
+embeddings
+  .command('sync [path]')
+  .description(t('help.command.embeddings.sync.description'))
+  .addHelpText('after', () => t('help.analyze.environment'))
+  .action(createLbugLazyAction(() => import('./embeddings-sync.js'), 'embeddingsSyncCommand'));
 
 program
   .command('clean')
@@ -369,7 +429,10 @@ program
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -380,7 +443,10 @@ program
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('-l, --limit <n>', 'Max callers/callees/processes to return')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program
@@ -469,7 +535,17 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+program.command('__update-check', { hidden: true }).action(async () => {
+  const { refresh } = await import('../core/update-check.js');
+  await refresh();
+});
+
 registerGroupCommands(program);
 localizeCliHelp(program);
 
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  writeCommandBanner(actionCommand);
+});
+
+runProcessCliUpdateNotice(packageVersion());
 program.parse(process.argv);

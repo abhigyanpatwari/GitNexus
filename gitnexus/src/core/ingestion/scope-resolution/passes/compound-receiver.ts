@@ -38,6 +38,7 @@ import {
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
+  findExportedDefIncludingImportedNames,
   findReceiverTypeBinding,
   isClassLike,
   isNamespaceNameShadowed,
@@ -128,6 +129,20 @@ interface ResolveCompoundReceiverOptions {
   readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
   /** Verified namespace handles visible in the current file. */
   readonly namespaceTargets?: ReadonlyMap<string, readonly string[]>;
+  /** A namespace member may be a name the target module imported and
+   *  publishes (hub modules). See `ScopeResolver.namespaceExportsIncludeImportedNames`. */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
+  /** Resolve a qualified CLASS name (`opmod.Op`, `hub.sub.Thing`,
+   *  `mod.Outer.Inner`) through the language's namespace chain walk
+   *  (`ScopeResolver.resolveNamespaceChains`). Seeds the dotted-chain walk
+   *  when its head is a namespace rather than a value: `opmod.Op.lookup` is
+   *  the enum `Op` reached through the module `opmod`, then its variant
+   *  `lookup` — a value of `Op` — and only then a method (PR #1432 review,
+   *  8.10). Absent ⇒ the head must bind in scope, exactly as before. */
+  readonly resolveQualifiedClass?: (
+    qualifiedName: string,
+    inScope: ScopeId,
+  ) => SymbolDefinition | undefined;
   /** Compact receiver chain for THIS site (`ReferenceSite.receiverChain`), when
    *  the language's capture emitter produced one. Present ⇒ the structural fold
    *  is tried before the text cascade; absent ⇒ behaviour is exactly as before.
@@ -241,7 +256,11 @@ function resolveConstructionExpressionClass(
     if (namespaceFiles.length > 0) {
       if (isNamespaceNameShadowed(namespaceName, inScope, scopes)) return undefined;
       const namespaceMatches = namespaceFiles
-        .map((targetFile) => findExportedDef(targetFile, exportedName, index))
+        .map((targetFile) =>
+          options.namespaceExportsIncludeImportedNames === true
+            ? findExportedDefIncludingImportedNames(targetFile, exportedName, index, scopes)
+            : findExportedDef(targetFile, exportedName, index),
+        )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
     }
@@ -1179,8 +1198,30 @@ export function resolveCompoundReceiverClass(
       options,
     );
   }
+  // Namespace-qualified chain head — `opmod.Op.lookup` / `hub.sub.Thing.x`:
+  // no binding and no class named `opmod`, but the LONGEST prefix the
+  // language's chain walk accepts as a class seeds the walk (the class
+  // itself, so a variant / static member hop is read off the class scope),
+  // and the remaining segments are walked as members. Longest first: the
+  // prefix is a class, not a value, and `a.B.C` must seed at `C`, not stop
+  // at `B` and read `C` as a member of it. The whole receiver may be the
+  // class (`opmod.Op` — no member segment left), exactly as a bare class
+  // name head resolves to the class constant above.
+  let firstHop = 1;
+  if (currentClass === undefined && headType === undefined && options.resolveQualifiedClass) {
+    for (let k = parts.length; k >= 2; k--) {
+      const prefix = parts.slice(0, k).join('.');
+      if (prefix.includes('(')) continue;
+      const seeded = options.resolveQualifiedClass(prefix, inScope);
+      if (seeded === undefined) continue;
+      currentClass = seeded;
+      currentIsClassConstant = true;
+      firstHop = k;
+      break;
+    }
+  }
 
-  for (let i = 1; i < parts.length && currentClass !== undefined; i++) {
+  for (let i = firstHop; i < parts.length && currentClass !== undefined; i++) {
     const segment = parts[i];
     if (segment === undefined) break;
     const memberName = stripCallParens(segment);

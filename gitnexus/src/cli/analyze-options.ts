@@ -20,7 +20,10 @@ export interface AnalyzeOptions {
   /** Watch quiet period in milliseconds. */
   debounce?: string;
   force?: boolean;
+  /** Commander negated flag: false only when --no-parse-cache is passed. */
+  parseCache?: boolean;
   repairFts?: boolean;
+  skipFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
    *   - `undefined` when the flag is omitted
@@ -112,6 +115,14 @@ export interface AnalyzeOptions {
   walCheckpointThreshold?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
+  /** Process-detection process cap. Positive integer string; `0` is invalid. */
+  maxProcesses?: string;
+  /** Process-detection per-node branching cap. Positive integer string. */
+  maxProcessBranching?: string;
+  /** Process-detection DFS depth cap. Positive integer string. */
+  maxProcessTraceDepth?: string;
+  /** Ranked entry-point candidate pool. Positive integer string. */
+  maxEntryPointCandidates?: string;
   embeddingThreads?: string;
   embeddingBatchSize?: string;
   embeddingSubBatchSize?: string;
@@ -124,6 +135,18 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418). Accepts a JSON
+   * bundle or a directory containing endpoint JSON files. Disabled by default.
+   */
+  springActuator?: string;
+  /**
+   * Explicit local AsyncAPI 3.x document input. Accepts a directory of
+   * documents or a single document, resolved against the repository root so an
+   * out-of-band cache and a committed directory are equally usable. Disabled by
+   * default.
+   */
+  asyncapiSpec?: string;
   /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
   embeddingBaseUrl?: string;
   /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */

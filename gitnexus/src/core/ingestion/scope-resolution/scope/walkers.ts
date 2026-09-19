@@ -173,18 +173,22 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
  * that collapses to `@scope.class` in the scope-extractor query contract.
  *
  * Semantics widened historically from `'Class' | 'Interface'` to cover
- * C#-shape languages (struct, record, enum, trait). Languages that emit
- * only `'Class'` are unaffected — the extra kinds never appear in their
- * parsed output.
+ * C#-shape languages (struct, record, enum, trait) and Zig tagged unions
+ * (`union(enum)` containers own methods like structs do). Languages that
+ * emit only `'Class'` are unaffected — the extra kinds never appear in
+ * their parsed output.
  */
 export function isClassLike(t: string): boolean {
   return (
     t === 'Class' ||
+    t === 'Protocol' ||
+    t === 'Category' ||
     t === 'Interface' ||
     t === 'Struct' ||
     t === 'Record' ||
     t === 'Enum' ||
-    t === 'Trait'
+    t === 'Trait' ||
+    t === 'Union'
   );
 }
 
@@ -208,12 +212,19 @@ export function isClassLike(t: string): boolean {
  * `resolveInheritanceBaseInScope` and `resolveQualifiedInheritanceBase` are
  * (2); receiver typing is (1).
  *
- * NOT YET INCLUDED, deliberately: `Typedef` and `Union`. They belong here
- * conceptually — the `union_item` note on `MEMBER_OWNER_NODE_TYPES` records
- * the same gap, that a union owns fields captured as `Property` yet is not a
- * recognized owner — but neither is wired as a member container today, so
- * adding them would widen a predicate nothing exercises. They join when their
- * containers do, with fixtures.
+ * `Union` IS included, via `isClassLike`: Zig wires `union(enum)` as a member
+ * container (methods dispatched on a union receiver — see the `main → isEnergy`
+ * case in `test/integration/resolvers/zig.test.ts`), so it is a shape. It
+ * lives in `isClassLike` because that is the label set the ownership walkers
+ * consult, NOT because unions inherit: Zig has no inheritance and its scope
+ * resolver supplies no heritage hooks, so a `Union` never has supertypes and
+ * its MRO is just itself. C/C++ unions still do not emit `Union` defs on the
+ * scope side, so nothing changes for them.
+ *
+ * NOT YET INCLUDED, deliberately: `Typedef`. It belongs here conceptually but
+ * is not wired as a member container today, so adding it would widen a
+ * predicate nothing exercises. It joins when its container does, with
+ * fixtures.
  */
 export function isShapeLike(t: string): boolean {
   return isClassLike(t) || t === 'TypeAlias';
@@ -342,6 +353,82 @@ export function isNamespaceNameShadowed(
   return true;
 }
 
+/**
+ * Does something between `inScope` and its module scope bind `name` to
+ * ANYTHING other than `def`?
+ *
+ * `isNamespaceNameShadowed` asks the same question for a namespace handle,
+ * where any local binding of the name is by definition not the import. A
+ * CONTAINER receiver needs the extra clause: the container may itself be the
+ * local declaration (`fn make() { const Local = struct {…}; … Local.go … }`),
+ * and reading that as its own shadow would suppress exactly the resolutions it
+ * is meant to permit — the #2723 mistake, one channel over.
+ *
+ * So a scope that binds the name answers immediately, and the answer is "not
+ * shadowed" only when one of that scope's bindings IS `def`. A name bound in a
+ * nearer scope to something else — a parameter, a local, a type binding — wins
+ * the lexical race, which is the whole point: `findClassBindingInScope` filters
+ * the chain by `isClassLike` and therefore cannot see that it lost it.
+ *
+ * The MODULE scope is inspected too, unlike `isNamespaceNameShadowed`, and the
+ * exemption is what makes that safe. That guard stops one rung short because a
+ * namespace import writes its own name into the module scope and would read as
+ * its own shadow (#2723); here the owner is compared by identity, so the binding
+ * that IS the owner exempts itself and only a binding to something ELSE answers
+ * `true`. Stopping short would leave the exact hole this walk exists to close:
+ * `findClassBindingInScope` steps over a module-scope binding that is not
+ * class-like and then answers from a WORKSPACE-wide qualified-name index, so
+ * `const Gauge = @import("other.zig").SOME_CONST;` in a file that never imports
+ * `Gauge.zig` would still resolve `Gauge.read` to that file's container.
+ * `lookupBindingsAt` is used at that scope and only there, because an imported
+ * alias lives in the finalized channel rather than in `scope.bindings`.
+ *
+ * Fail-closed like its sibling: a missing scope or a parent cycle answers
+ * `true`, because suppressing a resolution costs a missing edge while trusting a
+ * corrupt chain costs a wrong one.
+ */
+export function isOwnerNameShadowedBySomethingElse(
+  name: string,
+  def: SymbolDefinition,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = inScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return true;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return true;
+    if (scope.kind !== 'Object') {
+      const isModule = scope.kind === 'Module';
+      const imported = isModule ? lookupBindingsAt(currentId, name, scopes) : [];
+      const bindsHere =
+        scope.bindings.has(name) ||
+        scope.typeBindings.has(name) ||
+        scope.lexicalNames?.has(name) === true ||
+        imported.length > 0 ||
+        scope.ownedDefs.some((d) => {
+          const qualifiedName = d.qualifiedName;
+          if (qualifiedName === undefined) return false;
+          const dot = qualifiedName.lastIndexOf('.');
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === name;
+        });
+      if (bindsHere) {
+        if ((scope.bindings.get(name) ?? []).some((b) => b.def.nodeId === def.nodeId)) return false;
+        if (scope.ownedDefs.some((d) => d.nodeId === def.nodeId)) return false;
+        if (imported.some((b) => b.def.nodeId === def.nodeId)) return false;
+        return true;
+      }
+    }
+    // The module scope is the last rung, not a rung to skip: nothing above it
+    // can shadow a name for this file.
+    if (scope.kind === 'Module') return false;
+    currentId = scope.parent;
+  }
+  return true;
+}
+
 export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,
@@ -422,9 +509,10 @@ export function moduleScopeIdOf(
 /**
  * Look up a class-like binding by name in the given scope's chain.
  *
- * "Class-like" covers `Class | Interface | Struct | Record | Enum |
- * Trait` via the shared `isClassLike` predicate — every kind that
- * collapses to `@scope.class` in the scope-extractor query contract.
+ * "Class-like" covers `Class | Interface | Struct | Record | Enum | Trait |
+ * Protocol | Category` via the shared `isClassLike` predicate. Objective-C
+ * protocol and category definitions are graph-side containers rather than
+ * `@scope.class` captures.
  *
  * Walks the scope chain upward and consults TWO sources at each step:
  *   1. `scope.bindings` — populated during scope-extraction Pass 2 with
@@ -694,6 +782,20 @@ function soleBoundBaseName(bound: string): string | undefined {
   return base.length === 0 ? undefined : base;
 }
 
+export type ClassBindingLookup = {
+  /**
+   * When false, skip the workspace-unique QualifiedNameIndex hit (and the
+   * dotted-tail variant). Default true — Go inheritance still needs that
+   * hit because namespace-style imports often create no scope binding.
+   *
+   * Constructor-form free calls pass false so a unique type name is not
+   * treated as a precise in-scope binding. Those sites belong to
+   * `pickUniqueGlobalClass`, which labels the edge as a guess and runs
+   * `isGlobalNameFallbackPlausible`.
+   */
+  readonly uniqueQualifiedNameFallback?: boolean;
+};
+
 export function findClassBindingInScope(
   startScope: ScopeId,
   receiverName: string,
@@ -710,6 +812,7 @@ export function findClassBindingInScope(
    * selection. Only receiver-chain base and step resolution passes this.
    */
   stripDecoration?: DecorationStripper,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   // A TYPE PARAMETER is not a class, and it is checked before every route below
   // rather than inside one of them because each route would otherwise reach a
@@ -718,7 +821,13 @@ export function findClassBindingInScope(
   // fallback after stripping. The declaration that introduced the parameter is
   // the only thing that knows, and it knows for all three.
   if (bindsTypeParameter(startScope, receiverName, scopes)) {
-    return resolveThroughTypeParameterBound(startScope, receiverName, scopes, stripDecoration);
+    return resolveThroughTypeParameterBound(
+      startScope,
+      receiverName,
+      scopes,
+      stripDecoration,
+      lookup,
+    );
   }
 
   const local = walkScopeChain(startScope, receiverName, scopes, (def) => isClassLike(def.type));
@@ -727,21 +836,25 @@ export function findClassBindingInScope(
   // Fallback for languages (Go) where namespace-style imports don't
   // create scope bindings: resolve via QualifiedNameIndex. Only fires
   // when the scope-chain walk found nothing; single-match wins.
-  const qnames = scopes.qualifiedNames.get(receiverName);
-  if (qnames.length === 1) {
-    const def = scopes.defs.get(qnames[0]!);
-    if (def !== undefined && isClassLike(def.type)) return def;
-  }
-  // Second fallback: dotted names like "models.User" — try the simple
-  // name (tail after last dot) for languages where defs are indexed by
-  // simple name (Go). Only when the dotted lookup fails.
-  if (receiverName.includes('.')) {
-    const simple = receiverName.slice(receiverName.lastIndexOf('.') + 1);
-    if (simple.length > 0 && simple !== receiverName) {
-      const simpleIds = scopes.qualifiedNames.get(simple);
-      if (simpleIds.length === 1) {
-        const def = scopes.defs.get(simpleIds[0]!);
-        if (def !== undefined && isClassLike(def.type)) return def;
+  // Constructor-form free calls opt out — a unique type name is a guess,
+  // not proof the type is in scope (see `ClassBindingLookup`).
+  if (lookup?.uniqueQualifiedNameFallback !== false) {
+    const qnames = scopes.qualifiedNames.get(receiverName);
+    if (qnames.length === 1) {
+      const def = scopes.defs.get(qnames[0]!);
+      if (def !== undefined && isClassLike(def.type)) return def;
+    }
+    // Second fallback: dotted names like "models.User" — try the simple
+    // name (tail after last dot) for languages where defs are indexed by
+    // simple name (Go). Only when the dotted lookup fails.
+    if (receiverName.includes('.')) {
+      const simple = receiverName.slice(receiverName.lastIndexOf('.') + 1);
+      if (simple.length > 0 && simple !== receiverName) {
+        const simpleIds = scopes.qualifiedNames.get(simple);
+        if (simpleIds.length === 1) {
+          const def = scopes.defs.get(simpleIds[0]!);
+          if (def !== undefined && isClassLike(def.type)) return def;
+        }
       }
     }
   }
@@ -787,6 +900,7 @@ function resolveThroughTypeParameterBound(
   parameterName: string,
   scopes: ScopeResolutionIndexes,
   stripDecoration?: DecorationStripper,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   const bound = typeParameterAt(startScope, parameterName, scopes)?.bound;
   if (bound === undefined) return undefined;
@@ -794,7 +908,7 @@ function resolveThroughTypeParameterBound(
   if (baseName === undefined || baseName === parameterName) return undefined;
   // A bound naming another parameter terminates here rather than recursing.
   if (bindsTypeParameter(startScope, baseName, scopes)) return undefined;
-  return findClassBindingInScope(startScope, baseName, scopes, stripDecoration);
+  return findClassBindingInScope(startScope, baseName, scopes, stripDecoration, lookup);
 }
 
 function normalizeTemplateArgToken(value: string): string {
@@ -1195,6 +1309,7 @@ export function resolveInheritanceBaseInScope(
   scopes: ScopeResolutionIndexes,
   rawQualifiedName?: string,
   enclosingClassDef?: SymbolDefinition,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
   // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
@@ -1214,7 +1329,7 @@ export function resolveInheritanceBaseInScope(
     if (qualified !== undefined) return qualified;
   }
   return (
-    findClassBindingInScope(startScope, baseName, scopes) ??
+    findClassBindingInScope(startScope, baseName, scopes, undefined, lookup) ??
     resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
   );
 }
@@ -1438,6 +1553,43 @@ export function resolveAmbiguousInheritanceBaseViaImports(
 function dirnameOf(filePath: string): string {
   const idx = filePath.lastIndexOf('/');
   return idx === -1 ? '' : filePath.slice(0, idx);
+}
+
+/**
+ * True when the caller can see `classDef` through import evidence, not
+ * merely because the class name is workspace-unique.
+ *
+ * Exact imported file (`#include "user.h"`) and a finalize-resolved
+ * `targetDefId` (named `use` / `pub use` followed to the def) are
+ * precise. An import that *names* this class (`targetExportedName`)
+ * is also precise — a barrel's `targetFile` is the re-exporting module,
+ * not the defining file. A sibling-file import of a *different* name
+ * is not: `use crate::a::bar` does not make `Foo` in `a/foo.rs` visible.
+ *
+ * Directory-only matching is intentionally omitted. The same-directory
+ * tier on `resolveAmbiguousInheritanceBaseViaImports` is for picking
+ * among *ambiguous* names (C# namespace `using`); it is not proof a
+ * unique constructor type is in scope.
+ */
+export function isClassFileImportGrounded(
+  startScope: ScopeId,
+  classDef: Pick<SymbolDefinition, 'filePath' | 'nodeId'>,
+  scopes: ScopeResolutionIndexes,
+  importedName: string,
+): boolean {
+  const callerModule = moduleScopeIdOf(startScope, scopes);
+  const callerFile = scopes.scopeTree.getScope(startScope)?.filePath;
+  if (callerFile !== undefined && classDef.filePath === callerFile) return true;
+  if (callerModule === null) return false;
+  const importEdges = scopes.imports.get(callerModule);
+  if (importEdges === undefined || importEdges.length === 0) return false;
+  for (const edge of importEdges) {
+    if (edge.targetDefId !== undefined && edge.targetDefId === classDef.nodeId) return true;
+    if (edge.targetFile === null) continue;
+    if (edge.targetFile === classDef.filePath) return true;
+    if (importedName.length > 0 && edge.targetExportedName === importedName) return true;
+  }
+  return false;
 }
 
 /**
@@ -2103,4 +2255,58 @@ export function findExportedDef(
     if (ref.origin === 'local') return ref.def;
   }
   return undefined;
+}
+
+/**
+ * `findExportedDef`, then — when the target file declares no such local — a
+ * name the target file IMPORTED and publishes as its own (a hub module).
+ *
+ * A Zig hub is a file made only of re-exports: `pub const Terminal =
+ * @import("Terminal.zig");`, `pub const Thing = @import("thing.zig").Thing;`.
+ * Its module scope owns NO local binding, so `findExportedDef` answers nothing
+ * for `terminal.Terminal.init()` or `t: stdx.Thing`, and the finalized channel
+ * (`lookupBindingsAt`) is the only place the published names exist — origin
+ * `import` / `namespace` / `reexport`, def already resolved to the declaring
+ * file. Measured on ghostty (788 Zig files) before and after this helper:
+ * CALLS into `src/terminal/` from outside that directory went from 46 to 253;
+ * on tigerbeetle, CALLS into its `stdx` hub from outside went from 837 to 1500.
+ *
+ * Opt-in per provider (`ScopeResolver.namespaceExportsIncludeImportedNames`):
+ * in most languages a module's imports are NOT its exports (a TypeScript
+ * `import { X }` publishes nothing), and the finalized edge cannot say whether
+ * the import was written `pub`. Zig opts in because a hub member a consumer
+ * can name through the hub IS public — a private import cannot be reached
+ * through the hub in code that compiles.
+ *
+ * Class-like defs win over anything else bound under the name (a re-exported
+ * type over a same-named value), and a name the finalized channel binds to
+ * several distinct defs is refused — never guess a namespace member.
+ */
+export function findExportedDefIncludingImportedNames(
+  targetFile: string,
+  memberName: string,
+  index: WorkspaceResolutionIndex,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const local = findExportedDef(targetFile, memberName, index);
+  if (local !== undefined) return local;
+  const moduleScope = index.moduleScopeByFile.get(targetFile);
+  if (moduleScope === undefined) return undefined;
+  let picked: SymbolDefinition | undefined;
+  for (const ref of lookupBindingsAt(moduleScope.id, memberName, scopes)) {
+    if (ref.origin !== 'import' && ref.origin !== 'namespace' && ref.origin !== 'reexport')
+      continue;
+    if (picked === undefined) {
+      picked = ref.def;
+      continue;
+    }
+    if (picked.nodeId === ref.def.nodeId) continue;
+    if (isClassLike(ref.def.type) && !isClassLike(picked.type)) {
+      picked = ref.def;
+      continue;
+    }
+    if (isClassLike(picked.type) && !isClassLike(ref.def.type)) continue;
+    return undefined; // two distinct defs under one published name → refuse
+  }
+  return picked;
 }

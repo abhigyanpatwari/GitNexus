@@ -72,4 +72,10 @@ describe('FieldRegistry', () => {
 
     expect(reg.lookupFieldByOwner('class:User', 'name')?.nodeId).toBe('prop:second');
   });
+
+  it('returns the same frozen empty array on miss', () => {
+    const reg = createFieldRegistry();
+    expect(reg.lookupAllByOwner('class:Nope', 'x')).toBe(reg.lookupAllByOwner('class:Nope', 'y'));
+    expect(Object.isFrozen(reg.lookupAllByOwner('class:Nope', 'x'))).toBe(true);
+  });
 });

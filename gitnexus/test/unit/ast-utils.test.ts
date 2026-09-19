@@ -102,4 +102,25 @@ describe('ensureAndParse', () => {
     expect(parseSourceSafeSpy).toHaveBeenCalled();
     expect(result).not.toBeNull();
   });
+
+  it('parses Objective-C .h declarations and method snippets with the objc grammar', async () => {
+    const objcParse = vi.fn().mockReturnValue({ lang: 'objc' });
+    const cppParse = vi.fn().mockReturnValue({ lang: 'cpp' });
+    createParserForLanguage.mockImplementation(async (language: string) => {
+      if (language === 'objective-c') return { parse: objcParse };
+      if (language === 'cpp') return { parse: cppParse };
+      throw new Error(`unexpected language ${language}`);
+    });
+
+    const { ensureAndParse } = await import('../../src/core/embeddings/ast-utils.js');
+
+    await ensureAndParse('@interface Worker\n- (void)run;\n@end\n', 'Worker.h');
+    await ensureAndParse('- (void)run;\n', 'Worker.h');
+    await ensureAndParse('class Widget { int value; };\n', 'widget.h');
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'Worker.h');
+    expect(createParserForLanguage).toHaveBeenCalledWith('cpp', 'widget.h');
+    expect(objcParse).toHaveBeenCalledTimes(2);
+    expect(cppParse).toHaveBeenCalledTimes(1);
+  });
 });

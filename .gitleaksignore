@@ -1,2 +1,4 @@
 # Deleted README placeholder from PR #2458; no credential was present.
 c9fdab17f25ebaf332fba6e6ba55ee328f20fe66:README.md:curl-auth-header:348
+# Synthetic Kotlin Actuator fixture value from PR #3107; no credential was present.
+3951079300a18b14e79f5b5f5dd778ae19ced6e3:gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts:generic-api-key:8

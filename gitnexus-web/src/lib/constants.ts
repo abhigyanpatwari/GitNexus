@@ -8,6 +8,8 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Folder: '#6366f1', // Indigo
   File: '#3b82f6', // Blue
   Class: '#f59e0b', // Amber - stands out
+  Protocol: '#ec4899', // Pink - like Interface
+  Category: '#14b8a6', // Teal - like Method
   Function: '#10b981', // Emerald
   Method: '#14b8a6', // Teal
   Variable: '#64748b', // Slate - muted (less important)
@@ -37,6 +39,7 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Constructor: '#10b981', // Emerald - like Function
   Template: '#a78bfa', // Violet light - like Type
   Route: '#f43f5e', // Rose - like Process
+  Destination: '#fb7185', // Rose light - like Route, the broker-side counterpart
   Tool: '#a855f7', // Purple - like Project
   BasicBlock: '#475569', // Slate darker - control-flow node (muted, taint/PDG substrate)
 };
@@ -50,6 +53,8 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Folder: 10, // Structural - clearly bigger than files
   File: 6, // Common element - smaller than folders
   Class: 8, // Important code structure
+  Protocol: 7, // Like Interface
+  Category: 3, // Like Method
   Function: 4, // Common code element - small
   Method: 3, // Smaller than function
   Variable: 2, // Tiny - leaf node
@@ -79,6 +84,7 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Constructor: 4, // Like Function
   Template: 3, // Like Type
   Route: 5, // Like Enum
+  Destination: 5, // Like Route - the broker-side counterpart
   Tool: 5, // Like Enum
   BasicBlock: 2, // Tiny - control-flow node (taint/PDG substrate)
 };
@@ -113,6 +119,8 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
+  'Protocol',
+  'Category',
   'Function',
   'Method',
   'Property', // Kotlin/Java fields (HAS_PROPERTY + DEFINES File→Property)
@@ -127,6 +135,8 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Enum',
   'Type',

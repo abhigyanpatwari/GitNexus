@@ -14,6 +14,7 @@ import type { JavaSpringAopFact } from './spring-aop.js';
 import type { JavaSpringConditionalFact } from './spring-conditionals.js';
 import type { JavaSpringDiClassFact } from './spring-di.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
 import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
 
 export type JavaClassAnnotationFact = ClassAnnotationFact;
@@ -28,6 +29,7 @@ export interface JavaCaptureSideChannel {
   readonly springDiFacts?: readonly JavaSpringDiClassFact[];
   readonly springDynamicLookupFacts?: readonly SpringDynamicLookupFact[];
   readonly springNonHttpHandlerFacts?: readonly JavaSpringNonHttpHandlerFact[];
+  readonly springMessageProducerFacts?: readonly SpringMessageProducerFact[];
 }
 
 const classAnnotations = createClassAnnotationFactStore();
@@ -37,6 +39,7 @@ const springConditionalFacts = new Map<string, readonly JavaSpringConditionalFac
 const springDiFacts = new Map<string, readonly JavaSpringDiClassFact[]>();
 const springDynamicLookupFacts = new Map<string, readonly SpringDynamicLookupFact[]>();
 const springNonHttpHandlerFacts = new Map<string, readonly JavaSpringNonHttpHandlerFact[]>();
+const springMessageProducerFacts = new Map<string, readonly SpringMessageProducerFact[]>();
 
 /** Clear facts retained by a prior workspace pass in a long-lived process. */
 export function clearJavaClassAnnotationFacts(): void {
@@ -47,6 +50,7 @@ export function clearJavaClassAnnotationFacts(): void {
   springDiFacts.clear();
   springDynamicLookupFacts.clear();
   springNonHttpHandlerFacts.clear();
+  springMessageProducerFacts.clear();
 }
 
 export function setJavaSpringAopFacts(filePath: string, facts: readonly JavaSpringAopFact[]): void {
@@ -134,6 +138,20 @@ export function getJavaSpringNonHttpHandlerFacts(
   return springNonHttpHandlerFacts.get(filePath) ?? [];
 }
 
+export function setJavaSpringMessageProducerFacts(
+  filePath: string,
+  facts: readonly SpringMessageProducerFact[],
+): void {
+  if (facts.length === 0) springMessageProducerFacts.delete(filePath);
+  else springMessageProducerFacts.set(filePath, facts);
+}
+
+export function getJavaSpringMessageProducerFacts(
+  filePath: string,
+): readonly SpringMessageProducerFact[] {
+  return springMessageProducerFacts.get(filePath) ?? [];
+}
+
 /** Snapshot worker-local Java annotation facts for ParsedFile serialization. */
 export function collectJavaCaptureSideChannel(
   filePath: string,
@@ -145,6 +163,7 @@ export function collectJavaCaptureSideChannel(
   const diFacts = springDiFacts.get(filePath) ?? [];
   const dynamicLookupFacts = springDynamicLookupFacts.get(filePath) ?? [];
   const nonHttpHandlerFacts = springNonHttpHandlerFacts.get(filePath) ?? [];
+  const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
   if (
     facts.length === 0 &&
@@ -154,6 +173,7 @@ export function collectJavaCaptureSideChannel(
     diFacts.length === 0 &&
     dynamicLookupFacts.length === 0 &&
     nonHttpHandlerFacts.length === 0 &&
+    messageProducerFacts.length === 0 &&
     packageFact === undefined
   ) {
     return undefined;
@@ -168,6 +188,9 @@ export function collectJavaCaptureSideChannel(
     ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
     ...(dynamicLookupFacts.length > 0 ? { springDynamicLookupFacts: dynamicLookupFacts } : {}),
     ...(nonHttpHandlerFacts.length > 0 ? { springNonHttpHandlerFacts: nonHttpHandlerFacts } : {}),
+    ...(messageProducerFacts.length > 0
+      ? { springMessageProducerFacts: messageProducerFacts }
+      : {}),
   };
 }
 
@@ -192,6 +215,7 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     setJavaSpringDiFacts(parsed.filePath, []);
     setJavaSpringDynamicLookupFacts(parsed.filePath, []);
     setJavaSpringNonHttpHandlerFacts(parsed.filePath, []);
+    setJavaSpringMessageProducerFacts(parsed.filePath, []);
     setJavaPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
@@ -219,6 +243,10 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
   setJavaSpringNonHttpHandlerFacts(
     parsed.filePath,
     Array.isArray(data.springNonHttpHandlerFacts) ? data.springNonHttpHandlerFacts : [],
+  );
+  setJavaSpringMessageProducerFacts(
+    parsed.filePath,
+    Array.isArray(data.springMessageProducerFacts) ? data.springMessageProducerFacts : [],
   );
   setJavaPackageFact(
     parsed.filePath,

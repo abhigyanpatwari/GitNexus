@@ -326,6 +326,16 @@ describe('withHfDownloadRetry env overrides', () => {
     expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS);
   });
 
+  it('HF_MAX_ATTEMPTS=0.5 floors below 1 and falls back to the built-in default', async () => {
+    process.env.HF_MAX_ATTEMPTS = '0.5';
+    const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));
+    const cb = new CircuitBreaker({ failureThreshold: 99_999 });
+    await expect(withHfDownloadRetry(fn, { circuit: cb, baseDelayMs: 0 })).rejects.toThrow(
+      'fetch failed',
+    );
+    expect(fn).toHaveBeenCalledTimes(HF_MAX_ATTEMPTS);
+  });
+
   it('HF_MAX_ATTEMPTS=0 falls back to the built-in default', async () => {
     process.env.HF_MAX_ATTEMPTS = '0';
     const fn = vi.fn().mockRejectedValue(new Error('fetch failed'));

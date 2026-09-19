@@ -9,9 +9,13 @@
  * Initial classification (locked in Ring 1 #910):
  *   - production: javascript, typescript, python, java, c, cpp, csharp, go,
  *                 ruby, rust, php, kotlin, swift, dart
- *   - experimental: vue (embedded-language / SFC complexity),
+ *   - experimental: objective-c (fork provider MVP),
+ *                   vue (embedded-language / SFC complexity),
  *                   cobol (regex-provider path)
  *   - quarantined: (none)
+ *
+ * Added after Ring 1: zig enters as `experimental` (new language
+ * integration; promotion to `production` is a separate governance PR).
  */
 
 import { SupportedLanguages } from '../languages.js';
@@ -31,6 +35,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Java]: 'production',
     [SupportedLanguages.C]: 'production',
     [SupportedLanguages.CPlusPlus]: 'production',
+    [SupportedLanguages.ObjectiveC]: 'experimental',
     [SupportedLanguages.CSharp]: 'production',
     [SupportedLanguages.Go]: 'production',
     [SupportedLanguages.Ruby]: 'production',
@@ -41,6 +46,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Dart]: 'production',
     [SupportedLanguages.Vue]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
+    [SupportedLanguages.Zig]: 'experimental',
   };
 
 /** Convenience predicate: is this language gating Ring 4 retirement? */

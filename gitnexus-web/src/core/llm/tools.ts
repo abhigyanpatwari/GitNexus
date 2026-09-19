@@ -14,7 +14,11 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
-import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
+import type {
+  EnrichedSearchResult,
+  GrepOptions,
+  GrepResponse,
+} from '../../services/backend-client';
 
 /**
  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
@@ -44,7 +48,7 @@ export interface GraphRAGBackend {
     query: string,
     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
   ) => Promise<EnrichedSearchResult[]>;
-  grep: (pattern: string, limit?: number) => Promise<GrepResult[]>;
+  grep: (pattern: string, limit?: number, opts?: GrepOptions) => Promise<GrepResponse>;
   readFile: (filePath: string) => Promise<string>;
 }
 
@@ -375,20 +379,22 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         }
 
         const limit = maxResults ?? 100;
-        const fullPattern = fileFilter
-          ? `(?=.*${fileFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}).*${pattern}`
-          : pattern;
-
-        const results = await backendGrep(fullPattern, limit);
+        const { results, timedOut } = await backendGrep(pattern, limit, {
+          fileFilter,
+          caseSensitive,
+        });
+        const timeoutMsg = timedOut
+          ? '\n\n(Scan timed out after a few seconds — results may be incomplete)'
+          : '';
 
         if (results.length === 0) {
-          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
+          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}${timeoutMsg}`;
         }
 
         const formatted = results.map((r) => `${r.filePath}:${r.line}: ${r.text}`).join('\n');
         const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
 
-        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
+        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}${timeoutMsg}`;
       } catch (error) {
         return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -396,16 +402,20 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'grep',
       description:
-        'Search for exact text patterns across all files using regex. Use for finding specific strings, error messages, TODOs, variable names, etc.',
+        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds (the tool will say so if the scan was incomplete), so prefer precise patterns over catch-alls.',
       schema: z.object({
         pattern: z
           .string()
-          .describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
+          .describe(
+            'Regex pattern to search for (e.g., "TODO|FIXME", "console\\.log", "signOrder")',
+          ),
         fileFilter: z
           .string()
           .optional()
           .nullable()
-          .describe('Only search files containing this string (e.g., ".ts", "src/api")'),
+          .describe(
+            'Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")',
+          ),
         caseSensitive: z
           .boolean()
           .optional()
@@ -1219,7 +1229,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
           const baseName = targetFileName.replace(/\.[^/.]+$/, '');
           try {
-            const hints = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
+            const { results: hints } = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
             const filtered = hints.filter((h) => h.filePath !== targetFilePath);
 
             if (filtered.length > 0) {

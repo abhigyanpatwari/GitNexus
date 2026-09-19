@@ -34,6 +34,14 @@ export interface PipelineResult {
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
   /**
+   * Caller node id → simple names of every callee it has a CALLS edge to, read
+   * through the streaming sink when one was active (the raw graph holds no
+   * streamed edge). Denominator for the name-fallback census
+   * (`countCallsByLanguage`), so a guess count can be read as a share of the
+   * call graph. Absent only when scope resolution did not run.
+   */
+  resolvedCalleeNamesByCaller?: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
    * Interfaces whose structural-satisfaction check could not be completed
    * (#2873). Empty for languages with no structural detection.
    *
@@ -54,6 +62,8 @@ export interface PipelineResult {
   usedWorkerPool: boolean;
   /** Files actually dispatched to parser workers after parse-cache lookup. */
   reparsedFileCount: number;
+  /** Files restored from parse-cache chunks without parser-worker dispatch. */
+  parseCacheHitFileCount?: number;
   /** Files omitted from scope-resolution while the rest of analysis continued. */
   scopeExtractionFailures: readonly string[];
   /** Files scope resolution could not inspect because their parser was unavailable. */

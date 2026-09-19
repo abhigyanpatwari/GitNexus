@@ -217,6 +217,36 @@ func main() { fmt.Println() }
     expect(sources).toEqual(['fmt']);
   });
 
+  it('does not mark a bare generic constructor as package-qualified', () => {
+    const src = `
+package main
+
+type Box[T any] struct{}
+
+func main() { _ = Box[int]{} }
+`;
+    const refs = emitGoScopeCaptures(src, 'main.go').filter(
+      (m) => m['@reference.call.constructor'] !== undefined,
+    );
+    expect(refs.some((m) => m['@reference.name']?.text === 'Box')).toBe(true);
+    expect(refs.some((m) => m['@reference.qualified-name'] !== undefined)).toBe(false);
+  });
+
+  it('keeps the written spelling for a package-qualified generic constructor', () => {
+    const src = `
+package main
+
+import "example.com/models"
+
+func main() { _ = models.Box[int]{} }
+`;
+    const box = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@reference.call.constructor'] !== undefined && m['@reference.name']?.text === 'Box',
+    );
+    expect(box).toBeDefined();
+    expect(box!['@reference.qualified-name']?.text).toBe('models.Box[int]');
+  });
+
   it('captures a generic function declaration', () => {
     const src = `
 package main

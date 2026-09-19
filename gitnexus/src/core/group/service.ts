@@ -6,6 +6,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
+import { stalenessStatus, type StalenessInfo, type StalenessStatus } from '../staleness-status.js';
 import {
   canonicalizePath,
   loadMeta,
@@ -51,6 +52,17 @@ export interface GroupToolPort {
     repo: GroupRepoHandle,
     params: {
       target: string;
+      /**
+       * Target-selector params, same semantics as the single-repo `impact`
+       * tool: `target_uid` is the zero-ambiguity lookup (it wins over the
+       * name), `file_path`/`kind` narrow a name shared by several symbols
+       * (e.g. same-named Api/Impl/Controller layers). The port implementation
+       * consumes them directly; the Phase-1 caller in cross-impact.ts is
+       * responsible for threading them from the MCP `impact` args.
+       */
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -517,6 +529,14 @@ export class GroupService {
       // can otherwise see contract counts that disagree with this payload, with
       // nothing here explaining why the write was skipped.
       registryOutcome: result.registryOutcome,
+      // Data-quality signals surfaced from the sync run: links whose provider
+      // endpoint never resolved to a graph symbol, per-repo extraction
+      // failures with reasons, and operator warnings (e.g. bridge.lbug write
+      // failed after contracts.json was written). Always present so MCP
+      // consumers can branch on them without existence checks.
+      degradedLinks: result.degradedLinks,
+      failedRepos: result.failedRepos,
+      warnings: result.warnings,
     };
   }
 
@@ -824,6 +844,17 @@ export class GroupService {
         /** Set only when `unresolvable`; says what could not be resolved. */
         unresolvableReason?: string;
         commitsBehind?: number;
+        /**
+         * What the staleness check could establish (#3256). Additive:
+         * `indexStale` and `commitsBehind` keep their meaning. Two rows report
+         * `unknown` and they do NOT agree on those two fields, so read them
+         * together with this one: no commit was recorded (`indexStale: true`,
+         * `commitsBehind: -1`, the sentinel that case has always used), or the
+         * git probe could not answer (`indexStale: false`, `commitsBehind: 0`,
+         * straight from `checkStaleness`). MCP/HTTP `stalenessPayload` reports
+         * neither number — it omits `commitsBehind` for `unknown` entirely.
+         */
+        status?: StalenessStatus;
       }
     > = {};
 
@@ -853,9 +884,9 @@ export class GroupService {
         const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
           (await loadMeta(repoObj.storagePath)) ?? {};
 
-        const staleness = meta.lastCommit
+        const staleness: StalenessInfo = meta.lastCommit
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)
-          : { isStale: true, commitsBehind: -1 };
+          : { isStale: true, commitsBehind: -1, status: 'unknown' };
 
         const snapshot = registry?.repoSnapshots?.[repoPath];
         const contractsStale =
@@ -867,6 +898,7 @@ export class GroupService {
           missing: false,
           unresolvable: false,
           commitsBehind: staleness.commitsBehind,
+          status: stalenessStatus(staleness),
         };
       } catch (err) {
         // The registry read succeeded, so its answer about this row is

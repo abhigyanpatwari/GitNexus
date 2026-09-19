@@ -6,6 +6,7 @@ type DetectChangesSummary = {
   changed_count?: number;
   affected_count?: number;
   risk_level?: string;
+  message?: string;
 };
 
 type ChangedSymbol = {
@@ -55,6 +56,29 @@ export function formatDetectChangesResult(result: unknown): string {
     );
 
   if ((summary.changed_count ?? 0) === 0) {
+    // Parse-fail payloads set `partial` and an honest `message` (#2915/#3131).
+    // Production *clean* trees also set English `message: 'No changes detected.'`
+    // — that must go through `t('tool.detectChanges.noChanges')` or zh-CN never
+    // fires. Only pass the backend string through on a degraded/parse-fail run.
+    if (
+      payload.partial &&
+      typeof summary.message === 'string' &&
+      summary.message.trim().length > 0
+    ) {
+      return [...notes, summary.message.trim()].join('\n');
+    }
+    // Confirmed no-overlap: files parsed, mapping succeeded, zero symbols.
+    // `queryDegraded` is `partial: true` with the same counts and no message —
+    // do not call that a confirmed mapping (#3131 honesty).
+    if (!payload.partial && (summary.changed_files ?? 0) > 0) {
+      return [
+        ...notes,
+        t('tool.detectChanges.noOverlappingSymbols', { files: summary.changed_files }),
+      ].join('\n');
+    }
+    if (payload.partial) {
+      return notes.join('\n');
+    }
     return [...notes, t('tool.detectChanges.noChanges')].join('\n');
   }
 

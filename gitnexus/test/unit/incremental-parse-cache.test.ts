@@ -15,6 +15,8 @@ import {
   saveParseCache,
   pruneCache,
   slimParseWorkerResultsForCache,
+  getColdParseRebuildDir,
+  createColdParseRebuildDir,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
@@ -244,11 +246,51 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  it('pins SCHEMA_BUMP to 82 so concurrent bumps cannot silently collide (#2766, #3015, #3088)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(82);
+  // Moved 89 -> 90 for #2865's decorator-route `handlerName` after #3128
+  // merged and took 89. origin/main is 89; 90 is the next free value and
+  // still unused by other open PRs' parse-cache.ts heads — the same
+  // collision the paragraph above describes, caught this time by re-checking
+  // at merge.
+  // Moved 90 -> 91 for #3130's Kotlin Spring decoratorRoutes and Kotlin
+  // ModuleConstants shadow metadata, both persisted worker output.
+  // Moved 91 -> 92 for #1432 (Zig): the shared callable-flow reader's member-call
+  // capture facts change for Kotlin / C++ / C# / TypeScript, and Zig is captured
+  // for the first time with rules that moved within the PR — a warm cache from
+  // an earlier head of that branch replayed the old facts across `--force`.
+  // Moved 92 -> 93 for #3161 (Zig static gating): call captures inside a
+  // comptime-false branch gain the `@reference.static-gated` marker, a
+  // parse-time fact a warm cache from an earlier head would replay without.
+  // Moved 94 -> 95 for #3179: Objective-C framework-import-only header
+  // classification changed parse-worker output for the same file content.
+  // Moved 95 -> 96 for #3179: Objective-C macro-marker preprocessing now
+  // recognizes form feed and vertical tab as C preprocessing whitespace.
+  // Moved 96 -> 97 for #3179: comment-prefixed directives and invalid numeric
+  // marker prefixes change the parse-time normalization result.
+  // Moved 97 -> 98 for #3219 (Zig callable-value references): `ZIG_SCOPE_QUERY`
+  // gained three `@reference.value-ref` rules, so a `.zig` file now yields
+  // `value-ref` entries in `ParsedFile.referenceSites` where it yielded none.
+  // A warm pre-v98 cache replays the old, empty site list for every unchanged
+  // file — `--force` included, since shards are content-addressed — so no USES
+  // edge is emitted, the boundary probe measures a real zero, and `impact` on a
+  // registered accessor goes back to `epistemic: "exact"`: the #3399 defect,
+  // silently un-fixed on exactly the incremental path most users are on.
+  // Moved 98 -> 99 for #3190: lexical import provenance and corrected export
+  // evidence. origin/main took 98 for #3219 and 99 for #3190.
+  // Moved 99 -> 100 for #3253: retain absolute Rust import qualifiers.
+  // Moved 100 -> 101 for #3294 review: retain keyword glob paths and distinguish
+  // restricted pub(...) imports from unrestricted reexports.
+  // Moved 101 -> 102 for #3273: preserve exact call-result assignment facts
+  // required by post-resolution Swift return-type replay.
+  it('pins SCHEMA_BUMP to 102 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(102);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
+    // The PREVIOUS version must fail the reuse gate, not merely differ from the
+    // current one — a hardcoded number outside the conflict hunk rebases cleanly
+    // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    // Every nearby historical or in-flight value is rejected.
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
@@ -928,6 +970,80 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await rm(path.join(dir, 'parse-cache', `${key}.v8`), { force: true });
       const loaded = await loadParseCacheChunk(cache, key);
       expect(loaded).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists cold-rebuild shards under staging without touching the live parse-cache dir', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-stage-'));
+    try {
+      const liveKey = 'a'.repeat(64);
+      const stagedKey = 'b'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[liveKey, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([liveKey]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([liveKey, stagedKey]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, stagedKey, [minimalResult({ fileCount: 99 })]);
+      const liveNames = await readdir(path.join(dir, 'parse-cache'));
+      expect(liveNames).toContain(`${liveKey}.v8`);
+      expect(liveNames).not.toContain(`${stagedKey}.v8`);
+      const stagedNames = await readdir(path.join(staging, 'parse-cache'));
+      expect(stagedNames).toContain(`${stagedKey}.v8`);
+
+      const saved = await saveParseCache(dir, cache);
+      expect(saved.sort()).toEqual([liveKey, stagedKey].sort());
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, liveKey))?.[0]?.fileCount).toBe(1);
+      expect((await loadParseCacheChunk(loaded, stagedKey))?.[0]?.fileCount).toBe(99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers a staged shard over a same-hash live shard when publishing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-pref-'));
+    try {
+      const key = 'c'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([key]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('createColdParseRebuildDir returns distinct directories under the same storage root', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-uniq-'));
+    try {
+      const a = await createColdParseRebuildDir(dir);
+      const b = await createColdParseRebuildDir(dir);
+      expect(a).not.toBe(b);
+      expect(a.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
+      expect(b.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

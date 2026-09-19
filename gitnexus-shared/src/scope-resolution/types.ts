@@ -24,6 +24,9 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
+// Type-only, so the `reference-site.ts` → `types.ts` import cycle is erased
+// at compile time.
+import type { CallForm } from './reference-site.js';
 
 // ─── §2.1 Type aliases ──────────────────────────────────────────────────────
 
@@ -104,7 +107,14 @@ export type CaptureMatch = Readonly<Record<string, Capture>>;
  * produced when `expandsWildcardTo` materializes a wildcard against target
  * exports — a provider must never emit it at parse time.
  */
-export type ParsedImport =
+export type ParsedImport = ParsedImportSyntax & {
+  /** Lexical location retained by extraction, independently of execution timing.
+   * Absent for legacy or synthesized imports. Binding semantics remain opt-in
+   * through FinalizeHooks.importsBindAtLexicalScope. */
+  readonly declaredAtScope?: ScopeId;
+};
+
+type ParsedImportSyntax =
   /**
    * Per-name import without rename.
    *
@@ -180,14 +190,15 @@ export type ParsedImport =
        * field exists.** The natural place to decide it looks like the graph
        * bridge, by walking the scope the finalized edges hang off; that is
        * exactly what `graph-bridge/imports-to-edges.ts` once attempted, and it
-       * is dead code by construction. `finalize-algorithm.ts:295` publishes
-       * every file's finalized edges as
-       * `linkedByScope.set(file.moduleScope, …)`, so the map the bridge
-       * receives is keyed by the file's **Module** scope and by nothing else:
-       * the walk starts at a `Module` every time and answers `false` for every
-       * import in the tree. Finalize cannot recover the position either —
-       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]` with
-       * no scope attached. The extractor is the last stage that still knows
+       * is dead code by construction. Default finalize still publishes each
+       * file's edges under `file.moduleScope`, so a bridge walk that starts
+       * there answers `false` for every import. Resolvers that opt into
+       * `importsBindAtLexicalScope` instead key the edge by
+       * `parsed.declaredAtScope` when extraction placed the statement (Rust
+       * `use` in a function body is the example). Even then the *execution*
+       * question — does this import run at module init? — is not the same as
+       * the lexical key, and `FinalizeFile.parsedImports` is still a flat
+       * per-file list. The extractor is the last stage that still knows
        * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
        * fact here and it rides the edge from there — see
        * {@link ImportEdge.runsOnlyWhenCalled}.
@@ -752,6 +763,20 @@ export interface Reference {
     | 'import-use'
     | 'value-ref'
     | 'macro';
+  /**
+   * Call form of the site this reference was resolved from, copied verbatim
+   * from `ReferenceSite.callForm`; set only when `kind === 'call'`. The
+   * emit phase reads it to tell a construction site (`T{…}`, `new T()`,
+   * `T { .. }` — form `'constructor'`) apart from an invocation, which in the
+   * graph are both `CALLS` edges. Optional and additive: a `Reference` built
+   * without it is emitted exactly as before.
+   */
+  readonly callForm?: CallForm;
+  /** Copied from `ReferenceSite.staticGated` for `kind === 'call'`: the site is
+   *  in a branch provably unreachable from the indexed source at compile time.
+   *  The emit phase writes it to `GraphRelationship.staticGated` as metadata;
+   *  see the contract note there. Optional and additive. */
+  readonly staticGated?: boolean;
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }

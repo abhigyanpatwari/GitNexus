@@ -605,9 +605,13 @@ describe('POST /api/embed route wiring (#2790)', () => {
    * a character-distance regex so a comment edit cannot silently un-assert it.
    */
   const insideWithLbugDb = (source: string): string => {
-    const start = source.indexOf('await withLbugDb(lbugPath, async () => {');
-    const end = source.indexOf('\n            });', start);
-    expect(start).toBeGreaterThan(-1);
+    // The open is a multi-line `withLbugDb(lbugPath, async () => {…}, opts)` call
+    // since #3091 added the FTS-mode options argument, so anchor on the call head
+    // and close on that options argument rather than a fixed-indent literal.
+    const head = source.match(/await withLbugDb\(\s*lbugPath,\s*async \(\) => \{/);
+    expect(head).not.toBeNull();
+    const start = head!.index!;
+    const end = source.indexOf('skipFtsOption(ftsSession.skipFts)', start);
     expect(end).toBeGreaterThan(start);
     return source.slice(start, end);
   };
@@ -638,7 +642,7 @@ describe('POST /api/embed route wiring (#2790)', () => {
     // `stats.embeddings`, and the next CLI run's preserve-or-wipe decision
     // hangs on it.
     expect(region).toContain('const measuredEmbeddings = await countPersistedEmbeddings();');
-    expect(region).toContain('await saveMeta(entry.storagePath, embeddingMeta);');
+    expect(region).toContain('await saveMeta(storagePath, embeddingMeta);');
     // Ordering, without brittle character spans: flush → measure → decide →
     // write. Counting before the flush would describe rows still in the WAL.
     const flushed = region.lastIndexOf('await flushWAL();');
@@ -653,8 +657,8 @@ describe('POST /api/embed route wiring (#2790)', () => {
 
   it('measures in the post-flush checkpoint callback and nowhere else in the pipeline options', async () => {
     const source = await readSource();
-    expect(source).toContain(
-      'await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());',
+    expect(source).toMatch(
+      /await saveEmbeddingCheckpoint\(\s*checkpoint,\s*\[\],\s*await countPersistedEmbeddings\(\),?\s*\)/,
     );
     // The window-start callback fires before any row exists — it must pass no
     // count rather than restate a stale one.
@@ -683,5 +687,24 @@ describe('POST /api/embed route wiring (#2790)', () => {
     // `ready` fires unconditionally before the route knows the outcome (#2790).
     expect(source).toMatch(/p\.phase === 'ready'\s*\?\s*'finalizing'/);
     expect(source).not.toMatch(/p\.phase === 'ready' \? 'complete'/);
+  });
+});
+
+describe('HTTP repo catalog validation', () => {
+  const readSource = () =>
+    fs.readFile(path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'), 'utf-8');
+
+  it('lists and resolves repos with validate: true, and maps StorageRequirementError', async () => {
+    const source = await readSource();
+    expect(source).toMatch(/const repos = await listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/);
+    expect(source).toMatch(
+      /const freshRepos = await listRegisteredRepos\(\{\s*validate:\s*options\.validateStorage !== false,\s*\}\)/,
+    );
+    expect(source).toMatch(
+      /app\.get\('\/api\/repos'[\s\S]*listRegisteredRepos\(\{\s*validate:\s*true\s*\}\)/,
+    );
+    expect(source).toMatch(/sendStorageRequirementHttp\(err, res\)/);
+    expect(source).toMatch(/storageRequirementToHttp\(err\)/);
+    expect(source).toMatch(/code: 'index-unavailable'/);
   });
 });

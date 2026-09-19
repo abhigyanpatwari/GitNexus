@@ -8,6 +8,7 @@ import {
   refreshBaseRefLine,
   markdownSafeBranch,
 } from '../../src/cli/ai-context.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 describe('generateAIContextFiles', () => {
   let tmpDir: string;
@@ -225,6 +226,19 @@ describe('generateAIContextFiles', () => {
     expect(withoutPdg).toContain('explain(');
   });
 
+  it('gates Spring Actuator runtime evidence guidance on index metadata', () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    const enabled = generateGitNexusContent('SpringProject', stats, {
+      hasSpringActuator: true,
+    });
+    const disabled = generateGitNexusContent('PlainProject', stats);
+
+    expect(enabled).toContain('Spring Actuator runtime evidence is enabled');
+    expect(enabled).toContain('runtimeConfirmed === true');
+    expect(enabled).toContain('Snapshot values are never persisted');
+    expect(disabled).not.toContain('Spring Actuator runtime evidence is enabled');
+  });
+
   it('documents the MCP and Graph-RAG File-risk scale difference', () => {
     const content = generateGitNexusContent('RiskScaleProject', {
       nodes: 50,
@@ -283,6 +297,9 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
+    expect(content).toContain(
+      'On query/context/impact/cypher object results, read staleness.status and branch/lastCommit',
+    );
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -323,15 +340,18 @@ describe('generateAIContextFiles', () => {
     // clause (previously hand-added inside the committed docs instead of this
     // template, so a real `gitnexus analyze` silently deleted them on every
     // regeneration — moving them into the template is the fix, and they are
-    // unconditional text load-bearing enough to warrant the budget) — each time
-    // with the same argument, that the added line is load-bearing and the block
-    // is still meaningfully smaller than the original. That is a ratchet with no
-    // ratchet: an absolute cap can only ever fail on the PR that adds the
-    // character, and the fix is always to nudge the number. Assert the invariant
-    // the justifications actually appeal to — the RATIO to the pre-trim size —
-    // so a legitimate clause fits without ceremony while a genuine re-pad fails.
-    // (The structural guard is the sibling test asserting the six #856 section
-    // headers stay deleted; this one bounds bulk.)
+    // unconditional text load-bearing enough to warrant the budget), then
+    // 0.65 → 0.70 for the #3291 always-on `staleness` blockquote line (a second
+    // `>` line, not a new Always-Do bullet — the cheaper durable slot; the
+    // 0.65 band had ~3 chars of headroom so any useful line required a bump) —
+    // each time with the same argument, that the added line is load-bearing and
+    // the block is still meaningfully smaller than the original. That is a
+    // ratchet with no ratchet: an absolute cap can only ever fail on the PR
+    // that adds the character, and the fix is always to nudge the number.
+    // Assert the invariant the justifications actually appeal to — the RATIO
+    // to the pre-trim size — so a legitimate clause fits without ceremony
+    // while a genuine re-pad fails. (The structural guard is the sibling test
+    // asserting the six #856 section headers stay deleted; this one bounds bulk.)
     const PRE_TRIM_BLOCK_CHARS = 5465;
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
@@ -341,7 +361,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.65);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.7);
   });
 
   it('handles empty stats', async () => {
@@ -484,7 +504,11 @@ Old content here.
       await expect(
         fs.access(path.join(dir, '.claude', 'skills', 'gitnexus-exploring', 'SKILL.md')),
       ).resolves.toBeUndefined();
-      await expect(fs.access(legacyKnown)).rejects.toThrow();
+      // Divergent nested SKILL.md is preserved (#3080); only byte-identical
+      // leftovers are still removed.
+      await expect(fs.readFile(path.join(legacyKnown, 'SKILL.md'), 'utf-8')).resolves.toBe(
+        'legacy',
+      );
       await expect(fs.readFile(path.join(legacyUnknown, 'SKILL.md'), 'utf-8')).resolves.toBe(
         'custom nested',
       );
@@ -522,6 +546,198 @@ Old content here.
       ).rejects.toThrow();
     } finally {
       await fs.rm(skipDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skipSkills does not remove nested leftover standard skills (#3080 / AE4)', async () => {
+    const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-nested-'));
+    const skipStorage = path.join(skipDir, '.gitnexus');
+    const nested = path.join(skipDir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
+    await fs.mkdir(nested, { recursive: true });
+    await fs.mkdir(skipStorage, { recursive: true });
+    await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
+    try {
+      await generateAIContextFiles(skipDir, skipStorage, 'TestProject', { nodes: 1 }, undefined, {
+        skipAgentsMd: true,
+        skipSkills: true,
+      });
+      await expect(fs.readFile(path.join(nested, 'SKILL.md'), 'utf-8')).resolves.toBe(bundled);
+      await expect(
+        fs.access(path.join(skipDir, '.claude', 'skills', 'gitnexus-cli')),
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(skipDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves customized flat SKILL.md under skipAgentsMd (#3080 / AE1)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-flat-'));
+    const storage = path.join(dir, '.gitnexus');
+    const cliSkill = path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md');
+    await fs.mkdir(path.dirname(cliSkill), { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.writeFile(cliSkill, 'CUSTOM-COMMITTED-SKILL-3080-cli\n', 'utf-8');
+    const cap = _captureLogger();
+    try {
+      const result = await generateAIContextFiles(
+        dir,
+        storage,
+        'TestProject',
+        { nodes: 1 },
+        undefined,
+        { skipAgentsMd: true },
+      );
+      expect(result.files).toContain('AGENTS.md (skipped via --skip-agents-md)');
+      expect(result.files.some((f) => f.includes('skipped via --skip-skills'))).toBe(false);
+      await expect(fs.readFile(cliSkill, 'utf-8')).resolves.toBe(
+        'CUSTOM-COMMITTED-SKILL-3080-cli\n',
+      );
+      const msgs = cap.records().map((r) => r.msg ?? '');
+      expect(msgs.some((m) => m.includes(cliSkill) && m.includes('--skip-skills'))).toBe(true);
+    } finally {
+      cap.restore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a missing standard skill from the bundle (#3080 / AE2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-missing-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
+        skipAgentsMd: true,
+      });
+      const created = await fs.readFile(
+        path.join(dir, '.claude', 'skills', 'gitnexus-debugging', 'SKILL.md'),
+        'utf-8',
+      );
+      const bundled = await fs.readFile(
+        path.join(__dirname, '../../skills/gitnexus-debugging.md'),
+        'utf-8',
+      );
+      expect(created).toBe(bundled);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites a SKILL.md that already matches the current bundle (R2)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-ident-'));
+    const storage = path.join(dir, '.gitnexus');
+    const dest = path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.writeFile(dest, bundled, 'utf-8');
+    const writeSpy = vi.spyOn(fs, 'writeFile');
+    try {
+      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
+        skipAgentsMd: true,
+      });
+      await expect(fs.readFile(dest, 'utf-8')).resolves.toBe(bundled);
+      expect(writeSpy).toHaveBeenCalledWith(dest, bundled, 'utf-8');
+    } finally {
+      writeSpy.mockRestore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes nested leftover when SKILL.md matches the bundle', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-nested-ident-'));
+    const storage = path.join(dir, '.gitnexus');
+    const nested = path.join(dir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
+    await fs.mkdir(nested, { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
+    try {
+      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
+        skipAgentsMd: true,
+      });
+      await expect(fs.access(nested)).rejects.toThrow();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves nested leftover siblings even when SKILL.md matches the bundle', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-nested-sibling-'));
+    const storage = path.join(dir, '.gitnexus');
+    const nested = path.join(dir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
+    await fs.mkdir(nested, { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
+    await fs.writeFile(path.join(nested, 'notes.md'), 'operator notes\n', 'utf-8');
+    const cap = _captureLogger();
+    try {
+      const result = await generateAIContextFiles(
+        dir,
+        storage,
+        'TestProject',
+        { nodes: 1 },
+        undefined,
+        { skipAgentsMd: true },
+      );
+      await expect(fs.readFile(path.join(nested, 'notes.md'), 'utf-8')).resolves.toBe(
+        'operator notes\n',
+      );
+      expect(result.files).toContain(
+        '.claude/skills/gitnexus/<name>/ (legacy directories preserved: 1)',
+      );
+      expect(cap.records().some((record) => record.msg?.includes('operator-owned files'))).toBe(
+        true,
+      );
+    } finally {
+      cap.restore();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a divergent .agents mirror while writing a missing .claude copy', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-agents-'));
+    const storage = path.join(dir, '.gitnexus');
+    const agentsSkill = path.join(dir, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md');
+    await fs.mkdir(path.dirname(agentsSkill), { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.writeFile(agentsSkill, 'CUSTOM-AGENTS-MIRROR\n', 'utf-8');
+    try {
+      const result = await generateAIContextFiles(
+        dir,
+        storage,
+        'TestProject',
+        { nodes: 1 },
+        undefined,
+        {
+          skipAgentsMd: true,
+        },
+      );
+      await expect(fs.readFile(agentsSkill, 'utf-8')).resolves.toBe('CUSTOM-AGENTS-MIRROR\n');
+      const claudeCopy = await fs.readFile(
+        path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md'),
+        'utf-8',
+      );
+      expect(claudeCopy).not.toBe('CUSTOM-AGENTS-MIRROR\n');
+      expect(claudeCopy.length).toBeGreaterThan(0);
+      expect(result.files).toContain(
+        '.agents/skills/gitnexus-*/ (5 written, 1 preserved for .agents)',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 

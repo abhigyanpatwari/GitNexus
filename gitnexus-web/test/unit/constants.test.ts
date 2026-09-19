@@ -65,6 +65,8 @@ describe('FILTERABLE_LABELS', () => {
     expect(FILTERABLE_LABELS).toContain('Type');
     expect(FILTERABLE_LABELS).toContain('Decorator');
     expect(FILTERABLE_LABELS).toContain('Variable');
+    expect(FILTERABLE_LABELS).toContain('Protocol');
+    expect(FILTERABLE_LABELS).toContain('Category');
   });
 
   it('every filterable label has a defined color in NODE_COLORS', () => {

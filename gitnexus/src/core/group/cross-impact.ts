@@ -159,6 +159,15 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
       name: string;
       repoPath: string;
       target: string;
+      // Target selectors, same names/semantics as the single-repo impact tool
+      // (target_uid = zero-ambiguity lookup that wins over the name;
+      // file_path/kind narrow a name shared by same-named symbols). Threading
+      // them through HERE is what makes the MCP boundary's forwarding live —
+      // dropping them at this boundary silently re-broke the group-mode
+      // disambiguation loop once already.
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth: number;
       crossDepth: number;
@@ -173,11 +182,21 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   | { ok: false; error: string } {
   const name = String(params.name ?? '').trim();
   const repoPath = String(params.repo ?? '').trim();
-  const target = String(params.target ?? '').trim();
+  // Optional string, same helper shape as cross-trace's `str()`: empty/blank
+  // counts as absent so `target_uid: ''` degrades to the name lookup rather
+  // than a zero-ambiguity lookup of the empty uid. Parsed before the required
+  // check so UID-only callers (MCP impact schema requires `direction`, not
+  // `target`) are accepted.
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v : undefined;
+  const targetName = String(params.target ?? '').trim();
+  const target_uidEarly = str(params.target_uid);
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
     return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
-  if (!target) return { ok: false, error: 'target is required' };
+  if (!targetName && !target_uidEarly)
+    return { ok: false, error: 'target or target_uid is required' };
+  const target = targetName || target_uidEarly!;
   if (
     params.service !== undefined &&
     params.service !== null &&
@@ -205,6 +224,10 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
+  const target_uid = target_uidEarly;
+  const file_path = str(params.file_path);
+  const kind = str(params.kind);
+
   // Clamp at the validate boundary so the downstream `deadline` (line
   // ~366) and `safeLocalImpact`'s `setTimeout` both see a single
   // bounded value. Without this, the outer deadline budgeted Phase-2
@@ -224,6 +247,9 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth,
@@ -579,6 +605,9 @@ export async function runGroupImpact(
     name,
     repoPath,
     target,
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     crossDepth: _crossDepth,
@@ -606,6 +635,14 @@ export async function runGroupImpact(
 
   const impactParams: Parameters<GroupToolPort['impact']>[1] = {
     target,
+    // Selector params pass through to the member repo's impact (the port
+    // contract in service.ts documents them), so the single-repo tool's
+    // "re-call with target_uid to disambiguate" loop works unchanged in
+    // group mode. `undefined` keeps the call shape flat — same convention
+    // as the relationTypes line below.
+    target_uid,
+    file_path,
+    kind,
     direction,
     maxDepth,
     relationTypes: relationTypes && relationTypes.length > 0 ? relationTypes : undefined,

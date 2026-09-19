@@ -47,10 +47,21 @@
  * and `detect-changes-local-id-stability.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
-import ts from 'typescript';
+import * as t from '@babel/types';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  type AstNode,
+  type CommentRange,
+  forEachChild,
+  leadingCommentRanges,
+  lineAt,
+  nodeStart,
+  nodeText,
+  parseTypeScript,
+  trailingCommentRanges,
+} from '../helpers/parse-typescript-source.js';
 
 const SRC_DIR = fileURLToPath(new URL('../../src/', import.meta.url));
 
@@ -135,18 +146,18 @@ function walkTs(dir: string, relBase: string, out: string[]): string[] {
  * helpers (`seedBlockQuery`, `buildFtsQueryCypher`), and anything built from
  * those. Resolved to a fixpoint so an ordering constant can be composed.
  */
-function collectOrderingNames(sf: ts.SourceFile): Set<string> {
+function collectOrderingNames(source: string, ast: t.Node): Set<string> {
   const initializers = new Map<string, string>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      initializers.set(node.name.text, node.initializer.getText(sf));
+  const visit = (node: t.Node): void => {
+    if (t.isVariableDeclarator(node) && t.isIdentifier(node.id) && node.init) {
+      initializers.set(node.id.name, nodeText(source, node.init));
     }
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
-      initializers.set(node.name.text, node.getText(sf));
+    if (t.isFunctionDeclaration(node) && t.isIdentifier(node.id)) {
+      initializers.set(node.id.name, nodeText(source, node));
     }
-    ts.forEachChild(node, visit);
+    forEachChild(node, visit);
   };
-  visit(sf);
+  visit(ast);
 
   const ordering = new Set<string>();
   const referencesOrdering = (text: string): boolean =>
@@ -166,38 +177,38 @@ function collectOrderingNames(sf: ts.SourceFile): Set<string> {
 // ---------------------------------------------------------------------------
 // Query units
 // ---------------------------------------------------------------------------
-const isLiteralUnit = (node: ts.Node): boolean =>
-  ts.isStringLiteralLike(node) || ts.isTemplateExpression(node);
+const isLiteralUnit = (node: t.Node): boolean =>
+  t.isStringLiteral(node) || t.isTemplateLiteral(node);
 
 /** Climb `+` concatenation so a query split across fragments is ONE unit. */
-function concatenationRoot(node: ts.Node): ts.Node {
-  let current = node;
+function concatenationRoot(node: AstNode): AstNode {
+  let current: AstNode = node;
   while (
     current.parent !== undefined &&
-    ts.isBinaryExpression(current.parent) &&
-    current.parent.operatorToken.kind === ts.SyntaxKind.PlusToken
+    t.isBinaryExpression(current.parent) &&
+    current.parent.operator === '+'
   ) {
     current = current.parent;
   }
   return current;
 }
 
-function collectQueryUnits(sf: ts.SourceFile): ts.Node[] {
-  const byPosition = new Map<number, ts.Node>();
-  const visit = (node: ts.Node): void => {
+function collectQueryUnits(source: string, ast: t.Node): AstNode[] {
+  const byPosition = new Map<number, AstNode>();
+  const visit = (node: AstNode): void => {
     if (!isLiteralUnit(node)) {
-      ts.forEachChild(node, visit);
+      forEachChild(node, visit);
       return;
     }
     // Never descend INTO a literal: a nested template inside `${...}` is
     // already covered by the outer unit's text.
     const unit = concatenationRoot(node);
-    const text = unit.getText(sf);
+    const text = nodeText(source, unit);
     if (LIMIT_RE.test(text) && (CYPHER_CLAUSE_RE.test(text) || BARE_LIMIT_FRAGMENT_RE.test(text))) {
-      byPosition.set(unit.getStart(sf), unit);
+      byPosition.set(nodeStart(unit), unit);
     }
   };
-  visit(sf);
+  visit(ast as AstNode);
   return [...byPosition.entries()].sort((a, b) => a[0] - b[0]).map(([, node]) => node);
 }
 
@@ -216,14 +227,14 @@ interface CommentBlock {
   end: number;
 }
 
-const isFunctionLike = (node: ts.Node): boolean =>
-  ts.isFunctionDeclaration(node) ||
-  ts.isFunctionExpression(node) ||
-  ts.isArrowFunction(node) ||
-  ts.isMethodDeclaration(node) ||
-  ts.isConstructorDeclaration(node) ||
-  ts.isGetAccessorDeclaration(node) ||
-  ts.isSetAccessorDeclaration(node);
+const isFunctionLike = (node: t.Node): boolean =>
+  t.isFunctionDeclaration(node) ||
+  t.isFunctionExpression(node) ||
+  t.isArrowFunctionExpression(node) ||
+  t.isClassMethod(node) ||
+  t.isClassPrivateMethod(node) ||
+  t.isObjectMethod(node) ||
+  t.isTSDeclareMethod(node);
 
 /**
  * Comment blocks a marker for `node` may live in, NEAREST FIRST: the query's
@@ -239,22 +250,21 @@ const isFunctionLike = (node: ts.Node): boolean =>
  * Consecutive `//` lines arrive as one range EACH, so they are merged back into
  * a block: a reason may then wrap across lines and still fit `printWidth: 100`.
  */
-function markerBlocks(source: string, node: ts.Node): CommentBlock[] {
-  const nearestFirst: ts.CommentRange[] = [];
+function markerBlocks(source: string, node: AstNode): CommentBlock[] {
+  const nearestFirst: CommentRange[] = [];
   const seen = new Set<number>();
-  let current: ts.Node | undefined = node;
+  let current: AstNode | undefined = node;
   for (let depth = 0; current !== undefined && depth < 20; depth++) {
-    for (const range of [
-      ...(ts.getLeadingCommentRanges(source, current.getFullStart()) ?? []),
-      ...(ts.getTrailingCommentRanges(source, current.getEnd()) ?? []),
-    ]) {
+    for (const range of [...leadingCommentRanges(current), ...trailingCommentRanges(current)]) {
       if (!seen.has(range.pos)) {
         seen.add(range.pos);
         nearestFirst.push(range);
       }
     }
-    const parent: ts.Node | undefined = current.parent;
-    if (parent === undefined || isFunctionLike(parent) || ts.isSourceFile(parent)) break;
+    const parent: AstNode | undefined = current.parent;
+    if (parent === undefined || isFunctionLike(parent) || t.isFile(parent) || t.isProgram(parent)) {
+      break;
+    }
     current = parent;
   }
 
@@ -318,15 +328,15 @@ const reasonIsSubstantive = (reason: string): boolean =>
 // ---------------------------------------------------------------------------
 export function analyzeSource(file: string, source: string): QueryFinding[] {
   if (!LIMIT_RE.test(source)) return [];
-  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const ordering = collectOrderingNames(sf);
+  const { ast } = parseTypeScript(file, source);
+  const ordering = collectOrderingNames(source, ast);
   /** A marker declares ONE query: a claimed range cannot also cover the next. */
   const claimed = new Map<number, number>();
 
-  return collectQueryUnits(sf).map((unit) => {
-    const text = unit.getText(sf);
+  return collectQueryUnits(source, ast).map((unit) => {
+    const text = nodeText(source, unit);
     const limitOffset = Math.max(text.search(LIMIT_RE), 0);
-    const line = sf.getLineAndCharacterOfPosition(unit.getStart(sf) + limitOffset).line + 1;
+    const line = lineAt(source, nodeStart(unit) + limitOffset);
     const excerpt = text.replace(/\s+/g, ' ').slice(0, 160);
     const base = { file, line, excerpt };
 

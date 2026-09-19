@@ -361,11 +361,12 @@ describe('#2915 detect_changes hunk scaling', () => {
     );
     registerRepo(repoDir);
 
-    // Non-vacuous: the diff really does parse to two entries for one path.
+    // A content line that is itself `+++ b/code.py` must not open a second
+    // FileDiff — the same-path skip is the intended shape (#3251).
     const parsed = parseDiffHunks(
       execFileSync('git', diffArgsFor('unstaged'), { cwd: repoDir, encoding: 'utf-8' }),
     );
-    expect(parsed.map((fileDiff) => fileDiff.filePath)).toEqual(['code.py', 'code.py']);
+    expect(parsed.map((fileDiff) => fileDiff.filePath)).toEqual(['code.py']);
 
     const result = await runDetectChanges();
 

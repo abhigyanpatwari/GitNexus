@@ -47,6 +47,7 @@ function extract(
     definitionNode: nodeOfType(source, definitionType),
     parsedImports: imports,
     isExported,
+    filePath: 'src/convex.ts',
   });
 }
 

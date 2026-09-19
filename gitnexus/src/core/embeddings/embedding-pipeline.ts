@@ -17,6 +17,7 @@ import {
   embeddingToArray,
   isEmbedderReady,
 } from './embedder.js';
+import { isHttpMode } from './http-client.js';
 import { generateEmbeddingText } from './text-generator.js';
 import { chunkNode, characterChunk } from './chunker.js';
 import { extractStructuralNames } from './structural-extractor.js';
@@ -81,7 +82,7 @@ const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v4';
+export const EMBEDDING_TEXT_VERSION = 'v5';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.
@@ -560,7 +561,7 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 0,
     });
 
-    if (!isEmbedderReady()) {
+    if (!isHttpMode()) {
       await initEmbedder((modelProgress: ModelProgress) => {
         const downloadPercent = modelProgress.progress ?? 0;
         onProgress({
@@ -1009,6 +1010,13 @@ export const semanticSearch = async (
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
+  // determinism: probe — existence only. Only `exists.length` is read; which
+  // row LIMIT 1 returns cannot change whether the table is empty.
+  const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
+  if (!exists.length) {
+    return [];
+  }
+
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
   }
@@ -1054,12 +1062,11 @@ export const semanticSearch = async (
   }
 
   if (bestChunks.size === 0) {
-    // The Cypher only. NOT `measurePersistedEmbeddingCount`: its tri-state
-    // exists so a publisher never writes a fabricated 0, whereas here `?? 0`
-    // is the right answer — an unknown count simply skips the exact scan.
+    // NOT `measurePersistedEmbeddingCount`: its tri-state exists so a publisher
+    // never writes a fabricated 0, whereas here `?? 0` is the right answer —
+    // an unknown count simply skips the exact scan.
     const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
-    const countRow = countRows[0];
-    const embeddingCount = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
+    const embeddingCount = Number(countRows[0]?.cnt ?? countRows[0]?.[0] ?? 0);
     const exactLimit = getExactScanLimit();
     if (embeddingCount > 0 && embeddingCount <= exactLimit) {
       const rows = await executeQuery(`

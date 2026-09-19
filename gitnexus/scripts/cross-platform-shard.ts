@@ -36,9 +36,9 @@
  *
  * Only files heavy enough to matter are listed; everything else is carried by
  * {@link PER_FILE_OVERHEAD_SEC} alone. These are load-balancing hints, NOT
- * assertions — no
- * test asserts a runtime, and drift only makes the split slightly less even, so
- * a stale entry is harmless and refreshing them is optional. Deliberately not
+ * assertions — no test measures elapsed time against this table. Missing or
+ * stale heavy entries can still overload a shard; refresh them from failed
+ * CI logs and replay that profile in the partition tests. Deliberately not
  * auto-generated: a committed table is reviewable and works offline, and the
  * alternative (timing files at CI runtime to decide the split) would make the
  * partition depend on the very machine load it is trying to protect against.
@@ -49,13 +49,20 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/cli-e2e.test.ts': 621,
   'test/integration/worker-pool.test.ts': 222,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
-  // ESTIMATE, not a measurement (#2841): this suite drives more full
-  // `runFullAnalysis` cycles than the VECTOR sibling above, so the 8 s
-  // PER_FILE_OVERHEAD floor would badly under-charge it and skew the Windows
-  // split — the failure mode that produced the job timeouts this table exists
-  // to prevent. Scaled from the sibling's measured 87 s by analyze-run count.
-  // Replace with a real figure after the first green Windows matrix run.
-  'test/unit/incremental-index-extension-dml-gate.test.ts': 180,
+  // Measured on Windows in run 34014266125 (#3190, 2026-09-06). These DB
+  // suites landed together on shard 3: the old 180s estimate and missing
+  // entries made a ~27-minute recorded load look like an ~12-minute shard.
+  // Upstream speedups may reduce these figures; retaining conservative weights
+  // keeps the expensive suites distributed without changing the watchdog.
+  'test/unit/incremental-index-extension-dml-gate.test.ts': 414,
+  // Re-measured on windows-latest run 34815870795 after vendored-first FTS
+  // rewrote the HOME-layout e2e (373s) and skills-e2e grew to 542s. The old
+  // 146s/444s entries packed both onto shard 2/3 and blew the 20-minute
+  // watchdog with one file still queued.
+  'test/integration/skills-e2e.test.ts': 550,
+  'test/integration/fts-extension-e2e.test.ts': 380,
+  'test/integration/skip-fts.test.ts': 110,
+  'test/integration/analyze-wal-checkpoint-failure.test.ts': 86,
   'test/integration/cli-limit-e2e.test.ts': 75,
   'test/unit/hooks.test.ts': 26,
   'test/integration/analyze-heap-oom-e2e.test.ts': 23,

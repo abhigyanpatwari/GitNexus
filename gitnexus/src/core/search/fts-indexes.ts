@@ -8,8 +8,12 @@ import {
   type IndexCatalogSnapshot,
 } from '../lbug/lbug-adapter.js';
 import { getFtsCapability } from '../lbug/extension-loader.js';
-import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
-import { FTS_INDEXES } from './fts-schema.js';
+import { FTS_DISABLED_MESSAGE, type FtsDisabledReason } from './fts-policy.js';
+import {
+  classifyExtensionLoadError,
+  usesClassifiedLoadRemedy,
+} from '../lbug/extension-load-error.js';
+import { FTS_INDEXES, type FTSIndexDefinition } from './fts-schema.js';
 
 /**
  * Strip filesystem paths from a LadybugDB error before it reaches the HTTP
@@ -73,8 +77,12 @@ const formatWarningContext = (context: FtsWarningContext): string => {
  * text itself (#2767). Optional and additive: omitting it reproduces today's
  * exact message.
  */
-export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
+export const ftsDegradedWarning = (
+  context?: FtsWarningContext,
+  disabledReason?: FtsDisabledReason,
+): string => {
   const suffix = context ? formatWarningContext(context) : '';
+  if (disabledReason) return FTS_DISABLED_MESSAGE + suffix;
   const fts = getFtsCapability();
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
@@ -84,10 +92,9 @@ export const ftsDegradedWarning = (context?: FtsWarningContext): string => {
     // per-request path (HTTP /api/search + MCP query) does NO file I/O (#2383 F3);
     // fall back to the pure, no-I/O string classifier if it is somehow absent.
     const { kind, remedy } = fts.diagnosis ?? classifyExtensionLoadError(fts.reason);
-    const tail =
-      kind === 'missing_dependency'
-        ? ` ${remedy}`
-        : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
+    const tail = usesClassifiedLoadRemedy(kind)
+      ? ` ${remedy}`
+      : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +
@@ -156,6 +163,7 @@ export const SUPPORTED_FTS_STEMMERS: ReadonlySet<string> = new Set<string>([
 ]);
 
 export interface CreateSearchFTSIndexesOptions {
+  indexes?: readonly FTSIndexDefinition[];
   onIndexStart?: (table: string, indexName: string) => void;
   onIndexReady?: (table: string, indexName: string) => void;
   /**
@@ -224,9 +232,12 @@ export function getSearchFTSStemmer(): string {
  * THIS connection with no index created or dropped since — the same freshness
  * contract, and the same one-shared-`SHOW_INDEXES`-read purpose, as the gates in
  * `lbug-adapter.ts`. Omit it to have the sweep read the catalog itself.
+ * @param indexes FTS definitions for the active content-retention profile.
+ * @param tables When set, restrict the sweep to these node tables.
  */
 export async function dropSearchFTSIndexes(
   indexRows?: IndexCatalogSnapshot,
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
   tables?: ReadonlySet<string>,
 ): Promise<void> {
   // One catalog read for the whole sweep, decided PER CONFIGURED INDEX on
@@ -248,7 +259,7 @@ export async function dropSearchFTSIndexes(
   // so an index left over from an older, differently-named set was never dropped
   // whether the sweep ran or not.
   const rows = await resolveGateRows(indexRows);
-  for (const { table, indexName } of FTS_INDEXES) {
+  for (const { table, indexName } of indexes) {
     if (tables && !tables.has(table)) continue;
     // Skip only what the catalog POSITIVELY proves absent. Without this, a
     // machine whose FTS extension cannot load, analyzing a DB that never carried
@@ -325,7 +336,7 @@ export async function createSearchFTSIndexes(
 ): Promise<FtsIndexBuildFailure[]> {
   const stemmer = getSearchFTSStemmer();
   const failures: FtsIndexBuildFailure[] = [];
-  for (const { table, indexName, properties } of FTS_INDEXES) {
+  for (const { table, indexName, properties } of options?.indexes ?? FTS_INDEXES) {
     if (options?.tables && !options.tables.has(table)) continue;
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
@@ -335,10 +346,19 @@ export async function createSearchFTSIndexes(
     // the old name+content index would silently persist. `dropFTSIndex` no-ops
     // when the index is absent (first-ever analyze) and clears the per-connection
     // memo so the create below actually runs.
-    // ponytail: this rebuilds every FTS index on every analyze instead of
-    // skipping when present; FTS build is proportional to symbol-table size and
-    // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
-    // this rebuild cost ever shows up in analyze profiles.
+    // The cost DID show up in analyze profiles — 7.5s of a 31.7s edit loop on a
+    // 5350-file repo, `bench/analyze-phase-breakdown.md` — and a "skip when the
+    // index is already present" gate is NOT the answer, so don't reach for it.
+    // Every caller that reaches this loop has already dropped the indexes it
+    // passes in `tables`: the incremental writeback drops them because Ladybug
+    // cannot DML a table with a live FTS index (#2589), and a full rebuild
+    // builds into a fresh staging DB that never had one. A presence gate would
+    // therefore never fire. The cost is inherent — Ladybug's FTS is not
+    // incremental, so one changed row means re-tokenizing the whole table, and
+    // `File` alone is ~33MB of file content at ~10MB/s. The measured floor and
+    // the four exits that were tried and closed (narrow further, build
+    // concurrently, raise the connection thread count, drop `content`) are in
+    // that document.
     try {
       await dropFTSIndex(table, indexName);
       await createFTSIndex(table, indexName, [...properties], stemmer);
@@ -365,12 +385,16 @@ export async function createSearchFTSIndexes(
  * Anything heading for a network response has to pass it through
  * {@link redactPaths} first, the same rule the query-side warnings follow.
  */
-export const summarizeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
-  `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ` +
+export const summarizeFtsIndexBuildFailures = (
+  failures: readonly FtsIndexBuildFailure[],
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
+): string =>
+  `FTS index build failed for ${failures.length} of ${indexes.length} tables: ` +
   failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
 ): Promise<string[]> {
   // Read the catalog once and check each configured index both EXISTS and
   // covers its expected columns. A queryability-only probe (CALL QUERY_FTS_INDEX
@@ -400,7 +424,7 @@ export async function verifySearchFTSIndexes(
   }
 
   const missing: string[] = [];
-  for (const { table, indexName, properties } of FTS_INDEXES) {
+  for (const { table, indexName, properties } of indexes) {
     const actual = propsByIndex.get(indexName);
     // Absent from the catalog, or present but not covering every expected column.
     if (!actual || !properties.every((p) => actual.includes(p))) {
@@ -508,7 +532,8 @@ export async function buildSearchIndexesOrDegrade(
     // name+content-only index is invisible to the build (it succeeds) yet still
     // means description search is broken (#2299).
     const failures = await createSearchFTSIndexes(options);
-    const missing = await verifySearchFTSIndexes(executeQuery);
+    const indexes = options?.indexes ?? FTS_INDEXES;
+    const missing = await verifySearchFTSIndexes(executeQuery, indexes);
     if (failures.length === 0 && missing.length === 0) return { ok: true };
 
     // A table that failed to build is necessarily missing too — report it once,
@@ -516,7 +541,7 @@ export async function buildSearchIndexesOrDegrade(
     const named = new Set(failures.map((f) => `${f.table}.${f.indexName}`));
     const unexplained = missing.filter((name) => !named.has(name));
     const error = [
-      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures) : '',
+      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures, indexes) : '',
       // Structural incompleteness with no thrown error — classified capability
       // (degrade) below, matching prior behavior; a broken *write* surfaces as
       // a thrown IO/checkpoint error and is classified integrity there.

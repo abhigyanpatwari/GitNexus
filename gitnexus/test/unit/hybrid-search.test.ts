@@ -199,4 +199,20 @@ describe('hybridSearch — FTS failure fallback (#1489)', () => {
     expect(results[0].filePath).toBe('src/fts-hit.ts');
     expect(results[0].sources).toEqual(['bm25']);
   });
+
+  it('keeps BM25 results when semantic search throws', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({
+      results: [{ filePath: 'src/fts-hit.ts', score: 5, rank: 1 }],
+      ftsAvailable: true,
+    });
+
+    const mockExecuteQuery = vi.fn().mockResolvedValue([]);
+    const mockSemanticSearch = vi.fn().mockRejectedValue(new Error('sidecar aborted'));
+
+    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    expect(results).toHaveLength(1);
+    expect(results[0].filePath).toBe('src/fts-hit.ts');
+    expect(results[0].sources).toEqual(['bm25']);
+  });
 });

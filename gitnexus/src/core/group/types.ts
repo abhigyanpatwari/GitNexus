@@ -97,6 +97,19 @@ export interface CrossLink {
   contractId: string;
   matchType: MatchType;
   confidence: number;
+  /**
+   * `true` when the PROVIDER endpoint (`to`) has no resolved graph symbol —
+   * empty `symbolUid` / `symbolRef` at sync time (e.g. the handler failed to
+   * resolve and `symbolName` degraded to the file name). The contract boundary
+   * is still proven, but the link cannot anchor a cross-impact fan-out: an
+   * empty provider uid never matches a Phase-1 symbol id, and a downstream
+   * fan-out into it has no neighbor symbol to resolve. Derived once at the
+   * sync persistence boundary (`isUnresolvedEndpoint` in normalization.ts) and
+   * re-derived by `dedupeCrossLinks` when a merge backfills the uid. Absent on
+   * fully-anchored links. Distinct from manifest `manifest::…` synthetic UIDs,
+   * which have their own `fanout_status: 'not_attempted'` channel downstream.
+   */
+  degraded?: boolean;
 }
 
 export interface RepoSnapshot {

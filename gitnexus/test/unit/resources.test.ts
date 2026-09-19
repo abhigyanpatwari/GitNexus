@@ -517,6 +517,9 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
     expect(result).toContain('index:');
     expect(result).toContain('commit: "0123456789abcdef0123456789abcdef01234567"');
+    expect(result).toContain('storage_path: "/tmp/test-repo/.gitnexus"');
+    expect(result).toContain('content_retention: "full"');
+    expect(result).toMatch(/source_available: (true|false)/);
     expect(result).toContain(`runner_identity: ${JSON.stringify(runnerIdentity)}`);
     expect(result).toContain('runner_identity_schema_status: "current"');
   });
@@ -560,6 +563,27 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
     expect(result).toContain(
       'incomplete_reasons: ["incremental-in-progress","embedding-checkpoint-pending"]',
+    );
+  });
+
+  it('exposes Spring Actuator index metadata to agents', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: 'current-head',
+      indexedAt: '2026-08-31T20:00:00.000Z',
+      springActuator: {
+        enabled: true,
+        repoRelativeInputs: ['runtime-actuator'],
+      },
+    });
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+
+    expect(result).toContain(
+      'spring_actuator: {"enabled":true,"repoRelativeInputs":["runtime-actuator"]}',
     );
   });
 

@@ -261,6 +261,22 @@ describe('Pass 2: declarations + local bindings', () => {
     expect(result.localDefs[0]!.type).toBe('Function');
   });
 
+  it('backfills return types across duplicate declaration captures', () => {
+    const plain = declMatch('function', 'makeStore', 5, 0, 10, 0);
+    const annotated = declMatch('function', 'makeStore', 5, 0, 10, 0, {
+      '@declaration.return-type': cap('@declaration.return-type', 5, 0, 10, 0, 'Store'),
+    });
+    const result = extract(
+      [scopeMatch('module', 1, 0, 100, 0), scopeMatch('function', 5, 0, 10, 0), plain, annotated],
+      'Support.swift',
+      mockProvider(),
+    );
+
+    expect(result.localDefs).toHaveLength(2);
+    expect(new Set(result.localDefs.map((def) => def.nodeId)).size).toBe(1);
+    expect(result.localDefs.map((def) => def.returnType)).toEqual(['Store', 'Store']);
+  });
+
   it('preserves a synthetic declaration marker on the definition', () => {
     const result = extract(
       [
@@ -329,7 +345,7 @@ describe('Pass 3: raw imports', () => {
         interpretImport: () => named,
       }),
     );
-    expect(result.parsedImports).toEqual([named]);
+    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
   });
 
   it('drops imports when `interpretImport` returns null', () => {
@@ -443,7 +459,7 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
       'a.ts',
       mockProvider({ interpretImport: () => named }),
     );
-    expect(result.parsedImports).toEqual([named]);
+    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
   });
 
   // ─── The provider capability that opts out of the position rule ──────────
@@ -474,8 +490,10 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
       'a.c',
       mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: false }),
     );
-    // Byte-identical to the un-deferred shape, not merely `!== true`.
-    expect(result.parsedImports).toEqual([named]);
+    // Scope provenance survives, without adding the execution-deferral flag.
+    expect(result.parsedImports).toEqual([
+      { ...named, declaredAtScope: 'scope:a.c#2:0-99:0:Function' },
+    ]);
   });
 
   it('the identical captures ARE marked for a provider that does not declare it', () => {
@@ -488,7 +506,9 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     ];
     expect(
       extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
-    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    ).toEqual([
+      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+    ]);
     // Absent must mean `true`, not merely "not false" — the default is the
     // safe direction (position defers), and only an explicit `false` withholds
     // deferral. Spelling `true` therefore has to behave exactly like absent.
@@ -498,7 +518,9 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
         'a.ts',
         mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: true }),
       ).parsedImports,
-    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    ).toEqual([
+      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+    ]);
   });
 });
 
@@ -863,6 +885,55 @@ describe('Pass 6: callable-value-flow facts', () => {
   });
 });
 
+describe('Pass 7: call-result assignment identity', () => {
+  it('keeps same-name calls isolated by exact call-expression position', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 10, 0, 40, 0),
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            20,
+            14,
+            20,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 20, 6, 20, 11, 'store'),
+        },
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            21,
+            14,
+            21,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 21, 6, 21, 11, 'other'),
+        },
+      ],
+      'a.swift',
+      mockProvider(),
+    );
+
+    const fnScope = result.scopes.find((scope) => scope.kind === 'Function')!;
+    expect(result.callResultAssignmentSites).toEqual([
+      {
+        callSite: { startLine: 20, startCol: 14, endLine: 20, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'store',
+      },
+      {
+        callSite: { startLine: 21, startCol: 14, endLine: 21, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'other',
+      },
+    ]);
+  });
+});
+
 // ─── §End-to-end fixture ──────────────────────────────────────────────────
 
 describe('end-to-end fixture (all 5 passes together)', () => {
@@ -925,7 +996,9 @@ describe('end-to-end fixture (all 5 passes together)', () => {
     expect(fn.bindings.get('save')).toBeDefined();
 
     // Import collected.
-    expect(result.parsedImports).toEqual([parsedImport]);
+    expect(result.parsedImports).toEqual([
+      { ...parsedImport, declaredAtScope: result.moduleScope },
+    ]);
 
     // Type binding attached to function scope.
     expect(fn.typeBindings.get('name')?.rawName).toBe('string');

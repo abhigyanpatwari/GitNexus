@@ -3,20 +3,21 @@
  *
  * Everything real, nothing mocked: each test spawns the actual CLI entry as a
  * child process, LadybugDB loads the actual extension shared library from
- * disk, and the real out-of-process installer downloads the real extension in
- * the network-gated cases.
+ * disk. The packaged vendor artifact is the first LOAD path; HOME copies
+ * are no longer required for a green FTS run.
  *
- * Isolation: LadybugDB resolves its extension directory from the process HOME
- * (USERPROFILE on Windows), so every scenario owns a hermetic fake home with
- * its own `.lbdb/extension/<version>/<platform>/fts/` state — the machine's
- * real ~/.lbdb is never read or written. GITNEXUS_HOME additionally isolates
- * the registry (#829), following cli-e2e.test.ts conventions.
+ * Isolation: GITNEXUS_HOME isolates the registry (#829). LadybugDB still
+ * resolves `~/.lbdb` from HOME, and every scenario owns a hermetic fake home
+ * so the machine's real ~/.lbdb is never written. Analyze now path-LOADs the
+ * packaged vendor artifact first, so a broken or missing HOME copy is no
+ * longer an FTS outage when the packaged file is present. Vendor-broken
+ * coverage lives in `fts-vendored-root-seam.test.ts` (injected vendorRoot).
  *
- * Scenario matrix (the #2374 report, codified):
- *  - happy:   valid extension pre-installed, offline (load-only)
- *  - unhappy: extension file present but broken — the reporter's exact state
- *  - unhappy: extension file missing entirely (distinguishable reason)
- *  - heal:    FORCE INSTALL replaces a broken file over the network (auto)
+ * Scenario matrix:
+ *  - happy:   valid HOME copy, offline (load-only) — vendor or HOME loads
+ *  - packaged vendor survives a broken or missing HOME copy
+ *  - #2841:   HOME copy vanishes between runs — incremental stays incremental
+ *  - auto:    same vendor survivorship under the install policy
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
@@ -26,6 +27,11 @@ import fs from 'fs';
 import os from 'os';
 
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
+import {
+  defaultVendorRoot,
+  nodePlatformTuple,
+  resolveVendoredFtsPath,
+} from '../../src/core/lbug/vendored-extension-path.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
 
@@ -33,8 +39,6 @@ import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
 let extensionRelPath: string;
 /** Canonical valid extension bytes (path to a known-good file). */
 let seedExtensionFile: string | null = null;
-/** Real reachability of the extension repo — gates the auto-install cases. */
-let networkAvailable = false;
 
 const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
 const tmpDirs: string[] = [];
@@ -46,12 +50,39 @@ const makeTmpDir = (label: string): string => {
 };
 
 /**
- * Locate a known-good extension file for the running LadybugDB version.
- * Prefers a copy already installed under the machine's real home (pure file
- * read, offline); falls back to one real out-of-process install into a probe
- * home — the production installer script, not a reimplementation.
+ * Locate a known-good extension file for HOME-copy fixtures.
+ * Prefers the packaged vendor artifact (offline, no HOME/network), then a
+ * copy already installed under the machine's real home, then one real
+ * out-of-process install into a probe home.
  */
+/** Ladybug HOME layout: `~/.lbdb/extension/<coreVersion>/<upstreamPlatform>/fts/<file>`. */
+const ladybugHomeExtensionRelPath = (filename: string): string | null => {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(defaultVendorRoot(), 'lbug-fts', 'manifest.json'), 'utf8'),
+    ) as {
+      coreVersion?: string;
+      tuples?: Array<{ tuple: string; upstreamPlatform: string }>;
+    };
+    const upstream = raw.tuples?.find(
+      (entry) => entry.tuple === nodePlatformTuple(),
+    )?.upstreamPlatform;
+    if (!raw.coreVersion || !upstream) return null;
+    return path.join('.lbdb', 'extension', raw.coreVersion, upstream, 'fts', filename);
+  } catch {
+    return null;
+  }
+};
+
 const resolveSeedExtension = (): void => {
+  const packaged = resolveVendoredFtsPath();
+  if (packaged) {
+    extensionRelPath =
+      ladybugHomeExtensionRelPath(path.basename(packaged)) ??
+      path.join('.lbdb', 'extension', 'vendor-seed', 'fts', path.basename(packaged));
+    seedExtensionFile = packaged;
+    return;
+  }
   const realExtensionRoot = path.join(os.homedir(), '.lbdb', 'extension');
   const installed = findInstalledFtsExtension(realExtensionRoot);
   if (installed) {
@@ -71,7 +102,6 @@ const resolveSeedExtension = (): void => {
   if (install.status === 0 && probeInstalled) {
     extensionRelPath = path.relative(probeHome, probeInstalled);
     seedExtensionFile = probeInstalled;
-    networkAvailable = true;
     return;
   }
 };
@@ -152,21 +182,6 @@ beforeAll(() => {
       'GITNEXUS_REQUIRE_FTS=1 but no FTS extension could be located or installed for the E2E suite.',
     );
   }
-  // The self-heal cases need the real extension repo; probe it cheaply when
-  // the seed came from a local copy (the installer fallback already proved it).
-  return (async () => {
-    if (seedExtensionFile && !networkAvailable) {
-      try {
-        const res = await fetch('https://extension.ladybugdb.com/', {
-          method: 'HEAD',
-          signal: AbortSignal.timeout(5000),
-        });
-        networkAvailable = res.ok;
-      } catch {
-        networkAvailable = false;
-      }
-    }
-  })();
 }, 180_000);
 
 afterAll(() => {
@@ -221,7 +236,7 @@ describe('happy path — extension pre-installed, fully offline (load-only)', ()
   }, 180_000);
 });
 
-describe('unhappy path — extension file present but broken (the #2374 report)', () => {
+describe('packaged vendor survives a broken or missing home copy', () => {
   let home: string;
   let repo: string;
 
@@ -233,68 +248,47 @@ describe('unhappy path — extension file present but broken (the #2374 report)'
     repo = makeFixtureRepo('broken');
   });
 
-  it('analyze degrades gracefully and names the real LOAD failure, not "not pre-installed"', () => {
+  it('analyze stays FTS-available when ~/.lbdb is broken', () => {
     const result = runCli(['analyze'], repo, home, 'load-only');
     expect(result.status).toBe(0);
     expect(result.output).toContain('indexed successfully');
-    expect(result.output).toContain('FTS extension unavailable');
-    // The load-side ground truth must survive to the user…
-    expect(result.output).toContain('LOAD fts failed');
-    expect(result.output).toContain('Failed to load library');
-    // …and the old misdiagnosis must not: the file IS pre-installed.
-    expect(result.output).not.toContain('not pre-installed');
+    expect(result.output).not.toContain('FTS extension unavailable');
+    expect(result.output).not.toContain('search is disabled');
   }, 180_000);
 
-  it('analyze --repair-fts fails loudly with the live reason and an honest remedy', () => {
+  it('analyze --repair-fts succeeds from the packaged artifact', () => {
     const result = runCli(['analyze', '--repair-fts'], repo, home, 'load-only');
-    expect(result.status).not.toBe(0);
-    expect(result.output).toContain('Cannot repair FTS indexes');
-    expect(result.output).toContain('FTS extension failed to load');
-    expect(result.output).toContain('LOAD fts failed');
-    // Old message sent users to doctor "to install it"; doctor never installed.
-    expect(result.output).not.toContain('doctor` to install');
-    expect(result.output).toContain('gitnexus doctor');
-    // #2374 (U2): a corrupt file classifies as corrupt_file, so the Windows
-    // missing-dependency remedy must not misfire on the repair path either.
-    expect(result.output).not.toContain('Visual C++');
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('FTS indexes repaired successfully');
   }, 180_000);
 
-  it('query warns with the extension-load failure, not the misleading indexes-missing message', () => {
+  it('query finds the symbol with no HOME-copy degradation warning', () => {
     const result = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
     expect(result.status).toBe(0);
-    expect(result.output).toContain('FTS extension failed to load');
-    expect(result.output).toContain('Failed to load library');
-    expect(result.output).not.toContain('FTS indexes missing');
+    expect(result.output).toContain('greetE2eSymbol');
+    expect(result.output).not.toContain('keyword search degraded');
+    expect(result.output).not.toContain('FTS extension failed to load');
   }, 60_000);
 
-  it('doctor live-probes FTS as unavailable, prints the real error and an actionable remedy', () => {
+  it('doctor reports a live-probed available FTS despite a broken HOME copy', () => {
     const result = runCli(['doctor'], repo, home, 'load-only');
     expect(result.status).toBe(0);
-    expect(result.output).toContain('Full-text search: unavailable');
-    expect(result.output).toContain('Failed to load library');
-    // #2374 (U2): doctor routes the reason through the classifier and prints a
-    // remedy. A broken file is corrupt_file → re-download guidance; the Windows
-    // missing-dependency remedy (VC++/OpenSSL) must NOT misfire on a corrupt file
-    // — the catch-all guard, verified end-to-end through the real CLI.
-    expect(result.output).toContain('Re-download it with network access');
-    expect(result.output).not.toContain('Visual C++');
+    expect(result.output).toContain('Full-text search: available');
   }, 60_000);
-});
 
-describe('unhappy path — extension missing entirely', () => {
-  it('analyze degrades with a reason that distinguishes missing from broken', () => {
-    const { home } = makeHome('missing');
-    const repo = makeFixtureRepo('missing');
-    const result = runCli(['analyze'], repo, home, 'load-only');
+  it('analyze stays FTS-available when ~/.lbdb is missing entirely', () => {
+    const missing = makeHome('missing');
+    const missingRepo = makeFixtureRepo('missing');
+    const result = runCli(['analyze'], missingRepo, missing.home, 'load-only');
     expect(result.status).toBe(0);
-    expect(result.output).toContain('FTS extension unavailable');
-    expect(result.output).toContain('has not been installed');
-    expect(result.output).not.toContain('Failed to load library');
+    expect(result.output).toContain('indexed successfully');
+    expect(result.output).not.toContain('FTS extension unavailable');
+    expect(result.output).not.toContain('has not been installed');
   }, 180_000);
 });
 
-describe('regression — the extension disappears between analyze runs (#2841)', () => {
-  it('the incremental run completes with a full DB write instead of an opaque Binder exception', (ctx) => {
+describe('regression — the home copy disappears between analyze runs (#2841)', () => {
+  it('the incremental run completes without a Binder exception or a full-DB escalation', (ctx) => {
     const { home, extensionFile } = makeHome('valid');
     const repo = makeFixtureRepo('vanishing-extension');
 
@@ -336,36 +330,28 @@ describe('regression — the extension disappears between analyze runs (#2841)',
     const second = runCli(['analyze'], repo, home, 'load-only');
     // Pre-fix: exit 1 with "Binder exception: Trying to delete from an index on
     // table File but its extension is not loaded" and no mention of FTS at all.
+    // Packaged vendor still loads after HOME vanishes, so incremental stays
+    // incremental (no Binder, no full-DB escalation).
     expect(second.status).toBe(0);
     expect(second.output).not.toContain('its extension is not loaded');
-    expect(second.output).toContain('full DB write');
-    expect(second.output).toContain('FTS');
+    expect(second.output).not.toContain('full DB write');
+    expect(second.output).not.toContain('forcing full rebuild');
+    expect(second.output).toMatch(/Incremental:|indexed successfully/);
   }, 400_000);
 });
 
-describe('self-heal over the network — FORCE INSTALL replaces a broken file (auto)', () => {
-  beforeEach((ctx) => {
-    // The platform matrix already exercises offline FTS load/diagnostic paths
-    // against real macOS/Windows binaries. Keep network redownload coverage on
-    // Ubuntu, where the full test job has the most stable extension fetch path.
-    if (process.platform !== 'linux') ctx.skip();
-    if (!networkAvailable) ctx.skip();
-  });
-
-  it('the reported journey heals: degraded analyze, then repair-fts with auto re-downloads and repairs', () => {
-    const { home, extensionFile } = makeHome('broken');
+describe('auto policy — packaged vendor does not need a HOME reinstall', () => {
+  it('analyze --repair-fts with auto succeeds from the packaged artifact when HOME is broken', () => {
+    const { home } = makeHome('broken');
     const repo = makeFixtureRepo('heal');
 
-    const degraded = runCli(['analyze'], repo, home, 'load-only');
-    expect(degraded.status).toBe(0);
-    expect(degraded.output).toContain('FTS extension unavailable');
+    const first = runCli(['analyze'], repo, home, 'load-only');
+    expect(first.status).toBe(0);
+    expect(first.output).not.toContain('FTS extension unavailable');
 
-    // The reporter's exact failing command — plain INSTALL used to no-op
-    // over the broken file and this kept failing forever.
     const repair = runCli(['analyze', '--repair-fts'], repo, home, 'auto');
     expect(repair.status).toBe(0);
     expect(repair.output).toContain('FTS indexes repaired successfully');
-    expect(fs.statSync(extensionFile).size).toBeGreaterThan(1024 * 1024);
 
     const query = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
     expect(query.status).toBe(0);
@@ -373,13 +359,12 @@ describe('self-heal over the network — FORCE INSTALL replaces a broken file (a
     expect(query.output).not.toContain('keyword search degraded');
   }, 600_000);
 
-  it('a fresh machine with no extension installs it during analyze and gets full FTS', () => {
-    const { home, extensionFile } = makeHome('missing');
+  it('a fresh machine with no HOME copy still gets full FTS under load-only', () => {
+    const { home } = makeHome('missing');
     const repo = makeFixtureRepo('fresh');
-    const result = runCli(['analyze'], repo, home, 'auto');
+    const result = runCli(['analyze'], repo, home, 'load-only');
     expect(result.status).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');
-    expect(fs.existsSync(extensionFile)).toBe(true);
   }, 600_000);
 });

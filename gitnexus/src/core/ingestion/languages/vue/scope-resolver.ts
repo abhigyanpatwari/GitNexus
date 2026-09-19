@@ -117,6 +117,9 @@ const vueScopeResolver: ScopeResolver = {
   // Vue uses explicit imports for all external symbols; no global free-
   // call fallback needed (would produce spurious edges for built-ins).
   allowGlobalFreeCallFallback: false,
+  // Vue SFC scripts are TypeScript/JavaScript: a named import binds a module-level
+  // declaration, never a class member (see the TS resolver).
+  namedImportsBindTopLevelOnly: true,
 
   /**
    * Expand the scope-resolution file universe for Vue by performing a

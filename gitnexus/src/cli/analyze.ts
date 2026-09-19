@@ -13,6 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
+import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import { findUndeclaredRelationPairError } from '../core/lbug/rel-pair-routing.js';
@@ -28,7 +29,6 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
-  getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
@@ -42,7 +42,7 @@ import {
   selfCommitContextFiles,
   snapshotSelfCommitSafety,
 } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
+import { IndexLockTimeoutError, isIndexLockGuardTimeout } from '../storage/index-lock.js';
 import {
   loadAnalyzeConfig,
   mergeAnalyzeOptions,
@@ -54,6 +54,12 @@ import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  formatProcessDetectionBudgetBanner,
+  parseProcessDetectionBudgetStrings,
+  resolveProcessDetectionBudget,
+} from '../core/ingestion/process-detection-budget.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
@@ -69,9 +75,9 @@ import {
   safeUrl,
 } from '../core/embeddings/http-client.js';
 import {
+  assessLocalEmbeddingRuntime,
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
-  localEmbeddingPrefixUnloadableMessage,
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import {
@@ -79,8 +85,6 @@ import {
   getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
-  isPrefixRuntimeLoadable,
-  resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
@@ -668,6 +672,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS',
+  'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -774,7 +780,7 @@ export async function analyzeOrWatchCommandWithRunnerIdentity(
   options: AnalyzeOptions = {},
 ): Promise<void> {
   if (options.watch) {
-    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    const { watchCommandWithRunnerIdentity } = await import('./analyze-watch.js');
     await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
     return;
   }
@@ -786,8 +792,6 @@ const analyzeCommandImpl = async (
   cliOptions?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
-  console.log('\n  GitNexus Analyzer\n');
-
   // ── Resolve the target repo root ──────────────────────────────────
   // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
   // caller's cwd), and config can set defaults that the validation below
@@ -949,6 +953,18 @@ const analyzeCommandImpl = async (
     workerPoolSize = parsedWorkers;
   }
 
+  const processDetectionFromFlags = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: options.maxProcesses,
+      maxProcessBranching: options.maxProcessBranching,
+      maxProcessTraceDepth: options.maxProcessTraceDepth,
+      maxEntryPointCandidates: options.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(`  ${formatInvalidProcessDetectionOverride(flag, raw)}\n`);
+    },
+  );
+
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
   // (0 disables the cap entirely). Validated up here so failures match the
   // sibling-validation pattern (exit before bar.start() — otherwise
@@ -1001,6 +1017,17 @@ const analyzeCommandImpl = async (
       options.embeddingSubBatchSize,
     )
   ) {
+    return;
+  }
+
+  // An empty value resolves to the repository root, so `--asyncapi-spec ""`
+  // walks the whole tree — defeating the module's own rule that there is no
+  // glob-based auto-discovery, and spending the walk budget on `node_modules`.
+  // The HTTP entry point already rejects exactly this value; two doors onto one
+  // option must not hold different rules.
+  if (options.asyncapiSpec !== undefined && options.asyncapiSpec.trim() === '') {
+    cliError('  --asyncapi-spec must be a non-empty path.\n');
+    process.exitCode = 1;
     return;
   }
 
@@ -1117,14 +1144,18 @@ const analyzeCommandImpl = async (
     );
   }
 
-  // On-demand embedding runtime (#2370): when the optional stack was pruned at
-  // install time (proxy-blocked NuGet download in onnxruntime-node's
-  // postinstall), heal it here instead of failing later in the pipeline. The
-  // install goes through the user's npm registry config (mirrors/proxies
-  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
-  // before bar.start() like the sibling validations above.
+  // Local embeddings: refuse Intel Mac / unloadable prefix before any registry
+  // download, then auto-heal a missing stack. Analyze uses a short install
+  // timeout so a blackholed proxy cannot stall the index run.
   if (embeddingsEnabled && !isHttpMode()) {
-    const resolved = resolveEmbeddingRuntime();
+    const assessment = assessLocalEmbeddingRuntime();
+    if (assessment.status === 'blocked') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-unsupported',
+      });
+      process.exitCode = 1;
+      return;
+    }
     // Resolved-but-unloadable (a populated prefix on a Node with no
     // module.registerHooks), or nothing installed on such a Node: fail fast with
     // capability guidance instead of dying mid-pipeline over an unusable prefix
@@ -1132,28 +1163,20 @@ const analyzeCommandImpl = async (
     // never needs the hook, so it is excluded. --embeddings was explicitly
     // requested and this failure is deterministic, so fail fast rather than
     // silently degrading to BM25 (distinct from a transient install timeout).
-    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
-      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+    if (assessment.status === 'prefix-unloadable') {
+      cliError(`  ${assessment.message.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'local-embedding-stack-missing',
       });
       process.exitCode = 1;
       return;
     }
-    // On-demand embedding runtime (#2370): when the optional stack was pruned at
-    // install time (proxy-blocked NuGet download in onnxruntime-node's
-    // postinstall), heal it here instead of failing later in the pipeline. The
-    // install goes through the user's npm registry config (mirrors/proxies
-    // apply) with --ignore-scripts, so no NuGet download is attempted.
-    if (resolved === null) {
+    if (assessment.status === 'needs-install') {
       console.log(
-        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+        `  Local embedding runtime is not installed.\n` +
           `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
           `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
       );
       try {
-        // Short deadline (env override still wins): analyze is interactive, so a
-        // blackholed proxy must not stall the whole index run for the 10-minute
-        // default — fail over to the guidance below instead.
         await installEmbeddingRuntime(
           {},
           getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
@@ -1171,10 +1194,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && options.force) {
+  if (options.repairFts && (options.force || options.parseCache === false)) {
     cliError(
-      '  Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
     );
     process.exitCode = 1;
     return;
@@ -1230,6 +1253,12 @@ const analyzeCommandImpl = async (
   const maxFileSizeBanner = getMaxFileSizeBannerMessage();
   if (maxFileSizeBanner) {
     console.log(`${maxFileSizeBanner}\n`);
+  }
+  const processDetectionBanner = formatProcessDetectionBudgetBanner(
+    resolveProcessDetectionBudget(processDetectionFromFlags),
+  );
+  if (processDetectionBanner) {
+    console.log(`${processDetectionBanner}\n`);
   }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
@@ -1332,11 +1361,13 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation
-      // needs a fresh pipelineResult. Has no bearing on the registry
-      // collision guard (see allowDuplicateName below).
-      force: options.force || options.skills,
+      // Pipeline re-index — OR'd with --skills because skill generation needs
+      // a fresh pipelineResult, and with --no-parse-cache because bypassing
+      // parser output is meaningful only when the pipeline runs.
+      force: options.force || options.skills || options.parseCache === false,
+      useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
+      skipFts: options.skipFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
       dropEmbeddings: options.dropEmbeddings,
@@ -1369,9 +1400,15 @@ const analyzeCommandImpl = async (
       // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
       // env / auto-formula fallback inside the pipeline.
       workerPoolSize,
+      maxProcesses: processDetectionFromFlags.maxProcesses,
+      maxProcessBranching: processDetectionFromFlags.maxProcessBranching,
+      maxProcessTraceDepth: processDetectionFromFlags.maxProcessTraceDepth,
+      maxEntryPointCandidates: processDetectionFromFlags.maxEntryPointCandidates,
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      springActuatorPath: options.springActuator,
+      asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1404,7 +1441,7 @@ const analyzeCommandImpl = async (
       // run can write meta.json and then fail before registerRepo(); in
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
-      await assertAnalysisFinalized(repoPath);
+      await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
       // defaultBranch / `--default-branch` must still take effect. Surgically
       // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
@@ -1436,6 +1473,9 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (result.ftsSkipped) {
+        console.log(`  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}\n`);
+      }
       if (runOptions.registryName) {
         console.log(`  Registry name: ${result.repoName}\n`);
       }
@@ -1474,7 +1514,7 @@ const analyzeCommandImpl = async (
     // success so the silent-finalize state surfaces with a non-zero
     // exit code and an actionable error instead of being mistaken for
     // a healthy index.
-    await assertAnalysisFinalized(repoPath);
+    await assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
     // Gated so `--index-only --skills` skips community skill writes too
@@ -1505,10 +1545,9 @@ const analyzeCommandImpl = async (
               (count: number) => count >= 5,
             ).length;
           }
-          const { storagePath: sp } = getStoragePaths(repoPath);
           await generateAIContextFiles(
             repoPath,
-            sp,
+            result.storagePath,
             result.repoName,
             {
               files: s.files ?? 0,
@@ -1530,6 +1569,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }
@@ -1593,26 +1633,9 @@ const analyzeCommandImpl = async (
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
     if (result.ftsSkipped) {
-      // #2658 review L2: a build/verify failure is NOT an extension-unavailable
-      // problem — sending the user to install the extension is the wrong remedy.
-      if (result.ftsSkipReason === 'build-failed') {
-        console.log(
-          `\n  Warning: full-text/BM25 search is disabled — the search index build failed this run.\n` +
-            `  The FTS extension is available; rerun \`gitnexus analyze --repair-fts\`. If it persists,\n` +
-            `  check the disk for space or corruption. Run \`gitnexus doctor\` for details.`,
-        );
-      } else {
-        console.log(
-          // NOT "then rerun" (#2841 §5.C): this run stamped `lastCommit`, so a
-          // plain rerun on an unchanged tree takes the up-to-date fast path and
-          // returns before Phase 3 could rebuild anything — the advice would be
-          // ineffective exactly when the user follows it. `--repair-fts` is the
-          // verb that rebuilds the search indexes without re-parsing the repo.
-          `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto), then run\n` +
-            `  \`gitnexus analyze --repair-fts\` to build the search indexes. Run \`gitnexus doctor\` for details.`,
-        );
-      }
+      // Total switch (#2658 L2 + native-abort/tuple-missing): a new skip
+      // reason must not inherit the network-install remedy.
+      console.log(`\n  ${formatAnalyzeFtsSkipSummary(result.ftsSkipReason)}`);
     }
 
     try {
@@ -1654,6 +1677,14 @@ const analyzeCommandImpl = async (
     // refreshed by the holder — this is a clean, expected condition, not a
     // crash, so render the message without a stack trace.
     if (err instanceof IndexLockTimeoutError) {
+      if (isIndexLockGuardTimeout(err)) {
+        cliError(err.message, {
+          recoveryHint: 'index-lock-guard-recovery',
+          guardPath: err.guardPath,
+        });
+        process.exitCode = 1;
+        return;
+      }
       cliError(
         `  Another gitnexus analyze (pid ${err.holder.pid} on ${err.holder.hostname}) is ` +
           `already refreshing this index and did not finish within the wait window.\n` +

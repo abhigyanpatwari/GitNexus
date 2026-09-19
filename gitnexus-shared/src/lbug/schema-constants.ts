@@ -13,6 +13,8 @@ export const NODE_TABLES = [
   'Folder',
   'Function',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Method',
   'CodeElement',
@@ -40,6 +42,8 @@ export const NODE_TABLES = [
   'Module',
   'Route',
   'Tool',
+  // Async messaging overlay — the broker-side counterpart of `Route`.
+  'Destination',
   // Taint/PDG substrate (issue #2080) — inert until M1 (#2081) emits blocks.
   'BasicBlock',
 ] as const;
@@ -64,6 +68,8 @@ export const REL_TYPES = [
   'MEMBER_OF',
   'STEP_IN_PROCESS',
   'HANDLES_ROUTE',
+  'PUBLISHES_TO',
+  'CONSUMES_FROM',
   'FETCHES',
   'HANDLES_TOOL',
   'ENTRY_POINT_OF',

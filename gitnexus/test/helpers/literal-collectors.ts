@@ -9,7 +9,7 @@
  * FOUR modes (plan KTD3):
  *   1. Config reflection — import `*-extractors/configs/*.ts`, read each
  *      config-shaped export's node-type-array keys. Exact `config.language`.
- *   2. AST scan (`typescript` parser, no type-checker) over the EXTRACTION
+ *   2. AST scan (TypeScript 7 program SourceFile; no Checker gating) over the EXTRACTION
  *      surface — `*-extractors/**`, every `languages/<lang>/captures.ts`, and
  *      `export-detection.ts`. Collected BY CONSUMPTION SITE: `<n>.type === '..'`,
  *      `childForFieldName('..')` (capturing the receiver node type when an
@@ -26,7 +26,7 @@
  *      `ingestion/` (e.g. `type-env.ts`). These files MIX SyntaxNode `.type` with
  *      resolved-symbol `.type` (kinds like 'Class'), so a literal is collected
  *      ONLY when its `.type` / `childForFieldName` receiver resolves to a
- *      tree-sitter SyntaxNode (via the TS TypeChecker). Per-`languages/<lang>/`
+ *      tree-sitter SyntaxNode (via the TypeScript 7 Checker). Per-`languages/<lang>/`
  *      files tag to that one grammar; shared (non-`languages/<lang>/`) files tag
  *      to the full gated set (valid-if-any).
  *
@@ -35,8 +35,8 @@
  *
  * Test-only file: allowed to name languages.
  */
-import ts from 'typescript';
-import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import * as ts from './ts7-ast.js';
+import { readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
@@ -88,6 +88,7 @@ const DIR_LANG: Record<string, SupportedLanguages> = {
   swift: SupportedLanguages.Swift,
   dart: SupportedLanguages.Dart,
   vue: SupportedLanguages.Vue,
+  zig: SupportedLanguages.Zig,
 };
 
 /** Basename (no .ts) → language set, for extractor files that name a language. */
@@ -111,6 +112,7 @@ const BASENAME_LANGS: Record<string, SupportedLanguages[]> = {
   nextjs: [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript],
   expo: [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript],
   'fastapi-router-bindings': [SupportedLanguages.Python],
+  zig: [SupportedLanguages.Zig],
 };
 
 /** const-name prefix → language (for export-detection.ts style named sets). */
@@ -128,6 +130,7 @@ const PREFIX_LANGS: Record<string, SupportedLanguages[]> = {
   CPP: [SupportedLanguages.CPlusPlus],
   TS: [SupportedLanguages.TypeScript],
   JS: [SupportedLanguages.JavaScript],
+  ZIG: [SupportedLanguages.Zig],
 };
 
 /** Candidate grammar languages a CODE literal in `relPath` should be checked against. */
@@ -446,11 +449,16 @@ function receiverNodeTypeOf(call: ts.CallExpression, sf: ts.SourceFile): string 
   return receiverMutatedIn(recvText, scope) ? undefined : found;
 }
 
-function scanFile(file: string): ScanResult {
+function scanFile(
+  file: string,
+  built: { program: ts.Program; checker: ts.Checker } | null,
+): ScanResult {
   const relPath = rel(file);
   const langs = fileLanguages(relPath);
-  const src = readFileSync(file, 'utf8');
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true);
+  const empty: ScanResult = { nodeTypes: [], fields: [] };
+  if (!built) return empty;
+  const sf = programSourceFile(built.program, file);
+  if (!sf) return empty;
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
 
@@ -555,8 +563,9 @@ function scanFile(file: string): ScanResult {
 function collectInCodeLiterals(): ScanResult {
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
+  const built = buildProgram();
   for (const file of mode2Files()) {
-    const r = scanFile(file);
+    const r = scanFile(file, built);
     nodeTypes.push(...r.nodeTypes);
     fields.push(...r.fields);
   }
@@ -568,7 +577,7 @@ function collectInCodeLiterals(): ScanResult {
 // binding/interpret/arity/import-decomposer/...), the production path for
 // migrated languages. These files mix SyntaxNode `.type` (grammar nodes) with
 // resolved-symbol `.type` (kinds like 'Class'); a naive scan would false-
-// positive on the latter. So this mode uses the TS TypeChecker to collect a
+// positive on the latter. So this mode uses the TypeScript 7 Checker to collect a
 // literal ONLY when its `.type` receiver / childForFieldName target resolves to
 // a tree-sitter SyntaxNode. Per-language dir => grammar (no cross-lang ambiguity).
 // ---------------------------------------------------------------------------
@@ -610,25 +619,35 @@ function resolutionLayerFiles(): { file: string; langs: SupportedLanguages[] }[]
 }
 
 let _program: ts.Program | null = null;
-let _checker: ts.TypeChecker | null = null;
-function buildProgram(
-  rootFiles: string[],
-): { program: ts.Program; checker: ts.TypeChecker } | null {
+let _checker: ts.Checker | null = null;
+function buildProgram(): { program: ts.Program; checker: ts.Checker } | null {
   if (_program && _checker) return { program: _program, checker: _checker };
   try {
-    const cfg = ts.readConfigFile(join(REPO_ROOT, 'tsconfig.json'), ts.sys.readFile);
-    const parsed = ts.parseJsonConfigFileContent(cfg.config ?? {}, ts.sys, REPO_ROOT);
-    const options: ts.CompilerOptions = { ...parsed.options, noEmit: true, skipLibCheck: true };
-    _program = ts.createProgram(rootFiles, options);
-    _checker = _program.getTypeChecker();
+    const api = new ts.API({ cwd: REPO_ROOT });
+    const snapshot = api.updateSnapshot({
+      openProjects: [join(REPO_ROOT, 'tsconfig.json')],
+    });
+    const project = snapshot.getProjects()[0];
+    if (!project) return null;
+    _program = project.program;
+    _checker = project.checker;
     return { program: _program, checker: _checker };
   } catch {
     return null;
   }
 }
 
+const sourceFileByPath = new Map<string, ts.SourceFile | undefined>();
+
+function programSourceFile(program: ts.Program, file: string): ts.SourceFile | undefined {
+  if (sourceFileByPath.has(file)) return sourceFileByPath.get(file);
+  const sf = program.getSourceFile(file) ?? program.getSourceFile(realpathSync(file));
+  sourceFileByPath.set(file, sf);
+  return sf;
+}
+
 /** True when `node`'s resolved type is (or includes) a tree-sitter SyntaxNode. */
-function isSyntaxNodeReceiver(checker: ts.TypeChecker, node: ts.Node): boolean {
+function isSyntaxNodeReceiver(checker: ts.Checker, node: ts.Node): boolean {
   try {
     const s = checker.typeToString(checker.getTypeAtLocation(node));
     return /\bSyntaxNode\b/.test(s);
@@ -644,7 +663,7 @@ function collectResolutionLayerLiterals(): ScanResult {
   const nodeTypes: CollectedNodeType[] = [];
   const fields: CollectedField[] = [];
   const entries = resolutionLayerFiles();
-  const built = buildProgram(entries.map((e) => e.file));
+  const built = buildProgram();
   if (!built) {
     resolutionLayerProgramOk = false;
     return { nodeTypes, fields };
@@ -652,7 +671,7 @@ function collectResolutionLayerLiterals(): ScanResult {
   const { program, checker } = built;
 
   for (const { file, langs } of entries) {
-    const sf = program.getSourceFile(file);
+    const sf = programSourceFile(program, file);
     if (!sf) continue;
     const relPath = rel(file);
     const constMembers = new Map<string, string[]>();

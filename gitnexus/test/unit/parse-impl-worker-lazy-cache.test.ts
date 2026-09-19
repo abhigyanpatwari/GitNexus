@@ -103,6 +103,50 @@ parentPort.on('message', (msg) => {
   );
 };
 
+/**
+ * Like `writeResultWorker`, but each spawned instance writes its OWN marker
+ * keyed by `threadId`. The shared single-marker workers above can only prove
+ * "at least one worker started"; counting files in `markerDir` gives the actual
+ * pool size the parse phase asked `createWorkerPool` for, which is the only
+ * thing that distinguishes a clamped pool from an honored override.
+ */
+const writeSpawnCountingWorker = (workerPath: string, markerDir: string): void => {
+  fs.writeFileSync(
+    workerPath,
+    `
+const fs = require('node:fs');
+const path = require('node:path');
+const { parentPort, threadId } = require('node:worker_threads');
+fs.mkdirSync(${JSON.stringify(markerDir)}, { recursive: true });
+fs.writeFileSync(path.join(${JSON.stringify(markerDir)}, 'worker-' + threadId), 'spawned');
+parentPort.postMessage({ type: 'ready' });
+const accumulated = {
+  nodes: [], relationships: [], symbols: [], imports: [], calls: [], assignments: [], heritage: [],
+  routes: [], fetchCalls: [], fetchWrapperDefs: [], decoratorRoutes: [], routerIncludes: [], routerImports: [], toolDefs: [], ormQueries: [], constructorBindings: [],
+  fileScopeBindings: [], parsedFiles: [], skippedLanguages: {}, fileCount: 0,
+};
+parentPort.on('message', (msg) => {
+  if (msg && msg.type === 'sub-batch') {
+    for (const file of msg.files) {
+      const filePath = file.path;
+      const name = filePath.split('/').pop().replace(/\.ts$/, '');
+      accumulated.nodes.push({
+        id: 'Function:' + filePath + ':' + name,
+        label: 'Function',
+        properties: { name, filePath, startLine: 1, endLine: 1, language: 'typescript' },
+      });
+      accumulated.fileCount++;
+    }
+    parentPort.postMessage({ type: 'progress', filesProcessed: accumulated.fileCount });
+    parentPort.postMessage({ type: 'sub-batch-done' });
+    return;
+  }
+  if (msg && msg.type === 'flush') parentPort.postMessage({ type: 'result', data: accumulated });
+});
+`,
+  );
+};
+
 const writeExitBeforeReadyWorker = (workerPath: string): void => {
   fs.writeFileSync(workerPath, `process.exit(1);\n`);
 };
@@ -238,6 +282,56 @@ describe('parse-impl worker pool lazy startup', () => {
 
     // The fatal path did not silently parse sequentially behind the user's back.
     expect(Array.from(graph.nodes.values()).some((n) => n.properties.name === 'fatal')).toBe(false);
+  });
+
+  it('honors GITNEXUS_WORKER_POOL_SIZE above the work-proportional cap', async () => {
+    // The auto pool size is bounded by source bytes so a tiny repo does not
+    // spawn a full idle pool. That bound must apply to the AUTO default only —
+    // it used to clamp the operator's env override too, so an operator asking
+    // for more workers silently got the byte-derived number while `--workers`
+    // was honored.
+    //
+    // This asserts the pool the PARSE PHASE actually builds, not the resolver in
+    // isolation: `resolveAutoPoolSize()` already honored the env var before the
+    // fix, so a test at that level stays green through a revert.
+    const saved = process.env.GITNEXUS_WORKER_POOL_SIZE;
+    process.env.GITNEXUS_WORKER_POOL_SIZE = '3';
+    try {
+      // Four tiny files: total bytes are far under one CHUNK_BYTES_PER_WORKER so
+      // the work-proportional cap is 1, while the parseable count stays above the
+      // requested 3 (the pool never exceeds the number of files to parse).
+      const rels = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts'];
+      const scanned = rels.map((rel) => {
+        const full = path.join(repoDir, rel);
+        fs.mkdirSync(path.dirname(full), { recursive: true });
+        fs.writeFileSync(full, `export function ${path.basename(rel, '.ts')}() { return 1; }\n`);
+        return { path: rel, size: fs.statSync(full).size };
+      });
+
+      const markerDir = path.join(tempDir, 'pool-size-markers');
+      const workerPath = path.join(tempDir, 'pool-size-worker.js');
+      writeSpawnCountingWorker(workerPath, markerDir);
+
+      const result = await runChunkedParseAndResolve(
+        createKnowledgeGraph(),
+        scanned,
+        rels,
+        rels.length,
+        repoDir,
+        Date.now(),
+        () => {},
+        // No `workerPoolSize`: the env var is the only override in play.
+        { workerUrlForTest: pathToFileURL(workerPath) },
+      );
+
+      expect(result.usedWorkerPool).toBe(true);
+      // 3, not the byte-derived 1. Exactly this assertion fails on the clamped
+      // parent commit, which is what makes it a regression test for the fix.
+      expect(fs.readdirSync(markerDir)).toHaveLength(3);
+    } finally {
+      if (saved === undefined) delete process.env.GITNEXUS_WORKER_POOL_SIZE;
+      else process.env.GITNEXUS_WORKER_POOL_SIZE = saved;
+    }
   });
 
   it('throws when GITNEXUS_WORKER_POOL_SIZE=0 and no --workers flag (sequential parsing removed)', async () => {

@@ -39,6 +39,8 @@ From `gitnexus-web/`:
 ### Before opening a PR
 
 ```bash
+# gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
+# gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
 cd gitnexus && npx tsc --noEmit && npm test
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```

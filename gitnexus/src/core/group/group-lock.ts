@@ -21,17 +21,18 @@
  * else claims: group directories live under `~/.gitnexus/groups/<name>` (or
  * `$GITNEXUS_HOME`), never under a repo's `.gitnexus[/branches/<slug>]`.
  *
- * WHY IT FAILS CLOSED, unlike the registry lock. `withRegistryLock` degrades to
- * running UNLOCKED on timeout, and that is right for it: it guards a sub-second
- * JSON read/merge/write on a latency-critical path (`augment` runs on every
- * editor tool call), and running unlocked is merely the pre-lock status quo. A
- * group sync is the opposite on every axis — it is long, expensive, operator-
- * initiated, and its lost update destroys contracts rather than a registry field.
+ * WHY IT FAILS CLOSED, like the registry lock. `withRegistryLock` also
+ * refuses to continue unlocked on timeout: a lost registry update can drop a
+ * concurrent registration. A group sync still fails closed for additional
+ * reasons — it is long, expensive, operator-initiated, and a lost update
+ * destroys contracts rather than a registry field.
  * A sync that cannot be protected must not run at all, and there are three
  * distinct ways it can fail to be protected; all three throw
  * {@link GroupSyncLockError}:
  *
- *   1. TIMEOUT — the holder is still alive when the ceiling elapses.
+ *   1. TIMEOUT — a live holder still held the lock when the ceiling
+ *      elapsed, or an unrecoverable acquisition/reclaim guard leftover
+ *      exhausted the guard wait (see RUNBOOK.md).
  *   2. LOCK-FREE DEGRADATION — `acquireIndexLock` answers a read-only or
  *      permission-denied filesystem with a no-op handle that is byte-identical
  *      to a real one at the API boundary. That is a deliberate tolerance for
@@ -73,6 +74,7 @@ import path from 'node:path';
 import {
   acquireIndexLock,
   IndexLockTimeoutError,
+  isIndexLockGuardTimeout,
   type IndexLockHandle,
 } from '../../storage/index-lock.js';
 import { logger } from '../logger.js';
@@ -124,7 +126,7 @@ export const withGroupSyncLock = async <T>(
 ): Promise<T> => {
   let handle: IndexLockHandle;
   // The wrapper times the acquisition itself. `IndexLockTimeoutError` carries
-  // `holder` and `holderKnown` and nothing else — the elapsed wait exists only
+  // holder/guard identity but no elapsed-time field — the elapsed wait exists only
   // inside its inherited message string, so the figure has to be measured here
   // to be reported without that message. `Date.now()` matches how the primitive
   // measures its own wait.
@@ -148,6 +150,16 @@ export const withGroupSyncLock = async <T>(
     // socket backend the holder is not identifiable at all. Re-word it around
     // what IS known: which group, which operation, and how long we waited.
     if (err instanceof IndexLockTimeoutError) {
+      if (isIndexLockGuardTimeout(err)) {
+        throw new GroupSyncLockError(
+          'timeout',
+          groupDir,
+          `Could not acquire the sync lock for group "${path.basename(groupDir)}" ` +
+            `(${getGroupSyncLockDir(groupDir)}). ${err.message} ` +
+            `Nothing was written and this group was not synced.`,
+          err,
+        );
+      }
       throw new GroupSyncLockError(
         'timeout',
         groupDir,

@@ -16,6 +16,12 @@ import {
   RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
+import {
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+} from '../../storage/storage-resolver.js';
+import { loadMeta } from '../../storage/repo-meta.js';
+import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
 import type {
   GroupConfig,
   RepoHandle,
@@ -37,6 +43,7 @@ import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.
 import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
+import { applyDegradedFlag } from './normalization.js';
 import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
 import {
   markBridgeProvenanceUnknown,
@@ -103,6 +110,24 @@ export interface SyncResult {
    * none of that repo's contracts are in `contracts`.
    */
   unreadableRepos: string[];
+  /**
+   * Cross-links whose provider endpoint has no resolved graph symbol
+   * (`degraded: true` on the link — see `isUnresolvedEndpoint`). The boundary
+   * is proven but cross-impact fan-out cannot anchor it; the usual remedy is
+   * re-analyzing the provider repo so its handlers resolve.
+   */
+  degradedLinks: number;
+  /**
+   * Repos whose per-repo extraction threw (init, an extractor, or the
+   * snapshot read). Each still lands in `unreadableRepos` (group path) —
+   * unchanged downstream semantics — but carries its failure reason here: the
+   * catch used to swallow the exception, leaving contracts already pushed by
+   * earlier extractors in this iteration as silent half-repo data. `repo` is
+   * that same group path (e.g. `app/backend`), not the registry display name.
+   */
+  failedRepos: Array<{ repo: string; reason: string }>;
+  /** Operator-facing run warnings (e.g. bridge.lbug write failed after contracts.json was written). */
+  warnings: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
   /**
    * Matching stages this run was asked to skip. Populated on EVERY outcome,
@@ -275,6 +300,8 @@ export function partitionManifestWindows(
 
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
+  const failedRepos: Array<{ repo: string; reason: string }> = [];
+  const warnings: string[] = [];
   // Repos that ARE registered but that we could not extract from — the index
   // would not open, or an extractor threw partway and the repo's staged
   // contracts were dropped. Kept separate from `missingRepos` because the two
@@ -325,15 +352,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const includeEx = new IncludeExtractor();
 
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const handle = await resolve(regName, groupPath);
-        if (!handle) {
-          missingRepos.push(groupPath);
-          continue;
-        }
-        resolvedRepoPaths.set(groupPath, handle.repoPath);
-
-        const poolId = handle.id;
-        const lbugPath = path.join(handle.storagePath, 'lbug');
+        let lbugPath = '';
         // Staged per repo, not appended straight to `autoContracts`. Extractors
         // run in sequence and any one of them can throw; appending as we go left
         // a repo whose HTTP extractor succeeded and whose gRPC extractor failed
@@ -342,6 +361,27 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // output is now all-or-nothing, which is what that message describes.
         const repoContracts: StoredContract[] = [];
         try {
+          let handle = await resolve(regName, groupPath);
+          if (!handle) {
+            missingRepos.push(groupPath);
+            continue;
+          }
+          resolvedRepoPaths.set(groupPath, handle.repoPath);
+
+          // Validate the registry-selected slot immediately before it is
+          // opened. A foreign or incomplete external slot is a registered but
+          // unreadable member, so the existing per-member degradation path
+          // remains the user-visible behavior.
+          if (!opts?.resolveRepoHandle) {
+            const storagePath = await requireRegisteredStoragePath(
+              { path: handle.repoPath, storagePath: handle.storagePath },
+              STATUS_STORAGE_REQUIREMENTS,
+            );
+            handle = { ...handle, storagePath };
+          }
+
+          const poolId = handle.id;
+          lbugPath = path.join(handle.storagePath, LBUG_DIRECTORY);
           await initLbug(poolId, lbugPath);
           // No pin here: contract extraction below uses `executor` while this
           // repo is freshly initialized and live, and completes before the next
@@ -423,10 +463,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             }
           }
 
-          const metaPath = path.join(handle.storagePath, 'meta.json');
           try {
-            const raw = await fs.readFile(metaPath, 'utf-8');
-            const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
+            const m = await loadMeta(handle.storagePath);
+            if (!m) throw new Error('Index metadata is unavailable.');
             repoSnapshots[groupPath] = {
               indexedAt: m.indexedAt || '',
               lastCommit: m.lastCommit || '',
@@ -472,6 +511,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             "⚠️ Could not read this repo's index; its contracts are omitted from this sync.",
           );
           unreadableRepos.push(groupPath);
+          failedRepos.push({
+            repo: groupPath,
+            reason: err instanceof Error ? err.message : String(err),
+          });
           // Forget the handle recorded above (present only if the failure came
           // after initLbug). Deferred manifest resolution derives its known-repo
           // set from this map, so leaving the entry here re-opens a repo this
@@ -639,7 +682,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
   // same endpoints. Prefer the manifest version — it reflects operator intent
   // and carries matchType:'manifest' which downstream consumers may rely on.
-  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]);
+  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]).map(
+    applyDegradedFlag,
+  );
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
@@ -867,13 +912,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               'a lower bound rather than as complete.'
             : 'Its metadata could NOT be marked provenance-unknown, so those answers may still ' +
               'report as complete despite describing an older sync.';
+          const writeBridgeWarn =
+            '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
+            'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
+            `the previous sync's contracts. ${provenanceNote} ` +
+            'Re-run `gitnexus group sync` to retry.';
           logger.warn(
             { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
-            '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
-              'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-              `the previous sync's contracts. ${provenanceNote} ` +
-              'Re-run `gitnexus group sync` to retry.',
+            writeBridgeWarn,
           );
+          warnings.push(writeBridgeWarn);
         }
       }
     });
@@ -886,6 +934,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     unmatched: wildcard.remaining,
     missingRepos,
     unreadableRepos,
+    failedRepos,
+    warnings,
+    degradedLinks: crossLinks.filter((l) => l.degraded === true).length,
     repoSnapshots,
     registryOutcome,
   };

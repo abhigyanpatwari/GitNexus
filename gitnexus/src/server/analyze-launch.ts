@@ -15,13 +15,14 @@ import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
+import { INDEX_METADATA_FILE } from '../storage/repo-manager.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
-  canonicalizePath,
-  getStoragePath,
-  INDEX_METADATA_FILE,
-  listRegisteredRepos,
-  registryPathEquals,
-} from '../storage/repo-manager.js';
+  ANALYZE_FORCE_STORAGE_REQUIREMENTS,
+  ANALYZE_STORAGE_REQUIREMENTS,
+  requireStoragePath,
+} from '../storage/storage-resolver.js';
+import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
@@ -46,7 +47,23 @@ export interface LaunchOptions {
   force?: boolean;
   embeddings?: boolean;
   dropEmbeddings?: boolean;
+  springActuatorPath?: string;
+  asyncApiSpecPath?: string;
   registryName?: string;
+  /**
+   * Index-branch selector, forwarded to `AnalyzeOptions.branch`.
+   *
+   * Setting it does not by itself mean a `branches/<slug>/` sub-directory:
+   * `resolveBranchPlacement` (storage/branch-index.ts) keeps the run on the flat
+   * slot when that slot has no recorded owner, or when its owner already IS this
+   * label. Only a label that differs from the flat slot's owner gets its own
+   * sub-directory.
+   *
+   * The caller is responsible for having the branch checked out —
+   * `resolveWriteTarget` in core refuses a label that disagrees with the working
+   * tree, which is what keeps one branch's content out of another's slot (#2106).
+   */
+  branch?: string;
 }
 
 const MAX_WORKER_RETRIES = 2;
@@ -54,8 +71,8 @@ const MAX_WORKER_RETRIES = 2;
 /**
  * The worker reports `complete` over IPC before its on-disk finalization
  * (LadybugDB checkpoint + native handle release + metadata write) is visible
- * at `getStoragePath(targetPath)` — observed up to ~6.5s behind the IPC
- * message. Opening the database inside that window is what the pre-IPC
+ * at the ownership-validated storage path — observed up to ~6.5s behind the
+ * IPC message. Opening the database inside that window is what the pre-IPC
  * ordering was meant to prevent and is actively dangerous: reads fail with
  * binder errors or return an empty graph, the open can quarantine the
  * in-flight WAL, and the native layer racing the rewrite has crashed the
@@ -65,58 +82,101 @@ const FINALIZE_SETTLE_TIMEOUT_MS = 60_000;
 const FINALIZE_SETTLE_POLL_MS = 200;
 
 /**
+ * Resolve the directory this run's index actually landed in.
+ *
+ * `requireStoragePath` / `registerRepo` record the FLAT storage slot, but a
+ * pinned `--branch` run whose label differs from the flat slot's owner writes
+ * `lbug`/`gitnexus.json` under `branches/<slug>/` instead. Probing the flat
+ * path for such a run watches files it never rewrote, so the gate below would
+ * spin to its timeout on a perfectly successful analysis (#3199 review).
+ *
+ * `isPrimaryBranch` is the worker's own report of `!placement.branch`, so this
+ * follows the placement core actually chose rather than recomputing it here
+ * (the flat slot's recorded owner can be adopted mid-run, which would make a
+ * recomputation race the thing it is trying to observe).
+ */
+const settleDirFor = (
+  registryStoragePath: string,
+  branch: string | undefined,
+  isPrimaryBranch: boolean | undefined,
+): string =>
+  branch && isPrimaryBranch === false
+    ? path.join(registryStoragePath, BRANCHES_DIR, branchSlug(branch))
+    : registryStoragePath;
+
+/**
  * Resolve once the analyzed repo's index is settled at `storagePath`: the
  * LadybugDB file and metadata both exist AND were (re)written by THIS job
  * (mtime >= jobStartMs — bare existence is not enough, a re-analysis leaves
  * the previous index in place while it works), and no transient WAL/shadow/
  * checkpoint sidecars remain (the worker's native close has finished).
  *
- * Never rejects. Timing out logs and proceeds (pre-gate behavior) rather
- * than failing a job whose analysis genuinely succeeded — e.g. a no-op
- * non-force analyze legitimately rewrites nothing.
+ * `storagePath` is the ownership-validated path from `requireStoragePath`,
+ * not the request's user-provided repo path (CodeQL js/path-injection).
+ *
+ * Never rejects. Returns `true` once the index is settled. Timing out logs
+ * a warning and returns `false` — the caller must fail the job without
+ * publishing. The `alreadyUpToDate` fast path never rewrites `lbug` (see
+ * `run-analyze.ts`) and is treated as settled without waiting so it does
+ * not hold the analyze slot for 60s of polling.
  */
-/**
- * Look up the analyzed repo's registered storage path. The request's
- * user-provided path is used only as a comparison key; the filesystem probes
- * below run against the registry's own `storagePath` — the server-owned
- * record readers resolve through, and not a user-controlled value
- * (CodeQL js/path-injection).
- */
-const registeredStoragePath = async (targetPath: string): Promise<string | null> => {
-  const target = canonicalizePath(path.resolve(targetPath));
-  const entries = await listRegisteredRepos();
-  const entry = entries.find((e) => registryPathEquals(canonicalizePath(e.path), target));
-  return entry?.storagePath ?? null;
-};
-
-const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Promise<void> => {
-  const settled = (storagePath: string): boolean => {
+const waitForSettledIndex = async (
+  storagePath: string,
+  jobStartMs: number,
+  branch?: string,
+  isPrimaryBranch?: boolean,
+): Promise<boolean> => {
+  const settled = (probePath: string): boolean => {
     try {
-      const lbugStat = statSync(path.join(storagePath, 'lbug'));
-      const metaStat = statSync(path.join(storagePath, INDEX_METADATA_FILE));
-      return (
-        lbugStat.mtimeMs >= jobStartMs &&
-        metaStat.mtimeMs >= jobStartMs &&
-        ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every(
-          (f) => !existsSync(path.join(storagePath, f)),
-        )
-      );
+      // Inline path.relative barriers at every filesystem sink. CodeQL tracks
+      // `storagePath` from the HTTP analyze `path` through requireStoragePath
+      // and does not treat that helper as a js/path-injection sanitizer.
+      const storageRoot = path.resolve(storagePath);
+      const probeRoot = path.resolve(probePath);
+      const probeRel = path.relative(storageRoot, probeRoot);
+      if (probeRel.startsWith('..') || path.isAbsolute(probeRel)) {
+        return false;
+      }
+
+      const lbugPath = path.resolve(probeRoot, LBUG_DIRECTORY);
+      const lbugRel = path.relative(storageRoot, lbugPath);
+      if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
+        return false;
+      }
+      const lbugStat = statSync(lbugPath);
+
+      const metaPath = path.resolve(probeRoot, INDEX_METADATA_FILE);
+      const metaRel = path.relative(storageRoot, metaPath);
+      if (metaRel.startsWith('..') || path.isAbsolute(metaRel)) {
+        return false;
+      }
+      const metaStat = statSync(metaPath);
+
+      if (lbugStat.mtimeMs < jobStartMs || metaStat.mtimeMs < jobStartMs) {
+        return false;
+      }
+
+      return ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every((name) => {
+        const sidePath = path.resolve(probeRoot, name);
+        const sideRel = path.relative(storageRoot, sidePath);
+        if (sideRel.startsWith('..') || path.isAbsolute(sideRel)) {
+          return false;
+        }
+        return !existsSync(sidePath);
+      });
     } catch {
       return false; // not written yet
     }
   };
   const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
   for (;;) {
-    // Re-resolved each round: the worker registers the repo as part of the
-    // finalization this gate is waiting out.
-    const storagePath = await registeredStoragePath(targetPath);
-    if (storagePath && settled(storagePath)) return;
+    if (settled(settleDirFor(storagePath, branch, isPrimaryBranch))) return true;
     if (Date.now() > deadline) {
       logger.warn(
-        { targetPath },
-        'analyze finalization not visible after timeout; completing job anyway',
+        { storagePath },
+        'analyze finalization not visible after timeout; not publishing',
       );
-      return;
+      return false;
     }
     await new Promise((resolve) => setTimeout(resolve, FINALIZE_SETTLE_POLL_MS));
   }
@@ -125,21 +185,36 @@ const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Prom
 export function createLaunchAnalysisWorker(deps: LaunchDeps) {
   const { jobManager, backend, acquireRepoLock, releaseRepoLock, closeDbHandle } = deps;
 
-  return function launchAnalysisWorker(
+  return async function launchAnalysisWorker(
     job: { id: string },
     targetPath: string,
     opts: LaunchOptions,
-  ): void {
+  ): Promise<void> {
     // For waitForSettledIndex: files (re)written by this job have mtimes at or
     // after this instant. Taken before the fork so no worker write predates it.
     const jobStartMs = Date.now();
-    // Acquire shared repo lock (keyed on storagePath to match embed handler)
-    const analyzeLockKey = getStoragePath(targetPath);
+    const analyzeLockKey = await requireStoragePath(
+      targetPath,
+      opts.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
+    );
+    // Acquire shared repo lock only after ownership validation. The same
+    // resolved path is retained for finalization instead of being looked up
+    // again through the registry after the worker exits.
     const lockErr = acquireRepoLock(analyzeLockKey);
     if (lockErr) {
       jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
       return;
     }
+
+    // One launch, one release. `releaseRepoLock` is Set.delete (idempotent),
+    // and this flag also stops error / exit / child.error / complete-finally
+    // from racing a second drop if a late terminal message lands mid-settle.
+    let lockReleased = false;
+    const releaseLockOnce = (): void => {
+      if (lockReleased) return;
+      lockReleased = true;
+      releaseRepoLock(analyzeLockKey);
+    };
 
     jobManager.updateJob(job.id, { repoPath: targetPath, status: 'analyzing' });
 
@@ -171,6 +246,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       // Capture stderr for crash diagnostics
       let stderrChunks = '';
+      // A terminal IPC message (`complete`/`error`) means the worker finished
+      // and is now winding down — it calls process.exit(0) ~500ms later. The
+      // job is deliberately still non-terminal at that point because the
+      // finalization gate is running, so without this flag the exit handler
+      // below reads that clean exit as a crash and retries a SUCCESSFUL
+      // analysis, three times, before failing it (#3199 review).
+      let terminalIpcSeen = false;
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks += chunk.toString();
         if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
@@ -184,13 +266,21 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         const current = jobManager.getJob(job.id);
         if (!current || isTerminalJobStatus(current.status)) return;
 
+        if (msg.type === 'complete' || msg.type === 'error') terminalIpcSeen = true;
+
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
             status: 'analyzing',
             progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
           });
         } else if (msg.type === 'complete') {
-          releaseRepoLock(analyzeLockKey);
+          // Hold the write lock through settle AND the collapse/publish
+          // decision. Release in `finally` so timeout / collapse / init
+          // failure / complete each drop it exactly once. alreadyUpToDate
+          // skips the mtime wait (resolved `true` immediately) so this
+          // does not occupy the slot for 60s of polling — the lock still
+          // drops only after that short path finishes.
+          //
           // Before marking complete: (1) wait for the worker's on-disk
           // finalization to settle (see waitForSettledIndex), (2) evict the
           // cached DB handle — same invalidation DELETE /api/repo performs, a
@@ -200,10 +290,40 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // below true in practice: the repo is actually queryable when the
           // client receives the SSE complete event, and an index this run knows
           // to be incomplete is never published at all.
-          waitForSettledIndex(targetPath, jobStartMs)
-            .then(() => closeDbHandle())
-            .catch(() => {}) // best-effort: eviction failure must not fail the job
-            .then(() => {
+          //
+          // alreadyUpToDate never opens LadybugDB and never rewrites `lbug`
+          // (run-analyze.ts early-return; CLI notes the same). The mtime gate
+          // would spin the full 60s and hold the single global analyze slot.
+          // ftsRepairedOnly DOES rewrite `lbug` (initLbug + createSearchFTSIndexes)
+          // so it still waits.
+          const settle = msg.result.alreadyUpToDate
+            ? Promise.resolve(true)
+            : waitForSettledIndex(
+                analyzeLockKey,
+                jobStartMs,
+                opts.branch,
+                msg.result.isPrimaryBranch,
+              );
+          settle
+            .then((settled) => {
+              if (!settled) {
+                // Finalization never became visible. Do not evict the cached
+                // handle (a previously published index should keep being
+                // served) and do not publish. On-disk files stay for a retry.
+                jobManager.updateJob(job.id, {
+                  status: 'failed',
+                  repoName: msg.result.repoName,
+                  error:
+                    'Analysis finalization not visible after timeout. The index was not published; on-disk files were left for a retry.',
+                });
+                return false;
+              }
+              return closeDbHandle()
+                .catch(() => {}) // best-effort: eviction failure must not fail the job
+                .then(() => true);
+            })
+            .then((readyToPublish) => {
+              if (!readyToPublish) return;
               // PARITY WITH THE CLI, which is what the IPC projection was added
               // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
               // "so a server-side caller sees the same degraded outcome the CLI
@@ -264,7 +384,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
               // ordering comment above the chain true — the repo really is
               // queryable when the client receives the SSE complete event.
               return backend.init().then(() => {
-                jobManager.updateJob(job.id, { status: 'complete', repoName: msg.result.repoName });
+                jobManager.updateJob(job.id, {
+                  status: 'complete',
+                  repoName: msg.result.repoName,
+                });
               });
             })
             .catch((err) => {
@@ -273,9 +396,12 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
                 status: 'failed',
                 error: 'Server failed to reload after analysis. Try again.',
               });
+            })
+            .finally(() => {
+              releaseLockOnce();
             });
         } else if (msg.type === 'error') {
-          releaseRepoLock(analyzeLockKey);
+          releaseLockOnce();
           // A failed (force) analyze may still have rewritten DB files first.
           void closeDbHandle().catch(() => {});
           jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
@@ -283,7 +409,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       });
 
       child.on('error', (err) => {
-        releaseRepoLock(analyzeLockKey);
+        releaseLockOnce();
         jobManager.updateJob(job.id, {
           status: 'failed',
           error: `Worker process error: ${err.message}`,
@@ -293,6 +419,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
         if (!j || isTerminalJobStatus(j.status)) return;
+
+        // The worker already reported a terminal outcome; this exit is it
+        // winding down, not dying. The job is still non-terminal only because
+        // the finalization gate above has not resolved yet, and that gate owns
+        // the outcome — retrying here would fork a second worker over a
+        // finished, successful analysis.
+        if (terminalIpcSeen) return;
 
         // Worker crashed — attempt retry if under the limit
         if (j.retryCount < MAX_WORKER_RETRIES) {
@@ -315,7 +448,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           setTimeout(forkWorker, delay);
         } else {
           // Exhausted retries — permanent failure
-          releaseRepoLock(analyzeLockKey);
+          releaseLockOnce();
           jobManager.updateJob(job.id, {
             status: 'failed',
             error: `Worker crashed ${MAX_WORKER_RETRIES + 1} times (code ${code})${stderrChunks ? ': ' + stderrChunks.trim().split('\n').pop() : ''}`,
@@ -334,11 +467,19 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           force: !!opts.force,
           embeddings: !!opts.embeddings,
           dropEmbeddings: !!opts.dropEmbeddings,
+          ...(opts.springActuatorPath ? { springActuatorPath: opts.springActuatorPath } : {}),
+          ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
           ...(opts.registryName ? { registryName: opts.registryName } : {}),
+          ...(opts.branch ? { branch: opts.branch } : {}),
         },
       });
     };
 
-    forkWorker();
+    try {
+      forkWorker();
+    } catch (error) {
+      releaseLockOnce();
+      throw error;
+    }
   };
 }

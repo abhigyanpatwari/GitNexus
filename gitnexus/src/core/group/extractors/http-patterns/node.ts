@@ -13,6 +13,7 @@ import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js'
 import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
+  propertyName,
   scanDataRouteTables,
 } from '../../../ingestion/route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../../../ingestion/route-extractors/nest.js';
@@ -152,6 +153,37 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// ─── Consumer: wrapped client X.request({ url, method }) ────────────
+// Enterprise wrapper shape: an axios instance (or a named request helper)
+// re-exported under a local name — `httpClient.request({ url, method })`
+// from `@winex-plugin/win-request`, `$http.request(...)`. Generic names
+// like `api` need axios.create/import proof (`isHttpClientRef`); spelling
+// alone is too common (graphql-request helpers, domain `api` objects).
+// The member property is `request` (not an HTTP verb), so this cannot
+// collide with the Express provider pattern (`router.get`) or the axios
+// member form (`axios.get`). Option keys are resolved programmatically,
+// same as the jQuery ajax / axios object forms.
+//
+// The query captures the receiver so scan can reject unrelated
+// `.request({ url })` APIs (`cy.request`, `queue.request`).
+const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        object: (_) @obj
+        property: (property_identifier) @fn (#eq? @fn "request"))
+      arguments: (arguments . (object) @options))
+  `,
+};
+
+/**
+ * Receivers admitted as wrapped HTTP clients without axios.create proof.
+ * Spelling-only: the last identifier in `obj.text` (`this.$http` → `$http`).
+ * Keep this set small — every extra name is a false-positive surface.
+ */
+const WRAPPED_REQUEST_RECEIVERS = new Set(['httpClient', '$http']);
+
 interface NodePatternBundle {
   express: CompiledPatterns<Record<string, never>>;
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
@@ -160,6 +192,7 @@ interface NodePatternBundle {
   jqueryShorthand: CompiledPatterns<Record<string, never>>;
   jqueryAjax: CompiledPatterns<Record<string, never>>;
   axiosObject: CompiledPatterns<Record<string, never>>;
+  requestObject: CompiledPatterns<Record<string, never>>;
 }
 
 function compileBundle(language: unknown, name: string): NodePatternBundle {
@@ -177,6 +210,7 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
     jqueryShorthand: mk(JQUERY_SHORTHAND_SPEC, 'jquery-shorthand'),
     jqueryAjax: mk(JQUERY_AJAX_SPEC, 'jquery-ajax'),
     axiosObject: mk(AXIOS_OBJECT_SPEC, 'axios-object'),
+    requestObject: mk(REQUEST_OBJECT_SPEC, 'request-object'),
   };
 }
 
@@ -190,6 +224,7 @@ const TSX_BUNDLE = compileBundle(TypeScript.tsx, 'tsx-http');
  * of `keyNames`. Returns null when no matching pair is present or the
  * value is not a string literal. Used by the jQuery ajax / axios object
  * consumers to resolve `url` / `method` / `type` keys in any order.
+ * Keys use shared `propertyName` so quoted `"method"` matches `method`.
  */
 function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): string | null {
   for (let i = 0; i < objectNode.namedChildCount; i++) {
@@ -198,12 +233,87 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     const keyNode = pair.childForFieldName('key');
     const valueNode = pair.childForFieldName('value');
     if (!keyNode || !valueNode) continue;
-    if (!keyNames.includes(keyNode.text)) continue;
+    const key = propertyName(keyNode);
+    if (key === null || !keyNames.includes(key)) continue;
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
     if (lit !== null) return lit;
   }
   return null;
+}
+
+/**
+ * Verb for wrapped `X.request({ url, method|type })`. Absent key → GET
+ * (same default as fetch-without-options / jQuery ajax). Present but not a
+ * string/template, supplied only via object spread, or later overwritten by
+ * a duplicate key / spread → `*` so matching can still link without pinning GET.
+ * Later properties win, matching JavaScript object-literal evaluation.
+ */
+function readRequestMethod(
+  objectNode: Parser.SyntaxNode,
+  keyNames: readonly string[] = ['method', 'type'],
+): string {
+  type Verb = { kind: 'absent' } | { kind: 'literal'; value: string } | { kind: 'unknown' };
+  let last: Verb = { kind: 'absent' };
+  for (let i = 0; i < objectNode.namedChildCount; i++) {
+    const child = objectNode.namedChild(i);
+    if (!child) continue;
+    if (child.type === 'spread_element') {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    if (
+      child.type === 'shorthand_property_identifier' ||
+      child.type === 'shorthand_property_identifier_pattern'
+    ) {
+      if (keyNames.includes(child.text)) last = { kind: 'unknown' };
+      continue;
+    }
+    if (child.type !== 'pair') continue;
+    const keyNode = child.childForFieldName('key');
+    const valueNode = child.childForFieldName('value');
+    if (!keyNode) continue;
+    const key = propertyName(keyNode);
+    if (key === null || !keyNames.includes(key)) continue;
+    if (!valueNode || (valueNode.type !== 'string' && valueNode.type !== 'template_string')) {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    const lit = unquoteLiteral(valueNode.text);
+    if (lit === null || lit.includes('${')) {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    last = { kind: 'literal', value: lit };
+  }
+  if (last.kind === 'literal') return last.value.toUpperCase();
+  if (last.kind === 'unknown') return '*';
+  return 'GET';
+}
+
+function wrappedRequestReceiverName(receiver: string): string {
+  const parts = receiver.split('.');
+  return parts[parts.length - 1] ?? receiver;
+}
+
+/** Axios module / axios.create instance, or a registered wrapper identifier. */
+function isAdmittedWrappedRequestReceiver(
+  receiver: string,
+  fileKey: string | undefined,
+  facts: JsRepoFacts | null,
+): boolean {
+  if (WRAPPED_REQUEST_RECEIVERS.has(wrappedRequestReceiverName(receiver))) return true;
+  try {
+    const isModule =
+      facts === null || fileKey === undefined
+        ? receiver === 'axios'
+        : isAxiosNamespace(fileKey, receiver, facts);
+    if (isModule) return true;
+    if (!facts || fileKey === undefined) return false;
+    return isHttpClientRef(fileKey, receiver, facts);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -390,9 +500,10 @@ function resolveFactsFor(
  *
  * `/{param}` matches every one-segment provider route in the group, and
  * `matching.exclude_links_param_only_paths` defaults to `false`. A path whose
- * leading term is an unresolved placeholder is refused for the same reason —
- * nothing pins where it starts. (`resolveJsPathExpression` already refuses those
- * it folded itself; this also covers the literal fallback below.)
+ * leading term is an unresolved placeholder is refused unless the next
+ * character is `/` — that is the gateway-prefix shape
+ * `` `${serviceClient}/api/v1/x` `` that `stripLeadingTemplatePrefix` keeps.
+ * Bare `{param}` and `{param}api/x` stay rejected: nothing pins a route.
  */
 function looksLikeHttpPath(path: string): boolean {
   if (path === '') return false;
@@ -404,7 +515,7 @@ function looksLikeHttpPath(path: string): boolean {
   // unresolved term happened to contain a space.
   const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
   if (/\s/.test(shape)) return false;
-  if (shape.startsWith('{param}')) return false;
+  if (shape.startsWith('{param}') && !shape.startsWith('{param}/')) return false;
   // An all-digit string is a path only when it is written as one. A leading
   // slash is that evidence: `client.get('/123')` is a route whose segment the
   // consumer normalizer reads as `{param}`, while a bare `"5000"` folded out of
@@ -672,8 +783,7 @@ function scanBundle(
     if (!optionsNode) continue;
     const path = readStringProp(optionsNode, ['url']);
     if (path === null) continue;
-    const rawMethod = readStringProp(optionsNode, ['method']);
-    const method = (rawMethod ?? 'GET').toUpperCase();
+    const method = readRequestMethod(optionsNode, ['method']);
     out.push({
       role: 'consumer',
       framework: 'axios',
@@ -682,6 +792,37 @@ function scanBundle(
       name: null,
       line: optionsNode.startPosition.row + 1,
       confidence: 0.7,
+    });
+  }
+
+  // Consumer: wrapped client `X.request({ url, method })` — the shared
+  // enterprise axios-instance shape (`httpClient.request` from
+  // win-request and friends). Emit the raw url (templates intact) so
+  // shared `normalizeConsumerPath` can strip a leading `${…}` gateway
+  // prefix and fold mid/tail interpolations to `{param}`. A plugin-side
+  // longest-slash-segment reducer would truncate those mid-templates
+  // before the shared normalizer ever saw them. This scan drops only
+  // static relative urls (no `${`, no leading `/`, not `https?://`).
+  // That filter is request-wrapper-specific: fetch/axios member forms
+  // already admit absolute urls and leave host stripping to
+  // `normalizeConsumerPath`.
+  for (const match of runCompiledPatterns(bundle.requestObject, tree)) {
+    const optionsNode = match.captures.options;
+    const objNode = match.captures.obj;
+    if (!optionsNode || !objNode) continue;
+    if (!isAdmittedWrappedRequestReceiver(objNode.text, fileKey, facts)) continue;
+    const rawUrl = readStringProp(optionsNode, ['url']);
+    if (rawUrl === null) continue;
+    const url = rawUrl.trim();
+    if (!url.includes('${') && !url.startsWith('/') && !/^https?:\/\//i.test(url)) continue;
+    out.push({
+      role: 'consumer',
+      framework: 'request',
+      method: readRequestMethod(optionsNode),
+      path: url,
+      name: null,
+      line: optionsNode.startPosition.row + 1,
+      confidence: 0.65,
     });
   }
 

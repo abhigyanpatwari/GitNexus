@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createWatchIgnorePredicate } from '../../src/config/ignore-service.js';
-import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/watch.js';
+import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/analyze-watch.js';
 import * as git from '../../src/storage/git.js';
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -24,6 +24,21 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
+  it('forwards explicit FTS opt-out without changing the default', async () => {
+    const names = [
+      'GITNEXUS_MAX_FILE_SIZE',
+      'GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS',
+      'GITNEXUS_VERBOSE',
+    ] as const;
+    for (const name of names) vi.stubEnv(name, process.env[name]);
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    try {
+      expect((await resolveWatchOptions(repoPath, { skipFts: true }, baseline)).skipFts).toBe(true);
+      expect((await resolveWatchOptions(repoPath, {}, baseline)).skipFts).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('accepts every scanner-admitted file instead of maintaining a second allow-list', () => {
     expect(isRelevantWatchPath('src/service.ts')).toBe(true);
     expect(isRelevantWatchPath('server/app.py')).toBe(true);
@@ -112,6 +127,7 @@ describe('watch path selection', () => {
         skipAgentsMd: false,
         skipSkills: false,
         stats: true,
+        springActuator: './actuator',
       }),
     );
     const ignored: string[][] = [];
@@ -128,7 +144,7 @@ describe('watch path selection', () => {
       ),
     ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
     expect(ignored).toEqual([
-      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats'],
+      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats', 'springActuator'],
     ]);
 
     const unsupportedCliOptions: Array<[Parameters<typeof resolveWatchOptions>[1], string]> = [
@@ -137,6 +153,12 @@ describe('watch path selection', () => {
       [{ skipAgentsMd: true }, '--skip-agents-md'],
       [{ skipSkills: true }, '--skip-skills'],
       [{ stats: false }, '--no-stats'],
+      [{ springActuator: './actuator' }, '--spring-actuator'],
+      // Rejected for the same reason as the Actuator path: the watcher reacts
+      // to source changes and nothing watches a document directory, so
+      // accepting the flag would read the documents once and then serve a
+      // stale answer for the rest of the session.
+      [{ asyncapiSpec: './docs/asyncapi' }, '--asyncapi-spec'],
     ];
     for (const [options, flag] of unsupportedCliOptions) {
       await expect(
@@ -147,6 +169,27 @@ describe('watch path selection', () => {
         }),
       ).rejects.toThrow(`analyze --watch does not support ${flag}`);
     }
+  });
+
+  it('applies process-detection budget keys from rc and CLI without throwing (#3313)', async () => {
+    await fs.writeFile(
+      path.join(repoPath, '.gitnexusrc'),
+      JSON.stringify({ maxProcesses: '40', maxEntryPointCandidates: 400 }),
+    );
+    const baseline = { maxFileSize: undefined, workerTimeout: undefined, verbose: undefined };
+    await expect(resolveWatchOptions(repoPath, {}, baseline)).resolves.toMatchObject({
+      maxProcesses: 40,
+      maxEntryPointCandidates: 400,
+    });
+    await expect(
+      resolveWatchOptions(repoPath, { maxProcesses: '25' }, baseline),
+    ).resolves.toMatchObject({
+      maxProcesses: 25,
+      maxEntryPointCandidates: 400,
+    });
+    const zeroBudget = await resolveWatchOptions(repoPath, { maxProcesses: '0' }, baseline);
+    expect(zeroBudget).toMatchObject({ maxEntryPointCandidates: 400 });
+    expect(zeroBudget.maxProcesses).toBeUndefined();
   });
 
   it('rejects a watch file-size threshold above the parser ceiling', async () => {

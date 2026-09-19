@@ -406,7 +406,9 @@ export function resolveRouteHandlerSymbols(
     httpMethod: string | null | undefined,
     symbolId: string | undefined,
   ) => {
-    if (!routePath) return;
+    // An empty path is a valid, pathless mapping and normalizes to either `/`
+    // or its class/router prefix. Only null means the extractor had no route.
+    if (routePath === null) return;
     const url = normalizeExtractedRoutePath(routePath, prefix);
     const key = routeNodeKey(normalizeRouteMethod(httpMethod), url);
     if (claimed.has(key)) return; // first-writer-wins: later same-key routes can't override

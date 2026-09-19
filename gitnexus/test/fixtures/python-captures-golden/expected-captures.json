@@ -621,7 +621,7 @@
   },
   "python-overload-dispatch/service.py": {
     "captureGroups": 37,
-    "digest": "fd23d8926c3debb335ab3ae7126d4314ec2f5d81f5e81f47c12a5a7d8b25537d"
+    "digest": "b661e8965b168f16124d4682906516527e79d4c9de6f36fa1e7cf7aff9211c28"
   },
   "python-parent-resolution/models/__init__.py": {
     "captureGroups": 0,
@@ -781,7 +781,7 @@
   },
   "python-variadic-resolution/logger.py": {
     "captureGroups": 7,
-    "digest": "7d460bb9d28620ce178db652e15427a7cf7839cdf9ef651a9c30209ed3d22d82"
+    "digest": "e539f618f46b19d1f7674321c6b994c773b57753c19d7764da83900143d71c0e"
   },
   "python-walrus-chain/app.py": {
     "captureGroups": 37,

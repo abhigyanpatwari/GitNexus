@@ -562,6 +562,30 @@ export function isWalCorruptionError(err: unknown): boolean {
   return WAL_CORRUPTION_RE.test(msg);
 }
 
+/** Matches a LadybugDB storage-version mismatch: the on-disk file was
+ *  written by a different @ladybugdb/core build (a different storage
+ *  version) than the one currently installed — e.g. an index built by a
+ *  newer engine, opened after downgrading the pinned dependency. Example:
+ *  "Runtime exception: Trying to read a database file with a different
+ *  version. Database file version: 43, Current build storage version: 42" */
+const STORAGE_VERSION_MISMATCH_RE = /database file with a different version/i;
+
+export const STORAGE_VERSION_MISMATCH_SUGGESTION =
+  'This index was written by a different @ladybugdb/core build (a different storage version) than the one currently installed. Run `gitnexus analyze --force` on this repo to rebuild it with the current engine.';
+
+export function isStorageVersionMismatchError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return STORAGE_VERSION_MISMATCH_RE.test(msg);
+}
+
+/** Throws the rebuild-hint Error when `err` is a storage-version mismatch. */
+export function throwIfStorageVersionMismatch(err: unknown): void {
+  if (!isStorageVersionMismatchError(err)) return;
+  const msg = err instanceof Error ? err.message : String(err);
+  throw new Error(`${STORAGE_VERSION_MISMATCH_SUGGESTION} (${msg})`);
+}
+
 // ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
 //
 // Matched against LadybugDB v0.18.0 (see `gitnexus/package.json`

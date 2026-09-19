@@ -1,25 +1,22 @@
 /**
- * On-demand install of the optional local embedding stack (#2370).
+ * On-demand install of the local embedding stack.
  *
- * `@huggingface/transformers` and `onnxruntime-node` are optionalDependencies:
- * npm prunes them (instead of failing the whole install) when
- * `onnxruntime-node`'s postinstall cannot download its CUDA binaries from
- * api.nuget.org — common behind HTTP proxies and regional firewalls, where
- * that download ignores standard proxy env vars and 302 redirects.
+ * This overrides #2370: `@huggingface/transformers` and `onnxruntime-node` are
+ * no longer optionalDependencies. Default `npm install` does not fetch them.
+ * Operators opt in with `gitnexus embeddings install` (or analyze/sync auto-heal),
+ * which writes a prefix `package.json` (pins + overrides) and installs into
+ * `~/.gitnexus/embedding-runtime`. Version pins live in package.json
+ * `gitnexusEmbeddingStack` so they ship in the tarball without installing the
+ * packages. `onnxruntime-common` stays a regular dependency (#307).
  *
- * This module heals such an install without a reinstall: it fetches the stack
- * into a user-level runtime prefix (`~/.gitnexus/embedding-runtime`) straight
- * from the user's configured npm registry — honouring their mirror and proxy
- * settings, the part of their network setup that demonstrably works — with
- * `--ignore-scripts`, so no NuGet download is attempted at all. The CPU ONNX
- * binding ships inside the npm tarball; only CUDA GPU acceleration needs the
- * postinstall, and `installEmbeddingRuntime({ cuda: true })` opts into it.
- *
- * Resolution is package-first: a normally-installed stack always wins, and the
- * runtime prefix is only consulted when the bare specifier does not resolve.
+ * Resolution is still package-first: a leftover 1.6.12 tree that already has
+ * the packages in gitnexus `node_modules` wins until a clean reinstall.
+ * `--force` refreshes prefix overrides; it does not remove a leftover
+ * package-first tree.
  */
 import { createRequire } from 'node:module';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -90,22 +87,42 @@ export const getEmbeddingRuntimeDir = (): string => {
   return override ? resolve(override) : join(homedir(), '.gitnexus', 'embedding-runtime');
 };
 
+const EMBEDDING_STACK_NAMES = ['@huggingface/transformers', 'onnxruntime-node'] as const;
+
 /**
- * The version specs to install — read from gitnexus' own package.json
- * `optionalDependencies` so the on-demand install can never drift from what a
- * normal install would have provided. (The manifest ships in the tarball even
- * when npm pruned the packages themselves.)
+ * The version specs to install — read from `gitnexusEmbeddingStack` on
+ * gitnexus' package.json so the on-demand prefix cannot drift from the
+ * committed pins after the packages left optionalDependencies.
  */
 export const getEmbeddingStackSpecs = (): Record<string, string> => {
   const manifest = require('../../../package.json') as {
-    optionalDependencies?: Record<string, string>;
+    gitnexusEmbeddingStack?: Record<string, string>;
   };
-  const optional = manifest.optionalDependencies ?? {};
-  return Object.fromEntries(
-    ['@huggingface/transformers', 'onnxruntime-node']
-      .filter((name) => optional[name] !== undefined)
-      .map((name) => [name, optional[name]]),
-  );
+  const stack = manifest.gitnexusEmbeddingStack ?? {};
+  const missing = EMBEDDING_STACK_NAMES.filter((name) => !stack[name]);
+  if (missing.length > 0) {
+    throw new Error(`package.json gitnexusEmbeddingStack is missing: ${missing.join(', ')}`);
+  }
+  return Object.fromEntries(EMBEDDING_STACK_NAMES.map((name) => [name, stack[name]]));
+};
+
+export const writeEmbeddingRuntimePrefixManifest = (): void => {
+  const dir = getEmbeddingRuntimeDir();
+  mkdirSync(dir, { recursive: true });
+  const specs = getEmbeddingStackSpecs();
+  const manifest = {
+    name: 'gitnexus-embedding-runtime',
+    private: true,
+    dependencies: specs,
+    overrides: {
+      'adm-zip': '>=0.6.0',
+      sharp: '>=0.35.0',
+      '@huggingface/transformers': {
+        'onnxruntime-node': specs['onnxruntime-node'],
+      },
+    },
+  };
+  writeFileSync(join(dir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 };
 
 export interface EmbeddingRuntimeResolution {
@@ -125,7 +142,15 @@ export interface EmbeddingRuntimeResolution {
 export const isPrefixRuntimeLoadable = (): boolean => typeof getRegisterHooks() === 'function';
 
 /** Resolution anchored inside the runtime prefix (`<dir>/node_modules`). */
-const prefixRequire = () => createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+let cachedPrefixRequire: { dir: string; req: ReturnType<typeof createRequire> } | null = null;
+
+const prefixRequire = (): ReturnType<typeof createRequire> => {
+  const dir = getEmbeddingRuntimeDir();
+  if (cachedPrefixRequire?.dir === dir) return cachedPrefixRequire.req;
+  const req = createRequire(join(dir, 'noop.js'));
+  cachedPrefixRequire = { dir, req };
+  return req;
+};
 
 /**
  * True when BOTH load-bearing stack packages resolve from `req`. Probing
@@ -349,6 +374,7 @@ export const installEmbeddingRuntime = async (
   opts: EmbeddingInstallOptions = {},
   timeoutMs: number = getEmbeddingInstallTimeoutMs(),
 ): Promise<void> => {
+  writeEmbeddingRuntimePrefixManifest();
   const { args, env } = buildEmbeddingInstallCommand(opts);
   await new Promise<void>((resolve, reject) => {
     // Windows `npm` is a `.cmd` shim, so the spawn must go through a shell.

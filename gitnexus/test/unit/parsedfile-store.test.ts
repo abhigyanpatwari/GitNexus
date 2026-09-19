@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { promises as nodeFsPromises } from 'node:fs';
+import { promises as nodeFsPromises, existsSync } from 'node:fs';
 import v8 from 'node:v8';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
@@ -15,6 +15,10 @@ import {
   getParsedFileStoreDir,
   getDurableParsedFileDir,
   parsedFileLoadGc,
+  prepareDurableParsedFileChunk,
+  pruneAndSaveDurableParsedFileStore,
+  mergeStagedDurableParsedFileStore,
+  loadDurableParsedFileIndex,
 } from '../../src/storage/parsedfile-store.js';
 
 /**
@@ -78,6 +82,64 @@ describe('parsedfile-store', () => {
       expect(scope.bindings.get('fn')?.[0]?.defId).toBe('Function:a.c:fn');
       expect(scope.typeBindings).toBeInstanceOf(Map);
       expect((scope.typeBindings.get('x') as { name: string }).name).toBe('int');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('repeated loads with different wantPaths each see their own files (shard-listing memo)', async () => {
+    // Scope resolution calls loadParsedFilesForPaths once per LANGUAGE over the
+    // same store, so the second and later passes reuse the shard path listings
+    // the first pass authenticated instead of re-reading every shard. The
+    // failure mode that memo introduces is a FALSE SKIP: pass 2 concludes a
+    // shard holds nothing it wants, and those files silently never reach the
+    // graph — an exit-0 wrong answer, not a crash. Each pass below wants files
+    // the previous pass did not, so a listing carried over from the wrong shard
+    // shows up as a missing file here.
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c'), makeParsedFile('b.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('c.c')]);
+      await persistParsedFileChunk(dir, 'chunk-2', [makeParsedFile('d.c')]);
+
+      const first = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect([...first.keys()]).toEqual(['a.c']);
+
+      // Key-set asserts alone still pass if the memo never skipped: the
+      // envelope listing would open the shard and skip deserialize. Spy
+      // open+deserialize on a later miss so a no-memo path fails.
+      const deserialize = vi.spyOn(v8, 'deserialize');
+      const open = vi.spyOn(nodeFsPromises, 'open');
+      try {
+        const second = await loadParsedFilesForPaths(dir, new Set(['c.c', 'd.c']));
+        expect([...second.keys()].sort()).toEqual(['c.c', 'd.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file))).sort()).toEqual([
+          'chunk-1.v8',
+          'chunk-2.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(2);
+
+        open.mockClear();
+        deserialize.mockClear();
+        const third = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+        expect([...third.keys()]).toEqual(['b.c']);
+        expect(open.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+          'chunk-0.v8',
+        ]);
+        expect(deserialize).toHaveBeenCalledTimes(1);
+
+        const fourth = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c', 'c.c', 'd.c']));
+        expect([...fourth.keys()].sort()).toEqual(['a.c', 'b.c', 'c.c', 'd.c']);
+      } finally {
+        deserialize.mockRestore();
+        open.mockRestore();
+      }
+
+      // A shard written AFTER the memo was populated is still found: the memo
+      // holds listings, not the shard roster, and the roster is re-read per call.
+      await persistParsedFileChunk(dir, 'chunk-3', [makeParsedFile('e.c')]);
+      const fifth = await loadParsedFilesForPaths(dir, new Set(['e.c', 'a.c']));
+      expect([...fifth.keys()].sort()).toEqual(['a.c', 'e.c']);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -151,6 +213,55 @@ describe('parsedfile-store', () => {
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['flow.cpp']));
       expect(loaded.get('flow.cpp')?.callableFlowSites).toEqual(pf.callableFlowSites);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips exact call-result assignment identities', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const pf = makeStoreEntry('Scenario.swift', {
+        callResultAssignmentSites: [
+          {
+            callSite: { startLine: 3, startCol: 14, endLine: 3, endCol: 25 },
+            inScope: 'scope:run',
+            lhs: 'store',
+          },
+        ],
+      });
+      await persistParsedFileChunk(dir, 'assignment', [pf]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['Scenario.swift']));
+      expect(loaded.get('Scenario.swift')?.callResultAssignmentSites).toEqual(
+        pf.callResultAssignmentSites,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops malformed call-result assignments per site and rejects a non-array field', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const mixed = makeStoreEntry('mixed.swift', {
+        callResultAssignmentSites: [
+          {
+            callSite: { startLine: 3, startCol: 14, endLine: 3, endCol: 25 },
+            inScope: 'scope:run',
+            lhs: 'store',
+          },
+          { callSite: '3:14', inScope: 'scope:run', lhs: 'poison' },
+        ],
+      });
+      const garbage = makeStoreEntry('garbage.swift', {
+        callResultAssignmentSites: 'not-an-array',
+      });
+      await persistParsedFileChunk(dir, 'assignment-invalid', [mixed, garbage]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['mixed.swift', 'garbage.swift']));
+      expect(loaded.get('mixed.swift')?.callResultAssignmentSites).toHaveLength(1);
+      expect(loaded.has('garbage.swift')).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -844,6 +955,93 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect((await loadParsedFilesForPaths(dir, new Set(['a.c']))).size).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // chmod is the only lever that makes a real `fs.rm` reject here, and root
+  // ignores directory write permission while Windows treats the mode bits as a
+  // near no-op. Skipping is honest; a green vacuous run is not.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'keeps pruning and still writes the index when one chunk directory cannot be removed',
+    async () => {
+      // #3204: the non-survivor delete targets the same directory whose reset
+      // may have failed, so the causes that break the reset (permissions, a
+      // locked file, a read-only mount) break this rm too. One undeletable
+      // directory must not cost every other chunk its index entry.
+      const dir = await mkdtemp(path.join(tmpdir(), 'pf-rm-fail-'));
+      const durableDir = getDurableParsedFileDir(dir);
+      const undeletable = '3'.repeat(64);
+      const keep = '4'.repeat(64);
+      try {
+        await prepareDurableParsedFileChunk(durableDir, undeletable);
+        persistDurableParsedFileShardSync(durableDir, undeletable, 1, 0, [
+          makeParsedFile('gone.c'),
+        ]);
+        await prepareDurableParsedFileChunk(durableDir, keep);
+        persistDurableParsedFileShardSync(durableDir, keep, 1, 0, [makeParsedFile('keep.c')]);
+
+        // Clearing write permission on the chunk directory makes its shards
+        // un-unlinkable, so the recursive rm of that directory rejects while the
+        // store root stays writable for the index rewrite.
+        const doomed = path.join(durableDir, undeletable);
+        await nodeFsPromises.chmod(doomed, 0o555);
+        await expect(
+          pruneAndSaveDurableParsedFileStore(durableDir, 'v-test', new Set([keep])),
+        ).resolves.toBeUndefined();
+
+        // Assert the premise: the directory SURVIVED, i.e. the rm really did
+        // reject. Without this the test passes wherever the delete succeeds and
+        // would stay green if the try/catch were reverted.
+        expect(existsSync(doomed)).toBe(true);
+
+        const index = await loadDurableParsedFileIndex(durableDir, 'v-test');
+        expect(index.has(keep)).toBe(true);
+        expect(index.has(undeletable)).toBe(false);
+      } finally {
+        await nodeFsPromises.chmod(path.join(durableDir, undeletable), 0o755).catch(() => {});
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('overlays staged durable chunks onto the live store without dropping live-only keys', async () => {
+    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-'));
+    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stg-'));
+    try {
+      const liveOnly = '1'.repeat(64);
+      const rewritten = '2'.repeat(64);
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), liveOnly);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), liveOnly, 1, 0, [
+        makeParsedFile('keep.c'),
+      ]);
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), rewritten);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), rewritten, 1, 0, [
+        makeParsedFile('old.c'),
+      ]);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(live),
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(staged), rewritten);
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(staged), rewritten, 1, 0, [
+        makeParsedFile('new.c'),
+      ]);
+
+      await mergeStagedDurableParsedFileStore(
+        live,
+        staged,
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      expect(await durableChunkHasShards(live, liveOnly, new Set(['keep.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['new.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['old.c']))).toBe(false);
+    } finally {
+      await rm(live, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
     }
   });
 });

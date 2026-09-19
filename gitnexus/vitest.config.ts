@@ -14,7 +14,9 @@ export default defineConfig({
     // respawn every such child with a RAM-sized cap. Children inherit it via
     // the harnesses' `{ ...process.env }` spreads. Tests that exercise the
     // respawn behavior itself delete GITNEXUS_MEMORY in their own setup.
-    env: { GITNEXUS_MEMORY: 'off' },
+    // Tests assert the English CLI contract unless a case opts into another
+    // language explicitly. Do not inherit a developer shell's CLI locale.
+    env: { GITNEXUS_MEMORY: 'off', GITNEXUS_LANG: 'en' },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
     // it's a vitest forks + native addon interaction where destructors run in
@@ -64,6 +66,8 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/skip-fts.test.ts',
+            'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -73,6 +77,10 @@ export default defineConfig({
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
+            // Native @ladybugdb/core: loads a real graph through loadGraphToLbug
+            // and asserts the Destination NULL/join invariant on the stored rows.
+            'test/integration/spring-destinations-lbug.test.ts',
+            'test/integration/spring-destinations-incremental.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
@@ -92,6 +100,7 @@ export default defineConfig({
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
+            'test/integration/load-cached-embeddings-spill.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
@@ -139,6 +148,8 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/skip-fts.test.ts',
+            'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -148,6 +159,8 @@ export default defineConfig({
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
+            'test/integration/spring-destinations-lbug.test.ts',
+            'test/integration/spring-destinations-incremental.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
@@ -167,6 +180,7 @@ export default defineConfig({
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
+            'test/integration/load-cached-embeddings-spill.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',

@@ -36,6 +36,18 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The tsconfig loader rebases `paths` targets through `path.resolve`, so the
+  // wildcard suffix it must recognise is `/*` on POSIX and `\*` on Windows. It
+  // only looked for `/*`, and every alias target came back as `src*` on
+  // Windows while the Ubuntu run stayed green — so this file has to run where
+  // the separator differs.
+  'test/unit/tsconfig-index.test.ts',
+  // The unit half of the same rebasing rule. Fixture-free and pathApi-injectable
+  // (every separator assertion passes an explicit `path.win32` / `path.posix`),
+  // so unlike the fixture suite above it fails on EVERY runner when the
+  // normalisation is removed rather than only on windows-latest. Registered
+  // beside its fixture sibling so the two halves stay discoverable as one group.
+  'test/unit/tsconfig-rebase-target.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)
@@ -73,6 +85,20 @@ const PLATFORM_LOGIC = [
   'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
+  // U7 arm B: Windows FTS names a vendor-neutral OpenSSL/VC++ prerequisite
+  // and must never recommend borrowing Git for Windows DLLs. The file's
+  // assertions are unconditional so a skip-only suite cannot stay green.
+  'test/integration/fts-windows-dependency.test.ts',
+  // Remedy-text suites: discoverability only. They pass explicit platform
+  // strings into pure classifiers and drive mocked rejections with hardcoded
+  // literals, so they assert identically on every runner. Registering them
+  // here does not claim Windows-specific behavioral coverage.
+  'test/unit/extension-load-error.test.ts',
+  'test/unit/fts-degraded-warning.test.ts',
+  // Vendored-root symlink containment uses realpathSync + path.relative; a
+  // prefix-only leak follows a Windows junction / POSIX symlink out of
+  // vendor/. Ubuntu-only would leave that guard unverified on the OS matrix.
+  'test/unit/lbug-extension-loader.test.ts',
   // Global registry writes use the platform-specific index-lock backend
   // (Windows named pipe, Linux socket, or macOS file lock). This includes the
   // overlapping-registration regression from #2716 on every OS matrix.
@@ -130,6 +156,7 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/skip-fts.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
@@ -195,11 +222,14 @@ const SPAWN_CLI = [
   // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
   // run on the Windows/macOS matrix, not just the Ubuntu full suite.
   'test/integration/fts-extension-e2e.test.ts',
+  'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
+  // Real CLI spawn + directory symlinks for the update-notice parent/child path.
+  'test/integration/cli/update-notice.test.ts',
   'test/integration/setup-skills.test.ts',
   'test/integration/setup-antigravity.test.ts',
   'test/integration/antigravity-hook-e2e.test.ts',
@@ -275,6 +305,14 @@ const NATIVE_ADDON_SMOKE = [
 // Filesystem behavior tests — exercise operations that vary across
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
+  // Cargo membership uses path normalization, descriptor validation, symlinks,
+  // and Rust native parsing (including long Windows source strings).
+  'test/unit/scope-resolution/rust-cargo-targets.test.ts',
+  // The durable ParsedFile store's prune tolerates a chunk directory it cannot
+  // delete (#3204). The failures that motivate it — held handles, read-only
+  // mounts — are Windows- and macOS-flavored, and the permission-based case
+  // skips itself where chmod cannot block a delete, so run it everywhere.
+  'test/unit/parsedfile-store.test.ts',
   'test/integration/filesystem-walker.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',

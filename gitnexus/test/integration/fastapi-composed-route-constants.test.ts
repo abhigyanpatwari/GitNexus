@@ -27,7 +27,13 @@ import {
   loadParseCache,
   saveParseCache,
   PARSE_CACHE_VERSION,
+  pruneCache,
+  type ParseCache,
 } from '../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../src/storage/parsedfile-store.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'fastapi-composed-app');
 
@@ -164,35 +170,67 @@ describe('FastAPI composed route constants — ingestion↔group parity (#2391 R
 
 // ─── Warm parse-cache: composed routes survive the cache serialization ────────
 
-describe('FastAPI composed route constants — warm parse-cache (#2391 SCHEMA_BUMP)', () => {
-  it('re-resolves the composed route on an all-hit warm run after a save/load round-trip', async () => {
+describe('FastAPI composed routes — warm parse-cache (#2391, #2865)', () => {
+  it('replays composed paths and handler metadata on an all-hit warm run', async () => {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-composed-warm-'));
     try {
-      // Run #1 populates the parse cache.
-      const cold = {
+      const cold: ParseCache = {
         version: PARSE_CACHE_VERSION,
         entries: new Map(),
         usedKeys: new Set<string>(),
+        storagePath: storageDir,
+        onDiskKeys: new Set<string>(),
       };
-      await runPipelineFromRepo(FIXTURE, () => {}, { parseCache: cold });
-
-      // Force the JSON round-trip (mapReplacer/mapReviver) the real warm path uses
-      // — this is where the new `moduleConstants` Maps and `routePathExpr` fields
-      // must survive, or a warm re-analyze silently drops the composed route.
-      await saveParseCache(storageDir, cold);
-      const warm = await loadParseCache(storageDir);
-      expect(warm).not.toBeNull();
-
-      const result = await runPipelineFromRepo(FIXTURE, () => {}, {
-        parseCache: warm ?? undefined,
+      const coldResult = await runPipelineFromRepo(FIXTURE, () => {}, {
+        parseCache: cold,
+        workerPoolSize: 1,
       });
+      expect(coldResult.usedWorkerPool).toBe(true);
+
+      pruneCache(cold, cold.usedKeys);
+      const savedKeys = await saveParseCache(storageDir, cold);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storageDir),
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+      const warm = await loadParseCache(storageDir);
+      const replay = await runPipelineFromRepo(FIXTURE, () => {}, {
+        parseCache: warm,
+        workerPoolSize: 1,
+      });
+      expect(replay.usedWorkerPool).toBe(false);
+
       const urls = new Set<string>();
-      result.graph.forEachNode((n) => {
+      replay.graph.forEachNode((n) => {
         if (n.label === 'Route') urls.add(String(n.properties.name));
       });
       expect(urls.has('/api/v1/widgets/get')).toBe(true);
       expect(urls.has('/root/mid/leaf')).toBe(true);
       expect(urls.has('/')).toBe(false);
+
+      const handlers = (pipeline: PipelineResult): Map<string, string> => {
+        const out = new Map<string, string>();
+        pipeline.graph.forEachNode((node) => {
+          if (node.label !== 'Route') return;
+          const id = node.properties.handlerSymbolId;
+          if (typeof id === 'string') out.set(String(node.properties.name), id);
+        });
+        return out;
+      };
+      const coldHandlers = handlers(coldResult);
+      expect(coldHandlers.get('/api/v1/widgets/get')).toMatch(/create_widget/);
+      expect(handlers(replay)).toEqual(coldHandlers);
+
+      const handlerId = coldHandlers.get('/api/v1/widgets/get');
+      const routeId = [...replay.graph.iterNodes()].find(
+        (node) => node.label === 'Route' && node.properties.name === '/api/v1/widgets/get',
+      )?.id;
+      expect(
+        [...replay.graph.iterRelationshipsByType('HANDLES_ROUTE')].some(
+          (edge) => edge.sourceId === handlerId && edge.targetId === routeId,
+        ),
+      ).toBe(true);
     } finally {
       fs.rmSync(storageDir, { recursive: true, force: true });
     }

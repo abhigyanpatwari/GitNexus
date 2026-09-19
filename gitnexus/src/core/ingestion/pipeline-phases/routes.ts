@@ -336,32 +336,31 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
-      const handlerPathFor = (routeKey: string, entry: RouteEntry): string => {
-        if (entry.source !== DATA_ROUTE_TABLE_SOURCE) return entry.filePath;
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
-        const resolvedPath = handlerSymbolId
-          ? ctx.graph.getNode(handlerSymbolId)?.properties.filePath
-          : undefined;
-        return typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
-      };
-      const handlerPaths = [...routeRegistry].map(([key, entry]) => handlerPathFor(key, entry));
-      handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
+      // Resolve once so content attribution, the route stamp, and the edge use
+      // the same live graph node. Pre-seeded routes never own handler symbols.
+      const routes = [...routeRegistry].map(([routeKey, entry]) => {
+        const id = preSeededKeys.has(routeKey) ? undefined : routeHandlerSymbols.get(routeKey);
+        const node = id ? ctx.graph.getNode(id) : undefined;
+        const handlerSymbol = id && node ? { id, node } : undefined;
+        const resolvedPath =
+          entry.source === DATA_ROUTE_TABLE_SOURCE
+            ? handlerSymbol?.node.properties.filePath
+            : undefined;
+        const handlerPath = typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
+        return { routeKey, entry, handlerSymbol, handlerPath };
+      });
+      handlerContents = await readFileContents(
+        ctx.repoPath,
+        routes.map(({ handlerPath }) => handlerPath),
+      );
 
-      for (const [routeKey, entry] of routeRegistry) {
+      for (const { routeKey, entry, handlerSymbol, handlerPath } of routes) {
         const { source: routeSource, method: routeMethod, url } = entry;
-        const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        // A pre-seeded route can never legitimately appear in
-        // `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
-        const handlerSymbolId = preSeededKeys.has(routeKey)
-          ? undefined
-          : routeHandlerSymbols.get(routeKey);
+        const handlerSymbolId = handlerSymbol?.id;
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
-            ? handlerSymbolContent(
-                content,
-                handlerSymbolId ? ctx.graph.getNode(handlerSymbolId) : undefined,
-              )
+            ? handlerSymbolContent(content, handlerSymbol?.node)
             : content;
 
         const { responseKeys, errorKeys } = analysisContent
@@ -397,6 +396,19 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           confidence: 1.0,
           reason: routeSource,
         });
+
+        // Keep the file edge for existing extractor queries; add the live
+        // definition edge for explicit handler-level traversal.
+        if (handlerSymbolId) {
+          ctx.graph.addRelationship({
+            id: generateId('HANDLES_ROUTE', `${handlerSymbolId}->${routeNodeId}`),
+            sourceId: handlerSymbolId,
+            targetId: routeNodeId,
+            type: 'HANDLES_ROUTE',
+            confidence: 1.0,
+            reason: routeSource,
+          });
+        }
       }
 
       if (isDev) {

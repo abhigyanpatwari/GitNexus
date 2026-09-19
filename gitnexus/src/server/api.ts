@@ -12,17 +12,22 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
-import { createRequire } from 'node:module';
 import {
   canonicalizePath,
   cloneDirBelongsToEntry,
   loadMeta,
   saveMeta,
   listRegisteredRepos,
-  getStoragePath,
   registryPathEquals,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
+import {
+  requireDeletableStoragePath,
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageDeletionError,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 import {
   executeQuery,
   executePrepared,
@@ -33,11 +38,19 @@ import {
   withLbugDb,
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
+import { assertReadOnlyFtsCrashSafe } from '../core/lbug/sidecar-recovery.js';
 import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import {
+  checkoutIsDirectory,
+  contentRetentionFromMeta,
+  isFullSourceAvailable,
+} from '../core/content-retention.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
+import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -54,15 +67,24 @@ import {
   persistedEmbeddingCountOrUndefined,
   type PersistedEmbeddingCount,
 } from '../core/embedding-count.js';
-import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
+import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
+import { runGrepScanInWorker } from './grep-scan.js';
 import {
-  extractRepoName,
+  analyzeCloneOptions,
+  extractWebRepoName,
   getCloneDir,
   cloneOrPull,
   warnIfInsecureAzureConfig,
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
+import { checkStalenessAsync } from '../core/git-staleness.js';
+import { projectRepoDetail, projectRepoListEntry, resolveLastCommit } from './repo-projection.js';
+// Shared with the CLI's `--branch` (via the analyze-config wrapper) so both
+// entry points accept the same refs. Imported from core — not cli/ — so
+// createServer does not close a cycle with cli/serve.ts.
+import { InvalidBranchError, validateBranchName } from '../core/git-ref.js';
 import {
   assertServeAuthForPublicOrigin,
   createPublicOriginMatcher,
@@ -78,9 +100,19 @@ import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
 import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
+import {
+  bindServeUpdateControllerLifecycle,
+  buildServerInfo,
+  createServeUpdateController,
+} from './update-controller.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
+export {
+  bindServeUpdateControllerLifecycle,
+  buildServerInfo,
+  createServeUpdateController,
+  type ServerInfoResponse,
+  type ServeUpdateController,
+} from './update-controller.js';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -343,7 +375,27 @@ export const writeNdjsonRecord = async (
   }
 };
 
-const buildGraph = async (
+const ROUTE_NODE_CORE_PROJECTION =
+  'n.id AS id, n.name AS name, n.filePath AS filePath, ' +
+  'n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware';
+
+const LEGACY_ROUTE_NODE_QUERY = `MATCH (n:\`Route\`) RETURN ${ROUTE_NODE_CORE_PROJECTION}`;
+
+const isMissingRouteRuntimePropertyError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  const mentionsRuntimeProperty = ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some(
+    (property) => message.includes(property),
+  );
+
+  return (
+    mentionsRuntimeProperty &&
+    (/cannot find property/i.test(message) ||
+      /property .* does not exist/i.test(message) ||
+      /property .* not found/i.test(message))
+  );
+};
+
+export const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
@@ -354,6 +406,13 @@ const buildGraph = async (
         nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        const rows = await executeQuery(LEGACY_ROUTE_NODE_QUERY);
+        for (const row of rows) {
+          nodes.push(mapGraphNodeRow(table, row, includeContent));
+        }
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }
@@ -401,10 +460,13 @@ export const getNodeQuery = (table: string, includeContent: boolean): string => 
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
   }
   if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+    return `MATCH (n:${tableLabel}) RETURN ${ROUTE_NODE_CORE_PROJECTION}, n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus`;
   }
   if (table === 'Tool') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
+  }
+  if (table === 'Destination') {
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.address AS address, n.broker AS broker, n.resolution AS resolution, n.configKey AS configKey, n.configDefault AS configDefault`;
   }
   return includeContent
     ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
@@ -430,6 +492,29 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,
     middleware: row.middleware,
+    // Normalize legacy Route projections to the modern contract. Source is
+    // provenance; only runtimeConfirmed === true is authoritative.
+    runtimeConfirmed: table === 'Route' ? (row.runtimeConfirmed ?? false) : undefined,
+    runtimeSource: table === 'Route' ? row.runtimeSource : undefined,
+    runtimeStatus: table === 'Route' ? row.runtimeStatus : undefined,
+    // The Destination overlay written by `pipeline-phases/spring-destinations.ts`.
+    // Gated on the label for the same reason as the Route columns above: no
+    // other node query projects them, so an ungated read would put a key on
+    // every node in the graph.
+    //
+    // `?? undefined` is not decoration. LadybugDB returns NULL columns as
+    // `null`, and `address` is the cross-repository JOIN KEY that a destination
+    // carries ONLY when it resolved. Passing the `null` straight through would
+    // serialize `"address": null` for every unresolved destination, turning an
+    // ABSENT property — which cannot match anything — into a PRESENT one that
+    // every other unresolved destination shares. That is the false connection
+    // the keying rule exists to prevent, reintroduced at the API boundary, so
+    // the null is normalized back to absent for all five columns alike.
+    address: table === 'Destination' ? (row.address ?? undefined) : undefined,
+    broker: table === 'Destination' ? (row.broker ?? undefined) : undefined,
+    resolution: table === 'Destination' ? (row.resolution ?? undefined) : undefined,
+    configKey: table === 'Destination' ? (row.configKey ?? undefined) : undefined,
+    configDefault: table === 'Destination' ? (row.configDefault ?? undefined) : undefined,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
@@ -470,6 +555,19 @@ export const streamGraphNdjson = async (
         );
       });
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        await streamQuery(LEGACY_ROUTE_NODE_QUERY, async (row) => {
+          await writeNdjsonRecord(
+            res,
+            {
+              type: 'node',
+              data: mapGraphNodeRow(table, row, includeContent),
+            },
+            signal,
+          );
+        });
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }
@@ -486,6 +584,12 @@ export const streamGraphNdjson = async (
       signal,
     );
   });
+};
+
+const httpErrorBody = (err: any, fallback: string): { error: string; code?: string } => {
+  const body: { error: string; code?: string } = { error: err.message || fallback };
+  if (typeof err?.code === 'string') body.code = err.code;
+  return body;
 };
 
 const statusFromError = (err: any): number => {
@@ -559,6 +663,65 @@ export const resolveRegisteredRepoEntry = (
   );
 };
 
+export interface SourceAvailability {
+  available: boolean;
+  reason?: 'content-retention' | 'checkout-missing';
+  contentRetention?: ReturnType<typeof contentRetentionFromMeta>;
+}
+
+/** Map a failed storage probe to a catalog status. Missing/empty slots are 404; anything else is 503. */
+export const storageRequirementToHttp = (
+  err: StorageRequirementError,
+): { status: 404 | 503; body: { error: string; code: 'index-unavailable'; state: string } } => {
+  const notPresent = err.inspection.state === 'missing' || err.inspection.state === 'empty';
+  return {
+    status: notPresent ? 404 : 503,
+    body: {
+      error: err.message,
+      code: 'index-unavailable',
+      state: err.inspection.state,
+    },
+  };
+};
+
+const sendStorageRequirementHttp = (
+  err: unknown,
+  res: { status: (code: number) => { json: (body: unknown) => void } },
+): boolean => {
+  if (!(err instanceof StorageRequirementError)) return false;
+  const mapped = storageRequirementToHttp(err);
+  res.status(mapped.status).json(mapped.body);
+  return true;
+};
+
+/** Full-file endpoints require a live checkout; normalized index text is not source-viewer data. */
+export const getSourceAvailability = async (
+  entry: Pick<RegistryEntry, 'path' | 'storagePath'>,
+  loadedMeta?: Awaited<ReturnType<typeof loadMeta>>,
+): Promise<SourceAvailability> => {
+  const meta = loadedMeta === undefined ? await loadMeta(entry.storagePath) : loadedMeta;
+  const contentRetention = contentRetentionFromMeta(meta);
+  if (contentRetention !== 'full') {
+    return { available: false, reason: 'content-retention', contentRetention };
+  }
+  return isFullSourceAvailable(contentRetention, await checkoutIsDirectory(entry.path))
+    ? { available: true, contentRetention }
+    : { available: false, reason: 'checkout-missing', contentRetention };
+};
+
+const sendSourceUnavailable = (
+  res: { status: (code: number) => { json: (body: any) => void } },
+  availability: SourceAvailability,
+): void => {
+  const reason =
+    availability.reason === 'content-retention' ? 'content retention' : 'source checkout';
+  res.status(410).json({
+    error: `Full source is unavailable because the ${reason} is unavailable.`,
+    code: 'source-unavailable',
+    reason: availability.reason,
+  });
+};
+
 /**
  * Handle a GET /api/file request body. Extracted from createServer's route
  * registration so it can be unit-tested without spinning up an HTTP server
@@ -578,6 +741,7 @@ export const handleFileRequest = async (
     json: (body: any) => void;
   },
   repoPath: string,
+  availability: SourceAvailability = { available: true },
 ): Promise<void> => {
   try {
     // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
@@ -590,6 +754,11 @@ export const handleFileRequest = async (
       return;
     }
     const filePath = assertString(rawFilePath, 'path');
+
+    if (!availability.available) {
+      sendSourceUnavailable(res, availability);
+      return;
+    }
 
     // Path-injection containment — inline at the sink with the canonical
     // path.relative idiom that CodeQL's js/path-injection sanitizer
@@ -640,6 +809,28 @@ export const handleFileRequest = async (
   }
 };
 
+async function loadFtsSession(storagePath: string): Promise<{
+  meta: Awaited<ReturnType<typeof loadMeta>>;
+  ftsDisabledReason: FtsDisabledReason | undefined;
+  skipFts?: true;
+}> {
+  const meta = await loadMeta(storagePath);
+  const ftsDisabledReason = getFtsDisabledReason(meta?.capabilities?.fts);
+  return {
+    meta,
+    ftsDisabledReason,
+    ...skipFtsOption(Boolean(ftsDisabledReason)),
+  };
+}
+
+function skipFtsOption(skipFts?: boolean): { skipFts?: true } {
+  return skipFts ? { skipFts: true } : {};
+}
+
+function readOnlyFtsOptions(skipFts?: true): { readOnly: true; skipFts?: true } {
+  return skipFts ? { readOnly: true, skipFts: true } : { readOnly: true };
+}
+
 export const handleQueryRequest = async (
   req: express.Request,
   res: express.Response,
@@ -665,16 +856,20 @@ export const handleQueryRequest = async (
       return;
     }
     const lbugPath = path.join(entry.storagePath, 'lbug');
-    const result = await withLbugDb(lbugPath, () => executePrepared(cypher, queryParams ?? {}), {
-      readOnly: true,
-    });
+    const { skipFts } = await loadFtsSession(entry.storagePath);
+    const result = await withLbugDb(
+      lbugPath,
+      () => executePrepared(cypher, queryParams ?? {}),
+      readOnlyFtsOptions(skipFts),
+    );
     res.json({ result });
   } catch (err: any) {
+    if (sendStorageRequirementHttp(err, res)) return;
     if (isReadOnlyDbError(err)) {
       res.status(403).json({ error: 'Write queries are not allowed via the HTTP API' });
       return;
     }
-    res.status(500).json({ error: err.message || 'Query failed' });
+    res.status(500).json(httpErrorBody(err, 'Query failed'));
   }
 };
 
@@ -776,6 +971,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = await mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
+  const updateController = createServeUpdateController();
 
   // Backstop: remove any upload staging dirs orphaned by a previous crash.
   void sweepStaleUploads().catch(() => {});
@@ -812,11 +1008,30 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
    */
   const HOLD_QUEUE_TIMEOUT_SECS = 300; // 5 minutes
 
+  const validateResolvedRepoEntry = async (
+    entry: RegistryEntry | null,
+  ): Promise<RegistryEntry | null> => {
+    if (!entry) return null;
+    await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+    return entry;
+  };
+
   // Helper: resolve a repo by name from the global registry, or default to first.
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
-  const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
-    const repos = await listRegisteredRepos();
+  // Deletion passes `validateStorage: false` because it has a separate policy that
+  // intentionally permits a missing/empty local slot to be removed.
+  const resolveRepo = async (
+    repoName?: string,
+    isRetry = false,
+    req?: any,
+    options: { validateStorage?: boolean } = {},
+  ): Promise<any> => {
+    const repos = await listRegisteredRepos({
+      validate: options.validateStorage !== false,
+    });
     const found = resolveRegisteredRepoEntry(repos, repoName);
+    const validate = (entry: RegistryEntry | null): Promise<RegistryEntry | null> =>
+      options.validateStorage === false ? Promise.resolve(entry) : validateResolvedRepoEntry(entry);
 
     const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
@@ -856,8 +1071,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (!currentJob || currentJob.status === 'failed') break;
             if (currentJob.status === 'complete') {
               await backend.init();
-              const freshRepos = await listRegisteredRepos();
-              return resolveRegisteredRepoEntry(freshRepos, repoName);
+              const freshRepos = await listRegisteredRepos({
+                validate: options.validateStorage !== false,
+              });
+              return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -878,10 +1095,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(repoName, true, req);
+      return await resolveRepo(repoName, true, req, options);
     }
 
-    return found;
+    return validate(found);
   };
 
   // Lightweight healthcheck for Docker/orchestrator probes (#1147).
@@ -913,36 +1130,35 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Server info: version and launch context (npx / global / local dev)
   app.get('/api/info', (_req, res) => {
-    const execPath = process.env.npm_execpath ?? '';
-    const argv0 = process.argv[1] ?? '';
-    let launchContext: 'npx' | 'global' | 'local';
-    if (
-      execPath.includes('npx') ||
-      argv0.includes('_npx') ||
-      process.env.npm_config_prefix?.includes('_npx')
-    ) {
-      launchContext = 'npx';
-    } else if (argv0.includes('node_modules')) {
-      launchContext = 'local';
-    } else {
-      launchContext = 'global';
-    }
-    res.json({ version: pkg.version, launchContext, nodeVersion: process.version });
+    res.json(buildServerInfo(updateController.snapshot()));
   });
 
   // List all registered repos
-  app.get('/api/repos', async (_req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting) because this route now spawns
+  // one `git rev-list` per registered repo to answer freshness: an unauthenticated
+  // GET that costs N subprocesses is worth the same 60 rpm/IP ceiling `/api/repo`
+  // already carries. Web callers hit this on connect/switch, never in a loop.
+  app.get('/api/repos', createRouteLimiter(), async (_req, res) => {
     try {
-      const repos = await listRegisteredRepos();
+      const repos = await listRegisteredRepos({ validate: true });
+      // Checked in parallel, for the reason `list_repos` already does it that
+      // way: each check spawns an async `git rev-list`, and the sequential
+      // variant took ~50s across 200 repos (#1363). Projecting inside the map
+      // keeps the entry and its own check together — an index-matched second
+      // array is the shape that silently mispairs them if either is reordered.
       res.json(
-        repos.map((r) => ({
-          name: r.name,
-          path: r.path,
-          repoPath: r.path,
-          indexedAt: r.indexedAt,
-          lastCommit: r.lastCommit,
-          stats: r.stats,
-        })),
+        await Promise.all(
+          repos.map(async (r) => {
+            const [staleness, availability] = await Promise.all([
+              checkStalenessAsync(r.path, r.lastCommit),
+              getSourceAvailability(r),
+            ]);
+            return projectRepoListEntry(r, staleness, {
+              contentRetention: availability.contentRetention ?? 'full',
+              sourceAvailable: availability.available,
+            });
+          }),
+        ),
       );
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to list repos' });
@@ -969,13 +1185,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       const meta = await loadMeta(entry.storagePath);
-      res.json({
-        name: entry.name,
-        repoPath: entry.path,
-        indexedAt: meta?.indexedAt ?? entry.indexedAt,
-        stats: meta?.stats ?? entry.stats ?? {},
-      });
+      const [staleness, availability] = await Promise.all([
+        checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
+        getSourceAvailability(entry, meta),
+      ]);
+      res.json(
+        projectRepoDetail(entry, meta, staleness, {
+          contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
+          sourceAvailable: availability.available,
+        }),
+      );
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(500).json({ error: err.message || 'Failed to get repo info' });
     }
   });
@@ -991,14 +1212,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(400).json({ error: 'Missing repo name' });
         return;
       }
-      const entry = await resolveRepo(repoName);
+      const entry = await resolveRepo(repoName, false, undefined, { validateStorage: false });
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      let storagePath: string;
+      try {
+        storagePath = await requireDeletableStoragePath(entry);
+      } catch (err: any) {
+        if (err instanceof StorageDeletionError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        res.status(400).json({ error: err.message || 'Unsafe index storage path' });
+        return;
+      }
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
-      const lockKey = getStoragePath(entry.path);
+      const lockKey = storagePath;
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
         res.status(409).json({ error: lockErr });
@@ -1012,7 +1244,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {}
 
         // 1. Delete the .gitnexus index/storage directory
-        const storagePath = getStoragePath(entry.path);
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
@@ -1078,6 +1309,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
       if (stream) {
         const abortController = new AbortController();
@@ -1109,7 +1341,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await withLbugDb(
             lbugPath,
             async () => streamGraphNdjson(res, includeContent, abortController.signal),
-            { readOnly: true },
+            readOnlyFtsOptions(skipFts),
           );
           if (!abortController.signal.aborted && !res.writableEnded) {
             res.end();
@@ -1122,25 +1354,28 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const graph = await withLbugDb(lbugPath, async () => buildGraph(includeContent), {
-        readOnly: true,
-      });
+      const graph = await withLbugDb(
+        lbugPath,
+        async () => buildGraph(includeContent),
+        readOnlyFtsOptions(skipFts),
+      );
       res.json(graph);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       if (err instanceof ClientDisconnectedError) {
         return;
       }
-      const message = err.message || 'Failed to build graph';
+      const body = httpErrorBody(err, 'Failed to build graph');
       if (res.headersSent) {
         try {
-          res.write(JSON.stringify({ type: 'error', error: message }) + '\n');
+          res.write(JSON.stringify({ type: 'error', ...body }) + '\n');
         } catch {
           // Best-effort only after streaming has started.
         }
         res.end();
         return;
       }
-      res.status(500).json({ error: message });
+      res.status(500).json(body);
     }
   });
 
@@ -1165,6 +1400,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
+      const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
@@ -1193,7 +1429,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               sources: ['semantic'],
             }));
           } else if (mode === 'bm25') {
-            const ftsResponse = await searchFTSFromLbug(query, limit);
+            const ftsResponse = await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason);
             ftsAvailable = ftsResponse.ftsAvailable;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
@@ -1206,9 +1442,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (isEmbedderReady()) {
               const { semanticSearch: semSearch } =
                 await import('../core/embeddings/embedding-pipeline.js');
-              searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
+              searchResults = await hybridSearch(
+                query,
+                limit,
+                executeQuery,
+                semSearch,
+                ftsDisabledReason,
+              );
+              if (ftsDisabledReason) ftsAvailable = false;
             } else {
-              const ftsResponse = await searchFTSFromLbug(query, limit);
+              const ftsResponse = await searchFTSFromLbug(
+                query,
+                limit,
+                undefined,
+                ftsDisabledReason,
+              );
               ftsAvailable = ftsResponse.ftsAvailable;
               searchResults = ftsResponse.results;
             }
@@ -1302,27 +1550,33 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           return { searchResults: enriched, ftsAvailable };
         },
-        { readOnly: true },
+        readOnlyFtsOptions(skipFts),
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
-        response.warning = ftsDegradedWarning();
+        response.warning = ftsDegradedWarning(undefined, ftsDisabledReason);
       }
       res.json(response);
     } catch (err: any) {
-      res.status(500).json({ error: err.message || 'Search failed' });
+      if (sendStorageRequirementHttp(err, res)) return;
+      res.status(500).json(httpErrorBody(err, 'Search failed'));
     }
   });
 
   // Read file — with path traversal guard
   // Rate-limited (CodeQL js/missing-rate-limiting): per-request fs.readFile.
   app.get('/api/file', createRouteLimiter(), async (req, res) => {
-    const entry = await resolveRepo(requestedRepo(req));
-    if (!entry) {
-      res.status(404).json({ error: 'Repository not found' });
-      return;
+    try {
+      const entry = await resolveRepo(requestedRepo(req));
+      if (!entry) {
+        res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
+    } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
+      res.status(500).json({ error: err.message || 'Failed to read file' });
     }
-    await handleFileRequest(req, res, entry.path);
   });
 
   // Grep — regex search across file contents in the indexed repo
@@ -1337,88 +1591,46 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
-      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
-      // type check, the `.length` guard below counts array elements instead of
-      // characters, allowing arbitrarily long patterns through.
-      const rawPattern = req.query.pattern;
-      if (rawPattern === undefined) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
+      const sourceAvailability = await getSourceAvailability(entry);
+      if (!sourceAvailability.available) {
+        sendSourceUnavailable(res, sourceAvailability);
         return;
       }
-      const pattern = assertString(rawPattern, 'pattern');
-      if (pattern.length === 0) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
-        return;
-      }
-
-      // Length cap: applies to both literal and regex modes as a defense-in-depth
-      // bound against pathological input.
-      if (pattern.length > 200) {
-        res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
-        return;
-      }
-
-      // Treat user input as a literal substring in all cases to prevent
-      // regex-injection/ReDoS via attacker-controlled regex syntax.
-      const effectivePattern = escapeRegExp(pattern);
-
-      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
-      let regex: RegExp;
-      try {
-        regex = new RegExp(effectivePattern, 'gim');
-      } catch {
-        res.status(400).json({ error: 'Invalid regex pattern' });
-        return;
-      }
-
-      const parsedLimit = Number(req.query.limit ?? 50);
-      const limit = Number.isFinite(parsedLimit)
-        ? Math.max(1, Math.min(200, Math.trunc(parsedLimit)))
-        : 50;
-
-      const results: { filePath: string; line: number; text: string }[] = [];
+      // Pattern parsing lives in grep-params.ts (unit-testable without
+      // Express + LadybugDB). Matching runs in a worker so terminate() can
+      // cut a stuck regex.test() when the wall-clock budget expires.
+      const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const repoRoot = path.resolve(entry.path);
+      const { skipFts } = await loadFtsSession(entry.storagePath);
 
-      // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(
         lbugPath,
         () =>
           executeQuery(`MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`),
-        { readOnly: true },
+        readOnlyFtsOptions(skipFts),
       );
 
-      // Search files on disk one at a time (constant memory)
+      const filePaths: string[] = [];
       for (const row of fileRows) {
-        if (results.length >= limit) break;
         const filePath: string = row.filePath || '';
-        const fullPath = path.resolve(repoRoot, filePath);
-
-        // Path traversal guard
-        const safeRepoRoot = repoRoot.endsWith(path.sep) ? repoRoot : repoRoot + path.sep;
-        if (!fullPath.startsWith(safeRepoRoot) && fullPath !== repoRoot) continue;
-
-        let content: string;
-        try {
-          content = await fs.readFile(fullPath, 'utf-8');
-        } catch {
-          continue; // File may have been deleted since indexing
-        }
-
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (results.length >= limit) break;
-          if (regex.test(lines[i])) {
-            results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
-          }
-          regex.lastIndex = 0;
-        }
+        if (fileFilter && !filePath.toLowerCase().includes(fileFilter)) continue;
+        filePaths.push(filePath);
       }
 
-      res.json({ results });
+      const { results, timedOut } = await runGrepScanInWorker({
+        repoRoot,
+        filePaths,
+        pattern: regex.source,
+        flags: regex.flags,
+        limit,
+        deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+      });
+
+      res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
+      if (sendStorageRequirementHttp(err, res)) return;
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Grep failed'));
     }
   });
 
@@ -1428,7 +1640,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const result = await backend.queryProcesses(requestedRepo(req));
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query processes' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query processes'));
     }
   });
 
@@ -1448,9 +1660,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res
-        .status(statusFromError(err))
-        .json({ error: err.message || 'Failed to query process detail' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query process detail'));
     }
   });
 
@@ -1460,7 +1670,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const result = await backend.queryClusters(requestedRepo(req));
       res.json(result);
     } catch (err: any) {
-      res.status(statusFromError(err)).json({ error: err.message || 'Failed to query clusters' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query clusters'));
     }
   });
 
@@ -1480,9 +1690,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       res.json(result);
     } catch (err: any) {
-      res
-        .status(statusFromError(err))
-        .json({ error: err.message || 'Failed to query cluster detail' });
+      res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query cluster detail'));
     }
   });
 
@@ -1501,7 +1709,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           force,
           embeddings,
           dropEmbeddings,
+          springActuatorPath,
+          asyncApiSpecPath,
           token: repoToken,
+          branch: repoBranch,
         } = req.body;
 
         // Input type validation
@@ -1513,10 +1724,45 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           res.status(400).json({ error: '"path" must be a string' });
           return;
         }
+        if (
+          springActuatorPath !== undefined &&
+          (typeof springActuatorPath !== 'string' || springActuatorPath.trim().length === 0)
+        ) {
+          res.status(400).json({ error: '"springActuatorPath" must be a non-empty string' });
+          return;
+        }
+        if (
+          asyncApiSpecPath !== undefined &&
+          (typeof asyncApiSpecPath !== 'string' || asyncApiSpecPath.trim().length === 0)
+        ) {
+          res.status(400).json({ error: '"asyncApiSpecPath" must be a non-empty string' });
+          return;
+        }
 
         if (!repoUrl && !repoLocalPath) {
           res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
           return;
+        }
+
+        // Branch: optional index-branch selector, validated with the same rules
+        // as the CLI's `--branch` so both entry points accept the same refs.
+        // Rejecting here (rather than letting the clone fail) keeps a malformed
+        // ref from ever reaching `git`.
+        if (repoBranch !== undefined && typeof repoBranch !== 'string') {
+          res.status(400).json({ error: '"branch" must be a string' });
+          return;
+        }
+        let analyzeBranch: string | undefined;
+        if (repoBranch !== undefined) {
+          try {
+            analyzeBranch = validateBranchName(repoBranch, '"branch"');
+          } catch (err) {
+            if (err instanceof InvalidBranchError) {
+              res.status(400).json({ error: err.message });
+              return;
+            }
+            throw err;
+          }
         }
 
         // Token: optional, restricted charset to prevent header smuggling
@@ -1544,7 +1790,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
-        const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+        const job = jobManager.createJob({
+          repoUrl,
+          repoPath: repoLocalPath,
+          branch: analyzeBranch,
+        });
 
         // If job was already running (dedup), just return its id. The token is
         // not part of the dedup identity and is never stored on the job, so a
@@ -1571,12 +1821,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           try {
             // Clone if URL provided
             if (repoUrl && !repoLocalPath) {
-              const repoName = extractRepoName(repoUrl);
-              targetPath = getCloneDir(repoName);
+              const repoName = extractWebRepoName(repoUrl);
+              // Branch-pinned runs get their own clone dir, so they never share
+              // a working tree with the unpinned one (see getCloneDir).
+              targetPath = getCloneDir(repoName, analyzeBranch);
 
               jobManager.updateJob(job.id, {
                 status: 'cloning',
-                repoName,
+                // url+branch: same value as registryName (dir basename), not
+                // the extractWebRepoName stem used only as getCloneDir's first arg.
+                repoName: analyzeBranch ? path.basename(targetPath) : repoName,
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 
@@ -1588,7 +1842,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     progress: { phase: progress.phase, percent: 5, message: progress.message },
                   });
                 },
-                repoToken ? { token: repoToken } : undefined,
+                analyzeCloneOptions(repoToken, analyzeBranch),
               );
             }
 
@@ -1596,9 +1850,28 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               throw new Error('No target path resolved');
             }
 
-            launchAnalysisWorker(job, targetPath, { force, embeddings, dropEmbeddings });
+            await launchAnalysisWorker(job, targetPath, {
+              force,
+              embeddings,
+              dropEmbeddings,
+              springActuatorPath,
+              asyncApiSpecPath,
+              branch: analyzeBranch,
+              // Both clone dirs share an `origin`, so the name `registerRepo`
+              // infers from the remote would be identical and the second one
+              // would fail with RegistryNameCollisionError. Register the pinned
+              // clone under its directory name instead: unique per branch, and
+              // it re-derives through getCloneDir for DELETE /api/repo.
+              //
+              // Gated on the SAME condition as the clone above: when a caller
+              // supplies both `url` and `path` nothing is cloned, and renaming
+              // the operator's own local repo after its directory would be a
+              // surprise unrelated to branch pinning.
+              ...(analyzeBranch && repoUrl && !repoLocalPath
+                ? { registryName: path.basename(targetPath) }
+                : {}),
+            });
           } catch (err: any) {
-            if (targetPath) releaseRepoLock(getStoragePath(targetPath));
             jobManager.updateJob(job.id, {
               status: 'failed',
               error: err.message || 'Analysis failed',
@@ -1688,15 +1961,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
+        // Re-check the exact registered slot immediately before taking the lock.
+        // The query resolver already validates it, but this closes the gap between
+        // lookup and a long-running metadata-writing job.
+        const storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
-        const repoLockPath = entry.storagePath;
+        const repoLockPath = storagePath;
         const lockErr = acquireRepoLock(repoLockPath);
         if (lockErr) {
           res.status(409).json({ error: lockErr });
           return;
         }
 
-        const job = embedJobManager.createJob({ repoPath: entry.storagePath });
+        const job = embedJobManager.createJob({ repoPath: storagePath });
         embedJobManager.updateJob(job.id, {
           repoName: entry.name,
           status: 'analyzing' as any,
@@ -1720,188 +1998,204 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
-            const lbugPath = path.join(entry.storagePath, 'lbug');
-            await withLbugDb(lbugPath, async () => {
-              const { runEmbeddingPipeline } =
-                await import('../core/embeddings/embedding-pipeline.js');
-              const { resolveEmbeddingIdentity } =
-                await import('../core/embeddings/embedding-identity.js');
-              const embeddingIdentity = resolveEmbeddingIdentity();
-              let embeddingMeta = await loadMeta(entry.storagePath);
-              if (!embeddingMeta) {
-                throw new Error('Repository metadata is missing; run gitnexus analyze first');
-              }
-              const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
-              // The SAME decision the CLI's resume gate makes
-              // (core/embedding-checkpoint.ts). This route used to hard-throw on
-              // any identity mismatch and ignore `attempts` entirely, so a
-              // `'partial'` marker written by `gitnexus analyze` and resumed
-              // here hit exactly the permanent wedge `kind` exists to remove:
-              // two readers of one record disagreeing about the rule it encodes.
-              // No `force`/`--drop-embeddings` equivalent exists on this route,
-              // so the flag options go unset and `'discard'` is unreachable —
-              // it is folded into the abandon arm rather than given an invented
-              // flag. `maxAttempts` is left to the shared default.
-              const resume = priorCheckpoint
-                ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
-                : undefined;
-              if (resume?.action === 'abort') throw new Error(resume.error);
-              if (resume?.action === 'abandon' || resume?.action === 'discard') {
-                logger.warn({ repo: entry.name }, resume.log);
-              }
-              const forceReembedNodeIds: ReadonlySet<string> =
-                resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
-              const saveEmbeddingCheckpoint = async (
-                checkpoint: {
-                  nodesProcessed: number;
-                  totalNodes: number;
-                  chunksProcessed: number;
-                },
-                pendingNodeIds: string[],
-                embeddings?: PersistedEmbeddingCount,
-              ): Promise<void> => {
-                // tri-review NEW-2: re-read immediately before writing (mirrors
-                // the pattern in run-analyze.ts's --repair-fts stamp) instead of
-                // spreading the stale `embeddingMeta` snapshot captured once at
-                // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
-                // without a fresh read, a concurrent writer's update (e.g. a
-                // --repair-fts capability stamp) would be silently reverted on
-                // every checkpoint save for the job's whole lifetime.
-                const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-                // `stats.embeddings` only moves when the caller MEASURED the
-                // live count (the post-flush `onCheckpoint`). The window-start
-                // callback measures nothing and passes nothing: restating the
-                // old count there would re-publish a stale number and clobber
-                // what a preceding `onCheckpoint` just wrote (same split as
-                // run-analyze.ts's checkpoint writer).
-                embeddingMeta = withMeasuredEmbeddingCount(
-                  {
-                    ...latestMeta,
-                    // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
-                    embeddingCheckpoint: mintInterruptedCheckpoint(
-                      embeddingIdentity,
-                      checkpoint,
-                      pendingNodeIds,
-                    ),
+            const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
+            const ftsSession = await loadFtsSession(storagePath);
+            let embeddingMeta = ftsSession.meta;
+            // Writable embed still replays a leftover FTS-abort WAL. Refuse
+            // here — doInitLbug only gates the readOnly path, and analyze
+            // writers must still be able to park/rebuild.
+            await assertReadOnlyFtsCrashSafe(lbugPath);
+            await withLbugDb(
+              lbugPath,
+              async () => {
+                const { runEmbeddingPipeline } =
+                  await import('../core/embeddings/embedding-pipeline.js');
+                const { resolveEmbeddingIdentity } =
+                  await import('../core/embeddings/embedding-identity.js');
+                const embeddingIdentity = resolveEmbeddingIdentity();
+                if (!embeddingMeta) {
+                  throw new Error('Repository metadata is missing; run gitnexus analyze first');
+                }
+                const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
+                // The SAME decision the CLI's resume gate makes
+                // (core/embedding-checkpoint.ts). This route used to hard-throw on
+                // any identity mismatch and ignore `attempts` entirely, so a
+                // `'partial'` marker written by `gitnexus analyze` and resumed
+                // here hit exactly the permanent wedge `kind` exists to remove:
+                // two readers of one record disagreeing about the rule it encodes.
+                // No `force`/`--drop-embeddings` equivalent exists on this route,
+                // so the flag options go unset and `'discard'` is unreachable —
+                // it is folded into the abandon arm rather than given an invented
+                // flag. `maxAttempts` is left to the shared default.
+                const resume = priorCheckpoint
+                  ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
+                  : undefined;
+                if (resume?.action === 'abort') throw new Error(resume.error);
+                if (resume?.action === 'abandon' || resume?.action === 'discard') {
+                  logger.warn({ repo: entry.name }, resume.log);
+                }
+                const forceReembedNodeIds: ReadonlySet<string> =
+                  resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
+                const saveEmbeddingCheckpoint = async (
+                  checkpoint: {
+                    nodesProcessed: number;
+                    totalNodes: number;
+                    chunksProcessed: number;
                   },
-                  embeddings,
-                );
-                await saveMeta(entry.storagePath, embeddingMeta);
-              };
-              /**
-               * Count the persisted rows, or report the answer never arrived.
-               * The TRI-STATE is carried to the fold rather than collapsed here:
-               * `unknown` is not 0, and only the fold knows what to carry
-               * forward instead (core/embedding-count.ts).
-               */
-              const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
-                const counted = await measurePersistedEmbeddingCount(executeQuery);
-                if (counted.kind === 'unknown') {
-                  logger.warn(
-                    { reason: counted.reason },
-                    '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+                  pendingNodeIds: string[],
+                  embeddings?: PersistedEmbeddingCount,
+                ): Promise<void> => {
+                  // tri-review NEW-2: re-read immediately before writing (mirrors
+                  // the pattern in run-analyze.ts's --repair-fts stamp) instead of
+                  // spreading the stale `embeddingMeta` snapshot captured once at
+                  // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
+                  // without a fresh read, a concurrent writer's update (e.g. a
+                  // --repair-fts capability stamp) would be silently reverted on
+                  // every checkpoint save for the job's whole lifetime.
+                  const latestMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
+                  // `stats.embeddings` only moves when the caller MEASURED the
+                  // live count (the post-flush `onCheckpoint`). The window-start
+                  // callback measures nothing and passes nothing: restating the
+                  // old count there would re-publish a stale number and clobber
+                  // what a preceding `onCheckpoint` just wrote (same split as
+                  // run-analyze.ts's checkpoint writer).
+                  embeddingMeta = withMeasuredEmbeddingCount(
+                    {
+                      ...latestMeta,
+                      // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
+                      embeddingCheckpoint: mintInterruptedCheckpoint(
+                        embeddingIdentity,
+                        checkpoint,
+                        pendingNodeIds,
+                      ),
+                    },
+                    embeddings,
+                  );
+                  await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+                  await saveMeta(storagePath, embeddingMeta);
+                };
+                /**
+                 * Count the persisted rows, or report the answer never arrived.
+                 * The TRI-STATE is carried to the fold rather than collapsed here:
+                 * `unknown` is not 0, and only the fold knows what to carry
+                 * forward instead (core/embedding-count.ts).
+                 */
+                const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
+                  const counted = await measurePersistedEmbeddingCount(executeQuery);
+                  if (counted.kind === 'unknown') {
+                    logger.warn(
+                      { reason: counted.reason },
+                      '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
+                    );
+                  }
+                  return counted;
+                };
+                // Fetch existing content hashes for incremental embedding.
+                // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
+                const { fetchExistingEmbeddingHashes } =
+                  await import('../core/lbug/lbug-adapter.js');
+                const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
+                if (existingEmbeddings && existingEmbeddings.size > 0) {
+                  console.log(
+                    `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
                   );
                 }
-                return counted;
-              };
-              // Fetch existing content hashes for incremental embedding.
-              // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-              const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
-              const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-              if (existingEmbeddings && existingEmbeddings.size > 0) {
-                console.log(
-                  `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
-                );
-              }
-              const pipelineResult = await runEmbeddingPipeline(
-                executeQuery,
-                executeWithReusedStatement,
-                (p) => {
-                  embedJobManager.updateJob(job.id, {
-                    progress: {
-                      // `ready` maps to 'finalizing', NOT 'complete' (#2790).
-                      // The pipeline emits `ready`/100% unconditionally before
-                      // returning — including when it dropped nodes to endpoint
-                      // failures — and the route has not measured the index or
-                      // decided the outcome yet, so 'complete' here would make
-                      // the job record contradict itself (`status: 'analyzing'`,
-                      // `progress.phase: 'complete'`).
-                      phase:
-                        p.phase === 'ready'
-                          ? 'finalizing'
-                          : p.phase === 'error'
-                            ? 'failed'
-                            : p.phase,
-                      percent: p.percent,
-                      message:
-                        p.phase === 'loading-model'
-                          ? 'Loading embedding model...'
-                          : p.phase === 'embedding'
-                            ? `Embedding nodes (${p.percent}%)...`
-                            : p.phase === 'indexing'
-                              ? 'Creating vector index...'
-                              : p.phase === 'ready'
-                                ? 'Finalizing embeddings...'
-                                : `${p.phase} (${p.percent}%)`,
+                const pipelineResult = await runEmbeddingPipeline(
+                  executeQuery,
+                  executeWithReusedStatement,
+                  (p) => {
+                    embedJobManager.updateJob(job.id, {
+                      progress: {
+                        // `ready` maps to 'finalizing', NOT 'complete' (#2790).
+                        // The pipeline emits `ready`/100% unconditionally before
+                        // returning — including when it dropped nodes to endpoint
+                        // failures — and the route has not measured the index or
+                        // decided the outcome yet, so 'complete' here would make
+                        // the job record contradict itself (`status: 'analyzing'`,
+                        // `progress.phase: 'complete'`).
+                        phase:
+                          p.phase === 'ready'
+                            ? 'finalizing'
+                            : p.phase === 'error'
+                              ? 'failed'
+                              : p.phase,
+                        percent: p.percent,
+                        message:
+                          p.phase === 'loading-model'
+                            ? 'Loading embedding model...'
+                            : p.phase === 'embedding'
+                              ? `Embedding nodes (${p.percent}%)...`
+                              : p.phase === 'indexing'
+                                ? 'Creating vector index...'
+                                : p.phase === 'ready'
+                                  ? 'Finalizing embeddings...'
+                                  : `${p.phase} (${p.percent}%)`,
+                      },
+                    });
+                  },
+                  {}, // config: use defaults
+                  undefined, // skipNodeIds
+                  existingEmbeddings,
+                  {
+                    signal: embedController.signal,
+                    forceReembedNodeIds,
+                    onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+                      await saveEmbeddingCheckpoint(checkpoint, nodeIds);
                     },
-                  });
-                },
-                {}, // config: use defaults
-                undefined, // skipNodeIds
-                existingEmbeddings,
-                {
-                  signal: embedController.signal,
-                  forceReembedNodeIds,
-                  onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-                    await saveEmbeddingCheckpoint(checkpoint, nodeIds);
+                    onCheckpoint: async (checkpoint) => {
+                      // Count AFTER the flush, so the number describes rows that
+                      // are durable rather than rows still pending in the WAL.
+                      await flushWAL();
+                      await saveEmbeddingCheckpoint(
+                        checkpoint,
+                        [],
+                        await countPersistedEmbeddings(),
+                      );
+                    },
                   },
-                  onCheckpoint: async (checkpoint) => {
-                    // Count AFTER the flush, so the number describes rows that
-                    // are durable rather than rows still pending in the WAL.
-                    await flushWAL();
-                    await saveEmbeddingCheckpoint(checkpoint, [], await countPersistedEmbeddings());
-                  },
-                },
-              );
+                );
 
-              // Flush WAL so subsequent /api/search requests see the new
-              // embeddings immediately (#1149). In the CLI path closeLbug()
-              // handles this during process exit, but the server keeps the
-              // connection open for other routes — a CHECKPOINT is enough.
-              await flushWAL();
-              // Measure inside withLbugDb, after the flush and while the
-              // connection is still open — this is the route's only chance to
-              // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
-              // gets the same stamp: an honest count of a partial index is what
-              // makes it survivable.
-              const measuredEmbeddings = await countPersistedEmbeddings();
-              // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
-              // above — and the outcome decision reads it too: its
-              // `embeddingCheckpoint` is the marker this run's own mid-run
-              // writer saved, which is the only record of the work when the
-              // count query could not answer.
-              const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
-              const finalizeContext: EmbedRunFinalizeContext = {
-                measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
-                onDisk: finalMeta,
-                // The marker the job STARTED from — `finalMeta`'s has since been
-                // overwritten by the in-flight writer, so only this one carries
-                // the `'partial'` attempt chain.
-                resumedFrom: priorCheckpoint,
-              };
-              const outcome = resolveEmbedRunOutcome(
-                embeddingIdentity,
-                pipelineResult,
-                finalizeContext,
-              );
-              partialRunError = outcome.error;
-              partialRunDetail = outcome.partial;
-              embeddingMeta = withMeasuredEmbeddingCount(
-                { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
-                measuredEmbeddings,
-              );
-              await saveMeta(entry.storagePath, embeddingMeta);
-            });
+                // Flush WAL so subsequent /api/search requests see the new
+                // embeddings immediately (#1149). In the CLI path closeLbug()
+                // handles this during process exit, but the server keeps the
+                // connection open for other routes — a CHECKPOINT is enough.
+                await flushWAL();
+                // Measure inside withLbugDb, after the flush and while the
+                // connection is still open — this is the route's only chance to
+                // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
+                // gets the same stamp: an honest count of a partial index is what
+                // makes it survivable.
+                const measuredEmbeddings = await countPersistedEmbeddings();
+                // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
+                // above — and the outcome decision reads it too: its
+                // `embeddingCheckpoint` is the marker this run's own mid-run
+                // writer saved, which is the only record of the work when the
+                // count query could not answer.
+                const finalMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
+                const finalizeContext: EmbedRunFinalizeContext = {
+                  measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
+                  onDisk: finalMeta,
+                  // The marker the job STARTED from — `finalMeta`'s has since been
+                  // overwritten by the in-flight writer, so only this one carries
+                  // the `'partial'` attempt chain.
+                  resumedFrom: priorCheckpoint,
+                };
+                const outcome = resolveEmbedRunOutcome(
+                  embeddingIdentity,
+                  pipelineResult,
+                  finalizeContext,
+                );
+                partialRunError = outcome.error;
+                partialRunDetail = outcome.partial;
+                embeddingMeta = withMeasuredEmbeddingCount(
+                  { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
+                  measuredEmbeddings,
+                );
+                await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+                await saveMeta(storagePath, embeddingMeta);
+              },
+              skipFtsOption(ftsSession.skipFts),
+            );
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
             const current = embedJobManager.getJob(job.id);
@@ -1944,6 +2238,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         res.status(202).json({ jobId: job.id, status: 'analyzing' });
       } catch (err: any) {
+        if (sendStorageRequirementHttp(err, res)) return;
         if (err.message?.includes('already in progress')) {
           res.status(409).json({ error: err.message });
         } else {
@@ -2019,12 +2314,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       resolve();
     });
     server.on('error', (err) => reject(err));
+    // `listening` is the successful startup boundary for notifier work.
+    bindServeUpdateControllerLifecycle(server, updateController);
 
     // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default
     // destination is `sync: false` (buffered); `flushLoggerSync()` before
     // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
       console.log('\nShutting down...');
+      updateController.stop();
       server.close();
       jobManager.dispose();
       embedJobManager.dispose();

@@ -1,0 +1,145 @@
+/**
+ * Zig Language Provider.
+ *
+ * Key Zig traits:
+ *   - mroStrategy: default 'first-wins' is irrelevant — Zig has no inheritance,
+ *     and no heritage hooks are provided (Zig queries never produce
+ *     `@heritage.*` captures).
+ *   - exportChecker: walks to the enclosing variable_declaration /
+ *     function_declaration and looks for a `pub` or `export` keyword child.
+ *   - importResolver: resolves local `@import("./foo.zig")` paths and
+ *     build.zig.zon `.path` deps (root the dep's build.zig declares, then
+ *     src/root.zig, src/<name>.zig, src/main.zig); `@import("std")` and
+ *     `.url` packages are deliberately external.
+ *   - namedBindingExtractor: omitted — the scope side handles
+ *     `const Foo = @import("x").Foo` and `const Foo = ns.Foo` (ns an
+ *     @import binding) as NAMED imports instead (`zig/captures.ts`).
+ *   - scope-resolution hooks (Ring 3): `emitScopeCaptures` walks the file via
+ *     `zig/query.ts` (containers as Class scopes — including the container a
+ *     generic type constructor `fn List(comptime T: type) type` returns,
+ *     named after the fn; container-nested fns relabeled @declaration.method;
+ *     plain-variable groups filtered for container/import bindings and for
+ *     the keyword-less `variable_declaration`s tree-sitter-zig uses for
+ *     statement assignments); `interpretImport` maps `const x = @import("…")`
+ *     to a namespace import, member forms to named/alias imports and
+ *     `usingnamespace` to a wildcard; receiver types come from `self`
+ *     parameters, `T{…}` / `mod.T{…}` / `List(u8){…}` literals, `T.init()`
+ *     call returns, `x: T` annotations (incl. decl literals), container
+ *     FIELD types on the container's class scope (`self.session.name()`)
+ *     and one-level field aliases (`const s = self.session; s.name()`). The
+ *     emit-side wiring lives in `zig/scope-resolver.ts` (SCOPE_RESOLVERS).
+ */
+
+import { SupportedLanguages } from 'gitnexus-shared';
+import { defineLanguage } from '../language-provider.js';
+import { ZIG_QUERIES } from '../tree-sitter-queries.js';
+import { zigExportChecker } from '../export-detection.js';
+import { createImportResolver } from '../import-resolvers/resolver-factory.js';
+import { zigImportConfig } from '../import-resolvers/configs/zig.js';
+import { createCallExtractor } from '../call-extractors/generic.js';
+import { zigCallConfig } from '../call-extractors/configs/zig.js';
+import { createClassExtractor } from '../class-extractors/generic.js';
+import { zigClassConfig } from '../class-extractors/configs/zig.js';
+import { createFieldExtractor } from '../field-extractors/generic.js';
+import { zigFieldConfig } from '../field-extractors/configs/zig.js';
+import { createMethodExtractor } from '../method-extractors/generic.js';
+import { zigMethodConfig } from '../method-extractors/configs/zig.js';
+import { createVariableExtractor } from '../variable-extractors/generic.js';
+import { zigVariableConfig } from '../variable-extractors/configs/zig.js';
+import { zigTypeConfig } from '../type-extractors/zig.js';
+import {
+  emitZigScopeCaptures,
+  interpretZigImport,
+  interpretZigTypeBinding,
+  isZigContainerMethod,
+  isZigFileStruct,
+  isZigRedundantContainerCapture,
+  isZigTypeShadowingBinding,
+  zigArityCompatibility,
+  zigContainerLabel,
+  zigContainerName,
+  zigFileStructName,
+  zigBindingScopeFor,
+  zigReceiverBinding,
+  ZIG_CONTAINER_TYPES,
+} from './zig/index.js';
+
+export const zigProvider = defineLanguage({
+  id: SupportedLanguages.Zig,
+  extensions: ['.zig'],
+  entryPointPatterns: [
+    /^main$/, // standard executable entry point
+    /^build$/, // build.zig entry point
+  ],
+  astFrameworkPatterns: [],
+  treeSitterQueries: ZIG_QUERIES,
+  typeConfig: zigTypeConfig,
+  exportChecker: zigExportChecker,
+  importResolver: createImportResolver(zigImportConfig),
+  callExtractor: createCallExtractor(zigCallConfig),
+  classExtractor: createClassExtractor(zigClassConfig),
+  fieldExtractor: createFieldExtractor(zigFieldConfig),
+  methodExtractor: createMethodExtractor(zigMethodConfig),
+  variableExtractor: createVariableExtractor(zigVariableConfig),
+  // A `const`/`var` whose value is a container or an `@import` is the
+  // Struct/Enum/Union node or the import binding, not a Const beside it.
+  // Up to three ZIG_QUERIES rules match one container (wrapper, type
+  // constructor, bare container — F8); `zigContainerAnchor` names the one
+  // that mints it and the others are dropped here.
+  shouldSkipDefinitionCapture: (captureMap, defaultLabel) => {
+    if (defaultLabel === 'Const' || defaultLabel === 'Variable') {
+      const decl = captureMap['definition.const'] ?? captureMap['definition.variable'];
+      return decl !== undefined && isZigTypeShadowingBinding(decl);
+    }
+    if (defaultLabel === 'Struct' || defaultLabel === 'Enum' || defaultLabel === 'Union') {
+      const decl =
+        captureMap['definition.struct'] ??
+        captureMap['definition.enum'] ??
+        captureMap['definition.union'];
+      if (decl === undefined) return false;
+      // The file-struct rules over-match (a `@This` first parameter, a
+      // top-level `@This()` alias — see ZIG_QUERIES); the one predicate decides.
+      if (decl.type === 'source_file') return !isZigFileStruct(decl);
+      return isZigRedundantContainerCapture(decl, captureMap['name']);
+    }
+    return false;
+  },
+  // A file whose top level declares fields IS a struct named after the file
+  // (`Page.zig` → `Page`): its top-level fns/fields are members of that
+  // Struct. Files without fields are namespaces and own nothing.
+  resolveFileTypeOwner: (root, filePath) =>
+    isZigFileStruct(root) ? { name: zigFileStructName(filePath), label: 'Struct' } : null,
+  // Every container's identity comes from `zigContainerName` — the binding
+  // name for `const T = struct {…}` at file/container level, the fn name for
+  // a generic type constructor, and (F8) `string$R` / `build$1` for
+  // function-local and anonymous containers, which no name child spells. The
+  // class extractor names the node from the same function, so a member's
+  // owner id (`Method:<file>:string$R.get`) and the node id agree.
+  resolveContainerTypeOwner: (container, filePath) => {
+    if (!ZIG_CONTAINER_TYPES.has(container.type)) return null;
+    const name = zigContainerName(container, filePath);
+    const label = zigContainerLabel(container);
+    return name !== undefined && label !== undefined ? { name, label } : null;
+  },
+  labelOverride: (functionNode, defaultLabel) => {
+    if (defaultLabel !== 'Function') return defaultLabel;
+    if (isZigContainerMethod(functionNode)) return 'Method';
+    return defaultLabel;
+  },
+
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──
+  emitScopeCaptures: emitZigScopeCaptures,
+  interpretImport: interpretZigImport,
+  // `@import` is compile-time name lookup, not an executed statement: one
+  // written inside a function body is resolved exactly as one at file scope
+  // (same answer as C `#include` and Rust `use`). Without this, a
+  // function-scoped `@import` would be marked `runsOnlyWhenCalled` and a
+  // real import cycle through it would be hidden from `check --cycles`.
+  importsExecuteWhereWritten: false,
+  interpretTypeBinding: interpretZigTypeBinding,
+  bindingScopeFor: zigBindingScopeFor,
+  receiverBinding: zigReceiverBinding,
+  // Provider contract is (def, callsite); the ScopeResolver contract is
+  // (callsite, def) — same function, adapted argument order.
+  arityCompatibility: (def, callsite) => zigArityCompatibility(callsite, def),
+});

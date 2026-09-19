@@ -10,16 +10,19 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 export function splitRustUseDeclaration(node: SyntaxNode): CaptureMatch[] {
   if (node.type !== 'use_declaration') return [];
 
-  const isReexport = hasVisibilityModifier(node);
+  const isReexport = hasUnrestrictedPub(node);
   const argument = getUseArgument(node);
   if (argument === null) return [];
 
   return decomposeUseArgument(argument, '', isReexport, node);
 }
 
-function hasVisibilityModifier(node: SyntaxNode): boolean {
+function hasUnrestrictedPub(node: SyntaxNode): boolean {
   for (let i = 0; i < node.childCount; i++) {
-    if (node.child(i)?.type === 'visibility_modifier') return true;
+    const child = node.child(i);
+    // `pub(crate)` / `pub(super)` / `pub(in …)` / `crate` are not the crate's
+    // public surface, so they must not walk as `pub use` re-export evidence.
+    if (child?.type === 'visibility_modifier' && child.text === 'pub') return true;
   }
   return false;
 }
@@ -146,7 +149,9 @@ function buildScopedPath(node: SyntaxNode): string {
   if (node.type === 'scoped_identifier') {
     const parts: string[] = [];
     collectScopedParts(node, parts);
-    return parts.join('::');
+    // An absolute extern-prelude path bypasses a same-named local module.
+    // Keep that evidence when flattening the AST into an import specifier.
+    return `${node.text.startsWith('::') ? '::' : ''}${parts.join('::')}`;
   }
   return node.text;
 }
@@ -174,7 +179,7 @@ function buildWildcardPath(node: SyntaxNode): string {
     const child = node.child(i);
     if (child === null) continue;
     if (child.type === 'scoped_identifier') return buildScopedPath(child);
-    if (child.type === 'identifier') return child.text;
+    if (['identifier', 'crate', 'self', 'super'].includes(child.type)) return child.text;
   }
   return '';
 }

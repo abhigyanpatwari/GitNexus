@@ -78,6 +78,7 @@ import {
   fileContentHash,
   packParseCacheChunks,
 } from '../../src/storage/parse-cache.js';
+import type { ParseCache } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
 /**
@@ -257,7 +258,7 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
 
     const expectedChunkHash = hashPacks(scanned).poison;
 
-    const parseCache = {
+    const parseCache: ParseCache = {
       version: 'test',
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
@@ -323,6 +324,9 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     // against a fresh-quarantine pool.
     expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
     expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
+    // #3204: `usedKeys` alone would let `saveParseCache` copy a pre-existing
+    // shard forward, so the skipped chunk is also retired from the save.
+    expect(parseCache.staleKeys?.has(expectedChunkHash)).toBe(true);
     for (const hash of hashPacks(scanned).others) {
       expect(parseCache.entries.has(hash)).toBe(true);
     }
@@ -338,7 +342,7 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     }));
     const expectedChunkHash = hashPacks(scanned).poison;
 
-    const parseCache = {
+    const parseCache: ParseCache = {
       version: 'test',
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),

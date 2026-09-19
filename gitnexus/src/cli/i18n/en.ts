@@ -7,6 +7,16 @@ export const en = {
   'common.storage': 'Storage',
   'common.deleted': 'Deleted: {{target}}',
   'common.error': 'Error: {{message}}',
+  'update.available':
+    'GitNexus {{latestVersion}} is available (you are running {{installedVersion}}).',
+  'update.current':
+    'GitNexus {{installedVersion}} is current or newer than the latest stable version.',
+  'update.installing': 'Installing with {{command}}…',
+  'update.installed': 'Installed gitnexus@{{version}}. Restart long-running mcp/serve processes.',
+  'update.installFailed': 'npm install failed. You can retry: {{command}}',
+  'update.installError': 'Could not run npm: {{message}}',
+  'update.checkFailed':
+    'Could not check for updates (offline, private registry, or the check failed open).',
   'list.title': 'Indexed Repositories ({{count}})',
   'list.indexed': 'Indexed',
   'list.commit': 'Commit',
@@ -76,6 +86,8 @@ export const en = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
+  'tool.detectChanges.noOverlappingSymbols':
+    'Diff touched {{files}} file(s) but no indexed symbols overlap those hunks — not a clean tree.',
   'tool.detectChanges.partial':
     'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
   'tool.detectChanges.truncated':
@@ -111,8 +123,10 @@ export const en = {
   'doctor.labels.onnx': 'ONNX:',
   'doctor.labels.graphStore': 'Graph store:',
   'doctor.labels.fullTextSearch': 'Full-text search:',
-  'doctor.labels.vectorIndex': 'VECTOR index:',
-  'doctor.labels.semanticMode': 'Semantic mode:',
+  'doctor.labels.vectorIndex': 'VECTOR extension:',
+  'doctor.labels.semanticMode': 'Semantic support:',
+  'doctor.vectorCapability.indexUnverified': 'vector-index capable (repository index not checked)',
+  'doctor.vectorCapability.exactScanOnly': 'exact-scan only (VECTOR extension unavailable)',
   'doctor.labels.exactScanLimit': 'Exact scan limit:',
   'doctor.labels.note': 'Note:',
   'doctor.labels.backend': 'Backend:',
@@ -143,7 +157,19 @@ export const en = {
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
+  'help.command.autoSync.description':
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  'help.autoSync.details':
+    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: only SSH URLs on github.com, gitlab.com, and gitee.com are allowed.\nRuns once immediately, then repeats on sync_interval_minutes.',
+  'help.command.watch.description':
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  'help.watch.details':
+    '\n`gitnexus watch` does not start a watcher.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
+  'error.watch.ambiguous':
+    '`gitnexus watch` is ambiguous.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
   'help.command.analyze.description': 'Index a repository (full analysis)',
+  'help.command.embeddings.sync.description':
+    'Add missing embeddings to an existing index, checkpointing periodically for safe resume',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   'help.command.serve.description': 'Start local HTTP server for web UI connection',
@@ -153,9 +179,11 @@ export const en = {
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':
     'Show runtime platform capabilities and embedding configuration',
+  'help.command.update.description':
+    'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
-    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. The stack is not part of a default npm install. CPU installs download only from your configured npm registry — mirrors and proxies apply. `--cuda` additionally runs onnxruntime-node postinstall, which fetches CUDA binaries from NuGet (set GLOBAL_AGENT_HTTPS_PROXY behind a proxy).',
   'help.command.clean.description': 'Delete GitNexus index for current repo',
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
@@ -192,7 +220,9 @@ export const en = {
   'help.command.group.contracts.description': 'Inspect Contract Registry',
   'help.option.setup.codingAgent':
     'Configure only these coding agents (comma-separated or repeatable)',
-  'help.option.analyze.force': 'Force full re-index even if up to date',
+  'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
+  'help.option.analyze.noParseCache':
+    'Re-parse every source file instead of replaying cached parser output',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':
     'Enable embedding generation for semantic search (off by default). Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
@@ -201,7 +231,7 @@ export const en = {
   'help.option.analyze.skills':
     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
   'help.option.analyze.skipAgentsMd':
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
   'help.option.analyze.selfCommit':
     'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',
@@ -224,6 +254,14 @@ export const en = {
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze (integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
   'help.option.analyze.workers':
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  'help.option.analyze.maxProcesses':
+    'Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Default: dynamic.',
+  'help.option.analyze.maxProcessBranching':
+    'Process-detection per-node branching cap (positive integer). Default: 4.',
+  'help.option.analyze.maxProcessTraceDepth':
+    'Process-detection DFS depth cap (positive integer). Default: 10.',
+  'help.option.analyze.maxEntryPointCandidates':
+    'Ranked entry-point candidate pool (positive integer). Default: 200. Raise when the warning names this knob; doubling is the usual first raise.',
   'help.option.analyze.embeddingThreads': 'Limit local ONNX embedding CPU threads',
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
@@ -328,5 +366,5 @@ export const en = {
   'help.identityCache.environment':
     '\nAnalyzer identity cache:\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    Operator-trusted persistent cache for warm cross-process status. The directory must pre-exist, be outside the GitNexus package/build roots, and contain no symlink or junction components. Defaults remain fail-closed on platforms without POSIX ownership APIs.',
   'help.analyze.environment':
-    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  Operator-trusted persistent analyzer identity cache; must pre-exist, be outside package/build roots, and contain no symlink/junction components.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  Max wait at pool shutdown for a retired worker still inside native code (terminated at its next safe point instead of aborting the process). Default 30000.\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning. Default 20000.\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for MCP, 0.5 elsewhere.\n\nFlags override the corresponding env vars when both are provided.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
+    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_STORAGE_PATH=/absolute/index  Complete external index directory. Preserves the existing configuration semantics and overrides GITNEXUS_STORAGE_ROOT when both are set.\n  GITNEXUS_STORAGE_ROOT=/absolute/root  External index root; each repository uses an isolated <repo-basename>-<canonical-path-hash>/ slot.\n  GITNEXUS_CONTENT_RETENTION=full  Source-text retention profile: full, symbol, or none. Default full.\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  Operator-trusted persistent analyzer identity cache; must pre-exist, be outside package/build roots, and contain no symlink/junction components.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  Max wait at pool shutdown for a retired worker still inside native code (terminated at its next safe point instead of aborting the process). Default 30000.\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning. Default 20000.\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  Retry per-attempt HTTP embedding timeouts through GITNEXUS_EMBEDDING_MAX_ATTEMPTS (default off; timeouts stay terminal).\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for MCP, 0.5 elsewhere.\n  GITNEXUS_MAX_PROCESSES=N  Process-detection process cap (positive integer). Replaces the dynamic max(20, round(symbols/10)) formula. Distinct from query-time IMPACT_MAX_CHUNKS.\n  GITNEXUS_MAX_PROCESS_BRANCHING=N  Process-detection per-node branching cap. Default 4.\n  GITNEXUS_MAX_PROCESS_TRACE_DEPTH=N  Process-detection DFS depth cap. Default 10.\n  GITNEXUS_MAX_ENTRY_POINT_CANDIDATES=N  Ranked entry-point candidate pool. Default 200. Raise when the warning names this knob; doubling is the usual first raise.\n\nCLI flags take precedence over `.gitnexusrc`, which takes precedence over env vars, which take precedence over built-in defaults.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
 } as const;

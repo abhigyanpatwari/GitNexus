@@ -65,6 +65,10 @@ The `render.yaml` Blueprint (see the README's **Deploy to Render**) puts `gitnex
 
 Do not hand the URL out as a public demo. A token holder has read access to everything the deploy has indexed.
 
+### `/api/grep` regex semantics and residual ReDoS exposure
+
+`GET /api/grep` executes caller-supplied patterns as real regular expressions (with an optional path-substring `fileFilter` and `caseSensitive` flag) to honor the web chat's grep tool contract; `literal=1` restores the older escaped-substring mode. Mitigations: a 200-character pattern cap, line-by-line matching, a max-200 result cap, and a 5-second wall-clock budget. Matching runs in a `worker_threads` worker so a catastrophic pattern (e.g. `(a+)+$`) can be killed with `terminate()` when the budget expires — the parent event loop (other routes + SSE) stays responsive. A timed-out scan returns partial results with `timedOut: true`; the web grep tool surfaces that flag so an agent does not treat a cut-off scan as exhaustive. CodeQL still flags constructing a `RegExp` from the query string; that is the advertised contract, not accidental injection. Hosted deploys continue to gate the route behind the edge token.
+
 ## Automated Scans Running in CI
 
 This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.

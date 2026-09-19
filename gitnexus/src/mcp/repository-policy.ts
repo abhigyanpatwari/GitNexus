@@ -198,25 +198,27 @@ export class McpRepositoryPolicy {
       };
     }
 
-    // One fresh listing supplies both schema decisions. Besides keeping the
-    // advertised contract internally consistent, this avoids doing two full
-    // per-repo staleness fan-outs for every tools/list request.
-    const visibleRepos = await this.listAllowedRepos(backend);
-    if (visibleRepos.length <= 1) {
+    // Validated registry cardinality only — no listRepos() staleness git.
+    // The 0–1 arm stays a cheap countRepos() (no refreshRepos / kuzu cleanup).
+    const repoCount = await backend.countRepos();
+    if (repoCount <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
     try {
-      // listAllowedRepos() refreshed this backend immediately above. Resolve
-      // against that exact cache snapshot instead of racing another registry
-      // read; only read-only schemas may advertise the cwd-derived default.
+      // countRepos() does not refresh the backend; this cwd probe must.
       await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
-        refreshRegistry: false,
+        refreshRegistry: true,
       });
-      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
     } catch {
       return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
     }
+    // The probe just refreshed. If that snapshot is now a singleton, match the
+    // <=1 arm rather than advertising a split mutating-only schema.
+    if (backend.cachedRepoCount() <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
   }
 
   private async listReposPage(

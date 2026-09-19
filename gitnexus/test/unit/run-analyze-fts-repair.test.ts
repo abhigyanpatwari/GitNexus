@@ -7,7 +7,7 @@ import {
   saveMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
+import { EMBEDDING_DIMS, STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 import { getIndexIncompleteReasons } from '../../src/core/index-freshness.js';
 import type {
   EmbeddingPipelineOptions,
@@ -222,6 +222,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -278,6 +279,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
+    tryFlushWAL: vi.fn(async () => true),
     loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
     deleteNodesForFile: vi.fn(async () => undefined),
     deleteNodesForFiles: vi.fn(async () => undefined),
@@ -568,6 +570,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -633,6 +636,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -701,6 +705,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -772,6 +777,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -827,6 +833,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('ABORTS (throws before publish, leaves the previous index intact) on an FTS integrity failure on the atomic-swap path (#2658 review M1)', async () => {
+    // Select the atomic path on Windows too; the native adapter is mocked below.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     // The single-writer lock rules out a concurrent-writer race, so an
     // integrity-class FTS failure on the atomic-swap (--force) path is a real
     // broken build: run-analyze must throw BEFORE swapping the staging DB in,
@@ -841,6 +849,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteNodesForFiles: vi.fn(async () => undefined),
@@ -878,6 +887,13 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       await fs.mkdir(storagePath, { recursive: true });
       // A pre-existing "previous index" that must survive the aborted rebuild.
       await createPlaceholderGraphStore(lbugPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        storagePath,
+        lastCommit: 'previous-index',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
       const before = await fs.readFile(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -913,6 +929,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -986,6 +1003,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1104,6 +1122,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
       // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       // ≥1 cached row with a real-dims embedding: the harness default (empty
       // cache) would leave restoredEmbeddingCount at 0 and the recreation
       // gate shut — this test would then assert nothing.
@@ -1206,6 +1225,313 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       await tmpRepo.cleanup();
     }
   });
+
+  it('warns and continues without restore when loadCachedEmbeddings rejects (R11)', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    const executeWithReusedStatement = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement,
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => {
+        throw new Error('spill write failed');
+      }),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'cache-load-reject-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/embeddings/embedding-pipeline.js')>()),
+      batchInsertEmbeddings: vi.fn(async () => {
+        throw new Error('restore must not run after a cache-load failure');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-cache-reject-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 1 },
+      });
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true, embeddingsNodeLimit: 1 },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+
+      expect(logs.some((m) => m.includes('Warning: could not load cached embeddings'))).toBe(true);
+      expect(logs.some((m) => m.includes('spill write failed'))).toBe(true);
+      expect(
+        executeWithReusedStatement.mock.calls.some((call) =>
+          String(call[0]).includes('CREATE (e:CodeEmbedding'),
+        ),
+      ).toBe(false);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('omits failed restore rows from the Phase 4 skip-set so they can be re-embedded', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const CACHED_HASH = 'cached-stable-hash';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    let existingEmbeddings: Map<string, string> | undefined;
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set([RESTORED_NODE_ID]),
+        embeddings: [
+          {
+            nodeId: RESTORED_NODE_ID,
+            chunkIndex: 0,
+            startLine: 0,
+            endLine: 3,
+            embedding: new Array(EMBEDDING_DIMS).fill(0),
+            contentHash: CACHED_HASH,
+          },
+        ],
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'ktd7-skip-set-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    const runEmbeddingPipeline = vi.fn(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _cachedNodeIds: unknown,
+        embeddings: Map<string, string> | undefined,
+      ) => {
+        existingEmbeddings = embeddings;
+        return {
+          nodesProcessed: 0,
+          chunksProcessed: 0,
+          vectorIndexReady: false,
+          semanticMode: 'exact-scan' as const,
+          failedNodeIds: [],
+        };
+      },
+    );
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+      batchInsertEmbeddings: vi.fn(async () => {
+        throw new Error('nth batch insert failed');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-ktd7-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 1 },
+      });
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+
+      expect(runEmbeddingPipeline).toHaveBeenCalled();
+      expect(existingEmbeddings?.get(RESTORED_NODE_ID)).toBe(STALE_HASH_SENTINEL);
+      expect(logs.some((m) => m.includes('Warning: could not restore'))).toBe(true);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('marks a node stale when only some of its restore batches succeed', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const CACHED_HASH = 'cached-stable-hash';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    const embeddings = Array.from({ length: 201 }, (_, chunkIndex) => ({
+      nodeId: RESTORED_NODE_ID,
+      chunkIndex,
+      startLine: chunkIndex,
+      endLine: chunkIndex + 1,
+      embedding: new Array(EMBEDDING_DIMS).fill(0),
+      contentHash: CACHED_HASH,
+    }));
+    let existingEmbeddings: Map<string, string> | undefined;
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set([RESTORED_NODE_ID]),
+        embeddings,
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteNodesForFiles: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'partial-restore-skip-set-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    const runEmbeddingPipeline = vi.fn(
+      async (
+        _executeQuery: unknown,
+        _executeWithReusedStatement: unknown,
+        _onProgress: unknown,
+        _config: unknown,
+        _cachedNodeIds: unknown,
+        embeddings: Map<string, string> | undefined,
+      ) => {
+        existingEmbeddings = embeddings;
+        return {
+          nodesProcessed: 0,
+          chunksProcessed: 0,
+          vectorIndexReady: false,
+          semanticMode: 'exact-scan' as const,
+          failedNodeIds: [],
+        };
+      },
+    );
+    let inserts = 0;
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+      runEmbeddingPipeline,
+      buildVectorIndex: vi.fn(async () => false),
+      batchInsertEmbeddings: vi.fn(async () => {
+        inserts += 1;
+        if (inserts > 1) throw new Error('second batch insert failed');
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-partial-restore-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 201 },
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(tmpRepo.dbPath, { force: true }, { onProgress: () => {} });
+
+      expect(inserts).toBe(2);
+      expect(existingEmbeddings?.get(RESTORED_NODE_ID)).toBe(STALE_HASH_SENTINEL);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
 });
 
 /**
@@ -1257,6 +1583,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
       // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
@@ -1542,6 +1869,7 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
       wipeLbugDbFiles: vi.fn(async () => undefined),
+      tryFlushWAL: vi.fn(async () => true),
       loadCachedEmbeddings: vi.fn(async () => ({
         embeddingNodeIds: new Set<string>(),
         embeddings: [],
@@ -1665,8 +1993,10 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
     expect(error).toMatchObject({
       message: expect.stringMatching(/--drop-embeddings/),
     });
-    // The index really was not registered: no finalize meta was written.
-    expect(meta).toBeNull();
+    // A pre-pipeline ownership marker is expected, but no finalized receipt
+    // may claim that the failed index is usable.
+    expect(meta).toMatchObject({ lastCommit: '' });
+    expect(meta?.stats).toBeUndefined();
   });
 
   // State 3 — "cannot ask" is not "wrote nothing".

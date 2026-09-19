@@ -15,6 +15,7 @@
  */
 
 import {
+  accessSync,
   closeSync,
   constants as fsConstants,
   existsSync,
@@ -38,6 +39,7 @@ import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
+import { parseTruthyEnv } from './ingestion/utils/env.js';
 import { fileURLToPath } from 'node:url';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 
@@ -2335,8 +2337,30 @@ function snapshotCacheGuardDirect(request: CacheGuardRequest): CacheGuardResult 
   }
 }
 
-function snapshotCacheGuards(requests: CacheGuardRequest[]): CacheGuardResult[] {
+function installTreeUnwritable(packageRoot: string, buildRoot: string): boolean {
+  for (const dir of [packageRoot, buildRoot]) {
+    try {
+      accessSync(dir, fsConstants.W_OK);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EACCES' || code === 'EROFS') return true;
+    }
+  }
+  return false;
+}
+
+function snapshotCacheGuards(
+  requests: CacheGuardRequest[],
+  packageRoot: string,
+  buildRoot: string,
+): CacheGuardResult[] {
   if (requests.length < 128) return requests.map(snapshotCacheGuardDirect);
+  if (
+    parseTruthyEnv(process.env.GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS) ||
+    installTreeUnwritable(packageRoot, buildRoot)
+  ) {
+    return requests.map(snapshotCacheGuardDirect);
+  }
   try {
     const probe = spawnSync(
       process.execPath,
@@ -2468,7 +2492,7 @@ function validateIdentityCache(
     return { mode, absolutePath };
   });
   options.onCacheValidationPass?.({ guardCount: requests.length });
-  const actual = snapshotCacheGuards(requests);
+  const actual = snapshotCacheGuards(requests, cache.packageRoot, cache.buildRoot);
   const mismatch = actual.findIndex(
     (result, index) => !isDeepStrictEqual(result, entries[index][1]),
   );

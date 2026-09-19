@@ -66,6 +66,30 @@ export interface ModuleConstants {
   readonly literals: Map<string, string>;
   readonly exprs: Map<string, readonly Operand[]>;
   readonly imports: Map<string, ImportBinding>;
+  /**
+   * On-demand (wildcard) import specifiers whose bound member names could not
+   * be enumerated at extract time — Java `import static a.b.C.*;`, Python
+   * `from m import *`. The agnostic fold never reads this (it has no way to
+   * enumerate a target module's exports); a language binding materializes the
+   * promised bindings from a repo-wide map after extraction — see
+   * `expandJavaWildcardStaticImports` in the Java binding — so they resolve
+   * through the plain `imports` path with no special cases in the fold.
+   */
+  readonly wildcardImports?: readonly string[];
+}
+
+const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Declaration keys a language extractor found but could not fold. Java and
+ * Kotlin both use this metadata to keep lower-priority imports from replacing
+ * a real local declaration; other producers simply return the empty set.
+ */
+export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
+  const declarations = (
+    mc as (ModuleConstants & { readonly unfoldableDeclarations?: unknown }) | undefined
+  )?.unfoldableDeclarations;
+  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
 }
 
 /** Repo-wide map: unique file key (e.g. `app/constants.py`) → that file's

@@ -90,7 +90,7 @@ export function createMethodExtractor(config: MethodExtractionConfig): MethodExt
       // Resolve owner name: config hook → field-based → type_identifier → simple_identifier → "Companion"
       let ownerName: string | undefined;
       if (config.extractOwnerName) {
-        ownerName = config.extractOwnerName(node);
+        ownerName = config.extractOwnerName(node, context.filePath);
       }
       if (!ownerName) {
         const nameField = node.childForFieldName('name');
@@ -166,6 +166,17 @@ function findBodies(node: SyntaxNode, bodyNodeSet: Set<string>): SyntaxNode[] {
     result.push(bodyField);
     addNestedBodies(bodyField, bodyNodeSet, result);
   }
+  // Grammars with no body wrapper at all: a config that declares NO
+  // `bodyNodeTypes` (tree-sitter-zig's struct_declaration holds its
+  // function_declaration children directly) uses the type-declaration node
+  // itself as the body. The downstream walk filters by `methodNodeTypes`, so
+  // unrelated children are ignored. Deliberately NOT a fallback for configs
+  // that do declare body wrappers: for them a node without its wrapper is a
+  // bodiless declaration (forward declaration, `declare class`), and scanning
+  // it would change every such language for no method it could find.
+  if (result.length === 0 && bodyNodeSet.size === 0) {
+    result.push(node);
+  }
   return result;
 }
 
@@ -236,13 +247,15 @@ function buildMethod(
 
   // Static-owner detection is config-driven: each language declares which
   // container node types imply static (e.g. Ruby singleton_class, Kotlin companion_object).
-  const isStatic = (config.staticOwnerTypes?.has(ownerNode.type) ?? false) || config.isStatic(node);
+  const isStatic =
+    (config.staticOwnerTypes?.has(ownerNode.type) ?? false) ||
+    config.isStatic(node, context.filePath);
 
   return {
     name,
-    receiverType: config.extractReceiverType?.(node) ?? null,
+    receiverType: config.extractReceiverType?.(node, context.filePath) ?? null,
     returnType: config.extractReturnType(node) ?? null,
-    parameters: config.extractParameters(node),
+    parameters: config.extractParameters(node, context.filePath),
     visibility: config.extractVisibility(node),
     isStatic,
     isAbstract,

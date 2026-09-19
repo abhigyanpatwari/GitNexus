@@ -8,7 +8,8 @@
  *   - Every node whose `properties.filePath` is in `toWriteSet`.
  *   - Graph-wide Community/Process nodes unless `includeDerivedGraphWide`
  *     is false (#3016 incremental preserve). Spring metadata placeholders
- *     are always included.
+ *     and `Destination` nodes are always included — their owning phase
+ *     delete-alls them unconditionally before the writeback.
  *   - Every relationship where AT LEAST ONE endpoint is in the writable
  *     set above. Relationships entirely between unchanged-file nodes
  *     are skipped — their rows are still in the DB and re-inserting
@@ -57,9 +58,31 @@ import {
 } from '../ingestion/frameworks/spring/auto-configuration.js';
 import { isSpringAopEvidenceNode } from '../ingestion/frameworks/spring/aop.js';
 
+/**
+ * `Destination` is graph-wide for the same reason as the Spring AOP evidence
+ * nodes: the layer is recomputed in full on every run and deleted in full
+ * before the writeback (`deleteAllDestinations`), so it must be re-included in
+ * full or it is simply lost.
+ *
+ * The endpoint-writability rule cannot carry it. A RESOLVED destination stores
+ * no `filePath` at all — deliberately, so an incremental delete keyed on
+ * `filePath IN [...]` cannot cut a node shared across files — and the include
+ * test below starts from exactly that property. The result was a defect in both
+ * directions: a newly added file publishing to a new topic reported
+ * `added=1, exit 0` and silently put neither the destination nor the
+ * publisher's edge into the graph, so after the first index every new topic was
+ * invisible until a full rebuild; and a destination whose last referrer stopped
+ * referring to it survived forever as an edgeless orphan still carrying
+ * `address`, the cross-repository join key.
+ *
+ * Unresolved destinations DO carry a file path and would ride the ordinary
+ * rule, but they are included here too: the delete-all removes them as well, so
+ * anything not re-included would be dropped rather than merely stale.
+ */
 const isGraphWideNode = (node: GraphNode): boolean =>
   node.label === 'Community' ||
   node.label === 'Process' ||
+  node.label === 'Destination' ||
   isSpringAopEvidenceNode(node) ||
   isSpringAutoConfigurationSyntheticClass(node);
 

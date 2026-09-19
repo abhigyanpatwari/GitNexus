@@ -1,0 +1,35 @@
+{
+  "_what": "Baselines for bench/mcp-tools-list/measure.mjs --check. Guards unrestricted MCP tools/list after #3259: validated registry cardinality (countRepos) instead of listRepos() staleness git. Same approach as bench/parse-dispatch-rounds and bench/python-workspace-import-scan — exact floors first; the only timing arms are ratios. Never a millisecond ceiling.",
+
+  "_triage": "READ THIS BEFORE RE-RUNNING. n_repos, count_repos, list_repos, tools_listed, schema_read_only_requires_repo and schema_mutating_requires_repo are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green. count_vs_listRepos_ratio and listTools_vs_listRepos_ratio are UPPER timing arms. Runner contention dominates both, so re-run on an idle machine before investigating and read the reported `reps` first. If exactly one arm fails and it is a timing arm, suspect the machine. If listRepos() itself stops paying git (unrelated change), both ratios move toward 1 and need an explained re-baseline — do not just raise the budget.",
+
+  "n_repos": 200,
+  "count_repos": 200,
+  "list_repos": 200,
+  "_shape_note": "THE FLOOR. Without these three, every ratio below is a ceiling over nothing. listTools_vs_listRepos_ratio only asserts something while the corpus still pays N parallel rev-list processes. Shrink it to three happy-path rows and both arms are cheap; the ratio still passes, asserting a property the corpus no longer has.",
+
+  "tools_listed": 17,
+  "_tools_note": "Exact GITNEXUS_TOOLS roster size returned by client.listTools(). A schema path that throws, filters, or returns [] still looks fast on the ratio arm.",
+
+  "schema_read_only_requires_repo": true,
+  "schema_mutating_requires_repo": true,
+  "_schema_note": "This unrestricted 200-repo fixture has no cwd default, so both flags must stay true. Skipping the cwd probe and advertising a single-repo schema would pass every timing arm.",
+
+  "count_vs_listRepos_budget": 0.15,
+  "_count_ratio_note": "countRepos_ms / listRepos_ms. A RATIO rather than a millisecond ceiling, deliberately: wall-clock is runner-speed-dependent, and this repo has already been bitten by a fixed ms budget. Putting staleness git back on countRepos collapses this toward 1. Budget is 0.15 — more than 10x above the measured ~0.01, same fail-closed presence check as import-target. min-of-7 estimator.",
+
+  "listTools_vs_listRepos_budget": 0.75,
+  "_listTools_ratio_note": "client.listTools()_ms / listRepos_ms. Restoring listRepos() on toolSchemaRepoRequirements collapses this toward 1+. Budget is 0.75 — listRepos is git-bound and can get relatively faster on GitHub-hosted runners than the Node-bound listTools arm (measured ~0.22–0.28 here). The collapse-to-1 regression still fails. min-of-7 estimator.",
+
+  "_measured": {
+    "count_vs_listRepos_ratio": 0.026,
+    "count_vs_listRepos_ratio_samples": [0.025, 0.025, 0.026, 0.026, 0.025],
+    "listTools_vs_listRepos_ratio": 0.283,
+    "listTools_vs_listRepos_ratio_samples": [0.242, 0.242, 0.223, 0.267, 0.234, 0.283],
+    "count_ms": 8.99,
+    "listRepos_ms": 349.63,
+    "listTools_ms": 99.04,
+    "reps": 7
+  },
+  "_measured_note": "Maxima (and sample lists) over consecutive local runs using the min-of-7 estimator, including one --check pass. Milliseconds are diagnostic context only — nothing gates on them."
+}

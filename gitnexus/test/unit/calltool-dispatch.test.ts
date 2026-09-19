@@ -292,6 +292,86 @@ describe('LocalBackend.init', () => {
     await backend.init();
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('does not delete legacy Kuzu files while initializing a read backend', async () => {
+    setupSingleRepo();
+
+    await backend.init();
+
+    expect(cleanupOldKuzuFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('LocalBackend.countRepos', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    backend = new LocalBackend();
+    vi.clearAllMocks();
+  });
+
+  it('counts the validated registry, ignoring raw ENOENT ghost entries', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(1);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('returns 0 when every registry row is a ghost', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? []
+        : [
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-a',
+              path: '/tmp/ghost-a',
+              storagePath: '/tmp/.gitnexus/ghost-a',
+            },
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-b',
+              path: '/tmp/ghost-b',
+              storagePath: '/tmp/.gitnexus/ghost-b',
+            },
+          ],
+    );
+
+    await expect(backend.countRepos()).resolves.toBe(0);
+    expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
+  });
+
+  it('reports the in-memory size after refresh, not the raw registry file', async () => {
+    (listRegisteredRepos as any).mockImplementation(async (opts?: { validate?: boolean }) =>
+      opts?.validate
+        ? [MOCK_REPO_ENTRY]
+        : [
+            MOCK_REPO_ENTRY,
+            {
+              ...MOCK_REPO_ENTRY,
+              name: 'ghost-project',
+              path: '/tmp/ghost-project',
+              storagePath: '/tmp/.gitnexus/ghost-project',
+            },
+          ],
+    );
+
+    expect(backend.cachedRepoCount()).toBe(0);
+    await backend.init();
+    expect(backend.cachedRepoCount()).toBe(1);
+  });
 });
 
 describe('LocalBackend.disconnect', () => {
@@ -361,7 +441,10 @@ describe('LocalBackend.callTool', () => {
         direction: 'upstream',
       });
 
-      expect(result).toEqual({ status: 'normalized' });
+      // toMatchObject, not toEqual: since #3291 every hot-read-tool response
+      // also carries the `staleness` ref field. This test is about parameter
+      // normalization, so it pins the payload it cares about and ignores it.
+      expect(result).toMatchObject({ status: 'normalized' });
       const dispatched = impactSpy.mock.calls[0][1] as Record<string, unknown>;
       expect(dispatched.target).toBe('validate');
       expect(dispatched).not.toHaveProperty('name');
@@ -379,7 +462,8 @@ describe('LocalBackend.callTool', () => {
       file: ' src/auth.ts ',
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     const dispatched = contextSpy.mock.calls[0][1] as Record<string, unknown>;
     expect(dispatched.file_path).toBe('src/auth.ts');
     expect(dispatched).not.toHaveProperty('file');
@@ -396,8 +480,37 @@ describe('LocalBackend.callTool', () => {
       file: undefined,
     });
 
-    expect(result).toEqual({ status: 'normalized' });
+    // toMatchObject: responses carry the #3291 `staleness` ref field too.
+    expect(result).toMatchObject({ status: 'normalized' });
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
+  });
+
+  it('treats adapter-materialized blank optional aliases as absent', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+    const contextSpy = vi
+      .spyOn(backend as any, 'context')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      name: '',
+      symbol: ' ',
+      direction: 'upstream',
+    });
+    await backend.callTool('context', {
+      name: 'validate',
+      file_path: '',
+      file: ' ',
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('name');
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('symbol');
+    expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file_path');
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file');
   });
 
   it('allows agreeing canonical and alias values after trimming', async () => {
@@ -415,9 +528,41 @@ describe('LocalBackend.callTool', () => {
     expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
   });
 
+  it('folds CLI-style depth onto maxDepth before impact (#3261)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      depth: 2,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
+  it('treats depth 0 as omitted when maxDepth is present (#2279)', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      direction: 'upstream',
+      maxDepth: 2,
+      depth: 0,
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate', maxDepth: 2 });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('depth');
+  });
+
   it.each([
     ['impact', { target: 'validate', name: 'login', direction: 'upstream' }],
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
+    ['impact', { target: 'validate', direction: 'upstream', maxDepth: 3, depth: 1 }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
   ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
     const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
@@ -429,9 +574,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it.each([
-    ['impact', { target: '', direction: 'upstream' }],
     ['impact', { name: 42, direction: 'upstream' }],
-    ['context', { name: 'validate', file: '   ' }],
     ['context', { name: 'validate', file: null }],
   ])('rejects invalid %s aliases before repository resolution', async (method, params) => {
     const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
@@ -439,6 +582,19 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool(method, params);
 
     expect(result.error).toMatch(/non-empty string/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a blank required impact target before repository resolution', async () => {
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+
+    const result = await backend.callTool('impact', {
+      target: '',
+      name: ' ',
+      direction: 'upstream',
+    });
+
+    expect(result.error).toMatch(/requires target, name, symbol, or target_uid/i);
     expect(resolveSpy).not.toHaveBeenCalled();
   });
 
@@ -648,6 +804,34 @@ describe('LocalBackend.callTool', () => {
 
     expect(result).toHaveProperty('warning');
     expect((result as any).warning).toMatch(/gitnexus analyze --repair-fts/);
+  });
+
+  it('redacts a space-containing vendor path from the MCP query warning', async () => {
+    const { extensionManager, resetExtensionState } =
+      await import('../../src/core/lbug/extension-loader.js');
+    const spaced = '/tmp/fts vendor/lbug-fts/prebuilds/linux-x64/libfts.lbug_extension';
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(new Error(`Failed to load library '${spaced}': invalid ELF header`)),
+      'fts',
+      'FTS',
+      { policy: 'load-only', vendorRoot: '/tmp/empty-vendor-root' },
+    );
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
+    (executeParameterized as any).mockResolvedValue([]);
+
+    try {
+      const result = await backend.callTool('query', { query: 'ProcessActivity' });
+      expect(result).toHaveProperty('warning');
+      expect(String((result as { warning?: string }).warning)).toContain('invalid ELF header');
+      expect(String((result as { warning?: string }).warning)).not.toMatch(
+        /fts vendor|\/tmp\/|C:\\Users\\/,
+      );
+    } finally {
+      resetExtensionState();
+    }
   });
 
   it('does not include warning when ftsAvailable is true with zero results', async () => {
@@ -1044,13 +1228,22 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either "name" or "uid"');
   });
 
-  it('context tool returns not-found for missing symbol', async () => {
+  it('context tool returns content availability with a missing symbol', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('context', { name: 'doesNotExist' });
+    const result = await backend.callTool('context', {
+      name: 'doesNotExist',
+      include_content: true,
+    });
     expect(result.error).toContain('not found');
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
   });
 
-  it('context tool returns disambiguation for multiple matches', async () => {
+  it('context tool returns content availability with ambiguous matches', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
         id: 'func:main:1',
@@ -1069,9 +1262,15 @@ describe('LocalBackend.callTool', () => {
         endLine: 5,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = await backend.callTool('context', { name: 'main', include_content: true });
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
 
     // #470: every candidate carries a relevance score in [0, 1] and the list
     // is sorted descending by score (with deterministic tiebreakers).
@@ -2275,6 +2474,9 @@ describe('LocalBackend.callTool', () => {
         responseKeys: ['data', 'pagination'],
         errorKeys: ['error', 'message'],
         middleware: ['withAuth'],
+        runtimeConfirmed: true,
+        runtimeSource: 'spring-actuator',
+        runtimeStatus: 'runtime-confirmed',
         consumerName: 'GrantsList',
         consumerFile: 'src/GrantsList.tsx',
         fetchReason: 'fetch-url-match|keys:data,pagination',
@@ -2287,6 +2489,11 @@ describe('LocalBackend.callTool', () => {
     expect(result.responseShape.success).toEqual(['data', 'pagination']);
     expect(result.responseShape.error).toEqual(['error', 'message']);
     expect(result).toHaveProperty('middleware', ['withAuth']);
+    expect(result).toHaveProperty('runtimeEvidence', {
+      confirmed: true,
+      source: 'spring-actuator',
+      status: 'runtime-confirmed',
+    });
     expect(result).toHaveProperty('consumers');
     expect(result.consumers).toHaveLength(1);
     expect(result).toHaveProperty('impactSummary');
@@ -2395,6 +2602,9 @@ describe('LocalBackend.callTool', () => {
     responseKeys: null,
     errorKeys: null,
     middleware,
+    runtimeConfirmed: false,
+    runtimeSource: null,
+    runtimeStatus: null,
     consumerName: null,
     consumerFile: null,
     fetchReason: null,
@@ -2413,6 +2623,7 @@ describe('LocalBackend.callTool', () => {
       'GET',
       'POST',
     ]);
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
     expect(result.routes).toMatchObject([{ route: '/api/orders' }, { route: '/api/orders' }]);
   });
 
@@ -2472,6 +2683,20 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes[0].method).toBeNull();
   });
 
+  it('route_map falls back for legacy Route schemas and reports unconfirmed evidence', async () => {
+    vi.mocked(executeParameterized)
+      .mockRejectedValueOnce(
+        new Error('Binder exception: Cannot find property runtimeConfirmed for n.'),
+      )
+      .mockResolvedValueOnce([verbRow('GET', '/legacy', 'LegacyController.java')]);
+
+    const result = await backend.callTool('route_map', { route: '/legacy' });
+
+    // Modern Route query, legacy retry, then the linked-flow batch.
+    expect(executeParameterized).toHaveBeenCalledTimes(3);
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
+  });
+
   it('shape_check surfaces each route method', async () => {
     vi.mocked(executeParameterized).mockResolvedValue([
       {
@@ -2484,6 +2709,7 @@ describe('LocalBackend.callTool', () => {
     ]);
     const result = await backend.callTool('shape_check', { route: '/api/orders' });
     expect(result.routes[0].method).toBe('GET');
+    expect(result.routes[0].runtimeEvidence).toEqual({ confirmed: false });
   });
 
   // The partial-middleware warning is driven by a per-handler verb count taken
@@ -4371,6 +4597,37 @@ describe('LocalBackend.listRepos', () => {
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
   });
+
+  // #3256: `unknown` is listing-only (the hot read tools drop it; see
+  // tool-staleness.test.ts), so list_repos is where it must appear. `diverged`
+  // carries its hint and no invented count; `current` carries nothing.
+  it('reports unknown and diverged staleness on the listing (#3256)', async () => {
+    setupSingleRepo();
+    await backend.init();
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    const check = checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+    try {
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'unknown' });
+      expect((await backend.listRepos())[0].staleness).toEqual({ status: 'unknown' });
+
+      check.mockResolvedValue({
+        isStale: false,
+        commitsBehind: 0,
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+      expect((await backend.listRepos())[0].staleness).toEqual({
+        status: 'diverged',
+        hint: 'HEAD moved on',
+      });
+
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'current' });
+      expect((await backend.listRepos())[0].staleness).toBeUndefined();
+    } finally {
+      // The module-level mock is shared; put back the factory's default.
+      check.mockResolvedValue({ isStale: false, commitsBehind: 0 });
+    }
+  });
 });
 
 // ─── list_repos pagination (#2119) ─────────────────────────────────────
@@ -4788,6 +5045,28 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(path.basename(handle.lbugPath)).toBe('lbug');
     // The branch handle reports the branch's own commit, not the primary's.
     expect(handle.lastCommit).toBe('featsha');
+    // #3291: the pin's label, not the flat/primary slot — withToolStaleness
+    // copies handle.branch onto the hot-tool payload.
+    expect(handle.branch).toBe('feature/x');
+  });
+
+  it('a pinned-branch tool result names the pin in staleness.branch (#3291)', async () => {
+    // beforeEach clearAllMocks() drops the module-level git-staleness factory
+    // impl; restore a resolving current so withToolStaleness attaches the ref.
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    (checkStalenessAsync as any).mockResolvedValue({
+      isStale: false,
+      commitsBehind: 0,
+      status: 'current',
+    });
+    vi.spyOn(backend as any, 'impact').mockResolvedValue({ ok: true });
+    const result = (await backend.callTool('impact', {
+      target: 'doWork',
+      repo: 'multi',
+      branch: 'feature/x',
+    })) as { staleness: { branch?: string; lastCommit?: string } };
+    expect(result.staleness.branch).toBe('feature/x');
+    expect(result.staleness.lastCommit).toBe('featsha');
   });
 
   it('an un-indexed branch throws a clear error', async () => {
@@ -5043,11 +5322,20 @@ describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
       branch: 'x',
     });
 
-    // Flat index (lastCommit=FLATSHA) is 5 behind -> field present.
-    expect(flatRes).toMatchObject({ staleness: { commitsBehind: 5 } });
-    // Branch index (different lbugPath + lastCommit) is current; it must NOT
-    // inherit the flat handle's cached staleness (the pre-fix repoPath-keyed bug).
-    expect(branchRes).not.toHaveProperty('staleness');
+    // Flat index (lastCommit=FLATSHA) is 5 behind -> counted gap reported.
+    expect(flatRes).toMatchObject({
+      staleness: { status: 'behind', commitsBehind: 5, lastCommit: 'FLATSHA' },
+    });
+    // Branch index (different lbugPath + lastCommit) is current. Since #3291 the
+    // field rides on every response, so absence can no longer be the proof; what
+    // shows the flat handle's cached entry was NOT reused (the pre-fix
+    // repoPath-keyed bug) is that this one reports its OWN commit and its own
+    // status, with no trace of the flat handle's counted gap.
+    expect(branchRes).toMatchObject({
+      staleness: { status: 'current', lastCommit: 'BRANCHSHA' },
+    });
+    const branchStaleness = (branchRes as { staleness: { commitsBehind?: number } }).staleness;
+    expect(branchStaleness.commitsBehind).toBeUndefined();
   });
 });
 

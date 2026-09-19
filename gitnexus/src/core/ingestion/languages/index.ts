@@ -8,7 +8,11 @@
  * 4. Run `tsc --noEmit` to verify
  */
 
-import { SupportedLanguages, isBladeTemplateFilename } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  getLanguageFromFilename,
+  isBladeTemplateFilename,
+} from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 
 import { typescriptProvider, javascriptProvider } from './typescript.js';
@@ -19,12 +23,14 @@ import { goProvider } from './go.js';
 import { rustProvider } from './rust.js';
 import { csharpProvider } from './csharp.js';
 import { cProvider, cppProvider } from './c-cpp.js';
+import { objectiveCProvider } from './objective-c.js';
 import { phpProvider } from './php.js';
 import { rubyProvider } from './ruby.js';
 import { swiftProvider } from './swift.js';
 import { dartProvider } from './dart.js';
 import { vueProvider } from './vue.js';
 import { cobolProvider } from './cobol.js';
+import { zigProvider } from './zig.js';
 
 export const providers = {
   [SupportedLanguages.JavaScript]: javascriptProvider,
@@ -37,12 +43,14 @@ export const providers = {
   [SupportedLanguages.CSharp]: csharpProvider,
   [SupportedLanguages.C]: cProvider,
   [SupportedLanguages.CPlusPlus]: cppProvider,
+  [SupportedLanguages.ObjectiveC]: objectiveCProvider,
   [SupportedLanguages.PHP]: phpProvider,
   [SupportedLanguages.Ruby]: rubyProvider,
   [SupportedLanguages.Swift]: swiftProvider,
   [SupportedLanguages.Dart]: dartProvider,
   [SupportedLanguages.Vue]: vueProvider,
   [SupportedLanguages.Cobol]: cobolProvider,
+  [SupportedLanguages.Zig]: zigProvider,
 } satisfies Record<SupportedLanguages, LanguageProvider>;
 
 /** Get provider by language enum (always succeeds for SupportedLanguages). */
@@ -67,4 +75,40 @@ export function getProviderForFile(filePath: string): LanguageProvider | null {
   const ext = lastDot >= 0 ? filePath.slice(lastDot).toLowerCase() : '';
   const basename = filePath.slice(filePath.lastIndexOf('/') + 1);
   return extensionMap.get(ext) ?? extensionMap.get(basename) ?? null;
+}
+
+/** Return the provider whose content classifier confidently claims this file. */
+export function getProviderForFileContent(
+  filePath: string,
+  content: string,
+): LanguageProvider | null {
+  if (isBladeTemplateFilename(filePath)) return null;
+
+  for (const provider of Object.values(providers)) {
+    if (provider.classifyFileContent?.(filePath, content) === true) return provider;
+  }
+  const byExtension = getProviderForFile(filePath);
+  if (byExtension) return byExtension;
+  // Filename-only languages (Rakefile, Gemfile, …) live in
+  // getLanguageFromFilename, not provider.extensions.
+  const filenameLang = getLanguageFromFilename(filePath);
+  return filenameLang === null ? null : providers[filenameLang];
+}
+
+/** True when at least one provider wants source text before language bucketing. */
+export function needsContentLanguageClassification(filePath: string): boolean {
+  if (isBladeTemplateFilename(filePath)) return false;
+  return Object.values(providers).some(
+    (provider) =>
+      provider.classifyFileContent !== undefined &&
+      provider.shouldClassifyFileContent?.(filePath) === true,
+  );
+}
+
+/** Return the effective language for a file, optionally using source content. */
+export function getLanguageForFileContent(
+  filePath: string,
+  content: string,
+): SupportedLanguages | null {
+  return getProviderForFileContent(filePath, content)?.id ?? null;
 }

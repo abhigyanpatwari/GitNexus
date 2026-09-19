@@ -7,9 +7,11 @@ import { closeLbug, executeParameterized } from '../../../src/core/lbug/pool-ada
 import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
+// Graph Method.startLine is 0-based (tree-sitter row). `health()` is source line 5.
 const SEED = [
-  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:5, endLine:5, content:'', description:''})`,
-  `CREATE (:Const {id:'const:health-document', name:'HealthDocument', filePath:'src/generated.ts', startLine:1, endLine:1, content:'', description:''})`,
+  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:4, endLine:4, content:'', description:''})`,
+  `CREATE (:Method {id:'method:save', name:'save', filePath:'src/health.resolver.ts', startLine:6, endLine:6, content:'', description:''})`,
+  `CREATE (:Const {id:'const:health-document', name:'HealthDocument', filePath:'src/generated.ts', startLine:0, endLine:0, content:'', description:''})`,
 ];
 
 withTestLbugDB(
@@ -139,6 +141,42 @@ withTestLbugDB(
       } finally {
         registrySpy.mockRestore();
       }
+    });
+
+    it('binds a decorated arrow-field provider at the wrapper startLine (#3201)', async () => {
+      providerRoot = path.join(handle.tmpHandle.dbPath, 'arrow-provider-repo');
+      await fs.mkdir(path.join(providerRoot, 'src'), { recursive: true });
+      await fs.writeFile(
+        path.join(providerRoot, 'src/health.resolver.ts'),
+        `import { Query, Mutation, Resolver } from '@nestjs/graphql';
+@Resolver()
+class HealthResolver {
+  @Query()
+  health() { return 'ok'; }
+
+  @Mutation()
+  save = async () => true;
+}`,
+        'utf8',
+      );
+      const providerRepo: RepoHandle = {
+        id: handle.repoId,
+        path: 'api',
+        repoPath: providerRoot,
+        storagePath: handle.tmpHandle.dbPath,
+      };
+      const execute = (query: string, params: Record<string, unknown> = {}) =>
+        executeParameterized(handle.repoId, query, params);
+      const contracts = await new GraphqlExtractor().extract(execute, providerRoot, providerRepo);
+      expect(contracts).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            contractId: 'graphql::mutation::save',
+            role: 'provider',
+            symbolUid: 'method:save',
+          }),
+        ]),
+      );
     });
   },
   { seed: SEED, poolAdapter: true },

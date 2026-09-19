@@ -23,6 +23,28 @@ export interface BackendRepo {
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
   indexedAt: string;
   lastCommit?: string;
+  /**
+   * Branch this index was built from. Absent on legacy entries and non-git
+   * repos. Since #3199 a branch-pinned analyze registers its own entry, so this
+   * is what tells two entries for the same repository apart — the name is
+   * derived from the clone directory and is not a contract.
+   */
+  branch?: string;
+  /** Non-primary branch indexes recorded for the same path. */
+  branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
+  /**
+   * Absent when the index is at the repo's checked-out HEAD. Otherwise `status`
+   * says what the server could establish: `behind` (with the counted
+   * `commitsBehind`), `diverged` (HEAD has moved off the indexed commit but the
+   * history needed to count the gap is gone, so there is no `commitsBehind`),
+   * or `unknown` (the repository could not be measured). Same shape MCP
+   * `list_repos` returns; see the server's `core/staleness-status.ts` (#3256).
+   */
+  staleness?: {
+    status: 'behind' | 'diverged' | 'unknown';
+    commitsBehind?: number;
+    hint?: string;
+  };
   stats?: {
     files?: number;
     nodes?: number;
@@ -64,6 +86,12 @@ export interface GrepResult {
   text: string;
 }
 
+/** Full `/api/grep` payload — `timedOut` is true when the 5s budget cut the scan short. */
+export interface GrepResponse {
+  results: GrepResult[];
+  timedOut: boolean;
+}
+
 export interface JobProgress {
   phase: string;
   percent: number;
@@ -91,6 +119,7 @@ export class BackendError extends Error {
       | 'server'
       | 'client'
       | 'not_found'
+      | 'source_unavailable'
       | 'timeout'
       | 'rate_limited'
       // The write-route same-host Origin guard rejected this request (HTTP 403
@@ -521,22 +550,22 @@ const assertOk = async (response: Response): Promise<void> => {
     // Response body was not JSON
   }
 
-  const code =
-    response.status === 404
-      ? 'not_found'
-      : response.status === 429
-        ? 'rate_limited'
-        : // The public edge's token gate returns 401 with this discriminator;
-          // surface it as a distinct code so the UI can prompt for the token.
-          bodyCode === 'unauthorized'
-          ? 'unauthorized'
-          : // The write-route Origin guard returns 403 with this discriminator;
-            // surface it as a distinct code so the UI can give actionable guidance.
-            bodyCode === 'origin_not_allowed'
-            ? 'origin_blocked'
-            : response.status >= 400 && response.status < 500
-              ? 'client'
-              : 'server';
+  let code: ConstructorParameters<typeof BackendError>[2] = 'server';
+  if (bodyCode === 'source-unavailable') {
+    code = 'source_unavailable';
+  } else if (response.status === 404) {
+    code = 'not_found';
+  } else if (response.status === 429) {
+    code = 'rate_limited';
+  } else if (bodyCode === 'unauthorized') {
+    // Public-edge token gate: HTTP 401 with this discriminator.
+    code = 'unauthorized';
+  } else if (bodyCode === 'origin_not_allowed') {
+    // Write-route Origin guard: HTTP 403 with this discriminator.
+    code = 'origin_blocked';
+  } else if (response.status >= 400 && response.status < 500) {
+    code = 'client';
+  }
 
   // Retry-After is the standard HTTP signal for when the client may try again.
   // express-rate-limit emits it on 429 with seconds (integer) or HTTP-date.
@@ -569,9 +598,11 @@ export interface ServerInfo {
   version: string;
   launchContext: 'npx' | 'global' | 'local';
   nodeVersion: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
 }
 
-/** Fetch server info (version, launch context). */
+/** Fetch server info (version, launch context, and optional update state). */
 export const fetchServerInfo = async (): Promise<ServerInfo> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/info`);
   await assertOk(response);
@@ -655,7 +686,14 @@ export type BackendProbeStatus = 'ok' | 'unauthorized' | 'unreachable';
  */
 export const probeBackendStatus = async (): Promise<BackendProbeStatus> => {
   try {
-    const response = await fetchWithTimeout(`${_backendUrl}/api/repos`, {}, PROBE_TIMEOUT_MS);
+    // `/api/health` rather than `/api/repos`: this is a liveness question on a
+    // 2s budget, and `/api/repos` now spawns a `git rev-list` per registered
+    // repo to answer freshness. Probing it made the cost of "is the server up?"
+    // scale with the number of indexed repos, and a failed probe re-polls,
+    // stacking more children on the way (#3232 review). `/api/health` is a
+    // constant, and still sits behind the same `/api/*` edge gate, so the 401
+    // branch below keeps distinguishing "gated" from "not there".
+    const response = await fetchWithTimeout(`${_backendUrl}/api/health`, {}, PROBE_TIMEOUT_MS);
     if (response.status === 200) return 'ok';
     return response.status === 401 ? 'unauthorized' : 'unreachable';
   } catch {
@@ -869,23 +907,37 @@ export const search = async (
   return (body.results ?? []) as EnrichedSearchResult[];
 };
 
-/** Grep across file contents in the indexed repo. */
+/** Options for {@link grep} beyond pattern/repo/limit. */
+export interface GrepOptions {
+  /** Only search files whose path contains this substring (case-insensitive). */
+  fileFilter?: string | null;
+  /** Case-sensitive matching (default: insensitive). */
+  caseSensitive?: boolean;
+}
+
+/** Grep across file contents in the indexed repo. Regex semantics server-side. */
 export const grep = async (
   pattern: string,
   repo?: string,
   limit?: number,
-): Promise<GrepResult[]> => {
+  opts?: GrepOptions,
+): Promise<GrepResponse> => {
   const params = [
     `pattern=${encodeURIComponent(pattern)}`,
     repoParam(repo),
     limit ? `limit=${limit}` : '',
+    opts?.fileFilter ? `fileFilter=${encodeURIComponent(opts.fileFilter)}` : '',
+    opts?.caseSensitive ? 'caseSensitive=1' : '',
   ]
     .filter(Boolean)
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = await response.json();
-  return (body.results ?? []) as GrepResult[];
+  const body = (await response.json()) as Partial<GrepResponse>;
+  return {
+    results: body.results ?? [],
+    timedOut: body.timedOut === true,
+  };
 };
 
 /** Result from reading a file, optionally with line range. */
@@ -988,6 +1040,13 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
+  /**
+   * Index-branch selector. Omitted: a `url` with no existing clone takes the
+   * remote's default branch, an existing clone updates whichever branch it
+   * already has checked out, and a `path` request is not cloned at all and
+   * indexes that working tree as it stands.
+   */
+  branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,

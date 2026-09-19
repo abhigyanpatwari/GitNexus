@@ -12,6 +12,8 @@ import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
+import { loadMeta, type ContentRetention } from '../../storage/repo-meta.js';
+import { allowsFtsCrashWalPark, hasRecoveredInPlaceFtsAbort } from '../search/fts-crash-marker.js';
 import {
   NODE_TABLES,
   REL_TABLE_NAME,
@@ -32,7 +34,16 @@ import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
-import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
+import { EMBEDDABLE_LABELS } from '../embeddings/types.js';
+import {
+  abortCachedEmbeddingsBuilder,
+  createCachedEmbeddingsBuilder,
+  emptyCachedEmbeddingsSnapshot,
+  finalizeCachedEmbeddingsSnapshot,
+  ingestCachedEmbeddingRow,
+  type CachedEmbeddingsSnapshot,
+  type LoadCachedEmbeddingsOptions,
+} from '../embeddings/embedding-restore-spill.js';
 import {
   extensionManager,
   getFtsCapability,
@@ -41,7 +52,8 @@ import {
 } from './extension-loader.js';
 // Remedy classification for LOAD failures (#2374/#2383). Pure + node:fs only, so
 // this adds no cycle: `extension-loader.ts` already depends on it.
-import { diagnoseExtensionLoad } from './extension-load-error.js';
+import { diagnoseExtensionLoad, extractExtensionPath } from './extension-load-error.js';
+import { resolveFtsVersionPair } from './vendored-extension-path.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -49,7 +61,9 @@ import {
   HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
   isOpenRetryExhausted,
+  isStorageVersionMismatchError,
   isWalCorruptionError,
+  throwIfStorageVersionMismatch,
   bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
@@ -60,9 +74,11 @@ import {
   type LbugConnectionHandle,
 } from './lbug-config.js';
 import {
+  assertReadOnlyFtsCrashSafe,
   cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
+  type WalCrashEvidence,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
@@ -72,6 +88,7 @@ import {
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
+import { isProcessAlive } from '../../utils/process-identity.js';
 
 import { logger } from '../logger.js';
 import {
@@ -276,10 +293,9 @@ const DB_LOCK_RETRY_DELAY_MS = 500;
 /**
  * Return true when the error message indicates a write was attempted against
  * a read-only LadybugDB connection. The MCP query pool opens DBs read-only,
- * so any path that calls a `CREATE_*` procedure there will surface this
- * (e.g. defensive `ensureFTSIndex` calls). Owners of the writable analyze
- * path should ignore this error — index creation is owned by `gitnexus
- * analyze` and either already happened or will happen on the next run.
+ * so any path that calls a `CREATE_*` procedure there will surface this.
+ * Index creation is owned by `gitnexus analyze` and either already happened
+ * or will happen on the next run.
  */
 export const isReadOnlyDbError = (err: unknown): boolean => {
   // Walk the `cause` chain (bounded) so a wrapped read-only error — e.g. the
@@ -329,20 +345,6 @@ const INIT_LOCK_MAX_ATTEMPTS = 6;
 const INIT_LOCK_RETRY_DELAY_MS = 500;
 
 const initLockPath = (dbPath: string): string => `${dbPath}.init.lock`;
-
-/**
- * Returns true when the process identified by `pid` is still running.
- * Uses `process.kill(pid, 0)` which sends signal 0 (a no-op probe) —
- * it throws ESRCH when the process does not exist.
- */
-const isProcessAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /**
  * Try to break a stale lock whose owning process has exited.
@@ -556,8 +558,11 @@ const refuseLargeWalQuarantine = async (
   dbPath: string,
   mode: 'read-only' | 'writable',
   triggeringErr: unknown,
+  crashEvidence?: WalCrashEvidence,
 ): Promise<void> => {
-  await guardWalQuarantine(dbPath, mode, triggeringErr, logger);
+  // Latitude defaults to refusal. Only the analyze writer passes
+  // `fts-inplace-checkpointed`; serve never does (R9).
+  await guardWalQuarantine(dbPath, mode, triggeringErr, logger, crashEvidence);
 };
 
 const reopenReadOnlyAfterMissingShadow = async (
@@ -588,11 +593,37 @@ const reopenReadOnlyAfterMissingShadow = async (
   }
 };
 
+const writableFtsCrashWalEvidence = async (
+  dbPath: string,
+): Promise<WalCrashEvidence | undefined> => {
+  try {
+    const meta = await loadMeta(path.dirname(dbPath));
+    if (
+      meta &&
+      (allowsFtsCrashWalPark(meta.incrementalInProgress) ||
+        hasRecoveredInPlaceFtsAbort(meta.capabilities?.fts))
+    ) {
+      return { kind: 'fts-inplace-checkpointed' };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+};
+
 const reopenWritableAfterMissingShadow = async (
   dbPath: string,
   err: unknown,
 ): Promise<LbugConnectionHandle> => {
-  await refuseLargeWalQuarantine(dbPath, 'writable', err);
+  // Analyze writers may park a leftover in-place FTS abort WAL. Serve/embed
+  // refuse first via assertReadOnlyFtsCrashSafe and must not pass this
+  // evidence themselves (R9); read-only reopen never parks.
+  await refuseLargeWalQuarantine(
+    dbPath,
+    'writable',
+    err,
+    await writableFtsCrashWalEvidence(dbPath),
+  );
   try {
     await quarantineWalForMissingShadow(dbPath, {
       logger,
@@ -713,6 +744,11 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
             `  Original error: ${msg.slice(0, 200)}`,
         );
       }
+      if (isStorageVersionMismatchError(err)) {
+        await safeClose();
+        resetOpenConnectionState();
+        throwIfStorageVersionMismatch(err);
+      }
       if (!msg.includes('already exists') && !isDbBusyError(err) && !isReadOnlyDbError(err)) {
         logger.warn(`⚠️ Schema creation warning: ${msg.slice(0, 120)}`);
       }
@@ -722,8 +758,8 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
   return null;
 };
 
-export const initLbug = async (dbPath: string) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath));
+export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath, options));
 };
 
 /**
@@ -737,14 +773,14 @@ export const initLbug = async (dbPath: string) => {
 export const withLbugDb = async <T>(
   dbPath: string,
   operation: () => Promise<T>,
-  options: { readOnly?: boolean } = {},
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
 ): Promise<T> => {
   let lastError: unknown;
   const readOnly = options.readOnly === true;
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath, readOnly);
+        await ensureLbugInitialized(dbPath, { readOnly, skipFts: options.skipFts });
         return operation();
       });
     } catch (err) {
@@ -775,15 +811,32 @@ export const withLbugDb = async <T>(
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string, readOnly: boolean = false) => {
-  if (conn && currentDbPath === dbPath && currentDbReadOnly === readOnly) {
+let currentDbSkipFts = false;
+
+const ensureLbugInitialized = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
+  const readOnly = options.readOnly === true;
+  const skipFts = options.skipFts === true;
+  if (
+    conn &&
+    currentDbPath === dbPath &&
+    currentDbReadOnly === readOnly &&
+    currentDbSkipFts === skipFts
+  ) {
     return { db, conn };
   }
-  await doInitLbug(dbPath, readOnly);
+  await doInitLbug(dbPath, { readOnly, skipFts });
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
+const doInitLbug = async (
+  dbPath: string,
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
+) => {
+  const readOnly = options.readOnly === true;
+  const skipFts = options.skipFts === true;
   // Different database requested — close the old one first
   if (conn || db) {
     await safeClose();
@@ -802,14 +855,34 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // create databases and don't need the lock.
   // ---------------------------------------------------------------------------
   if (readOnly) {
+    await assertReadOnlyFtsCrashSafe(dbPath);
     await preflightLbugSidecars(dbPath, {
       mode: 'read-only',
       logger,
       allowQuarantine: false,
     });
 
-    const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
-    const usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+    let usable: Awaited<ReturnType<typeof ensureReadOnlyConnectionUsable>>;
+    try {
+      const opened = await openLbugConnection(lbug, dbPath, { readOnly: true });
+      // The storage-version check isn't necessarily enforced by the native
+      // engine until the first real query runs (ensureReadOnlyConnectionUsable's
+      // own probe query) — openLbugConnection alone can succeed on a
+      // mismatched file. Wrap both.
+      usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
+    } catch (err) {
+      // Not retryable: the on-disk file's storage version doesn't change on
+      // its own, so withLbugDb's retry loop (which only handles
+      // isDbBusyError) would just repeat the same native exception. Fail
+      // immediately with an actionable message instead (review finding on
+      // PR #3189 — this became reachable once the pinned engine version can
+      // trail behind whatever version last wrote an index, e.g. after
+      // downgrading the dependency). Mirrors the pool-adapter.ts check for
+      // the same error, on the separate open path /api/graph and /api/query
+      // actually use (withLbugDb, not the pool).
+      throwIfStorageVersionMismatch(err);
+      throw err;
+    }
     db = usable.db;
     conn = usable.conn;
     currentDbReadOnly = true;
@@ -918,10 +991,18 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
         allowQuarantine: true,
       });
 
-      const opened = await openLbugConnection(lbug, dbPath);
-      db = opened.db;
-      conn = opened.conn;
-      currentDbReadOnly = false;
+      try {
+        const opened = await openLbugConnection(lbug, dbPath);
+        db = opened.db;
+        conn = opened.conn;
+        currentDbReadOnly = false;
+      } catch (err) {
+        // Incremental analyze can hit a storage-version mismatch on construct
+        // or (more often) on the first schema query below. Fail immediately
+        // with the rebuild hint instead of warn-and-continue.
+        throwIfStorageVersionMismatch(err);
+        throw err;
+      }
     } finally {
       await releaseInitLock();
     }
@@ -955,8 +1036,11 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // Phase 3 installs it moments later in the same run. Warning here reported a
   // degradation that never happened — the run went on to build every FTS index.
   // Phase 3 (and the read-only branch) still warn for real failures.
-  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
+  if (!skipFts) {
+    await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
+  }
 
+  currentDbSkipFts = skipFts;
   currentDbPath = dbPath;
   return { db, conn };
 };
@@ -1105,6 +1189,8 @@ export const loadGraphToLbug = async (
    * which holds one CSV per pair and would silently drop one of them).
    */
   graphEmitManifest?: GraphEmitManifest,
+  /** Content profile for CSV emission; default preserves the historical full index. */
+  contentRetention: ContentRetention = 'full',
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1185,8 +1271,8 @@ export const loadGraphToLbug = async (
   let csvResult: StreamedCSVResult;
   try {
     csvResult = SERIAL
-      ? await streamAllCSVsToDisk(graph, repoPath, csvDir)
-      : await streamAllCSVsToDisk(graph, repoPath, csvDir, beginNodeCopy);
+      ? await streamAllCSVsToDisk(graph, repoPath, csvDir, undefined, contentRetention)
+      : await streamAllCSVsToDisk(graph, repoPath, csvDir, beginNodeCopy, contentRetention);
   } catch (emitErr) {
     // Relationship emit failed. In overlap mode a node COPY may be in flight —
     // settle it (the .catch above means this never rejects) before rethrowing so
@@ -1479,22 +1565,28 @@ export const fallbackRelationshipInserts = async (
   for (let i = 1; i < validRelLines.length; i++) {
     const line = validRelLines[i];
     try {
-      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      // CSV layout: from,to,type,confidence,reason,step[,staticGated]
+      // The trailing `staticGated` column (0/1) is optional so we remain
+      // tolerant of legacy CSVs written before the column existed.
+      const match = line.match(
+        /"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)(?:,([01]))?/,
+      );
       if (!match) continue;
-      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const [, fromId, toId, relType, confidenceStr, reason, stepStr, gatedStr] = match;
       const fromLabel = getNodeLabel(fromId);
       const toLabel = getNodeLabel(toId);
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
 
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
+      const staticGated = gatedStr === '1';
 
       await queryAndDrain(
         conn,
         `
         MATCH (a:${escapeLabel(fromLabel)} {id: ${formatCypherValue(fromId)} }),
               (b:${escapeLabel(toLabel)} {id: ${formatCypherValue(toId)} })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}}]->(b)
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}, staticGated: ${staticGated}}]->(b)
       `,
       );
     } catch {
@@ -1530,10 +1622,13 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Route') {
-    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, method, handlerSymbolId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, method, handlerSymbolId, runtimeConfirmed, runtimeSource, runtimeStatus) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Tool') {
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Destination') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, configDefault, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
     // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
@@ -1983,28 +2078,31 @@ export const getLbugStats = async (): Promise<{
 
 /**
  * Load cached embeddings from LadybugDB before a rebuild.
- * Returns all embedding vectors so they can be re-inserted after the graph is reloaded,
- * avoiding expensive re-embedding of unchanged nodes.
+ *
+ * Streams `CodeEmbedding` rows with `hasNext`/`getNext` under `withConnLock`
+ * (#2264, #3306). Vectors are spilled to a temp Float32 file once the table
+ * exceeds the in-memory row limit so incremental analyze cannot OOM the V8
+ * heap by materializing every `number[]` up front. Small tables still return
+ * in-RAM `embeddings` for existing callers/tests.
  *
  * Detects old schema (no chunkIndex column) and returns empty cache to trigger rebuild.
  */
-export const loadCachedEmbeddings = async (): Promise<{
-  embeddingNodeIds: Set<string>;
-  embeddings: CachedEmbedding[];
-}> => {
+export const loadCachedEmbeddings = async (
+  options?: LoadCachedEmbeddingsOptions,
+): Promise<CachedEmbeddingsSnapshot> => {
   const c = conn;
   if (!c) {
-    return { embeddingNodeIds: new Set(), embeddings: [] };
+    return emptyCachedEmbeddingsSnapshot();
   }
 
   // The whole read runs inside the connection lock (#2264 review P2). It's safe
   // today only by call-ordering (loadCachedEmbeddings runs before the WAL driver
   // starts), but the lock makes it robust to future reordering — a concurrent
   // CHECKPOINT on the singleton connection is the documented corruption trigger.
-  // Leaf read: no nested withConnLock-wrapped helpers inside.
+  // Leaf read: no nested withConnLock-wrapped helpers inside. Do NOT call
+  // `streamQuery` here — that path is unlocked and would race a CHECKPOINT.
   return withConnLock(async () => {
-    const embeddingNodeIds = new Set<string>();
-    const embeddings: CachedEmbedding[] = [];
+    const builder = createCachedEmbeddingsBuilder(options);
     try {
       // Schema migration detection: query with new columns to verify schema version.
       // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
@@ -2018,51 +2116,46 @@ export const loadCachedEmbeddings = async (): Promise<{
         );
         await readQueryRows(check);
       } catch {
-        return { embeddingNodeIds: new Set(), embeddings: [] };
+        abortCachedEmbeddingsBuilder(builder);
+        return emptyCachedEmbeddingsSnapshot();
       }
 
-      // Try to read contentHash alongside chunk columns
-      let rows: any;
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       let hasContentHash = true;
       try {
-        rows = await c.query(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
-        );
-      } catch (err: any) {
-        // Fallback for legacy DBs without contentHash column
-        const msg = err?.message ?? '';
-        if (isMissingColumnOrTableError(msg)) {
-          hasContentHash = false;
-          rows = await c.query(
-            `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+        try {
+          queryResult = await c.query(
+            `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
           );
-        } else {
-          throw err;
+        } catch (err: any) {
+          // Fallback for legacy DBs without contentHash column
+          const msg = err?.message ?? '';
+          if (isMissingColumnOrTableError(msg)) {
+            hasContentHash = false;
+            queryResult = await c.query(
+              `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+            );
+          } else {
+            throw err;
+          }
         }
-      }
-      for (const row of await readQueryRows(rows)) {
-        const nodeId = String(row.nodeId ?? row[0] ?? '');
-        if (!nodeId) continue;
-        embeddingNodeIds.add(nodeId);
-        const embedding = row.embedding ?? row[4];
-        if (embedding) {
-          embeddings.push({
-            nodeId,
-            chunkIndex: Number(row.chunkIndex ?? row[1] ?? 0),
-            startLine: Number(row.startLine ?? row[2] ?? 0),
-            endLine: Number(row.endLine ?? row[3] ?? 0),
-            embedding: Array.isArray(embedding)
-              ? embedding.map(Number)
-              : Array.from(embedding as any).map(Number),
-            contentHash: hasContentHash ? (row.contentHash ?? row[5] ?? undefined) : undefined,
-          });
+        const results = Array.isArray(queryResult) ? queryResult : [queryResult];
+        const result = results[0];
+        while (await result.hasNext()) {
+          const row = await result.getNext();
+          ingestCachedEmbeddingRow(builder, row, hasContentHash);
         }
+        return finalizeCachedEmbeddingsSnapshot(builder);
+      } catch (err) {
+        abortCachedEmbeddingsBuilder(builder);
+        throw err;
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
       }
-    } catch {
-      /* embedding table may not exist */
+    } catch (err) {
+      abortCachedEmbeddingsBuilder(builder);
+      throw err;
     }
-
-    return { embeddingNodeIds, embeddings };
   });
 };
 
@@ -2541,11 +2634,19 @@ export const deleteNodesForFile = async (
 /**
  * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
  * statement ~13KB (well inside parser limits) while a ~700-file write set
- * still collapses from ~13,000 statements to 124: 31 statements per chunk
- * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
- * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
+ * still collapses from ~13,000 statements to 128: 32 statements per chunk
+ * (1 CodeEmbedding join-delete + 31 filePath-bearing node tables — the
+ * 33-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
  * original "~40" claim under-counted the per-chunk statement fan-out
  * (tri-review 4669518496 accuracy sweep).
+ *
+ * `Destination` is counted in that 31 because the table IS visited, but a
+ * RESOLVED destination stores no `filePath` and so never matches the
+ * predicate — deliberately, because it is shared across files. See the node
+ * property block in `pipeline-phases/spring-destinations.ts` for why deleting
+ * one here would cut edges belonging to files outside the write set. Because
+ * this pass therefore cannot maintain the layer, {@link deleteAllDestinations}
+ * clears it separately and `extractChangedSubgraph` re-includes it whole.
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 
@@ -2567,8 +2668,11 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
  * statement is sound, while failing would brick every incremental run on
  * such a DB until `--force`. Statement count per chunk is unchanged by the
- * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
- * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * multi-label join: 1 embedding join-delete + 31 node-table deletes = 32
+ * (the rejected per-label fallback shape would have been 19 + 31 = 50).
+ * The 31 is the filePath-bearing half of the 33-table NODE_TABLES roster and
+ * moves whenever a node table is added — it went up by one when `Destination`
+ * joined, and the twin note on DELETE_FILES_CHUNK_SIZE has to move with it.
  * Singleton-connection only: the analyze writeback owns the write lock,
  * and `queryAndDrain` routes through `withConnLock` for it (the WAL
  * checkpoint driver is live during this).
@@ -3161,6 +3265,60 @@ export const deleteSpringAopEvidenceNodes = async (): Promise<{ nodesDeleted: nu
 };
 
 /**
+ * Drop EVERY `Destination` node before an incremental writeback, so the async
+ * messaging overlay is rebuilt whole from the fresh graph.
+ *
+ * Delete-all rather than delete-by-file, because the file-keyed rule cannot
+ * express this layer in either direction. A RESOLVED destination stores no
+ * `filePath` — that is what stops `deleteNodesForFiles` cutting a node shared
+ * by files outside the write set — which also means it is never deleted when it
+ * SHOULD be, so a destination whose last referrer stopped naming it survived as
+ * an edgeless orphan that still carried `address`, the cross-repository join
+ * key, accumulating on every run. The mirror defect was worse: without a
+ * matching graph-wide re-include, a newly added file publishing to a NEW topic
+ * wrote neither the destination nor the publisher's edge, silently and with a
+ * zero exit.
+ *
+ * The `springDestinations` phase runs on every persisting analyze and recomputes
+ * the full set from the whole file list, so delete-then-re-include is complete.
+ * `extractChangedSubgraph` treats `Destination` as graph-wide to supply the
+ * other half; the two must be changed together. DETACH DELETE also takes the
+ * `CONSUMES_FROM` / `PUBLISHES_TO` edges, which the re-include restores because
+ * every one of them has the destination as an endpoint.
+ */
+export const deleteAllDestinations = async (): Promise<{ nodesDeleted: number }> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query('MATCH (n:Destination) RETURN count(n) AS cnt');
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(await c.query('MATCH (n:Destination) DETACH DELETE n'));
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-destinations] failed to clear the messaging overlay before incremental ' +
+          `re-write (${message}) — aborting rather than leaving duplicate or orphaned ` +
+          'destinations; the next run will full-rebuild',
+      );
+    }
+  });
+};
+
+/**
  * Drop Spring-owned auto-configuration `DECLARES` relationships before
  * incremental writeback. `DECLARES` is generic, so exact reason filtering is
  * required: other metadata systems must retain their own declarations.
@@ -3290,8 +3448,8 @@ export const loadVectorExtension = async (
 };
 /**
  * Default stemmer for FTS indexes. Single source so the analyze path
- * (`getSearchFTSStemmer`) and the read-only `createFTSIndex`/`ensureFTSIndex`
- * defaults can never silently diverge.
+ * (`getSearchFTSStemmer`) and `createFTSIndex` defaults can never silently
+ * diverge.
  */
 export const DEFAULT_FTS_STEMMER = 'porter';
 
@@ -3618,7 +3776,10 @@ export const ensureEmbeddingRowDmlSafe = async (
  * read once per run. {@link INDEX_CATALOG_UNREADABLE} fails closed here without
  * a second read; omitting the argument makes the gate read for itself.
  */
-export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Promise<boolean> => {
+export const ensureFtsRowDmlSafe = async (
+  indexRows?: IndexCatalogSnapshot,
+  options: { skipFts?: boolean } = {},
+): Promise<boolean> => {
   // Unconditional precondition, same regression as the VECTOR twin's (#2841
   // review §5.B): a caller-supplied snapshot must not let a closed DB be
   // answered `true`.
@@ -3645,46 +3806,10 @@ export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Pro
       return indexType === undefined || indexType === 'FTS';
     });
   if (!indexGatesDml) return true;
+  // Existing/unknown native indexes still gate writes. Rebuild into a fresh
+  // database rather than loading FTS or issuing unsafe DML when opted out.
+  if (options.skipFts) return false;
   return await loadFTSExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
-};
-
-/**
- * Lazy-create an FTS index, caching the fact in-process.
- *
- * Kept for writable maintenance paths that need to lazily materialize an
- * index. Read-only query paths must not call this; production analysis owns
- * creating the configured search indexes before the database is served.
- *
- * Safe to call repeatedly — the in-process Set guarantees only the first
- * call hits LadybugDB. `closeLbug` clears the cache so re-init starts fresh.
- *
- * Defense in depth: if the active connection is read-only (e.g. the MCP
- * pool adapter), `CREATE_FTS_INDEX` will fail with "Cannot execute write
- * operations in a read-only database". Treat that as a no-op and cache
- * the key so callers don't loop on a path that can never succeed here —
- * the index is owned by `gitnexus analyze` (writable) and either already
- * exists or will be created on the next analyze.
- */
-export const ensureFTSIndex = async (
-  tableName: string,
-  indexName: string,
-  properties: string[],
-  stemmer: string = DEFAULT_FTS_STEMMER,
-): Promise<void> => {
-  const key = ftsIndexKey(tableName, indexName);
-  if (ensuredFTSIndexes.has(key)) return;
-  try {
-    await createFTSIndex(tableName, indexName, properties, stemmer);
-  } catch (e) {
-    // Read-only DB: writable analyze owns index creation; silently skip
-    // and cache so callers don't loop on a path that can never succeed
-    // here (the MCP query pool opens DBs read-only by design).
-    if (isReadOnlyDbError(e)) {
-      ensuredFTSIndexes.add(key);
-      return;
-    }
-    throw e;
-  }
 };
 
 export type FtsQueryFailureClass = 'missing-index' | 'missing-table' | 'other';
@@ -3944,7 +4069,15 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
       // extension binary is not re-inspected, falling back to a fresh structural
       // diagnosis when nothing recorded one.
       const ftsCapability = getFtsCapability();
-      const { remedy } = ftsCapability?.diagnosis ?? diagnoseExtensionLoad(ftsCapability?.reason);
+      const inspectPath = extractExtensionPath(ftsCapability?.reason);
+      const { remedy } =
+        ftsCapability?.diagnosis ??
+        diagnoseExtensionLoad(
+          ftsCapability?.reason,
+          'FTS',
+          inspectPath,
+          resolveFtsVersionPair(inspectPath),
+        );
       // Deliberately message-only: `remedy` is generated text (fixed system paths
       // at most), and LadybugDB's own path-bearing `reason` is NEVER interpolated
       // here — the #2374/#2375 redaction contract.

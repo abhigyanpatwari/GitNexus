@@ -1,0 +1,4 @@
+app:
+  messaging:
+    shared-topic: shared.v1
+    audit-topic: audit.v1

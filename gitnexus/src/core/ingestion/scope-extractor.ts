@@ -4,7 +4,7 @@
  * (RFC §5.3 + §3.2 Phase 1; Ring 2 PKG #919).
  *
  * Exactly one entry point: `extract(matches, filePath, provider) → ParsedFile`.
- * Runs a five-pass pipeline over the matches. Each pass is internal; the
+ * Runs a seven-pass pipeline over the matches. Each pass is internal; the
  * public contract is the output `ParsedFile`.
  *
  * ## Design principles
@@ -22,7 +22,7 @@
  *     don't overlap) are enforced by `buildScopeTree` from Ring 2 SHARED
  *     (#912). Malformed inputs throw `ScopeTreeInvariantError`.
  *
- * ## The five passes
+ * ## The seven passes
  *
  *   1. **Build scope tree.** Walk `@scope.*` matches. For each, consult
  *      `provider.resolveScopeKind` (default: suffix of the capture name).
@@ -60,6 +60,10 @@
  *      one `ReferenceSite` per match. Classify call form via
  *      `provider.classifyCallForm` (default: the capture's sub-tag if
  *      present; else `'free'`).
+ *   6. **Collect callable-value-flow facts.** Independent of Pass 5 so
+ *      existing reference-site extraction stays byte-identical.
+ *   7. **Preserve call-result assignment identity.** Untyped
+ *      `let lhs = call()` facts used by exact-callee return-type replay.
  *
  * ## What gets attached where
  *
@@ -80,6 +84,7 @@ import type {
   CallableFlowOperand,
   CallableFlowPassingMode,
   CallableFlowSite,
+  CallResultAssignmentSite,
   Capture,
   CaptureMatch,
   ImportEdge,
@@ -134,7 +139,7 @@ export type ScopeExtractorHooks = Pick<
 // ─── Public entry point ─────────────────────────────────────────────────────
 
 /**
- * Drive the five extraction passes and return a `ParsedFile`.
+ * Drive the seven extraction passes and return a `ParsedFile`.
  *
  * Throws `ScopeTreeInvariantError` (from #912) when the provider emits
  * captures that violate structural scope invariants (e.g., overlapping
@@ -240,6 +245,15 @@ export function extract(
   const callableFlowSites: CallableFlowSite[] = [];
   pass6CollectCallableFlows(partitioned.callableFlow, positionIndex, filePath, callableFlowSites);
 
+  // ── Pass 7: preserve call-result assignment identity ───────────────
+  const callResultAssignmentSites: CallResultAssignmentSite[] = [];
+  pass7CollectCallResultAssignments(
+    partitioned.callResultAssignment,
+    positionIndex,
+    filePath,
+    callResultAssignmentSites,
+  );
+
   // Freeze Scope drafts into final shape and return.
   const frozenScopes = scopeDrafts.map(draftToScope);
   return Object.freeze({
@@ -251,6 +265,9 @@ export function extract(
     referenceSites: Object.freeze(referenceSites.slice()),
     ...(callableFlowSites.length > 0
       ? { callableFlowSites: Object.freeze(callableFlowSites.slice()) }
+      : {}),
+    ...(callResultAssignmentSites.length > 0
+      ? { callResultAssignmentSites: Object.freeze(callResultAssignmentSites.slice()) }
       : {}),
   });
 }
@@ -264,6 +281,7 @@ interface Partitioned {
   readonly typeBinding: readonly CaptureMatch[];
   readonly reference: readonly CaptureMatch[];
   readonly callableFlow: readonly CaptureMatch[];
+  readonly callResultAssignment: readonly CaptureMatch[];
 }
 
 /**
@@ -283,6 +301,7 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
   const typeBinding: CaptureMatch[] = [];
   const reference: CaptureMatch[] = [];
   const callableFlow: CaptureMatch[] = [];
+  const callResultAssignment: CaptureMatch[] = [];
 
   for (const match of matches) {
     for (const topic of topicsOf(match)) {
@@ -305,14 +324,32 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
         case 'callable-flow':
           callableFlow.push(match);
           break;
+        case 'call-result-assignment':
+          callResultAssignment.push(match);
+          break;
       }
     }
   }
 
-  return { scope, declaration, import_, typeBinding, reference, callableFlow };
+  return {
+    scope,
+    declaration,
+    import_,
+    typeBinding,
+    reference,
+    callableFlow,
+    callResultAssignment,
+  };
 }
 
-type Topic = 'scope' | 'declaration' | 'import' | 'type-binding' | 'reference' | 'callable-flow';
+type Topic =
+  | 'scope'
+  | 'declaration'
+  | 'import'
+  | 'type-binding'
+  | 'reference'
+  | 'callable-flow'
+  | 'call-result-assignment';
 
 function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
   const topics = new Set<Topic>();
@@ -323,6 +360,7 @@ function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
     else if (name.startsWith('@type-binding.')) topics.add('type-binding');
     else if (name.startsWith('@reference.')) topics.add('reference');
     else if (name.startsWith('@callable-flow.')) topics.add('callable-flow');
+    else if (name.startsWith('@call-result-assignment.')) topics.add('call-result-assignment');
   }
   return topics;
 }
@@ -598,17 +636,25 @@ function pass2AttachDeclarations(
     // fact is the failure mode this subsystem rejects everywhere else.
     //
     // Copying the field onto BOTH twins makes the outcome identical whichever
-    // one wins. Deliberately narrow — only `typeParameters`, the one field with
-    // an asymmetric twin today. Widening this to "merge all metadata" would
-    // change what every existing duplicate resolves to, which is a different
-    // change with a different blast radius and no evidence behind it yet.
+    // one wins. Deliberately narrow — only metadata whose asymmetric twins have
+    // executable regressions (`typeParameters` and `returnType`). Widening this
+    // to "merge all metadata" would change what every existing duplicate
+    // resolves to, which is a different change with a different blast radius
+    // and no evidence behind it yet.
     const first = firstDefByNodeId.get(def.nodeId);
     if (first === undefined) {
       firstDefByNodeId.set(def.nodeId, def);
-    } else if (first.typeParameters === undefined && def.typeParameters !== undefined) {
-      first.typeParameters = def.typeParameters;
-    } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
-      def.typeParameters = first.typeParameters;
+    } else {
+      if (first.typeParameters === undefined && def.typeParameters !== undefined) {
+        first.typeParameters = def.typeParameters;
+      } else if (def.typeParameters === undefined && first.typeParameters !== undefined) {
+        def.typeParameters = first.typeParameters;
+      }
+      if (first.returnType === undefined && def.returnType !== undefined) {
+        first.returnType = def.returnType;
+      } else if (def.returnType === undefined && first.returnType !== undefined) {
+        def.returnType = first.returnType;
+      }
     }
 
     // Find the innermost scope that contains the declaration's anchor range.
@@ -707,6 +753,10 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -725,6 +775,7 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 
@@ -847,6 +898,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
   switch (kindStr.toLowerCase()) {
     case 'class':
       return 'Class';
+    case 'protocol':
+      return 'Protocol';
+    case 'category':
+      return 'Category';
     case 'interface':
       return 'Interface';
     case 'enum':
@@ -1033,8 +1088,7 @@ function pass3CollectImports(
   if (provider.interpretImport === undefined) return;
   // Hoisted: the capability is a property of the language, identical for every
   // match in the file. A provider that declares its imports do not execute
-  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
-  // the position walk entirely — position cannot defer something that never
+  // where they are written skips the execution-deferral walk — position cannot defer something that never
   // runs, and marking one deferred would hide a real cycle. Absent reads as
   // `true`, so an undeclared provider is unchanged. See
   // `LanguageProvider.importsExecuteWhereWritten`.
@@ -1045,14 +1099,22 @@ function pass3CollectImports(
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
     // The statement's own position, resolved to the innermost scope holding
-    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // it. Provenance is retained independently of execution timing. An
+    // unlocatable anchor leaves the import unmarked, which reads as
     // "runs at initialization" — the fail-safe direction, since it can only
     // make `check --cycles` over-report.
-    const inScopeId = positionCanDefer
-      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
-      : undefined;
-    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
-    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred =
+      positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push({
+      ...parsed,
+      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      ...(deferred ? { runsOnlyWhenCalled: true } : {}),
+    });
   }
 }
 
@@ -1308,6 +1370,11 @@ function pass5CollectReferences(
     // detection knows what to do with that. Absent for every language without
     // pointer embedding, so their sites stay byte-identical.
     const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
+    // Static-gating marker: the call sits in a branch the language layer proved
+    // dead at index time (Zig `if (CONST_FALSE)`). Recorded on the site and
+    // copied to the CALLS edge; absent everywhere else (see
+    // `ReferenceSite.staticGated`).
+    const staticGated = kind === 'call' && match['@reference.static-gated'] !== undefined;
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -1329,6 +1396,7 @@ function pass5CollectReferences(
       ...(receiverChain !== undefined ? { receiverChain } : {}),
       ...(inCalleePosition ? { inCalleePosition: true } : {}),
       ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
+      ...(staticGated ? { staticGated: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1630,6 +1698,24 @@ function pass6CollectCallableFlows(
   }
 }
 
+// ─── Pass 7: collect call-result assignment identity ──────────────────────
+
+function pass7CollectCallResultAssignments(
+  matches: readonly CaptureMatch[],
+  positionIndex: ReturnType<typeof buildPositionIndex>,
+  filePath: string,
+  out: CallResultAssignmentSite[],
+): void {
+  for (const match of matches) {
+    const call = match['@call-result-assignment.call'];
+    const lhs = match['@call-result-assignment.lhs'];
+    if (call === undefined || lhs === undefined || !nonEmpty(lhs.text)) continue;
+    const inScope = positionIndex.atPosition(filePath, call.range.startLine, call.range.startCol);
+    if (inScope === undefined) continue;
+    out.push({ callSite: call.range, inScope, lhs: lhs.text });
+  }
+}
+
 function callableFlowKind(match: CaptureMatch): CallableFlowKind | undefined {
   return CALLABLE_FLOW_KINDS.find((kind) => match[`@callable-flow.${kind}`] !== undefined);
 }
@@ -1775,6 +1861,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.is-synthetic',
   '@import.name',
   '@import.source',
   '@import.alias',
@@ -1793,6 +1880,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',
+  '@reference.static-gated',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',
