@@ -226,4 +226,131 @@ describe('Swift target sibling visibility', () => {
       { def: entry, origin: 'namespace' },
     ]);
   });
+
+  it.each([
+    ['public extension Outer.Inner {\n  static func makeEntry() {}\n}\n'],
+    ['@MainActor\nextension Outer.Inner {\n  static func makeEntry() {}\n}\n'],
+    ['@available(iOS 15, *)\npublic extension Outer.Inner {\n  static func makeEntry() {}\n}\n'],
+  ])('recovers a qualified owner through modifiers and attributes: %j', (extensionSource) => {
+    const { declaration, extension, entry, indexes, bindingAugmentations } =
+      qualifiedExtensionFixture(extensionSource);
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', extensionSource]]),
+    });
+
+    expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toEqual([
+      { def: entry, origin: 'namespace' },
+    ]);
+  });
+
+  it('prefers Outer.Inner.Entry over a colliding top-level Inner.Entry', () => {
+    const topInner: SymbolDefinition = {
+      nodeId: 'def:TopInner.swift:Inner',
+      filePath: 'TopInner.swift',
+      type: 'Class',
+      qualifiedName: 'Inner',
+    };
+    const wrongEntry: SymbolDefinition = {
+      nodeId: 'def:TopInner.swift:Inner.Entry',
+      filePath: 'TopInner.swift',
+      type: 'Class',
+      qualifiedName: 'Inner.Entry',
+      ownerId: topInner.nodeId,
+    };
+    const extensionSource = 'public extension Outer.Inner {\n  static func makeEntry() {}\n}\n';
+    const { declaration, extension, entry, indexes, bindingAugmentations } =
+      qualifiedExtensionFixture(extensionSource, { extraDefs: [topInner, wrongEntry] });
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', extensionSource]]),
+    });
+
+    expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toEqual([
+      { def: entry, origin: 'namespace' },
+    ]);
+  });
+
+  it('does not last-dot-guess Inner when source is present but not an extension', () => {
+    const topInner: SymbolDefinition = {
+      nodeId: 'def:TopInner.swift:Inner',
+      filePath: 'TopInner.swift',
+      type: 'Class',
+      qualifiedName: 'Inner',
+    };
+    const wrongEntry: SymbolDefinition = {
+      nodeId: 'def:TopInner.swift:Inner.Entry',
+      filePath: 'TopInner.swift',
+      type: 'Class',
+      qualifiedName: 'Inner.Entry',
+      ownerId: topInner.nodeId,
+    };
+    const { declaration, extension, indexes, bindingAugmentations } = qualifiedExtensionFixture(
+      'struct Unrelated {}\n',
+      { extraDefs: [topInner, wrongEntry] },
+    );
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', 'struct Unrelated {}\n']]),
+    });
+
+    expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toBeUndefined();
+  });
 });
+
+function qualifiedExtensionFixture(
+  extensionSource: string,
+  options: { extraDefs?: readonly SymbolDefinition[] } = {},
+) {
+  const inner: SymbolDefinition = {
+    nodeId: 'def:Types.swift:Outer.Inner',
+    filePath: 'Types.swift',
+    type: 'Class',
+    qualifiedName: 'Outer.Inner',
+  };
+  const entry: SymbolDefinition = {
+    nodeId: 'def:Types.swift:Outer.Inner.Entry',
+    filePath: 'Types.swift',
+    type: 'Class',
+    qualifiedName: 'Outer.Inner.Entry',
+    ownerId: inner.nodeId,
+  };
+  const makeEntry: SymbolDefinition = {
+    nodeId: 'def:Builder.swift:Inner.makeEntry',
+    filePath: 'Builder.swift',
+    type: 'Method',
+    qualifiedName: 'Inner.makeEntry',
+  };
+  const extraDefs = options.extraDefs ?? [];
+  const declaration = parsedFile(
+    'Types.swift',
+    [inner],
+    new Map([['Entry', [{ def: entry, origin: 'local' }]]]),
+    [inner, entry],
+  );
+  const extension = parsedFile(
+    'Builder.swift',
+    [],
+    new Map([['makeEntry', [{ def: makeEntry, origin: 'local' }]]]),
+    [makeEntry],
+    {
+      startLine: 1,
+      startCol: 0,
+      endLine: 3,
+      endCol: 1,
+    },
+  );
+  const bindingAugmentations = new Map();
+  const allDefs = [inner, entry, makeEntry, ...extraDefs];
+  const indexes = {
+    defs: buildDefIndex(allDefs),
+    moduleScopes: {
+      byFilePath: new Map([
+        ['Types.swift', moduleId('Types.swift')],
+        ['Builder.swift', moduleId('Builder.swift')],
+      ]),
+    },
+    bindingAugmentations,
+  } as unknown as ScopeResolutionIndexes;
+  return { declaration, extension, entry, indexes, bindingAugmentations };
+}

@@ -1302,7 +1302,9 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
 // the extended type over an unrelated top-level type with the same short name.
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!swiftAvailable)('Swift nested constructor lookup in an extension (#3262)', () => {
+describe.skipIf(!swiftAvailable)(
+  'Swift nested constructor lookup in a public qualified extension (#3262)',
+  () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -1312,7 +1314,7 @@ describe.skipIf(!swiftAvailable)('Swift nested constructor lookup in an extensio
     );
   }, 60000);
 
-  it('resolves Entry(id:text:) to Container.Entry and not the top-level Entry', () => {
+  it('resolves Entry(id:text:) to Outer.Container.Entry and not the top-level Entry', () => {
     const entryCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'makeEntry' && call.target === 'Entry',
     );

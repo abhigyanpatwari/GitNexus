@@ -122,9 +122,14 @@ function scopeOwnerKey(scope: Scope, source: string | undefined): string | undef
   // only the trailing owner on members (`Inner.f` for `extension Outer.Inner`),
   // so recover the full owner from this scope's declaration text first.
   const representative = firstBoundDefinition(scope);
-  const sourceOwner = source === undefined ? undefined : swiftExtensionOwner(source, scope);
-  if (representative !== undefined && sourceOwner !== undefined) {
-    return logicalOwnerKey({ ...representative, qualifiedName: sourceOwner });
+  if (source !== undefined) {
+    const sourceOwner = swiftExtensionOwner(source, scope);
+    if (representative !== undefined && sourceOwner !== undefined) {
+      return logicalOwnerKey({ ...representative, qualifiedName: sourceOwner });
+    }
+    // Source was available. Do not last-dot-guess: member qualified names are
+    // trailing-only, so `Inner.make` would key `Inner` instead of `Outer.Inner`.
+    return undefined;
   }
 
   // Hand-built fixtures and old cached shapes may have no source text. Keep
@@ -155,7 +160,11 @@ function firstBoundDefinition(scope: Scope): SymbolDefinition | undefined {
   return undefined;
 }
 
-/** Read `extension Outer.Inner` from the exact class-scope source range. */
+/**
+ * Read `extension Outer.Inner` from the class-scope source range.
+ * Access modifiers and attributes (`public`, `@MainActor`, `@available`)
+ * may precede the keyword, so the match is not start-anchored.
+ */
 function swiftExtensionOwner(source: string, scope: Scope): string | undefined {
   const starts = [0, 0];
   for (let index = 0; index < source.length; index += 1) {
@@ -164,7 +173,7 @@ function swiftExtensionOwner(source: string, scope: Scope): string | undefined {
   const start = starts[scope.range.startLine];
   if (start === undefined) return undefined;
   const declaration = source.slice(start + scope.range.startCol);
-  const match = /^\s*extension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
+  const match = /\bextension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
     declaration,
   );
   return match?.[1]?.replace(/\s+/g, '');
