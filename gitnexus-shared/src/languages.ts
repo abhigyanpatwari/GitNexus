@@ -24,4 +24,5 @@ export enum SupportedLanguages {
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
   Zig = 'zig',
+  Elixir = 'elixir',
 }

@@ -1,4 +1,5 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
+import { createRequire } from 'node:module';
 import {
   boundCallableStartPosition,
   localIdentity,
@@ -44,6 +45,7 @@ import type {
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
+const _require = createRequire(import.meta.url);
 
 // ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
 // The worker maintains its own grammar table (the guarded vendored-grammar
@@ -91,6 +93,11 @@ try {
 let ObjectiveC: TreeSitterLanguage | null = null;
 try {
   ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
+} catch {}
+
+let Elixir: TreeSitterLanguage | null = null;
+try {
+  Elixir = _require('tree-sitter-elixir');
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
@@ -573,6 +580,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
   ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
+  ...(Elixir ? { [SupportedLanguages.Elixir]: Elixir } : {}),
 };
 
 /**

@@ -329,10 +329,11 @@ function f(x) { exec(escape(x)); }`);
 describe('registry + model identity', () => {
   beforeEach(() => clearSourceSinkRegistry());
 
-  it('registerBuiltinTaintModels registers TS, JS, and Python (idempotent); others stay undefined', () => {
+  it('registerBuiltinTaintModels registers every built-in model idempotently', () => {
     registerBuiltinTaintModels();
     registerBuiltinTaintModels(); // idempotent — last-write-wins on the same ids
     expect(registeredTaintLanguages().sort()).toEqual([
+      'elixir',
       'java',
       'javascript',
       'python',
@@ -342,6 +343,7 @@ describe('registry + model identity', () => {
     expect(getSourceSinkConfig('typescript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('javascript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('python')).toBe(BUILTIN_TAINT_MODELS.python);
+    expect(getSourceSinkConfig('elixir')).toBe(BUILTIN_TAINT_MODELS.elixir);
     expect(getSourceSinkConfig('ruby')).toBeUndefined();
   });
 

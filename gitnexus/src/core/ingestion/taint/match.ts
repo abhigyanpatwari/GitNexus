@@ -344,7 +344,11 @@ export function matchFunctionSites(
       return r.path.length >= 2 && r.path[r.path.length - 1] === entry.name;
     }
     if (entry.receivers !== undefined) {
-      return r.path.length === 2 && entry.receivers.includes(r.path[0]) && r.path[1] === entry.name;
+      return (
+        r.path.length >= 2 &&
+        entry.receivers.includes(r.path.slice(0, -1).join('.')) &&
+        r.path.at(-1) === entry.name
+      );
     }
     return false;
   };
