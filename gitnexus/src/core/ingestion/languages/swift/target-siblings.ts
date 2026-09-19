@@ -255,8 +255,22 @@ function skipLineComment(text: string, start: number): number {
 }
 
 function skipBlockComment(text: string, start: number): number {
-  const close = text.indexOf('*/', start + 2);
-  return close === -1 ? text.length : close + 2;
+  let index = start + 2;
+  let depth = 1;
+  while (index < text.length && depth > 0) {
+    if (text.startsWith('/*', index)) {
+      depth += 1;
+      index += 2;
+      continue;
+    }
+    if (text.startsWith('*/', index)) {
+      depth -= 1;
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  return index;
 }
 
 function skipQuoted(text: string, start: number, quote: string): number {

@@ -195,6 +195,10 @@ describe('Swift target sibling visibility', () => {
       0,
     ],
     ['  public extension Outer.Inner {\n  static func makeEntry() {}\n}\n', 2],
+    [
+      '/* outer /* inner */ extension Wrong */ extension Outer.Inner {\n  static func makeEntry() {}\n}\n',
+      0,
+    ],
   ])(
     'recovers a qualified owner through modifiers and attributes: %j',
     (extensionSource, startCol = 0) => {
@@ -210,56 +214,61 @@ describe('Swift target sibling visibility', () => {
   );
 
   it('prefers Outer.Inner.Entry over a colliding top-level Inner.Entry', () => {
-    const topInner: SymbolDefinition = {
-      nodeId: 'def:TopInner.swift:Inner',
-      filePath: 'TopInner.swift',
-      type: 'Class',
-      qualifiedName: 'Inner',
-    };
-    const wrongEntry: SymbolDefinition = {
-      nodeId: 'def:TopInner.swift:Inner.Entry',
-      filePath: 'TopInner.swift',
-      type: 'Class',
-      qualifiedName: 'Inner.Entry',
-      ownerId: topInner.nodeId,
-    };
+    const { collision, topInner, wrongEntry } = collidingTopLevelInner();
     const extensionSource = 'public extension Outer.Inner {\n  static func makeEntry() {}\n}\n';
     const { declaration, extension, entry, indexes, bindingAugmentations } =
       qualifiedExtensionFixture(extensionSource, { extraDefs: [topInner, wrongEntry] });
 
-    populateSwiftTargetSiblings([declaration, extension], indexes, {
+    populateSwiftTargetSiblings([declaration, extension, collision], indexes, {
       fileContents: new Map([['Builder.swift', extensionSource]]),
     });
 
     expectAugmentedEntry(bindingAugmentations, entry);
+    expect(bindingAugmentations.get(classId('TopInner.swift'))?.get('Entry')).toEqual([
+      { def: wrongEntry, origin: 'namespace' },
+    ]);
   });
 
   it('does not last-dot-guess Inner when source is present but not an extension', () => {
-    const topInner: SymbolDefinition = {
-      nodeId: 'def:TopInner.swift:Inner',
-      filePath: 'TopInner.swift',
-      type: 'Class',
-      qualifiedName: 'Inner',
-    };
-    const wrongEntry: SymbolDefinition = {
-      nodeId: 'def:TopInner.swift:Inner.Entry',
-      filePath: 'TopInner.swift',
-      type: 'Class',
-      qualifiedName: 'Inner.Entry',
-      ownerId: topInner.nodeId,
-    };
+    const { collision, topInner, wrongEntry } = collidingTopLevelInner();
     const { declaration, extension, indexes, bindingAugmentations } = qualifiedExtensionFixture(
       'struct Unrelated {}\n',
       { extraDefs: [topInner, wrongEntry] },
     );
 
-    populateSwiftTargetSiblings([declaration, extension], indexes, {
+    populateSwiftTargetSiblings([declaration, extension, collision], indexes, {
       fileContents: new Map([['Builder.swift', 'struct Unrelated {}\n']]),
     });
 
     expect(bindingAugmentations.get(classId('Builder.swift'))?.get('Entry')).toBeUndefined();
+    expect(bindingAugmentations.get(classId('TopInner.swift'))?.get('Entry')).toEqual([
+      { def: wrongEntry, origin: 'namespace' },
+    ]);
   });
 });
+
+function collidingTopLevelInner() {
+  const topInner: SymbolDefinition = {
+    nodeId: 'def:TopInner.swift:Inner',
+    filePath: 'TopInner.swift',
+    type: 'Class',
+    qualifiedName: 'Inner',
+  };
+  const wrongEntry: SymbolDefinition = {
+    nodeId: 'def:TopInner.swift:Inner.Entry',
+    filePath: 'TopInner.swift',
+    type: 'Class',
+    qualifiedName: 'Inner.Entry',
+    ownerId: topInner.nodeId,
+  };
+  const collision = parsedFile(
+    'TopInner.swift',
+    [topInner],
+    new Map([['Entry', [{ def: wrongEntry, origin: 'local' }]]]),
+    [topInner, wrongEntry],
+  );
+  return { collision, topInner, wrongEntry };
+}
 
 function expectAugmentedEntry(
   bindingAugmentations: Map<ScopeId, Map<string, unknown>>,

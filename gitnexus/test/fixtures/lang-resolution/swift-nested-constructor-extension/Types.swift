@@ -1,6 +1,6 @@
-enum Outer {
-    struct Container {
-        struct Entry {
+public enum Outer {
+    public struct Container {
+        public struct Entry {
             let id: Int
             let text: String
         }
