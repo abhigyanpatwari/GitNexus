@@ -709,12 +709,10 @@ function extractBalancedParen(source: string, openIndex: number): string | null 
       continue;
     }
     if (ch === '/' && next === '/') {
-      // `https://` / `http://` is not a line comment.
-      if (i === 0 || source[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-        continue;
-      }
+      // `https://` lives inside a string, already excluded above.
+      inLineComment = true;
+      i++;
+      continue;
     } else if (ch === '/' && next === '*') {
       blockCommentDepth = 1;
       i++;
@@ -813,10 +811,8 @@ function readSwiftFactoryField(
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || block[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-      }
+      inLineComment = true;
+      i++;
       continue;
     }
     if (ch === '/' && next === '*') {
@@ -908,11 +904,9 @@ function swiftManifestHasCompletenessHazard(source: string): boolean {
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || source[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-        atLineStart = false;
-      }
+      inLineComment = true;
+      i++;
+      atLineStart = false;
       continue;
     }
     if (ch === '/' && next === '*') {
@@ -984,10 +978,8 @@ function advanceSwiftCommentScan(source: string, state: SwiftCommentScan, upTo: 
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || source[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-      }
+      inLineComment = true;
+      i++;
       continue;
     }
     if (ch === '/' && next === '*') {
@@ -1017,6 +1009,8 @@ export function parseSwiftPackageManifest(source: string): {
     return { targets, complete: false };
   }
 
+  const packageTargets = inspectSwiftPackageTargets(source);
+
   SWIFT_FACTORY_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   let sawUnreadableFactory = false;
@@ -1028,6 +1022,12 @@ export function parseSwiftPackageManifest(source: string): {
       commentScan.inLineComment ||
       commentScan.blockCommentDepth > 0 ||
       commentScan.inString !== null
+    ) {
+      continue;
+    }
+    if (
+      packageTargets.arraySpans.length > 0 &&
+      !packageTargets.arraySpans.some(([lo, hi]) => match.index >= lo && match.index <= hi)
     ) {
       continue;
     }
@@ -1066,21 +1066,43 @@ export function parseSwiftPackageManifest(source: string): {
 
   return {
     targets,
-    complete: !sawUnreadableFactory && !swiftManifestHasHelperBuiltTargets(source),
+    complete: !sawUnreadableFactory && !packageTargets.helperBuilt,
   };
 }
 
-/**
- * Fail-open when `Package(...)`'s own `targets:` argument is not a literal
- * array. Product factories (`.library(..., targets: libTargets)`) sit inside
- * nested parens and are ignored. Comments and strings do not count.
- */
-function swiftManifestHasHelperBuiltTargets(source: string): boolean {
-  return forEachSwiftPackageArgs(source, packageTargetsArgIsHelperBuilt);
+interface SwiftPackageTargetsInspection {
+  helperBuilt: boolean;
+  arraySpans: Array<[number, number]>;
+}
+
+const SWIFT_ALL_FACTORY_NAMES = new Set<string>([
+  ...SWIFT_SOURCE_FACTORY_NAMES,
+  ...SWIFT_SKIP_FACTORY_NAMES,
+]);
+
+/** Locate `Package(...)`'s `targets:` argument. Product `targets:` stay nested. */
+function inspectSwiftPackageTargets(source: string): SwiftPackageTargetsInspection {
+  const arraySpans: Array<[number, number]> = [];
+  let helperBuilt = false;
+  const unreadable = forEachSwiftPackageArgs(source, (args, argsStart) => {
+    const found = inspectPackageTargetsArg(args);
+    if (found.helperBuilt) {
+      helperBuilt = true;
+      return true;
+    }
+    if (found.arrayStart !== null && found.arrayEnd !== null) {
+      arraySpans.push([argsStart + found.arrayStart, argsStart + found.arrayEnd]);
+    }
+    return false;
+  });
+  return { helperBuilt: helperBuilt || unreadable, arraySpans };
 }
 
 /** Walk `Package(` calls outside comments/strings. Unclosed `Package(` is incomplete. */
-function forEachSwiftPackageArgs(source: string, visit: (args: string) => boolean): boolean {
+function forEachSwiftPackageArgs(
+  source: string,
+  visit: (args: string, argsStart: number) => boolean,
+): boolean {
   let inString: '"' | "'" | null = null;
   let escape = false;
   let inLineComment = false;
@@ -1119,10 +1141,8 @@ function forEachSwiftPackageArgs(source: string, visit: (args: string) => boolea
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || source[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-      }
+      inLineComment = true;
+      i++;
       continue;
     }
     if (ch === '/' && next === '*') {
@@ -1141,13 +1161,17 @@ function forEachSwiftPackageArgs(source: string, visit: (args: string) => boolea
     if (parenAt === null || source[parenAt] !== '(') continue;
     const args = extractBalancedParen(source, parenAt);
     if (args === null) return true;
-    if (visit(args)) return true;
+    if (visit(args, parenAt + 1)) return true;
     i = parenAt + args.length + 1;
   }
   return false;
 }
 
-function packageTargetsArgIsHelperBuilt(args: string): boolean {
+function inspectPackageTargetsArg(args: string): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
   let inString: '"' | "'" | null = null;
   let escape = false;
   let inLineComment = false;
@@ -1187,10 +1211,8 @@ function packageTargetsArgIsHelperBuilt(args: string): boolean {
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || args[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-      }
+      inLineComment = true;
+      i++;
       continue;
     }
     if (ch === '/' && next === '*') {
@@ -1221,19 +1243,118 @@ function packageTargetsArgIsHelperBuilt(args: string): boolean {
     }
     return classifyPackageTargetsValue(args, colonAt + 1);
   }
-  return false;
+  return { helperBuilt: false, arrayStart: null, arrayEnd: null };
 }
 
-function classifyPackageTargetsValue(args: string, afterColon: number): boolean {
+function classifyPackageTargetsValue(
+  args: string,
+  afterColon: number,
+): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
   const start = skipSwiftWsAndComments(args, afterColon);
-  if (start === null) return true;
+  if (start === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
   if (args[start] === '[') {
     const close = matchSwiftSquare(args, start);
-    if (close === null) return true;
+    if (close === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
     const next = skipSwiftWsAndComments(args, close + 1);
-    return next !== null && args[next] === '+';
+    if (next !== null && args[next] === '+') {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    if (packageTargetsArrayHasComputed(args, start, close)) {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    return { helperBuilt: false, arrayStart: start, arrayEnd: close };
   }
-  return true;
+  return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+}
+
+function packageTargetsArrayHasComputed(source: string, open: number, close: number): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  let bracket = 0;
+  for (let i = open; i < close; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') {
+      bracket++;
+      continue;
+    }
+    if (ch === ']') {
+      bracket--;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (bracket !== 1 || paren !== 0) continue;
+    if (ch === ',' || /\s/.test(ch)) continue;
+    if (ch === '.') {
+      let j = i + 1;
+      while (j < close && isSwiftIdentCont(source[j])) j++;
+      const name = source.slice(i + 1, j);
+      const after = skipSwiftWsAndComments(source, j);
+      if (after !== null && source[after] === '(' && SWIFT_ALL_FACTORY_NAMES.has(name)) {
+        const block = extractBalancedParen(source, after);
+        if (block === null) return true;
+        i = after + block.length + 1;
+        continue;
+      }
+      return true;
+    }
+    return true;
+  }
+  return false;
 }
 
 function matchSwiftSquare(source: string, openIndex: number): number | null {
@@ -1276,11 +1397,9 @@ function matchSwiftSquare(source: string, openIndex: number): number | null {
       continue;
     }
     if (ch === '/' && next === '/') {
-      if (i === 0 || source[i - 1] !== ':') {
-        inLineComment = true;
-        i++;
-        continue;
-      }
+      inLineComment = true;
+      i++;
+      continue;
     } else if (ch === '/' && next === '*') {
       blockCommentDepth = 1;
       i++;

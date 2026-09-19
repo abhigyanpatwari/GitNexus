@@ -303,6 +303,39 @@ let package = Package(name: "Demo", targets: actualTargets)
     expect(parsed.complete).toBe(false);
     expect(parsed.targets.get('Incidental')).toBe('Sources/Incidental');
   });
+
+  it('does not collect a factory outside Package(targets: [...])', () => {
+    const parsed = parseSwiftPackageManifest(`
+func unused() { _ = Target.target(name: "Ghost") }
+let package = Package(name: "Demo", targets: [.target(name: "Incidental")])
+`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Incidental')).toBe('Sources/Incidental');
+  });
+
+  it('treats a computed element inside the targets: array as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(name: "Demo", targets: [makeTargets()])
+`);
+    expect(parsed.complete).toBe(false);
+    expect(parsed.targets.size).toBe(0);
+  });
+
+  it('does not treat a line comment after a label colon as live source', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(
+    name: "Demo",
+    targets: [
+        .target(name: // .target(name: "Ghost")
+            "Models"),
+    ]
+)
+`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
 });
 
 describe('swiftDeclaredTargetPrefix', () => {
