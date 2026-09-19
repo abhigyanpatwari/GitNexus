@@ -198,7 +198,7 @@ function swiftExtensionOwner(
   return EXTENSION_OWNER.exec(cleaned)?.[1]?.replace(/\s+/g, '');
 }
 
-/** `Scope.range` is 1-based on lines and 0-based on columns. */
+/** `Scope.range` is 1-based on lines. Columns are Tree-sitter UTF-8 bytes. */
 function lineStartsOf(source: string): number[] {
   const starts = [0, 0];
   for (let index = 0; index < source.length; index += 1) {
@@ -215,7 +215,31 @@ function sliceScopeRange(
   const start = starts[range.startLine];
   const end = starts[range.endLine];
   if (start === undefined || end === undefined) return undefined;
-  return source.slice(start + range.startCol, end + range.endCol);
+  return source.slice(
+    start + jsOffsetForUtf8Column(source, start, range.startCol),
+    end + jsOffsetForUtf8Column(source, end, range.endCol),
+  );
+}
+
+/** Convert a Tree-sitter UTF-8 column into a JS string offset on that line. */
+function jsOffsetForUtf8Column(source: string, lineStart: number, utf8Column: number): number {
+  let bytes = 0;
+  let index = lineStart;
+  while (index < source.length && bytes < utf8Column) {
+    if (source[index] === '\n') break;
+    const codePoint = source.codePointAt(index);
+    if (codePoint === undefined) break;
+    bytes += utf8ByteLength(codePoint);
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  return index - lineStart;
+}
+
+function utf8ByteLength(codePoint: number): number {
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
 }
 
 /** Header through the first unquoted `{`, with strings and comments blanked. */
@@ -241,7 +265,15 @@ function cleanExtensionHeader(declaration: string): string {
       index = end;
       continue;
     }
-    if (current === '"' || current === "'") {
+    const pounds = current === '#' ? leadingPounds(declaration, index) : 0;
+    const quoteAt = index + pounds;
+    if (declaration.startsWith('"""', quoteAt) || declaration[quoteAt] === '"') {
+      const end = skipSwiftString(declaration, index);
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    if (current === "'") {
       const end = skipQuoted(declaration, index, current);
       blank(index, end);
       index = end;
@@ -276,6 +308,42 @@ function skipBlockComment(text: string, start: number): number {
     index += 1;
   }
   return index;
+}
+
+function leadingPounds(text: string, start: number): number {
+  let count = 0;
+  while (text[start + count] === '#') count += 1;
+  return count;
+}
+
+function skipSwiftString(text: string, start: number): number {
+  const pounds = leadingPounds(text, start);
+  const quoteAt = start + pounds;
+  if (text.startsWith('"""', quoteAt)) {
+    return skipDelimitedString(text, quoteAt + 3, `"""${'#'.repeat(pounds)}`, pounds === 0);
+  }
+  if (text[quoteAt] === '"') {
+    return skipDelimitedString(text, quoteAt + 1, `"${'#'.repeat(pounds)}`, pounds === 0);
+  }
+  return start + Math.max(pounds, 1);
+}
+
+function skipDelimitedString(
+  text: string,
+  bodyStart: number,
+  closer: string,
+  escapes: boolean,
+): number {
+  let index = bodyStart;
+  while (index < text.length) {
+    if (escapes && text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text.startsWith(closer, index)) return index + closer.length;
+    index += 1;
+  }
+  return text.length;
 }
 
 function skipQuoted(text: string, start: number, quote: string): number {

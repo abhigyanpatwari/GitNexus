@@ -199,6 +199,10 @@ describe('Swift target sibling visibility', () => {
       '/* outer /* inner */ extension Wrong */ extension Outer.Inner {\n  static func makeEntry() {}\n}\n',
       0,
     ],
+    [
+      '@available(*, deprecated, message: #"Use extension Wrong"#)\npublic extension Outer.Inner {\n  static func makeEntry() {}\n}\n',
+      0,
+    ],
   ])(
     'recovers a qualified owner through modifiers and attributes: %j',
     (extensionSource, startCol = 0) => {
@@ -212,6 +216,21 @@ describe('Swift target sibling visibility', () => {
       expectAugmentedEntry(bindingAugmentations, entry);
     },
   );
+
+  it('converts Tree-sitter UTF-8 columns before slicing JS source', () => {
+    const prefix = 'struct Café {}; ';
+    const extensionSource = `${prefix}extension Outer.Inner {\n  static func makeEntry() {}\n}\n`;
+    const { declaration, extension, entry, indexes, bindingAugmentations } =
+      qualifiedExtensionFixture(extensionSource, {
+        startCol: Buffer.byteLength(prefix, 'utf8'),
+      });
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', extensionSource]]),
+    });
+
+    expectAugmentedEntry(bindingAugmentations, entry);
+  });
 
   it('recovers a Unicode qualified extension owner', () => {
     const extensionSource = 'public extension Café.Container {\n  static func makeEntry() {}\n}\n';
