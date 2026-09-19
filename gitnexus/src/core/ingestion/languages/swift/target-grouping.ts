@@ -108,9 +108,11 @@ export function coerceDeclaredSwiftTargets(
   resolutionConfig: unknown,
 ): ReadonlyMap<string, string> | null {
   const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
-  if (config == null || !(config.targets instanceof Map)) return null;
+  if (config == null) return null;
   if (config.origin === 'directories') return null;
-  return config.targets;
+  if (config.declaredTargets instanceof Map) return config.declaredTargets;
+  if (config.targets instanceof Map) return config.targets;
+  return null;
 }
 
 /** Segment-boundary membership used by grouping and declared import resolve. */

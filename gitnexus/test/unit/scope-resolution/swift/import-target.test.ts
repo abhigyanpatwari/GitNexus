@@ -74,6 +74,20 @@ describe('resolveSwiftImportTarget — declared Package.swift (R3, R4)', () => {
     expect(resolve('Models', AE1_FILES, 'Sources/App/main.swift', empty)).toBeNull();
   });
 
+  it('empty declaredTargets with inferred grouping folders stays external', () => {
+    const loadedShape = {
+      origin: 'package.swift' as const,
+      targets: new Map([
+        ['Foundation', 'Sources/Foundation'],
+        ['App', 'Sources/App'],
+        ['Models', 'Sources/Models'],
+      ]),
+      declaredTargets: new Map<string, string>(),
+    };
+    expect(resolve('Foundation', AE1_FILES, 'Sources/App/main.swift', loadedShape)).toBeNull();
+    expect(resolve('Models', AE1_FILES, 'Sources/App/main.swift', loadedShape)).toBeNull();
+  });
+
   it('a declared target literally named Foundation still resolves', () => {
     const namedFoundation = {
       origin: 'package.swift' as const,

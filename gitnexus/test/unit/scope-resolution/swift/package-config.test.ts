@@ -14,6 +14,7 @@ import {
   loadSwiftPackageConfig,
   parseSwiftPackageManifest,
 } from '../../../../src/core/ingestion/language-config.js';
+import { coerceDeclaredSwiftTargets } from '../../../../src/core/ingestion/languages/swift/target-grouping.js';
 
 const roots: string[] = [];
 
@@ -55,11 +56,14 @@ describe('parseSwiftPackageManifest', () => {
   });
 
   it('honors an explicit path:', () => {
-    const parsed = parseSwiftPackageManifest(`
+    const src = `
       .target(name: "Core", path: "Modules/Core")
-    `);
-    expect(parsed.complete).toBe(true);
-    expect(parsed.targets.get('Core')).toBe('Modules/Core');
+    `;
+    const parsed = parseSwiftPackageManifest(src);
+    expect({ complete: parsed.complete, entries: [...parsed.targets] }).toEqual({
+      complete: true,
+      entries: [['Core', 'Modules/Core']],
+    });
   });
 
   it('maps .testTarget to Tests/<name>', () => {
@@ -99,6 +103,59 @@ let package = Package(name: "Demo", targets: makeTargets())
     const parsed = parseSwiftPackageManifest(`.target(name: targetName)`);
     expect(parsed.complete).toBe(false);
   });
+
+  it('treats a computed path: as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "Core", path: corePath)`);
+    expect(parsed.complete).toBe(false);
+  });
+
+  it('ignores a // commented factory', () => {
+    const parsed = parseSwiftPackageManifest(`
+      // .target(name: "Ghost")
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('does not treat a dependency .target(name:) as a declared target', () => {
+    const parsed = parseSwiftPackageManifest(`
+      .target(name: "App", dependencies: [.target(name: "Core")])
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('App')).toBe('Sources/App');
+    expect(parsed.targets.has('Core')).toBe(false);
+  });
+
+  it('prefers an explicit path over an earlier same-name factory', () => {
+    const parsed = parseSwiftPackageManifest(`
+      .target(name: "Core")
+      .target(name: "Core", path: "Modules/Core")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Core')).toBe('Modules/Core');
+  });
+
+  it('treats a string-interpolated path as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "Core", path: "Modules/\\(name)")`);
+    expect(parsed.complete).toBe(false);
+  });
+
+  it('treats a parenthesized name string as a complete factory', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "Foo (experimental)")`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Foo (experimental)')).toBe('Sources/Foo (experimental)');
+  });
+
+  it('does not treat .library(..., targets: names) as a helper-built list', () => {
+    const parsed = parseSwiftPackageManifest(`
+      .library(name: "Demo", targets: libTargets)
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
 });
 
 describe('loadSwiftPackageConfig', () => {
@@ -129,7 +186,10 @@ let package = Package(
 
     const cfg = await loadSwiftPackageConfig(root);
     expect(cfg?.origin).toBe('package.swift');
-    expect(cfg!.targets.size).toBe(0);
+    expect(cfg!.declaredTargets?.size).toBe(0);
+    // Grouping still uses inferred folders so App/Foundation stay isolated.
+    expect(cfg!.targets.get('Foundation')).toBe('Sources/Foundation');
+    expect(coerceDeclaredSwiftTargets(cfg)?.size).toBe(0);
   });
 
   it('infers Sources/* folders when Package.swift is missing', async () => {

@@ -190,6 +190,13 @@ export interface SwiftPackageConfig {
    * existing `{ targets }` fixtures stay valid.
    */
   origin?: SwiftPackageConfigOrigin;
+  /**
+   * Declaration map when `origin` is `package.swift` (may be empty).
+   * Grouping uses `targets`, which is this map when it is non-empty and the
+   * inferred `Sources/*` map when the declaration is empty — so a
+   * binary-only Package.swift does not collapse every file into `__default__`.
+   */
+  declaredTargets?: Map<string, string>;
 }
 
 // ============================================================================
@@ -543,8 +550,26 @@ const SWIFT_FACTORY_RE =
 
 function extractBalancedParen(source: string, openIndex: number): string | null {
   let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
   for (let i = openIndex; i < source.length; i++) {
     const ch = source[i];
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
     if (ch === '(') depth++;
     else if (ch === ')') {
       depth--;
@@ -560,9 +585,18 @@ function swiftStringField(block: string, field: string): string | undefined {
 }
 
 function swiftManifestHasCompletenessHazard(source: string): boolean {
-  if (/(^|\n)\s*#if\b/.test(source) || /(^|\n)\s*#elseif\b/.test(source)) return true;
-  // `targets: makeTargets()` — a call, not an array literal of factories.
-  return /\btargets\s*:\s*[A-Za-z_$]/.test(source);
+  return /(^|\n)\s*#if\b/.test(source) || /(^|\n)\s*#elseif\b/.test(source);
+}
+
+function swiftFactoryIsCommented(source: string, index: number): boolean {
+  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
+  return source.slice(lineStart, index).includes('//');
+}
+
+function swiftPathIsUnreadable(block: string): boolean {
+  if (!/\bpath\s*:/.test(block)) return false;
+  const customPath = swiftStringField(block, 'path');
+  return customPath === undefined || customPath === '' || customPath.includes('\\(');
 }
 
 /** Heuristic Package.swift scan. Never shells out to `swift package dump-package`. */
@@ -578,7 +612,10 @@ export function parseSwiftPackageManifest(source: string): {
   SWIFT_FACTORY_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   let sawUnreadableFactory = false;
+  const covered: Array<[number, number]> = [];
   while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
+    if (swiftFactoryIsCommented(source, match.index)) continue;
+    if (covered.some(([start, end]) => match.index > start && match.index < end)) continue;
     const kind = match[1];
     const paren = source.indexOf('(', match.index);
     const block = extractBalancedParen(source, paren);
@@ -586,6 +623,7 @@ export function parseSwiftPackageManifest(source: string): {
       sawUnreadableFactory = true;
       continue;
     }
+    covered.push([match.index, paren + 1 + block.length + 1]);
     if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
     if (!SWIFT_SOURCE_FACTORIES.has(kind)) continue;
     const name = swiftStringField(block, 'name');
@@ -593,12 +631,25 @@ export function parseSwiftPackageManifest(source: string): {
       sawUnreadableFactory = true;
       continue;
     }
+    if (swiftPathIsUnreadable(block)) {
+      sawUnreadableFactory = true;
+      continue;
+    }
     const customPath = swiftStringField(block, 'path');
     const dir = customPath ?? (kind === 'testTarget' ? `Tests/${name}` : `Sources/${name}`);
-    if (!targets.has(name)) targets.set(name, dir);
+    const existing = targets.get(name);
+    if (existing === undefined) {
+      targets.set(name, dir);
+    } else if (customPath !== undefined && existing === `Sources/${name}`) {
+      // A later `.target(name:path:)` wins over an earlier same-name
+      // factory that only implied the default path.
+      targets.set(name, customPath);
+    }
   }
 
-  return { targets, complete: !sawUnreadableFactory };
+  const helperBuiltList =
+    targets.size === 0 && /\btargets\s*:\s*[A-Za-z_$]/.test(source);
+  return { targets, complete: !sawUnreadableFactory && !helperBuiltList };
 }
 
 async function inferSwiftDirectoryTargets(repoRoot: string): Promise<Map<string, string>> {
@@ -631,7 +682,11 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
       if (isDev) {
         logger.info(`📦 Loaded ${parsed.targets.size} Swift package targets from Package.swift`);
       }
-      return { targets: parsed.targets, origin: 'package.swift' };
+      return {
+        targets: parsed.targets.size > 0 ? parsed.targets : inferred,
+        origin: 'package.swift',
+        declaredTargets: parsed.targets,
+      };
     }
   } catch {
     // Missing or unreadable — fall through to inferred folders.

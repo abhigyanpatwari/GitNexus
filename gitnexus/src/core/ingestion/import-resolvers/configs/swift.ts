@@ -101,19 +101,26 @@ function getSwiftTargetIndex(
   return index;
 }
 
+/** Declaration view — inlined copy of `coerceDeclaredSwiftTargets` (no `languages/` import). */
+function declaredSwiftTargets(
+  config: NonNullable<ResolveCtx['configs']['swiftPackageConfig']>,
+): ReadonlyMap<string, string> | null {
+  if (config.origin === 'directories') return null;
+  if (config.declaredTargets instanceof Map) return config.declaredTargets;
+  return config.targets;
+}
+
 /** Swift Package.swift target map resolution strategy. */
 export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
-  // Inferred `Sources/*` maps are grouping-only. Hand-built `{ targets }`
-  // fixtures with no origin stay declared (same as coerceDeclaredSwiftTargets).
-  if (swiftPackageConfig == null || swiftPackageConfig.origin === 'directories') {
-    return null;
-  }
+  if (swiftPackageConfig == null) return null;
+  const declared = declaredSwiftTargets(swiftPackageConfig);
+  if (declared == null) return null;
   const moduleName = rawImportPath.split('.')[0];
-  if (moduleName === '' || !swiftPackageConfig.targets.has(moduleName)) {
+  if (moduleName === '' || !declared.has(moduleName)) {
     return null;
   }
-  const index = getSwiftTargetIndex(ctx, swiftPackageConfig.targets);
+  const index = getSwiftTargetIndex(ctx, declared);
   const files = index.byTarget.get(moduleName);
   if (files !== undefined && files.length > 0) {
     return { kind: 'files', files: [...files] };
