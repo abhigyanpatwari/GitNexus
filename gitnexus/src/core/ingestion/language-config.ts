@@ -216,6 +216,12 @@ export function coerceDeclaredSwiftTargets(
   return null;
 }
 
+/** Segment-boundary prefix for a Package.swift `path:`. `"."` is the package root. */
+export function swiftDeclaredTargetPrefix(dir: string): string {
+  const norm = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+  return norm === '' || norm === '.' ? '' : `${norm}/`;
+}
+
 /** Zig package config parsed from build.zig.zon and the root build.zig */
 export interface ZigBuildZonConfig {
   /**
@@ -733,10 +739,56 @@ function swiftManifestHasCompletenessHazard(source: string): boolean {
 }
 
 function swiftFactoryIsCommented(source: string, index: number): boolean {
-  const lineStart = source.lastIndexOf('\n', index - 1) + 1;
-  const before = source.slice(lineStart, index);
-  // `https://` / `http://` on a minified Package.swift line is not a comment.
-  return /(^|[^:])\/\//.test(before);
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < index; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || source[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+    }
+  }
+  return inLineComment || blockCommentDepth > 0;
 }
 
 function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {

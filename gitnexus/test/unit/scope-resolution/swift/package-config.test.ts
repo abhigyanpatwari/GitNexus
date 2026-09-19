@@ -109,6 +109,24 @@ let package = Package(name: "Demo", targets: makeTargets())
     expect(parsed.complete).toBe(false);
   });
 
+  it('ignores a block-commented factory', () => {
+    const parsed = parseSwiftPackageManifest(`
+      /* .target(name: "Ghost") */
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('records path: "." as the package root', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "Lib", path: ".")`);
+    expect({ complete: parsed.complete, entries: [...parsed.targets] }).toEqual({
+      complete: true,
+      entries: [['Lib', '.']],
+    });
+  });
+
   it('ignores a // commented factory', () => {
     const parsed = parseSwiftPackageManifest(`
       // .target(name: "Ghost")

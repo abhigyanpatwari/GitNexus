@@ -2,8 +2,10 @@
  * Swift import capture: import-kind, @_exported, and module path (R5, R6).
  */
 import { describe, expect, it } from 'vitest';
+import { SupportedLanguages } from '../../../../src/config/supported-languages.js';
 import { emitSwiftScopeCaptures } from '../../../../src/core/ingestion/languages/swift/index.js';
 import { interpretSwiftImport } from '../../../../src/core/ingestion/languages/swift/interpret.js';
+import { isLanguageAvailable } from '../../../../src/core/tree-sitter/parser-loader.js';
 
 function importsOf(src: string) {
   return emitSwiftScopeCaptures(src, 'Probe.swift')
@@ -11,7 +13,9 @@ function importsOf(src: string) {
     .filter((imp): imp is NonNullable<typeof imp> => imp !== null);
 }
 
-describe('interpretSwiftImport via emitSwiftScopeCaptures', () => {
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
+
+describe.skipIf(!swiftAvailable)('interpretSwiftImport via emitSwiftScopeCaptures', () => {
   it('import Foundation is a namespace, not exported', () => {
     expect(importsOf('import Foundation')).toEqual([
       {
@@ -32,6 +36,23 @@ describe('interpretSwiftImport via emitSwiftScopeCaptures', () => {
         targetRaw: 'Models',
       },
     ]);
+  });
+
+  it('allows a block comment between import and its kind', () => {
+    expect(importsOf('import /* selected API */ struct Models.User')).toEqual([
+      {
+        kind: 'named',
+        localName: 'User',
+        importedName: 'User',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
+
+  it('does not take import kind from an @available message string', () => {
+    expect(
+      importsOf('@available(*, deprecated, message: "import struct") import Foo.Bar'),
+    ).toMatchObject([{ kind: 'namespace', targetRaw: 'Foo' }]);
   });
 
   it('preserves @testable as the same module', () => {

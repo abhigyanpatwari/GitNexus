@@ -19,7 +19,8 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-const IMPORT_KIND_RE = /\bimport\s+(struct|class|enum|protocol|func|let|var|typealias)\b/;
+const IMPORT_KIND_RE =
+  /\bimport(?:(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)+)(struct|class|enum|protocol|func|let|var|typealias)\b/;
 
 interface SwiftImportSpec {
   readonly source: string;
@@ -56,7 +57,7 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
 
   if (identifierNode === null) return null;
 
-  const importKind = IMPORT_KIND_RE.exec(node.text)?.[1] ?? null;
+  const importKind = importKindFromClause(node, identifierNode);
 
   const segments: string[] = [];
   for (let i = 0; i < identifierNode.namedChildCount; i++) {
@@ -78,6 +79,15 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
     importKind,
     atNode: node,
   };
+}
+
+/** Kind token from the import clause only — skip `@available(..., message: "import struct")`. */
+function importKindFromClause(node: SyntaxNode, identifierNode: SyntaxNode): string | null {
+  const identRel = identifierNode.startIndex - node.startIndex;
+  const before = identRel >= 0 ? node.text.slice(0, identRel) : node.text;
+  const importAt = before.lastIndexOf('import');
+  const clause = importAt === -1 ? before : before.slice(importAt);
+  return IMPORT_KIND_RE.exec(clause)?.[1] ?? null;
 }
 
 function bindingKind(spec: SwiftImportSpec): 'namespace' | 'named' | 'reexport' {

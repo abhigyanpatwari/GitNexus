@@ -12,7 +12,7 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { coerceDeclaredSwiftTargets } from '../../language-config.js';
+import { coerceDeclaredSwiftTargets, swiftDeclaredTargetPrefix } from '../../language-config.js';
 import { isSwiftSdkModule } from './sdk-modules.js';
 
 export interface SwiftResolveContext {
@@ -67,7 +67,7 @@ function getDeclaredFilesByName(
 
   const dirs = [...declared.entries()].map(([name, dir]) => ({
     name,
-    prefix: dir.replace(/\\/g, '/') + '/',
+    prefix: swiftDeclaredTargetPrefix(dir),
   }));
   const byName = new Map<string, string[]>();
   for (const { name } of dirs) byName.set(name, []);

@@ -59,6 +59,16 @@ describe('groupSwiftFilesBySpmTarget — shared SPM bucketing contract', () => {
     expect(groups.has('Beta')).toBe(false);
   });
 
+  it('assigns root-level files to a path: "." target', () => {
+    const files = ['Lib.swift', 'Sources/Other/X.swift'];
+    const targets = new Map([['Lib', '.']]);
+
+    const groups = groupSwiftFilesBySpmTarget(files, id, targets);
+
+    expect(groups.get('Lib')).toEqual(files);
+    expect(groups.has('__default__')).toBe(false);
+  });
+
   it('matches a target dir only at a `/` boundary, not a substring', () => {
     // "Sources/Alpha" must NOT match "Sources/AlphaBeta/...". The matcher
     // accepts only a path-start or slash-delimited target occurrence.

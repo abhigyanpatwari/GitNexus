@@ -18,7 +18,7 @@
  * matching target; import-config fans a file out to every matching target.
  */
 
-import type { SwiftPackageConfig } from '../../language-config.js';
+import { swiftDeclaredTargetPrefix, type SwiftPackageConfig } from '../../language-config.js';
 export { coerceDeclaredSwiftTargets } from '../../language-config.js';
 
 const DEFAULT_TARGET = '__default__';
@@ -50,7 +50,7 @@ export function groupSwiftFilesBySpmTarget<T>(
 
   const targetPrefixes = [...targets.entries()].map(([name, dir]) => ({
     name,
-    prefix: dir.replace(/\\/g, '/') + '/',
+    prefix: swiftDeclaredTargetPrefix(dir),
   }));
 
   const groups = new Map<string, T[]>();
@@ -97,10 +97,11 @@ export function coerceSwiftTargets(resolutionConfig: unknown): ReadonlyMap<strin
 }
 
 function pathMatchesTargetPrefix(normalizedPath: string, prefix: string): boolean {
+  if (prefix === '') return true;
   return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
 }
 
 /** Segment-boundary membership used by grouping and declared import resolve. */
 export function fileMatchesSwiftTargetDir(normalizedPath: string, targetDir: string): boolean {
-  return pathMatchesTargetPrefix(normalizedPath, targetDir.replace(/\\/g, '/') + '/');
+  return pathMatchesTargetPrefix(normalizedPath, swiftDeclaredTargetPrefix(targetDir));
 }

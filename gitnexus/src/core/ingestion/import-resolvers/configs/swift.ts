@@ -28,7 +28,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import { coerceDeclaredSwiftTargets } from '../../language-config.js';
+import { coerceDeclaredSwiftTargets, swiftDeclaredTargetPrefix } from '../../language-config.js';
 import type { ImportResolutionConfig, ImportResolverStrategy, ResolveCtx } from '../types.js';
 
 interface SwiftTargetIndex {
@@ -73,7 +73,7 @@ function getSwiftTargetIndex(
   const targetDirs: { name: string; prefix: string }[] = [];
   const byTarget = new Map<string, string[]>();
   for (const [name, dir] of targets) {
-    targetDirs.push({ name, prefix: dir.replace(/\\/g, '/') + '/' });
+    targetDirs.push({ name, prefix: swiftDeclaredTargetPrefix(dir) });
     byTarget.set(name, []);
   }
 

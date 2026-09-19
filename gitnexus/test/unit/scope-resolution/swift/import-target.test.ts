@@ -107,6 +107,16 @@ describe('resolveSwiftImportTarget — declared Package.swift (R3, R4)', () => {
     ]);
   });
 
+  it('a declared path: "." target reaches root-level Swift files', () => {
+    const files = ['Lib.swift', 'Sources/Other/X.swift'];
+    expect(
+      resolve('Lib', files, 'Sources/App/main.swift', {
+        origin: 'package.swift',
+        targets: new Map([['Lib', '.']]),
+      }),
+    ).toEqual(['Lib.swift', 'Sources/Other/X.swift']);
+  });
+
   it('excludes the importer from its own module file list', () => {
     const files = ['Sources/Models/User.swift', 'Sources/Models/Other.swift'];
     expect(
