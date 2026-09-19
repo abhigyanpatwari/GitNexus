@@ -216,9 +216,13 @@ export function coerceDeclaredSwiftTargets(
   return null;
 }
 
-/** Segment-boundary prefix for a Package.swift `path:`. `"."` is the package root. */
+/** Segment-boundary prefix for a Package.swift `path:`. `"."` / `"./"` is the package root. */
 export function swiftDeclaredTargetPrefix(dir: string): string {
-  const norm = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+  let norm = dir.replace(/\\/g, '/');
+  while (norm.startsWith('./')) {
+    norm = norm.slice(2);
+  }
+  norm = norm.replace(/\/+$/, '');
   return norm === '' || norm === '.' ? '' : `${norm}/`;
 }
 
@@ -745,9 +749,20 @@ function skipSwiftWsAndComments(source: string, start: number): number | null {
       continue;
     }
     if (ch === '/' && next === '*') {
-      const end = source.indexOf('*/', i + 2);
-      if (end === -1) return null;
-      i = end + 2;
+      let depth = 1;
+      i += 2;
+      while (i < source.length && depth > 0) {
+        if (source[i] === '/' && source[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (source[i] === '*' && source[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth !== 0) return null;
       continue;
     }
     return i;
@@ -1051,17 +1066,233 @@ export function parseSwiftPackageManifest(source: string): {
 
   return {
     targets,
-    complete: !sawUnreadableFactory && !swiftManifestHasHelperBuiltTargets(source, targets.size),
+    complete: !sawUnreadableFactory && !swiftManifestHasHelperBuiltTargets(source),
   };
 }
 
-/** `targets: makeTargets()` / `targets: [.target(...)] + more` — fail-open.
- *  `.library(..., targets: libTargets)` is not a helper-built package list. */
-function swiftManifestHasHelperBuiltTargets(source: string, collectedCount: number): boolean {
-  if (collectedCount === 0 && /\btargets\s*:\s*[A-Za-z_$]/.test(source)) return true;
-  if (/\btargets\s*:\s*[A-Za-z_$][\w.]*\s*\(/.test(source)) return true;
-  if (/\btargets\s*:\s*[A-Za-z_$][\w.]*\s*\+/.test(source)) return true;
-  return /\btargets\s*:\s*\[[\s\S]*?\]\s*\+/.test(source);
+/**
+ * Fail-open when `Package(...)`'s own `targets:` argument is not a literal
+ * array. Product factories (`.library(..., targets: libTargets)`) sit inside
+ * nested parens and are ignored. Comments and strings do not count.
+ */
+function swiftManifestHasHelperBuiltTargets(source: string): boolean {
+  return forEachSwiftPackageArgs(source, packageTargetsArgIsHelperBuilt);
+}
+
+/** Walk `Package(` calls outside comments/strings. Unclosed `Package(` is incomplete. */
+function forEachSwiftPackageArgs(source: string, visit: (args: string) => boolean): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || source[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (
+      !source.startsWith('Package', i) ||
+      isSwiftIdentCont(source[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(source[i - 1]))
+    ) {
+      continue;
+    }
+    const parenAt = skipSwiftWsAndComments(source, i + 7);
+    if (parenAt === null || source[parenAt] !== '(') continue;
+    const args = extractBalancedParen(source, parenAt);
+    if (args === null) return true;
+    if (visit(args)) return true;
+    i = parenAt + args.length + 1;
+  }
+  return false;
+}
+
+function packageTargetsArgIsHelperBuilt(args: string): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    const next = args[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || args[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (paren !== 0) continue;
+    if (
+      !args.startsWith('targets', i) ||
+      isSwiftIdentCont(args[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(args[i - 1]))
+    ) {
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(args, i + 7);
+    if (colonAt === null || args[colonAt] !== ':') {
+      i += 6;
+      continue;
+    }
+    return classifyPackageTargetsValue(args, colonAt + 1);
+  }
+  return false;
+}
+
+function classifyPackageTargetsValue(args: string, afterColon: number): boolean {
+  const start = skipSwiftWsAndComments(args, afterColon);
+  if (start === null) return true;
+  if (args[start] === '[') {
+    const close = matchSwiftSquare(args, start);
+    if (close === null) return true;
+    const next = skipSwiftWsAndComments(args, close + 1);
+    return next !== null && args[next] === '+';
+  }
+  return true;
+}
+
+function matchSwiftSquare(source: string, openIndex: number): number | null {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || source[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+        continue;
+      }
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
 }
 
 async function inferSwiftDirectoryTargets(repoRoot: string): Promise<Map<string, string>> {

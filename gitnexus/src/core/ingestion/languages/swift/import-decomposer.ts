@@ -232,10 +232,21 @@ function kindAfterImportKeyword(clause: string): string | null {
       continue;
     }
     if (ch === '/' && next === '*') {
-      const end = clause.indexOf('*/', i + 2);
-      if (end === -1) return null;
+      let depth = 1;
+      i += 2;
+      while (i < clause.length && depth > 0) {
+        if (clause[i] === '/' && clause[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (clause[i] === '*' && clause[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth !== 0) return null;
       skipped = true;
-      i = end + 2;
       continue;
     }
     break;

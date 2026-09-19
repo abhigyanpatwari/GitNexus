@@ -13,6 +13,7 @@ import path from 'node:path';
 import {
   loadSwiftPackageConfig,
   parseSwiftPackageManifest,
+  swiftDeclaredTargetPrefix,
 } from '../../../../src/core/ingestion/language-config.js';
 import { coerceDeclaredSwiftTargets } from '../../../../src/core/ingestion/languages/swift/target-grouping.js';
 
@@ -268,6 +269,52 @@ let package = Package(name: "Demo", targets: extraTargets + [.target(name: "Core
     );
     expect(parsed.complete).toBe(true);
     expect(parsed.targets.get('T')).toBe('Sources/T');
+  });
+
+  it('ignores a commented helper-built targets: list', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(
+    name: "Demo",
+    targets: [
+        .target(name: "Models"),
+    ]
+)
+// targets: makeTargets()
+`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('ignores a helper-built targets: spelling inside a string', () => {
+    const parsed = parseSwiftPackageManifest(`
+let note = "targets: makeTargets()"
+let package = Package(name: "Demo", targets: [.target(name: "Models")])
+`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('treats Package(targets: variable) as incomplete even when a factory was collected', () => {
+    const parsed = parseSwiftPackageManifest(`
+func unused() { _ = Target.target(name: "Ghost") }
+let package = Package(name: "Demo", targets: actualTargets)
+.target(name: "Incidental")
+`);
+    expect(parsed.complete).toBe(false);
+    expect(parsed.targets.get('Incidental')).toBe('Sources/Incidental');
+  });
+});
+
+describe('swiftDeclaredTargetPrefix', () => {
+  it('treats . and ./ as the package root', () => {
+    expect(swiftDeclaredTargetPrefix('.')).toBe('');
+    expect(swiftDeclaredTargetPrefix('./')).toBe('');
+    expect(swiftDeclaredTargetPrefix('./.')).toBe('');
+  });
+
+  it('strips a leading ./ from a relative target path', () => {
+    expect(swiftDeclaredTargetPrefix('./Sources/Core')).toBe('Sources/Core/');
+    expect(swiftDeclaredTargetPrefix('Sources/Core')).toBe('Sources/Core/');
   });
 });
 

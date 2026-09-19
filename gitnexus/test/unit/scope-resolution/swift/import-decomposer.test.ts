@@ -140,4 +140,15 @@ describe.skipIf(!swiftAvailable)('interpretSwiftImport via emitSwiftScopeCapture
       },
     ]);
   });
+
+  it('reads the kind after nested block comments', () => {
+    expect(importsOf('import /* outer /* inner */ */ struct Models.User')).toEqual([
+      {
+        kind: 'named',
+        localName: 'User',
+        importedName: 'User',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
 });
