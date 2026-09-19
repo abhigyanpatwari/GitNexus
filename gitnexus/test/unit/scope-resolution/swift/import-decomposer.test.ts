@@ -118,4 +118,28 @@ describe.skipIf(!swiftAvailable)('interpretSwiftImport via emitSwiftScopeCapture
       },
     ]);
   });
+
+  it('does not treat _exported inside an @available message as @_exported', () => {
+    expect(
+      importsOf('@available(*, deprecated, message: "_exported") import Models'),
+    ).toEqual([
+      {
+        kind: 'namespace',
+        localName: 'Models',
+        importedName: 'Models',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
+
+  it('reads the kind after a comment that itself contains import', () => {
+    expect(importsOf('import /* import */ struct Models.User')).toEqual([
+      {
+        kind: 'named',
+        localName: 'User',
+        importedName: 'User',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
 });

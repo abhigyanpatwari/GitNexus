@@ -47,8 +47,8 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
     const child = node.namedChild(i);
     if (child === null) continue;
     if (child.type === 'modifiers') {
-      if (/\btestable\b/.test(child.text)) testable = true;
-      if (/_exported\b/.test(child.text)) exported = true;
+      if (swiftModifiersHaveAttribute(child.text, 'testable')) testable = true;
+      if (swiftModifiersHaveAttribute(child.text, '_exported')) exported = true;
     } else if (child.type === 'identifier') {
       identifierNode = child;
     }
@@ -80,18 +80,139 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
   };
 }
 
+function isSwiftIdentCont(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+
+/** First `word` outside comments and strings. Linear scan. */
+function indexOfBareWord(text: string, word: string): number {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (
+      text.startsWith(word, i) &&
+      !isSwiftIdentCont(text[i + word.length]) &&
+      (i === 0 || !isSwiftIdentCont(text[i - 1]))
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** `@name` token in modifier text — not `_exported` / `testable` inside a string. */
+function swiftModifiersHaveAttribute(text: string, name: 'testable' | '_exported'): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch !== '@') continue;
+    let j = i + 1;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    if (text.startsWith(name, j) && !isSwiftIdentCont(text[j + name.length])) return true;
+  }
+  return false;
+}
+
 /** Kind token from the import clause only — skip `@available(..., message: "import struct")`. */
 function importKindFromClause(node: SyntaxNode, identifierNode: SyntaxNode): string | null {
   const identRel = identifierNode.startIndex - node.startIndex;
   const before = identRel >= 0 ? node.text.slice(0, identRel) : node.text;
-  const importAt = before.lastIndexOf('import');
+  const importAt = indexOfBareWord(before, 'import');
   const clause = importAt === -1 ? before : before.slice(importAt);
   return kindAfterImportKeyword(clause);
 }
 
 /** After `import`, skip whitespace and comments, then read a kind token. Linear: no nested-quantifier backtracking. */
 function kindAfterImportKeyword(clause: string): string | null {
-  const start = clause.lastIndexOf('import');
+  const start = indexOfBareWord(clause, 'import');
   if (start === -1) return null;
   let i = start + 'import'.length;
   let skipped = false;

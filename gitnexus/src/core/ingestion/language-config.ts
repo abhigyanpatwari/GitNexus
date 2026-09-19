@@ -665,10 +665,6 @@ const SWIFT_FACTORY_RE = new RegExp(
   `\\.(${[...SWIFT_SOURCE_FACTORY_NAMES, ...SWIFT_SKIP_FACTORY_NAMES].join('|')})\\s*\\(`,
   'g',
 );
-const SWIFT_NAME_FIELD_RE = /\bname\s*:\s*["']([^"']+)["']/;
-const SWIFT_PATH_FIELD_RE = /\bpath\s*:\s*["']([^"']+)["']/;
-const SWIFT_PATH_KEY_RE = /\bpath\s*:/;
-
 function extractBalancedParen(source: string, openIndex: number): string | null {
   let depth = 0;
   let inString: '"' | "'" | null = null;
@@ -729,13 +725,199 @@ function extractBalancedParen(source: string, openIndex: number): string | null 
   return null;
 }
 
-function swiftStringField(block: string, field: 'name' | 'path'): string | undefined {
-  const re = field === 'name' ? SWIFT_NAME_FIELD_RE : SWIFT_PATH_FIELD_RE;
-  return re.exec(block)?.[1];
+function isSwiftIdentCont(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+
+function skipSwiftWsAndComments(source: string, start: number): number | null {
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const nl = source.indexOf('\n', i + 2);
+      if (nl === -1) return null;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end === -1) return null;
+      i = end + 2;
+      continue;
+    }
+    return i;
+  }
+  return null;
+}
+
+/** First `name:` / `path:` string outside comments. Escapes and interpolations are unreadable. */
+function readSwiftFactoryField(
+  block: string,
+  field: 'name' | 'path',
+): { value: string | undefined; keyPresent: boolean } {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < block.length; i++) {
+    const ch = block[i];
+    const next = block[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || block[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(ch)) continue;
+    let j = i + 1;
+    while (j < block.length && isSwiftIdentCont(block[j])) j++;
+    if (block.slice(i, j) !== field) {
+      i = j - 1;
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(block, j);
+    if (colonAt === null || block[colonAt] !== ':') {
+      i = j - 1;
+      continue;
+    }
+    const valueAt = skipSwiftWsAndComments(block, colonAt + 1);
+    if (valueAt === null) return { value: undefined, keyPresent: true };
+    const quote = block[valueAt];
+    if (quote !== '"' && quote !== "'") return { value: undefined, keyPresent: true };
+    const parsed = readSwiftSimpleQuotedString(block, valueAt);
+    if (parsed === null) return { value: undefined, keyPresent: true };
+    return { value: parsed, keyPresent: true };
+  }
+  return { value: undefined, keyPresent: false };
+}
+
+/** Quoted literal with no escapes. Any `\` (including `\u{…}` and `\(`) is unreadable. */
+function readSwiftSimpleQuotedString(source: string, openIndex: number): string | null {
+  const quote = source[openIndex];
+  let i = openIndex + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') return null;
+    if (ch === quote) return source.slice(openIndex + 1, i);
+    if (ch === '\n') return null;
+    i++;
+  }
+  return null;
 }
 
 function swiftManifestHasCompletenessHazard(source: string): boolean {
-  return /(^|\n)\s*#if\b/.test(source) || /(^|\n)\s*#elseif\b/.test(source);
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let atLineStart = true;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      } else if (ch === '\n') {
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      else if (ch === '\n') atLineStart = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      if (i === 0 || source[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+        atLineStart = false;
+      }
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '\n') {
+      atLineStart = true;
+      continue;
+    }
+    if (atLineStart && /\s/.test(ch)) continue;
+    if (atLineStart && ch === '#') {
+      if (source.startsWith('if', i + 1) && !isSwiftIdentCont(source[i + 3])) return true;
+      if (source.startsWith('elseif', i + 1) && !isSwiftIdentCont(source[i + 7])) return true;
+    }
+    atLineStart = false;
+  }
+  return false;
 }
 
 interface SwiftCommentScan {
@@ -805,12 +987,6 @@ function advanceSwiftCommentScan(source: string, state: SwiftCommentScan, upTo: 
   state.blockCommentDepth = blockCommentDepth;
 }
 
-function swiftFactoryIsCommented(source: string, index: number): boolean {
-  const state = newSwiftCommentScan();
-  advanceSwiftCommentScan(source, state, index);
-  return state.inLineComment || state.blockCommentDepth > 0;
-}
-
 function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {
   if (!hasPathKey) return false;
   return customPath === undefined || customPath === '' || customPath.includes('\\(');
@@ -833,7 +1009,13 @@ export function parseSwiftPackageManifest(source: string): {
   let coveredEnd = -1;
   while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
     advanceSwiftCommentScan(source, commentScan, match.index);
-    if (commentScan.inLineComment || commentScan.blockCommentDepth > 0) continue;
+    if (
+      commentScan.inLineComment ||
+      commentScan.blockCommentDepth > 0 ||
+      commentScan.inString !== null
+    ) {
+      continue;
+    }
     if (match.index > 0 && match.index < coveredEnd) continue;
     const kind = match[1];
     const paren = source.indexOf('(', match.index);
@@ -844,13 +1026,15 @@ export function parseSwiftPackageManifest(source: string): {
     }
     coveredEnd = Math.max(coveredEnd, paren + 1 + block.length + 1);
     if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
-    const name = swiftStringField(block, 'name');
-    if (name === undefined || name === '') {
+    const nameField = readSwiftFactoryField(block, 'name');
+    if (nameField.value === undefined || nameField.value === '') {
       sawUnreadableFactory = true;
       continue;
     }
-    const customPath = swiftStringField(block, 'path');
-    if (swiftPathIsUnreadable(customPath, SWIFT_PATH_KEY_RE.test(block))) {
+    const name = nameField.value;
+    const pathField = readSwiftFactoryField(block, 'path');
+    const customPath = pathField.value;
+    if (swiftPathIsUnreadable(customPath, pathField.keyPresent)) {
       sawUnreadableFactory = true;
       continue;
     }
@@ -876,6 +1060,7 @@ export function parseSwiftPackageManifest(source: string): {
 function swiftManifestHasHelperBuiltTargets(source: string, collectedCount: number): boolean {
   if (collectedCount === 0 && /\btargets\s*:\s*[A-Za-z_$]/.test(source)) return true;
   if (/\btargets\s*:\s*[A-Za-z_$][\w.]*\s*\(/.test(source)) return true;
+  if (/\btargets\s*:\s*[A-Za-z_$][\w.]*\s*\+/.test(source)) return true;
   return /\btargets\s*:\s*\[[\s\S]*?\]\s*\+/.test(source);
 }
 

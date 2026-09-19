@@ -208,6 +208,60 @@ let package = Package(name: "Demo", targets: makeTargets() + [.target(name: "Cor
     expect(parsed.targets.get('Models')).toBe('Sources/Models');
   });
 
+  it('ignores a factory-like spelling inside a string literal', () => {
+    const parsed = parseSwiftPackageManifest(`
+      let example = ".target(name: 'Ghost')"
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('treats a variable-prefix targets: concatenation as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(name: "Demo", targets: extraTargets + [.target(name: "Core")])
+`);
+    expect(parsed.complete).toBe(false);
+    expect(parsed.targets.get('Core')).toBe('Sources/Core');
+  });
+
+  it('skips a commented name: field and uses the real one', () => {
+    const parsed = parseSwiftPackageManifest(`.target(/* name: "Ghost" */ name: "Models")`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('does not treat a commented #if as a completeness hazard', () => {
+    const parsed = parseSwiftPackageManifest(`
+      // #if os(macOS)
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('does not treat a block-commented #if as a completeness hazard', () => {
+    const parsed = parseSwiftPackageManifest(`
+/*
+#if os(macOS)
+    .target(name: "MacOnly")
+#endif
+*/
+      .target(name: "Models")
+    `);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('MacOnly')).toBe(false);
+    expect(parsed.targets.get('Models')).toBe('Sources/Models');
+  });
+
+  it('rejects a name string with a Swift escape', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "\\u{43}ore")`);
+    expect(parsed.complete).toBe(false);
+    expect(parsed.targets.size).toBe(0);
+  });
+
   it('does not treat https:// on the same line as a commented factory', () => {
     const parsed = parseSwiftPackageManifest(
       'let package = Package(name: "Demo", dependencies: [.package(url: "https://example.com/foo.git", from: "1.0.0")], targets: [.target(name: "T")])',
