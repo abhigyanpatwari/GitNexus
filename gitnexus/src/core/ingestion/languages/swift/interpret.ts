@@ -19,17 +19,23 @@ export function interpretSwiftImport(captures: CaptureMatch): ParsedImport | nul
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
 
-  // Swift imports are whole-module (wildcard semantics): `import Foundation`
-  // brings the entire module into scope, no named members. The SPM target
-  // (first dotted segment) is the resolution target; the full path is kept
-  // as importedName for reference. `@testable` resolves identically to a
-  // plain import (same module is visible in test scope).
   const source = sourceCap.text;
-  const fullPath = captures['@import.name']?.text ?? source;
+  const name = captures['@import.name']?.text ?? source;
+  const kindText = captures['@import.kind']?.text;
+
+  if (kindText === 'reexport' || kindText === 'named') {
+    return {
+      kind: kindText,
+      localName: name,
+      importedName: name,
+      targetRaw: source,
+    };
+  }
+
   return {
     kind: 'namespace',
     localName: source,
-    importedName: fullPath,
+    importedName: name,
     targetRaw: source,
   };
 }

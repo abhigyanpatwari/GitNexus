@@ -14,12 +14,15 @@
  * Module identity: Swift has no in-source `package X` marker. Module
  * membership is the SPM target *subtree* (`Sources/<Target>/…`), threaded
  * in via the SPM target map (`resolutionConfig` → `coerceSwiftTargets`)
- * and grouped by `groupSwiftFilesBySpmTarget` — replicating legacy
- * `groupSwiftFilesByTarget`. With no scanned source dir the map is null
+ * and grouped by `groupSwiftFilesBySpmTarget`. The helper preserves the
+ * legacy `groupSwiftFilesByTarget` bucketing contract for ordinary layouts
+ * while intentionally fixing #2931's repeated-prefix edge case. With no
+ * target map (no Package.swift and no scanned `Sources/*`) the map is null
  * and all files form one `__default__` module (single-Xcode-project
- * assumption). Every pair of distinct `.swift` files in the same module
- * gets a directed IMPORTS edge in both directions (whole-module
- * visibility is symmetric).
+ * assumption). An inferred folder map must keep sibling folders isolated.
+ * Every pair of distinct `.swift`
+ * files in the same module gets a directed IMPORTS edge in both directions
+ * (whole-module visibility is symmetric).
  *
  * Node identity + edge construction mirror the generic `emitImportEdges`
  * convention (`graph-bridge/imports-to-edges.ts`): `generateId('File', path)`
@@ -41,8 +44,6 @@ export function emitSwiftImplicitImportEdges(
   _nodeLookup: GraphNodeLookup,
   resolutionConfig?: unknown,
 ): void {
-  // Group files by SPM target subtree (the module). No-source-dir → all
-  // files in one `__default__` bucket.
   const targets = coerceSwiftTargets(resolutionConfig);
   const filesByTarget = groupSwiftFilesBySpmTarget(
     parsedFiles,
@@ -51,16 +52,15 @@ export function emitSwiftImplicitImportEdges(
   );
 
   for (const [, group] of filesByTarget) {
-    if (group.length < 2) continue; // no siblings to import
+    if (group.length < 2) continue;
     for (const source of group) {
-      for (const target of group) {
-        if (source.filePath === target.filePath) continue; // no self-import
-        const dedupKey = `${source.filePath}->${target.filePath}`;
-
+      for (const dest of group) {
+        if (source.filePath === dest.filePath) continue;
+        const dedupKey = `${source.filePath}->${dest.filePath}`;
         graph.addRelationship({
           id: generateId('IMPORTS', dedupKey),
           sourceId: generateId('File', source.filePath),
-          targetId: generateId('File', target.filePath),
+          targetId: generateId('File', dest.filePath),
           type: 'IMPORTS',
           confidence: 1.0,
           reason: 'swift-scope: implicit module visibility',

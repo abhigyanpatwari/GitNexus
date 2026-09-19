@@ -37,14 +37,15 @@
  *      Array where Element: Equatable`) are not narrowed — the `Self`
  *      type of a protocol method resolves to the protocol, not the
  *      conforming type.
- *   2. **Cross-module `import` resolution** is still directory-segment
- *      based (`import Foo` → files under a `Foo/` dir); explicit imports do
- *      not yet consult the SPM target map (follow-up, tracked under #1935).
- *      Same-target visibility (the common case) IS SPM-target-subtree
- *      accurate — handled by sibling augmentation grouped via
- *      `groupSwiftFilesBySpmTarget`, not by explicit imports.
+ *   2. **Cross-module `import` resolution** uses a Package.swift
+ *      declaration map when one is present, otherwise the directory-segment
+ *      index minus well-known SDK module names (#2964). Same-target
+ *      visibility (the common case) is SPM-target-subtree grouping via
+ *      `groupSwiftFilesBySpmTarget`, not explicit imports.
  *   3. **Operator / subscript overloads** dispatch by name only.
- *   4. **`@_exported import` re-exports** are treated as plain imports.
+ *   4. **`@_exported import`** is `ParsedImport` `kind: 'reexport'` and
+ *      in-repo modules are closed transitively at resolve time. `public
+ *      import` is not a re-export.
  */
 
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
@@ -87,12 +88,18 @@ const swiftScopeResolver: ScopeResolver = {
   // `goScopeResolver`'s `loadGoModulePath`.
   loadResolutionConfig: (repoPath: string) => loadSwiftPackageConfig(repoPath),
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: SwiftResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    const ws: SwiftResolveContext = {
+      fromFile,
+      allFilePaths,
+      resolutionConfig,
+      parsedFiles: context?.parsedFiles,
+    };
     return resolveSwiftImportTarget(
-      interpretSwiftImport({
-        '@import.source': { name: '@import.source', text: targetRaw, range: ZERO_RANGE },
-      }) ?? { kind: 'namespace', localName: targetRaw, importedName: targetRaw, targetRaw },
+      context?.parsedImport ??
+        interpretSwiftImport({
+          '@import.source': { name: '@import.source', text: targetRaw, range: ZERO_RANGE },
+        }) ?? { kind: 'namespace', localName: targetRaw, importedName: targetRaw, targetRaw },
       ws,
     );
   },
