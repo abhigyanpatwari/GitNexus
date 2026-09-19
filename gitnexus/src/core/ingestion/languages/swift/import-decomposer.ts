@@ -19,8 +19,7 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-const IMPORT_KIND_RE =
-  /\bimport(?:(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\n]*\n)+)(struct|class|enum|protocol|func|let|var|typealias)\b/;
+const IMPORT_KIND_TOKEN_RE = /^(struct|class|enum|protocol|func|let|var|typealias)\b/;
 
 interface SwiftImportSpec {
   readonly source: string;
@@ -87,7 +86,41 @@ function importKindFromClause(node: SyntaxNode, identifierNode: SyntaxNode): str
   const before = identRel >= 0 ? node.text.slice(0, identRel) : node.text;
   const importAt = before.lastIndexOf('import');
   const clause = importAt === -1 ? before : before.slice(importAt);
-  return IMPORT_KIND_RE.exec(clause)?.[1] ?? null;
+  return kindAfterImportKeyword(clause);
+}
+
+/** After `import`, skip whitespace and comments, then read a kind token. Linear: no nested-quantifier backtracking. */
+function kindAfterImportKeyword(clause: string): string | null {
+  const start = clause.lastIndexOf('import');
+  if (start === -1) return null;
+  let i = start + 'import'.length;
+  let skipped = false;
+  while (i < clause.length) {
+    const ch = clause[i];
+    const next = clause[i + 1];
+    if (/\s/.test(ch)) {
+      skipped = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const nl = clause.indexOf('\n', i + 2);
+      if (nl === -1) return null;
+      skipped = true;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = clause.indexOf('*/', i + 2);
+      if (end === -1) return null;
+      skipped = true;
+      i = end + 2;
+      continue;
+    }
+    break;
+  }
+  if (!skipped) return null;
+  return IMPORT_KIND_TOKEN_RE.exec(clause.slice(i))?.[1] ?? null;
 }
 
 function bindingKind(spec: SwiftImportSpec): 'namespace' | 'named' | 'reexport' {

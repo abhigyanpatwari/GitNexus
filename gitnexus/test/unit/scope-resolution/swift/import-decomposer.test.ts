@@ -49,6 +49,29 @@ describe.skipIf(!swiftAvailable)('interpretSwiftImport via emitSwiftScopeCapture
     ]);
   });
 
+  it('allows a line comment between import and its kind', () => {
+    expect(importsOf('import // selected API\nstruct Models.User')).toEqual([
+      {
+        kind: 'named',
+        localName: 'User',
+        importedName: 'User',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
+
+  it('reads the kind after a long block comment that repeats star-slash-slash-star', () => {
+    const noise = '*//*'.repeat(80);
+    expect(importsOf(`import /* ${noise} */ struct Models.User`)).toEqual([
+      {
+        kind: 'named',
+        localName: 'User',
+        importedName: 'User',
+        targetRaw: 'Models',
+      },
+    ]);
+  });
+
   it('does not take import kind from an @available message string', () => {
     expect(
       importsOf('@available(*, deprecated, message: "import struct") import Foo.Bar'),
