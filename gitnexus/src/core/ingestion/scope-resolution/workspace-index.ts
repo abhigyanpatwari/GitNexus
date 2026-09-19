@@ -39,7 +39,14 @@
  * Build cost is O(totalScopes). Read-only after construction.
  */
 
-import type { ParsedFile, Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  Scope,
+  ScopeId,
+  ScopeTree,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 import { isClassLike } from './scope/walkers.js';
 
@@ -107,11 +114,15 @@ class ScopeByKeyView<K> implements ReadonlyMap<K, Scope> {
 export function buildWorkspaceResolutionIndex(
   parsedFiles: readonly ParsedFile[],
   scopeTree?: ScopeTree,
+  options?: {
+    readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  },
 ): WorkspaceResolutionIndex {
   const classScopeIdByDefId = new Map<string, ScopeId>();
   const classScopeIdToDefId = new Map<ScopeId, string>();
   const moduleScopeIdByFile = new Map<string, ScopeId>();
   const exportedCallableByName = new Map<string, SymbolDefinition>();
+  const declaredReturnTypeByCallableId = new Map<string, TypeRef>();
   // Back-compat (no scopeTree): keep the direct Scope-object maps.
   const classScopeByDefIdDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
   const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
@@ -138,6 +149,24 @@ export function buildWorkspaceResolutionIndex(
     }
 
     for (const scope of parsed.scopes) {
+      if (scope.kind === 'Function' && scope.parent !== null) {
+        for (const def of scope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+            continue;
+          }
+          if (def.returnType !== undefined) {
+            const stripped = options?.stripTypePreservingDecoration?.(def.returnType);
+            const rawName = stripped ?? def.returnType;
+            declaredReturnTypeByCallableId.set(def.nodeId, {
+              rawName,
+              ...(rawName !== def.returnType ? { declaredSpelling: def.returnType } : {}),
+              declaredAtScope: scope.id,
+              source: 'return-annotation',
+            });
+            continue;
+          }
+        }
+      }
       if (scope.kind !== 'Class') continue;
       const cd = scope.ownedDefs.find((d) => isClassLike(d.type));
       if (cd !== undefined) {
@@ -157,5 +186,11 @@ export function buildWorkspaceResolutionIndex(
       ? moduleScopeByFileDirect!
       : new ScopeByKeyView(moduleScopeIdByFile, scopeTree);
 
-  return { classScopeByDefId, classScopeIdToDefId, moduleScopeByFile, exportedCallableByName };
+  return {
+    classScopeByDefId,
+    classScopeIdToDefId,
+    moduleScopeByFile,
+    exportedCallableByName,
+    declaredReturnTypeByCallableId,
+  };
 }
