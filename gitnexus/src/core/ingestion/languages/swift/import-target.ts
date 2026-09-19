@@ -1,37 +1,27 @@
 /**
  * `resolveImportTarget` adapter for the Swift `ScopeResolver`.
  *
- * Swift's `import ModuleName` brings in a whole SPM target / framework
- * module. The scope-resolution contract passes only `allFilePaths` (no
- * `SwiftPackageConfig`), so we resolve a module name to the `.swift`
- * files under a directory segment named after the module — the SPM
- * convention `Sources/<Module>/*.swift` (and the common
- * `<Module>/*.swift` layout). This needs no manifest parsing.
+ * Hybrid (KTD1): a Package.swift declaration map (`origin: 'package.swift'`)
+ * resolves only declared target names. Otherwise refuse well-known SDK
+ * module names and fall back to the memoized directory-segment index so
+ * local folder modules still resolve without a manifest (R7).
  *
- * Same-module (intra-target) visibility — the bulk of Swift cross-file
- * resolution, which needs NO `import` statement — is handled separately
- * by `populateSwiftTargetSiblings` (see `target-siblings.ts`). This
- * adapter only resolves EXPLICIT `import` statements (cross-module).
- *
- * Returns all matching files (one ImportEdge per file, like Go's
- * package resolver) so every exported symbol in the module materializes
- * a binding. Returns `null` for external frameworks (Foundation, UIKit,
- * …) that have no in-repo directory.
- *
- * Performance: the directory→files grouping is memoized on the stable
- * `allFilePaths` Set identity (the same Set is threaded to every import
- * in a run), so it is built once per run — NOT once per import. Mirrors
- * Python's `getPythonFileIndex` WeakMap pattern (PR #1918).
+ * Same-module visibility without `import` is `populateSwiftTargetSiblings`.
+ * This adapter only resolves EXPLICIT cross-module `import`s.
  */
 
-import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { coerceDeclaredSwiftTargets, fileMatchesSwiftTargetDir } from './target-grouping.js';
+import { isSwiftSdkModule } from './sdk-modules.js';
 
 export interface SwiftResolveContext {
   readonly fromFile: string;
   /** `ReadonlySet` so the orchestrator's stable run-level set flows
    *  straight through to the memoized index key. */
   readonly allFilePaths: ReadonlySet<string>;
+  readonly resolutionConfig?: unknown;
+  readonly parsedFiles?: readonly ParsedFile[];
 }
 
 interface SwiftModuleIndex {
@@ -45,11 +35,7 @@ const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): Swif
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
     if (!norm.endsWith('.swift')) continue;
-    // Each interior directory segment is a candidate module name. A file
-    // `Sources/Models/User.swift` is attributed to module `Sources` and
-    // module `Models`; an `import Models` then resolves to it.
     const segments = norm.split('/');
-    // Drop the filename (last segment); the rest are directory segments.
     for (let i = 0; i < segments.length - 1; i++) {
       const seg = segments[i];
       if (seg === '') continue;
@@ -65,12 +51,28 @@ const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): Swif
   return { byModule };
 });
 
-export function resolveSwiftImportTarget(
-  parsedImport: ParsedImport,
-  workspaceIndex: WorkspaceIndex,
-): string | readonly string[] | null {
+function filesForDeclaredTarget(
+  allFilePaths: ReadonlySet<string>,
+  targetDir: string,
+  fromFile: string,
+): string[] {
+  const out: string[] = [];
+  for (const raw of allFilePaths) {
+    const norm = raw.replace(/\\/g, '/');
+    if (!norm.endsWith('.swift')) continue;
+    if (!fileMatchesSwiftTargetDir(norm, targetDir)) continue;
+    if (raw === fromFile) continue;
+    out.push(raw);
+  }
+  return out;
+}
+
+function excludeImporter(files: readonly string[], fromFile: string): string[] {
+  return files.filter((f) => f !== fromFile);
+}
+
+function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | null {
   const ctx = workspaceIndex as SwiftResolveContext | undefined;
-  // Duck-type the set (PR #1918 P2: don't `instanceof Set`).
   const allFilePaths = (ctx as { allFilePaths?: unknown } | undefined)?.allFilePaths;
   if (
     ctx === undefined ||
@@ -80,18 +82,79 @@ export function resolveSwiftImportTarget(
   ) {
     return null;
   }
+  return ctx;
+}
 
-  // Swift import target is the SPM module name (first dotted segment).
+/** Module files only — no @_exported closure. Null means external / unknown. */
+export function resolveSwiftModuleFiles(
+  moduleName: string,
+  ctx: SwiftResolveContext,
+): string[] | null {
+  if (moduleName === '') return null;
+
+  const declared = coerceDeclaredSwiftTargets(ctx.resolutionConfig);
+  if (declared !== null) {
+    const dir = declared.get(moduleName);
+    if (dir === undefined) return null;
+    const files = filesForDeclaredTarget(ctx.allFilePaths, dir, ctx.fromFile);
+    return files.length > 0 ? files : null;
+  }
+
+  if (isSwiftSdkModule(moduleName)) return null;
+
+  const index = getSwiftModuleIndex(ctx.allFilePaths);
+  const files = index.byModule.get(moduleName);
+  if (files === undefined || files.length === 0) return null;
+  const out = excludeImporter(files, ctx.fromFile);
+  return out.length > 0 ? out : null;
+}
+
+export function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveContext): string[] {
+  const parsedByPath = new Map((ctx.parsedFiles ?? []).map((pf) => [pf.filePath, pf]));
+  if (parsedByPath.size === 0) return [...seed];
+
+  const seenModules = new Set<string>();
+  const out = new Set(seed);
+  const queue = [...seed];
+
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    const parsed = parsedByPath.get(file);
+    if (parsed === undefined) continue;
+    for (const imp of parsed.parsedImports) {
+      if (imp.kind !== 'reexport') continue;
+      const targetRaw = imp.targetRaw;
+      if (targetRaw === null || targetRaw === '') continue;
+      const moduleName = targetRaw.split('.')[0];
+      if (moduleName === '' || seenModules.has(moduleName)) continue;
+      seenModules.add(moduleName);
+      const more = resolveSwiftModuleFiles(moduleName, ctx);
+      if (more === null) continue;
+      for (const next of more) {
+        if (out.has(next)) continue;
+        out.add(next);
+        queue.push(next);
+      }
+    }
+  }
+
+  return [...out];
+}
+
+export function resolveSwiftImportTarget(
+  parsedImport: ParsedImport,
+  workspaceIndex: WorkspaceIndex,
+): string | readonly string[] | null {
+  const ctx = narrowContext(workspaceIndex);
+  if (ctx === null) return null;
+
   const targetRaw = parsedImport.targetRaw;
   if (targetRaw === null || targetRaw === '') return null;
   const moduleName = targetRaw.split('.')[0];
   if (moduleName === '') return null;
 
-  const index = getSwiftModuleIndex(ctx.allFilePaths);
-  const files = index.byModule.get(moduleName);
-  if (files === undefined || files.length === 0) return null; // external framework
-
-  // Exclude the importer itself (a file under `Foo/` importing `Foo`).
-  const out = files.filter((f) => f !== ctx.fromFile);
-  return out.length > 0 ? out : null;
+  const files = resolveSwiftModuleFiles(moduleName, ctx);
+  if (files === null) return null;
+  const expanded = expandSwiftReexportFiles(files, ctx);
+  return expanded.length > 0 ? expanded : null;
 }

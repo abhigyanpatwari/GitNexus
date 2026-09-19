@@ -4,32 +4,30 @@
  * `@import.name` / `@import.testable` that `interpretSwiftImport`
  * consumes.
  *
- * Swift imports are whole-module (no named members), so this is 1:1 —
- * one `import` produces exactly one import. The split layer exposes the
- * module name and the `@testable` flag without pushing raw-text parsing
- * into `interpret.ts`.
+ *   import Foundation              → kind=namespace, source=Foundation
+ *   import Foo.Bar                 → kind=namespace, source=Foo
+ *   import struct Foo.Bar          → kind=named, source=Foo, name=Bar
+ *   @testable import MyApp         → kind=namespace, source=MyApp, testable=1
+ *   @_exported import Foo          → kind=reexport, source=Foo, name=Foo
+ *   @_exported import struct Foo.Bar → kind=reexport, source=Foo, name=Bar
  *
- *   import Foundation        → kind=namespace, source=Foundation
- *   import Foo.Bar           → kind=namespace, source=Foo (SPM target),
- *                              name=Foo.Bar (full path, for reference)
- *   @testable import MyApp   → kind=namespace, source=MyApp, testable=1
- *
- * Verified against tree-sitter-swift 0.7.1:
- *   (import_declaration
- *     (modifiers (attribute (user_type (type_identifier))))?   ; @testable / @_exported
- *     (identifier (simple_identifier)+))                        ; one per dotted segment
+ * Import-kind (`struct`/`class`/…) is not a named tree-sitter child
+ * (hidden `_import_kind` in 0.7.1). Read it from the statement text.
+ * `@_exported` / `@testable` live on `modifiers`.
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+const IMPORT_KIND_RE = /\bimport\s+(struct|class|enum|protocol|func|let|var|typealias)\b/;
+
 interface SwiftImportSpec {
-  /** SPM target name — the first dotted segment (`Foo` in `import Foo.Bar`). */
   readonly source: string;
-  /** Full dotted module path (`Foo.Bar`). */
+  readonly memberName: string;
   readonly fullPath: string;
-  /** True for `@testable import` (test-scope visibility; resolves identically). */
   readonly testable: boolean;
+  readonly exported: boolean;
+  readonly importKind: string | null;
   readonly atNode: SyntaxNode;
 }
 
@@ -42,14 +40,15 @@ export function splitSwiftImport(stmtNode: SyntaxNode): CaptureMatch | null {
 
 function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
   let testable = false;
+  let exported = false;
   let identifierNode: SyntaxNode | null = null;
 
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child === null) continue;
     if (child.type === 'modifiers') {
-      // Any attribute whose text mentions `testable` flips the flag.
       if (/\btestable\b/.test(child.text)) testable = true;
+      if (/_exported\b/.test(child.text)) exported = true;
     } else if (child.type === 'identifier') {
       identifierNode = child;
     }
@@ -57,36 +56,53 @@ function parseSwiftImport(node: SyntaxNode): SwiftImportSpec | null {
 
   if (identifierNode === null) return null;
 
-  // The module path is one or more simple_identifier children, one per
-  // dotted segment. The SPM target is the FIRST segment.
+  const importKind = IMPORT_KIND_RE.exec(node.text)?.[1] ?? null;
+
   const segments: string[] = [];
   for (let i = 0; i < identifierNode.namedChildCount; i++) {
     const seg = identifierNode.namedChild(i);
     if (seg !== null && seg.type === 'simple_identifier') segments.push(seg.text);
   }
   if (segments.length === 0) {
-    // Fall back to the raw identifier text (e.g. a grammar shape we didn't
-    // anticipate). Split on `.` to recover the target segment.
     const raw = identifierNode.text.trim();
     if (raw === '') return null;
     const parts = raw.split('.');
-    return { source: parts[0], fullPath: raw, testable, atNode: node };
+    return {
+      source: parts[0],
+      memberName: parts.length > 1 ? parts[parts.length - 1] : parts[0],
+      fullPath: raw,
+      testable,
+      exported,
+      importKind,
+      atNode: node,
+    };
   }
 
   return {
     source: segments[0],
+    memberName: segments.length > 1 ? segments[segments.length - 1] : segments[0],
     fullPath: segments.join('.'),
     testable,
+    exported,
+    importKind,
     atNode: node,
   };
 }
 
+function bindingKind(spec: SwiftImportSpec): 'namespace' | 'named' | 'reexport' {
+  if (spec.exported) return 'reexport';
+  if (spec.importKind !== null && spec.fullPath.includes('.')) return 'named';
+  return 'namespace';
+}
+
 function buildImportMatch(stmtNode: SyntaxNode, spec: SwiftImportSpec): CaptureMatch {
+  const kind = bindingKind(spec);
+  const nameText = kind === 'namespace' ? spec.fullPath : spec.memberName;
   const m: Record<string, Capture> = {
     '@import.statement': nodeToCapture('@import.statement', stmtNode),
-    '@import.kind': syntheticCapture('@import.kind', spec.atNode, 'namespace'),
+    '@import.kind': syntheticCapture('@import.kind', spec.atNode, kind),
     '@import.source': syntheticCapture('@import.source', spec.atNode, spec.source),
-    '@import.name': syntheticCapture('@import.name', spec.atNode, spec.fullPath),
+    '@import.name': syntheticCapture('@import.name', spec.atNode, nameText),
   };
   if (spec.testable) {
     m['@import.testable'] = syntheticCapture('@import.testable', spec.atNode, '1');

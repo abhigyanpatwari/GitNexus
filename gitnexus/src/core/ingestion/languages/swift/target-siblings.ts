@@ -14,7 +14,8 @@
  * The helper preserves the legacy `wireSwiftImplicitImports` bucketing
  * contract for ordinary layouts (first target wins and unmatched files use
  * `__default__`) but intentionally fixes #2931's repeated-prefix edge case.
- * When a package config is present, files are grouped by SPM target subtree;
+ * When a target map is present (declared Package.swift or inferred
+ * `Sources/*` folders), files are grouped by SPM target subtree;
  * otherwise ALL Swift files form one module (`__default__`,
  * single-Xcode-project assumption). Every `.swift` file in the same target
  * sees its siblings' top-level defs.

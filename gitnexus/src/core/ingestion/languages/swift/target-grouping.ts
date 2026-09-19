@@ -63,7 +63,8 @@ export function groupSwiftFilesBySpmTarget<T>(
     const normalized = rawPath.includes('\\') ? rawPath.replace(/\\/g, '/') : rawPath;
     let assigned = false;
     for (const { name, prefix } of targetPrefixes) {
-      if (normalized.startsWith(prefix) || normalized.includes(`/${prefix}`)) {
+      const dir = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+      if (fileMatchesSwiftTargetDir(normalized, dir)) {
         let group = groups.get(name);
         if (group === undefined) {
           group = [];
@@ -96,4 +97,24 @@ export function coerceSwiftTargets(resolutionConfig: unknown): ReadonlyMap<strin
     return config.targets;
   }
   return null;
+}
+
+/**
+ * Declaration view for explicit import resolve. `origin: 'directories'`
+ * is grouping-only. A hand-built `{ targets }` with no origin stays a
+ * declaration so existing fixtures keep working.
+ */
+export function coerceDeclaredSwiftTargets(
+  resolutionConfig: unknown,
+): ReadonlyMap<string, string> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  if (config == null || !(config.targets instanceof Map)) return null;
+  if (config.origin === 'directories') return null;
+  return config.targets;
+}
+
+/** Segment-boundary membership used by grouping and declared import resolve. */
+export function fileMatchesSwiftTargetDir(normalizedPath: string, targetDir: string): boolean {
+  const prefix = targetDir.replace(/\\/g, '/') + '/';
+  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
 }

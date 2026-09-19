@@ -8,9 +8,8 @@
  * first-target-wins ordering, and the same `__default__` fallback. It now
  * intentionally differs for issue #2931's repeated-prefix edge case by
  * accepting a later segment-boundary occurrence when an earlier textual
- * occurrence is embedded inside a longer path segment. The legacy pipeline
- * remains byte-identical; these tests pin the shared behavior that must not
- * drift while allowing that documented correctness fix.
+ * occurrence is embedded inside a longer path segment. These tests pin the
+ * shared ordinary-layout contract plus that documented #2931 fix.
  *
  *   1. A multi-subdir single target buckets into ONE group.
  *   2. A file matching two overlapping same-named target prefixes is
@@ -114,6 +113,26 @@ describe('groupSwiftFilesBySpmTarget — shared SPM bucketing contract', () => {
 
     expect(groups.get('Alpha')).toEqual([items[0]]);
     expect(groups.get('Beta')).toEqual([items[1]]);
+  });
+
+  it('keeps inferred Sources/* folders in separate buckets', () => {
+    const targets = new Map([
+      ['App', 'Sources/App'],
+      ['Models', 'Sources/Models'],
+      ['Foundation', 'Sources/Foundation'],
+    ]);
+    const items = [
+      'Sources/App/main.swift',
+      'Sources/Models/User.swift',
+      'Sources/Foundation/Thing.swift',
+    ];
+
+    const groups = groupSwiftFilesBySpmTarget(items, id, targets);
+
+    expect(groups.get('App')).toEqual(['Sources/App/main.swift']);
+    expect(groups.get('Models')).toEqual(['Sources/Models/User.swift']);
+    expect(groups.get('Foundation')).toEqual(['Sources/Foundation/Thing.swift']);
+    expect(groups.get('__default__')).toBeUndefined();
   });
 
   it('normalizes backslash paths to forward-slash before matching', () => {

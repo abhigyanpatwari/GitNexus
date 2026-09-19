@@ -27,6 +27,12 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ImportResolutionConfig, ImportResolverStrategy, ResolveCtx } from '../types.js';
 
+/** Keep aligned with `fileMatchesSwiftTargetDir` in languages/swift/target-grouping.ts. */
+function fileMatchesTargetDir(normalizedPath: string, targetDir: string): boolean {
+  const prefix = targetDir.replace(/\\/g, '/') + '/';
+  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
+}
+
 interface SwiftTargetIndex {
   /** Target name → original-case `.swift` file paths under that target dir. */
   readonly byTarget: ReadonlyMap<string, string[]>;
@@ -83,7 +89,8 @@ function getSwiftTargetIndex(
     const norm = ctx.normalizedFileList[i];
     if (!norm.endsWith('.swift')) continue;
     for (const { name, prefix } of targetPrefixes) {
-      if (norm.startsWith(prefix)) {
+      const dir = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+      if (fileMatchesTargetDir(norm, dir)) {
         byTarget.get(name)!.push(ctx.allFileList[i]);
       }
     }
@@ -97,19 +104,21 @@ function getSwiftTargetIndex(
 /** Swift Package.swift target map resolution strategy. */
 export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
-  if (swiftPackageConfig) {
-    // Only the targets map is needed; build the index lazily so repos
-    // without a Package.swift config pay nothing.
-    if (swiftPackageConfig.targets.has(rawImportPath)) {
-      const index = getSwiftTargetIndex(ctx, swiftPackageConfig.targets);
-      const files = index.byTarget.get(rawImportPath);
-      if (files !== undefined && files.length > 0) {
-        // Copy so callers can't mutate the cached index bucket.
-        return { kind: 'files', files: [...files] };
-      }
-    }
+  // Inferred `Sources/*` maps are grouping-only. Hand-built `{ targets }`
+  // fixtures with no origin stay declared (same as coerceDeclaredSwiftTargets).
+  if (swiftPackageConfig == null || swiftPackageConfig.origin === 'directories') {
+    return null;
   }
-  return null; // External framework (Foundation, UIKit, etc.)
+  const moduleName = rawImportPath.split('.')[0];
+  if (moduleName === '' || !swiftPackageConfig.targets.has(moduleName)) {
+    return null;
+  }
+  const index = getSwiftTargetIndex(ctx, swiftPackageConfig.targets);
+  const files = index.byTarget.get(moduleName);
+  if (files !== undefined && files.length > 0) {
+    return { kind: 'files', files: [...files] };
+  }
+  return null;
 };
 
 export const swiftImportConfig: ImportResolutionConfig = {

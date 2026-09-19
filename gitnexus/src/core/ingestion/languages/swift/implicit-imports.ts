@@ -17,8 +17,10 @@
  * and grouped by `groupSwiftFilesBySpmTarget`. The helper preserves the
  * legacy `groupSwiftFilesByTarget` bucketing contract for ordinary layouts
  * while intentionally fixing #2931's repeated-prefix edge case. With no
- * scanned source dir the map is null and all files form one `__default__`
- * module (single-Xcode-project assumption). Every pair of distinct `.swift`
+ * target map (no Package.swift and no scanned `Sources/*`) the map is null
+ * and all files form one `__default__` module (single-Xcode-project
+ * assumption). An inferred folder map must keep sibling folders isolated.
+ * Every pair of distinct `.swift`
  * files in the same module gets a directed IMPORTS edge in both directions
  * (whole-module visibility is symmetric).
  *
@@ -35,6 +37,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { generateId } from '../../../../lib/utils.js';
 import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import { expandSwiftReexportFiles } from './import-target.js';
 
 export function emitSwiftImplicitImportEdges(
   graph: KnowledgeGraph,
@@ -51,17 +54,30 @@ export function emitSwiftImplicitImportEdges(
     targets,
   );
 
-  for (const [, group] of filesByTarget) {
-    if (group.length < 2) continue; // no siblings to import
-    for (const source of group) {
-      for (const target of group) {
-        if (source.filePath === target.filePath) continue; // no self-import
-        const dedupKey = `${source.filePath}->${target.filePath}`;
+  const allFilePaths = new Set(parsedFiles.map((parsed) => parsed.filePath));
 
+  for (const [, group] of filesByTarget) {
+    const reexported = expandSwiftReexportFiles(
+      group.map((parsed) => parsed.filePath),
+      {
+        fromFile: '',
+        allFilePaths,
+        resolutionConfig,
+        parsedFiles,
+      },
+    );
+    const visible = new Set(group.map((parsed) => parsed.filePath));
+    for (const dest of reexported) visible.add(dest);
+
+    if (visible.size < 2) continue;
+    for (const source of group) {
+      for (const dest of visible) {
+        if (source.filePath === dest) continue;
+        const dedupKey = `${source.filePath}->${dest}`;
         graph.addRelationship({
           id: generateId('IMPORTS', dedupKey),
           sourceId: generateId('File', source.filePath),
-          targetId: generateId('File', target.filePath),
+          targetId: generateId('File', dest),
           type: 'IMPORTS',
           confidence: 1.0,
           reason: 'swift-scope: implicit module visibility',

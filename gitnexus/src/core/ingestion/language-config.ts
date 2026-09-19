@@ -174,9 +174,22 @@ export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEv
 }
 
 /** Swift Package Manager module config */
+export type SwiftPackageConfigOrigin = 'package.swift' | 'directories';
+
 export interface SwiftPackageConfig {
   /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
   targets: Map<string, string>;
+  /**
+   * `package.swift` — extracted from a readable Package.swift with no
+   * completeness hazards. Explicit import resolve may treat this as a
+   * declaration map (empty means every name is external).
+   * `directories` — inferred from `Sources/*` (or Package/Sources / src)
+   * when no usable declaration exists. Grouping uses this; import resolve
+   * must not.
+   * Omitted on hand-built test configs: treated as a declaration map so
+   * existing `{ targets }` fixtures stay valid.
+   */
+  origin?: SwiftPackageConfigOrigin;
 }
 
 // ============================================================================
@@ -518,12 +531,78 @@ async function collectDeclaredNamespaces(
   return structure.incomplete ? 'truncated' : 'ok';
 }
 
-export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  // Swift imports are module-name based (e.g., `import SiuperModel`)
-  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
-  // We scan for these directories to build a target map
-  const targets = new Map<string, string>();
+const SWIFT_SOURCE_FACTORIES = new Set([
+  'target',
+  'executableTarget',
+  'testTarget',
+  'macro',
+]);
+const SWIFT_SKIP_FACTORIES = new Set(['binaryTarget', 'plugin', 'systemLibrary']);
+const SWIFT_FACTORY_RE =
+  /\.(target|executableTarget|testTarget|macro|binaryTarget|plugin|systemLibrary)\s*\(/g;
 
+function extractBalancedParen(source: string, openIndex: number): string | null {
+  let depth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return source.slice(openIndex + 1, i);
+    }
+  }
+  return null;
+}
+
+function swiftStringField(block: string, field: string): string | undefined {
+  const match = new RegExp(String.raw`\b${field}\s*:\s*["']([^"']+)["']`).exec(block);
+  return match?.[1];
+}
+
+function swiftManifestHasCompletenessHazard(source: string): boolean {
+  if (/(^|\n)\s*#if\b/.test(source) || /(^|\n)\s*#elseif\b/.test(source)) return true;
+  // `targets: makeTargets()` — a call, not an array literal of factories.
+  return /\btargets\s*:\s*[A-Za-z_$]/.test(source);
+}
+
+/** Heuristic Package.swift scan. Never shells out to `swift package dump-package`. */
+export function parseSwiftPackageManifest(source: string): {
+  targets: Map<string, string>;
+  complete: boolean;
+} {
+  const targets = new Map<string, string>();
+  if (swiftManifestHasCompletenessHazard(source)) {
+    return { targets, complete: false };
+  }
+
+  SWIFT_FACTORY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let sawUnreadableFactory = false;
+  while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
+    const kind = match[1];
+    const paren = source.indexOf('(', match.index);
+    const block = extractBalancedParen(source, paren);
+    if (block === null) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
+    if (!SWIFT_SOURCE_FACTORIES.has(kind)) continue;
+    const name = swiftStringField(block, 'name');
+    if (name === undefined || name === '') {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    const customPath = swiftStringField(block, 'path');
+    const dir = customPath ?? (kind === 'testTarget' ? `Tests/${name}` : `Sources/${name}`);
+    if (!targets.has(name)) targets.set(name, dir);
+  }
+
+  return { targets, complete: !sawUnreadableFactory };
+}
+
+async function inferSwiftDirectoryTargets(repoRoot: string): Promise<Map<string, string>> {
+  const targets = new Map<string, string>();
   const sourceDirs = ['Sources', 'Package/Sources', 'src'];
   for (const sourceDir of sourceDirs) {
     try {
@@ -538,12 +617,31 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
       // Directory doesn't exist
     }
   }
+  return targets;
+}
 
-  if (targets.size > 0) {
-    if (isDev) {
-      logger.info(`📦 Loaded ${targets.size} Swift package targets`);
+export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
+  const inferred = await inferSwiftDirectoryTargets(repoRoot);
+
+  try {
+    const manifestPath = path.join(repoRoot, 'Package.swift');
+    const source = await fs.readFile(manifestPath, 'utf-8');
+    const parsed = parseSwiftPackageManifest(source);
+    if (parsed.complete) {
+      if (isDev) {
+        logger.info(`📦 Loaded ${parsed.targets.size} Swift package targets from Package.swift`);
+      }
+      return { targets: parsed.targets, origin: 'package.swift' };
     }
-    return { targets };
+  } catch {
+    // Missing or unreadable — fall through to inferred folders.
+  }
+
+  if (inferred.size > 0) {
+    if (isDev) {
+      logger.info(`📦 Inferred ${inferred.size} Swift source folders`);
+    }
+    return { targets: inferred, origin: 'directories' };
   }
   return null;
 }
