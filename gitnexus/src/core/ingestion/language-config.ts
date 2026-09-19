@@ -738,12 +738,22 @@ function swiftManifestHasCompletenessHazard(source: string): boolean {
   return /(^|\n)\s*#if\b/.test(source) || /(^|\n)\s*#elseif\b/.test(source);
 }
 
-function swiftFactoryIsCommented(source: string, index: number): boolean {
-  let inString: '"' | "'" | null = null;
-  let escape = false;
-  let inLineComment = false;
-  let blockCommentDepth = 0;
-  for (let i = 0; i < index; i++) {
+interface SwiftCommentScan {
+  i: number;
+  inString: '"' | "'" | null;
+  escape: boolean;
+  inLineComment: boolean;
+  blockCommentDepth: number;
+}
+
+function newSwiftCommentScan(): SwiftCommentScan {
+  return { i: 0, inString: null, escape: false, inLineComment: false, blockCommentDepth: 0 };
+}
+
+/** Resume the comment/string walk up to `upTo`. Matches are left-to-right, so this is O(n) over the file. */
+function advanceSwiftCommentScan(source: string, state: SwiftCommentScan, upTo: number): void {
+  let { i, inString, escape, inLineComment, blockCommentDepth } = state;
+  for (; i < upTo; i++) {
     const ch = source[i];
     const next = source[i + 1];
     if (inLineComment) {
@@ -788,7 +798,17 @@ function swiftFactoryIsCommented(source: string, index: number): boolean {
       i++;
     }
   }
-  return inLineComment || blockCommentDepth > 0;
+  state.i = i;
+  state.inString = inString;
+  state.escape = escape;
+  state.inLineComment = inLineComment;
+  state.blockCommentDepth = blockCommentDepth;
+}
+
+function swiftFactoryIsCommented(source: string, index: number): boolean {
+  const state = newSwiftCommentScan();
+  advanceSwiftCommentScan(source, state, index);
+  return state.inLineComment || state.blockCommentDepth > 0;
 }
 
 function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {
@@ -809,10 +829,12 @@ export function parseSwiftPackageManifest(source: string): {
   SWIFT_FACTORY_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   let sawUnreadableFactory = false;
-  const covered: Array<[number, number]> = [];
+  const commentScan = newSwiftCommentScan();
+  let coveredEnd = -1;
   while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
-    if (swiftFactoryIsCommented(source, match.index)) continue;
-    if (covered.some(([start, end]) => match.index > start && match.index < end)) continue;
+    advanceSwiftCommentScan(source, commentScan, match.index);
+    if (commentScan.inLineComment || commentScan.blockCommentDepth > 0) continue;
+    if (match.index > 0 && match.index < coveredEnd) continue;
     const kind = match[1];
     const paren = source.indexOf('(', match.index);
     const block = extractBalancedParen(source, paren);
@@ -820,7 +842,7 @@ export function parseSwiftPackageManifest(source: string): {
       sawUnreadableFactory = true;
       continue;
     }
-    covered.push([match.index, paren + 1 + block.length + 1]);
+    coveredEnd = Math.max(coveredEnd, paren + 1 + block.length + 1);
     if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
     const name = swiftStringField(block, 'name');
     if (name === undefined || name === '') {

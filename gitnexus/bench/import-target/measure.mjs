@@ -627,7 +627,7 @@ const HEAP_BUDGETED = [
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -1869,7 +1869,7 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'swift') {
     return resolveSwiftImportTarget(
       { kind: 'namespace', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+      { fromFile: from, allFilePaths, parsedFiles: pass.parsedFiles },
     );
   }
   if (lang === 'rust') return resolveRustImportTarget(target, from, allFilePaths, undefined);
@@ -2324,6 +2324,26 @@ const CONTEXT_PROBE = {
       probeFile('pkg/__init__.py', [['Function', 'pkg.X']]),
       probeFile('pkg/X.py', [['Function', 'pkg.X.run']]),
       probeFile('app/main.py', [['Function', 'app.main.run']]),
+    ],
+  },
+  /**
+   * `import App` where App `@_exported import`s Models. With parsedFiles the
+   * re-export closure unions Models' files; without it the adapter returns
+   * only App's own file. Two distinct non-null answers, so a dropped
+   * `parsedFiles` cannot look like a miss.
+   */
+  swift: {
+    from: 'Sources/Client/Main.swift',
+    target: 'App',
+    parsedFiles: [
+      {
+        ...probeFile('Sources/App/Lib.swift', [['Class', 'App.Lib']]),
+        parsedImports: [
+          { kind: 'reexport', localName: 'Models', importedName: 'Models', targetRaw: 'Models' },
+        ],
+      },
+      probeFile('Sources/Models/User.swift', [['Class', 'Models.User']]),
+      probeFile('Sources/Client/Main.swift', [['Class', 'Client.Main']]),
     ],
   },
 };
@@ -3065,7 +3085,7 @@ expectNoOrphanKeys(
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
 // hook declares, and that is a number the registry can be asked for. Today
-// exactly four answer 5 (php, java, kotlin, python) and the other thirteen answer 3 or 4 —
+// exactly five answer 5 (php, java, kotlin, python, swift) and the other twelve answer 3 or 4 —
 // which is why thirteen arms can ignore this whole question and their numbers
 // did not move when it was fixed.
 //

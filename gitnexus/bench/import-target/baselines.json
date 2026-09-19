@@ -659,6 +659,11 @@
         "path_segments": 13,
         "probe": "ExternalPkg0"
       },
+      "context": {
+        "target": "App",
+        "with_context": "Sources/App/Lib.swift,Sources/Models/User.swift",
+        "without_context": "Sources/App/Lib.swift"
+      },
       "_measured": {
         "collide_ms": 0.819,
         "collide_scaling_ratio": 3.454,
