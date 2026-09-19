@@ -224,7 +224,6 @@ let package = Package(name: "Demo", targets: makeTargets() + [.target(name: "Cor
 let package = Package(name: "Demo", targets: extraTargets + [.target(name: "Core")])
 `);
     expect(parsed.complete).toBe(false);
-    expect(parsed.targets.get('Core')).toBe('Sources/Core');
   });
 
   it('skips a commented name: field and uses the real one', () => {
@@ -301,7 +300,7 @@ let package = Package(name: "Demo", targets: actualTargets)
 .target(name: "Incidental")
 `);
     expect(parsed.complete).toBe(false);
-    expect(parsed.targets.get('Incidental')).toBe('Sources/Incidental');
+    expect(parsed.targets.size).toBe(0);
   });
 
   it('does not collect a factory outside Package(targets: [...])', () => {
@@ -319,6 +318,16 @@ let package = Package(name: "Demo", targets: [.target(name: "Incidental")])
 let package = Package(name: "Demo", targets: [makeTargets()])
 `);
     expect(parsed.complete).toBe(false);
+    expect(parsed.targets.size).toBe(0);
+  });
+
+  it('does not collect factories when Package omits targets:', () => {
+    const parsed = parseSwiftPackageManifest(`
+let unused = Target.target(name: "Ghost")
+let package = Package(name: "Empty")
+`);
+    expect(parsed.complete).toBe(true);
+    expect(parsed.targets.has('Ghost')).toBe(false);
     expect(parsed.targets.size).toBe(0);
   });
 

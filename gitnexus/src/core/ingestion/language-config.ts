@@ -1026,7 +1026,7 @@ export function parseSwiftPackageManifest(source: string): {
       continue;
     }
     if (
-      packageTargets.arraySpans.length > 0 &&
+      packageTargets.sawPackage &&
       !packageTargets.arraySpans.some(([lo, hi]) => match.index >= lo && match.index <= hi)
     ) {
       continue;
@@ -1072,6 +1072,7 @@ export function parseSwiftPackageManifest(source: string): {
 
 interface SwiftPackageTargetsInspection {
   helperBuilt: boolean;
+  sawPackage: boolean;
   arraySpans: Array<[number, number]>;
 }
 
@@ -1084,24 +1085,30 @@ const SWIFT_ALL_FACTORY_NAMES = new Set<string>([
 function inspectSwiftPackageTargets(source: string): SwiftPackageTargetsInspection {
   const arraySpans: Array<[number, number]> = [];
   let helperBuilt = false;
-  const unreadable = forEachSwiftPackageArgs(source, (args, argsStart) => {
-    const found = inspectPackageTargetsArg(args);
-    if (found.helperBuilt) {
-      helperBuilt = true;
-      return true;
-    }
-    if (found.arrayStart !== null && found.arrayEnd !== null) {
-      arraySpans.push([argsStart + found.arrayStart, argsStart + found.arrayEnd]);
-    }
-    return false;
-  });
-  return { helperBuilt: helperBuilt || unreadable, arraySpans };
+  const seen = { package: false };
+  const unreadable = forEachSwiftPackageArgs(
+    source,
+    (args, argsStart) => {
+      const found = inspectPackageTargetsArg(args);
+      if (found.helperBuilt) {
+        helperBuilt = true;
+        return true;
+      }
+      if (found.arrayStart !== null && found.arrayEnd !== null) {
+        arraySpans.push([argsStart + found.arrayStart, argsStart + found.arrayEnd]);
+      }
+      return false;
+    },
+    seen,
+  );
+  return { helperBuilt: helperBuilt || unreadable, sawPackage: seen.package, arraySpans };
 }
 
 /** Walk `Package(` calls outside comments/strings. Unclosed `Package(` is incomplete. */
 function forEachSwiftPackageArgs(
   source: string,
   visit: (args: string, argsStart: number) => boolean,
+  seen?: { package: boolean },
 ): boolean {
   let inString: '"' | "'" | null = null;
   let escape = false;
@@ -1159,6 +1166,7 @@ function forEachSwiftPackageArgs(
     }
     const parenAt = skipSwiftWsAndComments(source, i + 7);
     if (parenAt === null || source[parenAt] !== '(') continue;
+    if (seen !== undefined) seen.package = true;
     const args = extractBalancedParen(source, parenAt);
     if (args === null) return true;
     if (visit(args, parenAt + 1)) return true;
