@@ -85,16 +85,36 @@ describe('Swift @_exported visibility', () => {
   });
 
   it('@_exported import Foundation adds no files', () => {
-    const files = [
-      'Sources/A/A.swift',
-      'Sources/Foundation/Thing.swift',
-      'Sources/App/main.swift',
-    ];
+    const files = ['Sources/A/A.swift', 'Sources/Foundation/Thing.swift', 'Sources/App/main.swift'];
     const parsed = [
       stubFile('Sources/A/A.swift', [reexport('Foundation')]),
       stubFile('Sources/Foundation/Thing.swift'),
     ];
     expect(resolve('A', files, parsed)).toEqual(['Sources/A/A.swift']);
+  });
+
+  it('member-only @_exported import does not paint the rest of the module', () => {
+    const files = [
+      'Sources/A/A.swift',
+      'Sources/Models/User.swift',
+      'Sources/Models/Other.swift',
+      'Sources/App/main.swift',
+    ];
+    const parsed = [
+      stubFile('Sources/A/A.swift', [reexport('Models', 'User')]),
+      stubFile('Sources/Models/User.swift'),
+      stubFile('Sources/Models/Other.swift'),
+    ];
+    const declared = {
+      origin: 'package.swift' as const,
+      targets: new Map([
+        ['A', 'Sources/A'],
+        ['Models', 'Sources/Models'],
+      ]),
+    };
+    expect(resolve('A', files, parsed, 'Sources/App/main.swift', declared)).toEqual([
+      'Sources/A/A.swift',
+    ]);
   });
 
   it('a sibling file that does not write @_exported still contributes the reexport', () => {

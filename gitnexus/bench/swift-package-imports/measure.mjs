@@ -250,12 +250,7 @@ function correctness(corpus) {
 
   const fromOther = 'Sources/Mod2/File0.swift';
   const reexport = resultFiles(
-    resolveOne(
-      { from: fromOther, raw: 'Mod0' },
-      allFilePaths,
-      corpus.config,
-      corpus.parsedFiles,
-    ),
+    resolveOne({ from: fromOther, raw: 'Mod0' }, allFilePaths, corpus.config, corpus.parsedFiles),
   );
   const reexportExtra =
     reexport.includes('Sources/Mod0/File0.swift') && reexport.includes('Sources/Mod1/File0.swift')
@@ -272,7 +267,8 @@ function correctness(corpus) {
   const emptyDeclaredExternal = empty == null ? 1 : 0;
 
   const groups = groupSwiftFilesBySpmTarget(corpus.files, (p) => p, corpus.targets);
-  const firstWins = groups.get('Mod0')?.includes(corpus.extras.clash) === true &&
+  const firstWins =
+    groups.get('Mod0')?.includes(corpus.extras.clash) === true &&
     groups.get('Mod1')?.includes(corpus.extras.clash) !== true
       ? 1
       : 0;
@@ -304,7 +300,12 @@ let package = Package(
     nestedRepeatResolved,
     firstWins,
     parseTargets: parseFixed.targets.size,
-    parseBinarySkipped: parseFixed.targets.has('Lib') || parseFixed.targets.has('Gen') || parseFixed.targets.has('CFoo') ? 0 : 1,
+    parseBinarySkipped:
+      parseFixed.targets.has('Lib') ||
+      parseFixed.targets.has('Gen') ||
+      parseFixed.targets.has('CFoo')
+        ? 0
+        : 1,
     urlCommentTargets: urlComment.targets.get('T') === 'Sources/T' ? 1 : 0,
     parseComplete: parseFixed.complete && urlComment.complete ? 1 : 0,
     fingerprint: createHash('sha256').update(records.sort().join('\n')).digest('hex'),
@@ -347,7 +348,9 @@ console.log(
 console.log(
   `empty_declared_external: ${shape.emptyDeclaredExternal}  (expect ${baselines.empty_declared_external})`,
 );
-console.log(`reexport_extra         : ${shape.reexportExtra}  (expect ${baselines.reexport_extra})`);
+console.log(
+  `reexport_extra         : ${shape.reexportExtra}  (expect ${baselines.reexport_extra})`,
+);
 console.log(
   `nested_repeat_resolved : ${shape.nestedRepeatResolved}  (expect ${baselines.nested_repeat_resolved})`,
 );
@@ -359,7 +362,9 @@ console.log(
 console.log(
   `url_comment_targets    : ${shape.urlCommentTargets}  (expect ${baselines.url_comment_targets})`,
 );
-console.log(`parse_complete         : ${shape.parseComplete}  (expect ${baselines.parse_complete})`);
+console.log(
+  `parse_complete         : ${shape.parseComplete}  (expect ${baselines.parse_complete})`,
+);
 console.log(`layout_fingerprint     : ${shape.fingerprint}`);
 console.log(
   `resolve_scaling_ratio  : ${resolveScaling.toFixed(3)}  (budget <= ${baselines.resolve_scaling_budget}; ~1.0 is linear)`,
@@ -412,14 +417,21 @@ if (process.argv.includes('--check')) {
     }
   }
 
-  if (small.targetCount !== baselines.targets || files !== baselines.files || imports !== baselines.imports) {
+  if (
+    small.targetCount !== baselines.targets ||
+    files !== baselines.files ||
+    imports !== baselines.imports
+  ) {
     failed = true;
     console.error(
       `\nFAIL shape: the corpus must stay large enough that declared_resolved still measures a walk.`,
     );
   }
 
-  if (parseSmall.targets.size !== PARSE_TARGETS || parseLarge.targets.size !== PARSE_TARGETS * SCALE) {
+  if (
+    parseSmall.targets.size !== PARSE_TARGETS ||
+    parseLarge.targets.size !== PARSE_TARGETS * SCALE
+  ) {
     failed = true;
     console.error(
       `\nFAIL parse scale shape: ${parseSmall.targets.size} -> ${parseLarge.targets.size}, ` +

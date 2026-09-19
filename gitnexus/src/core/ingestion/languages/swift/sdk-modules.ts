@@ -16,6 +16,8 @@ export const SWIFT_SDK_MODULES: ReadonlySet<string> = new Set([
   'ObjectiveC',
   'Swift',
   'CoreFoundation',
+  'CoreData',
+  'CoreGraphics',
   'XCTest',
   'Testing',
   'Observation',

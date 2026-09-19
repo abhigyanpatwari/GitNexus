@@ -87,22 +87,26 @@ function getDeclaredFilesByName(
   return byName;
 }
 
-const getSwiftReexportFlag = perFileSet((parsedFiles: readonly ParsedFile[]): { hasReexport: boolean } => {
-  for (const parsed of parsedFiles) {
-    for (const imp of parsed.parsedImports) {
-      if (imp.kind === 'reexport') return { hasReexport: true };
+const getSwiftReexportFlag = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): { hasReexport: boolean } => {
+    for (const parsed of parsedFiles) {
+      for (const imp of parsed.parsedImports) {
+        if (imp.kind === 'reexport') return { hasReexport: true };
+      }
     }
-  }
-  return { hasReexport: false };
-});
+    return { hasReexport: false };
+  },
+);
 
-const getSwiftParsedByPath = perFileSet((parsedFiles: readonly ParsedFile[]): ReadonlyMap<string, ParsedFile> => {
-  const byPath = new Map<string, ParsedFile>();
-  for (const parsed of parsedFiles) {
-    byPath.set(parsed.filePath, parsed);
-  }
-  return byPath;
-});
+const getSwiftParsedByPath = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): ReadonlyMap<string, ParsedFile> => {
+    const byPath = new Map<string, ParsedFile>();
+    for (const parsed of parsedFiles) {
+      byPath.set(parsed.filePath, parsed);
+    }
+    return byPath;
+  },
+);
 
 function excludeImporter(files: readonly string[], fromFile: string): string[] {
   return files.filter((f) => f !== fromFile);
@@ -129,10 +133,7 @@ function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | nu
 }
 
 /** Module files only — no @_exported closure. Null means external / unknown. */
-function resolveSwiftModuleFiles(
-  moduleName: string,
-  ctx: SwiftResolveContext,
-): string[] | null {
+function resolveSwiftModuleFiles(moduleName: string, ctx: SwiftResolveContext): string[] | null {
   if (moduleName === '') return null;
 
   const declared = coerceDeclaredSwiftTargets(ctx.resolutionConfig);
@@ -174,6 +175,10 @@ function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveCont
       if (targetRaw === null) continue;
       const moduleName = firstSwiftModuleSegment(targetRaw);
       if (moduleName === null || seenModules.has(moduleName)) continue;
+      // `@_exported import struct Models.User` re-exports User, not Models.
+      // File-level resolve cannot attribute a member to a file, so skip
+      // the whole-module enqueue rather than painting every Models file.
+      if (imp.importedName !== moduleName) continue;
       seenModules.add(moduleName);
       const more = resolveSwiftModuleFiles(moduleName, ctx);
       if (more === null) continue;

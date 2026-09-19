@@ -34,8 +34,13 @@ describe('resolveSwiftImportTarget — inferred / no config (R7)', () => {
     expect(resolve('Models')).toEqual(['Sources/Models/User.swift']);
   });
 
-  it('AE6: UIKit is null on an inferred Sources/UIKit decoy', () => {
-    const files = [...AE1_FILES, 'Sources/UIKit/Thing.swift'];
+  it('AE6: UIKit / CoreData / CoreGraphics are null on inferred decoys', () => {
+    const files = [
+      ...AE1_FILES,
+      'Sources/UIKit/Thing.swift',
+      'Sources/CoreData/Thing.swift',
+      'Sources/CoreGraphics/Thing.swift',
+    ];
     const inferred = {
       origin: 'directories' as const,
       targets: new Map([
@@ -43,9 +48,13 @@ describe('resolveSwiftImportTarget — inferred / no config (R7)', () => {
         ['Models', 'Sources/Models'],
         ['Foundation', 'Sources/Foundation'],
         ['UIKit', 'Sources/UIKit'],
+        ['CoreData', 'Sources/CoreData'],
+        ['CoreGraphics', 'Sources/CoreGraphics'],
       ]),
     };
     expect(resolve('UIKit', files, 'Sources/App/main.swift', inferred)).toBeNull();
+    expect(resolve('CoreData', files, 'Sources/App/main.swift', inferred)).toBeNull();
+    expect(resolve('CoreGraphics', files, 'Sources/App/main.swift', inferred)).toBeNull();
     expect(resolve('Models', files, 'Sources/App/main.swift', inferred)).toEqual([
       'Sources/Models/User.swift',
     ]);

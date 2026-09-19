@@ -652,12 +652,7 @@ async function collectDeclaredNamespaces(
   return structure.incomplete ? 'truncated' : 'ok';
 }
 
-const SWIFT_SOURCE_FACTORY_NAMES = [
-  'target',
-  'executableTarget',
-  'testTarget',
-  'macro',
-] as const;
+const SWIFT_SOURCE_FACTORY_NAMES = ['target', 'executableTarget', 'testTarget', 'macro'] as const;
 const SWIFT_SKIP_FACTORY_NAMES = ['binaryTarget', 'plugin', 'systemLibrary'] as const;
 const SWIFT_SKIP_FACTORIES = new Set<string>(SWIFT_SKIP_FACTORY_NAMES);
 const SWIFT_FACTORY_RE = new RegExp(
@@ -672,8 +667,25 @@ function extractBalancedParen(source: string, openIndex: number): string | null 
   let depth = 0;
   let inString: '"' | "'" | null = null;
   let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
   for (let i = openIndex; i < source.length; i++) {
     const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
     if (inString !== null) {
       if (escape) {
         escape = false;
@@ -688,6 +700,18 @@ function extractBalancedParen(source: string, openIndex: number): string | null 
     }
     if (ch === '"' || ch === "'") {
       inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      // `https://` / `http://` is not a line comment.
+      if (i === 0 || source[i - 1] !== ':') {
+        inLineComment = true;
+        i++;
+        continue;
+      }
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
       continue;
     }
     if (ch === '(') depth++;
@@ -767,9 +791,18 @@ export function parseSwiftPackageManifest(source: string): {
     }
   }
 
-  const helperBuiltList =
-    targets.size === 0 && /\btargets\s*:\s*[A-Za-z_$]/.test(source);
-  return { targets, complete: !sawUnreadableFactory && !helperBuiltList };
+  return {
+    targets,
+    complete: !sawUnreadableFactory && !swiftManifestHasHelperBuiltTargets(source, targets.size),
+  };
+}
+
+/** `targets: makeTargets()` / `targets: [.target(...)] + more` — fail-open.
+ *  `.library(..., targets: libTargets)` is not a helper-built package list. */
+function swiftManifestHasHelperBuiltTargets(source: string, collectedCount: number): boolean {
+  if (collectedCount === 0 && /\btargets\s*:\s*[A-Za-z_$]/.test(source)) return true;
+  if (/\btargets\s*:\s*[A-Za-z_$][\w.]*\s*\(/.test(source)) return true;
+  return /\btargets\s*:\s*\[[\s\S]*?\]\s*\+/.test(source);
 }
 
 async function inferSwiftDirectoryTargets(repoRoot: string): Promise<Map<string, string>> {

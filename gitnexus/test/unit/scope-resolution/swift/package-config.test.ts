@@ -148,6 +148,39 @@ let package = Package(name: "Demo", targets: makeTargets())
     expect(parsed.targets.get('Foo (experimental)')).toBe('Sources/Foo (experimental)');
   });
 
+  it('ignores a commented parenthesis while balancing a factory', () => {
+    const parsed = parseSwiftPackageManifest(`
+      .target(name: "Core", // )
+       path: "Modules/Core")
+    `);
+    expect({ complete: parsed.complete, entries: [...parsed.targets] }).toEqual({
+      complete: true,
+      entries: [['Core', 'Modules/Core']],
+    });
+  });
+
+  it('ignores a block-comment parenthesis while balancing a factory', () => {
+    const parsed = parseSwiftPackageManifest(`.target(name: "Core", /* ) */ path: "Modules/Core")`);
+    expect({ complete: parsed.complete, entries: [...parsed.targets] }).toEqual({
+      complete: true,
+      entries: [['Core', 'Modules/Core']],
+    });
+  });
+
+  it('treats a mixed literal + helper-built targets: list as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(name: "Demo", targets: [.target(name: "Core")] + makeTargets())
+`);
+    expect(parsed.complete).toBe(false);
+  });
+
+  it('treats a helper-built list concatenated before literals as incomplete', () => {
+    const parsed = parseSwiftPackageManifest(`
+let package = Package(name: "Demo", targets: makeTargets() + [.target(name: "Core")])
+`);
+    expect(parsed.complete).toBe(false);
+  });
+
   it('does not treat .library(..., targets: names) as a helper-built list', () => {
     const parsed = parseSwiftPackageManifest(`
       .library(name: "Demo", targets: libTargets)
