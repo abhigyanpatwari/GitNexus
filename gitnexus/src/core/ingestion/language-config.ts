@@ -1108,7 +1108,7 @@ function inspectSwiftPackageTargets(source: string): SwiftPackageTargetsInspecti
 function forEachSwiftPackageArgs(
   source: string,
   visit: (args: string, argsStart: number) => boolean,
-  seen?: { package: boolean },
+  seen: { package: boolean },
 ): boolean {
   let inString: '"' | "'" | null = null;
   let escape = false;
@@ -1166,7 +1166,7 @@ function forEachSwiftPackageArgs(
     }
     const parenAt = skipSwiftWsAndComments(source, i + 7);
     if (parenAt === null || source[parenAt] !== '(') continue;
-    if (seen !== undefined) seen.package = true;
+    seen.package = true;
     const args = extractBalancedParen(source, parenAt);
     if (args === null) return true;
     if (visit(args, parenAt + 1)) return true;
