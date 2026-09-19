@@ -1,0 +1,14 @@
+{
+  "PostToolUse": [
+    {
+      "matcher": "Grep|Glob|Execute",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node ${DROID_PLUGIN_ROOT}/hooks/gitnexus-hook.js",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
