@@ -36,8 +36,6 @@ export function populateSwiftTargetSiblings(
     readonly resolutionConfig?: unknown;
   },
 ): void {
-  // Group files by SPM target subtree (the module). No-source-dir → all
-  // files in one `__default__` bucket.
   const targets = coerceSwiftTargets(ctx.resolutionConfig);
   const filesByTarget = groupSwiftFilesBySpmTarget(
     parsedFiles,
@@ -61,11 +59,7 @@ export function populateSwiftTargetSiblings(
         if (receiverModule === undefined) continue;
 
         for (const def of target.defs) {
-          const name = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-          if (name === '') continue;
-          const bucket = getAugmentationBucket(augmentations, receiverModule, name);
-          if (bucket.some((b) => b.def.nodeId === def.nodeId)) continue;
-          bucket.push({ def, origin: 'namespace' });
+          addNamespaceBinding(augmentations, receiverModule, def);
         }
       }
     }
@@ -85,13 +79,26 @@ function populateNestedTypeFragments(
   fileContents: ReadonlyMap<string, string>,
 ): void {
   const scopesByOwner = new Map<string, ScopeId[]>();
+  const lineStartsByFile = new Map<string, readonly number[]>();
   for (const parsed of group) {
+    const source = fileContents.get(parsed.filePath);
+    let lineStarts: readonly number[] | undefined;
+    if (source !== undefined) {
+      lineStarts = lineStartsByFile.get(parsed.filePath);
+      if (lineStarts === undefined) {
+        lineStarts = lineStartsOf(source);
+        lineStartsByFile.set(parsed.filePath, lineStarts);
+      }
+    }
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
-      const key = scopeOwnerKey(scope, fileContents.get(parsed.filePath));
+      const key = scopeOwnerKey(scope, source, lineStarts);
       if (key === undefined) continue;
-      const scopes = scopesByOwner.get(key) ?? [];
-      if (!scopesByOwner.has(key)) scopesByOwner.set(key, scopes);
+      let scopes = scopesByOwner.get(key);
+      if (scopes === undefined) {
+        scopes = [];
+        scopesByOwner.set(key, scopes);
+      }
       scopes.push(scope.id);
     }
   }
@@ -103,33 +110,39 @@ function populateNestedTypeFragments(
       if (owner === undefined) continue;
       const targetScopes = scopesByOwner.get(logicalOwnerKey(owner));
       if (targetScopes === undefined) continue;
-      const name = simpleName(def);
-      if (name === '') continue;
       for (const scopeId of targetScopes) {
-        const bucket = getAugmentationBucket(augmentations, scopeId, name);
-        if (bucket.some((binding) => binding.def.nodeId === def.nodeId)) continue;
-        bucket.push({ def, origin: 'namespace' });
+        addNamespaceBinding(augmentations, scopeId, def);
       }
     }
   }
 }
 
-function scopeOwnerKey(scope: Scope, source: string | undefined): string | undefined {
+function scopeOwnerKey(
+  scope: Scope,
+  source: string | undefined,
+  lineStarts?: readonly number[],
+): string | undefined {
   const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
   if (owner !== undefined) return logicalOwnerKey(owner);
 
   // Extension scopes carry no synthetic class def. Capture generation keeps
   // only the trailing owner on members (`Inner.f` for `extension Outer.Inner`),
   // so recover the full owner from this scope's declaration text first.
-  const representative = firstBoundDefinition(scope);
   if (source !== undefined) {
-    const sourceOwner = swiftExtensionOwner(source, scope);
-    if (representative !== undefined && sourceOwner !== undefined) {
-      return logicalOwnerKey({ ...representative, qualifiedName: sourceOwner });
-    }
-    // Source was available. Do not last-dot-guess: member qualified names are
-    // trailing-only, so `Inner.make` would key `Inner` instead of `Outer.Inner`.
-    return undefined;
+    const sourceOwner = swiftExtensionOwner(source, scope, lineStarts);
+    // Do not last-dot-guess: member qualified names are trailing-only, so
+    // `Inner.make` would key `Inner` instead of `Outer.Inner`.
+    if (sourceOwner === undefined) return undefined;
+    const representative = firstBoundDefinition(scope);
+    return logicalOwnerKey({
+      ...(representative ?? {
+        nodeId: sourceOwner,
+        filePath: scope.filePath,
+        type: 'Class',
+        qualifiedName: sourceOwner,
+      }),
+      qualifiedName: sourceOwner,
+    });
   }
 
   // Hand-built fixtures and old cached shapes may have no source text. Keep
@@ -163,20 +176,100 @@ function firstBoundDefinition(scope: Scope): SymbolDefinition | undefined {
 /**
  * Read `extension Outer.Inner` from the class-scope source range.
  * Access modifiers and attributes (`public`, `@MainActor`, `@available`)
- * may precede the keyword, so the match is not start-anchored.
+ * may precede the keyword, so the match is not start-anchored. Attribute
+ * message strings and comments must not supply a false `extension Type`.
  */
-function swiftExtensionOwner(source: string, scope: Scope): string | undefined {
+function swiftExtensionOwner(
+  source: string,
+  scope: Scope,
+  lineStarts?: readonly number[],
+): string | undefined {
+  const declaration = sliceScopeRange(source, scope.range, lineStarts ?? lineStartsOf(source));
+  if (declaration === undefined) return undefined;
+  const cleaned = cleanExtensionHeader(declaration);
+  const match = /\bextension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
+    cleaned,
+  );
+  return match?.[1]?.replace(/\s+/g, '');
+}
+
+/** `Scope.range` is 1-based on lines and 0-based on columns. */
+function lineStartsOf(source: string): number[] {
   const starts = [0, 0];
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === '\n') starts.push(index + 1);
   }
-  const start = starts[scope.range.startLine];
-  if (start === undefined) return undefined;
-  const declaration = source.slice(start + scope.range.startCol);
-  const match = /\bextension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
-    declaration,
-  );
-  return match?.[1]?.replace(/\s+/g, '');
+  return starts;
+}
+
+function sliceScopeRange(
+  source: string,
+  range: Scope['range'],
+  starts: readonly number[],
+): string | undefined {
+  const start = starts[range.startLine];
+  const end = starts[range.endLine];
+  if (start === undefined || end === undefined) return undefined;
+  return source.slice(start + range.startCol, end + range.endCol);
+}
+
+/** Header through the first unquoted `{`, with strings and comments blanked. */
+function cleanExtensionHeader(declaration: string): string {
+  let index = 0;
+  let cleaned = '';
+  const blank = (from: number, to: number): void => {
+    for (let cursor = from; cursor < to; cursor += 1) {
+      cleaned += declaration[cursor] === '\n' ? '\n' : ' ';
+    }
+  };
+  while (index < declaration.length) {
+    const current = declaration[index];
+    if (current === '/' && declaration[index + 1] === '/') {
+      const end = skipLineComment(declaration, index);
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    if (current === '/' && declaration[index + 1] === '*') {
+      const end = skipBlockComment(declaration, index);
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    if (current === '"' || current === "'") {
+      const end = skipQuoted(declaration, index, current);
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    if (current === '{') break;
+    cleaned += current;
+    index += 1;
+  }
+  return cleaned;
+}
+
+function skipLineComment(text: string, start: number): number {
+  const newline = text.indexOf('\n', start);
+  return newline === -1 ? text.length : newline + 1;
+}
+
+function skipBlockComment(text: string, start: number): number {
+  const close = text.indexOf('*/', start + 2);
+  return close === -1 ? text.length : close + 2;
+}
+
+function skipQuoted(text: string, start: number, quote: string): number {
+  let index = start + 1;
+  while (index < text.length) {
+    if (text[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (text[index] === quote) return index + 1;
+    index += 1;
+  }
+  return text.length;
 }
 
 function logicalOwnerKey(def: SymbolDefinition): string {
@@ -187,6 +280,18 @@ function logicalOwnerKey(def: SymbolDefinition): string {
 
 function simpleName(def: SymbolDefinition): string {
   return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+}
+
+function addNamespaceBinding(
+  augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  scopeId: ScopeId,
+  def: SymbolDefinition,
+): void {
+  const name = simpleName(def);
+  if (name === '') return;
+  const bucket = getAugmentationBucket(augmentations, scopeId, name);
+  if (bucket.some((binding) => binding.def.nodeId === def.nodeId)) return;
+  bucket.push({ def, origin: 'namespace' });
 }
 
 function getAugmentationBucket(

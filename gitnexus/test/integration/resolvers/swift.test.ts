@@ -1305,26 +1305,27 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
 describe.skipIf(!swiftAvailable)(
   'Swift nested constructor lookup in a public qualified extension (#3262)',
   () => {
-  let result: PipelineResult;
+    let result: PipelineResult;
 
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'swift-nested-constructor-extension'),
-      () => {},
-    );
-  }, 60000);
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'swift-nested-constructor-extension'),
+        () => {},
+      );
+    }, 60000);
 
-  it('resolves Entry(id:text:) to Outer.Container.Entry and not the top-level Entry', () => {
-    const entryCalls = getRelationships(result, 'CALLS').filter(
-      (call) => call.source === 'makeEntry' && call.target === 'Entry',
-    );
+    it('resolves Entry(id:text:) to Outer.Container.Entry and not the top-level Entry', () => {
+      const entryCalls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'makeEntry' && call.target === 'Entry',
+      );
 
-    expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
-    expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
-      false,
-    );
-  });
-});
+      expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
+      expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
+        false,
+      );
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // F75: protocol property requirements (`var title: String { get }`) are
