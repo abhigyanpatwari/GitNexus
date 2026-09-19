@@ -213,6 +213,18 @@ describe('Swift target sibling visibility', () => {
     },
   );
 
+  it('recovers a Unicode qualified extension owner', () => {
+    const extensionSource = 'public extension Café.Container {\n  static func makeEntry() {}\n}\n';
+    const { declaration, extension, entry, indexes, bindingAugmentations } =
+      qualifiedExtensionFixture(extensionSource, { ownerQualifiedName: 'Café.Container' });
+
+    populateSwiftTargetSiblings([declaration, extension], indexes, {
+      fileContents: new Map([['Builder.swift', extensionSource]]),
+    });
+
+    expectAugmentedEntry(bindingAugmentations, entry);
+  });
+
   it('prefers Outer.Inner.Entry over a colliding top-level Inner.Entry', () => {
     const { collision, topInner, wrongEntry } = collidingTopLevelInner();
     const extensionSource = 'public extension Outer.Inner {\n  static func makeEntry() {}\n}\n';

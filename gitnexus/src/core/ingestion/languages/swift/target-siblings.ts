@@ -178,7 +178,15 @@ function firstBoundDefinition(scope: Scope): SymbolDefinition | undefined {
  * Access modifiers and attributes (`public`, `@MainActor`, `@available`)
  * may precede the keyword, so the match is not start-anchored. Attribute
  * message strings and comments must not supply a false `extension Type`.
+ * Owner segments use Unicode identifier characters so `Café.Container`
+ * is not truncated to `Caf`.
  */
+const SWIFT_TYPE_IDENT = String.raw`[\p{ID_Start}_][\p{ID_Continue}]*`;
+const EXTENSION_OWNER = new RegExp(
+  String.raw`\bextension\s+(${SWIFT_TYPE_IDENT}(?:\s*\.\s*${SWIFT_TYPE_IDENT})*)`,
+  'u',
+);
+
 function swiftExtensionOwner(
   source: string,
   scope: Scope,
@@ -187,10 +195,7 @@ function swiftExtensionOwner(
   const declaration = sliceScopeRange(source, scope.range, lineStarts ?? lineStartsOf(source));
   if (declaration === undefined) return undefined;
   const cleaned = cleanExtensionHeader(declaration);
-  const match = /\bextension\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)/.exec(
-    cleaned,
-  );
-  return match?.[1]?.replace(/\s+/g, '');
+  return EXTENSION_OWNER.exec(cleaned)?.[1]?.replace(/\s+/g, '');
 }
 
 /** `Scope.range` is 1-based on lines and 0-based on columns. */
