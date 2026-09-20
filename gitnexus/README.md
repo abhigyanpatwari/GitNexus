@@ -187,8 +187,8 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
 | `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)       |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)                  |
-| `context`        | 360-degree symbol view — categorized refs, process participation       |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF); optional `chain_depth` expands each result's call chain |
+| `context`        | 360-degree symbol view — categorized refs, process participation, HTTP routes, `is_entry_point` flag; optional `chain_depth` call-chain expansion |
 | `impact`         | Blast radius analysis with depth grouping and confidence               |
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |

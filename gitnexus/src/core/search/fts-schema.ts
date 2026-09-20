@@ -48,7 +48,7 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   { table: 'Union', indexName: 'union_fts', properties: FTS_PROPERTIES },
   { table: 'Static', indexName: 'static_fts', properties: FTS_PROPERTIES },
   { table: 'Variable', indexName: 'variable_fts', properties: FTS_PROPERTIES },
-  // #trpc-fork: Route URLs (e.g. "/trpc/cabinet.setProviderCap") are keyword-
+  // Route URLs (e.g. "/trpc/admin.setSettings") are keyword-
   // searchable so agents can find a procedure from its URL without first
   // resolving the URL → handlerSymbolId → Function node. Route has no
   // `description`/`content` column (see ROUTE_SCHEMA), so this is name-only.

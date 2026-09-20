@@ -2966,7 +2966,7 @@ export class LocalBackend {
 
     await this.ensureInitialized(repo);
 
-    // #trpc-fork: defaults raised (limit 5 → 10, max_symbols 10 → 25) so a
+    // defaults raised (limit 5 → 10, max_symbols 10 → 25) so a
     // procedure→workflow→helper chain fits inside a single page. The tool
     // schema mirrors these defaults.
     const processLimit = params.limit || 10;
@@ -3110,7 +3110,7 @@ export class LocalBackend {
     for (const ids of chunk(nodeIds, LBUG_QUERY_BATCH_SIZE)) {
       // Processes each symbol participates in. `n.id AS nodeId` is prepended as
       // column 0 so rows from many symbols can be re-associated to their symbol.
-      // #trpc-fork: also fetch `p.entryPointId` so we can (a) mark the entry
+      // also fetch `p.entryPointId` so we can (a) mark the entry
       // symbol with `is_entry_point: true` in `process_symbols` and (b) look up
       // the route attached to this process (if any) via ENTRY_POINT_OF.
       try {
@@ -3237,7 +3237,7 @@ export class LocalBackend {
           const pType = row.processType ?? row[4];
           const stepCount = row.stepCount ?? row[5];
           const step = row.step ?? row[6];
-          // #trpc-fork: entryPointId is the new column from STEP_IN_PROCESS.
+          // entryPointId is the new column from STEP_IN_PROCESS.
           // Falls back to '' when the Process node predates the property or
           // the column is null (older index).
           const entryPointId = row.entryPointId ?? row[7] ?? '';
@@ -3271,9 +3271,9 @@ export class LocalBackend {
 
     timer.stop(); // symbol_lookup
 
-    // #trpc-fork: batched ENTRY_POINT_OF lookup — for each process, find the
+    // batched ENTRY_POINT_OF lookup — for each process, find the
     // Route node linked to the process's entry-point symbol (or to the process
-    // directly). This surfaces the HTTP route (e.g. "/trpc/cabinet.setProviderCap")
+    // directly). This surfaces the HTTP route (e.g. "/trpc/admin.setSettings")
     // alongside each process in `query` results so agents don't need a separate
     // `route_map` call. Also handles upstream's link shape where the edge goes
     // from Route → Process directly.
@@ -3352,7 +3352,7 @@ export class LocalBackend {
     const processSymbols = rankedProcesses.flatMap((p) =>
       p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
         ...s,
-        // #trpc-fork: mark the entry-point symbol so an agent reading the
+        // mark the entry-point symbol so an agent reading the
         // process can tell procedure vs. workflow vs. helper at a glance.
         ...(p.entryPointId && s.id === p.entryPointId ? { is_entry_point: true } : {}),
       })),
@@ -4844,7 +4844,7 @@ export class LocalBackend {
       logQueryError('context:process-participation', e);
     }
 
-    // #trpc-fork: ENTRY_POINT_OF lookup — find the HTTP route(s) this symbol
+    // ENTRY_POINT_OF lookup — find the HTTP route(s) this symbol
     // handles, and whether it's the entry point of any process. Makes context()
     // self-sufficient: an agent learns the symbol's route + entry-point status
     // in the same call it already runs before every edit (AGENTS.md mandates
@@ -5016,7 +5016,7 @@ export class LocalBackend {
       aopMetadataPromise,
     ]);
 
-    // #trpc-fork: optional BFS chain expansion. When `chain_depth` > 0, walk
+    // optional BFS chain expansion. When `chain_depth` > 0, walk
     // CALLS edges up to N hops from this symbol and return the layered result
     // as a `chain` field. This reveals the full procedure→workflow→sub-workflow
     // call chain in ONE call instead of forcing the agent to chain context()
@@ -5075,7 +5075,7 @@ export class LocalBackend {
   }
 
   /**
-   * #trpc-fork: BFS chain expansion for `context({chain_depth: N})`.
+   * BFS chain expansion for `context({chain_depth: N})`.
    *
    * Walks CALLS edges up to `maxDepth` hops from the seed symbol, in BOTH
    * directions (upstream callers AND downstream callees), and returns the
