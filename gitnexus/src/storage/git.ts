@@ -677,6 +677,7 @@ export const listLocalHeads = (repoPath: string): string[] | null => {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
+      maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
     });
     if (result.error || result.status !== 0) return null;
     const output = (result.stdout ?? '').toString().trim();

@@ -155,6 +155,7 @@ describe('git utilities', () => {
           cwd: '/project',
           stdio: ['ignore', 'pipe', 'ignore'],
           windowsHide: true,
+          maxBuffer: 64 * 1024 * 1024,
         }),
       );
     });

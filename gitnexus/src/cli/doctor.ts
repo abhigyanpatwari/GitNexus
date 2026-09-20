@@ -385,8 +385,9 @@ export const doctorCommand = async () => {
     }
   }
   // Doctor stays runtime-global. Add only a cwd leftover-slot section when
-  // this process is inside an indexed repo (KTD5). Never scan every registry
-  // entry and never delete.
+  // this process is inside an indexed repo (KTD5). Look up that repo's
+  // registry row for recorded branch slugs; do not report leftovers for
+  // every registered repo, and never delete.
   const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
   if (!cwdRepo) return;
   const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);
