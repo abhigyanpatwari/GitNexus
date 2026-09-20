@@ -843,7 +843,7 @@ export interface RegisterRepoOptions {
    * to the registry. Callback failures are ignored: reporting must not turn a
    * successful registry write into an apparent transaction failure.
    */
-  onRename?: (previousName: string, nextName: string) => void;
+  onRename?: (previousName: string, nextName: string) => void | Promise<void>;
   /**
    * Allow two DIFFERENT repo paths to register under the same alias
    * (#829). Mapped from the `--allow-duplicate-name` CLI flag.
@@ -1159,7 +1159,7 @@ const registerRepoUnlocked = async (
   await writeRegistry(fresh);
   if (opts?.name !== undefined && freshExisting && freshExisting.name !== name) {
     try {
-      opts.onRename?.(freshExisting.name, name);
+      await opts.onRename?.(freshExisting.name, name);
     } catch {
       // The rename is already durable; observer failures cannot roll it back.
     }

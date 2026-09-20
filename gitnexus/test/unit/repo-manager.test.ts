@@ -963,6 +963,21 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries[0].name).toBe('new-alias');
   });
 
+  it('keeps an alias rename committed when an async observer rejects', async () => {
+    await registerRepo(tmpRepoA.dbPath, meta, { name: 'old-alias' });
+
+    await expect(
+      registerRepo(tmpRepoA.dbPath, meta, {
+        name: 'new-alias',
+        onRename: async () => {
+          throw new Error('observer failed');
+        },
+      }),
+    ).resolves.toBe('new-alias');
+
+    expect(await listRegisteredRepos()).toMatchObject([{ name: 'new-alias' }]);
+  });
+
   it('registerRepo throws RegistryNameCollisionError when another path uses the name', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'shared' });
 
