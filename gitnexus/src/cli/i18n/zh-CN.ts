@@ -279,7 +279,7 @@ export const zhCN = {
   'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
-  'help.option.clean.stale': '回收记录分支已不是本地 head 的分支索引',
+  'help.option.clean.stale': '回收已不是本地 head 的残留分支索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',

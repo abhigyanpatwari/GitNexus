@@ -349,7 +349,7 @@ program
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
-  .option('--stale', 'Reclaim per-branch indexes whose recorded branch is no longer a local head')
+  .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
   .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',

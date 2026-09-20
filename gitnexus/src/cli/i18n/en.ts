@@ -301,8 +301,7 @@ export const en = {
   'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
   'help.option.clean.lbugSidecars':
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
-  'help.option.clean.stale':
-    'Reclaim per-branch indexes whose recorded branch is no longer a local head',
+  'help.option.clean.stale': 'Reclaim leftover branch indexes that are not a live local head',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
