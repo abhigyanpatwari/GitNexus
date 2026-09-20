@@ -534,7 +534,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setReadingCount(0);
     try {
       const entries = collectDropEntries(e.dataTransfer); // sync, before any await
-      const { files, skipped } = await readDroppedFolder(entries, {
+      const { files, skipped, oversized } = await readDroppedFolder(entries, {
         signal: controller.signal,
         onProgress: setReadingCount,
       });
@@ -544,7 +544,12 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       // unblocks Analyze and a second drop).
       if (requestControllerRef.current === controller) setReadingCount(null);
       if (controller.signal.aborted) return;
-      await startFolderUpload(filterRepoFiles(files), controller, skipped);
+      const filtered = filterRepoFiles(files);
+      await startFolderUpload(
+        { ...filtered, droppedCount: filtered.droppedCount + oversized },
+        controller,
+        skipped,
+      );
     } catch (err) {
       if (requestControllerRef.current === controller) setReadingCount(null);
       if (controller.signal.aborted) return;

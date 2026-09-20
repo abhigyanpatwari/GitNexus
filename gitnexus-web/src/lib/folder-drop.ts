@@ -67,6 +67,12 @@ export interface DroppedFolder {
    * count. Unreadable single files are counted here as well.
    */
   skipped: number;
+  /**
+   * Readable files omitted because they exceed MAX_FILE_BYTES. They do not
+   * count toward MAX_DROP_FILES; the drop summary adds this to droppedCount
+   * so it matches the picker (filterRepoFiles) skip count.
+   */
+  oversized: number;
 }
 
 /**
@@ -117,11 +123,12 @@ export async function readDroppedFolder(
   const root = entries[0] as FileSystemDirectoryEntry;
   const files: File[] = [];
   let skipped = 0;
+  let oversized = 0;
 
   // A folder that is itself named like build output (`dist`, `out`, ...) would
   // lose every file to filterRepoFiles anyway (the root is a path segment
   // too); answer without walking it.
-  if (EXCLUDED_DIRS.has(root.name)) return { files, skipped: 1 };
+  if (EXCLUDED_DIRS.has(root.name)) return { files, skipped: 1, oversized: 0 };
 
   const throwIfAborted = () => {
     if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError');
@@ -172,11 +179,14 @@ export async function readDroppedFolder(
             continue;
           }
           throwIfAborted();
-          // Oversized files are dropped later by filterRepoFiles. Do not push
-          // them here: every getFile() used to count toward MAX_DROP_FILES, so
-          // a tree the picker accepts (20k keepers + oversized siblings) was
-          // rejected as tooManyFiles.
-          if (file.size > MAX_FILE_BYTES) continue;
+          // Do not push oversized files: they used to count toward
+          // MAX_DROP_FILES, so a tree the picker accepts (20k keepers +
+          // oversized siblings) was rejected as tooManyFiles. Count them so
+          // the drop summary's droppedCount still matches the picker.
+          if (file.size > MAX_FILE_BYTES) {
+            oversized++;
+            continue;
+          }
           // A dropped File reports '' here while the picker reports
           // `<folder>/<rest>`. An own property shadows the prototype getter, so
           // filterRepoFiles (and therefore the server) sees one shape.
@@ -194,7 +204,7 @@ export async function readDroppedFolder(
   await walk(root, root.name, 1);
   throwIfAborted();
   report(files.length);
-  return { files, skipped };
+  return { files, skipped, oversized };
 }
 
 const readBatch = (reader: FileSystemDirectoryReader) =>

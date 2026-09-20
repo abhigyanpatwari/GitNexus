@@ -109,7 +109,7 @@ describe('readDroppedFolder', () => {
     const root = dirEntry('repo', children, 100);
     const { files } = await readDroppedFolder([root]);
     expect(files).toHaveLength(250);
-    // three full batches plus the terminating empty read
+    // two full 100-entry batches, one 50-entry batch, then the empty read
     expect(root.reads).toBe(4);
   });
 
@@ -152,17 +152,21 @@ describe('readDroppedFolder', () => {
   it('does not count oversized files toward MAX_DROP_FILES', async () => {
     const oversized = fileEntry('big.bin', MAX_FILE_BYTES + 1);
     const keepers = Array.from({ length: MAX_DROP_FILES }, (_, i) => fileEntry(`f${i}`));
-    const { files } = await readDroppedFolder([dirEntry('repo', [oversized, ...keepers])]);
+    const { files, oversized: oversizedCount } = await readDroppedFolder([
+      dirEntry('repo', [oversized, ...keepers]),
+    ]);
     expect(files).toHaveLength(MAX_DROP_FILES);
     expect(paths(files)).not.toContain('repo/big.bin');
+    expect(oversizedCount).toBe(1);
   });
 
   it('skips oversized files before they reach filterRepoFiles', async () => {
-    const { files, skipped } = await readDroppedFolder([
+    const { files, skipped, oversized } = await readDroppedFolder([
       dirEntry('repo', [fileEntry('a.ts'), fileEntry('big.bin', MAX_FILE_BYTES + 1)]),
     ]);
     expect(paths(files)).toEqual(['repo/a.ts']);
     expect(skipped).toBe(0);
+    expect(oversized).toBe(1);
   });
 
   it('aborts mid-walk and does not read later siblings', async () => {
