@@ -336,7 +336,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       resolutionConfig: undefined,
       external: 'Foundation',
       decoy: 'Sources/Foundation/Thing.swift',
-      reachesDecoy: 'Models',
+      reachesDecoy: 'Sources',
     },
   ],
   [
@@ -417,7 +417,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
-  [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
 ]);

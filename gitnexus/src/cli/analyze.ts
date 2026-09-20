@@ -54,6 +54,12 @@ import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  formatProcessDetectionBudgetBanner,
+  parseProcessDetectionBudgetStrings,
+  resolveProcessDetectionBudget,
+} from '../core/ingestion/process-detection-budget.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
@@ -947,6 +953,18 @@ const analyzeCommandImpl = async (
     workerPoolSize = parsedWorkers;
   }
 
+  const processDetectionFromFlags = parseProcessDetectionBudgetStrings(
+    {
+      maxProcesses: options.maxProcesses,
+      maxProcessBranching: options.maxProcessBranching,
+      maxProcessTraceDepth: options.maxProcessTraceDepth,
+      maxEntryPointCandidates: options.maxEntryPointCandidates,
+    },
+    (flag, raw) => {
+      cliWarn(`  ${formatInvalidProcessDetectionOverride(flag, raw)}\n`);
+    },
+  );
+
   // Parse `--embeddings [limit]`: `true` → default cap, string → numeric cap
   // (0 disables the cap entirely). Validated up here so failures match the
   // sibling-validation pattern (exit before bar.start() — otherwise
@@ -1236,6 +1254,12 @@ const analyzeCommandImpl = async (
   if (maxFileSizeBanner) {
     console.log(`${maxFileSizeBanner}\n`);
   }
+  const processDetectionBanner = formatProcessDetectionBudgetBanner(
+    resolveProcessDetectionBudget(processDetectionFromFlags),
+  );
+  if (processDetectionBanner) {
+    console.log(`${processDetectionBanner}\n`);
+  }
 
   // ── CLI progress bar setup ─────────────────────────────────────────
   const barOptions: cliProgress.Options & { terminal?: CliProgressTerminal } = {
@@ -1376,6 +1400,10 @@ const analyzeCommandImpl = async (
       // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
       // env / auto-formula fallback inside the pipeline.
       workerPoolSize,
+      maxProcesses: processDetectionFromFlags.maxProcesses,
+      maxProcessBranching: processDetectionFromFlags.maxProcessBranching,
+      maxProcessTraceDepth: processDetectionFromFlags.maxProcessTraceDepth,
+      maxEntryPointCandidates: processDetectionFromFlags.maxEntryPointCandidates,
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,

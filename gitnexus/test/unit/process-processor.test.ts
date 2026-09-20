@@ -585,7 +585,13 @@ describe('process depth (D1/D2)', () => {
   // `findEntryPoints` returns several starting points, so the deep chain is
   // traced from inside it whatever the traversal order does — a test there
   // passes under BOTH traversals and guards nothing.
-  const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
+  const cfg = {
+    maxTraceDepth: 10,
+    maxBranching: 4,
+    maxProcesses: 75,
+    minSteps: 3,
+    maxEntryPointCandidates: 200,
+  };
 
   const deepAndShallow = (order: readonly string[]): Map<string, string[]> => {
     // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
@@ -1213,6 +1219,26 @@ describe('the entry-point candidate cap is disclosed too', () => {
 
     expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
     expect(result.stats.truncation.truncated).toBe(false);
+  });
+
+  it('honors maxEntryPointCandidates instead of the compiled 200 (#3313)', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+      maxEntryPointCandidates: 410,
+    });
+
+    expect(result.stats.entryPointsFound).toBe(410);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
+  });
+
+  it('drops one candidate when the override is one below the list length (#3313)', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+      maxEntryPointCandidates: 409,
+    });
+
+    expect(result.stats.entryPointsFound).toBe(409);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(1);
   });
 });
 

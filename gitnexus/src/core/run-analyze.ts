@@ -198,6 +198,13 @@ import {
   nodeTablesForIncrementalDelete,
   shouldPreservePersistedDerivedGraph,
 } from './incremental/derived-writeback.js';
+import {
+  formatInvalidProcessDetectionOverride,
+  processDetectionBudgetMismatch,
+  resolveProcessDetectionBudget,
+  toProcessDetectionStamp,
+  uncertifyProcessDetectionStamp,
+} from './ingestion/process-detection-budget.js';
 import { NODE_TABLES } from './lbug/schema.js';
 import {
   loadParseCache,
@@ -221,9 +228,20 @@ import {
 } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
 import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
-import type { CachedEmbedding } from './embeddings/types.js';
+import {
+  cacheRowCount,
+  discardScopedEmbeddingSpills,
+  disposeEmbeddingSpill,
+  withEmbeddingSpillScope,
+  emptyCachedEmbeddingsSnapshot,
+  EmbeddingSpillReader,
+  materializeCachedEmbeddings,
+  normalizeCachedEmbeddings,
+  snapshotEmbeddingDims,
+  type CachedEmbeddingsSnapshot,
+} from './embeddings/embedding-restore-spill.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
-import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
+import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
   EMBEDDING_DIMS,
@@ -474,8 +492,9 @@ export interface AnalyzeOptions {
   pdgEmitChunkSize?: number;
   /** Streamed structural graph emit (#2680). Honored only on a full rebuild
    *  (`force === true`). May also be enabled via `GITNEXUS_STREAM_GRAPH_EMIT`.
-   *  Trades community detection, process extraction and PDG taint summaries for
-   *  a ~2.9x reduction of in-memory graph heap. */
+   *  The sink answers a complete relationship read, so community detection,
+   *  process extraction, and PDG taint summaries still run; streaming reduces
+   *  in-memory graph heap (~2.9x) by keeping those edges on disk. */
   streamGraphEmit?: boolean;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
@@ -517,6 +536,16 @@ export interface AnalyzeOptions {
    * removed); `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
+  /**
+   * Process-detection budget overrides (#3313). Threaded to
+   * `PipelineOptions` without mutating `process.env`. Unset fields fall
+   * back to `GITNEXUS_*` env, then shipped defaults / the dynamic
+   * `maxProcesses` formula.
+   */
+  maxProcesses?: number;
+  maxProcessBranching?: number;
+  maxProcessTraceDepth?: number;
+  maxEntryPointCandidates?: number;
   /**
    * Extra fetch-wrapper function names to treat as HTTP consumers, forwarded to
    * `PipelineOptions.fetchWrappers` (#1589/#1852 residual). Sourced from the CLI
@@ -1041,12 +1070,16 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
  * directory (#2658). `metaDir` — not `getStoragePaths(repoPath, options.branch)`
  * — is the lock scope: a `--branch X` that owns the flat slot resolves to the
  * flat `.gitnexus`, so scoping off the raw option would lock the wrong dir.
+ * `rejectedDetectedBranch` is log-only (the detect-reject warning after lock
+ * settle); it does not change placement.
  */
 interface WriteTarget {
   storagePath: string;
   repoHasGit: boolean;
   currentCommit: string;
   checkedOutBranch: string | null;
+  /** Raw checkout name when git returned one the branch-name rules reject. */
+  rejectedDetectedBranch: string | null;
   branchLabel: string | null;
   placement: { branch?: string };
   lbugPath: string;
@@ -1078,9 +1111,12 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   // validated (#2106 R1): a git ref the branch-name rules forbid becomes `null`
   // → the flat slot, matching that a later `--branch <that-ref>` query would
   // also be rejected. A normal ref round-trips index-time/query-time labels.
-  const checkedOutBranch = repoHasGit
-    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
-    : null;
+  // Keep the raw rejected name so `runFullAnalysis` can warn once after the
+  // lock settles. Detached / non-git / empty detect stay `null` here and silent.
+  const rawDetectedBranch = repoHasGit ? getCurrentBranch(repoPath) : null;
+  const checkedOutBranch = sanitizeDetectedBranch(rawDetectedBranch) ?? null;
+  const rejectedDetectedBranch =
+    rawDetectedBranch != null && checkedOutBranch === null ? rawDetectedBranch : null;
   // Analyze indexes the working tree, not an arbitrary ref. An explicit
   // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
   // content into X's slot, corrupting X (#2106). Refuse the mismatch. Detached
@@ -1101,6 +1137,7 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     repoHasGit,
     currentCommit,
     checkedOutBranch,
+    rejectedDetectedBranch,
     branchLabel,
     placement,
     lbugPath,
@@ -1166,59 +1203,69 @@ export async function runFullAnalysis(
 
   let writeTarget = await resolveWriteTarget(repoPath, options);
   let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
-  try {
-    requireExclusiveIndexLock(
-      lock,
-      `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
-    );
-    // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
-    // during which git HEAD/branch — and thus the resolved write slot — may
-    // change (a commit lands, a branch is switched, or another writer adopts the
-    // flat slot). The pre-wait snapshot must NOT be reused: re-resolve UNDER the
-    // lock so the freshness check (`existingMeta.lastCommit === currentCommit`)
-    // and the meta stamps see current git state, honoring the module's "re-check
-    // freshness after acquiring" contract. If the slot itself moved we hold the
-    // WRONG lock — release and re-acquire the correct one. Bounded so a
-    // pathologically churning checkout can't loop forever; after the cap we
-    // proceed on the current lock. The loop is INSIDE the try so a re-resolve
-    // that throws (e.g. a `--branch` that stopped matching the now-switched
-    // checkout) still releases the held lock via `finally` (no leak).
-    const MAX_RELOCK = 3;
-    for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
-      // Never pass the pre-lock storagePath as already-validated: requireStoragePath
-      // must run again under the lock so a now-foreign slot aborts (and finally
-      // still releases the lock).
-      const fresh = await resolveWriteTarget(repoPath, options);
-      if (fresh.metaDir === writeTarget.metaDir) {
-        writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
-        break;
-      }
-      log(
-        `Index write target moved while waiting for the lock ` +
-          `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
-      );
-      lock.release();
-      writeTarget = fresh;
-      lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+  return withEmbeddingSpillScope(async () => {
+    try {
       requireExclusiveIndexLock(
         lock,
-        `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
+        `Cannot acquire the index lock at ${writeTarget.metaDir}; refusing an unlocked analysis.`,
       );
-      if (attempt === MAX_RELOCK - 1) {
-        log('Index write target still moving after repeated re-acquire; proceeding on this lock.');
+      // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
+      // during which git HEAD/branch — and thus the resolved write slot — may
+      // change (a commit lands, a branch is switched, or another writer adopts the
+      // flat slot). The pre-wait snapshot must NOT be reused: re-resolve UNDER the
+      // lock so the freshness check (`existingMeta.lastCommit === currentCommit`)
+      // and the meta stamps see current git state, honoring the module's "re-check
+      // freshness after acquiring" contract. If the slot itself moved we hold the
+      // WRONG lock — release and re-acquire the correct one. Bounded so a
+      // pathologically churning checkout can't loop forever; after the cap we
+      // proceed on the current lock. The loop is INSIDE the try so a re-resolve
+      // that throws (e.g. a `--branch` that stopped matching the now-switched
+      // checkout) still releases the held lock via `finally` (no leak).
+      const MAX_RELOCK = 3;
+      for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
+        // Never pass the pre-lock storagePath as already-validated: requireStoragePath
+        // must run again under the lock so a now-foreign slot aborts (and finally
+        // still releases the lock).
+        const fresh = await resolveWriteTarget(repoPath, options);
+        if (fresh.metaDir === writeTarget.metaDir) {
+          writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
+          break;
+        }
+        log(
+          `Index write target moved while waiting for the lock ` +
+            `(${writeTarget.metaDir} → ${fresh.metaDir}); re-acquiring the correct slot.`,
+        );
+        lock.release();
+        writeTarget = fresh;
+        lock = await acquireIndexLock(fresh.metaDir, acquireOpts);
+        requireExclusiveIndexLock(
+          lock,
+          `Cannot acquire the index lock at ${fresh.metaDir}; refusing an unlocked analysis.`,
+        );
+        if (attempt === MAX_RELOCK - 1) {
+          log(
+            'Index write target still moving after repeated re-acquire; proceeding on this lock.',
+          );
+        }
       }
+      if (writeTarget.rejectedDetectedBranch) {
+        log(
+          `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
+        );
+      }
+      return await runFullAnalysisInner(
+        repoPath,
+        options,
+        callbacks,
+        writeTarget,
+        contentRetention,
+        runnerIdentityAtBootstrap,
+      );
+    } finally {
+      discardScopedEmbeddingSpills();
+      lock.release();
     }
-    return await runFullAnalysisInner(
-      repoPath,
-      options,
-      callbacks,
-      writeTarget,
-      contentRetention,
-      runnerIdentityAtBootstrap,
-    );
-  } finally {
-    lock.release();
-  }
+  });
 }
 
 async function runFullAnalysisInner(
@@ -2037,13 +2084,37 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Process-detection budget (#3313). Resolve CLI/options then env here so
+  // MCP/server jobs honor GITNEXUS_* without a CLI merge. Compare against
+  // the persisted stamp BEFORE the already-up-to-date fast path: a clean
+  // same-commit raise must re-detect flows rather than return the sampled
+  // index. Does NOT set force — incremental empty-diff + skip derived
+  // preserve is enough.
+  const processDetectionBudget = resolveProcessDetectionBudget(
+    {
+      maxProcesses: options.maxProcesses,
+      maxProcessBranching: options.maxProcessBranching,
+      maxProcessTraceDepth: options.maxProcessTraceDepth,
+      maxEntryPointCandidates: options.maxEntryPointCandidates,
+    },
+    process.env,
+    (knob, raw) => {
+      log(formatInvalidProcessDetectionOverride(knob, raw));
+    },
+  );
+  const processDetectionMismatch = processDetectionBudgetMismatch(
+    existingMeta?.processDetection,
+    processDetectionBudget,
+  );
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
     !existingMeta.embeddingCheckpoint &&
     !options.force &&
     existingMeta.lastCommit === currentCommit &&
-    !ftsModeChanged
+    !ftsModeChanged &&
+    !processDetectionMismatch
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
@@ -2103,6 +2174,8 @@ async function runFullAnalysisInner(
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
       if (!dirty && !indexedContentChanged && !healUnregistered) {
+        const processDetectionStamp =
+          existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
@@ -2154,7 +2227,11 @@ async function runFullAnalysisInner(
           // documented Docker :ro workflow (#1549) — degrades to a warning.
           try {
             await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
-            await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              branch: branchLabel,
+              processDetection: processDetectionStamp,
+            });
           } catch (err) {
             // EACCES/EPERM also arise from ownership problems and transient
             // Windows locks, so keep the real error visible alongside the
@@ -2167,10 +2244,24 @@ async function runFullAnalysisInner(
           // Discriminator-only restamp (flag↔env). `existingMeta` already
           // carries the folded skipReason; persist it without a write plan.
           try {
-            await saveMeta(metaDir, existingMeta);
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              processDetection: processDetectionStamp,
+            });
           } catch (err) {
             log(
               `Warning: could not restamp the FTS skip reason (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
+            );
+          }
+        } else if (!existingMeta.processDetection) {
+          try {
+            await saveMeta(metaDir, {
+              ...existingMeta,
+              processDetection: processDetectionStamp,
+            });
+          } catch (err) {
+            log(
+              `Warning: could not backfill the process-detection stamp (${formatMetaWriteFailureReason(err)}); will retry on the next run.`,
             );
           }
         }
@@ -2214,8 +2305,18 @@ async function runFullAnalysisInner(
   // The default-preserve branch is what makes a routine `analyze` (e.g. a
   // post-commit hook) safe: a multi-minute embedding pass is no longer
   // silently dropped just because the caller omitted `--embeddings`.
-  let cachedEmbeddingNodeIds = new Set<string>();
-  let cachedEmbeddings: CachedEmbedding[] = [];
+  let cachedSnapshot: CachedEmbeddingsSnapshot = emptyCachedEmbeddingsSnapshot();
+  const adoptCachedEmbeddings = (raw: CachedEmbeddingsSnapshot): void => {
+    cachedSnapshot = normalizeCachedEmbeddings(raw);
+  };
+  const discardCachedEmbeddings = (): void => {
+    disposeEmbeddingSpill(cachedSnapshot.spill);
+    cachedSnapshot = emptyCachedEmbeddingsSnapshot();
+  };
+  const discardCachedEmbeddingSpill = (): void => {
+    disposeEmbeddingSpill(cachedSnapshot.spill);
+    cachedSnapshot = { ...cachedSnapshot, spill: undefined };
+  };
 
   const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
   const {
@@ -2250,7 +2351,7 @@ async function runFullAnalysisInner(
   // of the predicted `willTryIncremental`). The post-pipeline branch may
   // disagree with the prediction (e.g. when the pipeline produces zero
   // File nodes, `isIncremental` flips false and the full-rebuild path
-  // wipes the DB) — loading unconditionally is cheap insurance against
+  // wipes the DB) — loading unconditionally is insurance against
   // silently dropping embeddings on a mispredicted run. The re-insert
   // step gates itself on the actual `isIncremental` value to avoid
   // PK-conflicts when the incremental writeback path keeps the rows.
@@ -2264,9 +2365,7 @@ async function runFullAnalysisInner(
     try {
       progress('embeddings', 0, 'Caching embeddings...');
       await initAnalysisLbug(lbugPath);
-      const cached = await loadCachedEmbeddings();
-      cachedEmbeddingNodeIds = cached.embeddingNodeIds;
-      cachedEmbeddings = cached.embeddings;
+      adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
       // Surface cache-load failures explicitly: silently swallowing here would
@@ -2277,8 +2376,7 @@ async function runFullAnalysisInner(
           `(${err?.message ?? String(err)}). ` +
           `Embeddings will not be preserved on this run.`,
       );
-      cachedEmbeddingNodeIds = new Set<string>();
-      cachedEmbeddings = [];
+      discardCachedEmbeddings();
       try {
         await closeLbug();
       } catch {
@@ -2352,6 +2450,16 @@ async function runFullAnalysisInner(
       {
         parseCache,
         workerPoolSize: options.workerPoolSize,
+        maxProcesses: processDetectionBudget.maxProcesses,
+        maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
+          ? processDetectionBudget.maxProcessBranching
+          : undefined,
+        maxProcessTraceDepth: processDetectionBudget.overridden.maxProcessTraceDepth
+          ? processDetectionBudget.maxProcessTraceDepth
+          : undefined,
+        maxEntryPointCandidates: processDetectionBudget.overridden.maxEntryPointCandidates
+          ? processDetectionBudget.maxEntryPointCandidates
+          : undefined,
         // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
         // build gate (workerData.pdg) and the scope-resolution emit gate.
         pdg: options.pdg === true,
@@ -2391,6 +2499,7 @@ async function runFullAnalysisInner(
       },
     );
   } catch (err) {
+    discardCachedEmbeddingSpill();
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     throw err;
   }
@@ -2482,7 +2591,8 @@ async function runFullAnalysisInner(
     skipDerivedGraphPhases &&
     isIncremental &&
     !!hashDiff &&
-    shouldPreservePersistedDerivedGraph(hashDiff);
+    shouldPreservePersistedDerivedGraph(hashDiff) &&
+    !processDetectionMismatch;
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
@@ -2565,17 +2675,21 @@ async function runFullAnalysisInner(
     );
     // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
     // success at the meta-save step. Scoped to this branch's meta.json.
-    const now = Date.now();
-    await saveMeta(metaDir, {
-      ...existingMeta!,
-      incrementalInProgress: {
-        startedAt: now,
-        updatedAt: now,
-        phase: 'pre-write',
-        toWriteCount: hashDiff.toWrite.length,
-        directWriteCount: hashDiff.toWrite.length,
-      },
-    });
+    // POSIX atomic incremental mutates the copy, so a live dirty stamp would
+    // force-rebuild a healthy index after a crash before swap.
+    if (!atomicIncremental) {
+      const now = Date.now();
+      await saveMeta(metaDir, {
+        ...existingMeta!,
+        incrementalInProgress: {
+          startedAt: now,
+          updatedAt: now,
+          phase: 'pre-write',
+          toWriteCount: hashDiff.toWrite.length,
+          directWriteCount: hashDiff.toWrite.length,
+        },
+      });
+    }
     if (atomicIncremental) {
       // Stage the live index into the temp so the in-place delete/writeback
       // below mutates the COPY, and the end-of-run swap publishes it atomically.
@@ -2627,6 +2741,7 @@ async function runFullAnalysisInner(
     try {
       await wipeLbugDbFiles(buildPath);
     } catch (error) {
+      discardCachedEmbeddingSpill();
       if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
       throw error;
     }
@@ -2655,6 +2770,7 @@ async function runFullAnalysisInner(
   try {
     await initAnalysisLbug(buildPath);
   } catch (error) {
+    discardCachedEmbeddingSpill();
     if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
     throw error;
   }
@@ -2976,7 +3092,7 @@ async function runFullAnalysisInner(
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
-      // destroy them. `--drop-embeddings` deliberately leaves `cachedEmbeddings`
+      // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`
       // empty (`deriveEmbeddingMode` returns `shouldLoadCache: false` for it by
       // construction — see the four-mode comment at the cache-load site), and its
       // `options.force = true` conversion sits INSIDE
@@ -2991,12 +3107,16 @@ async function runFullAnalysisInner(
       // while rows survive ⇒ `hasExisting` false ⇒ `shouldLoadCache` false), i.e.
       // it would fix the wipe by deleting the safeguard. Covers
       // `--drop-embeddings --embeddings` too — the rescue repopulates
-      // `cachedEmbeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
+      // `cachedSnapshot.embeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
       // the already-embedded set, so the very nodes the user asked to REGENERATE
       // would be skipped.
-      if (extensionForcedRebuild && !options.dropEmbeddings && cachedEmbeddings.length === 0) {
+      if (
+        extensionForcedRebuild &&
+        !options.dropEmbeddings &&
+        cacheRowCount(cachedSnapshot) === 0
+      ) {
         // The escalation below WIPES the DB files, and Phase 3.5 restores
-        // embedding rows from `cachedEmbeddings` — which is only populated when
+        // embedding rows from `cachedSnapshot` — which is only populated when
         // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
         // under-reports its embeddings (meta restored from an older run, or a
         // count that never got stamped) would therefore have every vector
@@ -3004,14 +3124,21 @@ async function runFullAnalysisInner(
         // while the DB is still intact — a plain MATCH, which needs no VECTOR
         // extension. Rows whose owning node is gone are dropped by Phase 3.5's
         // live-graph filter, exactly as on any other wiped path.
-        const rescued = await loadCachedEmbeddings();
-        if (rescued.embeddings.length > 0) {
-          cachedEmbeddings = rescued.embeddings;
-          cachedEmbeddingNodeIds = rescued.embeddingNodeIds;
+        try {
+          adoptCachedEmbeddings(await loadCachedEmbeddings());
+          if (cacheRowCount(cachedSnapshot) > 0) {
+            log(
+              `Preserving ${cacheRowCount(cachedSnapshot)} embedding row(s) across the forced rebuild ` +
+                `(the index metadata did not account for them).`,
+            );
+          }
+        } catch (err: any) {
           log(
-            `Preserving ${rescued.embeddings.length} embedding row(s) across the forced rebuild ` +
-              `(the index metadata did not account for them).`,
+            `Warning: could not load cached embeddings ` +
+              `(${err?.message ?? String(err)}). ` +
+              `Embeddings will not be preserved on this run.`,
           );
+          discardCachedEmbeddings();
         }
       }
       // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
@@ -3492,6 +3619,11 @@ async function runFullAnalysisInner(
         lastCommit: '',
         indexedAt: new Date().toISOString(),
       };
+      // #3322: persist uncertified *before* CREATE_FTS_INDEX. Park keeps this
+      // stamp; it must not invent one on every FTS-only crash. Missing stamp +
+      // shipped defaults is a match, so a budget-mismatch derived rewrite that
+      // dies in FTS would otherwise recertify the rewritten Community/Process
+      // rows on a flagless retry.
       await saveMeta(metaDir, {
         ...base,
         incrementalInProgress: buildFtsDirtyStamp({
@@ -3499,6 +3631,11 @@ async function runFullAnalysisInner(
           writePlan: 'in-place',
           checkpointSucceeded: boundaryCheckpointSucceeded,
         }),
+        ...(processDetectionMismatch
+          ? {
+              processDetection: uncertifyProcessDetectionStamp(base.processDetection),
+            }
+          : {}),
       });
     }
 
@@ -3650,26 +3787,27 @@ async function runFullAnalysisInner(
     //      propagates errors (a completed writeback means a deterministic
     //      delete outcome) and this process holds the exclusive DB lock (no
     //      concurrent writer).
-    // The per-batch try/catch stays as a last-resort guard only — it no
-    // longer fires on the happy path.
+    // Materialize runs outside the insert catch so a spill I/O failure is not
+    // treated as a benign PK conflict. Any node with a failed restore batch is
+    // marked stale in the Phase 4 map so leftover chunks are deleted and rembedded.
     let restoredEmbeddingCount = 0;
-    if (cachedEmbeddings.length > 0) {
-      const cachedDims = cachedEmbeddings[0].embedding.length;
+    const restoreFailedNodeIds = new Set<string>();
+    if (cacheRowCount(cachedSnapshot) > 0) {
+      const cachedDims = snapshotEmbeddingDims(cachedSnapshot);
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
-      if (cachedDims !== EMBEDDING_DIMS) {
+      if (cachedDims !== undefined && cachedDims !== EMBEDDING_DIMS) {
         // Dimensions changed (e.g. switched embedding model) — discard cache and re-embed all
         log(
           `Embedding dimensions changed (${cachedDims}d -> ${EMBEDDING_DIMS}d), discarding cache`,
         );
-        cachedEmbeddings = [];
-        cachedEmbeddingNodeIds = new Set();
+        discardCachedEmbeddings();
       } else {
         const { batchInsertEmbeddings: batchInsert } =
           await import('./embeddings/embedding-pipeline.js');
         // (1) Live-graph filter — the FULL pipeline graph (always produced),
         // NOT the incremental subgraph, or unchanged files' rows would be
         // dropped from the restore set.
-        const liveEmbeddings = cachedEmbeddings.filter(
+        const liveEmbeddings = cachedSnapshot.rows.filter(
           (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
         );
         // (2) Restore-scope filter (see the discipline note above).
@@ -3682,13 +3820,36 @@ async function runFullAnalysisInner(
               });
         progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
-        for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
-          try {
-            await batchInsert(executeWithReusedStatement, batch);
-            restoredEmbeddingCount += batch.length;
-          } catch {
-            /* last-resort guard — conflict-free by construction above */
+        let spillReader: EmbeddingSpillReader | undefined;
+        try {
+          for (const batch of chunk(rowsToRestore, EMBED_BATCH)) {
+            let materialized;
+            try {
+              if (!spillReader && cachedSnapshot.spill && cachedSnapshot.embeddings.length === 0) {
+                spillReader = new EmbeddingSpillReader(cachedSnapshot.spill);
+              }
+              materialized = materializeCachedEmbeddings(cachedSnapshot, batch, spillReader);
+            } catch (err) {
+              for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
+              log(
+                `Warning: could not materialize ${batch.length} cached embedding(s) for restore ` +
+                  `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
+              );
+              continue;
+            }
+            try {
+              await batchInsert(executeWithReusedStatement, materialized);
+              restoredEmbeddingCount += batch.length;
+            } catch (err) {
+              for (const row of batch) restoreFailedNodeIds.add(row.nodeId);
+              log(
+                `Warning: could not restore ${batch.length} cached embedding(s) ` +
+                  `(${(err as Error).message}); those nodes will be re-embedded if this run generates embeddings.`,
+              );
+            }
           }
+        } finally {
+          spillReader?.close();
         }
 
         // Legacy-orphan sweep (FIX 3, finder B): the live-graph filter's
@@ -3705,7 +3866,7 @@ async function runFullAnalysisInner(
         // sweep failure must never fail a completed writeback, so the whole
         // sweep warns-and-continues.
         if (deletedFilePathsForRestore !== null) {
-          const orphanRowIds = cachedEmbeddings
+          const orphanRowIds = cachedSnapshot.rows
             .filter((e) => pipelineResult.graph.getNode(e.nodeId) === undefined)
             .map((e) => `${e.nodeId}:${e.chunkIndex}`);
           if (orphanRowIds.length > 0) {
@@ -3734,6 +3895,9 @@ async function runFullAnalysisInner(
         }
       }
     }
+    // Vectors are on disk only to survive the wipe/delete. After restore,
+    // drop the spill so Phase 4 does not keep a multi-GB temp file open.
+    discardCachedEmbeddingSpill();
 
     // ── Phase 4: Embeddings (90–98%) ──────────────────────────────────
     const stats = await getLbugStats();
@@ -3983,9 +4147,16 @@ async function runFullAnalysisInner(
       const embeddingIdentity = embeddingIdentityForRun;
       // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
       let existingEmbeddings: Map<string, string> | undefined;
-      if (cachedEmbeddingNodeIds.size > 0) {
+      if (cachedSnapshot.embeddingNodeIds.size > 0) {
         existingEmbeddings = new Map<string, string>();
-        for (const e of cachedEmbeddings) {
+        for (const e of cachedSnapshot.rows) {
+          if (restoreFailedNodeIds.has(e.nodeId)) {
+            // Any failed batch for this node: mark stale so Phase 4 DELETEs
+            // leftover chunks and re-embeds. Omitting the id would treat the
+            // node as new and PK-conflict on rows that already restored.
+            existingEmbeddings.set(e.nodeId, STALE_HASH_SENTINEL);
+            continue;
+          }
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
@@ -4062,7 +4233,7 @@ async function runFullAnalysisInner(
           progress('embeddings', scaled, label);
         },
         {},
-        cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
+        cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
         existingEmbeddings,
         {
           forceReembedNodeIds: pendingEmbeddingNodeIds,
@@ -4471,6 +4642,7 @@ async function runFullAnalysisInner(
       // stamp after an on→off flip; the next pdgModeMismatch then compares
       // off==off and incremental eligibility is restored.
       pdg: resolvePdgConfig(options),
+      processDetection: toProcessDetectionStamp(processDetectionBudget),
     };
     // Re-resolve at the commit boundary. Long analyses can overlap an npm
     // upgrade, rebuilt dist tree, or native dependency replacement; stamping
@@ -4744,6 +4916,7 @@ async function runFullAnalysisInner(
       }
     }
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    discardCachedEmbeddingSpill();
     if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.

@@ -54,8 +54,8 @@ if (!fs.existsSync(SHARED_ROOT)) {
 
 // Launch tsc as `node typescript/lib/tsc.js` on every OS. The `.bin/tsc` /
 // `tsc.cmd` shims are Windows-only wrappers; `execFileSync` cannot spawn a
-// `.cmd` without a shell, and a separate `npm ci` in gitnexus-shared pulls
-// TypeScript 7 optional platform packages (7+ minutes in CI).
+// `.cmd` without a shell, and a separate `npm ci` in gitnexus-shared would
+// pull a second TypeScript 7 optional-platform install (7+ minutes in CI).
 const tscJs = path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
 if (!fs.existsSync(tscJs)) {
   console.error(

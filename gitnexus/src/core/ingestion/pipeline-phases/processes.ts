@@ -19,6 +19,12 @@ import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
 import type { ParseOutput } from './parse.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
+import {
+  buildProcessDetectionPhaseConfig,
+  formatWholeFlowsMissingRemedies,
+  processDetectionEffectiveLimits,
+  resolveProcessDetectionBudget,
+} from '../process-detection-budget.js';
 import { generateId } from '../../../lib/utils.js';
 import { routeNodeKey } from '../route-extractors/route-path.js';
 import { isDev } from '../utils/env.js';
@@ -79,11 +85,29 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
+    const resolvedBudget = resolveProcessDetectionBudget(
+      {
+        maxProcesses: ctx.options?.maxProcesses,
+        maxProcessBranching: ctx.options?.maxProcessBranching,
+        maxProcessTraceDepth: ctx.options?.maxProcessTraceDepth,
+        maxEntryPointCandidates: ctx.options?.maxEntryPointCandidates,
+      },
+      // Env is resolved in `runFullAnalysis` and threaded on PipelineOptions.
+      // The phase reads only those fields so unit tests stay isolated from
+      // the host environment.
+      {},
+    );
     let symbolCount = 0;
-    ctx.graph.forEachNode((n) => {
-      if (n.label !== 'File') symbolCount++;
-    });
-    const dynamicMaxProcesses = computeDynamicMaxProcesses(symbolCount);
+    if (resolvedBudget.maxProcesses === undefined) {
+      ctx.graph.forEachNode((n) => {
+        if (n.label !== 'File') symbolCount++;
+      });
+    }
+    const detectionConfig = buildProcessDetectionPhaseConfig(
+      resolvedBudget,
+      symbolCount,
+      computeDynamicMaxProcesses,
+    );
 
     // R3-6: where the program reaches outward. Already collected by the parse
     // phase for FILE-level FETCHES/QUERIES edges; reused here at function
@@ -123,7 +147,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
           stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
         });
       },
-      { maxProcesses: dynamicMaxProcesses, minSteps: 3 },
+      detectionConfig,
       outwardActionSites,
     );
 
@@ -143,8 +167,8 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     // "unexplored entry points mean whole flows are missing, while a
     // depth-capped trace means a flow is present but shorter than it really is"
     // — and it is what keeps the line worth reading. Warning on every counter
-    // meant warning on every run: this phase overrides only `maxProcesses`, so
-    // at the shipped defaults (`maxBranching: 4`, `maxTraceDepth: 10`,
+    // meant warning on every run: at the shipped defaults (`maxBranching: 4`,
+    // `maxTraceDepth: 10`,
     // per-entry trace budget 12) `calleesDropped` fires for any function with
     // five callees, `tracesDepthCapped` for any chain deeper than ten, and
     // `walksCutByBudget` for any entry point with twelve paths under it. All
@@ -171,6 +195,15 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       truncation.entryPointCandidatesDropped > 0 ||
       truncation.entryPointsUnexplored > 0 ||
       truncation.processesDropped > 0;
+    const effectiveLimits = processDetectionEffectiveLimits(
+      detectionConfig.maxProcesses,
+      resolvedBudget,
+    );
+    const remedies = formatWholeFlowsMissingRemedies(
+      truncation,
+      effectiveLimits,
+      entryPointCandidates,
+    );
     const shape =
       `${truncation.entryPointCandidatesDropped} of ${entryPointCandidates} candidate entry point(s) never ranked in, ` +
       `${truncation.entryPointsUnexplored} ranked entry point(s) never traced, ` +
@@ -180,13 +213,13 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       `${truncation.walksCutByBudget} walk(s) cut by the per-entry trace budget.`;
     if (flowsMissing) {
       logger.warn(
-        { truncation },
+        { truncation, effectiveLimits },
         `[processes] ${processResult.stats.totalProcesses} flows reported, but whole flows are MISSING: ` +
-          `${shape} An absent flow does NOT mean the code path does not exist.`,
+          `${shape}${remedies} An absent flow does NOT mean the code path does not exist.`,
       );
     } else if (truncation.truncated) {
       logger.debug(
-        { truncation },
+        { truncation, effectiveLimits },
         `[processes] ${processResult.stats.totalProcesses} flows reported; every flow found is present, ` +
           `but some are shorter than the code path they describe: ${shape}`,
       );

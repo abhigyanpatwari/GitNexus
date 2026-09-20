@@ -692,7 +692,10 @@ export interface ScopeResolver {
    */
   readonly populateWorkspaceOwners?: (
     parsedFiles: readonly ParsedFile[],
-    ctx: { readonly fileContents: ReadonlyMap<string, string> },
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
+    },
   ) => void;
 
   /**
@@ -964,6 +967,11 @@ export interface ScopeResolver {
    * regression).
    */
   readonly freeCallsRequireInstanceOwnership?: boolean;
+
+  /** Whether an unqualified call inside a type may dispatch to an inherited
+   * instance method. Languages such as Swift allow implicit-self lookup,
+   * while Python/JavaScript/PHP require an explicit receiver. */
+  readonly implicitThisWalksMro?: boolean;
 
   /**
    * When true, a constructor-form call `Type(...)` links to the Class def
