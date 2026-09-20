@@ -39,6 +39,7 @@ const workflowDocument = load(workflow) as {
         'timeout-minutes'?: unknown;
         with?: Record<string, unknown>;
         env?: Record<string, string>;
+        'working-directory'?: string;
       }>;
     }
   >;
@@ -476,16 +477,26 @@ exit 1`);
     expect(containment).toContain('gitnexus-cursor-integration/skills/gitnexus-review/*');
   });
 
-  it('installs node_modules for the monorepo root, gitnexus-shared, and gitnexus', () => {
-    // The benchmark sandbox-copies node_modules from all three (tasks.scenarios.yaml).
-    // The root tree was absent on the first real run because only the two subpackage
-    // steps ran, so capture_task_dependency_binding aborted at task binding.
+  it('installs node_modules for the monorepo root and gitnexus, and compiles shared from the parent', () => {
+    // The benchmark sandbox-copies node_modules from root and gitnexus
+    // (tasks.scenarios.yaml). Shared is compiled by gitnexus `npm run build`
+    // (scripts/build.js); a dedicated npm ci in gitnexus-shared stalls CI.
     const rootStep = findStep('Install monorepo root dependencies');
     expect(rootStep).toBeDefined();
     expect(rootStep).not.toHaveProperty('working-directory'); // installs at the repo root
     expect(String(rootStep?.run)).toContain('npm ci');
-    expect(stepRun('Build pinned shared runtime')).toContain('npm ci');
-    expect(stepRun('Install and build pinned GitNexus runtime')).toContain('npm ci');
+    expect(findStep('Build pinned shared runtime')).toBeUndefined();
+    const gitnexusRun = stepRun('Install and build pinned GitNexus runtime');
+    expect(gitnexusRun).toContain('npm ci');
+    expect(gitnexusRun).toContain('npm run build');
+    expect(gitnexusRun).toContain('mkdir -p ../gitnexus-shared/node_modules');
+    expect(
+      evolveJob?.steps?.some(
+        (step) =>
+          step['working-directory'] === 'gitnexus-shared' &&
+          String(step.run ?? '').includes('npm ci'),
+      ),
+    ).toBe(false);
   });
 
   it('waits for the runner boot-time package lock before installing containment tools', () => {
