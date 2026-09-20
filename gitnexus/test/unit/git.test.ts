@@ -169,7 +169,7 @@ describe('git utilities', () => {
       expect(listLocalHeads('/project')).toEqual([]);
     });
 
-    it('returns null when git cannot run', () => {
+    it('returns null when git exits non-zero', () => {
       mockSpawnSync.mockReturnValueOnce({
         status: 128,
         stdout: '',
@@ -177,6 +177,16 @@ describe('git utilities', () => {
         error: undefined,
       } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/not-a-repo')).toBeNull();
+    });
+
+    it('returns null when git cannot run', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: null,
+        stdout: '',
+        stderr: '',
+        error: Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }),
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/missing-git')).toBeNull();
     });
   });
 

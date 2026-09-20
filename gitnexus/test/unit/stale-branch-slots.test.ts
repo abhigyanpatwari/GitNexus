@@ -8,6 +8,7 @@ import {
   registerRepo,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import * as repoManager from '../../src/storage/repo-manager.js';
 import { listStaleBranchSlots, removeBranchSlot } from '../../src/storage/stale-branch-slots.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 
@@ -326,5 +327,34 @@ describe('removeBranchSlot (#3331)', () => {
     expect(result.ok).toBe(true);
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
+  });
+
+  it('keeps the registry row when removeBranchIndex rejects after a successful rm', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    const spy = vi
+      .spyOn(repoManager, 'removeBranchIndex')
+      .mockRejectedValueOnce(new Error('lock timeout'));
+
+    try {
+      const result = await removeBranchSlot({
+        repoPath,
+        storagePath,
+        branch: 'feature/x',
+        dir,
+      });
+
+      expect(result.ok).toBe(false);
+      expect(result.keptRegistry).toBe(true);
+      expect(result.emptiedBranchesDir).toBe(false);
+      expect(result.error?.message).toBe('lock timeout');
+      await expect(fs.access(dir)).rejects.toThrow();
+      const [entry] = await listRegisteredRepos();
+      expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/x']);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

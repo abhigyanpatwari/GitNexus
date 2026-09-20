@@ -63,16 +63,13 @@ const directorySizeBytes = async (root: string): Promise<number> => {
     for (const entry of entries) {
       if (entry.isDirectory()) stack.push(path.join(current, entry.name));
     }
-    const sizes = await Promise.all(
-      files.map(async (file) => {
-        try {
-          return (await fs.stat(file)).size;
-        } catch {
-          return 0;
-        }
-      }),
-    );
-    for (const size of sizes) total += size;
+    for (const file of files) {
+      try {
+        total += (await fs.stat(file)).size;
+      } catch {
+        // Skip files that disappear or become unreadable mid-walk.
+      }
+    }
   }
   return total;
 };
@@ -141,12 +138,14 @@ export const listStaleBranchSlots = async (
     }
   }
 
-  return Promise.all(
-    pending.map(async (row) => ({
+  const sized: StaleBranchSlot[] = [];
+  for (const row of pending) {
+    sized.push({
       ...row,
       sizeBytes: row.dir ? await directorySizeBytes(row.dir) : 0,
-    })),
-  );
+    });
+  }
+  return sized;
 };
 
 const isContainedBranchDir = (storagePath: string, dir: string): boolean => {
@@ -224,7 +223,16 @@ export const removeBranchSlot = async (
     }
   }
 
-  await removeBranchIndex(repoPath, branch);
+  try {
+    await removeBranchIndex(repoPath, branch);
+  } catch (err) {
+    return {
+      ok: false,
+      emptiedBranchesDir: false,
+      keptRegistry: true,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
   const emptiedBranchesDir = await rmdirEmptyBranches(storagePath);
   return { ok: true, emptiedBranchesDir, keptRegistry: false };
 };

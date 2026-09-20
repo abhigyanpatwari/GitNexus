@@ -35,9 +35,13 @@ import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core
 import { t } from './i18n/index.js';
 import { cachedUpdateNoticeLine } from './update-notice.js';
 import { formatSlotSize, staleReasonLabel } from './stale-branch-format.js';
-import { findRepo, listRegisteredRepos } from '../storage/repo-manager.js';
+import {
+  canonicalizePath,
+  findRepo,
+  listRegisteredRepos,
+  registryPathEquals,
+} from '../storage/repo-manager.js';
 import { listStaleBranchSlots, type StaleBranchSlot } from '../storage/stale-branch-slots.js';
-import path from 'node:path';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -387,7 +391,9 @@ export const doctorCommand = async () => {
   // entry and never delete.
   const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
   if (!cwdRepo) return;
-  const entry = entries.find((item) => path.resolve(item.path) === path.resolve(cwdRepo.repoPath));
+  const entry = entries.find((item) =>
+    registryPathEquals(canonicalizePath(item.path), canonicalizePath(cwdRepo.repoPath)),
+  );
   const slots = await listStaleBranchSlots({
     repoPath: cwdRepo.repoPath,
     storagePath: cwdRepo.storagePath,
