@@ -62,10 +62,7 @@ describe('extractTrpcRoutes', () => {
       '  }),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual([
-      'GET /trpc/user.admin.users.list',
-      'GET /trpc/user.billing.users.list',
-    ]);
+    expect(paths(source)).toEqual(['GET /trpc/admin.users.list', 'GET /trpc/billing.users.list']);
   });
 
   it('an all-dot merge prefix is treated as no prefix', () => {
@@ -268,6 +265,19 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
+  it('nested db.transaction().query inside .input is not a GET terminal; create stays POST', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.input(v => db.transaction().query(v)).mutation(handler),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['POST /trpc/create']);
+  });
+
   it('defaults.merge is not a tRPC router prefix', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
@@ -299,6 +309,43 @@ describe('extractTrpcRoutes', () => {
       '});',
     ].join('\n');
     expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
+  });
+
+  it('regex after if (ok) does not pop a nested admin router', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    foo: publicProcedure.query(() => { if (ok) /}/.test(value) }),',
+      '    bar: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
+  });
+
+  it('grouping and call parens still treat / as division', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    foo: publicProcedure.query(() => (a + b) / c),',
+      '    bar: publicProcedure.query(() => foo(ok) / x),',
+      '    baz: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual([
+      'GET /trpc/admin.foo',
+      'GET /trpc/admin.bar',
+      'GET /trpc/admin.baz',
+    ]);
   });
 
   it('regex after return does not pop a nested admin router', () => {
@@ -334,6 +381,21 @@ describe('extractTrpcRoutes', () => {
       '});',
     ].join('\n');
     expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
+  });
+
+  it('bare router() userRouter binding still prefixes user, not the filename', () => {
+    const source = [
+      "import { router, publicProcedure } from '../trpc';",
+      '',
+      'export const userRouter = router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(
+      extractTrpcRoutes('src/server/trpc/routers/account.ts', source).map(
+        (r) => r.httpMethod + ' ' + r.routePath,
+      ),
+    ).toEqual(['GET /trpc/user.list']);
   });
 
   it('createTRPCRouter appRouter binding in root.ts does not prefix with app', () => {

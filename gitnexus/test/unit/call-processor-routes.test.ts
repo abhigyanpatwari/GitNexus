@@ -447,4 +447,36 @@ describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', ()
     expect(edges[0].reason).toBe('trpc-route');
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
+
+  it('db.transaction().query inside create .input still binds POST create as trpc-route', async () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.input(v => db.transaction().query(v)).mutation(() => null),',
+      '});',
+    ].join('\n');
+    const extracted = extractTrpcRoutes(TRPC_FILE, source);
+    expect(extracted.map((r) => `${r.httpMethod} ${r.routePath}`)).toEqual(['POST /trpc/create']);
+
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'create', 'fn:user.create', 'Function');
+    addFunctionNode(
+      graph,
+      'fn:user.create',
+      'create',
+      TRPC_FILE,
+      (extracted[0]?.lineNumber ?? 1) - 1,
+    );
+
+    await processRoutesFromExtracted(graph, extracted, model);
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('fn:user.create');
+    expect(edges[0].reason).toBe('trpc-route');
+    expect(routeCallsEdges(graph)).toHaveLength(0);
+  });
 });

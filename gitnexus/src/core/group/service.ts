@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import { stalenessStatus, type StalenessInfo, type StalenessStatus } from '../staleness-status.js';
+import { mapConcurrent } from '../../lib/utils.js';
 import {
   canonicalizePath,
   loadMeta,
@@ -460,6 +461,8 @@ const GROUP_QUERY_DEFAULT_LIMIT = 10;
 const GROUP_QUERY_MAX_LIMIT = 100;
 const GROUP_QUERY_DEFAULT_MAX_SYMBOLS = 25;
 const GROUP_QUERY_MAX_SYMBOLS = 200;
+/** Cap member-repo query fan-out. Complements LocalBackend's per-query BFS cap. */
+const GROUP_QUERY_MEMBER_CONCURRENCY = 4;
 
 function clampGroupQueryBound(value: unknown, fallback: number, max: number): number {
   if (typeof value !== 'number' || !(value > 0)) return fallback;
@@ -779,34 +782,42 @@ export class GroupService {
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    const perRepo = await Promise.all(
-      memberEntries.map(async ([repoPath, registryName]) => {
-        try {
-          const repoObj = await this.port.resolveRepo(registryName);
-          const queryResult = (await this.port.query(repoObj, {
-            query: queryText,
-            limit,
-            max_symbols,
-            include_content: false,
-            chain_depth,
-          })) as {
-            processes?: Array<Record<string, unknown>>;
-            process_symbols?: Array<Record<string, unknown>>;
-          };
-          const processes = servicePrefix
-            ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
-            : queryResult.processes || [];
-          const scored = processes.map((p, idx) => ({
-            ...p,
-            _rrf_score: 1 / (idx + 1 + 60),
-            _repo: repoPath,
-          }));
-          return { repo: repoPath, score: 0, processes: scored as unknown[] };
-        } catch {
-          return { repo: repoPath, score: 0, processes: [] as unknown[] };
-        }
-      }),
-    );
+    const perRepo = (
+      await mapConcurrent(
+        memberEntries,
+        async ([repoPath, registryName]) => {
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            const queryResult = (await this.port.query(repoObj, {
+              query: queryText,
+              limit,
+              max_symbols,
+              include_content: false,
+              chain_depth,
+            })) as {
+              processes?: Array<Record<string, unknown>>;
+              process_symbols?: Array<Record<string, unknown>>;
+            };
+            const processes = servicePrefix
+              ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
+              : queryResult.processes || [];
+            const scored = processes.map((p, idx) => ({
+              ...p,
+              _rrf_score: 1 / (idx + 1 + 60),
+              _repo: repoPath,
+            }));
+            return { repo: repoPath, score: 0, processes: scored as unknown[] };
+          } catch {
+            return { repo: repoPath, score: 0, processes: [] as unknown[] };
+          }
+        },
+        { concurrency: GROUP_QUERY_MEMBER_CONCURRENCY },
+      )
+    ).map((result, index) => {
+      if (result) return result;
+      const [repoPath] = memberEntries[index]!;
+      return { repo: repoPath, score: 0, processes: [] as unknown[] };
+    });
 
     const allProcesses = perRepo.flatMap((r) => r.processes as Array<Record<string, unknown>>);
     allProcesses.sort((a, b) => (b._rrf_score as number) - (a._rrf_score as number));

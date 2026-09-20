@@ -3360,9 +3360,9 @@ export class LocalBackend {
     // chain starts where the flow starts. Bounded: one BFS per process (at
     // most processLimit), each internally capped by _computeContextChain (50
     // nodes per direction per depth layer), and at most
-    // QUERY_CHAIN_BFS_CONCURRENCY walks in flight. This is the owning cap —
-    // group-mode query fans out per member into this path, so a second cap in
-    // GroupService would double-limit without changing peak BFS load here.
+    // QUERY_CHAIN_BFS_CONCURRENCY walks in flight. This is the per-query BFS
+    // cap; GroupService.groupQuery also caps member-query fan-out so a group
+    // of N members cannot run 4×N concurrent BFS walks.
     // Best-effort — a BFS failure drops that process's chain but never fails
     // the query.
     const chainByProcessId = new Map<string, any[]>();

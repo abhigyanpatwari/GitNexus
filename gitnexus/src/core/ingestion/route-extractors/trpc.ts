@@ -8,12 +8,14 @@ const HTTP_METHOD_MAP: Record<string, string> = {
 
 // Shared by the file gate and the line scanner. A tRPC terminal is
 // `.query(` / `.mutation(` / `.subscription(` only after a Procedure
-// builder (`publicProcedure`, `t.procedure`), after `)` (chained
-// `.input(...).query(`), or at the start of a line (prettier-broken
-// chain). `db.query(` / `obj.query(` must not match. The `/m` flag
-// lets the file gate see a line-start `.query(` in whole-file text.
+// builder (`publicProcedure`, `t.procedure`) or at the start of a
+// line (prettier-broken chain). `db.query(` / `obj.query(` must not
+// match. Chained `.input(...).query(` is accepted in the scanner when
+// parenDepth is back at the procedure key (the input parens closed).
+// The `/m` flag lets the file gate see a line-start `.query(` in
+// whole-file text.
 const TERMINAL_CALL_RE =
-  /(?:(?<=Procedure)|(?<=t\.procedure)|(?<=\))|^)\s*\.\s*(query|mutation|subscription)\s*\(/m;
+  /(?:(?<=Procedure)|(?<=t\.procedure)|^)\s*\.\s*(query|mutation|subscription)\s*\(/m;
 
 // Procedure keys may sit at the start of an indented line, or mid-line after
 // `{` / `,` in a compact router (`t.router({ health: publicProcedure.query(...) })`).
@@ -54,7 +56,7 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
   }
 
   const routerVarMatch = masked.match(
-    /(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*(?:createTRPCRouter|\w+\s*\.\s*router)\s*\(/,
+    /(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*(?:createTRPCRouter|\w+\s*\.\s*router|router)\s*\(/,
   );
   if (routerVarMatch) {
     // `appRouter` / `rootRouter` is the root binding, not a nest key.
@@ -92,7 +94,11 @@ function isTrpcRouterFile(content: string): boolean {
     return false;
   }
   if (!TERMINAL_CALL_RE.test(content)) {
-    return false;
+    // Compact `.input(...).mutation(` is not Procedure-adjacent or
+    // line-start; the scanner binds it via parenDepth.
+    if (!/\.\s*(?:query|mutation|subscription)\s*\(/.test(content)) {
+      return false;
+    }
   }
   return (
     /initTRPC|createTRPCRouter|createTRPCProxyClient|createTRPCNext|@trpc\//.test(content) ||
@@ -117,6 +123,18 @@ interface ScanState {
    * regex. Cleared by any other significant token (`return 1 / 2` stays division).
    */
   lastIdentifier: string | null;
+  /** `(` ++ / `)` -- in this masker; never below 0. */
+  parenDepth: number;
+  /**
+   * Paren depth of a control keyword's opening `(` (`if` / `while` / …),
+   * remembered until that condition's `)` closes.
+   */
+  controlConditionDepth: number | null;
+  /**
+   * After a control-condition `)`, the next `/` is a regex — until another
+   * significant non-`/` token. `(a + b) / c` and `foo(ok) / x` stay division.
+   */
+  regexAfterControlClose: boolean;
 }
 
 /** Keywords that introduce an expression/statement, so the next `/` is a regex. */
@@ -136,8 +154,26 @@ const REGEX_AFTER_KEYWORDS = new Set([
   'instanceof',
 ]);
 
+/** Control keywords whose parenthesized condition makes the following `/` a regex. */
+const CONTROL_CONDITION_KEYWORDS = new Set(['if', 'while', 'for', 'catch', 'switch', 'with']);
+
+function createScanState(): ScanState {
+  return {
+    inString: null,
+    inBlockComment: false,
+    prevSignificant: null,
+    lastIdentifier: null,
+    parenDepth: 0,
+    controlConditionDepth: null,
+    regexAfterControlClose: false,
+  };
+}
+
 /** `/` starts a regex unless the previous significant char ends a primary (`a / b`). */
 function previousAllowsDivision(state: ScanState): boolean {
+  if (state.regexAfterControlClose) {
+    return false;
+  }
   if (state.lastIdentifier !== null && REGEX_AFTER_KEYWORDS.has(state.lastIdentifier)) {
     return false;
   }
@@ -247,6 +283,7 @@ function maskNonCode(line: string, state: ScanState): string {
       // Property names (`foo.return / x`) are not keyword introducers.
       state.lastIdentifier = state.prevSignificant === '.' ? null : ident;
       state.prevSignificant = ident.charAt(ident.length - 1);
+      state.regexAfterControlClose = false;
       i = j;
       continue;
     }
@@ -254,6 +291,7 @@ function maskNonCode(line: string, state: ScanState): string {
       i = maskRegexLiteral(line, out, i);
       state.prevSignificant = '/';
       state.lastIdentifier = null;
+      state.regexAfterControlClose = false;
       continue;
     }
     if (ch === "'" || ch === '"' || ch === '\u0060') {
@@ -266,11 +304,40 @@ function maskNonCode(line: string, state: ScanState): string {
           i += quotedKey[0].length;
           state.prevSignificant = ':';
           state.lastIdentifier = null;
+          state.regexAfterControlClose = false;
           continue;
         }
       }
       out[i] = ' ';
       state.inString = ch;
+      state.lastIdentifier = null;
+      state.regexAfterControlClose = false;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      state.parenDepth++;
+      if (state.lastIdentifier !== null && CONTROL_CONDITION_KEYWORDS.has(state.lastIdentifier)) {
+        state.controlConditionDepth = state.parenDepth;
+      }
+      state.prevSignificant = '(';
+      state.lastIdentifier = null;
+      state.regexAfterControlClose = false;
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      if (
+        state.controlConditionDepth !== null &&
+        state.parenDepth === state.controlConditionDepth
+      ) {
+        state.regexAfterControlClose = true;
+        state.controlConditionDepth = null;
+      } else {
+        state.regexAfterControlClose = false;
+      }
+      if (state.parenDepth > 0) state.parenDepth--;
+      state.prevSignificant = ')';
       state.lastIdentifier = null;
       i++;
       continue;
@@ -278,6 +345,7 @@ function maskNonCode(line: string, state: ScanState): string {
     if (!/\s/.test(ch)) {
       state.prevSignificant = ch;
       state.lastIdentifier = null;
+      state.regexAfterControlClose = false;
     }
     i++;
   }
@@ -286,12 +354,7 @@ function maskNonCode(line: string, state: ScanState): string {
 
 /** Whole-file mask. Length-preserving so indices align with `content`. */
 function maskSource(content: string): string {
-  const state: ScanState = {
-    inString: null,
-    inBlockComment: false,
-    prevSignificant: null,
-    lastIdentifier: null,
-  };
+  const state = createScanState();
   return content
     .split('\n')
     .map((line) => maskNonCode(line, state))
@@ -322,10 +385,27 @@ const ROUTER_OPEN_RE =
 const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'gm');
 const PROCEDURE_KEY_RE_G = new RegExp(PROCEDURE_KEY_RE.source, 'g');
 const ROUTER_OPEN_RE_G = new RegExp(ROUTER_OPEN_RE.source, 'g');
+// Every `.query(` / `.mutation(` / `.subscription(` — the scanner emits
+// only at the procedure's parenDepth, and only when TERMINAL_CALL_RE
+// matched or the previous non-space is `)` (chained `.input(...).query(`).
+const ANY_TERMINAL_RE_G = /\.\s*(query|mutation|subscription)\s*\(/g;
 
 function matchAll(re: RegExp, text: string): RegExpMatchArray[] {
   re.lastIndex = 0;
   return [...text.matchAll(re)];
+}
+
+function prevNonSpace(text: string, index: number): string | null {
+  for (let p = index - 1; p >= 0; p--) {
+    if (!/\s/.test(text[p])) return text[p];
+  }
+  return null;
+}
+
+/** Line-start `^    .query(` matches at column 0; the scanner keys the `.`. */
+function terminalDotIndex(text: string, start: number): number {
+  const dot = text.indexOf('.', start);
+  return dot === -1 ? start : dot;
 }
 
 export function extractTrpcRoutes(filePath: string, content: string): ExtractedRoute[] {
@@ -337,18 +417,14 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
   const lines = content.split('\n');
   const nestStack: NestFrame[] = [];
-  const scanState: ScanState = {
-    inString: null,
-    inBlockComment: false,
-    prevSignificant: null,
-    lastIdentifier: null,
-  };
+  const scanState = createScanState();
   let depth = 0;
+  let parenDepth = 0;
   // Set on a router-open; the first '{' scanned afterwards opens the
   // router's object literal and pushes the frame (handles both
   // 'user: t.router({' and the rare '{' on the following line).
   let pendingRouterName: string | null = null;
-  let currentProcedure: { name: string; depth: number } | null = null;
+  let currentProcedure: { name: string; depth: number; parenDepth: number } | null = null;
 
   const emitProcedure = (method: string, proc: { name: string }, terminalLine: number): void => {
     // Nested routers compose the full path ('user.admin.list'): without the
@@ -404,7 +480,11 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     }
     const terminalByIndex = new Map<number, string>();
     for (const m of matchAll(TERMINAL_CALL_RE_G, masked)) {
-      terminalByIndex.set(m.index ?? 0, m[1]);
+      terminalByIndex.set(terminalDotIndex(masked, m.index ?? 0), m[1]);
+    }
+    const anyTerminalByIndex = new Map<number, string>();
+    for (const m of matchAll(ANY_TERMINAL_RE_G, masked)) {
+      anyTerminalByIndex.set(m.index ?? 0, m[1]);
     }
 
     for (let c = 0; c < masked.length; c++) {
@@ -427,6 +507,10 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         if (currentProcedure !== null && depth < currentProcedure.depth) {
           currentProcedure = null;
         }
+      } else if (ch === '(') {
+        parenDepth++;
+      } else if (ch === ')') {
+        if (parenDepth > 0) parenDepth--;
       } else if (ch === ';' && currentProcedure !== null && depth <= currentProcedure.depth) {
         currentProcedure = null;
       }
@@ -441,13 +525,18 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       } else {
         const keyName = keyByIndex.get(c);
         if (keyName !== undefined) {
-          currentProcedure = { name: keyName, depth };
+          currentProcedure = { name: keyName, depth, parenDepth };
         }
       }
 
-      const terminalMethod = terminalByIndex.get(c);
-      if (terminalMethod !== undefined && currentProcedure !== null) {
-        emitProcedure(terminalMethod, currentProcedure, i + 1);
+      const candidate = anyTerminalByIndex.get(c);
+      if (
+        candidate !== undefined &&
+        currentProcedure !== null &&
+        parenDepth === currentProcedure.parenDepth &&
+        (terminalByIndex.has(c) || prevNonSpace(masked, c) === ')')
+      ) {
+        emitProcedure(candidate, currentProcedure, i + 1);
         currentProcedure = null;
       }
     }
