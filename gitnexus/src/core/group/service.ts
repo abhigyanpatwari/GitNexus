@@ -739,7 +739,13 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
 
-    const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
+    // Mirror the query tool schema (tools.ts): omitted limit is 10, omitted
+    // max_symbols is 25. The previous 5/10 hardcodes silently truncated
+    // group-mode results below the advertised defaults, and max_symbols was
+    // not forwarded at all.
+    const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 10;
+    const max_symbols =
+      typeof params.max_symbols === 'number' && params.max_symbols > 0 ? params.max_symbols : 25;
     const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
@@ -764,7 +770,7 @@ export class GroupService {
           const queryResult = (await this.port.query(repoObj, {
             query: queryText,
             limit,
-            max_symbols: 10,
+            max_symbols,
             include_content: false,
             chain_depth,
           })) as {

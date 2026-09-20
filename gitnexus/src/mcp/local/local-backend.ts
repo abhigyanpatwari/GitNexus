@@ -5147,6 +5147,10 @@ export class LocalBackend {
     // by the returned-node alias: the upstream query returns `caller`, the
     // downstream query returns `target`, and test-file demotion must rank
     // the returned node — not the frontier node the edge was reached from.
+    //
+    // `labels(node)`, not `labels(node)[0]`: LadybugDB returns the label as
+    // a scalar string, and subscripting a string is 1-based over characters,
+    // so `[0]` is always '' (see graph-queries.ts and detect_changes).
     const testOrderExpr = (alias: string) => `
       CASE
         WHEN ${alias}.filePath IS NULL THEN 0
@@ -5177,7 +5181,7 @@ export class LocalBackend {
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT caller.id IN $visited
             RETURN caller.id AS uid, caller.name AS name,
-                   caller.filePath AS filePath, labels(caller)[0] AS kind,
+                   caller.filePath AS filePath, labels(caller) AS kind,
                    ${testOrderExpr('caller')} AS isTest
             ORDER BY isTest ASC, caller.filePath ASC, caller.name ASC
             LIMIT 50
@@ -5213,7 +5217,7 @@ export class LocalBackend {
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT target.id IN $visited
             RETURN target.id AS uid, target.name AS name,
-                   target.filePath AS filePath, labels(target)[0] AS kind,
+                   target.filePath AS filePath, labels(target) AS kind,
                    ${testOrderExpr('target')} AS isTest
             ORDER BY isTest ASC, target.filePath ASC, target.name ASC
             LIMIT 50

@@ -378,6 +378,22 @@ export const TYPESCRIPT_SCOPE_QUERY = `
 ;; Quoted object keys are identical shapes to the identifier-key pairs above —
 ;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
 ;; otherwise leave its procedures anonymous and file-level attributed.
+;; Identifier callees ({ 'handler': wrap(() => {}) }) match the identifier-key
+;; block above; member-expression callees keep the array-method exclusion.
+(pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+
+(pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+
 ((pair
   key: (string (string_fragment) @declaration.name)
   value: (call_expression

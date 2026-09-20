@@ -6,6 +6,16 @@ const HTTP_METHOD_MAP: Record<string, string> = {
   subscription: 'WS',
 };
 
+// Shared by the file gate and the line scanner. Extraction already allowed
+// whitespace before '(' (`publicProcedure.query (`) but the gate used a
+// literal `.query(` substring, so pretty-printed terminals never entered
+// the scanner. Keep both sides on this one pattern.
+const TERMINAL_CALL_RE = /\.\s*(query|mutation|subscription)\s*\(/;
+
+// Procedure keys may sit at the start of an indented line, or mid-line after
+// `{` / `,` in a compact router (`t.router({ health: publicProcedure.query(...) })`).
+const PROCEDURE_KEY_RE = /(?:^|[{,])\s*(\w+)\s*:\s*(\w*Procedure|t\.procedure)\b/;
+
 function extractRouterPrefix(content: string, filePath: string): string | null {
   const mergeMatch = content.match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
   if (mergeMatch) {
@@ -37,11 +47,7 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
 // the gate and emit phantom routes. Every real v9-v11 router imports one of
 // these exact names.
 function isTrpcRouterFile(content: string): boolean {
-  if (
-    !content.includes('.query(') &&
-    !content.includes('.mutation(') &&
-    !content.includes('.subscription(')
-  ) {
+  if (!TERMINAL_CALL_RE.test(content)) {
     return false;
   }
   return (
@@ -59,6 +65,65 @@ function isTrpcRouterFile(content: string): boolean {
 interface ScanState {
   inString: string | null;
   inBlockComment: boolean;
+}
+
+/**
+ * Replace comments and string/template literals with spaces so a regex can
+ * see only real code. Uses a copy of `state` — the brace scanner still owns
+ * the live comment/string machine for depth tracking.
+ */
+function maskNonCode(line: string, state: ScanState): string {
+  const copy: ScanState = { inString: state.inString, inBlockComment: state.inBlockComment };
+  const out = line.split('');
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    const next = i + 1 < line.length ? line[i + 1] : '';
+    if (copy.inString !== null) {
+      out[i] = ' ';
+      if (ch === '\\') {
+        if (i + 1 < line.length) out[i + 1] = ' ';
+        i += 2;
+        continue;
+      }
+      if (ch === copy.inString) copy.inString = null;
+      i++;
+      continue;
+    }
+    if (copy.inBlockComment) {
+      out[i] = ' ';
+      if (ch === '*' && next === '/') {
+        if (i + 1 < line.length) out[i + 1] = ' ';
+        copy.inBlockComment = false;
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      while (i < line.length) {
+        out[i] = ' ';
+        i++;
+      }
+      return out.join('');
+    }
+    if (ch === '/' && next === '*') {
+      out[i] = ' ';
+      if (i + 1 < line.length) out[i + 1] = ' ';
+      copy.inBlockComment = true;
+      i += 2;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '\u0060') {
+      out[i] = ' ';
+      copy.inString = ch;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
 }
 
 function scanLineBraces(
@@ -156,16 +221,17 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     // so 'admin: adminProcedure.router(' does not also match the procedure
     // pattern below and poison currentProcedure (the double-prefix bug).
     const routerOpenMatch = line.match(ROUTER_OPEN_RE);
-    const keyMatch = routerOpenMatch
-      ? null
-      : line.match(/^\s+(\w+)\s*:\s*(\w*Procedure|t\.procedure)\b/);
+    const keyMatch = routerOpenMatch ? null : line.match(PROCEDURE_KEY_RE);
     if (routerOpenMatch) {
       pendingRouterName = routerOpenMatch[1];
     } else if (keyMatch) {
       currentProcedure = { name: keyMatch[1], line: i + 1 };
     }
 
-    const terminalMatch = line.match(/\.\s*(query|mutation|subscription)\s*\(/);
+    // Terminal recognition must ignore comments/literals — a `// .query(`
+    // (or the same text in a string) would otherwise emit and clear
+    // currentProcedure before the real terminal is seen.
+    const terminalMatch = maskNonCode(line, scanState).match(TERMINAL_CALL_RE);
     if (terminalMatch && currentProcedure) {
       const method = terminalMatch[1];
       // Nested routers compose the full path ('user.admin.list'): without the

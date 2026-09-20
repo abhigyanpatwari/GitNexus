@@ -228,7 +228,22 @@ export const TYPESCRIPT_QUERIES = `
 
 ; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
 ; Mirrors the string-key rules in languages/typescript/query.ts so both
-; pipelines attribute quoted-key procedures identically.
+; pipelines attribute quoted-key procedures identically. Identifier callees
+; ({ 'handler': wrap(() => {}) }) match the identifier-key block above.
+(pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
 ((pair
   key: (string (string_fragment) @name)
   value: (call_expression

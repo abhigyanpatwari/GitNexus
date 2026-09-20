@@ -112,6 +112,44 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     expect(paths(source)).toEqual(['GET /trpc/user.list', 'POST /trpc/user.create']);
   });
 
+  it('compact one-line routers still emit a procedure key', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({ health: publicProcedure.query(() => null) });',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+  });
+
+  it('does not treat .query( inside a comment as the procedure terminal', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  health: publicProcedure',
+      '    // leftover note: .query(',
+      '    .query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+  });
+
+  it('gates and extracts terminals with whitespace before the opening paren', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  health: publicProcedure.query (() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+  });
+
   it('braces inside strings and comments do not skew the nesting stack', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",

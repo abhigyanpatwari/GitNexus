@@ -295,6 +295,44 @@ describe('GroupService', () => {
       expect(result.error).toContain('name and query are required');
     });
 
+    it('test_groupQuery_uses_advertised_query_defaults_when_omitted', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({ name: 'test-group', query: 'auth flow' });
+        expect(query).toHaveBeenCalled();
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 10, max_symbols: 25 });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupQuery_forwards_explicit_limit_and_max_symbols', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: 3,
+          max_symbols: 7,
+        });
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 3, max_symbols: 7 });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
     it('test_groupQuery_merges_results_across_repos', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {

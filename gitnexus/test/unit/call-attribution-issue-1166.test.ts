@@ -327,6 +327,15 @@ describe('issue #1166 — definition-phase consistency', () => {
     expect(names).toContain('add-item');
   });
 
+  it('captures quoted-key identifier HOC pairs (`\'handler\': wrap(() => ...)`)', () => {
+    const names = definedFunctionNames(`
+      export const store = {
+        'handler': wrap(() => doSomething()),
+      };
+    `);
+    expect(names).toContain('handler');
+  });
+
   it('does not invent names for computed-key pairs (`[K]: () => ...`)', () => {
     const names = definedFunctionNames(`
       export const store = {
