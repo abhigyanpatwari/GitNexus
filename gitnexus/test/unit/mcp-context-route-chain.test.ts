@@ -208,6 +208,39 @@ describe('context/query route + chain enrichment', () => {
     ]);
   });
 
+  it('context({chain_depth:1}) de-duplicates a node reached through two frontier edges', async () => {
+    (executeParameterized as any).mockImplementation(
+      async (_db: string, query: string, params: any = {}) => {
+        if (isUidLookup(params) || isNameLookup(params)) return [HANDLER];
+        if (params?.frontier) {
+          if (query.includes('MATCH (caller)')) return [CALLER, { ...CALLER }];
+          if (query.includes('MATCH (n)-[r:CodeRelation]->(target)'))
+            return [CALLEE, { ...CALLEE }];
+          return [];
+        }
+        if (query.includes('STEP_IN_PROCESS')) return [];
+        if (query.includes('HANDLES_ROUTE')) return [{ url: ROUTE.url, method: ROUTE.method }];
+        if (query.includes('ENTRY_POINT_OF')) return [];
+        return [];
+      },
+    );
+
+    const result = await backend.callTool('context', { uid: HANDLER.id, chain_depth: 1 });
+
+    expect(result.status).toBe('found');
+    expect(result.chain).toEqual([
+      {
+        depth: 1,
+        upstream: [
+          { uid: CALLER.uid, name: CALLER.name, filePath: CALLER.filePath, kind: CALLER.kind },
+        ],
+        downstream: [
+          { uid: CALLEE.uid, name: CALLEE.name, filePath: CALLEE.filePath, kind: CALLEE.kind },
+        ],
+      },
+    ]);
+  });
+
   it('context({chain_depth:1}) lists a reciprocal peer in both layer-1 directions', async () => {
     (executeParameterized as any).mockImplementation(
       mockGraph({ handlesRoute: true, processRows: [], reciprocalPeer: PEER }),

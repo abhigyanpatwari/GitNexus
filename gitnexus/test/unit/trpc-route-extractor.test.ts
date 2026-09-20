@@ -286,6 +286,56 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
+  it('identifier callback is the handler name; inline arrows keep the procedure key', () => {
+    const ident = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.mutation(handler),',
+      '});',
+    ].join('\n');
+    expect(extractTrpcRoutes(FILE, ident)).toEqual([
+      expect.objectContaining({
+        routePath: '/trpc/create',
+        methodName: 'handler',
+        httpMethod: 'POST',
+      }),
+    ]);
+
+    const multiline = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.mutation(',
+      '    handler',
+      '  ),',
+      '});',
+    ].join('\n');
+    expect(extractTrpcRoutes(FILE, multiline)[0]?.methodName).toBe('handler');
+
+    const arrow = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.mutation(async () => null),',
+      '});',
+    ].join('\n');
+    expect(extractTrpcRoutes(FILE, arrow)[0]?.methodName).toBe('create');
+
+    const member = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.mutation(handlers.create),',
+      '});',
+    ].join('\n');
+    expect(extractTrpcRoutes(FILE, member)[0]?.methodName).toBe('create');
+  });
+
   it('nested db.transaction().query inside .input is not a GET terminal; create stays POST', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",

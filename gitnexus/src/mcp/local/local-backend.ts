@@ -5223,7 +5223,18 @@ export class LocalBackend {
           visited: Array.from(visited),
         });
         if (rows.length === 0) return { nextFrontier: [] };
-        const fresh = rows.filter((r: any) => !visited.has(r.uid));
+        // MATCH is one row per CALLS edge. A node that calls (or is called
+        // by) several IDs in `$frontier` therefore appears more than once;
+        // `visited` is only updated after this layer is built, so the
+        // filter alone cannot collapse those twins. Duplicates would also
+        // consume the 50-row LIMIT and hide other reachable nodes.
+        const seen = new Set<string>();
+        const fresh = rows.filter((r: any) => {
+          const uid = r.uid;
+          if (!uid || visited.has(uid) || seen.has(uid)) return false;
+          seen.add(uid);
+          return true;
+        });
         const nodes = fresh.map((r: any) => ({
           uid: r.uid,
           name: r.name,

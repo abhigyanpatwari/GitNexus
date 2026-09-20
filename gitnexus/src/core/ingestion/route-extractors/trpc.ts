@@ -416,6 +416,19 @@ function prevNonSpace(text: string, index: number): string | null {
   return null;
 }
 
+// `create: publicProcedure.mutation(handler)` — the graph Function is
+// `handler`, not the object key. Inline `async` / `function` / `() =>`
+// callbacks keep the key so HOC pair naming still matches.
+const IDENTIFIER_CALLBACK_RESERVED = new Set(['async', 'function', 'await', 'new', 'yield']);
+const IDENTIFIER_CALLBACK_RE =
+  /^\.\s*(?:query|mutation|subscription)\s*\(\s*([A-Za-z_$][\w$]*)\s*[,)]/;
+
+function identifierCallbackName(textFromDot: string): string | undefined {
+  const match = textFromDot.match(IDENTIFIER_CALLBACK_RE);
+  if (!match || IDENTIFIER_CALLBACK_RESERVED.has(match[1])) return undefined;
+  return match[1];
+}
+
 /** Line-start `^    .query(` matches at column 0; the scanner keys the `.`. */
 function terminalDotIndex(text: string, start: number): number {
   const dot = text.indexOf('.', start);
@@ -440,7 +453,12 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
   let pendingRouterName: string | null = null;
   let currentProcedure: { name: string; depth: number; parenDepth: number } | null = null;
 
-  const emitProcedure = (method: string, proc: { name: string }, terminalLine: number): void => {
+  const emitProcedure = (
+    method: string,
+    proc: { name: string },
+    terminalLine: number,
+    textFromDot: string,
+  ): void => {
     // Nested routers compose the full path ('user.admin.list'): without the
     // stack, same-named procedures in sibling routers deduped to ONE route
     // and the survivor carried the wrong path.
@@ -460,7 +478,7 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         // class) or mis-link an unrelated same-named class — leave it unset;
         // call-processor binds the same-file handler symbol directly.
         controllerName: null,
-        methodName: proc.name,
+        methodName: identifierCallbackName(textFromDot) ?? proc.name,
         middleware: [],
         prefix: null,
         // pickSameFileHandler compares this 1-based line to Function
@@ -550,7 +568,7 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         parenDepth === currentProcedure.parenDepth &&
         (terminalByIndex.has(c) || prevNonSpace(masked, c) === ')')
       ) {
-        emitProcedure(candidate, currentProcedure, i + 1);
+        emitProcedure(candidate, currentProcedure, i + 1, lines.slice(i).join('\n').slice(c));
         currentProcedure = null;
       }
     }

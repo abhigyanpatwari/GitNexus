@@ -448,6 +448,31 @@ describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', ()
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
+  it('identifier callback methodName binds the handler Function, not the procedure key', async () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.mutation(handler),',
+      '});',
+    ].join('\n');
+    const extracted = extractTrpcRoutes(TRPC_FILE, source);
+    expect(extracted[0]?.methodName).toBe('handler');
+
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'handler', 'fn:user.handler', 'Function');
+    addFunctionNode(graph, 'fn:user.handler', 'handler', TRPC_FILE, 2);
+
+    await processRoutesFromExtracted(graph, extracted, model);
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('fn:user.handler');
+    expect(edges[0].reason).toBe('trpc-route');
+  });
+
   it('db.transaction().query inside create .input still binds POST create as trpc-route', async () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
