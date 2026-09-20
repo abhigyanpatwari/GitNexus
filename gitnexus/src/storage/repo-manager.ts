@@ -1175,9 +1175,7 @@ export const registerRepo = async (
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
 ): Promise<string> => {
-  const { name, rename } = await withRegistryLock(() =>
-    registerRepoUnlocked(repoPath, meta, opts),
-  );
+  const { name, rename } = await withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
   if (rename) {
     try {
       await opts?.onRename?.(rename.previousName, rename.nextName);
