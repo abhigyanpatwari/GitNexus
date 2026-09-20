@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -20,9 +20,11 @@ import {
 // Mock child_process.execSync
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 const mockExecSync = vi.mocked(execSync);
+const mockSpawnSync = vi.mocked(spawnSync);
 
 describe('git utilities', () => {
   beforeEach(() => {
@@ -139,10 +141,16 @@ describe('git utilities', () => {
 
   describe('listLocalHeads (#3331)', () => {
     it('returns local head names including a slashed branch', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('main\nfeature/x\n'));
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: 'main\nfeature/x\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/project')).toEqual(['main', 'feature/x']);
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git for-each-ref --format=%(refname:short) refs/heads',
+      expect(mockSpawnSync).toHaveBeenCalledWith(
+        'git',
+        ['for-each-ref', '--format=%(refname:short)', 'refs/heads'],
         expect.objectContaining({
           cwd: '/project',
           stdio: ['ignore', 'pipe', 'ignore'],
@@ -152,14 +160,22 @@ describe('git utilities', () => {
     });
 
     it('returns an empty list when the repo has no local heads', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: '\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/project')).toEqual([]);
     });
 
     it('returns null when git cannot run', () => {
-      mockExecSync.mockImplementationOnce(() => {
-        throw new Error('fatal: not a git repository');
-      });
+      mockSpawnSync.mockReturnValueOnce({
+        status: 128,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/not-a-repo')).toBeNull();
     });
   });

@@ -60,7 +60,20 @@ export const en = {
   'clean.deletedRepo': 'Deleted: {{name}} ({{storagePath}})',
   'clean.notFoundHere': 'No indexed repository found in this directory.',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
-  'clean.branchNotIndexed': 'No indexed branch named "{{branch}}" for this repository.',
+  'clean.branchNotIndexed':
+    'No indexed branch named "{{branch}}" for this repository. Use `gitnexus clean --stale` to reclaim leftover branch indexes, or `gitnexus list` to see recorded names.',
+  'clean.stale.none': 'No leftover branch indexes to reclaim.',
+  'clean.stale.preview': 'This will delete {{count}} leftover branch index(es):',
+  'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.headsUnavailable':
+    'Could not list local heads; leftover branch indexes were not deleted. Re-run `gitnexus clean --stale` when git is available.',
+  'clean.stale.deleted': 'Deleted leftover branch index: {{branch}}',
+  'clean.stale.failed':
+    'Could not delete leftover branch index "{{branch}}" — stop the process holding it (GitNexus MCP/serve) and retry.',
+  'clean.stale.reason.refMissing': 'not a local head',
+  'clean.stale.reason.diskOnly': 'leftover directory (no registry row)',
+  'clean.stale.reason.registryOnly': 'registry row (directory gone)',
+  'clean.stale.reason.headsUnavailable': 'could not list local heads',
   'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
   'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',
@@ -283,6 +296,8 @@ export const en = {
   'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
   'help.option.clean.lbugSidecars':
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
+  'help.option.clean.stale':
+    'Reclaim per-branch indexes whose recorded branch is no longer a local head',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',

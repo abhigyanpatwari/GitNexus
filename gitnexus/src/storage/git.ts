@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -672,13 +672,14 @@ export const getCurrentBranch = (repoPath: string): string | null => {
  */
 export const listLocalHeads = (repoPath: string): string[] | null => {
   try {
-    const output = execSync('git for-each-ref --format=%(refname:short) refs/heads', {
+    const result = spawnSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], {
       cwd: repoPath,
+      encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-    })
-      .toString()
-      .trim();
+    });
+    if (result.error || result.status !== 0) return null;
+    const output = (result.stdout ?? '').toString().trim();
     if (!output) return [];
     return output
       .split('\n')

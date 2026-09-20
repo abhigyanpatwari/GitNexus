@@ -37,7 +37,10 @@ import {
   saveMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { cleanCommand } from '../../src/cli/clean.js';
 import { removeBranchSlot } from '../../src/storage/stale-branch-slots.js';
+import { branchSlug } from '../../src/storage/branch-index.js';
+import { initGitRepo, commitAll } from '../helpers/temp-git-repo.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import { createTempDir } from '../helpers/test-db.js';
 
@@ -184,5 +187,40 @@ describe('removeBranchSlot — rm failure keeps the branch summary (#3331)', () 
     const [entry] = await listRegisteredRepos();
     expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
     await expect(fs.access(dir)).resolves.toBeUndefined();
+  });
+
+  it('continues remaining --stale candidates after one rm failure', async () => {
+    initGitRepo(tmpRepo.dbPath);
+    await fs.writeFile(path.join(tmpRepo.dbPath, 'README.md'), 'hi\n');
+    commitAll(tmpRepo.dbPath, 'init');
+    const storagePath = path.join(tmpRepo.dbPath, '.gitnexus');
+    await saveMeta(storagePath, { ...metaFor('main', 'aaa1111'), repoPath: tmpRepo.dbPath });
+    await registerRepo(tmpRepo.dbPath, { ...metaFor('main', 'aaa1111'), repoPath: tmpRepo.dbPath });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+    const dirX = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const dirY = path.join(storagePath, 'branches', branchSlug('feature/y'));
+    await saveMeta(dirX, metaFor('feature/x', 'bbb2222'));
+    await saveMeta(dirY, metaFor('feature/y', 'ccc3333'));
+
+    fsCtx.rmMock.mockImplementation(async (target, options) => {
+      if (String(target) === dirX) {
+        throw Object.assign(new Error('mock busy'), { code: 'EBUSY' });
+      }
+      return fsCtx.realRm!(target, options);
+    });
+
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(tmpRepo.dbPath);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await cleanCommand({ stale: true, force: true });
+      const [entry] = await listRegisteredRepos();
+      expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
+      await expect(fs.access(dirX)).resolves.toBeUndefined();
+      await expect(fs.access(dirY)).rejects.toThrow();
+    } finally {
+      cwdSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });

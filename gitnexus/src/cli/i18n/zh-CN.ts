@@ -59,7 +59,20 @@ export const zhCN = {
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
-  'clean.branchNotIndexed': '该仓库没有名为 “{{branch}}” 的已索引分支。',
+  'clean.branchNotIndexed':
+    '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',
+  'clean.stale.none': '没有可回收的残留分支索引。',
+  'clean.stale.preview': '将删除 {{count}} 个残留分支索引：',
+  'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.headsUnavailable':
+    '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.deleted': '已删除残留分支索引：{{branch}}',
+  'clean.stale.failed':
+    '无法删除残留分支索引 “{{branch}}” — 请停止占用它的进程（GitNexus MCP/serve）后重试。',
+  'clean.stale.reason.refMissing': '不是本地分支',
+  'clean.stale.reason.diskOnly': '残留目录（无注册表记录）',
+  'clean.stale.reason.registryOnly': '注册表记录（目录已不存在）',
+  'clean.stale.reason.headsUnavailable': '无法列出本地分支',
   'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
   'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',
@@ -262,6 +275,7 @@ export const zhCN = {
   'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
+  'help.option.clean.stale': '回收记录分支已不是本地 head 的分支索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',

@@ -156,6 +156,12 @@ export const isContainedBranchDir = (storagePath: string, dir: string): boolean 
 export const isDeleteCandidate = (slot: StaleBranchSlot): boolean =>
   slot.reason !== 'heads-unavailable';
 
+export const formatSlotSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
 export interface RemoveBranchSlotInput {
   repoPath: string;
   storagePath: string;

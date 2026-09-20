@@ -15,7 +15,14 @@ import {
   getStoragePaths,
 } from '../storage/repo-manager.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
-import { removeBranchSlot } from '../storage/stale-branch-slots.js';
+import {
+  formatSlotSize,
+  isDeleteCandidate,
+  listStaleBranchSlots,
+  removeBranchSlot,
+  type StaleBranchReason,
+  type StaleBranchSlot,
+} from '../storage/stale-branch-slots.js';
 import {
   cleanParkedLbugSidecars,
   inspectLbugSidecars,
@@ -23,12 +30,101 @@ import {
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
 
+export const staleReasonLabel = (reason: StaleBranchReason): string => {
+  switch (reason) {
+    case 'ref-missing':
+      return t('clean.stale.reason.refMissing');
+    case 'disk-only':
+      return t('clean.stale.reason.diskOnly');
+    case 'registry-only':
+      return t('clean.stale.reason.registryOnly');
+    case 'heads-unavailable':
+      return t('clean.stale.reason.headsUnavailable');
+  }
+};
+
+export const formatStaleSlotLine = (slot: StaleBranchSlot): string =>
+  t('clean.stale.item', {
+    branch: slot.branch,
+    reason: staleReasonLabel(slot.reason),
+    path: slot.dir ?? '(registry only)',
+    size: formatSlotSize(slot.sizeBytes),
+  });
+
 export const cleanCommand = async (options?: {
   force?: boolean;
   all?: boolean;
   lbugSidecars?: boolean;
+  stale?: boolean;
   branch?: string;
 }) => {
+  // --stale: reclaim leftover per-branch slots whose recorded branch is not
+  // a live local head (#3331). Exclusive arm before --branch (KTD1).
+  if (options?.stale) {
+    const cwd = process.cwd();
+    const repo = await findRepo(cwd);
+    if (!repo) {
+      console.log(t('clean.notFoundHere'));
+      return;
+    }
+    const entries = await listRegisteredRepos();
+    const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo.repoPath));
+    let storagePath: string;
+    try {
+      storagePath = await requireDeletableStoragePath({
+        path: repo.repoPath,
+        storagePath: repo.storagePath,
+      });
+    } catch (err) {
+      if (err instanceof StorageDeletionError) {
+        logger.error(`Refusing to clean leftover branch indexes: ${err.message}`);
+        return;
+      }
+      throw err;
+    }
+    const slots = await listStaleBranchSlots({
+      repoPath: repo.repoPath,
+      storagePath,
+      branches: entry?.branches,
+    });
+    const unavailable = slots.filter((slot) => slot.reason === 'heads-unavailable');
+    if (unavailable.length > 0) {
+      console.log(t('clean.stale.headsUnavailable'));
+      for (const slot of unavailable) {
+        console.log(`  - ${formatStaleSlotLine(slot)}`);
+      }
+      return;
+    }
+    const candidates = slots.filter(isDeleteCandidate);
+    if (candidates.length === 0) {
+      console.log(t('clean.stale.none'));
+      return;
+    }
+    if (!options.force) {
+      console.log(t('clean.stale.preview', { count: candidates.length }));
+      for (const slot of candidates) {
+        console.log(`  - ${formatStaleSlotLine(slot)}`);
+      }
+      console.log(`\n${t('common.runForceConfirm')}`);
+      return;
+    }
+    for (const slot of candidates) {
+      const result = await removeBranchSlot({
+        repoPath: repo.repoPath,
+        storagePath,
+        branch: slot.branch,
+        dir: slot.dir,
+      });
+      if (!result.ok) {
+        console.log(t('clean.stale.failed', { branch: slot.branch }));
+        logger.error({ err: result.error }, 'Failed to delete leftover branch index:');
+        continue;
+      }
+      console.log(t('clean.stale.deleted', { branch: slot.branch }));
+    }
+    return;
+  }
+
   // --branch <name>: remove a single non-primary branch's index (#2106 R7).
   // Resolve against the RECORDED branches[] summary (never by slugging the
   // user's raw input, which can disagree with the index-time-sanitized label).

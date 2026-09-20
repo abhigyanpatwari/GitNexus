@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`gitnexus clean --stale`** — reclaim per-branch indexes whose recorded branch is no longer a local head, without naming each deleted branch (#3331)
+
 ## [1.5.3] - 2026-04-01
 
 ### Added

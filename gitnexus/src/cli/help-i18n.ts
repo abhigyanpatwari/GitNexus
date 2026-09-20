@@ -96,6 +96,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'clean|--all': 'help.option.clean.all',
   'clean|--branch <name>': 'help.option.clean.branch',
   'clean|--lbug-sidecars': 'help.option.clean.lbugSidecars',
+  'clean|--stale': 'help.option.clean.stale',
   'remove|-f, --force': 'help.option.force.confirmation',
   'wiki|-f, --force': 'help.option.wiki.force',
   'wiki|--provider <provider>': 'help.option.wiki.provider',
