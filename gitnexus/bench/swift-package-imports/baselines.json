@@ -1,0 +1,52 @@
+{
+  "_what": "Baselines for bench/swift-package-imports/measure.mjs --check. Guards Swift Package.swift declaration resolve after #2964 / #2931: declared-target hits, SDK and undeclared-folder misses, empty declaredTargets fail-closed, @_exported union, #2931 nested-prefix membership, first-wins grouping, and https:// factory survival. Same approach as bench/parse-dispatch-rounds/baselines.json — exact floors and a fingerprint first; the only timing arms are ratios.",
+
+  "_triage": "READ THIS BEFORE RE-RUNNING. targets, files, imports, declared_resolved, sdk_external, undeclared_external, empty_declared_external, reexport_extra, nested_repeat_resolved, first_wins, parse_targets, parse_binary_skipped, url_comment_targets, parse_complete and layout_fingerprint are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green. resolve_scaling_ratio, strategy_scaling_ratio and parse_scaling_ratio are the only timing arms; runner contention dominates them, so re-run on an idle machine before investigating and read the reported `reps` first. If exactly one arm fails and it is a timing arm, suspect the machine.",
+
+  "targets": 16,
+  "files": 260,
+  "imports": 12288,
+  "_shape_note": "THE FLOOR. Without these three, every arm below is a ceiling over nothing. declared_resolved only asserts something while the corpus still walks many files and imports. Shrink it to one happy-path module and declared_resolved still reads 32 and still passes, asserting a property the corpus no longer has. Files-per-target is 16 and does not scale — 4x grows target count so a hit returns a constant-size file list. Scaling files-per-target instead makes the return-list copy look quadratic even when the index is linear (the same trap bench/import-target documents for Swift collide_scaling).",
+
+  "declared_resolved": 32,
+  "sdk_external": 32,
+  "undeclared_external": 16,
+  "empty_declared_external": 1,
+  "reexport_extra": 1,
+  "nested_repeat_resolved": 1,
+  "first_wins": 1,
+  "_membership_note": "Exact resolve/grouping counts on the unique query set (one File0 per target). declared_resolved=32 is two declared spellings (Mod{t+1} and Mod{t+1}.Model) across 16 targets. sdk_external=32 is Foundation+UIKit. undeclared_external=16 is the in-repo CoreUI folder that Package.swift does not declare — the hole bench/import-target's Swift arm cannot see. empty_declared_external=1 pins an empty declaredTargets map. reexport_extra=1 pins import Mod0 including Mod1 after @_exported. nested_repeat_resolved=1 pins vendor/Sources/Mod0/Sources/Mod0/Nested.swift (#2931). first_wins=1 pins a two-prefix file into Mod0 only.",
+
+  "parse_targets": 3,
+  "parse_binary_skipped": 1,
+  "url_comment_targets": 1,
+  "parse_complete": 1,
+  "_parse_note": "Exact parse floors on a fixed manifest, not the scaling corpus. parse_targets=3 is Models+App+AppTests. parse_binary_skipped=1 means Lib/Gen/CFoo never entered the map. url_comment_targets=1 pins https:// on the same line as a later .target. parse_complete=1 pins both manifests readable.",
+
+  "layout_fingerprint": "2b220baa1df63778489949f9596879ba1c89a49e62c57bd9d2336fd8d74c17bd",
+  "_layout_fingerprint_note": "sha256 over sorted from|target->files rows on the unique query set. A change here is a BEHAVIOUR change — the resolver returned a different target set. Explain it, never re-baseline it alone.",
+
+  "resolve_scaling_budget": 1.9,
+  "strategy_scaling_budget": 1.6,
+  "parse_scaling_budget": 1.9,
+  "_resolve_scaling_note": "(t_4n / t_n) / 4 for resolveSwiftImportTarget over the declared corpus; ~1.0 is linear. A RATIO rather than a millisecond ceiling, deliberately: wall-clock is runner-speed-dependent, and this repo has already been bitten by a fixed ms budget. A per-import allFilePaths scan scores ~4. Budget is 1.9, i.e. 1.51x the measured maximum 1.261 — this file's siblings use ~1.5x on ratios. min-of-15 estimator.",
+  "_strategy_scaling_note": "(t_4n / t_n) / 4 for swiftPackageStrategy (the import-config WeakMap index). Measured maximum 1.030; budget 1.6 is 1.55x, matching parse-dispatch-rounds' pack_scaling_budget.",
+  "_parse_scaling_note": "(t_4n / t_n) / 4 for parseSwiftPackageManifest over 256 vs 1024 factories. Measured maximum 1.276; budget 1.9 is 1.49x. The small cell is still sub-millisecond, so this budget is looser than strategy on purpose.",
+
+  "_measured": {
+    "resolve_scaling_ratio": 1.261,
+    "resolve_scaling_ratio_samples": [1.261, 1.201, 1.182, 1.241, 1.212],
+    "strategy_scaling_ratio": 1.03,
+    "strategy_scaling_ratio_samples": [1.019, 0.994, 0.97, 1.015, 1.03],
+    "parse_scaling_ratio": 1.276,
+    "parse_scaling_ratio_samples": [1.25, 1.276, 1.215, 1.224, 1.227],
+    "resolve_ms": 3.5,
+    "resolve_ms_4x": 17.16,
+    "strategy_ms": 0.67,
+    "strategy_ms_4x": 2.65,
+    "parse_ms": 0.41,
+    "parse_ms_4x": 2.01,
+    "reps": 15
+  },
+  "_measured_note": "Maxima (and sample lists) over 5 consecutive local runs using the min-of-15 estimator from parse-dispatch-rounds. Milliseconds are diagnostic context only — nothing gates on them."
+}

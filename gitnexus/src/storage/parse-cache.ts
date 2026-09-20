@@ -769,7 +769,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v101 (#3294 review): Rust bare-keyword glob imports retain crate/self/super
 // instead of an empty target path; restricted pub(...) imports are no longer
 // captured as unrestricted reexports. Re-extract both facts on warm indexes.
-const SCHEMA_BUMP = 101;
+// v102: ParsedFile gained callResultAssignmentSites; old durable shards do
+// not carry the exact assignment identity required by return-type replay.
+const SCHEMA_BUMP = 102;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

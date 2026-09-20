@@ -306,6 +306,52 @@ describe.skipIf(!swiftAvailable)('Swift extension deduplication', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Protocol-extension implicit self (issue #3273): a conforming type may call
+// default implementation methods without an explicit receiver. Resolution
+// must traverse the protocol's extension surface instead of falling back to
+// unrelated same-named private methods elsewhere in the module.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-protocol-extension-implicit-self'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves unqualified helper calls to the protocol extension', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    for (const target of ['makeStore', 'makeValue', 'insertItem']) {
+      const call = calls.find((c) => c.target === target);
+      expect(call?.targetFilePath).toBe('Support.swift');
+    }
+  });
+
+  it('keeps unrelated private same-name methods unreachable', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'run');
+    expect(calls.some((c) => c.targetFilePath === 'AUnrelated.swift')).toBe(false);
+  });
+
+  it('preserves the downstream call through the extension helper return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const execute = calls.find((c) => c.source === 'run' && c.target === 'execute');
+    expect(execute?.targetFilePath).toBe('Support.swift');
+    expect(
+      result.resolutionOutcomes.some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'Scenario.swift' &&
+          outcome.name === 'execute',
+      ),
+    ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Constructor fallback: Swift constructors look like free function calls
 // (no `new` keyword). The resolver retries with constructor form when
 // free-form finds no callable but the name resolves to a Class/Struct.
@@ -1250,6 +1296,36 @@ describe.skipIf(!swiftAvailable)('Swift nested-type extension (extension Foo.Bar
     expect(baseCall!.rel.targetId).toBe('Function:Types.swift:Bar.base#0');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A bare constructor inside an extension must prefer a nested type owned by
+// the extended type over an unrelated top-level type with the same short name.
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!swiftAvailable)(
+  'Swift nested constructor lookup in a public qualified extension (#3262)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(
+        path.join(FIXTURES, 'swift-nested-constructor-extension'),
+        () => {},
+      );
+    }, 60000);
+
+    it('resolves Entry(id:text:) to Outer.Container.Entry and not the top-level Entry', () => {
+      const entryCalls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'makeEntry' && call.target === 'Entry',
+      );
+
+      expect(entryCalls.map((call) => call.rel.targetId)).toEqual(['Struct:Types.swift:Entry']);
+      expect(entryCalls.some((call) => call.rel.targetId === 'Struct:Standalone.swift:Entry')).toBe(
+        false,
+      );
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // F75: protocol property requirements (`var title: String { get }`) are

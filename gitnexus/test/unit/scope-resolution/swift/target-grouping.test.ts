@@ -3,18 +3,19 @@
  * KTD2).
  *
  * `groupSwiftFilesBySpmTarget` (`languages/swift/target-grouping.ts`)
- * DUPLICATES the legacy `groupSwiftFilesByTarget` (`languages/swift.ts`)
- * SPM-subtree semantics so the registry-primary same-module hooks group by
- * the SPM target subtree without touching the legacy pipeline (hard
- * constraint: legacy stays byte-identical). Because the duplication can
- * silently drift if legacy is later changed, this test pins the exact
- * bucketing for representative inputs so a future divergence surfaces
- * loudly:
+ * preserves the legacy `groupSwiftFilesByTarget` (`languages/swift.ts`)
+ * bucketing contract for ordinary SPM layouts: one target bucket per file,
+ * first-target-wins ordering, and the same `__default__` fallback. It now
+ * intentionally differs for issue #2931's repeated-prefix edge case by
+ * accepting a later segment-boundary occurrence when an earlier textual
+ * occurrence is embedded inside a longer path segment. These tests pin the
+ * shared ordinary-layout contract plus that documented #2931 fix.
  *
  *   1. A multi-subdir single target buckets into ONE group.
  *   2. A file matching two overlapping same-named target prefixes is
  *      assigned to the FIRST target only (legacy `break`s — no fan-out).
- *   3. Unmatched files AND the no-targets case route to `__default__` = all.
+ *   3. Target dirs match only at path-segment boundaries.
+ *   4. Unmatched files AND the no-targets case route to `__default__` = all.
  *
  * `coerceSwiftTargets` is also covered: it duck-types `{ targets: Map }`
  * (no `instanceof` on the config object) and returns `null` otherwise.
@@ -27,7 +28,7 @@ import {
 
 const id = (s: string) => s;
 
-describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)', () => {
+describe('groupSwiftFilesBySpmTarget — shared SPM bucketing contract', () => {
   it('buckets a multi-subdir single target into ONE group', () => {
     const files = [
       'Sources/Alpha/Core/User.swift',
@@ -45,7 +46,7 @@ describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)
 
   it('assigns a file matching two overlapping same-named prefixes to the FIRST target only', () => {
     // Both targets are prefixes of the file's path (Beta dir nested under
-    // Alpha). Legacy `break`s on the first match → one bucket per file.
+    // Alpha). The first configured match wins → one bucket per file.
     const files = ['Sources/Alpha/Beta/User.swift'];
     const targets = new Map([
       ['Alpha', 'Sources/Alpha'],
@@ -58,9 +59,19 @@ describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)
     expect(groups.has('Beta')).toBe(false);
   });
 
+  it('assigns root-level files to a path: "." target', () => {
+    const files = ['Lib.swift', 'Sources/Other/X.swift'];
+    const targets = new Map([['Lib', '.']]);
+
+    const groups = groupSwiftFilesBySpmTarget(files, id, targets);
+
+    expect(groups.get('Lib')).toEqual(files);
+    expect(groups.has('__default__')).toBe(false);
+  });
+
   it('matches a target dir only at a `/` boundary, not a substring', () => {
-    // "Sources/Alpha" must NOT match "Sources/AlphaBeta/..." — the legacy
-    // predicate requires idx===0 or a preceding `/`.
+    // "Sources/Alpha" must NOT match "Sources/AlphaBeta/...". The matcher
+    // accepts only a path-start or slash-delimited target occurrence.
     const files = ['Sources/AlphaBeta/User.swift'];
     const targets = new Map([['Alpha', 'Sources/Alpha']]);
 
@@ -112,6 +123,26 @@ describe('groupSwiftFilesBySpmTarget — legacy SPM-subtree parity (drift guard)
 
     expect(groups.get('Alpha')).toEqual([items[0]]);
     expect(groups.get('Beta')).toEqual([items[1]]);
+  });
+
+  it('keeps inferred Sources/* folders in separate buckets', () => {
+    const targets = new Map([
+      ['App', 'Sources/App'],
+      ['Models', 'Sources/Models'],
+      ['Foundation', 'Sources/Foundation'],
+    ]);
+    const items = [
+      'Sources/App/main.swift',
+      'Sources/Models/User.swift',
+      'Sources/Foundation/Thing.swift',
+    ];
+
+    const groups = groupSwiftFilesBySpmTarget(items, id, targets);
+
+    expect(groups.get('App')).toEqual(['Sources/App/main.swift']);
+    expect(groups.get('Models')).toEqual(['Sources/Models/User.swift']);
+    expect(groups.get('Foundation')).toEqual(['Sources/Foundation/Thing.swift']);
+    expect(groups.get('__default__')).toBeUndefined();
   });
 
   it('normalizes backslash paths to forward-slash before matching', () => {

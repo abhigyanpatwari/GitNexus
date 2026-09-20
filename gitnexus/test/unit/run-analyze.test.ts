@@ -188,10 +188,11 @@ describe('run-analyze module', () => {
       await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const logs: string[] = [];
       const result = await runFullAnalysis(
         tmpRepo.dbPath,
         { registryName: 'new' },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
 
       expect(result.alreadyUpToDate).toBe(true);
@@ -199,6 +200,7 @@ describe('run-analyze module', () => {
       const entries = await readRegistry();
       expect(entries).toHaveLength(1);
       expect(entries[0].name).toBe('new');
+      expect(logs).toContain('Registry name changed: "old" -> "new".');
       const agents = await fs.readFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), 'utf-8');
       expect(agents).toContain('**new**');
     } finally {
