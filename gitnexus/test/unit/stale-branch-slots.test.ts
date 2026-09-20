@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { branchSlug } from '../../src/storage/branch-index.js';
 import { INDEX_METADATA_FILE } from '../../src/storage/storage-constants.js';
 import {
@@ -89,6 +89,32 @@ describe('listStaleBranchSlots (#3331)', () => {
         reason: 'disk-only',
       }),
     ]);
+  });
+
+  it('does not classify a registry row when the slug path is unreadable', async () => {
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, 'stat').mockImplementation(async (target, options) => {
+      if (path.resolve(String(target)) === path.resolve(dir)) {
+        const err = new Error('EACCES') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realStat(target, options);
+    });
+
+    try {
+      const rows = await listStaleBranchSlots({
+        repoPath,
+        storagePath,
+        branches: [{ branch: 'feature/x' }],
+        heads: ['main'],
+      });
+      expect(rows).toEqual([]);
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 
   it('classifies a registry row whose directory is gone as registry-only', async () => {

@@ -34,16 +34,18 @@ export interface ListStaleBranchSlotsInput {
 const slotDirForBranch = (storagePath: string, branch: string): string =>
   path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
 
-const isDirectory = async (dir: string): Promise<boolean> => {
+/** Proven directory, proven absence, or a probe error that is not ENOENT/ENOTDIR. */
+type DirectoryProbe = 'dir' | 'missing' | 'unreadable';
+
+const probeDirectory = async (dir: string): Promise<DirectoryProbe> => {
   try {
-    return (await fs.stat(dir)).isDirectory();
+    return (await fs.stat(dir)).isDirectory() ? 'dir' : 'missing';
   } catch (err) {
-    if (isMissingFilesystemError(err)) return false;
-    return false;
+    return isMissingFilesystemError(err) ? 'missing' : 'unreadable';
   }
 };
 
-export const directorySizeBytes = async (root: string): Promise<number> => {
+const directorySizeBytes = async (root: string): Promise<number> => {
   let total = 0;
   const stack = [root];
   while (stack.length > 0) {
@@ -55,19 +57,22 @@ export const directorySizeBytes = async (root: string): Promise<number> => {
     } catch {
       continue;
     }
+    const files = entries
+      .filter((entry) => entry.isFile())
+      .map((entry) => path.join(current, entry.name));
     for (const entry of entries) {
-      const child = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(child);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      try {
-        total += (await fs.stat(child)).size;
-      } catch {
-        // Size walks are best-effort; skip unreadable files.
-      }
+      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
     }
+    const sizes = await Promise.all(
+      files.map(async (file) => {
+        try {
+          return (await fs.stat(file)).size;
+        } catch {
+          return 0;
+        }
+      }),
+    );
+    for (const size of sizes) total += size;
   }
   return total;
 };
@@ -96,30 +101,29 @@ export const listStaleBranchSlots = async (
     diskDirs = entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.join(branchesRoot, entry.name));
-  } catch (err) {
-    if (!isMissingFilesystemError(err)) {
-      diskDirs = [];
-    }
+  } catch {
+    diskDirs = [];
   }
 
-  const rows: StaleBranchSlot[] = [];
+  const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];
   const seenDirs = new Set<string>();
 
   for (const [resolvedDir, branch] of registryByDir) {
-    const exists = await isDirectory(resolvedDir);
+    const probe = await probeDirectory(resolvedDir);
+    if (probe === 'unreadable') continue;
+    const exists = probe === 'dir';
     const dir = exists ? resolvedDir : null;
     if (exists) seenDirs.add(resolvedDir);
-    const sizeBytes = exists ? await directorySizeBytes(resolvedDir) : 0;
     if (live === null) {
-      rows.push({ branch, dir, sizeBytes, reason: 'heads-unavailable' });
+      pending.push({ branch, dir, reason: 'heads-unavailable' });
       continue;
     }
     if (!exists) {
-      rows.push({ branch, dir: null, sizeBytes: 0, reason: 'registry-only' });
+      pending.push({ branch, dir: null, reason: 'registry-only' });
       continue;
     }
     if (!live.has(branch)) {
-      rows.push({ branch, dir, sizeBytes, reason: 'ref-missing' });
+      pending.push({ branch, dir, reason: 'ref-missing' });
     }
   }
 
@@ -128,20 +132,24 @@ export const listStaleBranchSlots = async (
     if (seenDirs.has(resolved) || registryByDir.has(resolved)) continue;
     const branch = await metadataBranch(dir);
     if (branch === null) continue;
-    const sizeBytes = await directorySizeBytes(dir);
     if (live === null) {
-      rows.push({ branch, dir: resolved, sizeBytes, reason: 'heads-unavailable' });
+      pending.push({ branch, dir: resolved, reason: 'heads-unavailable' });
       continue;
     }
     if (!live.has(branch)) {
-      rows.push({ branch, dir: resolved, sizeBytes, reason: 'disk-only' });
+      pending.push({ branch, dir: resolved, reason: 'disk-only' });
     }
   }
 
-  return rows;
+  return Promise.all(
+    pending.map(async (row) => ({
+      ...row,
+      sizeBytes: row.dir ? await directorySizeBytes(row.dir) : 0,
+    })),
+  );
 };
 
-export const isContainedBranchDir = (storagePath: string, dir: string): boolean => {
+const isContainedBranchDir = (storagePath: string, dir: string): boolean => {
   const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
   const resolved = path.resolve(dir);
   const relative = path.relative(branchesRoot, resolved);
@@ -155,12 +163,6 @@ export const isContainedBranchDir = (storagePath: string, dir: string): boolean 
 
 export const isDeleteCandidate = (slot: StaleBranchSlot): boolean =>
   slot.reason !== 'heads-unavailable';
-
-export const formatSlotSize = (bytes: number): string => {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-};
 
 export interface RemoveBranchSlotInput {
   repoPath: string;
@@ -207,11 +209,10 @@ export const removeBranchSlot = async (
     });
     let dirGone = !rmError;
     if (rmError) {
-      const probeCode = await fs.access(dir).then(
-        () => null,
-        (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? 'UNKNOWN',
+      dirGone = await fs.access(dir).then(
+        () => false,
+        (e: unknown) => isMissingFilesystemError(e),
       );
-      dirGone = probeCode === 'ENOENT' || probeCode === 'ENOTDIR';
     }
     if (!dirGone) {
       return {
