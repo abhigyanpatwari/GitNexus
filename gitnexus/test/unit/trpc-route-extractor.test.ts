@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { extractTrpcRoutes } from '../../src/core/ingestion/route-extractors/trpc.js';
-import { calculateEntryPointScore } from '../../src/core/ingestion/entry-point-scoring.js';
+import {
+  extractTrpcRoutes,
+  shouldScanForTrpcRoutes,
+} from '../../src/core/ingestion/route-extractors/trpc.js';
 
 const FILE = 'src/server/trpc/routers/user.ts';
 
 const paths = (source: string) =>
   extractTrpcRoutes(FILE, source).map((r) => r.httpMethod + ' ' + r.routePath);
 
-describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
-  it('I3: same-named procedures in sibling nested routers keep distinct full paths', () => {
+describe('extractTrpcRoutes', () => {
+  it('same-named procedures in sibling nested routers keep distinct full paths', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
       'const t = initTRPC.create();',
@@ -33,7 +35,7 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     ]);
   });
 
-  it('B1: a merge prefix keeps exactly one dot boundary (post. -> post.list)', () => {
+  it('a merge prefix keeps exactly one dot boundary (post. -> post.list)', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
       'const t = initTRPC.create();',
@@ -46,7 +48,7 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     expect(paths(source)).toEqual(['GET /trpc/post.list']);
   });
 
-  it('I3: bare router() import style still nests sibling routers', () => {
+  it('bare router() import style still nests sibling routers', () => {
     const source = [
       "import { router, publicProcedure } from '../trpc';",
       '',
@@ -69,7 +71,7 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     ]);
   });
 
-  it('B1: an all-dot merge prefix is treated as no prefix', () => {
+  it('an all-dot merge prefix is treated as no prefix', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
       'const t = initTRPC.create();',
@@ -82,7 +84,7 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     expect(paths(source)).toEqual(['GET /trpc/list']);
   });
 
-  it('I10: a file whose only procedure-ish name is unrelated emits nothing', () => {
+  it('a file whose only procedure-ish name is unrelated emits nothing', () => {
     // Pre-fix, /\b\w*Procedure\w*\b matched myProcedure/ProcedureBuilder and
     // this file emitted a phantom route; the allowlist rejects it.
     const source = [
@@ -96,7 +98,7 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     expect(extractTrpcRoutes(FILE, source)).toEqual([]);
   });
 
-  it('I10: chained key/terminal across lines still emit, and the key resets after its object closes', () => {
+  it('chained key/terminal across lines still emit, and the key resets after its object closes', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
       'const t = initTRPC.create();',
@@ -170,33 +172,84 @@ describe('extractTrpcRoutes (PR #3339 review fixes)', () => {
     // depth counter from the string/comment braces would mis-nest it.
     expect(paths(source)).toEqual(['POST /trpc/app.admin.error', 'GET /trpc/app.health']);
   });
-});
 
-describe('entry-point scoring regression (I1)', () => {
-  it('does not crash on a .js router path whose framework detection returns null', () => {
-    // '/server/routers/' passes the scoring isTrpcRouter regex but, after B3,
-    // detectFrameworkFromPath returns null for it (no '/trpc/' segment). The
-    // pre-fix non-optional '.framework' access crashed right here.
-    const jsResult = calculateEntryPointScore(
-      'settingsRouter',
-      'javascript',
-      true,
-      0,
-      3,
-      'src/server/routers/settings.js',
-    );
-    expect(Number.isFinite(jsResult.score)).toBe(true);
+  it('prettier multiline z.object input still emits the list route', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const protectedProcedure = t.procedure;',
+      '',
+      'export const userRouter = t.router({',
+      '  list: protectedProcedure',
+      '    .input(',
+      '      z.object({',
+      '        id: z.string(),',
+      '      }),',
+      '    )',
+      '    .query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/user.list']);
   });
 
-  it('still grants the tRPC utility-penalty exemption to /trpc/routers/ TS files', () => {
-    const tsResult = calculateEntryPointScore(
-      'settingsRouter',
-      'typescript',
-      true,
-      0,
-      3,
-      'src/server/trpc/routers/settings.ts',
-    );
-    expect(Number.isFinite(tsResult.score)).toBe(true);
+  it('compact nested admin.list one-liner emits the nested path', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({ admin: t.router({ list: publicProcedure.query(() => null) }) });',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.admin.list']);
+  });
+
+  it("quoted 'create' key emits a POST create route", () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      "  'create': publicProcedure.mutation(() => null),",
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['POST /trpc/app.create']);
+  });
+
+  it('does not treat a commented-out create key as the current procedure', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  list: publicProcedure',
+      '    // leftover: create: publicProcedure.query(',
+      '    .query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.list']);
+  });
+
+  it('createTRPCRouter appRouter binding in root.ts supplies the app prefix', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = createTRPCRouter({',
+      '  health: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(
+      extractTrpcRoutes('src/server/trpc/root.ts', source).map(
+        (r) => r.httpMethod + ' ' + r.routePath,
+      ),
+    ).toEqual(['GET /trpc/app.health']);
+  });
+});
+
+describe('shouldScanForTrpcRoutes', () => {
+  it('matches a repo-root routers/ file after slash-normalizing', () => {
+    expect(shouldScanForTrpcRoutes('routers/foo.ts')).toBe(true);
+    expect(shouldScanForTrpcRoutes('src/server/api/routers/user.ts')).toBe(true);
+    expect(shouldScanForTrpcRoutes('src/lib/utils.ts')).toBe(false);
   });
 });

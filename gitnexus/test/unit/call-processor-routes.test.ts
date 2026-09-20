@@ -63,6 +63,26 @@ function routeCallsEdges(graph: KnowledgeGraph) {
   return graph.relationships.filter((r) => r.type === 'CALLS' && r.reason === 'laravel-route');
 }
 
+function trpcCallsEdges(graph: KnowledgeGraph) {
+  return graph.relationships.filter((r) => r.type === 'CALLS' && r.reason === 'trpc-route');
+}
+
+const TRPC_FILE = 'src/server/trpc/routers/user.ts';
+
+function addFunctionNode(
+  graph: KnowledgeGraph,
+  id: string,
+  name: string,
+  filePath: string,
+  startLine: number,
+) {
+  graph.addNode({
+    id,
+    label: 'Function',
+    properties: { name, filePath, startLine },
+  });
+}
+
 describe('processRoutesFromExtracted — Laravel route → controller CALLS edges', () => {
   it('resolvable controller + same-file method → one CALLS edge to the method node', async () => {
     const graph = createKnowledgeGraph();
@@ -128,17 +148,14 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
-  it('route missing controllerName or methodName → skipped', async () => {
+  it('route missing methodName → skipped', async () => {
     const graph = createKnowledgeGraph();
     const model = modelWithController(['index']);
 
-    await processRoutesFromExtracted(
-      graph,
-      [makeRoute({ controllerName: null }), makeRoute({ methodName: null })],
-      model,
-    );
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: null })], model);
 
     expect(routeCallsEdges(graph)).toHaveLength(0);
+    expect(trpcCallsEdges(graph)).toHaveLength(0);
   });
 
   it('multiple routes to the same controller → one edge per route, distinct targets', async () => {
@@ -293,5 +310,108 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     const edges = routeCallsEdges(graph);
     expect(edges).toHaveLength(1);
     expect(edges[0].targetId).toBe('method:OrderController.index');
+  });
+});
+
+describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', () => {
+  it('unique same-file Function + controllerName null + methodName match → one CALLS edge reason trpc-route', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list', 'Function');
+    addFunctionNode(graph, 'fn:user.list', 'list', TRPC_FILE, 10);
+
+    await processRoutesFromExtracted(
+      graph,
+      [
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          routePath: '/trpc/user.list',
+          lineNumber: 11,
+        }),
+      ],
+      model,
+    );
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].sourceId).toBe(generateId('File', TRPC_FILE));
+    expect(edges[0].targetId).toBe('fn:user.list');
+    expect(edges[0].reason).toBe('trpc-route');
+    expect(edges[0].confidence).toBeCloseTo(0.5, 5);
+    expect(routeCallsEdges(graph)).toHaveLength(0);
+  });
+
+  it('two same-name Functions + matching lineNumbers → two trpc-route edges to the two node ids', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list#admin', 'Function');
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list#billing', 'Function');
+    addFunctionNode(graph, 'fn:user.list#admin', 'list', TRPC_FILE, 10);
+    addFunctionNode(graph, 'fn:user.list#billing', 'list', TRPC_FILE, 40);
+
+    await processRoutesFromExtracted(
+      graph,
+      [
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          httpMethod: 'get',
+          routePath: '/trpc/admin.list',
+          lineNumber: 11,
+        }),
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          httpMethod: 'get',
+          routePath: '/trpc/billing.list',
+          lineNumber: 41,
+        }),
+      ],
+      model,
+    );
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(2);
+    expect(edges.map((e) => e.targetId).sort()).toEqual([
+      'fn:user.list#admin',
+      'fn:user.list#billing',
+    ]);
+    expect(edges.every((e) => e.reason === 'trpc-route')).toBe(true);
+  });
+
+  it('two same-name Functions + routes without matching lineNumbers → zero trpc-route edges (fail-open)', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list#admin', 'Function');
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list#billing', 'Function');
+    addFunctionNode(graph, 'fn:user.list#admin', 'list', TRPC_FILE, 10);
+    addFunctionNode(graph, 'fn:user.list#billing', 'list', TRPC_FILE, 40);
+
+    await processRoutesFromExtracted(
+      graph,
+      [
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          routePath: '/trpc/admin.list',
+          lineNumber: 99,
+        }),
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          routePath: '/trpc/billing.list',
+          lineNumber: 100,
+        }),
+      ],
+      model,
+    );
+
+    expect(trpcCallsEdges(graph)).toHaveLength(0);
   });
 });

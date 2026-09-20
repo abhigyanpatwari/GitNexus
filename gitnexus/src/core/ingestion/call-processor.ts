@@ -30,6 +30,7 @@ import {
 } from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -48,6 +49,30 @@ interface RouteHandlerResolutionContext {
   readonly files: readonly RouteResolutionFile[];
   readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
   readonly isExportedSymbol: (nodeId: string) => boolean;
+  /** 0-based graph-node startLine for same-name tRPC handler disambiguation. */
+  readonly nodeStartLine?: (nodeId: string) => number | undefined;
+}
+
+/**
+ * Pick a same-file route handler from `lookupExactAll` hits.
+ *
+ * Graph nodes store 0-based `startLine`; `ExtractedRoute.lineNumber` is 1-based
+ * (`i + 1` in the tRPC scanner). When several defs share a name, the unique
+ * winner is the one whose node startLine equals `toZeroBasedLine(route.lineNumber)`.
+ * No unique winner (or no line reader) → `undefined` (fail-open).
+ */
+function pickSameFileHandler(
+  defs: readonly SymbolDefinition[],
+  route: { lineNumber: number },
+  getStartLine?: (nodeId: string) => number | undefined,
+): SymbolDefinition | undefined {
+  if (defs.length === 1) return defs[0];
+  if (defs.length > 1 && getStartLine !== undefined) {
+    const targetLine = toZeroBasedLine(route.lineNumber);
+    const matches = defs.filter((def) => Number(getStartLine(def.nodeId)) === targetLine);
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+  return undefined;
 }
 
 /** Record one exported graph node into the incremental ExportedTypeMap. */
@@ -211,20 +236,26 @@ export const processRoutesFromExtracted = async (
 
     // tRPC routes carry NO controller: a router is an object binding, not a
     // class, so the extractor leaves controllerName unset and names the
-    // handler by its object-literal key. Bind the same-file symbol directly,
-    // refusing ambiguity (length !== 1 -> skip, fail-open). Laravel routes
-    // always set controllerName and Django routes leave methodName null, so
-    // this branch is tRPC-only by construction — the laravel guessed-method
+    // handler by its object-literal key. Bind the same-file symbol directly.
+    // A unique name wins; same-name handlers are disambiguated by matching
+    // the graph node's 0-based startLine to route.lineNumber (1-based).
+    // No unique match → skip, fail-open. Laravel routes always set
+    // controllerName and Django routes leave methodName null, so this
+    // branch is tRPC-only by construction — the laravel guessed-method
     // fallback below never sees a controller-less route.
     if (!route.controllerName) {
-      const handlerDefs = model.symbols.lookupExactAll(route.filePath, route.methodName);
-      if (handlerDefs.length !== 1) continue;
+      const handler = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        (id) => graph.getNode(id)?.properties.startLine as number | undefined,
+      );
+      if (!handler) continue;
       const sourceId = generateId('File', route.filePath);
-      const relId = generateId('CALLS', sourceId + ':route->' + handlerDefs[0].nodeId);
+      const relId = generateId('CALLS', sourceId + ':route->' + handler.nodeId);
       graph.addRelationship({
         id: relId,
         sourceId,
-        targetId: handlerDefs[0].nodeId,
+        targetId: handler.nodeId,
         type: 'CALLS',
         confidence: ROUTE_EDGE_CONFIDENCE,
         reason: 'trpc-route',
@@ -325,8 +356,9 @@ export function resolveRouteHandlerSymbols(
   // stamp always belongs to the route that actually won the Route node.
   const claimed = new Set<string>();
 
-  // Resolve a single same-file symbol by name, refusing to guess on ambiguity:
-  // exactly one match → its nodeId; zero or many → undefined (fail-open).
+  // Resolve a single same-file symbol by name. Exactly one match → its nodeId.
+  // Zero or many matches → undefined (fail-open). tRPC same-name handlers
+  // use pickSameFileHandler at the controller-less call site instead.
   const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
     const defs = model.symbols.lookupExactAll(filePath, name);
     return defs.length === 1 ? defs[0]?.nodeId : undefined;
@@ -453,8 +485,11 @@ export function resolveRouteHandlerSymbols(
       }
       if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
     } else if (!route.controllerName && route.methodName) {
-      // tRPC: the handler is a same-file object-key symbol; refuse ambiguity.
-      methodId = uniqueSymbolId(route.filePath, route.methodName);
+      methodId = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        routeContext?.nodeStartLine,
+      )?.nodeId;
     }
     claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
   }

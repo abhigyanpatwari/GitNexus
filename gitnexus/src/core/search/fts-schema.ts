@@ -20,6 +20,7 @@ export interface FTSIndexDefinition {
 // indexing the same set keeps a symbol's doc comment both keyword- and
 // semantically-searchable.
 const FTS_PROPERTIES = ['name', 'content', 'description'] as const;
+const NAME_ONLY_PROPERTIES = ['name'] as const;
 
 export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // File has no `description` column — keep it name+content only.
@@ -52,10 +53,8 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // searchable so agents can find a procedure from its URL without first
   // resolving the URL → handlerSymbolId → Function node. Route has no
   // `description`/`content` column (see ROUTE_SCHEMA), so this is name-only.
-  { table: 'Route', indexName: 'route_fts', properties: ['name'] },
+  { table: 'Route', indexName: 'route_fts', properties: NAME_ONLY_PROPERTIES },
 ];
-
-const NAME_ONLY_PROPERTIES = ['name'] as const;
 
 /** Return the FTS definitions compatible with one persisted content profile. */
 export const getFtsIndexes = (profile: FtsProfile = 'full'): readonly FTSIndexDefinition[] => {

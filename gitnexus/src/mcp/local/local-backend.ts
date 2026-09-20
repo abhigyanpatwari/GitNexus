@@ -123,6 +123,9 @@ import {
   EXPLAIN_MAX_LIMIT,
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
+  QUERY_DEFAULT_LIMIT,
+  QUERY_DEFAULT_MAX_SYMBOLS,
+  CONTEXT_CHAIN_MAX_DEPTH,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -2967,11 +2970,8 @@ export class LocalBackend {
 
     await this.ensureInitialized(repo);
 
-    // defaults raised (limit 5 → 10, max_symbols 10 → 25) so a
-    // procedure→workflow→helper chain fits inside a single page. The tool
-    // schema mirrors these defaults.
-    const processLimit = params.limit || 10;
-    const maxSymbolsPerProcess = params.max_symbols || 25;
+    const processLimit = params.limit || QUERY_DEFAULT_LIMIT;
+    const maxSymbolsPerProcess = params.max_symbols || QUERY_DEFAULT_MAX_SYMBOLS;
     const requestedContent = params.include_content ?? false;
     // Do not trust a lingering graph property when the metadata contract says
     // source-derived text is unavailable. A full rebuild normally removes the
@@ -3077,7 +3077,6 @@ export class LocalBackend {
         entryPointId: string;
         totalScore: number;
         cohesionBoost: number;
-        route?: { url: string; method: string };
         symbols: any[];
       }
     >();
@@ -3253,7 +3252,6 @@ export class LocalBackend {
               entryPointId,
               totalScore: 0,
               cohesionBoost: 0,
-              route: undefined,
               symbols: [],
             });
           }
@@ -3272,22 +3270,35 @@ export class LocalBackend {
 
     timer.stop(); // symbol_lookup
 
-    // batched ENTRY_POINT_OF lookup — for each process, find the
-    // Route node linked to the process's entry-point symbol (or to the process
-    // directly). This surfaces the HTTP route (e.g. "/trpc/admin.setSettings")
-    // alongside each process in `query` results so agents don't need a separate
-    // `route_map` call. Also handles upstream's link shape where the edge goes
-    // from Route → Process directly.
-    const routeByProcessId = new Map<string, { url: string; method: string }>();
-    if (processMap.size > 0) {
+    // Rank first — route enrichment is unused in the sort and only the
+    // returned page needs it.
+    timer.start('ranking');
+    const rankedProcesses = Array.from(processMap.values())
+      .map((p) => ({
+        ...p,
+        routes: undefined as Array<{ url: string; method?: string }> | undefined,
+        priority: p.totalScore + p.cohesionBoost * 0.1,
+      }))
+      .sort((a, b) => b.priority - a.priority || compareCodeUnits(a.id, b.id))
+      .slice(0, processLimit);
+    timer.stop(); // ranking
+
+    // Route lookup for the ranked page only. Current indexes emit:
+    //   (1) Route -[ENTRY_POINT_OF]-> Process   (processes.ts)
+    //   (2) Route -[ENTRY_POINT_OF]-> <entryFn> (legacy indexes)
+    //   (3) handler -[HANDLES_ROUTE]-> Route    (routes.ts)
+    // Shape (2) is leftover — call-processor does not emit
+    // Route-[ENTRY_POINT_OF]->Function. HANDLES_ROUTE is what lets an entry
+    // symbol resolve when no Process edge exists.
+    const routesByProcessId = new Map<string, Array<{ url: string; method?: string }>>();
+    if (rankedProcesses.length > 0) {
+      const pidByEntryPoint = new Map<string, string>();
+      for (const p of rankedProcesses) {
+        if (p.entryPointId) pidByEntryPoint.set(p.entryPointId, p.id);
+      }
       try {
-        const pidList = Array.from(processMap.keys());
+        const pidList = rankedProcesses.map((p) => p.id);
         for (const pidChunk of chunk(pidList, LBUG_ID_PROBE_BATCH_SIZE)) {
-          // Try two edge shapes:
-          //   (1) Route -[ENTRY_POINT_OF]-> Process   (upstream processes.ts)
-          //   (2) Route -[ENTRY_POINT_OF]-> <entryFn> -[STEP_IN_PROCESS]-> Process
-          //     (when the edge is anchored on the entry symbol instead of the
-          //     Process node — older variant we still emit for tRPC handlers)
           const routeRows = await executeParameterized(
             repo.lbugPath,
             `
@@ -3298,6 +3309,10 @@ export class LocalBackend {
             MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(entryFn)
             WHERE entryFn.id IN $entryIds
             RETURN entryFn.id AS pid, route.name AS url, route.method AS method
+            UNION ALL
+            MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+            WHERE handler.id IN $entryIds
+            RETURN handler.id AS pid, route.name AS url, route.method AS method
           `,
             {
               pids: pidChunk,
@@ -3310,33 +3325,27 @@ export class LocalBackend {
             const targetPid = row.pid ?? row[0];
             const url = row.url ?? row[1];
             const method = row.method ?? row[2];
-            // entryFn.id from shape (2) is the entry symbol's id, not a pid —
-            // re-anchor it to the process that owns this entry symbol.
             const owningPid = processMap.has(targetPid)
               ? targetPid
-              : Array.from(processMap.values()).find((p) => p.entryPointId === targetPid)?.id;
-            if (owningPid && !routeByProcessId.has(owningPid)) {
-              routeByProcessId.set(owningPid, { url, method: method || '' });
+              : pidByEntryPoint.get(targetPid);
+            if (!owningPid || !url) continue;
+            const methodStr = method ? String(method) : undefined;
+            const dedupKey = methodStr ? `${methodStr}:${url}` : url;
+            const list = routesByProcessId.get(owningPid) ?? [];
+            if (!list.some((r) => (r.method ? `${r.method}:${r.url}` : r.url) === dedupKey)) {
+              list.push(methodStr ? { url, method: methodStr } : { url });
+              routesByProcessId.set(owningPid, list);
             }
           }
         }
       } catch (e) {
-        // Best-effort enrichment — never fail the query.
         logQueryError('query:route-lookup', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+      for (const p of rankedProcesses) {
+        p.routes = routesByProcessId.get(p.id);
       }
     }
-
-    // Step 3: Rank processes by aggregate score + internal cohesion boost
-    timer.start('ranking');
-    const rankedProcesses = Array.from(processMap.values())
-      .map((p) => ({
-        ...p,
-        route: routeByProcessId.get(p.id),
-        priority: p.totalScore + p.cohesionBoost * 0.1, // cohesion as subtle ranking signal
-      }))
-      .sort((a, b) => b.priority - a.priority || compareCodeUnits(a.id, b.id))
-      .slice(0, processLimit);
-    timer.stop(); // ranking
 
     // Optional BFS chain enrichment (mirrors context({chain_depth})). Attached
     // per ranked process, keyed on the process's entry-point symbol so the
@@ -3345,7 +3354,10 @@ export class LocalBackend {
     // nodes per direction per depth layer). Best-effort — a BFS failure drops
     // that process's chain but never fails the query.
     const chainByProcessId = new Map<string, any[]>();
-    const requestedChainDepth = Math.max(0, Math.min(3, Number(params.chain_depth ?? 0) || 0));
+    const requestedChainDepth = Math.max(
+      0,
+      Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(params.chain_depth ?? 0) || 0),
+    );
     if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
       timer.start('chain_enrichment');
       await Promise.all(
@@ -3360,6 +3372,7 @@ export class LocalBackend {
             chainByProcessId.set(p.id, chain);
           } catch (e) {
             logQueryError('query:chain-bfs', e);
+            if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
           }
         }),
       );
@@ -3375,7 +3388,13 @@ export class LocalBackend {
       symbol_count: p.symbols.length,
       process_type: p.processType,
       step_count: p.stepCount,
-      ...(p.route ? { route: p.route.url, method: p.route.method || undefined } : {}),
+      ...(p.routes && p.routes.length > 0
+        ? {
+            route: p.routes[0].url,
+            method: p.routes[0].method || undefined,
+            routes: p.routes,
+          }
+        : {}),
       ...(chainByProcessId.has(p.id) ? { chain: chainByProcessId.get(p.id) } : {}),
     }));
 
@@ -4874,21 +4893,19 @@ export class LocalBackend {
       logQueryError('context:process-participation', e);
     }
 
-    // ENTRY_POINT_OF lookup — find the HTTP route(s) this symbol
-    // handles, and whether it's the entry point of any process. Makes context()
-    // self-sufficient: an agent learns the symbol's route + entry-point status
-    // in the same call it already runs before every edit (AGENTS.md mandates
-    // context() pre-edit), avoiding a separate query()/route_map() round-trip.
-    // A symbol is considered its process's entry point when the process's
-    // entryPointId matches symId. Routes are attributed only from processes
-    // where this symbol is the entry point (a middle-step symbol does not
-    // "own" the process's route) OR from a direct Route-[ENTRY_POINT_OF]->symId
-    // edge (tRPC handler resolution in call-processor.ts emits these for
-    // procedures that never made it into a Process).
-    const isEntryPoint = processRows.some((r: any) => (r.entryPointId ?? r[4]) === symId);
+    // Route lookup — HTTP endpoints this symbol handles, plus entry-point
+    // status. Makes context() self-sufficient: an agent learns the symbol's
+    // route + entry-point status in the same call it already runs before every
+    // edit (AGENTS.md mandates context() pre-edit).
+    // A symbol is the process entry point when entryPointId matches symId.
+    // Process-linked routes come from Route-[ENTRY_POINT_OF]->Process
+    // (processes.ts). Handler routes come from (handler)-[HANDLES_ROUTE]->Route
+    // (routes.ts). A middle-step symbol does not own a process's route.
+    // call-processor does not emit Route-[ENTRY_POINT_OF]->Function.
     const entryPids = processRows
       .filter((r: any) => (r.entryPointId ?? r[4]) === symId)
       .map((r: any) => r.pid || r[0]);
+    const isEntryPoint = entryPids.length > 0;
     const routes: Array<{ url: string; method?: string }> = [];
     try {
       const routeRows = await executeParameterized(
@@ -4896,6 +4913,10 @@ export class LocalBackend {
         `
         MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(target)
         WHERE target.id = $symId OR target.id IN $entryPids
+        RETURN route.name AS url, route.method AS method
+        UNION
+        MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+        WHERE handler.id = $symId
         RETURN route.name AS url, route.method AS method
       `,
         { symId, entryPids: entryPids.length > 0 ? entryPids : ['__none__'] },
@@ -5057,7 +5078,10 @@ export class LocalBackend {
     // invocations. Test-file nodes are deprioritized (pushed to the end of each
     // depth layer) so real callers/callees surface first.
     let chain: any[] | undefined;
-    const requestedDepth = Math.max(0, Math.min(3, Number(chain_depth ?? 0) || 0));
+    const requestedDepth = Math.max(
+      0,
+      Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(chain_depth ?? 0) || 0),
+    );
     if (requestedDepth > 0) {
       try {
         chain = await this._computeContextChain(repo, symId, requestedDepth);
@@ -5168,15 +5192,39 @@ export class LocalBackend {
     let upstreamFrontier = [seedId];
     let downstreamFrontier = [seedId];
 
+    const walk = async (
+      frontier: string[],
+      cypher: string,
+      logLabel: string,
+    ): Promise<{ nodes?: any[]; nextFrontier: string[] }> => {
+      if (frontier.length === 0) return { nextFrontier: [] };
+      try {
+        const rows = await executeParameterized(repo.lbugPath, cypher, {
+          frontier,
+          visited: Array.from(visited),
+        });
+        if (rows.length === 0) return { nextFrontier: [] };
+        const fresh = rows.filter((r: any) => !visited.has(r.uid));
+        const nodes = fresh.map((r: any) => ({
+          uid: r.uid,
+          name: r.name,
+          filePath: r.filePath,
+          kind: r.kind,
+        }));
+        for (const r of fresh) visited.add(r.uid);
+        return { nodes, nextFrontier: fresh.map((r: any) => r.uid) };
+      } catch (e) {
+        logQueryError(logLabel, e);
+        return { nextFrontier: [] };
+      }
+    };
+
     for (let depth = 1; depth <= maxDepth; depth++) {
       const layer: { depth: number; upstream?: any[]; downstream?: any[] } = { depth };
 
-      // Upstream (callers) — MATCH (caller)-[CALLS]->(n)
-      if (upstreamFrontier.length > 0) {
-        try {
-          const rows = await executeParameterized(
-            repo.lbugPath,
-            `
+      const upstream = await walk(
+        upstreamFrontier,
+        `
             MATCH (caller)-[r:CodeRelation]->(n)
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT caller.id IN $visited
@@ -5186,33 +5234,14 @@ export class LocalBackend {
             ORDER BY isTest ASC, caller.filePath ASC, caller.name ASC
             LIMIT 50
           `,
-            { frontier: upstreamFrontier, visited: Array.from(visited) },
-          );
-          if (rows.length > 0) {
-            const fresh = rows.filter((r: any) => !visited.has(r.uid));
-            layer.upstream = fresh.map((r: any) => ({
-              uid: r.uid,
-              name: r.name,
-              filePath: r.filePath,
-              kind: r.kind,
-            }));
-            for (const r of fresh) visited.add(r.uid);
-            upstreamFrontier = fresh.map((r: any) => r.uid);
-          } else {
-            upstreamFrontier = [];
-          }
-        } catch (e) {
-          logQueryError('context:chain-bfs:upstream', e);
-          upstreamFrontier = [];
-        }
-      }
+        'context:chain-bfs:upstream',
+      );
+      if (upstream.nodes !== undefined) layer.upstream = upstream.nodes;
+      upstreamFrontier = upstream.nextFrontier;
 
-      // Downstream (callees) — MATCH (n)-[CALLS]->(target)
-      if (downstreamFrontier.length > 0) {
-        try {
-          const rows = await executeParameterized(
-            repo.lbugPath,
-            `
+      const downstream = await walk(
+        downstreamFrontier,
+        `
             MATCH (n)-[r:CodeRelation]->(target)
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT target.id IN $visited
@@ -5222,28 +5251,11 @@ export class LocalBackend {
             ORDER BY isTest ASC, target.filePath ASC, target.name ASC
             LIMIT 50
           `,
-            { frontier: downstreamFrontier, visited: Array.from(visited) },
-          );
-          if (rows.length > 0) {
-            const fresh = rows.filter((r: any) => !visited.has(r.uid));
-            layer.downstream = fresh.map((r: any) => ({
-              uid: r.uid,
-              name: r.name,
-              filePath: r.filePath,
-              kind: r.kind,
-            }));
-            for (const r of fresh) visited.add(r.uid);
-            downstreamFrontier = fresh.map((r: any) => r.uid);
-          } else {
-            downstreamFrontier = [];
-          }
-        } catch (e) {
-          logQueryError('context:chain-bfs:downstream', e);
-          downstreamFrontier = [];
-        }
-      }
+        'context:chain-bfs:downstream',
+      );
+      if (downstream.nodes !== undefined) layer.downstream = downstream.nodes;
+      downstreamFrontier = downstream.nextFrontier;
 
-      // Stop early if both frontiers collapsed.
       if (!layer.upstream && !layer.downstream) break;
       layers.push(layer);
       if (upstreamFrontier.length === 0 && downstreamFrontier.length === 0) break;

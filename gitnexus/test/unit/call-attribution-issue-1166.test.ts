@@ -29,8 +29,10 @@
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
-import { TYPESCRIPT_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
+import JS from 'tree-sitter-javascript';
+import { JAVASCRIPT_QUERIES, TYPESCRIPT_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
 import { typescriptProvider } from '../../src/core/ingestion/languages/typescript.js';
+import { getJsParser, getJsScopeQuery } from '../../src/core/ingestion/languages/javascript/query.js';
 import {
   FUNCTION_NODE_TYPES,
   genericFuncName,
@@ -336,6 +338,13 @@ describe('issue #1166 — definition-phase consistency', () => {
     expect(names).toContain('handler');
   });
 
+  it('captures tRPC pair HOC create: publicProcedure.mutation(...)', () => {
+    const names = definedFunctionNames(`
+      const r = { create: publicProcedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
   it('does not invent names for computed-key pairs (`[K]: () => ...`)', () => {
     const names = definedFunctionNames(`
       export const store = {
@@ -577,5 +586,60 @@ describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
     `);
     expect(findCall(sites, 'first')?.attributedTo).toBe('x');
     expect(findCall(sites, 'second')?.attributedTo).toBe('x');
+  });
+});
+
+// ─── JavaScript HOC-wrapped pair values (tRPC / Express-style) ──────────────
+
+describe('issue #1166 — JavaScript HOC-wrapped pair values (tRPC)', () => {
+  const JS_GRAMMAR = JS as Parameters<Parser['setLanguage']>[0];
+
+  function definedJsFunctionNames(code: string): string[] {
+    const parser = new Parser();
+    parser.setLanguage(JS_GRAMMAR);
+    const query = new Parser.Query(JS_GRAMMAR, JAVASCRIPT_QUERIES);
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'definition.function') isFn = true;
+        if (c.name === 'name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  function definedJsScopeFunctionNames(code: string): string[] {
+    const parser = getJsParser('router.js');
+    const query = getJsScopeQuery('router.js');
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  it('captures create: publicProcedure.mutation as @definition.function in JAVASCRIPT_QUERIES', () => {
+    const names = definedJsFunctionNames(`
+      const r = { create: publicProcedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures create: procedure.mutation in JAVASCRIPT_SCOPE_QUERY', () => {
+    const names = definedJsScopeFunctionNames(`
+      const r = { create: procedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
   });
 });

@@ -333,6 +333,23 @@ describe('GroupService', () => {
       }
     });
 
+    it('test_groupQuery_forwards_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({ name: 'test-group', query: 'auth flow', chain_depth: 2 });
+        expect(query).toHaveBeenCalled();
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ chain_depth: 2 });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
     it('test_groupQuery_merges_results_across_repos', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
@@ -482,6 +499,26 @@ repos:
         expect(r.group).toBe('test-group');
         expect(r.results).toHaveLength(2);
         expect(port.context).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContext_forwards_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const context = vi.fn(async () => ({
+          status: 'found',
+          symbol: { filePath: 'services/auth/x.ts', uid: 'u1', name: 'X' },
+        }));
+        const svc = new GroupService(makePort({ context }));
+        await svc.groupContext({ name: 'test-group', target: 'MySym', chain_depth: 2 });
+        expect(context).toHaveBeenCalled();
+        for (const call of context.mock.calls) {
+          expect(call[1]).toMatchObject({ chain_depth: 2 });
+        }
       } finally {
         vi.unstubAllEnvs();
         cleanup();

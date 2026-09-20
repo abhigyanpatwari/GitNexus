@@ -739,10 +739,6 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
 
-    // Mirror the query tool schema (tools.ts): omitted limit is 10, omitted
-    // max_symbols is 25. The previous 5/10 hardcodes silently truncated
-    // group-mode results below the advertised defaults, and max_symbols was
-    // not forwarded at all.
     const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 10;
     const max_symbols =
       typeof params.max_symbols === 'number' && params.max_symbols > 0 ? params.max_symbols : 25;

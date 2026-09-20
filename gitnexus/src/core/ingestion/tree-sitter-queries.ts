@@ -856,6 +856,81 @@ export const JAVASCRIPT_QUERIES = `
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
 
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/javascript/query.ts.
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/javascript/query.ts so both
+; pipelines attribute quoted-key procedures identically. Identifier callees
+; ({ 'handler': wrap(() => {}) }) match the identifier-key block above.
+(pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (arrow_function)))) @definition.function
+
+(pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier)
+    arguments: (arguments
+      (function_expression)))) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; See TYPESCRIPT_QUERIES section above for the full rationale (issue #1166
 ; follow-up — covers forwardRef / memo / useCallback / useMemo / observer
