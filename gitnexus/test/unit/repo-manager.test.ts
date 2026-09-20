@@ -963,6 +963,43 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries[0].name).toBe('new-alias');
   });
 
+  it('keeps an alias rename committed when an async observer rejects', async () => {
+    await registerRepo(tmpRepoA.dbPath, meta, { name: 'old-alias' });
+
+    const onRename = vi.fn(async () => {
+      throw new Error('observer failed');
+    });
+
+    await expect(
+      registerRepo(tmpRepoA.dbPath, meta, {
+        name: 'new-alias',
+        onRename,
+      }),
+    ).resolves.toBe('new-alias');
+
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(onRename).toHaveBeenCalledWith('old-alias', 'new-alias');
+    expect(await listRegisteredRepos()).toMatchObject([{ name: 'new-alias' }]);
+  });
+
+  it('releases the registry lock before invoking onRename', async () => {
+    await registerRepo(tmpRepoA.dbPath, meta, { name: 'old-alias' });
+
+    await registerRepo(tmpRepoA.dbPath, meta, {
+      name: 'new-alias',
+      onRename: async () => {
+        await registerRepo(tmpRepoB.dbPath, meta, { name: 'observer-reentry' });
+      },
+    });
+
+    expect(await listRegisteredRepos()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'new-alias' }),
+        expect.objectContaining({ name: 'observer-reentry' }),
+      ]),
+    );
+  });
+
   it('registerRepo throws RegistryNameCollisionError when another path uses the name', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'shared' });
 
