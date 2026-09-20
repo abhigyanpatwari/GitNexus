@@ -11,7 +11,10 @@
  * `@reference.inherits` captures in each language's `languages/<lang>/captures.ts`.
  */
 
-import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from './ts-js-hoc-utils.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -191,19 +194,21 @@ export const TYPESCRIPT_QUERIES = `
 ; tRPC, Express route definitions, and similar frameworks use this pattern where
 ; an object property's value is a call_expression wrapping an arrow/function callback.
 ; Mirrors the registry-primary patterns in languages/typescript/query.ts.
-(pair
+((pair
   key: (property_identifier) @name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function)))) @definition.function
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
-(pair
+((pair
   key: (property_identifier) @name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (function_expression)))) @definition.function
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; Member-expression variants exclude callback-taking array methods —
 ; '{ visible: items.filter(item => item.active) }' is a Const holding an
@@ -228,21 +233,24 @@ export const TYPESCRIPT_QUERIES = `
 
 ; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
 ; Mirrors the string-key rules in languages/typescript/query.ts so both
-; pipelines attribute quoted-key procedures identically. Identifier callees
-; ({ 'handler': wrap(() => {}) }) match the identifier-key block above.
-(pair
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
   key: (string (string_fragment) @name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function)))) @definition.function
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
-(pair
+((pair
   key: (string (string_fragment) @name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (function_expression)))) @definition.function
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ((pair
   key: (string (string_fragment) @name)
@@ -860,19 +868,21 @@ export const JAVASCRIPT_QUERIES = `
 ; tRPC, Express route definitions, and similar frameworks use this pattern where
 ; an object property's value is a call_expression wrapping an arrow/function callback.
 ; Mirrors the registry-primary patterns in languages/javascript/query.ts.
-(pair
+((pair
   key: (property_identifier) @name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function)))) @definition.function
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
-(pair
+((pair
   key: (property_identifier) @name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (function_expression)))) @definition.function
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; Member-expression variants exclude callback-taking array methods —
 ; '{ visible: items.filter(item => item.active) }' is a Const holding an
@@ -897,21 +907,24 @@ export const JAVASCRIPT_QUERIES = `
 
 ; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
 ; Mirrors the string-key rules in languages/javascript/query.ts so both
-; pipelines attribute quoted-key procedures identically. Identifier callees
-; ({ 'handler': wrap(() => {}) }) match the identifier-key block above.
-(pair
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
   key: (string (string_fragment) @name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function)))) @definition.function
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
-(pair
+((pair
   key: (string (string_fragment) @name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
-      (function_expression)))) @definition.function
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ((pair
   key: (string (string_fragment) @name)
@@ -1038,9 +1051,9 @@ export const JAVASCRIPT_QUERIES = `
     value: (call_expression
       function: (member_expression
         property: (property_identifier) @callee)
-      arguments: (arguments
+        arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (variable_declaration
   (variable_declarator
@@ -1050,7 +1063,7 @@ export const JAVASCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped default exports (JS parity with TS patterns above).
  (export_statement

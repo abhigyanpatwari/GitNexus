@@ -25,6 +25,15 @@ describe('tRPC entry-point scoring', () => {
     expect(util.reasons).toContain('utility-pattern');
   });
 
+  it('still applies utility-pattern to non-accessor helpers in a T3 router file', () => {
+    const routerPath = 'src/server/api/routers/settings.ts';
+    for (const name of ['formatDate', '_internal', 'parseInput'] as const) {
+      const result = calculateEntryPointScore(name, 'typescript', true, 0, 3, routerPath);
+      expect(result.reasons).toContain('utility-pattern');
+      expect(result.reasons).toContain('framework:trpc-router');
+    }
+  });
+
   it('does not crash on a .js router path whose framework detection returns null', () => {
     const jsResult = calculateEntryPointScore(
       'settingsRouter',

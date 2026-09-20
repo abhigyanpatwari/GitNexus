@@ -259,19 +259,21 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Anchor discipline: same as direct pairs — on the inner arrow/function, not
 ;; the outer call_expression. The arrow's range matches its @scope.function range,
 ;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
-(pair
+((pair
   key: (property_identifier) @declaration.name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(pair
+((pair
   key: (property_identifier) @declaration.name
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ; Member-expression variants exclude callback-taking array methods —
 ; '{ visible: items.filter(item => item.active) }' is a value holding an
@@ -298,21 +300,24 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 ;; Quoted object keys are identical shapes to the identifier-key pairs above —
 ;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
 ;; otherwise leave its procedures anonymous and file-level attributed.
-;; Identifier callees ({ 'handler': wrap(() => {}) }) match the identifier-key
-;; block above; member-expression callees keep the array-method exclusion.
-(pair
+;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
+;; string-key rules, not the identifier-key block above; member-expression
+;; callees keep the array-method exclusion.
+((pair
   key: (string (string_fragment) @declaration.name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
-(pair
+((pair
   key: (string (string_fragment) @declaration.name)
   value: (call_expression
-    function: (identifier)
+    function: (identifier) @hoc
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
   key: (string (string_fragment) @declaration.name)

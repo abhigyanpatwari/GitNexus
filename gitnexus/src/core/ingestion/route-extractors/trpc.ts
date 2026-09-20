@@ -14,10 +14,11 @@ const TERMINAL_CALL_RE = /\.\s*(query|mutation|subscription)\s*\(/;
 
 // Procedure keys may sit at the start of an indented line, or mid-line after
 // `{` / `,` in a compact router (`t.router({ health: publicProcedure.query(...) })`).
-// Quoted keys (`'create'` / `"create"`) are the same procedure name as the
-// unquoted identifier.
+// Quoted keys (`'create'` / `"admin-panel"`) are the same procedure name as the
+// unquoted identifier. Unquoted stays `\w+`; quoted allows hyphens and similar
+// identifier-like punctuation (`$`, `.`). Dual groups: name = m[1] || m[3].
 const PROCEDURE_KEY_RE =
-  /(?:^|[{,])\s*(['"]?)(\w+)\1\s*:\s*(\w*Procedure|t\.procedure)\b/;
+  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(\w*Procedure|t\.procedure)\b/;
 
 /** Normalize slashes and prefix `/` so a repo-root `routers/foo.ts` matches `/routers/`. */
 export function shouldScanForTrpcRoutes(filePath: string): boolean {
@@ -34,9 +35,7 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
 
   const mergePos = masked.search(/\.merge\s*\(/);
   if (mergePos >= 0) {
-    const mergeMatch = content
-      .slice(mergePos)
-      .match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
+    const mergeMatch = content.slice(mergePos).match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
     if (mergeMatch) {
       // A '.merge('post.', ...)' prefix composes the route-path key; a stray
       // leading/trailing dot would double up when we join ('post..list') —
@@ -151,7 +150,7 @@ function maskNonCode(line: string, state: ScanState): string {
       // ROUTER_OPEN_RE can see quoted keys after the mask. A real string
       // (no `ident` + matching quote + colon) is still blanked.
       if (ch !== '\u0060') {
-        const quotedKey = line.slice(i).match(/^(['"])(\w+)\1\s*:/);
+        const quotedKey = line.slice(i).match(/^(['"])([\w$.-]+)\1\s*:/);
         if (quotedKey) {
           i += quotedKey[0].length;
           continue;
@@ -194,7 +193,7 @@ interface NestFrame {
 // The object-literal body opens at the first '{' scanned after the match
 // (almost always on the same line).
 const ROUTER_OPEN_RE =
-  /(?:^|[{,])\s*(['"]?)(\w+)\1\s*:\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|\w+Procedure\s*\.\s*router|router)\s*\(/;
+  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|\w+Procedure\s*\.\s*router|router)\s*\(/;
 
 // `/g` copies for matchAll. The non-global originals stay lastIndex-safe for `.test()`.
 const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'g');
@@ -221,9 +220,9 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
   // router's object literal and pushes the frame (handles both
   // 'user: t.router({' and the rare '{' on the following line).
   let pendingRouterName: string | null = null;
-  let currentProcedure: { name: string; line: number; depth: number } | null = null;
+  let currentProcedure: { name: string; depth: number } | null = null;
 
-  const emitProcedure = (method: string, proc: { name: string; line: number }): void => {
+  const emitProcedure = (method: string, proc: { name: string }, terminalLine: number): void => {
     // Nested routers compose the full path ('user.admin.list'): without the
     // stack, same-named procedures in sibling routers deduped to ONE route
     // and the survivor carried the wrong path.
@@ -246,7 +245,12 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         methodName: proc.name,
         middleware: [],
         prefix: null,
-        lineNumber: proc.line,
+        // pickSameFileHandler compares this 1-based line to Function
+        // startLine (0-based). The handler is the terminal callback
+        // (`.query` / `.mutation` / `.subscription`), so emit that line
+        // — not the object-key line, which is often earlier after
+        // `.input()` / `.use()` chaining. Same-line key+terminal is unchanged.
+        lineNumber: terminalLine,
       });
     }
   };
@@ -261,14 +265,14 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
     const routerByIndex = new Map<number, string>();
     for (const m of matchAll(ROUTER_OPEN_RE_G, masked)) {
-      routerByIndex.set(m.index ?? 0, m[2]);
+      routerByIndex.set(m.index ?? 0, m[1] || m[3]);
     }
     const keyByIndex = new Map<number, string>();
     for (const m of matchAll(PROCEDURE_KEY_RE_G, masked)) {
       const idx = m.index ?? 0;
       // 'admin: adminProcedure.router(' matches both; the router-open wins
       // so we do not poison currentProcedure (the double-prefix bug).
-      if (!routerByIndex.has(idx)) keyByIndex.set(idx, m[2]);
+      if (!routerByIndex.has(idx)) keyByIndex.set(idx, m[1] || m[3]);
     }
     const terminalByIndex = new Map<number, string>();
     for (const m of matchAll(TERMINAL_CALL_RE_G, masked)) {
@@ -309,13 +313,13 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       } else {
         const keyName = keyByIndex.get(c);
         if (keyName !== undefined) {
-          currentProcedure = { name: keyName, line: i + 1, depth };
+          currentProcedure = { name: keyName, depth };
         }
       }
 
       const terminalMethod = terminalByIndex.get(c);
       if (terminalMethod !== undefined && currentProcedure !== null) {
-        emitProcedure(terminalMethod, currentProcedure);
+        emitProcedure(terminalMethod, currentProcedure, i + 1);
         currentProcedure = null;
       }
     }

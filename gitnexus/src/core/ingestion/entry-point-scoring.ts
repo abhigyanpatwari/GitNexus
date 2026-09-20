@@ -132,15 +132,20 @@ export function calculateEntryPointScore(
   // exemption, the 0.3× utility penalty cancels the 3.0× tRPC framework boost
   // (net 0.9, below baseline), preventing procedures like `setSettings`
   // from becoming Process entry points and hiding them from `query` results.
+  // Only accessor/predicate names skip the penalty — helpers such as
+  // `formatDate`, `_internal`, or `parseInput` in the same router file still
+  // match UTILITY_PATTERNS. The 3.0× tRPC framework boost stays path-based.
   // The exemption follows detectFrameworkFromPath so T3 (`/api/routers/`) and
   // `/app/trpc/routers/` layouts get the same treatment as `/trpc/routers/`.
   // Optional chaining guards `.js` router paths: the framework detector's
   // tRPC branch is TS-only and returns null for them.
   const frameworkHint = filePath ? detectFrameworkFromPath(filePath) : null;
   const skipUtilityPenalty = frameworkHint?.framework === 'trpc';
+  const trpcAccessorExemption =
+    skipUtilityPenalty && /^(get|set|is|has|can|should|will|did)[A-Z]/.test(name);
 
   // Check negative patterns first (utilities get penalized)
-  if (!skipUtilityPenalty && UTILITY_PATTERNS.some((p) => p.test(name))) {
+  if (!trpcAccessorExemption && UTILITY_PATTERNS.some((p) => p.test(name))) {
     nameMultiplier = 0.3; // Significant penalty
     reasons.push('utility-pattern');
   } else {

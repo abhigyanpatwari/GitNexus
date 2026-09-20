@@ -30,9 +30,19 @@ import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
 import JS from 'tree-sitter-javascript';
-import { JAVASCRIPT_QUERIES, TYPESCRIPT_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
+import {
+  JAVASCRIPT_QUERIES,
+  TYPESCRIPT_QUERIES,
+} from '../../src/core/ingestion/tree-sitter-queries.js';
 import { typescriptProvider } from '../../src/core/ingestion/languages/typescript.js';
-import { getJsParser, getJsScopeQuery } from '../../src/core/ingestion/languages/javascript/query.js';
+import {
+  getJsParser,
+  getJsScopeQuery,
+} from '../../src/core/ingestion/languages/javascript/query.js';
+import {
+  getTsParser,
+  getTsScopeQuery,
+} from '../../src/core/ingestion/languages/typescript/query.js';
 import {
   FUNCTION_NODE_TYPES,
   genericFuncName,
@@ -276,6 +286,19 @@ describe('issue #1166 — Bug B: object-property arrows are named by pair.key', 
     const getUser = findCall(sites, 'getUser');
     expect(getUser?.attributedTo).toBe('queryFn');
   });
+
+  it('does not attribute then / setTimeout pair callbacks to the property key', () => {
+    const sites = collectCallAttributions(`
+      const o = {
+        result: promise.then(() => workThen()),
+        timer: setTimeout(() => workTimer(), 1),
+        handler: wrap(() => workWrap()),
+      };
+    `);
+    expect(findCall(sites, 'workThen')?.attributedTo).not.toBe('result');
+    expect(findCall(sites, 'workTimer')?.attributedTo).not.toBe('timer');
+    expect(findCall(sites, 'workWrap')?.attributedTo).toBe('handler');
+  });
 });
 
 // ─── Definition-phase consistency ───────────────────────────────────────────
@@ -342,6 +365,52 @@ describe('issue #1166 — definition-phase consistency', () => {
     const names = definedFunctionNames(`
       const r = { create: publicProcedure.mutation(async () => {}) };
     `);
+    expect(names).toContain('create');
+  });
+
+  it('does not name value-returning pair callbacks then / setTimeout / Array.from', () => {
+    const names = definedFunctionNames(`
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `);
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('timer');
+    expect(names).not.toContain('visible');
+    expect(names).toContain('handler');
+    expect(names).toContain('create');
+  });
+
+  it('TYPESCRIPT_SCOPE_QUERY does not name then / setTimeout / Array.from pair values', () => {
+    const parser = getTsParser('router.ts');
+    const query = getTsScopeQuery('router.ts');
+    const tree = parser.parse(`
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `);
+    const names: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) names.push(name);
+    }
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('timer');
+    expect(names).not.toContain('visible');
+    expect(names).toContain('handler');
     expect(names).toContain('create');
   });
 
@@ -641,5 +710,24 @@ describe('issue #1166 — JavaScript HOC-wrapped pair values (tRPC)', () => {
       const r = { create: procedure.mutation(async () => {}) };
     `);
     expect(names).toContain('create');
+  });
+
+  it('does not name then / setTimeout / Array.from pair values in JS queries', () => {
+    const src = `
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `;
+    for (const names of [definedJsFunctionNames(src), definedJsScopeFunctionNames(src)]) {
+      expect(names).not.toContain('result');
+      expect(names).not.toContain('timer');
+      expect(names).not.toContain('visible');
+      expect(names).toContain('handler');
+      expect(names).toContain('create');
+    }
   });
 });

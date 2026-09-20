@@ -13,8 +13,9 @@ export interface FTSIndexDefinition {
 // once they are populated by `descriptionExtractor` (#2270/#2286, issue #2299).
 //
 // IMPORTANT: every property must be a real column on its table (see
-// `core/lbug/schema.ts`). `File` has no `description` column, so it stays
-// name+content. All other entries below carry a `description` column.
+// `core/lbug/schema.ts`). `File` and `Route` have no `description` column
+// (`File` stays name+content; `Route` is name-only). All other entries
+// below carry a `description` column.
 //
 // Tables beyond the original 5 mirror `EMBEDDABLE_LABELS` (embeddings/types.ts):
 // indexing the same set keeps a symbol's doc comment both keyword- and

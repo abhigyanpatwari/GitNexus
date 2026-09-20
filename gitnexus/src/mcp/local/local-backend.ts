@@ -184,6 +184,14 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
 const CANDIDATE_WINDOW = 20;
 
 /**
+ * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
+ * is already node-capped inside `_computeContextChain`; this bounds how many
+ * of those walks run at once so a page of processes (and each group member
+ * hitting this path) cannot open a full page of concurrent graph queries.
+ */
+const QUERY_CHAIN_BFS_CONCURRENCY = 4;
+
+/**
  * `content` is an index capability rather than a promise that every symbol has
  * text. Retention `none` intentionally omits it, while `symbol` retains only
  * symbol spans. Keep this response additive and emit it only when requested so
@@ -3351,8 +3359,12 @@ export class LocalBackend {
     // per ranked process, keyed on the process's entry-point symbol so the
     // chain starts where the flow starts. Bounded: one BFS per process (at
     // most processLimit), each internally capped by _computeContextChain (50
-    // nodes per direction per depth layer). Best-effort — a BFS failure drops
-    // that process's chain but never fails the query.
+    // nodes per direction per depth layer), and at most
+    // QUERY_CHAIN_BFS_CONCURRENCY walks in flight. This is the owning cap —
+    // group-mode query fans out per member into this path, so a second cap in
+    // GroupService would double-limit without changing peak BFS load here.
+    // Best-effort — a BFS failure drops that process's chain but never fails
+    // the query.
     const chainByProcessId = new Map<string, any[]>();
     const requestedChainDepth = Math.max(
       0,
@@ -3360,8 +3372,9 @@ export class LocalBackend {
     );
     if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
       timer.start('chain_enrichment');
-      await Promise.all(
-        rankedProcesses.map(async (p) => {
+      await mapConcurrent(
+        rankedProcesses,
+        async (p) => {
           if (!p.entryPointId) return;
           try {
             const chain = await this._computeContextChain(
@@ -3374,7 +3387,8 @@ export class LocalBackend {
             logQueryError('query:chain-bfs', e);
             if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
           }
-        }),
+        },
+        { concurrency: QUERY_CHAIN_BFS_CONCURRENCY },
       );
       timer.stop(); // chain_enrichment
     }

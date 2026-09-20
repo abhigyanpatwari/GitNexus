@@ -40,6 +40,10 @@ export const ARRAY_METHOD_HOC_BLOCKLIST = [
   'toReversed',
   'toSpliced',
   'with',
+  'then',
+  'catch',
+  'finally',
+  'from',
 ] as const;
 
 export const ARRAY_METHOD_HOC_BLOCKLIST_SET: ReadonlySet<string> = new Set(
@@ -86,10 +90,12 @@ export const ARRAY_METHOD_NOT_ANY_OF_PREDICATE = buildNotAnyOfPredicate(
   ARRAY_METHOD_HOC_BLOCKLIST,
 );
 
-export const DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE = buildNotAnyOfPredicate(
-  'hoc',
-  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST,
-);
+// `#not-any-of?` cannot share a query with another `#not-any-of?` on a
+// different capture: the earlier predicate is ignored. Pair-HOC rules already
+// use `#not-any-of? @callee`, so the identifier blocklist is `#not-eq?`
+// chains on `@hoc` instead. Same names, same capture.
+export const DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE =
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST.map((value) => `(#not-eq? @hoc "${value}")`).join('\n  ');
 
 export function deriveDefaultExportHocName(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');

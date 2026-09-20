@@ -455,6 +455,19 @@ function rejectRetiredSyncParams(params: Record<string, unknown>): { error: stri
   return null;
 }
 
+/** Advertised MCP query page bounds (tools.ts schema). Mirrored so core stays MCP-free. */
+const GROUP_QUERY_DEFAULT_LIMIT = 10;
+const GROUP_QUERY_MAX_LIMIT = 100;
+const GROUP_QUERY_DEFAULT_MAX_SYMBOLS = 25;
+const GROUP_QUERY_MAX_SYMBOLS = 200;
+
+function clampGroupQueryBound(value: unknown, fallback: number, max: number): number {
+  if (typeof value !== 'number' || !(value > 0)) return fallback;
+  if (!Number.isFinite(value)) return max;
+  const n = Math.floor(value);
+  return n < 1 ? fallback : Math.min(max, n);
+}
+
 export class GroupService {
   constructor(private readonly port: GroupToolPort) {}
 
@@ -739,9 +752,16 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
 
-    const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 10;
-    const max_symbols =
-      typeof params.max_symbols === 'number' && params.max_symbols > 0 ? params.max_symbols : 25;
+    const limit = clampGroupQueryBound(
+      params.limit,
+      GROUP_QUERY_DEFAULT_LIMIT,
+      GROUP_QUERY_MAX_LIMIT,
+    );
+    const max_symbols = clampGroupQueryBound(
+      params.max_symbols,
+      GROUP_QUERY_DEFAULT_MAX_SYMBOLS,
+      GROUP_QUERY_MAX_SYMBOLS,
+    );
     const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;

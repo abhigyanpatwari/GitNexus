@@ -111,7 +111,14 @@ describe('extractTrpcRoutes', () => {
       '  create: protectedProcedure.mutation(() => null),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/user.list', 'POST /trpc/user.create']);
+    const emitted = extractTrpcRoutes(FILE, source);
+    expect(emitted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual([
+      'GET /trpc/user.list',
+      'POST /trpc/user.create',
+    ]);
+    // list: key on line 6, `.query(` terminal on line 8. create: key+terminal
+    // share line 9, so the number is unchanged.
+    expect(emitted.map((r) => r.lineNumber)).toEqual([8, 9]);
   });
 
   it('compact one-line routers still emit a procedure key', () => {
@@ -121,7 +128,10 @@ describe('extractTrpcRoutes', () => {
       'const publicProcedure = t.procedure;',
       'export const appRouter = t.router({ health: publicProcedure.query(() => null) });',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+    const compact = extractTrpcRoutes(FILE, source);
+    expect(compact.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/app.health']);
+    // key and `.query(` share the export line — same number as before.
+    expect(compact.map((r) => r.lineNumber)).toEqual([4]);
   });
 
   it('does not treat .query( inside a comment as the procedure terminal', () => {
@@ -136,7 +146,9 @@ describe('extractTrpcRoutes', () => {
       '    .query(() => null),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+    const emitted = extractTrpcRoutes(FILE, source);
+    expect(emitted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/app.health']);
+    expect(emitted[0]?.lineNumber).toBe(8);
   });
 
   it('gates and extracts terminals with whitespace before the opening paren', () => {
@@ -189,7 +201,10 @@ describe('extractTrpcRoutes', () => {
       '    .query(() => null),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/user.list']);
+    const emitted = extractTrpcRoutes(FILE, source);
+    expect(emitted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/user.list']);
+    // key on line 6; `.query(` after the prettier-broken `.input(z.object)` is 12.
+    expect(emitted[0]?.lineNumber).toBe(12);
   });
 
   it('compact nested admin.list one-liner emits the nested path', () => {
@@ -200,6 +215,20 @@ describe('extractTrpcRoutes', () => {
       'export const appRouter = t.router({ admin: t.router({ list: publicProcedure.query(() => null) }) });',
     ].join('\n');
     expect(paths(source)).toEqual(['GET /trpc/app.admin.list']);
+  });
+
+  it('quoted kebab-case router and procedure keys emit the dotted path', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      "  'admin-panel': t.router({",
+      "    'list-users': publicProcedure.query(() => null),",
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.admin-panel.list-users']);
   });
 
   it("quoted 'create' key emits a POST create route", () => {

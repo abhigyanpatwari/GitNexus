@@ -327,6 +327,40 @@ describe('GroupService', () => {
         for (const call of query.mock.calls) {
           expect(call[1]).toMatchObject({ limit: 3, max_symbols: 7 });
         }
+        expect(query).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupQuery_clamps_infinite_and_oversized_limit_and_max_symbols', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+
+        await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: Infinity,
+          max_symbols: 9999,
+        });
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
+        }
+
+        query.mockClear();
+        await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: 9999,
+          max_symbols: Infinity,
+        });
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
+        }
       } finally {
         vi.unstubAllEnvs();
         cleanup();
