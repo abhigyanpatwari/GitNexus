@@ -57,7 +57,12 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
     /(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*(?:createTRPCRouter|\w+\s*\.\s*router)\s*\(/,
   );
   if (routerVarMatch) {
-    return routerVarMatch[1].replace(/Router$/i, '');
+    // `appRouter` / `rootRouter` is the root binding, not a nest key.
+    // Live tRPC paths are `admin.users.list`, not `app.admin.users.list`.
+    // Do not fall through to the filename prefix — this file is the root composer.
+    const base = routerVarMatch[1].replace(/Router$/i, '');
+    if (/^(app|root)$/i.test(base)) return null;
+    return base;
   }
 
   const fileName =
@@ -106,10 +111,37 @@ interface ScanState {
   inBlockComment: boolean;
   /** Last non-whitespace code char — distinguishes `/regex/` from `a / b`. */
   prevSignificant: string | null;
+  /**
+   * Last identifier token. Persists across whitespace, comments, and newlines
+   * (`return\n  /}/`) so a keyword that introduces an expression can start a
+   * regex. Cleared by any other significant token (`return 1 / 2` stays division).
+   */
+  lastIdentifier: string | null;
 }
 
+/** Keywords that introduce an expression/statement, so the next `/` is a regex. */
+const REGEX_AFTER_KEYWORDS = new Set([
+  'return',
+  'throw',
+  'case',
+  'else',
+  'new',
+  'delete',
+  'void',
+  'typeof',
+  'yield',
+  'await',
+  'in',
+  'of',
+  'instanceof',
+]);
+
 /** `/` starts a regex unless the previous significant char ends a primary (`a / b`). */
-function previousAllowsDivision(prev: string | null): boolean {
+function previousAllowsDivision(state: ScanState): boolean {
+  if (state.lastIdentifier !== null && REGEX_AFTER_KEYWORDS.has(state.lastIdentifier)) {
+    return false;
+  }
+  const prev = state.prevSignificant;
   if (prev === null) return false;
   // Identifier / number, call/index close, or a just-closed string/template.
   return /[\w$)\]]/.test(prev) || prev === "'" || prev === '"' || prev === '\u0060';
@@ -205,9 +237,23 @@ function maskNonCode(line: string, state: ScanState): string {
       i += 2;
       continue;
     }
-    if (ch === '/' && !previousAllowsDivision(state.prevSignificant)) {
+    if (/[A-Za-z_$]/.test(ch)) {
+      let j = i;
+      let ident = '';
+      while (j < line.length && /[\w$]/.test(line[j])) {
+        ident += line[j];
+        j++;
+      }
+      // Property names (`foo.return / x`) are not keyword introducers.
+      state.lastIdentifier = state.prevSignificant === '.' ? null : ident;
+      state.prevSignificant = ident.charAt(ident.length - 1);
+      i = j;
+      continue;
+    }
+    if (ch === '/' && !previousAllowsDivision(state)) {
       i = maskRegexLiteral(line, out, i);
       state.prevSignificant = '/';
+      state.lastIdentifier = null;
       continue;
     }
     if (ch === "'" || ch === '"' || ch === '\u0060') {
@@ -219,15 +265,20 @@ function maskNonCode(line: string, state: ScanState): string {
         if (quotedKey) {
           i += quotedKey[0].length;
           state.prevSignificant = ':';
+          state.lastIdentifier = null;
           continue;
         }
       }
       out[i] = ' ';
       state.inString = ch;
+      state.lastIdentifier = null;
       i++;
       continue;
     }
-    if (!/\s/.test(ch)) state.prevSignificant = ch;
+    if (!/\s/.test(ch)) {
+      state.prevSignificant = ch;
+      state.lastIdentifier = null;
+    }
     i++;
   }
   return out.join('');
@@ -235,7 +286,12 @@ function maskNonCode(line: string, state: ScanState): string {
 
 /** Whole-file mask. Length-preserving so indices align with `content`. */
 function maskSource(content: string): string {
-  const state: ScanState = { inString: null, inBlockComment: false, prevSignificant: null };
+  const state: ScanState = {
+    inString: null,
+    inBlockComment: false,
+    prevSignificant: null,
+    lastIdentifier: null,
+  };
   return content
     .split('\n')
     .map((line) => maskNonCode(line, state))
@@ -281,7 +337,12 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
   const lines = content.split('\n');
   const nestStack: NestFrame[] = [];
-  const scanState: ScanState = { inString: null, inBlockComment: false, prevSignificant: null };
+  const scanState: ScanState = {
+    inString: null,
+    inBlockComment: false,
+    prevSignificant: null,
+    lastIdentifier: null,
+  };
   let depth = 0;
   // Set on a router-open; the first '{' scanned afterwards opens the
   // router's object literal and pushes the frame (handles both

@@ -29,10 +29,7 @@ describe('extractTrpcRoutes', () => {
       '  }),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual([
-      'GET /trpc/app.admin.users.list',
-      'GET /trpc/app.billing.users.list',
-    ]);
+    expect(paths(source)).toEqual(['GET /trpc/admin.users.list', 'GET /trpc/billing.users.list']);
   });
 
   it('a merge prefix keeps exactly one dot boundary (post. -> post.list)', () => {
@@ -129,7 +126,7 @@ describe('extractTrpcRoutes', () => {
       'export const appRouter = t.router({ health: publicProcedure.query(() => null) });',
     ].join('\n');
     const compact = extractTrpcRoutes(FILE, source);
-    expect(compact.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/app.health']);
+    expect(compact.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/health']);
     // key and `.query(` share the export line — same number as before.
     expect(compact.map((r) => r.lineNumber)).toEqual([4]);
   });
@@ -147,7 +144,7 @@ describe('extractTrpcRoutes', () => {
       '});',
     ].join('\n');
     const emitted = extractTrpcRoutes(FILE, source);
-    expect(emitted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/app.health']);
+    expect(emitted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual(['GET /trpc/health']);
     expect(emitted[0]?.lineNumber).toBe(8);
   });
 
@@ -161,7 +158,7 @@ describe('extractTrpcRoutes', () => {
       '  health: publicProcedure.query (() => null),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.health']);
+    expect(paths(source)).toEqual(['GET /trpc/health']);
   });
 
   it('braces inside strings and comments do not skew the nesting stack', () => {
@@ -180,9 +177,9 @@ describe('extractTrpcRoutes', () => {
       '  health: publicProcedure.query(() => null),',
       '});',
     ].join('\n');
-    // health must be app.health (top level), NOT app.admin.health — a skewed
+    // health must be /trpc/health (top level), NOT /trpc/admin.health — a skewed
     // depth counter from the string/comment braces would mis-nest it.
-    expect(paths(source)).toEqual(['POST /trpc/app.admin.error', 'GET /trpc/app.health']);
+    expect(paths(source)).toEqual(['POST /trpc/admin.error', 'GET /trpc/health']);
   });
 
   it('prettier multiline z.object input still emits the list route', () => {
@@ -214,7 +211,7 @@ describe('extractTrpcRoutes', () => {
       'const publicProcedure = t.procedure;',
       'export const appRouter = t.router({ admin: t.router({ list: publicProcedure.query(() => null) }) });',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.admin.list']);
+    expect(paths(source)).toEqual(['GET /trpc/admin.list']);
   });
 
   it('quoted kebab-case router and procedure keys emit the dotted path', () => {
@@ -228,7 +225,7 @@ describe('extractTrpcRoutes', () => {
       '  }),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.admin-panel.list-users']);
+    expect(paths(source)).toEqual(['GET /trpc/admin-panel.list-users']);
   });
 
   it("quoted 'create' key emits a POST create route", () => {
@@ -240,7 +237,7 @@ describe('extractTrpcRoutes', () => {
       "  'create': publicProcedure.mutation(() => null),",
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['POST /trpc/app.create']);
+    expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
   it('does not treat a commented-out create key as the current procedure', () => {
@@ -255,7 +252,7 @@ describe('extractTrpcRoutes', () => {
       '    .query(() => null),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.list']);
+    expect(paths(source)).toEqual(['GET /trpc/list']);
   });
 
   it('db.query inside .input is not a GET terminal; create stays POST', () => {
@@ -268,7 +265,7 @@ describe('extractTrpcRoutes', () => {
       '  create: publicProcedure.input(z.custom(async v => db.query(v))).mutation(handler),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['POST /trpc/app.create']);
+    expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
   it('defaults.merge is not a tRPC router prefix', () => {
@@ -284,8 +281,8 @@ describe('extractTrpcRoutes', () => {
     ].join('\n');
     const emitted = paths(source);
     expect(emitted).not.toContain('GET /trpc/internal.list');
-    // router-var prefix from appRouter is OK; must not pick up 'internal'.
-    expect(emitted).toEqual(['GET /trpc/app.list']);
+    // appRouter is the root binding (no prefix); must not pick up 'internal'.
+    expect(emitted).toEqual(['GET /trpc/list']);
   });
 
   it('regex literal braces do not pop a nested admin router', () => {
@@ -301,10 +298,45 @@ describe('extractTrpcRoutes', () => {
       '  }),',
       '});',
     ].join('\n');
-    expect(paths(source)).toEqual(['GET /trpc/app.admin.foo', 'GET /trpc/app.admin.bar']);
+    expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
   });
 
-  it('createTRPCRouter appRouter binding in root.ts supplies the app prefix', () => {
+  it('regex after return does not pop a nested admin router', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    foo: publicProcedure.query(() => { return /}/.test(value) }),',
+      '    bar: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
+  });
+
+  it('regex after return persists across a newline', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    foo: publicProcedure.query(() => {',
+      '      return',
+      '        /}/.test(value)',
+      '    }),',
+      '    bar: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.foo', 'GET /trpc/admin.bar']);
+  });
+
+  it('createTRPCRouter appRouter binding in root.ts does not prefix with app', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
       'const t = initTRPC.create();',
@@ -317,7 +349,7 @@ describe('extractTrpcRoutes', () => {
       extractTrpcRoutes('src/server/trpc/root.ts', source).map(
         (r) => r.httpMethod + ' ' + r.routePath,
       ),
-    ).toEqual(['GET /trpc/app.health']);
+    ).toEqual(['GET /trpc/health']);
   });
 });
 

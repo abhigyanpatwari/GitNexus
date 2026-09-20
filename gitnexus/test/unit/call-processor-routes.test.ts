@@ -422,13 +422,11 @@ describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', ()
       'const t = initTRPC.create();',
       'const publicProcedure = t.procedure;',
       'export const appRouter = t.router({',
-      '  create: publicProcedure.input(z.custom(async v => db.query(v))).mutation(handler),',
+      '  create: publicProcedure.input(z.custom(async v => db.query(v))).mutation(() => null),',
       '});',
     ].join('\n');
     const extracted = extractTrpcRoutes(TRPC_FILE, source);
-    expect(extracted.map((r) => `${r.httpMethod} ${r.routePath}`)).toEqual([
-      'POST /trpc/app.create',
-    ]);
+    expect(extracted.map((r) => `${r.httpMethod} ${r.routePath}`)).toEqual(['POST /trpc/create']);
 
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
