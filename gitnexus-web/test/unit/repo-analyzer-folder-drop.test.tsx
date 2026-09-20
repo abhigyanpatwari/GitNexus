@@ -286,7 +286,7 @@ describe('folder drop on the Local Folder tab', () => {
     expect(uploadFolder).not.toHaveBeenCalled();
   });
 
-  it('does not let an aborted drop clear a later drop\'s reading state', async () => {
+  it("does not let an aborted drop clear a later drop's reading state", async () => {
     const { zone } = renderLocalTab();
     const heldA = deferredFileEntry('slow-a.ts');
     fireEvent.drop(zone, { dataTransfer: dataTransfer([dirEntry('repo-a', [heldA.entry])]) });
