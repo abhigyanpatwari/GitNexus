@@ -60,7 +60,7 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
   const routes: ExtractedRoute[] = [];
   const seen = new Set<string>();
-  const { routerName, prefix } = extractRouterInfo(content, filePath);
+  const { prefix } = extractRouterInfo(content, filePath);
 
   const lines = content.split('\n');
   let currentProcedure: { name: string; line: number } | null = null;
@@ -86,7 +86,11 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
           httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
           routePath: `/trpc/${procedurePath}`,
           routeName: procedurePath,
-          controllerName: routerName,
+          // A tRPC router is an object binding, not a class. Route consumers
+          // resolve `controllerName` through `lookupClassByName`
+          // (call-processor.ts), which would either skip these routes (no such
+          // class) or mis-link an unrelated same-named class — leave it unset.
+          controllerName: null,
           methodName: procedureName,
           middleware: [],
           prefix: null,

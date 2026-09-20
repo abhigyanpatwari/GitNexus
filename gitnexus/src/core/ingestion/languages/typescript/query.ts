@@ -353,21 +353,26 @@ export const TYPESCRIPT_SCOPE_QUERY = `
     arguments: (arguments
       (function_expression) @declaration.function)))
 
-(pair
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a value holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
   key: (property_identifier) @declaration.name
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
       (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
-(pair
+((pair
   key: (property_identifier) @declaration.name
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ;;
@@ -1243,20 +1248,11 @@ export const TYPESCRIPT_SCOPE_QUERY = `
   function: (await_expression
     (identifier) @reference.name)) @reference.call.free
 
-;; Curried/chained call: f(x)(y) — call_expression whose function is a call_expression.
-;; Common in patterns like workflow(db)(input) where a factory returns a closure.
-;; The inner call is already captured by the plain free-call pattern above; this
-;; pattern captures the outer application. Dedup in free-call-fallback collapses
-;; both to a single CALLS edge per (caller, target) pair.
-(call_expression
-  function: (call_expression
-    function: (identifier) @reference.name)) @reference.call.free
-
-;; Awaited curried call: await f(x)(y)
-(call_expression
-  function: (await_expression
-    (call_expression
-      function: (identifier) @reference.name))) @reference.call.free
+;; NOTE: Curried applications f(x)(y) are deliberately NOT anchored here. The
+;; inner f(x) call is captured by the plain free-call pattern above; anchoring
+;; the outer application would record f as called with (y) — wrong arity and
+;; argument types for overload resolution (see free-call-fallback's
+;; site.arity / site.argumentTypes filtering).
 
 ;; References — member calls: \`obj.method()\` (includes optional chain).
 ;; The (_) wildcard matches any named receiver including \`this\` /

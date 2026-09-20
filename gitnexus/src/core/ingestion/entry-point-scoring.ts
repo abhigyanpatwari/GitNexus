@@ -134,9 +134,17 @@ export function calculateEntryPointScore(
   // from becoming Process entry points and hiding them from `query` results.
   // The exemption is scoped to tRPC router files only — non-router files still
   // pay the utility penalty so genuine utility helpers stay deprioritized.
+  // Normalize like detectFrameworkFromPath (backslashes → slashes, leading
+  // slash) so a relative `routers/settings.ts` matches here too — otherwise
+  // it receives the framework boost without this exemption. Optional chaining
+  // guards `.js` router paths: the framework detector's tRPC branch is
+  // TS-only and returns null for them (the JS provider still indexes tRPC).
+  const normalizedPath = filePath ? filePath.replace(/\\/g, '/') : '';
+  const routerMatchPath = normalizedPath.startsWith('/') ? normalizedPath : `/${normalizedPath}`;
   const isTrpcRouter =
-    filePath && /\/(routers|trpc\/routers|server\/routers)\//i.test(filePath.replace(/\\/g, '/'));
-  const skipUtilityPenalty = isTrpcRouter && detectFrameworkFromPath(filePath).framework === 'trpc';
+    !!filePath && /\/(routers|trpc\/routers|server\/routers)\//i.test(routerMatchPath);
+  const skipUtilityPenalty =
+    isTrpcRouter && detectFrameworkFromPath(filePath)?.framework === 'trpc';
 
   // Check negative patterns first (utilities get penalized)
   if (!skipUtilityPenalty && UTILITY_PATTERNS.some((p) => p.test(name))) {

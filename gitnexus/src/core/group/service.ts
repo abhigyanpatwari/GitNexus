@@ -113,6 +113,13 @@ export interface GroupToolPort {
       uid?: string;
       file_path?: string;
       include_content?: boolean;
+      /**
+       * Optional BFS chain expansion, same semantics as the single-repo
+       * `context` tool. Optional so existing GroupToolPort test mocks that
+       * predate `chain_depth` keep type-checking (same rationale as the
+       * optional trace/resolveSymbol members below).
+       */
+      chain_depth?: number;
     },
   ): Promise<unknown>;
   // ── Cross-repo trace support (optional on the port) ────────────────
@@ -628,6 +635,7 @@ export class GroupService {
     const uid = typeof params.uid === 'string' ? params.uid.trim() : undefined;
     const file_path = typeof params.file_path === 'string' ? params.file_path : undefined;
     const include_content = Boolean(params.include_content);
+    const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
     if (
       params.service !== undefined &&
       params.service !== null &&
@@ -681,6 +689,7 @@ export class GroupService {
             uid,
             file_path,
             include_content,
+            chain_depth,
           });
 
           if (servicePrefix) {

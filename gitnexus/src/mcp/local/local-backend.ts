@@ -4870,12 +4870,16 @@ export class LocalBackend {
       `,
         { symId, entryPids: entryPids.length > 0 ? entryPids : ['__none__'] },
       );
-      const seenUrls = new Set<string>();
+      // Dedup on method+url: Route identity includes the HTTP method, and a
+      // symbol can legitimately sit behind both variants of the same URL
+      // (GET/POST pair). URL-only dedup would drop the second endpoint.
+      const seenRoutes = new Set<string>();
       for (const r of routeRows) {
         const url = r.url ?? r[0];
-        if (url && !seenUrls.has(url)) {
-          seenUrls.add(url);
-          const method = r.method ?? r[1];
+        const method = r.method ?? r[1];
+        const dedupKey = method ? `${method}:${url}` : url;
+        if (url && !seenRoutes.has(dedupKey)) {
+          seenRoutes.add(dedupKey);
           routes.push(method ? { url, method } : { url });
         }
       }
@@ -5108,16 +5112,18 @@ export class LocalBackend {
       downstream?: any[];
     }>
   > {
-    // LadybugDB has no regex operator — use CONTAINS clauses. Kept as a string
-    // fragment so both the upstream and downstream queries below share it.
-    const TEST_ORDER_EXPR = `
+    // LadybugDB has no regex operator — use CONTAINS clauses. Parameterized
+    // by the returned-node alias: the upstream query returns `caller`, the
+    // downstream query returns `target`, and test-file demotion must rank
+    // the returned node — not the frontier node the edge was reached from.
+    const testOrderExpr = (alias: string) => `
       CASE
-        WHEN n.filePath IS NULL THEN 0
-        WHEN n.filePath CONTAINS '.test.' THEN 1
-        WHEN n.filePath CONTAINS '.spec.' THEN 1
-        WHEN n.filePath CONTAINS '__tests__/' THEN 1
-        WHEN n.filePath CONTAINS '/test/' THEN 1
-        WHEN n.filePath CONTAINS '/tests/' THEN 1
+        WHEN ${alias}.filePath IS NULL THEN 0
+        WHEN ${alias}.filePath CONTAINS '.test.' THEN 1
+        WHEN ${alias}.filePath CONTAINS '.spec.' THEN 1
+        WHEN ${alias}.filePath CONTAINS '__tests__/' THEN 1
+        WHEN ${alias}.filePath CONTAINS '/test/' THEN 1
+        WHEN ${alias}.filePath CONTAINS '/tests/' THEN 1
         ELSE 0
       END
     `;
@@ -5141,7 +5147,7 @@ export class LocalBackend {
               AND NOT caller.id IN $visited
             RETURN caller.id AS uid, caller.name AS name,
                    caller.filePath AS filePath, labels(caller)[0] AS kind,
-                   ${TEST_ORDER_EXPR} AS isTest
+                   ${testOrderExpr('caller')} AS isTest
             ORDER BY isTest ASC, caller.filePath ASC, caller.name ASC
             LIMIT 50
           `,
@@ -5177,7 +5183,7 @@ export class LocalBackend {
               AND NOT target.id IN $visited
             RETURN target.id AS uid, target.name AS name,
                    target.filePath AS filePath, labels(target)[0] AS kind,
-                   ${TEST_ORDER_EXPR} AS isTest
+                   ${testOrderExpr('target')} AS isTest
             ORDER BY isTest ASC, target.filePath ASC, target.name ASC
             LIMIT 50
           `,
@@ -8955,6 +8961,7 @@ export class LocalBackend {
       if (typeof params.file_path === 'string') contextArgs.file_path = params.file_path;
       if (params.include_content !== undefined)
         contextArgs.include_content = params.include_content;
+      if (params.chain_depth !== undefined) contextArgs.chain_depth = params.chain_depth;
       if (params.service !== undefined && params.service !== null)
         contextArgs.service = params.service;
       if (memberRest !== undefined) {

@@ -205,21 +205,26 @@ export const TYPESCRIPT_QUERIES = `
     arguments: (arguments
       (function_expression)))) @definition.function
 
-(pair
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
   key: (property_identifier) @name
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
-      (arrow_function)))) @definition.function
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
-(pair
+((pair
   key: (property_identifier) @name
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
-      (function_expression)))) @definition.function
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
@@ -430,18 +435,10 @@ export const TYPESCRIPT_QUERIES = `
       property: (property_identifier) @call.name))
   (type_arguments)) @call
 
-; Curried/chained call: f(x)(y) — call_expression whose function is a call_expression.
-; Common in patterns like workflow(db)(input) where a factory returns a closure.
-(call_expression
-  function: (call_expression
-    function: (identifier) @call.name)) @call
-
-; Awaited curried call: await f(x)(y)
-(call_expression
-  function: (await_expression
-    (call_expression
-      function: (identifier) @call.name))
-  (type_arguments)) @call
+; NOTE: Curried applications f(x)(y) are deliberately not anchored — the inner
+; f(x) is captured by the plain call pattern above, and anchoring the outer
+; application would mis-attribute its arguments to f (wrong arity/argument
+; types for overload resolution).
 
 ; Constructor calls: new Foo()
 (new_expression
