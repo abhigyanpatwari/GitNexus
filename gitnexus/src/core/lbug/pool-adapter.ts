@@ -34,6 +34,7 @@ import {
   guardWalQuarantine,
   isMissingFsError,
   isMissingShadowSidecarError,
+  isReadOnlyCheckpointInProgressError,
   isReadOnlyShadowReplayError,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
@@ -612,6 +613,19 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
     db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: false });
     await db.init();
     await probeDatabaseForShadowReplay(db);
+    // Load-bearing durability step (engine 0.19.1 matrix, homelab repro
+    // 2026-09-19): the probe replays the WAL in MEMORY only. Without an
+    // explicit CHECKPOINT the engine drops those pages at close and the
+    // follow-up read-only open silently serves the pre-checkpoint state.
+    const conn = createConnection(db);
+    try {
+      const checkpointResult = await conn.query('CHECKPOINT');
+      const result = Array.isArray(checkpointResult) ? checkpointResult[0] : checkpointResult;
+      await result.getAll();
+      result.close?.();
+    } finally {
+      await conn.close().catch(() => {});
+    }
   } catch (err) {
     if (isMissingShadowSidecarError(err)) {
       await tryQuarantineForMissingShadow(dbPath, {
@@ -640,8 +654,14 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
       readOnly: true,
       throwOnWalReplayFailure: false,
     });
-    await db.init();
+    // init() is inside the try: an interrupted checkpoint (pod killed
+    // mid-CHECKPOINT leaves `lbug.wal` + `lbug.shadow`) can make the read-only
+    // OPEN itself refuse — "Cannot open database in read-only mode while
+    // checkpoint is in progress" — before any probe runs (homelab repro
+    // 2026-09-19). Both refusal classes recover identically below: one
+    // writable open replays the WAL/completes the checkpoint.
     try {
+      await db.init();
       await probeDatabaseForShadowReplay(db);
     } catch (err) {
       if (isMissingShadowSidecarError(err)) {
@@ -664,7 +684,10 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
         await probeDatabaseForShadowReplay(db);
         return db;
       }
-      if (!isReadOnlyShadowReplayError(err)) {
+      if (
+        !isReadOnlyShadowReplayError(err) &&
+        !isReadOnlyCheckpointInProgressError(err)
+      ) {
         throw err;
       }
       await db.close().catch(() => {});

@@ -233,6 +233,22 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   return /replay shadow pages under read-only mode/i.test(msg);
 };
 
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
+// When bumping LadybugDB, re-validate this regex against the new error format
+// — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
+// Verified by a live occurrence: killing a wiki pod mid-CHECKPOINT left
+// `lbug.wal` + `lbug.shadow` on disk (interrupted checkpoint), and every later
+// read-only open refused with exactly this message (homelab repro
+// 2026-09-19, GitNexus image 1.6.10-20260917). Sibling of
+// `isReadOnlyShadowReplayError` — the two are the read-only refusals an
+// interrupted checkpoint produces, and both are recovered the same way: one
+// writable open replays the WAL/completes the checkpoint, then the read-only
+// open succeeds.
+export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);
+};
+
 export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): string => {
   const msg = err instanceof Error ? err.message : String(err);
   return (

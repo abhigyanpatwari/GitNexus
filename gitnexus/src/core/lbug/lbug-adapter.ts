@@ -80,6 +80,7 @@ import {
   guardWalQuarantine,
   type WalCrashEvidence,
   isMissingShadowSidecarError,
+  isReadOnlyCheckpointInProgressError,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
   preflightLbugSidecars,
@@ -547,6 +548,11 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
 // whether the read-only shadow replay throws, so no row identity is read.
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
+// The durability half of writable recovery: replayed pages only persist when
+// an explicit CHECKPOINT applies them to the main file (see
+// recoverReadOnlyViaWritableOpen).
+const RECOVERY_CHECKPOINT_QUERY = 'CHECKPOINT';
+
 /**
  * Serve-side entry to the shared WAL-quarantine safety gate. Refuses (throws)
  * when the `.shadow` is present on disk or the orphan WAL is too large to
@@ -650,7 +656,7 @@ const ensureReadOnlyConnectionUsable = async (
       await closeLbugConnection(handle);
       return await reopenReadOnlyAfterMissingShadow(dbPath, err);
     }
-    if (!isReadOnlyShadowReplayError(err)) {
+    if (!isReadOnlyShadowReplayError(err) && !isReadOnlyCheckpointInProgressError(err)) {
       await closeLbugConnection(handle);
       throw err;
     }
@@ -658,7 +664,27 @@ const ensureReadOnlyConnectionUsable = async (
   }
 
   await closeLbugConnection(handle);
+  return await recoverReadOnlyViaWritableOpen(dbPath, shadowReplayErr);
+};
 
+/**
+ * Clear an interrupted-checkpoint / pending-shadow-replay state by opening the
+ * database WRITABLE once — probe (forces the WAL replay) then an explicit
+ * CHECKPOINT (persists it; see the comment at the call site) — and reopening
+ * read-only. Recovery for every read-only refusal an interrupted checkpoint
+ * produces — `isReadOnlyShadowReplayError` and
+ * `isReadOnlyCheckpointInProgressError` — shared by the probe path
+ * (`ensureReadOnlyConnectionUsable`) and the open path (`doInitLbug`'s
+ * read-only branch, where the native open itself refuses before any probe can
+ * run). Homelab repro 2026-09-19: a wiki pod killed mid-CHECKPOINT left the
+ * checkpoint sidecars behind, and every read-only open thereafter failed until
+ * a writable open (any `gitnexus analyze`) recovered it — this makes the read
+ * path self-heal instead.
+ */
+const recoverReadOnlyViaWritableOpen = async (
+  dbPath: string,
+  triggeringErr: unknown,
+): Promise<LbugConnectionHandle> => {
   let writable: LbugConnectionHandle;
   try {
     writable = await openLbugConnection(lbug, dbPath);
@@ -666,18 +692,28 @@ const ensureReadOnlyConnectionUsable = async (
     const code = extractErrnoCode(openErr);
     if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
       throw new Error(
-        shadowSidecarRecoveryMessage(dbPath, shadowReplayErr) +
-          '\n  The workspace appears to be read-only — mount it read-write to perform shadow replay recovery,' +
+        shadowSidecarRecoveryMessage(dbPath, triggeringErr) +
+          '\n  The workspace appears to be read-only — mount it read-write to perform WAL recovery,' +
           ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
       );
     }
     throw openErr;
   }
   let missingShadowError: unknown;
+  let probeSucceeded = false;
   try {
     await queryAndDrain(writable.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    probeSucceeded = true;
+    // Load-bearing durability step (engine 0.19.1 matrix, homelab repro
+    // 2026-09-19): the probe replays the WAL in MEMORY only. Without an
+    // explicit CHECKPOINT the engine drops those pages at close and the
+    // follow-up read-only open silently serves the pre-checkpoint state.
+    // CHECKPOINT applies the replay to the main file, consuming the
+    // `lbug.wal.checkpoint` / `lbug.shadow` sidecars and clearing the
+    // checkpoint locks the interrupted checkpoint left behind.
+    await queryAndDrain(writable.conn, RECOVERY_CHECKPOINT_QUERY);
   } catch (err) {
-    if (isMissingShadowSidecarError(err)) {
+    if (!probeSucceeded && isMissingShadowSidecarError(err)) {
       missingShadowError = err;
     } else {
       throw err;
@@ -695,7 +731,11 @@ const ensureReadOnlyConnectionUsable = async (
     return reopened;
   } catch (err) {
     await closeLbugConnection(reopened);
-    if (isMissingShadowSidecarError(err)) {
+    if (
+      isMissingShadowSidecarError(err) ||
+      isReadOnlyShadowReplayError(err) ||
+      isReadOnlyCheckpointInProgressError(err)
+    ) {
       throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
     }
     throw err;
@@ -871,17 +911,25 @@ const doInitLbug = async (
       // mismatched file. Wrap both.
       usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
     } catch (err) {
-      // Not retryable: the on-disk file's storage version doesn't change on
-      // its own, so withLbugDb's retry loop (which only handles
-      // isDbBusyError) would just repeat the same native exception. Fail
-      // immediately with an actionable message instead (review finding on
-      // PR #3189 — this became reachable once the pinned engine version can
-      // trail behind whatever version last wrote an index, e.g. after
-      // downgrading the dependency). Mirrors the pool-adapter.ts check for
-      // the same error, on the separate open path /api/graph and /api/query
-      // actually use (withLbugDb, not the pool).
-      throwIfStorageVersionMismatch(err);
-      throw err;
+      // An interrupted checkpoint can make the OPEN itself refuse read-only
+      // ("Cannot open database in read-only mode while checkpoint is in
+      // progress") before any probe runs. Clear it with one writable open,
+      // then reopen read-only — the same self-heal the probe path applies.
+      if (isReadOnlyCheckpointInProgressError(err)) {
+        usable = await recoverReadOnlyViaWritableOpen(dbPath, err);
+      } else {
+        // Not retryable: the on-disk file's storage version doesn't change on
+        // its own, so withLbugDb's retry loop (which only handles
+        // isDbBusyError) would just repeat the same native exception. Fail
+        // immediately with an actionable message instead (review finding on
+        // PR #3189 — this became reachable once the pinned engine version can
+        // trail behind whatever version last wrote an index, e.g. after
+        // downgrading the dependency). Mirrors the pool-adapter.ts check for
+        // the same error, on the separate open path /api/graph and /api/query
+        // actually use (withLbugDb, not the pool).
+        throwIfStorageVersionMismatch(err);
+        throw err;
+      }
     }
     db = usable.db;
     conn = usable.conn;
