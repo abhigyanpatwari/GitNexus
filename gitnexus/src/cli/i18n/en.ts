@@ -65,6 +65,7 @@ export const en = {
   'clean.stale.none': 'No leftover branch indexes to reclaim.',
   'clean.stale.preview': 'This will delete {{count}} leftover branch index(es):',
   'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.registryOnlyPath': '(registry only)',
   'clean.stale.headsUnavailable':
     'Could not list local heads; leftover branch indexes were not deleted. Re-run `gitnexus clean --stale` when git is available.',
   'clean.stale.deleted': 'Deleted leftover branch index: {{branch}}',

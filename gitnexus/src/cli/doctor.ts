@@ -34,13 +34,9 @@ import { updateEligibleInstallSync } from '../core/install-context.js';
 import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
 import { cachedUpdateNoticeLine } from './update-notice.js';
-import { staleReasonLabel } from './stale-branch-format.js';
+import { formatSlotSize, staleReasonLabel } from './stale-branch-format.js';
 import { findRepo, listRegisteredRepos } from '../storage/repo-manager.js';
-import {
-  formatSlotSize,
-  listStaleBranchSlots,
-  type StaleBranchSlot,
-} from '../storage/stale-branch-slots.js';
+import { listStaleBranchSlots, type StaleBranchSlot } from '../storage/stale-branch-slots.js';
 import path from 'node:path';
 
 function isCombiningMark(codePoint: number): boolean {
@@ -389,9 +385,8 @@ export const doctorCommand = async () => {
   // Doctor stays runtime-global. Add only a cwd leftover-slot section when
   // this process is inside an indexed repo (KTD5). Never scan every registry
   // entry and never delete.
-  const cwdRepo = await findRepo(process.cwd());
+  const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
   if (!cwdRepo) return;
-  const entries = await listRegisteredRepos();
   const entry = entries.find((item) => path.resolve(item.path) === path.resolve(cwdRepo.repoPath));
   const slots = await listStaleBranchSlots({
     repoPath: cwdRepo.repoPath,

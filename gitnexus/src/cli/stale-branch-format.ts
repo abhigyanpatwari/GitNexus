@@ -1,9 +1,11 @@
 import { t } from './i18n/index.js';
-import {
-  formatSlotSize,
-  type StaleBranchReason,
-  type StaleBranchSlot,
-} from '../storage/stale-branch-slots.js';
+import { type StaleBranchReason, type StaleBranchSlot } from '../storage/stale-branch-slots.js';
+
+export const formatSlotSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 export const staleReasonLabel = (reason: StaleBranchReason): string => {
   switch (reason) {
@@ -22,6 +24,6 @@ export const formatStaleSlotLine = (slot: StaleBranchSlot): string =>
   t('clean.stale.item', {
     branch: slot.branch,
     reason: staleReasonLabel(slot.reason),
-    path: slot.dir ?? '(registry only)',
+    path: slot.dir ?? t('clean.stale.registryOnlyPath'),
     size: formatSlotSize(slot.sizeBytes),
   });

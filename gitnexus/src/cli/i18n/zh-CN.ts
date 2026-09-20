@@ -64,6 +64,7 @@ export const zhCN = {
   'clean.stale.none': '没有可回收的残留分支索引。',
   'clean.stale.preview': '将删除 {{count}} 个残留分支索引：',
   'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.registryOnlyPath': '（仅注册表）',
   'clean.stale.headsUnavailable':
     '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
   'clean.stale.deleted': '已删除残留分支索引：{{branch}}',

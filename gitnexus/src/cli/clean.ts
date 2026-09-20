@@ -14,6 +14,7 @@ import {
   listRegisteredRepos,
   getStoragePaths,
 } from '../storage/repo-manager.js';
+import { BRANCHES_DIR } from '../storage/branch-index.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
 import { formatStaleSlotLine } from './stale-branch-format.js';
 import {
@@ -136,7 +137,7 @@ export const cleanCommand = async (options?: {
     const branchDir = path.dirname(lbugPath);
     // Safety guard: the target MUST live under the validated
     // storage slot's `branches/` directory before any destructive fs.rm.
-    const branchesRoot = path.join(storagePath, 'branches') + path.sep;
+    const branchesRoot = path.join(storagePath, BRANCHES_DIR) + path.sep;
     if (!branchDir.startsWith(branchesRoot)) {
       logger.error(
         `Refusing to clean branch index outside the validated storage slot: ${branchDir}`,
