@@ -403,12 +403,14 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
     expect(lines.join('\n')).toContain('gitnexus clean --stale');
   });
 
-  it('still prints sizes when heads could not be listed', () => {
+  it('prints retry-git copy instead of reclaim when heads cannot be listed (#3337)', () => {
     const lines = orphanedBranchSlotDoctorLines([
       slot({ reason: 'heads-unavailable', sizeBytes: 2048 }),
+      slot({ branch: 'other', reason: 'ref-missing', sizeBytes: 4096 }),
     ]);
-    expect(lines.join('\n')).toContain(t('clean.stale.reason.headsUnavailable'));
-    expect(lines.join('\n')).toContain('2.0 KB');
+    expect(lines).toEqual([t('clean.stale.headsUnavailable')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
   });
 
   it('does not print leftover slots when cwd is not an indexed repo', async () => {

@@ -200,9 +200,14 @@ export function nativeStatusLine(check: NativeCheckResult): string {
 
 /**
  * Cwd leftover-slot lines (#3331). Pure: no deletes and no registry scan.
+ * When heads cannot be listed, do not title rows as orphaned or name
+ * `clean --stale` (#3337): that command refuses to delete in the same state.
  */
 export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
   if (slots.length === 0) return [];
+  if (slots.some((slot) => slot.reason === 'heads-unavailable')) {
+    return [t('clean.stale.headsUnavailable')];
+  }
   const lines = [t('doctor.orphanedBranches')];
   let total = 0;
   for (const slot of slots) {
