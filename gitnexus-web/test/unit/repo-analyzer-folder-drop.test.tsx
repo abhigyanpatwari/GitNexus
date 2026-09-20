@@ -286,6 +286,39 @@ describe('folder drop on the Local Folder tab', () => {
     expect(uploadFolder).not.toHaveBeenCalled();
   });
 
+  it('does not let an aborted drop clear a later drop\'s reading state', async () => {
+    const { zone } = renderLocalTab();
+    const heldA = deferredFileEntry('slow-a.ts');
+    fireEvent.drop(zone, { dataTransfer: dataTransfer([dirEntry('repo-a', [heldA.entry])]) });
+    await act(async () => {});
+    expect(screen.getByTestId('drop-reading')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /GitHub/ }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
+    const zoneB = screen.getByTestId('folder-drop-zone');
+    const heldB = deferredFileEntry('slow-b.ts');
+    fireEvent.drop(zoneB, { dataTransfer: dataTransfer([dirEntry('repo-b', [heldB.entry])]) });
+    await act(async () => {});
+    expect(screen.getByTestId('drop-reading')).toBeInTheDocument();
+
+    await act(async () => {
+      heldA.release();
+    });
+
+    expect(screen.getByTestId('drop-reading')).toBeInTheDocument();
+    expect(screen.getByTestId('upload-folder')).toBeDisabled();
+    expect(uploadFolder).not.toHaveBeenCalled();
+
+    await act(async () => {
+      heldB.release();
+    });
+
+    expect(screen.queryByTestId('drop-reading')).toBeNull();
+    expect(uploadFolder).toHaveBeenCalledTimes(1);
+    const [, manifest] = vi.mocked(uploadFolder).mock.calls[0] ?? [];
+    expect(manifest).toEqual(['repo-b/slow-b.ts']);
+  });
+
   it('ignores a drop while an upload is already in flight', async () => {
     const { zone } = renderLocalTab();
     vi.mocked(uploadFolder).mockImplementation(() => new Promise(() => {}));

@@ -538,13 +538,15 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
         signal: controller.signal,
         onProgress: setReadingCount,
       });
-      // Clear the reading state before the abort check: an abort from Analyze
-      // or a mode switch must not leave the indicator up and the button off.
-      setReadingCount(null);
+      // Only the walk that still owns the request controller may clear the
+      // reading mutex. An aborted drop that settles after a later drop started
+      // must not steal the live walk's lock (readingCount === null is what
+      // unblocks Analyze and a second drop).
+      if (requestControllerRef.current === controller) setReadingCount(null);
       if (controller.signal.aborted) return;
       await startFolderUpload(filterRepoFiles(files), controller, skipped);
     } catch (err) {
-      setReadingCount(null);
+      if (requestControllerRef.current === controller) setReadingCount(null);
       if (controller.signal.aborted) return;
       setValidationError(
         err instanceof DropRejection

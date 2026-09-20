@@ -24,7 +24,7 @@
  * only then filters).
  */
 
-import { EXCLUDED_DIRS } from './upload-filter';
+import { EXCLUDED_DIRS, MAX_FILE_BYTES } from './upload-filter';
 
 /** Matches the server's `maxFiles` (DEFAULT_INGEST_LIMITS in upload-ingest.ts). */
 export const MAX_DROP_FILES = 20000;
@@ -172,6 +172,11 @@ export async function readDroppedFolder(
             continue;
           }
           throwIfAborted();
+          // Oversized files are dropped later by filterRepoFiles. Do not push
+          // them here: every getFile() used to count toward MAX_DROP_FILES, so
+          // a tree the picker accepts (20k keepers + oversized siblings) was
+          // rejected as tooManyFiles.
+          if (file.size > MAX_FILE_BYTES) continue;
           // A dropped File reports '' here while the picker reports
           // `<folder>/<rest>`. An own property shadows the prototype getter, so
           // filterRepoFiles (and therefore the server) sees one shape.

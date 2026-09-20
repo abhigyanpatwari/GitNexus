@@ -6,7 +6,7 @@ import {
   MAX_DROP_FILES,
   MAX_PATH_SEGMENTS,
 } from './folder-drop';
-import { filterRepoFiles } from './upload-filter';
+import { filterRepoFiles, MAX_FILE_BYTES } from './upload-filter';
 
 // jsdom has no File and Directory Entries API, so the fixtures are plain
 // objects with the members the walk uses: isFile/isDirectory/name,
@@ -149,6 +149,22 @@ describe('readDroppedFolder', () => {
     });
   });
 
+  it('does not count oversized files toward MAX_DROP_FILES', async () => {
+    const oversized = fileEntry('big.bin', MAX_FILE_BYTES + 1);
+    const keepers = Array.from({ length: MAX_DROP_FILES }, (_, i) => fileEntry(`f${i}`));
+    const { files } = await readDroppedFolder([dirEntry('repo', [oversized, ...keepers])]);
+    expect(files).toHaveLength(MAX_DROP_FILES);
+    expect(paths(files)).not.toContain('repo/big.bin');
+  });
+
+  it('skips oversized files before they reach filterRepoFiles', async () => {
+    const { files, skipped } = await readDroppedFolder([
+      dirEntry('repo', [fileEntry('a.ts'), fileEntry('big.bin', MAX_FILE_BYTES + 1)]),
+    ]);
+    expect(paths(files)).toEqual(['repo/a.ts']);
+    expect(skipped).toBe(0);
+  });
+
   it('aborts mid-walk and does not read later siblings', async () => {
     const controller = new AbortController();
     const later = dirEntry('later', [fileEntry('z.ts')]);
@@ -251,13 +267,13 @@ describe('readDroppedFolder', () => {
   it('produces files that filterRepoFiles turns into an aligned manifest', async () => {
     const root = dirEntry('repo', [
       fileEntry('a.ts'),
-      fileEntry('big.bin', 30 * 1024 * 1024),
+      fileEntry('big.bin', MAX_FILE_BYTES + 1),
       dirEntry('src', [fileEntry('b.ts')]),
     ]);
     const { files } = await readDroppedFolder([root]);
     const result = filterRepoFiles(files);
     expect(result.manifest).toEqual(['repo/a.ts', 'repo/src/b.ts']);
-    expect(result.droppedCount).toBe(1);
+    expect(result.droppedCount).toBe(0);
     result.files.forEach((f, i) => expect(f.webkitRelativePath).toBe(result.manifest[i]));
   });
 });
