@@ -70,6 +70,7 @@ export const zhCN = {
   'clean.stale.deleted': '已删除残留分支索引：{{branch}}',
   'clean.stale.failed':
     '无法删除残留分支索引 “{{branch}}” — 请停止占用它的进程（GitNexus MCP/serve）后重试。',
+  'clean.stale.skippedLive': '已跳过残留分支索引 “{{branch}}” — 它再次成为本地分支。',
   'clean.stale.reason.refMissing': '不是本地分支',
   'clean.stale.reason.diskOnly': '残留目录（无注册表记录）',
   'clean.stale.reason.registryOnly': '注册表记录（目录已不存在）',

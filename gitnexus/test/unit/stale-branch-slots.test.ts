@@ -329,6 +329,84 @@ describe('removeBranchSlot (#3331)', () => {
     expect(entry.branches).toBeUndefined();
   });
 
+  it('refuses when branches/ is a symlink or junction pointing outside', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const outside = path.join(fixture.dbPath, 'outside-tree');
+    const slug = branchSlug('feature/x');
+    const outsideSlot = path.join(outside, slug);
+    await writeSlotMeta(outsideSlot, 'feature/x');
+    await fs.writeFile(path.join(outsideSlot, 'payload.bin'), 'secret');
+    await fs.mkdir(storagePath, { recursive: true });
+    const branchesRoot = path.join(storagePath, 'branches');
+    await fs.symlink(outside, branchesRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    const dir = path.join(branchesRoot, slug);
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.keptRegistry).toBe(true);
+    expect(result.emptiedBranchesDir).toBe(false);
+    await expect(fs.access(outsideSlot)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(outsideSlot, 'payload.bin'), 'utf8')).resolves.toBe(
+      'secret',
+    );
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/x']);
+  });
+
+  it('unlinks a slot symlink or junction and leaves the outside target', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const outside = path.join(fixture.dbPath, 'outside-slot');
+    await writeSlotMeta(outside, 'feature/x');
+    await fs.writeFile(path.join(outside, 'payload.bin'), 'secret');
+    const branchesRoot = path.join(storagePath, 'branches');
+    await fs.mkdir(branchesRoot, { recursive: true });
+    const dir = path.join(branchesRoot, branchSlug('feature/x'));
+    await fs.symlink(outside, dir, process.platform === 'win32' ? 'junction' : 'dir');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: true, keptRegistry: false });
+    await expect(fs.lstat(dir)).rejects.toThrow();
+    await expect(fs.access(outside)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(outside, 'payload.bin'), 'utf8')).resolves.toBe('secret');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('deletes a normal leftover slot directory', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    await fs.writeFile(path.join(dir, 'payload.bin'), 'stale');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: true, keptRegistry: false });
+    await expect(fs.access(dir)).rejects.toThrow();
+    await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toThrow();
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toBeUndefined();
+  });
+
   it('keeps the registry row when removeBranchIndex rejects after a successful rm', async () => {
     await registerRepo(repoPath, metaFor('main'));
     await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });

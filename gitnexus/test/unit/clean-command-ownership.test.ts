@@ -135,7 +135,7 @@ describe('cleanCommand named branch empty-dir cleanup (#3331)', () => {
     initGitRepo(repo);
     process.env.GITNEXUS_HOME = home;
 
-    const { registerRepo, getStoragePaths, saveMeta, branchSlug } =
+    const { registerRepo, getStoragePaths, saveMeta } =
       await import('../../src/storage/repo-manager.js');
     const meta = {
       repoPath: repo,
@@ -156,7 +156,6 @@ describe('cleanCommand named branch empty-dir cleanup (#3331)', () => {
     const branchDir = path.dirname(getStoragePaths(repo, 'feature/x', storagePath).metaPath);
     await saveMeta(branchDir, { ...meta, branch: 'feature/x' });
     expect(path.basename(path.dirname(branchDir))).toBe('branches');
-    expect(branchSlug).toBeTypeOf('function');
 
     vi.spyOn(process, 'cwd').mockReturnValue(repo);
     vi.spyOn(console, 'log').mockImplementation(() => {});

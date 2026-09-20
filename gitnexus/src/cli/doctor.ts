@@ -36,10 +36,9 @@ import { t } from './i18n/index.js';
 import { cachedUpdateNoticeLine } from './update-notice.js';
 import { formatSlotSize, staleReasonLabel } from './stale-branch-format.js';
 import {
-  canonicalizePath,
+  findRegistryEntryByRepoPath,
   findRepo,
   listRegisteredRepos,
-  registryPathEquals,
 } from '../storage/repo-manager.js';
 import { listStaleBranchSlots, type StaleBranchSlot } from '../storage/stale-branch-slots.js';
 
@@ -200,8 +199,7 @@ export function nativeStatusLine(check: NativeCheckResult): string {
 }
 
 /**
- * Cwd leftover-slot lines for the doctor Storage section (#3331). Pure so
- * tests can pin the copy without deleting anything or scanning the registry.
+ * Cwd leftover-slot lines (#3331). Pure: no deletes and no registry scan.
  */
 export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
   if (slots.length === 0) return [];
@@ -391,9 +389,7 @@ export const doctorCommand = async () => {
   // entry and never delete.
   const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
   if (!cwdRepo) return;
-  const entry = entries.find((item) =>
-    registryPathEquals(canonicalizePath(item.path), canonicalizePath(cwdRepo.repoPath)),
-  );
+  const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);
   const slots = await listStaleBranchSlots({
     repoPath: cwdRepo.repoPath,
     storagePath: cwdRepo.storagePath,

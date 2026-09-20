@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanCommand } from '../../src/cli/clean.js';
 import { t } from '../../src/cli/i18n/index.js';
 import { branchSlug } from '../../src/storage/branch-index.js';
+import * as git from '../../src/storage/git.js';
 import {
   getStoragePaths,
   registerRepo,
@@ -93,6 +94,82 @@ describe('cleanCommand --stale (#3331)', () => {
     await expect(fs.access(dir)).rejects.toThrow();
     await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toThrow();
     await expect(fs.access(path.join(storagePath, INDEX_METADATA_FILE))).resolves.toBeUndefined();
+  });
+
+  it('skips a leftover slot that is a local head again on force re-check', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await saveMeta(dir, metaFor('feature/x', repo));
+    const realListLocalHeads = git.listLocalHeads;
+    let calls = 0;
+    vi.spyOn(git, 'listLocalHeads').mockImplementation((repoPath: string) => {
+      calls += 1;
+      if (calls === 1) return realListLocalHeads(repoPath);
+      return ['main', 'feature/x'];
+    });
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    const output = logs.join('\n');
+    expect(output).toContain(t('clean.stale.skippedLive', { branch: 'feature/x' }));
+    expect(output).not.toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    await expect(fs.access(dir)).resolves.toBeUndefined();
+  });
+
+  it('still deletes when force re-check returns an empty head list', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await saveMeta(dir, metaFor('feature/x', repo));
+    const realListLocalHeads = git.listLocalHeads;
+    let calls = 0;
+    vi.spyOn(git, 'listLocalHeads').mockImplementation((repoPath: string) => {
+      calls += 1;
+      if (calls === 1) return realListLocalHeads(repoPath);
+      return [];
+    });
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    expect(logs.join('\n')).toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    await expect(fs.access(dir)).rejects.toThrow();
+  });
+
+  it('does not delete when force re-check cannot list local heads', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await saveMeta(dir, metaFor('feature/x', repo));
+    const realListLocalHeads = git.listLocalHeads;
+    let calls = 0;
+    vi.spyOn(git, 'listLocalHeads').mockImplementation((repoPath: string) => {
+      calls += 1;
+      if (calls === 1) return realListLocalHeads(repoPath);
+      return null;
+    });
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    const output = logs.join('\n');
+    expect(output).toContain(t('clean.stale.headsUnavailable'));
+    expect(output).not.toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    await expect(fs.access(dir)).resolves.toBeUndefined();
   });
 
   it('does not delete when local heads cannot be listed', async () => {

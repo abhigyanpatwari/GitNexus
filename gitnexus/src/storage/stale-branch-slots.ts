@@ -29,6 +29,8 @@ export interface ListStaleBranchSlotsInput {
   branches?: readonly { branch: string }[];
   /** Injected in tests. When omitted, listed from `repoPath`. */
   heads?: string[] | null;
+  /** Default true. `--stale --force` skips the size walk; it never prints sizes. */
+  includeSize?: boolean;
 }
 
 const slotDirForBranch = (storagePath: string, branch: string): string =>
@@ -82,10 +84,8 @@ const metadataBranch = async (dir: string): Promise<string | null> => {
 export const listStaleBranchSlots = async (
   input: ListStaleBranchSlotsInput,
 ): Promise<StaleBranchSlot[]> => {
-  const heads = input.heads !== undefined ? input.heads : listLocalHeads(input.repoPath);
   const recorded = input.branches ?? [];
   const branchesRoot = path.join(input.storagePath, BRANCHES_DIR);
-  const live = heads === null ? null : new Set(heads);
 
   const registryByDir = new Map<string, string>();
   for (const row of recorded) {
@@ -102,15 +102,18 @@ export const listStaleBranchSlots = async (
     diskDirs = [];
   }
 
+  if (recorded.length === 0 && diskDirs.length === 0) return [];
+
+  const heads = input.heads !== undefined ? input.heads : listLocalHeads(input.repoPath);
+  const live = heads === null ? null : new Set(heads);
+
   const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];
-  const seenDirs = new Set<string>();
 
   for (const [resolvedDir, branch] of registryByDir) {
     const probe = await probeDirectory(resolvedDir);
     if (probe === 'unreadable') continue;
     const exists = probe === 'dir';
     const dir = exists ? resolvedDir : null;
-    if (exists) seenDirs.add(resolvedDir);
     if (live === null) {
       pending.push({ branch, dir, reason: 'heads-unavailable' });
       continue;
@@ -126,7 +129,7 @@ export const listStaleBranchSlots = async (
 
   for (const dir of diskDirs) {
     const resolved = path.resolve(dir);
-    if (seenDirs.has(resolved) || registryByDir.has(resolved)) continue;
+    if (registryByDir.has(resolved)) continue;
     const branch = await metadataBranch(dir);
     if (branch === null) continue;
     if (live === null) {
@@ -138,26 +141,132 @@ export const listStaleBranchSlots = async (
     }
   }
 
+  const includeSize = input.includeSize !== false;
   const sized: StaleBranchSlot[] = [];
   for (const row of pending) {
     sized.push({
       ...row,
-      sizeBytes: row.dir ? await directorySizeBytes(row.dir) : 0,
+      sizeBytes: includeSize && row.dir ? await directorySizeBytes(row.dir) : 0,
     });
   }
   return sized;
 };
 
-const isContainedBranchDir = (storagePath: string, dir: string): boolean => {
-  const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
-  const resolved = path.resolve(dir);
-  const relative = path.relative(branchesRoot, resolved);
+/** Lexical / realpath containment: `child` is a proper descendant of `parent`. */
+const isProperChildPath = (parent: string, child: string): boolean => {
+  const root = path.resolve(parent);
+  const resolved = path.resolve(child);
+  const relative = path.relative(root, resolved);
   return (
     relative !== '' &&
     relative !== '..' &&
     !relative.startsWith(`..${path.sep}`) &&
     !path.isAbsolute(relative)
   );
+};
+
+const isSameNormalizedPath = (left: string, right: string): boolean =>
+  path.relative(path.resolve(path.normalize(left)), path.resolve(path.normalize(right))) === '';
+
+export const isContainedBranchDir = (storagePath: string, dir: string): boolean =>
+  isProperChildPath(path.resolve(storagePath, BRANCHES_DIR), dir);
+
+const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
+
+const keepRegistryFailure = (error: Error): RemoveBranchSlotResult => ({
+  ok: false,
+  emptiedBranchesDir: false,
+  keptRegistry: true,
+  error,
+});
+
+const refuseOutsideSlot = (dir: string): RemoveBranchSlotResult =>
+  keepRegistryFailure(
+    new Error(`Refusing to clean branch index outside the validated storage slot: ${dir}`),
+  );
+
+const slotPathExists = async (slotDir: string): Promise<boolean> => {
+  try {
+    await fs.lstat(slotDir);
+    return true;
+  } catch (err) {
+    return !isMissingFilesystemError(err);
+  }
+};
+
+/**
+ * Delete a lexically contained slot. Returns a failure result, or `null` when
+ * the slot path is gone and the registry row may drop (KTD4).
+ */
+const removeValidatedSlotDir = async (
+  storagePath: string,
+  dir: string,
+): Promise<RemoveBranchSlotResult | null> => {
+  if (!isContainedBranchDir(storagePath, dir)) {
+    return refuseOutsideSlot(dir);
+  }
+
+  const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
+
+  let branchesStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    branchesStat = await fs.lstat(branchesRoot);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return null;
+    return keepRegistryFailure(toError(err));
+  }
+
+  // Never walk a branches/ symlink (rm of a child would delete the target).
+  if (branchesStat.isSymbolicLink()) {
+    return refuseOutsideSlot(dir);
+  }
+
+  let realStorage: string;
+  let realBranches: string;
+  try {
+    realStorage = await fs.realpath(storagePath);
+    realBranches = await fs.realpath(branchesRoot);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return null;
+    return keepRegistryFailure(toError(err));
+  }
+
+  // Junctions may not report as symlinks from lstat; realpath must still land
+  // on storagePath/branches, not an outside tree.
+  const expectedBranches = path.normalize(path.join(realStorage, BRANCHES_DIR));
+  if (!isSameNormalizedPath(realBranches, expectedBranches)) {
+    return refuseOutsideSlot(dir);
+  }
+
+  let slotStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    slotStat = await fs.lstat(dir);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return null;
+    return keepRegistryFailure(toError(err));
+  }
+
+  let deleteError: Error | undefined;
+  try {
+    // A symlink, or a Windows junction that lstat reports as a directory,
+    // must be unlinked at the lexical path. Never fs.rm through a target
+    // that realpath places outside branches/.
+    const realDir = slotStat.isSymbolicLink() ? null : await fs.realpath(dir);
+    const unlinkOnly =
+      slotStat.isSymbolicLink() || (realDir !== null && !isProperChildPath(realBranches, realDir));
+    if (unlinkOnly) {
+      await fs.unlink(dir);
+    } else {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    deleteError = toError(err);
+  }
+
+  if (await slotPathExists(dir)) {
+    return keepRegistryFailure(deleteError ?? new Error(`Could not remove branch index: ${dir}`));
+  }
+  return null;
 };
 
 export const isDeleteCandidate = (slot: StaleBranchSlot): boolean =>
@@ -192,46 +301,14 @@ export const removeBranchSlot = async (
 ): Promise<RemoveBranchSlotResult> => {
   const { repoPath, storagePath, branch, dir } = input;
   if (dir !== null) {
-    if (!isContainedBranchDir(storagePath, dir)) {
-      return {
-        ok: false,
-        emptiedBranchesDir: false,
-        keptRegistry: true,
-        error: new Error(
-          `Refusing to clean branch index outside the validated storage slot: ${dir}`,
-        ),
-      };
-    }
-    let rmError: NodeJS.ErrnoException | undefined;
-    await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
-      rmError = err as NodeJS.ErrnoException;
-    });
-    let dirGone = !rmError;
-    if (rmError) {
-      dirGone = await fs.access(dir).then(
-        () => false,
-        (e: unknown) => isMissingFilesystemError(e),
-      );
-    }
-    if (!dirGone) {
-      return {
-        ok: false,
-        emptiedBranchesDir: false,
-        keptRegistry: true,
-        error: rmError ?? new Error(`Could not remove branch index: ${dir}`),
-      };
-    }
+    const refused = await removeValidatedSlotDir(storagePath, dir);
+    if (refused) return refused;
   }
 
   try {
     await removeBranchIndex(repoPath, branch);
   } catch (err) {
-    return {
-      ok: false,
-      emptiedBranchesDir: false,
-      keptRegistry: true,
-      error: err instanceof Error ? err : new Error(String(err)),
-    };
+    return keepRegistryFailure(toError(err));
   }
   const emptiedBranchesDir = await rmdirEmptyBranches(storagePath);
   return { ok: true, emptiedBranchesDir, keptRegistry: false };

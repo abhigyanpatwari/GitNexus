@@ -71,6 +71,8 @@ export const en = {
   'clean.stale.deleted': 'Deleted leftover branch index: {{branch}}',
   'clean.stale.failed':
     'Could not delete leftover branch index "{{branch}}" — stop the process holding it (GitNexus MCP/serve) and retry.',
+  'clean.stale.skippedLive':
+    'Skipped leftover branch index "{{branch}}" — it is a local head again.',
   'clean.stale.reason.refMissing': 'not a local head',
   'clean.stale.reason.diskOnly': 'leftover directory (no registry row)',
   'clean.stale.reason.registryOnly': 'registry row (directory gone)',

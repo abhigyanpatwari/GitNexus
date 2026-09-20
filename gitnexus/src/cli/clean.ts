@@ -9,17 +9,17 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logger } from '../core/logger.js';
 import {
-  canonicalizePath,
+  findRegistryEntryByRepoPath,
   findRepo,
   unregisterRepo,
   listRegisteredRepos,
   getStoragePaths,
-  registryPathEquals,
 } from '../storage/repo-manager.js';
-import { BRANCHES_DIR } from '../storage/branch-index.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
 import { formatStaleSlotLine } from './stale-branch-format.js';
+import { listLocalHeads } from '../storage/git.js';
 import {
+  isContainedBranchDir,
   isDeleteCandidate,
   listStaleBranchSlots,
   removeBranchSlot,
@@ -48,9 +48,7 @@ export const cleanCommand = async (options?: {
       return;
     }
     const entries = await listRegisteredRepos();
-    const entry = entries.find((e) =>
-      registryPathEquals(canonicalizePath(e.path), canonicalizePath(repo.repoPath)),
-    );
+    const entry = findRegistryEntryByRepoPath(entries, repo.repoPath);
     let storagePath: string;
     try {
       storagePath = await requireDeletableStoragePath({
@@ -68,6 +66,7 @@ export const cleanCommand = async (options?: {
       repoPath: repo.repoPath,
       storagePath,
       branches: entry?.branches,
+      includeSize: !options.force,
     });
     const unavailable = slots.filter((slot) => slot.reason === 'heads-unavailable');
     if (unavailable.length > 0) {
@@ -91,6 +90,15 @@ export const cleanCommand = async (options?: {
       return;
     }
     for (const slot of candidates) {
+      const heads = listLocalHeads(repo.repoPath);
+      if (heads === null) {
+        console.log(t('clean.stale.headsUnavailable'));
+        return;
+      }
+      if (heads.includes(slot.branch)) {
+        console.log(t('clean.stale.skippedLive', { branch: slot.branch }));
+        continue;
+      }
       const result = await removeBranchSlot({
         repoPath: repo.repoPath,
         storagePath,
@@ -118,9 +126,7 @@ export const cleanCommand = async (options?: {
       return;
     }
     const entries = await listRegisteredRepos();
-    const entry = entries.find((e) =>
-      registryPathEquals(canonicalizePath(e.path), canonicalizePath(repo.repoPath)),
-    );
+    const entry = findRegistryEntryByRepoPath(entries, repo.repoPath);
     const summary = entry?.branches?.find((b) => b.branch === options.branch);
     if (!summary) {
       console.log(t('clean.branchNotIndexed', { branch: options.branch }));
@@ -141,10 +147,7 @@ export const cleanCommand = async (options?: {
     }
     const { lbugPath } = getStoragePaths(repo.repoPath, summary.branch, storagePath);
     const branchDir = path.dirname(lbugPath);
-    // Safety guard: the target MUST live under the validated
-    // storage slot's `branches/` directory before any destructive fs.rm.
-    const branchesRoot = path.join(storagePath, BRANCHES_DIR) + path.sep;
-    if (!branchDir.startsWith(branchesRoot)) {
+    if (!isContainedBranchDir(storagePath, branchDir)) {
       logger.error(
         `Refusing to clean branch index outside the validated storage slot: ${branchDir}`,
       );
