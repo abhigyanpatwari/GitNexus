@@ -248,7 +248,7 @@ describe('listStaleBranchSlots (#3331)', () => {
     ]);
   });
 
-  it('does not classify an unreadable leftover directory with no registry row', async () => {
+  it('does not classify a leftover directory with unreadable metadata and no registry row', async () => {
     const dir = path.join(storagePath, 'branches', 'mystery-deadbeef');
     await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(path.join(dir, INDEX_METADATA_FILE), '{not-json');
@@ -535,6 +535,28 @@ describe('removeBranchSlot (#3331)', () => {
     await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toThrow();
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
+  });
+
+  it('does not drop a registry row when removing a non-canonical disk-only dir', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const canonical = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(canonical, 'feature/x');
+    const stray = path.join(storagePath, 'branches', 'mystery-deadbeef');
+    await writeSlotMeta(stray, 'feature/x');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: stray,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: false, keptRegistry: true });
+    await expect(fs.access(stray)).rejects.toThrow();
+    await expect(fs.access(canonical)).resolves.toBeUndefined();
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/x']);
   });
 
   it('keeps the registry row when removeBranchIndex rejects after a successful rm', async () => {

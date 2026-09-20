@@ -7,6 +7,7 @@ import { branchSlug } from '../../src/storage/branch-index.js';
 import * as git from '../../src/storage/git.js';
 import {
   getStoragePaths,
+  listRegisteredRepos,
   registerRepo,
   saveMeta,
   type RepoMeta,
@@ -252,6 +253,31 @@ describe('cleanCommand --stale (#3331)', () => {
     await cleanCommand({ stale: true, force: true });
 
     await expect(fs.access(dir)).rejects.toThrow();
+  });
+
+  it('does not drop a recorded branch when a stray disk-only dir claims its name', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const branchesRoot = path.join(storagePath, 'branches');
+    await fs.mkdir(branchesRoot, { recursive: true });
+    const canonical = path.join(branchesRoot, branchSlug('feature/x'));
+    await fs.writeFile(canonical, 'not-a-directory');
+    const stray = path.join(branchesRoot, 'mystery-deadbeef');
+    await saveMeta(stray, metaFor('feature/x', repo));
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    expect(logs.join('\n')).toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    expect(logs.join('\n')).toContain(t('clean.stale.probeFailed'));
+    await expect(fs.access(stray)).rejects.toThrow();
+    await expect(fs.readFile(canonical, 'utf8')).resolves.toBe('not-a-directory');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/x']);
   });
 
   it('drops a registry-only row without requiring a directory', async () => {
