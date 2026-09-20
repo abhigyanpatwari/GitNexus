@@ -182,7 +182,9 @@ describe('context/query route + chain enrichment', () => {
     expect(result.chain).toEqual([
       {
         depth: 1,
-        upstream: [{ uid: CALLER.uid, name: CALLER.name, filePath: CALLER.filePath, kind: CALLER.kind }],
+        upstream: [
+          { uid: CALLER.uid, name: CALLER.name, filePath: CALLER.filePath, kind: CALLER.kind },
+        ],
         downstream: [
           { uid: CALLEE.uid, name: CALLEE.name, filePath: CALLEE.filePath, kind: CALLEE.kind },
         ],
@@ -280,7 +282,9 @@ describe('context/query route + chain enrichment', () => {
     expect(result.processes[0].chain).toEqual([
       {
         depth: 1,
-        upstream: [{ uid: CALLER.uid, name: CALLER.name, filePath: CALLER.filePath, kind: CALLER.kind }],
+        upstream: [
+          { uid: CALLER.uid, name: CALLER.name, filePath: CALLER.filePath, kind: CALLER.kind },
+        ],
         downstream: [
           { uid: CALLEE.uid, name: CALLEE.name, filePath: CALLEE.filePath, kind: CALLEE.kind },
         ],

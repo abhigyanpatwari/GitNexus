@@ -201,8 +201,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 0,
           maximum: CONTEXT_CHAIN_MAX_DEPTH,
           default: 0,
-          description:
-            `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.`,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.`,
         },
         maxTokens: {
           type: 'integer',
@@ -362,8 +361,7 @@ ${HOT_READ_STALENESS_NOTE}`,
           minimum: 0,
           maximum: CONTEXT_CHAIN_MAX_DEPTH,
           default: 0,
-          description:
-            `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) and return the result as a \`chain\` field (downstream callees + upstream callers layered by depth). 0 = disabled (default). 1 = direct neighbours only. 2-${CONTEXT_CHAIN_MAX_DEPTH} = procedure→workflow→sub-workflow depth. Useful for revealing the full tRPC/RPC call chain in a single call instead of chaining context() invocations.`,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) and return the result as a \`chain\` field (downstream callees + upstream callers layered by depth). 0 = disabled (default). 1 = direct neighbours only. 2-${CONTEXT_CHAIN_MAX_DEPTH} = procedure→workflow→sub-workflow depth. Useful for revealing the full tRPC/RPC call chain in a single call instead of chaining context() invocations.`,
         },
         maxTokens: {
           type: 'integer',
