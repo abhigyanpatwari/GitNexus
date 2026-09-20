@@ -258,6 +258,52 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['GET /trpc/app.list']);
   });
 
+  it('db.query inside .input is not a GET terminal; create stays POST', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  create: publicProcedure.input(z.custom(async v => db.query(v))).mutation(handler),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['POST /trpc/app.create']);
+  });
+
+  it('defaults.merge is not a tRPC router prefix', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      "const options = defaults.merge('internal', overrides);",
+      '',
+      'export const appRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    const emitted = paths(source);
+    expect(emitted).not.toContain('GET /trpc/internal.list');
+    // router-var prefix from appRouter is OK; must not pick up 'internal'.
+    expect(emitted).toEqual(['GET /trpc/app.list']);
+  });
+
+  it('regex literal braces do not pop a nested admin router', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      '',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    foo: publicProcedure.query(() => /}/.test(value)),',
+      '    bar: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/app.admin.foo', 'GET /trpc/app.admin.bar']);
+  });
+
   it('createTRPCRouter appRouter binding in root.ts supplies the app prefix', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",

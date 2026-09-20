@@ -6,11 +6,14 @@ const HTTP_METHOD_MAP: Record<string, string> = {
   subscription: 'WS',
 };
 
-// Shared by the file gate and the line scanner. Extraction already allowed
-// whitespace before '(' (`publicProcedure.query (`) but the gate used a
-// literal `.query(` substring, so pretty-printed terminals never entered
-// the scanner. Keep both sides on this one pattern.
-const TERMINAL_CALL_RE = /\.\s*(query|mutation|subscription)\s*\(/;
+// Shared by the file gate and the line scanner. A tRPC terminal is
+// `.query(` / `.mutation(` / `.subscription(` only after a Procedure
+// builder (`publicProcedure`, `t.procedure`), after `)` (chained
+// `.input(...).query(`), or at the start of a line (prettier-broken
+// chain). `db.query(` / `obj.query(` must not match. The `/m` flag
+// lets the file gate see a line-start `.query(` in whole-file text.
+const TERMINAL_CALL_RE =
+  /(?:(?<=Procedure)|(?<=t\.procedure)|(?<=\))|^)\s*\.\s*(query|mutation|subscription)\s*\(/m;
 
 // Procedure keys may sit at the start of an indented line, or mid-line after
 // `{` / `,` in a compact router (`t.router({ health: publicProcedure.query(...) })`).
@@ -33,9 +36,14 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
   // hit on the mask can be re-read from the original for quoted merge text.
   const masked = maskSource(content);
 
-  const mergePos = masked.search(/\.merge\s*\(/);
-  if (mergePos >= 0) {
-    const mergeMatch = content.slice(mergePos).match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
+  // Only `t.merge` / `trpc.merge` / `tRPC.merge` / `*Router.merge` or a
+  // chained `).merge(` is a tRPC prefix. `defaults.merge('internal', …)`
+  // is lodash-style options merging and must not prefix every route.
+  const mergeHit = masked.match(/(?:\b(?:t|trpc|tRPC|\w+Router)|(?<=\)))\s*\.\s*merge\s*\(/);
+  if (mergeHit && mergeHit.index !== undefined) {
+    const mergeMatch = content
+      .slice(mergeHit.index)
+      .match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
     if (mergeMatch) {
       // A '.merge('post.', ...)' prefix composes the route-path key; a stray
       // leading/trailing dot would double up when we join ('post..list') —
@@ -96,12 +104,61 @@ function isTrpcRouterFile(content: string): boolean {
 interface ScanState {
   inString: string | null;
   inBlockComment: boolean;
+  /** Last non-whitespace code char — distinguishes `/regex/` from `a / b`. */
+  prevSignificant: string | null;
+}
+
+/** `/` starts a regex unless the previous significant char ends a primary (`a / b`). */
+function previousAllowsDivision(prev: string | null): boolean {
+  if (prev === null) return false;
+  // Identifier / number, call/index close, or a just-closed string/template.
+  return /[\w$)\]]/.test(prev) || prev === "'" || prev === '"' || prev === '\u0060';
 }
 
 /**
- * Replace comments and string/template literals with spaces so a regex can
- * see only real code. Updates `state` so the next line (and `maskSource`)
- * inherit the live comment/string machine.
+ * Blank one `/pattern/flags` literal (length-preserving). `start` is the
+ * opening `/`. Character classes keep `/` from ending the pattern.
+ */
+function maskRegexLiteral(line: string, out: string[], start: number): number {
+  out[start] = ' ';
+  let i = start + 1;
+  let inClass = false;
+  while (i < line.length) {
+    const c = line[i];
+    out[i] = ' ';
+    if (c === '\\') {
+      if (i + 1 < line.length) out[i + 1] = ' ';
+      i += 2;
+      continue;
+    }
+    if (inClass) {
+      if (c === ']') inClass = false;
+      i++;
+      continue;
+    }
+    if (c === '[') {
+      inClass = true;
+      i++;
+      continue;
+    }
+    if (c === '/') {
+      i++;
+      while (i < line.length && /[a-zA-Z]/.test(line[i])) {
+        out[i] = ' ';
+        i++;
+      }
+      return i;
+    }
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Replace comments, string/template literals, and regex literals with spaces
+ * so a regex can see only real code. `{` / `}` inside `/}/` must not move
+ * brace depth. Updates `state` so the next line (and `maskSource`) inherit
+ * the live comment/string machine and the last significant code char.
  */
 function maskNonCode(line: string, state: ScanState): string {
   const out = line.split('');
@@ -116,7 +173,10 @@ function maskNonCode(line: string, state: ScanState): string {
         i += 2;
         continue;
       }
-      if (ch === state.inString) state.inString = null;
+      if (ch === state.inString) {
+        state.inString = null;
+        state.prevSignificant = ch;
+      }
       i++;
       continue;
     }
@@ -145,14 +205,20 @@ function maskNonCode(line: string, state: ScanState): string {
       i += 2;
       continue;
     }
+    if (ch === '/' && !previousAllowsDivision(state.prevSignificant)) {
+      i = maskRegexLiteral(line, out, i);
+      state.prevSignificant = '/';
+      continue;
+    }
     if (ch === "'" || ch === '"' || ch === '\u0060') {
-      // Keep `'create':` / `"admin":` visible so PROCEDURE_KEY_RE and
+      // Keep `'create':` / `"admin-panel":` visible so PROCEDURE_KEY_RE and
       // ROUTER_OPEN_RE can see quoted keys after the mask. A real string
       // (no `ident` + matching quote + colon) is still blanked.
       if (ch !== '\u0060') {
         const quotedKey = line.slice(i).match(/^(['"])([\w$.-]+)\1\s*:/);
         if (quotedKey) {
           i += quotedKey[0].length;
+          state.prevSignificant = ':';
           continue;
         }
       }
@@ -161,6 +227,7 @@ function maskNonCode(line: string, state: ScanState): string {
       i++;
       continue;
     }
+    if (!/\s/.test(ch)) state.prevSignificant = ch;
     i++;
   }
   return out.join('');
@@ -168,7 +235,7 @@ function maskNonCode(line: string, state: ScanState): string {
 
 /** Whole-file mask. Length-preserving so indices align with `content`. */
 function maskSource(content: string): string {
-  const state: ScanState = { inString: null, inBlockComment: false };
+  const state: ScanState = { inString: null, inBlockComment: false, prevSignificant: null };
   return content
     .split('\n')
     .map((line) => maskNonCode(line, state))
@@ -196,7 +263,7 @@ const ROUTER_OPEN_RE =
   /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|\w+Procedure\s*\.\s*router|router)\s*\(/;
 
 // `/g` copies for matchAll. The non-global originals stay lastIndex-safe for `.test()`.
-const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'g');
+const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'gm');
 const PROCEDURE_KEY_RE_G = new RegExp(PROCEDURE_KEY_RE.source, 'g');
 const ROUTER_OPEN_RE_G = new RegExp(ROUTER_OPEN_RE.source, 'g');
 
@@ -214,7 +281,7 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
   const lines = content.split('\n');
   const nestStack: NestFrame[] = [];
-  const scanState: ScanState = { inString: null, inBlockComment: false };
+  const scanState: ScanState = { inString: null, inBlockComment: false, prevSignificant: null };
   let depth = 0;
   // Set on a router-open; the first '{' scanned afterwards opens the
   // router's object literal and pushes the frame (handles both

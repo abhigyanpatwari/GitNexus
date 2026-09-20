@@ -347,6 +347,7 @@ describe('GroupService', () => {
           limit: Infinity,
           max_symbols: 9999,
         });
+        expect(query).toHaveBeenCalledTimes(2);
         for (const call of query.mock.calls) {
           expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
         }
@@ -358,6 +359,7 @@ describe('GroupService', () => {
           limit: 9999,
           max_symbols: Infinity,
         });
+        expect(query).toHaveBeenCalledTimes(2);
         for (const call of query.mock.calls) {
           expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
         }

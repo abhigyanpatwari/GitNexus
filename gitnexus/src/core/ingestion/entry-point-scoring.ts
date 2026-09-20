@@ -137,8 +137,10 @@ export function calculateEntryPointScore(
   // match UTILITY_PATTERNS. The 3.0× tRPC framework boost stays path-based.
   // The exemption follows detectFrameworkFromPath so T3 (`/api/routers/`) and
   // `/app/trpc/routers/` layouts get the same treatment as `/trpc/routers/`.
-  // Optional chaining guards `.js` router paths: the framework detector's
-  // tRPC branch is TS-only and returns null for them.
+  // Optional chaining still guards paths that fail the tRPC predicates
+  // (e.g. generic `/routers/*.js` without `/trpc/` or `/api/routers/`).
+  // JS/JSX routers that match those predicates get `framework: 'trpc'`
+  // the same way TS/TSX routers do.
   const frameworkHint = filePath ? detectFrameworkFromPath(filePath) : null;
   const skipUtilityPenalty = frameworkHint?.framework === 'trpc';
   const trpcAccessorExemption =

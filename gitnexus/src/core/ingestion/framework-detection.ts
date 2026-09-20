@@ -87,7 +87,7 @@ export function detectFrameworkFromPath(filePath: string): FrameworkHint | null 
   // alone also matches Vue Router / Next.js-style folders and must not
   // take the 3.0 entry-point multiplier.
   if (
-    (p.endsWith('.ts') || p.endsWith('.tsx')) &&
+    (p.endsWith('.ts') || p.endsWith('.tsx') || p.endsWith('.js') || p.endsWith('.jsx')) &&
     ((p.includes('/trpc/') && p.includes('/routers/')) || p.includes('/api/routers/'))
   ) {
     return { framework: 'trpc', entryPointMultiplier: 3.0, reason: 'trpc-router' };

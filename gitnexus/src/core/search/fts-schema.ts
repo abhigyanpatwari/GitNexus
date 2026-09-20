@@ -17,9 +17,11 @@ export interface FTSIndexDefinition {
 // (`File` stays name+content; `Route` is name-only). All other entries
 // below carry a `description` column.
 //
-// Tables beyond the original 5 mirror `EMBEDDABLE_LABELS` (embeddings/types.ts):
-// indexing the same set keeps a symbol's doc comment both keyword- and
-// semantically-searchable.
+// Symbol tables beyond the original 5 still mirror `EMBEDDABLE_LABELS`
+// (embeddings/types.ts): indexing the same set keeps a symbol's doc comment
+// both keyword- and semantically-searchable. Route is the exception: it is
+// keyword-only (`NAME_ONLY_PROPERTIES`) and is not in EMBEDDABLE_LABELS, so
+// it is not semantically searchable.
 const FTS_PROPERTIES = ['name', 'content', 'description'] as const;
 const NAME_ONLY_PROPERTIES = ['name'] as const;
 

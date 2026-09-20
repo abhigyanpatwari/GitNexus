@@ -34,6 +34,32 @@ describe('tRPC entry-point scoring', () => {
     }
   });
 
+  it('skips utility-pattern for accessor procedures on a T3 JavaScript router', () => {
+    const result = calculateEntryPointScore(
+      'setSettings',
+      'javascript',
+      true,
+      0,
+      3,
+      'src/server/api/routers/settings.js',
+    );
+    expect(result.reasons).toContain('framework:trpc-router');
+    expect(result.reasons).not.toContain('utility-pattern');
+  });
+
+  it('still applies utility-pattern to non-accessor helpers on a T3 JavaScript router', () => {
+    const result = calculateEntryPointScore(
+      'formatDate',
+      'javascript',
+      true,
+      0,
+      3,
+      'src/server/api/routers/settings.js',
+    );
+    expect(result.reasons).toContain('utility-pattern');
+    expect(result.reasons).toContain('framework:trpc-router');
+  });
+
   it('does not crash on a .js router path whose framework detection returns null', () => {
     const jsResult = calculateEntryPointScore(
       'settingsRouter',
