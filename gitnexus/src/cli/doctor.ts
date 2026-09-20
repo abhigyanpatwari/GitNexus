@@ -34,6 +34,14 @@ import { updateEligibleInstallSync } from '../core/install-context.js';
 import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
 import { cachedUpdateNoticeLine } from './update-notice.js';
+import { staleReasonLabel } from './stale-branch-format.js';
+import { findRepo, listRegisteredRepos } from '../storage/repo-manager.js';
+import {
+  formatSlotSize,
+  listStaleBranchSlots,
+  type StaleBranchSlot,
+} from '../storage/stale-branch-slots.js';
+import path from 'node:path';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -189,6 +197,25 @@ export function poolSizeDoctorLine(pool: number, envRaw: string | undefined): st
  */
 export function nativeStatusLine(check: NativeCheckResult): string {
   return `  ${padDisplayEnd('native', 10)}${nativeStatusText(check)}`;
+}
+
+/**
+ * Cwd leftover-slot lines for the doctor Storage section (#3331). Pure so
+ * tests can pin the copy without deleting anything or scanning the registry.
+ */
+export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
+  if (slots.length === 0) return [];
+  const lines = [t('doctor.orphanedBranches')];
+  let total = 0;
+  for (const slot of slots) {
+    total += slot.sizeBytes;
+    lines.push(
+      `  ${slot.branch}  ${staleReasonLabel(slot.reason)}  ${formatSlotSize(slot.sizeBytes)}`,
+    );
+  }
+  lines.push(`  ${t('doctor.orphanedBranches.total', { size: formatSlotSize(total) })}`);
+  lines.push(`  ${t('doctor.orphanedBranches.reclaim')}`);
+  return lines;
 }
 
 function nativeStatusText(check: NativeCheckResult): string {
@@ -358,5 +385,23 @@ export const doctorCommand = async () => {
     if (cudaRedirect.detail) {
       console.log(`  ${padDisplayEnd('', 12)}${cudaRedirect.detail}`);
     }
+  }
+  // Doctor stays runtime-global. Add only a cwd leftover-slot section when
+  // this process is inside an indexed repo (KTD5). Never scan every registry
+  // entry and never delete.
+  const cwdRepo = await findRepo(process.cwd());
+  if (!cwdRepo) return;
+  const entries = await listRegisteredRepos();
+  const entry = entries.find((item) => path.resolve(item.path) === path.resolve(cwdRepo.repoPath));
+  const slots = await listStaleBranchSlots({
+    repoPath: cwdRepo.repoPath,
+    storagePath: cwdRepo.storagePath,
+    branches: entry?.branches,
+  });
+  const orphanLines = orphanedBranchSlotDoctorLines(slots);
+  if (orphanLines.length === 0) return;
+  console.log('');
+  for (const line of orphanLines) {
+    console.log(line);
   }
 };
