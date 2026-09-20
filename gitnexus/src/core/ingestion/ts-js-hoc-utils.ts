@@ -133,3 +133,54 @@ export function isBlockedDefaultExportHoc(node: SyntaxNode): boolean {
   const callee = callExpr.childForFieldName?.('function');
   return callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text);
 }
+
+// Core check on a call expression: does it register a callback with a built-in
+// that never stores the callback as a named callable? Identifier callees
+// (timers/microtasks) use the export-default blocklist; member callees use the
+// array/promise-method blocklist. Only calls that actually receive a function
+// argument qualify.
+export function isBlockedCallbackRegistrationCall(
+  callExpr: SyntaxNode | null | undefined,
+): boolean {
+  if (callExpr === null || callExpr === undefined || callExpr.type !== 'call_expression') {
+    return false;
+  }
+
+  const callee = callExpr.childForFieldName?.('function');
+  let blocked = false;
+  if (callee?.type === 'identifier') {
+    blocked = DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text);
+  } else if (callee?.type === 'member_expression') {
+    const property = callee.childForFieldName?.('property');
+    blocked =
+      property?.type === 'property_identifier' && ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text);
+  }
+  if (!blocked) return false;
+
+  const args = callExpr.childForFieldName?.('arguments');
+  return (
+    args !== null &&
+    args !== undefined &&
+    args.namedChildren.some(
+      (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+    )
+  );
+}
+
+// Pair-value form: { timer: setTimeout(() => ..., 100) } binds a handle and
+// { visible: items.filter(...) } binds a value - neither is a callable. The
+// capture emitters enforce the blocklists emit-side so the guarantee does not
+// depend on query-predicate sharing behavior in node-tree-sitter 0.21
+// (implicit-global stringValues across compiled queries). node is the
+// arrow/function captured inside the call's arguments; the registration call
+// is two hops up and must sit directly in pair-value position.
+export function isBlockedPairCallbackRegistration(node: SyntaxNode): boolean {
+  const args = node.parent;
+  if (args === null || args.type !== 'arguments') return false;
+
+  const callExpr = args.parent;
+  if (callExpr === null || callExpr.type !== 'call_expression') return false;
+  if (callExpr.parent?.type !== 'pair') return false;
+
+  return isBlockedCallbackRegistrationCall(callExpr);
+}

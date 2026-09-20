@@ -43,6 +43,8 @@ import {
   getTsParser,
   getTsScopeQuery,
 } from '../../src/core/ingestion/languages/typescript/query.js';
+import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescript/captures.js';
+import { emitJsScopeCaptures } from '../../src/core/ingestion/languages/javascript/captures.js';
 import {
   FUNCTION_NODE_TYPES,
   genericFuncName,
@@ -383,6 +385,41 @@ describe('issue #1166 — definition-phase consistency', () => {
     expect(names).not.toContain('visible');
     expect(names).toContain('handler');
     expect(names).toContain('create');
+  });
+
+  // The emitters also enforce the built-in blocklists emit-side so the
+  // guarantee holds regardless of query-predicate sharing behavior in
+  // node-tree-sitter 0.21 (implicit-global stringValues across compiled
+  // queries). This pins the emitter-level contract independently of the
+  // query-level gates above.
+  it('does not invent Function declarations for built-in callback registrations (emit-side)', () => {
+    const declaredPairNames = (src: string, filePath: string): (string | undefined)[] => {
+      const matches = filePath.endsWith('.js')
+        ? emitJsScopeCaptures(src, filePath)
+        : emitTsScopeCaptures(src, filePath);
+      return matches
+        .filter((m) => m['@declaration.function'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+    };
+    const src = `
+      export const timers = {
+        timer: setTimeout(() => doSomething(), 100),
+        later: Promise.resolve().then(() => doSomething()),
+        ids: Array.from([1, 2], (n) => doSomething(n)),
+        handler: wrapIt(() => doSomething()),
+      };
+    `;
+    const tsNames = declaredPairNames(src, 'test.ts');
+    expect(tsNames).not.toContain('timer');
+    expect(tsNames).not.toContain('later');
+    expect(tsNames).not.toContain('ids');
+    expect(tsNames).toContain('handler');
+
+    const jsNames = declaredPairNames(src, 'test.js');
+    expect(jsNames).not.toContain('timer');
+    expect(jsNames).not.toContain('later');
+    expect(jsNames).not.toContain('ids');
+    expect(jsNames).toContain('handler');
   });
 
   it('TYPESCRIPT_SCOPE_QUERY does not name then / setTimeout / Array.from pair values', () => {

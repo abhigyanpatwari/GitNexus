@@ -29,6 +29,7 @@ import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
+  isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SkippedPath } from './clone-safety.js';
@@ -2297,6 +2298,18 @@ const processFileGroup = (
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
       if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
+
+      // `{ timer: setTimeout(() => …, 100) }` registers a timer, not a
+      // Function — the TSQ-path twin of the emit-side gate in
+      // languages/*/captures.ts (the query-level `#not-any-of?` predicate
+      // is unreliable: node-tree-sitter 0.21 shares `stringValues` across
+      // `#any-of?` predicates of a compiled query).
+      if (
+        definitionNode?.type === 'pair' &&
+        isBlockedCallbackRegistrationCall(definitionNode.childForFieldName('value'))
+      ) {
+        continue;
+      }
 
       const nameNode = captureMap['name'];
       const extractedClassSymbol =
