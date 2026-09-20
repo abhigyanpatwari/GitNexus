@@ -12,6 +12,7 @@ import {
   sanitizeRepoName,
   getDefaultBranch,
   getCurrentBranch,
+  listLocalHeads,
   getGitInfoExcludePath,
   getCoreExcludesFilePath,
 } from '../../src/storage/git.js';
@@ -133,6 +134,33 @@ describe('git utilities', () => {
     it('preserves a slash in the branch name (slugging happens elsewhere)', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
       expect(getCurrentBranch('/project')).toBe('release/1.2');
+    });
+  });
+
+  describe('listLocalHeads (#3331)', () => {
+    it('returns local head names including a slashed branch', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('main\nfeature/x\n'));
+      expect(listLocalHeads('/project')).toEqual(['main', 'feature/x']);
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'git for-each-ref --format=%(refname:short) refs/heads',
+        expect.objectContaining({
+          cwd: '/project',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+        }),
+      );
+    });
+
+    it('returns an empty list when the repo has no local heads', () => {
+      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      expect(listLocalHeads('/project')).toEqual([]);
+    });
+
+    it('returns null when git cannot run', () => {
+      mockExecSync.mockImplementationOnce(() => {
+        throw new Error('fatal: not a git repository');
+      });
+      expect(listLocalHeads('/not-a-repo')).toBeNull();
     });
   });
 

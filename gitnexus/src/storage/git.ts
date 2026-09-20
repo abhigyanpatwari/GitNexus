@@ -666,6 +666,30 @@ export const getCurrentBranch = (repoPath: string): string | null => {
 };
 
 /**
+ * Local `refs/heads` names, or `null` when the directory is not a git
+ * worktree or git cannot run. An empty array means the listing succeeded
+ * and there are no local heads — that is not a listing failure (#3331).
+ */
+export const listLocalHeads = (repoPath: string): string[] | null => {
+  try {
+    const output = execSync('git for-each-ref --format=%(refname:short) refs/heads', {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    })
+      .toString()
+      .trim();
+    if (!output) return [];
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Sanitize a repository name to prevent argument injection and ensure
  * cross-platform filesystem compatibility.
  *

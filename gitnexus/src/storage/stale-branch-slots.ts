@@ -1,0 +1,140 @@
+/**
+ * Classify leftover per-branch index slots (#3331).
+ *
+ * Live means a name in local `refs/heads`. Classification never reverses
+ * `branchSlug`; registry rows join through the same forward slug path
+ * `clean --branch` already computes. This module does not delete.
+ */
+
+import fs from 'fs/promises';
+import path from 'path';
+import { BRANCHES_DIR, branchSlug } from './branch-index.js';
+import { listLocalHeads } from './git.js';
+import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
+
+export type StaleBranchReason = 'ref-missing' | 'registry-only' | 'disk-only' | 'heads-unavailable';
+
+export interface StaleBranchSlot {
+  branch: string;
+  dir: string | null;
+  sizeBytes: number;
+  reason: StaleBranchReason;
+}
+
+export interface ListStaleBranchSlotsInput {
+  repoPath: string;
+  storagePath: string;
+  branches?: readonly { branch: string }[];
+  /** Injected in tests. When omitted, listed from `repoPath`. */
+  heads?: string[] | null;
+}
+
+const slotDirForBranch = (storagePath: string, branch: string): string =>
+  path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
+
+const isDirectory = async (dir: string): Promise<boolean> => {
+  try {
+    return (await fs.stat(dir)).isDirectory();
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return false;
+    return false;
+  }
+};
+
+export const directorySizeBytes = async (root: string): Promise<number> => {
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined) break;
+    let entries;
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const child = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(child);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        total += (await fs.stat(child)).size;
+      } catch {
+        // Size walks are best-effort; skip unreadable files.
+      }
+    }
+  }
+  return total;
+};
+
+const metadataBranch = async (dir: string): Promise<string | null> => {
+  const meta = await loadMeta(dir);
+  return typeof meta?.branch === 'string' && meta.branch.length > 0 ? meta.branch : null;
+};
+
+export const listStaleBranchSlots = async (
+  input: ListStaleBranchSlotsInput,
+): Promise<StaleBranchSlot[]> => {
+  const heads = input.heads !== undefined ? input.heads : listLocalHeads(input.repoPath);
+  const recorded = input.branches ?? [];
+  const branchesRoot = path.join(input.storagePath, BRANCHES_DIR);
+  const live = heads === null ? null : new Set(heads);
+
+  const registryByDir = new Map<string, string>();
+  for (const row of recorded) {
+    registryByDir.set(path.resolve(slotDirForBranch(input.storagePath, row.branch)), row.branch);
+  }
+
+  let diskDirs: string[] = [];
+  try {
+    const entries = await fs.readdir(branchesRoot, { withFileTypes: true });
+    diskDirs = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(branchesRoot, entry.name));
+  } catch (err) {
+    if (!isMissingFilesystemError(err)) {
+      diskDirs = [];
+    }
+  }
+
+  const rows: StaleBranchSlot[] = [];
+  const seenDirs = new Set<string>();
+
+  for (const [resolvedDir, branch] of registryByDir) {
+    const exists = await isDirectory(resolvedDir);
+    const dir = exists ? resolvedDir : null;
+    if (exists) seenDirs.add(resolvedDir);
+    const sizeBytes = exists ? await directorySizeBytes(resolvedDir) : 0;
+    if (live === null) {
+      rows.push({ branch, dir, sizeBytes, reason: 'heads-unavailable' });
+      continue;
+    }
+    if (!exists) {
+      rows.push({ branch, dir: null, sizeBytes: 0, reason: 'registry-only' });
+      continue;
+    }
+    if (!live.has(branch)) {
+      rows.push({ branch, dir, sizeBytes, reason: 'ref-missing' });
+    }
+  }
+
+  for (const dir of diskDirs) {
+    const resolved = path.resolve(dir);
+    if (seenDirs.has(resolved) || registryByDir.has(resolved)) continue;
+    const branch = await metadataBranch(dir);
+    if (branch === null) continue;
+    const sizeBytes = await directorySizeBytes(dir);
+    if (live === null) {
+      rows.push({ branch, dir: resolved, sizeBytes, reason: 'heads-unavailable' });
+      continue;
+    }
+    if (!live.has(branch)) {
+      rows.push({ branch, dir: resolved, sizeBytes, reason: 'disk-only' });
+    }
+  }
+
+  return rows;
+};
