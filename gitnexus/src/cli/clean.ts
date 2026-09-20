@@ -23,6 +23,7 @@ import {
   isDeleteCandidate,
   listStaleBranchSlots,
   removeBranchSlot,
+  staleListingBlock,
 } from '../storage/stale-branch-slots.js';
 import {
   cleanParkedLbugSidecars,
@@ -39,7 +40,7 @@ export const cleanCommand = async (options?: {
   branch?: string;
 }) => {
   // --stale: reclaim leftover per-branch slots whose recorded branch is not
-  // a live local head (#3331). Exclusive arm before --branch (KTD1).
+  // a live local head (#3331). Exclusive arm before --branch.
   if (options?.stale) {
     const cwd = process.cwd();
     const repo = await findRepo(cwd);
@@ -68,16 +69,31 @@ export const cleanCommand = async (options?: {
       branches: entry?.branches,
       includeSize: !options.force,
     });
-    const unavailable = slots.filter((slot) => slot.reason === 'heads-unavailable');
-    if (unavailable.length > 0) {
+    const listingBlock = staleListingBlock(slots);
+    if (listingBlock === 'heads-unavailable') {
       console.log(t('clean.stale.headsUnavailable'));
-      for (const slot of unavailable) {
+      for (const slot of slots.filter((row) => row.reason === 'heads-unavailable')) {
         console.log(`  - ${formatStaleSlotLine(slot)}`);
       }
       return;
     }
+    if (listingBlock === 'listing-failed') {
+      console.log(t('clean.stale.listingFailed'));
+      return;
+    }
     const candidates = slots.filter(isDeleteCandidate);
+    const probeFailed = slots.filter((slot) => slot.reason === 'probe-failed');
+    const printProbeFailed = (): void => {
+      console.log(t('clean.stale.probeFailed'));
+      for (const slot of probeFailed) {
+        console.log(`  - ${formatStaleSlotLine(slot)}`);
+      }
+    };
     if (candidates.length === 0) {
+      if (probeFailed.length > 0) {
+        printProbeFailed();
+        return;
+      }
       console.log(t('clean.stale.none'));
       return;
     }
@@ -85,6 +101,9 @@ export const cleanCommand = async (options?: {
       console.log(t('clean.stale.preview', { count: candidates.length }));
       for (const slot of candidates) {
         console.log(`  - ${formatStaleSlotLine(slot)}`);
+      }
+      if (probeFailed.length > 0) {
+        printProbeFailed();
       }
       console.log(`\n${t('common.runForceConfirm')}`);
       return;
@@ -111,6 +130,9 @@ export const cleanCommand = async (options?: {
         continue;
       }
       console.log(t('clean.stale.deleted', { branch: slot.branch }));
+    }
+    if (probeFailed.length > 0) {
+      printProbeFailed();
     }
     return;
   }

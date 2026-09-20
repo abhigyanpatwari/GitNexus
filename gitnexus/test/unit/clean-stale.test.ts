@@ -172,6 +172,59 @@ describe('cleanCommand --stale (#3331)', () => {
     await expect(fs.access(dir)).resolves.toBeUndefined();
   });
 
+  it('does not treat an obstructed slot path as none or delete it', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await fs.mkdir(path.dirname(dir), { recursive: true });
+    await fs.writeFile(dir, 'not-a-directory');
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    const output = logs.join('\n');
+    expect(output).toContain(t('clean.stale.probeFailed'));
+    expect(output).not.toContain(t('clean.stale.none'));
+    expect(output).not.toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    await expect(fs.readFile(dir, 'utf8')).resolves.toBe('not-a-directory');
+  });
+
+  it('does not delete when leftover directories cannot be listed', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await saveMeta(dir, metaFor('feature/x', repo));
+    const branchesRoot = path.join(storagePath, 'branches');
+    const realReaddir = fs.readdir.bind(fs);
+    vi.spyOn(fs, 'readdir').mockImplementation((async (target: unknown, options?: unknown) => {
+      if (path.resolve(String(target)) === path.resolve(branchesRoot)) {
+        const err = new Error('EACCES') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realReaddir(
+        target as Parameters<typeof realReaddir>[0],
+        options as Parameters<typeof realReaddir>[1],
+      );
+    }) as typeof fs.readdir);
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    expect(logs.join('\n')).toContain(t('clean.stale.listingFailed'));
+    expect(logs.join('\n')).not.toContain(t('clean.stale.deleted', { branch: 'feature/x' }));
+    expect(logs.join('\n')).not.toContain(t('clean.stale.none'));
+    await expect(fs.access(dir)).resolves.toBeUndefined();
+  });
+
   it('does not delete when local heads cannot be listed', async () => {
     await writeOwnedFlat(repo, storagePath);
     await registerRepo(repo, metaFor('main', repo));

@@ -9,12 +9,18 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { BRANCHES_DIR, branchSlug } from './branch-index.js';
+import { BRANCHES_DIR } from './branch-index.js';
 import { listLocalHeads } from './git.js';
 import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
-import { removeBranchIndex } from './repo-manager.js';
+import { getStoragePaths, removeBranchIndex } from './repo-manager.js';
 
-export type StaleBranchReason = 'ref-missing' | 'registry-only' | 'disk-only' | 'heads-unavailable';
+export type StaleBranchReason =
+  | 'ref-missing'
+  | 'registry-only'
+  | 'disk-only'
+  | 'heads-unavailable'
+  | 'probe-failed'
+  | 'listing-failed';
 
 export interface StaleBranchSlot {
   branch: string;
@@ -33,15 +39,15 @@ export interface ListStaleBranchSlotsInput {
   includeSize?: boolean;
 }
 
-const slotDirForBranch = (storagePath: string, branch: string): string =>
-  path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
+const slotDirForBranch = (repoPath: string, storagePath: string, branch: string): string =>
+  path.dirname(getStoragePaths(repoPath, branch, storagePath).metaPath);
 
 /** Proven directory, proven absence, or a probe error that is not ENOENT/ENOTDIR. */
 type DirectoryProbe = 'dir' | 'missing' | 'unreadable';
 
 const probeDirectory = async (dir: string): Promise<DirectoryProbe> => {
   try {
-    return (await fs.stat(dir)).isDirectory() ? 'dir' : 'missing';
+    return (await fs.stat(dir)).isDirectory() ? 'dir' : 'unreadable';
   } catch (err) {
     return isMissingFilesystemError(err) ? 'missing' : 'unreadable';
   }
@@ -89,7 +95,10 @@ export const listStaleBranchSlots = async (
 
   const registryByDir = new Map<string, string>();
   for (const row of recorded) {
-    registryByDir.set(path.resolve(slotDirForBranch(input.storagePath, row.branch)), row.branch);
+    registryByDir.set(
+      path.resolve(slotDirForBranch(input.repoPath, input.storagePath, row.branch)),
+      row.branch,
+    );
   }
 
   let diskDirs: string[] = [];
@@ -98,7 +107,10 @@ export const listStaleBranchSlots = async (
     diskDirs = entries
       .filter((entry) => entry.isDirectory())
       .map((entry) => path.join(branchesRoot, entry.name));
-  } catch {
+  } catch (err) {
+    if (!isMissingFilesystemError(err)) {
+      return [{ branch: '', dir: null, sizeBytes: 0, reason: 'listing-failed' }];
+    }
     diskDirs = [];
   }
 
@@ -109,9 +121,18 @@ export const listStaleBranchSlots = async (
 
   const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];
 
-  for (const [resolvedDir, branch] of registryByDir) {
-    const probe = await probeDirectory(resolvedDir);
-    if (probe === 'unreadable') continue;
+  const registryProbes = await Promise.all(
+    [...registryByDir].map(async ([resolvedDir, branch]) => ({
+      resolvedDir,
+      branch,
+      probe: await probeDirectory(resolvedDir),
+    })),
+  );
+  for (const { resolvedDir, branch, probe } of registryProbes) {
+    if (probe === 'unreadable') {
+      pending.push({ branch, dir: resolvedDir, reason: 'probe-failed' });
+      continue;
+    }
     const exists = probe === 'dir';
     const dir = exists ? resolvedDir : null;
     if (live === null) {
@@ -127,11 +148,13 @@ export const listStaleBranchSlots = async (
     }
   }
 
-  for (const dir of diskDirs) {
-    const resolved = path.resolve(dir);
-    if (registryByDir.has(resolved)) continue;
-    const branch = await metadataBranch(dir);
+  const leftoverDirs = diskDirs.filter((dir) => !registryByDir.has(path.resolve(dir)));
+  const leftoverMeta = await Promise.all(
+    leftoverDirs.map(async (dir) => ({ dir, branch: await metadataBranch(dir) })),
+  );
+  for (const { dir, branch } of leftoverMeta) {
     if (branch === null) continue;
+    const resolved = path.resolve(dir);
     if (live === null) {
       pending.push({ branch, dir: resolved, reason: 'heads-unavailable' });
       continue;
@@ -142,14 +165,12 @@ export const listStaleBranchSlots = async (
   }
 
   const includeSize = input.includeSize !== false;
-  const sized: StaleBranchSlot[] = [];
-  for (const row of pending) {
-    sized.push({
+  return Promise.all(
+    pending.map(async (row) => ({
       ...row,
       sizeBytes: includeSize && row.dir ? await directorySizeBytes(row.dir) : 0,
-    });
-  }
-  return sized;
+    })),
+  );
 };
 
 /** Lexical / realpath containment: `child` is a proper descendant of `parent`. */
@@ -196,7 +217,7 @@ const slotPathExists = async (slotDir: string): Promise<boolean> => {
 
 /**
  * Delete a lexically contained slot. Returns a failure result, or `null` when
- * the slot path is gone and the registry row may drop (KTD4).
+ * the slot path is gone and the registry row may drop.
  */
 const removeValidatedSlotDir = async (
   storagePath: string,
@@ -270,7 +291,16 @@ const removeValidatedSlotDir = async (
 };
 
 export const isDeleteCandidate = (slot: StaleBranchSlot): boolean =>
-  slot.reason !== 'heads-unavailable';
+  slot.reason === 'ref-missing' || slot.reason === 'registry-only' || slot.reason === 'disk-only';
+
+export type StaleListingBlock = 'heads-unavailable' | 'listing-failed';
+
+/** Git-list or branches/ listing failed; clean and doctor must not reclaim. */
+export const staleListingBlock = (slots: readonly StaleBranchSlot[]): StaleListingBlock | null => {
+  if (slots.some((slot) => slot.reason === 'heads-unavailable')) return 'heads-unavailable';
+  if (slots.some((slot) => slot.reason === 'listing-failed')) return 'listing-failed';
+  return null;
+};
 
 export interface RemoveBranchSlotInput {
   repoPath: string;
@@ -301,8 +331,8 @@ export const removeBranchSlot = async (
 ): Promise<RemoveBranchSlotResult> => {
   const { repoPath, storagePath, branch, dir } = input;
   if (dir !== null) {
-    const refused = await removeValidatedSlotDir(storagePath, dir);
-    if (refused) return refused;
+    const slotDirError = await removeValidatedSlotDir(storagePath, dir);
+    if (slotDirError) return slotDirError;
   }
 
   try {

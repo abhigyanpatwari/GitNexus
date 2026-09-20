@@ -68,6 +68,10 @@ export const en = {
   'clean.stale.registryOnlyPath': '(registry only)',
   'clean.stale.headsUnavailable':
     'Could not list local heads; leftover branch indexes were not deleted. Re-run `gitnexus clean --stale` when git is available.',
+  'clean.stale.listingFailed':
+    'Could not read leftover branch index directories; leftover indexes were not deleted. Check permissions on the branches/ directory and re-run `gitnexus clean --stale`.',
+  'clean.stale.probeFailed':
+    'Could not inspect leftover branch index path(s); those slots were not deleted.',
   'clean.stale.deleted': 'Deleted leftover branch index: {{branch}}',
   'clean.stale.failed': 'Could not delete leftover branch index "{{branch}}".',
   'clean.stale.skippedLive':
@@ -76,6 +80,8 @@ export const en = {
   'clean.stale.reason.diskOnly': 'leftover directory (no registry row)',
   'clean.stale.reason.registryOnly': 'registry row (directory gone)',
   'clean.stale.reason.headsUnavailable': 'could not list local heads',
+  'clean.stale.reason.probeFailed': 'could not inspect slot path',
+  'clean.stale.reason.listingFailed': 'could not list leftover directories',
   'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
   'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',

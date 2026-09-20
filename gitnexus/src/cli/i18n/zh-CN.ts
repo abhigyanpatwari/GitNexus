@@ -67,6 +67,9 @@ export const zhCN = {
   'clean.stale.registryOnlyPath': '（仅注册表）',
   'clean.stale.headsUnavailable':
     '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.listingFailed':
+    '无法读取残留分支索引目录，因此未删除残留索引。请检查 branches/ 目录权限后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.probeFailed': '无法检查残留分支索引路径，因此未删除这些槽位。',
   'clean.stale.deleted': '已删除残留分支索引：{{branch}}',
   'clean.stale.failed': '无法删除残留分支索引 “{{branch}}”。',
   'clean.stale.skippedLive': '已跳过残留分支索引 “{{branch}}” — 它再次成为本地分支。',
@@ -74,6 +77,8 @@ export const zhCN = {
   'clean.stale.reason.diskOnly': '残留目录（无注册表记录）',
   'clean.stale.reason.registryOnly': '注册表记录（目录已不存在）',
   'clean.stale.reason.headsUnavailable': '无法列出本地分支',
+  'clean.stale.reason.probeFailed': '无法检查槽位路径',
+  'clean.stale.reason.listingFailed': '无法列出残留目录',
   'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
   'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',

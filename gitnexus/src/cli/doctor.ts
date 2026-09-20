@@ -40,7 +40,12 @@ import {
   findRepo,
   listRegisteredRepos,
 } from '../storage/repo-manager.js';
-import { listStaleBranchSlots, type StaleBranchSlot } from '../storage/stale-branch-slots.js';
+import {
+  isDeleteCandidate,
+  listStaleBranchSlots,
+  staleListingBlock,
+  type StaleBranchSlot,
+} from '../storage/stale-branch-slots.js';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -205,8 +210,12 @@ export function nativeStatusLine(check: NativeCheckResult): string {
  */
 export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
   if (slots.length === 0) return [];
-  if (slots.some((slot) => slot.reason === 'heads-unavailable')) {
+  const listingBlock = staleListingBlock(slots);
+  if (listingBlock === 'heads-unavailable') {
     return [t('clean.stale.headsUnavailable')];
+  }
+  if (listingBlock === 'listing-failed') {
+    return [t('clean.stale.listingFailed')];
   }
   const lines = [t('doctor.orphanedBranches')];
   let total = 0;
@@ -217,7 +226,9 @@ export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[
     );
   }
   lines.push(`  ${t('doctor.orphanedBranches.total', { size: formatSlotSize(total) })}`);
-  lines.push(`  ${t('doctor.orphanedBranches.reclaim')}`);
+  if (slots.some(isDeleteCandidate)) {
+    lines.push(`  ${t('doctor.orphanedBranches.reclaim')}`);
+  }
   return lines;
 }
 
@@ -390,9 +401,9 @@ export const doctorCommand = async () => {
     }
   }
   // Doctor stays runtime-global. Add only a cwd leftover-slot section when
-  // this process is inside an indexed repo (KTD5). Look up that repo's
-  // registry row for recorded branch slugs; do not report leftovers for
-  // every registered repo, and never delete.
+  // this process is inside an indexed repo. Look up that repo's registry row
+  // for recorded branch slugs; do not report leftovers for every registered
+  // repo, and never delete.
   const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
   if (!cwdRepo) return;
   const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);

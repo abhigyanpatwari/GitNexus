@@ -74,4 +74,37 @@ describe('clean --stale leftover branch slots (#3331)', () => {
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
   });
+
+  it('keeps a live slot when a tag shares the branch name', async () => {
+    const repo = fixture.dbPath;
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+    commitAll(repo, 'init');
+    execSync('git branch -M main', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    execSync('git branch feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    execSync('git tag feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
+
+    const storagePath = path.join(repo, '.gitnexus');
+    const meta = (branch: string): RepoMeta => ({
+      repoPath: repo,
+      lastCommit: 'aaa',
+      indexedAt: '2026-09-20T00:00:00.000Z',
+      branch,
+      stats: { files: 1, nodes: 1 },
+    });
+    await saveMeta(storagePath, meta('main'));
+    await registerRepo(repo, meta('main'));
+    await registerRepo(repo, meta('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await saveMeta(dir, meta('feature/x'));
+
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await cleanCommand({ stale: true, force: true });
+
+    await expect(fs.access(dir)).resolves.toBeUndefined();
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toContain('feature/x');
+  });
 });

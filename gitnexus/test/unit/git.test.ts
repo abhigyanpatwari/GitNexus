@@ -143,14 +143,14 @@ describe('git utilities', () => {
     it('returns local head names including a slashed branch', () => {
       mockSpawnSync.mockReturnValueOnce({
         status: 0,
-        stdout: 'main\nfeature/x\n',
+        stdout: 'refs/heads/main\nrefs/heads/feature/x\n',
         stderr: '',
         error: undefined,
       } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/project')).toEqual(['main', 'feature/x']);
       expect(mockSpawnSync).toHaveBeenCalledWith(
         'git',
-        ['for-each-ref', '--format=%(refname:short)', 'refs/heads'],
+        ['for-each-ref', '--format=%(refname)', 'refs/heads'],
         expect.objectContaining({
           cwd: '/project',
           stdio: ['ignore', 'pipe', 'ignore'],
@@ -158,6 +158,16 @@ describe('git utilities', () => {
           maxBuffer: 64 * 1024 * 1024,
         }),
       );
+    });
+
+    it('ignores lines that do not start with refs/heads/', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: 'refs/heads/main\nheads/feature/x\nrefs/tags/feature/x\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/project')).toEqual(['main']);
     });
 
     it('returns an empty list when the repo has no local heads', () => {

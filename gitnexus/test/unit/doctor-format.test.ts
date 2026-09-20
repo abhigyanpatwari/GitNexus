@@ -413,6 +413,35 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
     expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
   });
 
+  it('prints only listingFailed when listing-failed is mixed with ref-missing', () => {
+    const lines = orphanedBranchSlotDoctorLines([
+      slot({ reason: 'listing-failed', branch: '', dir: null, sizeBytes: 0 }),
+      slot({ reason: 'ref-missing' }),
+    ]);
+    expect(lines).toEqual([t('clean.stale.listingFailed')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('prints heading and probe-failed row without reclaim', () => {
+    const lines = orphanedBranchSlotDoctorLines([slot({ reason: 'probe-failed' })]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain('feature/x');
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('includes reclaim when probe-failed is mixed with ref-missing', () => {
+    const lines = orphanedBranchSlotDoctorLines([
+      slot({ reason: 'probe-failed' }),
+      slot({ branch: 'other', reason: 'ref-missing' }),
+    ]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
+    expect(lines.join('\n')).toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
   it('does not print leftover slots when cwd is not an indexed repo', async () => {
     const tmp = await createTempDir();
     try {

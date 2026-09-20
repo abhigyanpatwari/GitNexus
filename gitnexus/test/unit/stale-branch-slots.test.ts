@@ -9,7 +9,12 @@ import {
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import * as repoManager from '../../src/storage/repo-manager.js';
-import { listStaleBranchSlots, removeBranchSlot } from '../../src/storage/stale-branch-slots.js';
+import {
+  isDeleteCandidate,
+  listStaleBranchSlots,
+  removeBranchSlot,
+  type StaleBranchSlot,
+} from '../../src/storage/stale-branch-slots.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 
 async function writeSlotMeta(dir: string, branch: string): Promise<void> {
@@ -56,6 +61,7 @@ describe('listStaleBranchSlots (#3331)', () => {
       }),
     ]);
     expect(rows[0]?.sizeBytes).toBeGreaterThan(0);
+    expect(isDeleteCandidate(rows[0]!)).toBe(true);
   });
 
   it('does not classify a recorded branch that is still a local head', async () => {
@@ -112,9 +118,115 @@ describe('listStaleBranchSlots (#3331)', () => {
         branches: [{ branch: 'feature/x' }],
         heads: ['main'],
       });
-      expect(rows).toEqual([]);
+      expect(rows).toEqual([
+        expect.objectContaining({
+          branch: 'feature/x',
+          dir,
+          reason: 'probe-failed',
+        }),
+      ]);
+      expect(isDeleteCandidate(rows[0]!)).toBe(false);
     } finally {
       statSpy.mockRestore();
+    }
+  });
+
+  it('classifies a regular file at the canonical slug path as probe-failed', async () => {
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await fs.mkdir(path.dirname(dir), { recursive: true });
+    await fs.writeFile(dir, 'not a directory');
+
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['main'],
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        branch: 'feature/x',
+        dir,
+        reason: 'probe-failed',
+      }),
+    ]);
+    expect(isDeleteCandidate(rows[0]!)).toBe(false);
+  });
+
+  it('returns listing-failed when branches/ readdir fails with a non-missing error', async () => {
+    const branchesRoot = path.join(storagePath, 'branches');
+    const realReaddir = fs.readdir.bind(fs);
+    const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation((async (
+      target: unknown,
+      options?: unknown,
+    ) => {
+      if (path.resolve(String(target)) === path.resolve(branchesRoot)) {
+        const err = new Error('EACCES') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realReaddir(
+        target as Parameters<typeof realReaddir>[0],
+        options as Parameters<typeof realReaddir>[1],
+      );
+    }) as typeof fs.readdir);
+
+    try {
+      const rows = await listStaleBranchSlots({
+        repoPath,
+        storagePath,
+        branches: [],
+        heads: ['main'],
+      });
+      expect(rows).toEqual([
+        {
+          branch: '',
+          dir: null,
+          sizeBytes: 0,
+          reason: 'listing-failed',
+        },
+      ]);
+      expect(isDeleteCandidate(rows[0]!)).toBe(false);
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  });
+
+  it('does not classify registry rows when branches/ listing fails', async () => {
+    const branchesRoot = path.join(storagePath, 'branches');
+    const realReaddir = fs.readdir.bind(fs);
+    const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation((async (
+      target: unknown,
+      options?: unknown,
+    ) => {
+      if (path.resolve(String(target)) === path.resolve(branchesRoot)) {
+        const err = new Error('EACCES') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realReaddir(
+        target as Parameters<typeof realReaddir>[0],
+        options as Parameters<typeof realReaddir>[1],
+      );
+    }) as typeof fs.readdir);
+
+    try {
+      const rows = await listStaleBranchSlots({
+        repoPath,
+        storagePath,
+        branches: [{ branch: 'feature/x' }],
+        heads: ['main'],
+      });
+      expect(rows).toEqual([
+        {
+          branch: '',
+          dir: null,
+          sizeBytes: 0,
+          reason: 'listing-failed',
+        },
+      ]);
+    } finally {
+      readdirSpy.mockRestore();
     }
   });
 
@@ -208,6 +320,24 @@ describe('listStaleBranchSlots (#3331)', () => {
     });
 
     expect(rows).toEqual([]);
+  });
+});
+
+describe('isDeleteCandidate', () => {
+  const slot = (reason: StaleBranchSlot['reason']): StaleBranchSlot => ({
+    branch: 'feature/x',
+    dir: '/tmp/x',
+    sizeBytes: 0,
+    reason,
+  });
+
+  it('is true only for reclaimable leftover reasons', () => {
+    expect(isDeleteCandidate(slot('ref-missing'))).toBe(true);
+    expect(isDeleteCandidate(slot('registry-only'))).toBe(true);
+    expect(isDeleteCandidate(slot('disk-only'))).toBe(true);
+    expect(isDeleteCandidate(slot('heads-unavailable'))).toBe(false);
+    expect(isDeleteCandidate(slot('probe-failed'))).toBe(false);
+    expect(isDeleteCandidate(slot('listing-failed'))).toBe(false);
   });
 });
 

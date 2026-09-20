@@ -17,6 +17,14 @@ export const staleReasonLabel = (reason: StaleBranchReason): string => {
       return t('clean.stale.reason.registryOnly');
     case 'heads-unavailable':
       return t('clean.stale.reason.headsUnavailable');
+    case 'probe-failed':
+      return t('clean.stale.reason.probeFailed');
+    case 'listing-failed':
+      return t('clean.stale.reason.listingFailed');
+    default: {
+      const _exhaustive: never = reason;
+      return _exhaustive;
+    }
   }
 };
 

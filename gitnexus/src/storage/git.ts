@@ -672,7 +672,7 @@ export const getCurrentBranch = (repoPath: string): string | null => {
  */
 export const listLocalHeads = (repoPath: string): string[] | null => {
   try {
-    const result = spawnSync('git', ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], {
+    const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -685,6 +685,8 @@ export const listLocalHeads = (repoPath: string): string[] | null => {
     return output
       .split('\n')
       .map((line) => line.trim())
+      .filter((line) => line.startsWith('refs/heads/'))
+      .map((line) => line.slice('refs/heads/'.length))
       .filter((line) => line.length > 0);
   } catch {
     return null;
