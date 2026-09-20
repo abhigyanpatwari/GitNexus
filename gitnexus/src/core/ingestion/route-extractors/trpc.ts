@@ -38,33 +38,42 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
   // hit on the mask can be re-read from the original for quoted merge text.
   const masked = maskSource(content);
 
-  // Only `t.merge` / `trpc.merge` / `tRPC.merge` / `*Router.merge` or a
-  // chained `).merge(` is a tRPC prefix. `defaults.merge('internal', …)`
-  // is lodash-style options merging and must not prefix every route.
-  const mergeHit = masked.match(/(?:\b(?:t|trpc|tRPC|\w+Router)|(?<=\)))\s*\.\s*merge\s*\(/);
-  if (mergeHit && mergeHit.index !== undefined) {
-    const mergeMatch = content
-      .slice(mergeHit.index)
-      .match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
-    if (mergeMatch) {
-      // A '.merge('post.', ...)' prefix composes the route-path key; a stray
-      // leading/trailing dot would double up when we join ('post..list') —
-      // strip both edges and treat an all-dot prefix as no prefix.
-      const merged = (mergeMatch[1] ?? mergeMatch[2] ?? '').replace(/^\.+|\.+$/g, '');
-      return merged.length > 0 ? merged : null;
-    }
-  }
+  // Prefer the exported *Router binding; otherwise the first const/let/var.
+  // A file-wide first `.merge('post.', …)` used to prefix every procedure,
+  // including a later `export const appRouter = t.router({ health })`.
+  const exportBinding = masked.match(/export\s+(?:const|let|var)\s+(\w+Router)\s*=\s*/);
+  const anyBinding = masked.match(/(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*/);
+  const binding = exportBinding ?? anyBinding;
 
-  const routerVarMatch = masked.match(
-    /(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*(?:createTRPCRouter|\w+\s*\.\s*router|router)\s*\(/,
-  );
-  if (routerVarMatch) {
-    // `appRouter` / `rootRouter` is the root binding, not a nest key.
-    // Live tRPC paths are `admin.users.list`, not `app.admin.users.list`.
-    // Do not fall through to the filename prefix — this file is the root composer.
-    const base = routerVarMatch[1].replace(/Router$/i, '');
-    if (/^(app|root)$/i.test(base)) return null;
-    return base;
+  if (binding && binding.index !== undefined) {
+    const rhsStart = binding.index + binding[0].length;
+    const rhsMasked = masked.slice(rhsStart);
+
+    // Only `t.merge` / `trpc.merge` / `tRPC.merge` / `*Router.merge` on THIS
+    // binding is a tRPC prefix. `defaults.merge('internal', …)` is lodash-style
+    // and cannot match here; a preceding `t.merge('post.', postRouter)` is
+    // ignored when this binding is `t.router` / `createTRPCRouter` / `router(`.
+    if (/^(?:t|trpc|tRPC|\w+Router)\s*\.\s*merge\s*\(/.test(rhsMasked)) {
+      const mergeMatch = content
+        .slice(rhsStart)
+        .match(/\.merge\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,/);
+      if (mergeMatch) {
+        // A '.merge('post.', ...)' prefix composes the route-path key; a stray
+        // leading/trailing dot would double up when we join ('post..list') —
+        // strip both edges and treat an all-dot prefix as no prefix.
+        const merged = (mergeMatch[1] ?? mergeMatch[2] ?? '').replace(/^\.+|\.+$/g, '');
+        return merged.length > 0 ? merged : null;
+      }
+    }
+
+    if (/^(?:createTRPCRouter|\w+\s*\.\s*router|router)\s*\(/.test(rhsMasked)) {
+      // `appRouter` / `rootRouter` is the root binding, not a nest key.
+      // Live tRPC paths are `admin.users.list`, not `app.admin.users.list`.
+      // Do not fall through to the filename prefix — this file is the root composer.
+      const base = binding[1].replace(/Router$/i, '');
+      if (/^(app|root)$/i.test(base)) return null;
+      return base;
+    }
   }
 
   const fileName =
@@ -83,26 +92,31 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
 // the gate and emit phantom routes. Every real v9-v11 router imports one of
 // these exact names.
 function isTrpcRouterFile(content: string): boolean {
+  // Markers and cheap-checks run on the mask: a comment/string `@trpc/server`
+  // or `initTRPC` must not open the file for an unrelated `fooProcedure.query`.
+  // Real routers keep unquoted identifiers (`initTRPC`, `publicProcedure`).
+  const masked = maskSource(content);
+
   // Cheap reject before the terminal regex: every live procedure still
   // contains one of these identifiers. Whitespace between `.` and the
   // name is allowed by TERMINAL_CALL_RE, so we do not require a literal `.query`.
   if (
-    !content.includes('query') &&
-    !content.includes('mutation') &&
-    !content.includes('subscription')
+    !masked.includes('query') &&
+    !masked.includes('mutation') &&
+    !masked.includes('subscription')
   ) {
     return false;
   }
-  if (!TERMINAL_CALL_RE.test(content)) {
+  if (!TERMINAL_CALL_RE.test(masked)) {
     // Compact `.input(...).mutation(` is not Procedure-adjacent or
     // line-start; the scanner binds it via parenDepth.
-    if (!/\.\s*(?:query|mutation|subscription)\s*\(/.test(content)) {
+    if (!/\.\s*(?:query|mutation|subscription)\s*\(/.test(masked)) {
       return false;
     }
   }
   return (
-    /initTRPC|createTRPCRouter|createTRPCProxyClient|createTRPCNext|@trpc\//.test(content) ||
-    /\b(?:public|protected|private)Procedure\b/.test(content)
+    /initTRPC|createTRPCRouter|createTRPCProxyClient|createTRPCNext|@trpc\//.test(masked) ||
+    /\b(?:public|protected|private)Procedure\b/.test(masked)
   );
 }
 

@@ -45,6 +45,19 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['GET /trpc/post.list']);
   });
 
+  it('a preceding t.merge does not prefix a later t.router appRouter', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      "t.merge('post.', postRouter);",
+      'export const appRouter = t.router({',
+      '  health: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/health']);
+  });
+
   it('bare router() import style still nests sibling routers', () => {
     const source = [
       "import { router, publicProcedure } from '../trpc';",
@@ -88,6 +101,14 @@ describe('extractTrpcRoutes', () => {
       'export const routes = {',
       '  list: myProcedure.query(() => null),',
       '};',
+    ].join('\n');
+    expect(extractTrpcRoutes(FILE, source)).toEqual([]);
+  });
+
+  it('a comment or string tRPC marker plus fooProcedure emits nothing', () => {
+    const source = [
+      '// leftover: import { initTRPC } from "@trpc/server"',
+      'const handlers = { ping: fooProcedure.query(() => null) }',
     ].join('\n');
     expect(extractTrpcRoutes(FILE, source)).toEqual([]);
   });

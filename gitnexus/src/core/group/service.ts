@@ -461,8 +461,8 @@ const GROUP_QUERY_DEFAULT_LIMIT = 10;
 const GROUP_QUERY_MAX_LIMIT = 100;
 const GROUP_QUERY_DEFAULT_MAX_SYMBOLS = 25;
 const GROUP_QUERY_MAX_SYMBOLS = 200;
-/** Cap member-repo query fan-out. Complements LocalBackend's per-query BFS cap. */
-const GROUP_QUERY_MEMBER_CONCURRENCY = 4;
+/** Cap per-member fan-out for group query/context. Complements LocalBackend's per-query BFS cap. */
+const GROUP_MEMBER_CONCURRENCY = 4;
 
 function clampGroupQueryBound(value: unknown, fallback: number, max: number): number {
   if (typeof value !== 'number' || !(value > 0)) return fallback;
@@ -703,36 +703,44 @@ export class GroupService {
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    const results: GroupContextResult['results'] = await Promise.all(
-      memberEntries.map(async ([repoPath, registryName]) => {
-        try {
-          const repoObj = await this.port.resolveRepo(registryName);
-          const payload = await this.port.context(repoObj, {
-            name: target || undefined,
-            uid,
-            file_path,
-            include_content,
-            chain_depth,
-          });
+    const results: GroupContextResult['results'] = (
+      await mapConcurrent(
+        memberEntries,
+        async ([repoPath, registryName]) => {
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            const payload = await this.port.context(repoObj, {
+              name: target || undefined,
+              uid,
+              file_path,
+              include_content,
+              chain_depth,
+            });
 
-          if (servicePrefix) {
-            const st = (payload as { status?: string })?.status;
-            const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
-            if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
-              return { repoPath, registryName, payload: {} };
+            if (servicePrefix) {
+              const st = (payload as { status?: string })?.status;
+              const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
+              if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
+                return { repoPath, registryName, payload: {} };
+              }
             }
-          }
 
-          return { repoPath, registryName, payload };
-        } catch (e) {
-          return {
-            repoPath,
-            registryName,
-            payload: { error: e instanceof Error ? e.message : String(e) },
-          };
-        }
-      }),
-    );
+            return { repoPath, registryName, payload };
+          } catch (e) {
+            return {
+              repoPath,
+              registryName,
+              payload: { error: e instanceof Error ? e.message : String(e) },
+            };
+          }
+        },
+        { concurrency: GROUP_MEMBER_CONCURRENCY },
+      )
+    ).map((result, index) => {
+      if (result) return result;
+      const [repoPath, registryName] = memberEntries[index]!;
+      return { repoPath, registryName, payload: {} };
+    });
 
     return {
       group: name,
@@ -811,7 +819,7 @@ export class GroupService {
             return { repo: repoPath, score: 0, processes: [] as unknown[] };
           }
         },
-        { concurrency: GROUP_QUERY_MEMBER_CONCURRENCY },
+        { concurrency: GROUP_MEMBER_CONCURRENCY },
       )
     ).map((result, index) => {
       if (result) return result;

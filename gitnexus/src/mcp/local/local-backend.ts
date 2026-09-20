@@ -5165,10 +5165,13 @@ export class LocalBackend {
    *
    * Test-file nodes are deprioritized (pushed to the end of each list) so real
    * callers/callees surface first — same ORDER BY logic as the main incoming
-   * /outgoing queries (Fix A). Cycles are broken via a global `visited` set
-   * (a node visited at depth N is not re-emitted at depth N+1 even if it has
-   * another path back into the frontier). Hard cap of 50 nodes per direction
-   * per depth layer keeps the response bounded.
+   * /outgoing queries (Fix A). Cycles are broken via a per-direction `visited`
+   * set (a node visited at depth N in one direction is not re-emitted at
+   * depth N+1 in that same direction even if it has another path back into
+   * the frontier). Upstream and downstream do not share visited, so a
+   * reciprocal CALLS pair (A→B and B→A) still appears on both sides of
+   * layer 1. Hard cap of 50 nodes per direction per depth layer keeps the
+   * response bounded.
    */
   private async _computeContextChain(
     repo: RepoHandle,
@@ -5202,7 +5205,8 @@ export class LocalBackend {
     `;
 
     const layers: Array<{ depth: number; upstream?: any[]; downstream?: any[] }> = [];
-    const visited = new Set<string>([seedId]);
+    const visitedUpstream = new Set<string>([seedId]);
+    const visitedDownstream = new Set<string>([seedId]);
     let upstreamFrontier = [seedId];
     let downstreamFrontier = [seedId];
 
@@ -5210,6 +5214,7 @@ export class LocalBackend {
       frontier: string[],
       cypher: string,
       logLabel: string,
+      visited: Set<string>,
     ): Promise<{ nodes?: any[]; nextFrontier: string[] }> => {
       if (frontier.length === 0) return { nextFrontier: [] };
       try {
@@ -5249,6 +5254,7 @@ export class LocalBackend {
             LIMIT 50
           `,
         'context:chain-bfs:upstream',
+        visitedUpstream,
       );
       if (upstream.nodes !== undefined) layer.upstream = upstream.nodes;
       upstreamFrontier = upstream.nextFrontier;
@@ -5266,6 +5272,7 @@ export class LocalBackend {
             LIMIT 50
           `,
         'context:chain-bfs:downstream',
+        visitedDownstream,
       );
       if (downstream.nodes !== undefined) layer.downstream = downstream.nodes;
       downstreamFrontier = downstream.nextFrontier;

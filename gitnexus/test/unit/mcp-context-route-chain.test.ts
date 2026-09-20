@@ -96,6 +96,15 @@ const CALLEE = {
   isTest: 0,
 };
 
+/** Reciprocal peer of HANDLER: CALLS HANDLER→PEER and PEER→HANDLER. */
+const PEER = {
+  uid: 'Function:src/peer.ts:peerFn',
+  name: 'peerFn',
+  filePath: 'src/peer.ts',
+  kind: 'Function',
+  isTest: 0,
+};
+
 async function makeBackend(): Promise<LocalBackend> {
   const b = new LocalBackend();
   await b.init();
@@ -120,11 +129,18 @@ function mockGraph(options: {
   processRows?: any[];
   chain?: boolean;
   queryProcess?: boolean;
+  /** Same peer for both CALLS directions; omit if already in $visited. */
+  reciprocalPeer?: typeof PEER;
 }) {
   return async (_db: string, query: string, params: any = {}) => {
     if (isUidLookup(params) || isNameLookup(params)) return [HANDLER];
 
     if (params?.frontier) {
+      const visited = new Set(params.visited ?? []);
+      if (options.reciprocalPeer) {
+        if (visited.has(options.reciprocalPeer.uid)) return [];
+        return [options.reciprocalPeer];
+      }
       if (!options.chain) return [];
       if (query.includes('MATCH (caller)')) return [CALLER];
       if (query.includes('MATCH (n)-[r:CodeRelation]->(target)')) return [CALLEE];
@@ -188,6 +204,24 @@ describe('context/query route + chain enrichment', () => {
         downstream: [
           { uid: CALLEE.uid, name: CALLEE.name, filePath: CALLEE.filePath, kind: CALLEE.kind },
         ],
+      },
+    ]);
+  });
+
+  it('context({chain_depth:1}) lists a reciprocal peer in both layer-1 directions', async () => {
+    (executeParameterized as any).mockImplementation(
+      mockGraph({ handlesRoute: true, processRows: [], reciprocalPeer: PEER }),
+    );
+
+    const result = await backend.callTool('context', { uid: HANDLER.id, chain_depth: 1 });
+
+    const peerNode = { uid: PEER.uid, name: PEER.name, filePath: PEER.filePath, kind: PEER.kind };
+    expect(result.status).toBe('found');
+    expect(result.chain).toEqual([
+      {
+        depth: 1,
+        upstream: [peerNode],
+        downstream: [peerNode],
       },
     ]);
   });
