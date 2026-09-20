@@ -290,9 +290,13 @@ describe('LadybugDB sidecar recovery', () => {
         const source = readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'lbug', file), 'utf-8');
         expect(source, file).toContain('isReadOnlyCheckpointInProgressError');
         // The refusal rides the SAME recovery as the shadow-replay error —
-        // neither adapter may quarantine or rebuild for this state.
+        // neither adapter may quarantine or rebuild for this state. The
+        // leading `!` matters: this must pin the THROW-THROUGH guard
+        // (`!shadowReplay && !checkpoint`), and a substring match without it
+        // would also accept the inverted predicate that recovers ONLY the
+        // shadow-replay class — the exact regression this guards against.
         expect(source, file).toMatch(
-          /isReadOnlyShadowReplayError\(err\) &&\s*!isReadOnlyCheckpointInProgressError\(err\)/,
+          /!isReadOnlyShadowReplayError\(err\) &&\s*!isReadOnlyCheckpointInProgressError\(err\)/,
         );
       }
       // The classifier regex itself lives only in sidecar-recovery.ts.

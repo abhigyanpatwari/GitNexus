@@ -622,7 +622,8 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
       const checkpointResult = await conn.query('CHECKPOINT');
       const result = Array.isArray(checkpointResult) ? checkpointResult[0] : checkpointResult;
       await result.getAll();
-      result.close?.();
+      // Shared best-effort closer (awaits + swallows) — never roll this loop.
+      await closeQueryResults(result);
     } finally {
       await conn.close().catch(() => {});
     }
