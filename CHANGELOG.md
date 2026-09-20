@@ -4,14 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **`gitnexus clean --stale`** — reclaim per-branch indexes whose recorded branch is no longer a local head, without naming each deleted branch. `gitnexus doctor` reports leftover slots and their size for the current repo (#3331)
-
-### Fixed
-
-- **`gitnexus doctor` leftover slots** — when local heads cannot be listed, print the retry-git message instead of titling rows as orphaned or naming `clean --stale` (#3337)
-
 ## [1.5.3] - 2026-04-01
 
 ### Added
