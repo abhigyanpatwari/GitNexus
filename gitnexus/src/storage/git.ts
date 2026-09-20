@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -660,6 +660,34 @@ export const getCurrentBranch = (repoPath: string): string | null => {
       .trim();
     if (!branch || branch === 'HEAD') return null;
     return branch;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Local `refs/heads` names, or `null` when the directory is not a git
+ * worktree or git cannot run. An empty array means the listing succeeded
+ * and there are no local heads — that is not a listing failure (#3331).
+ */
+export const listLocalHeads = (repoPath: string): string[] | null => {
+  try {
+    const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+      maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
+    });
+    if (result.error || result.status !== 0) return null;
+    const output = (result.stdout ?? '').toString().trim();
+    if (!output) return [];
+    return output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('refs/heads/'))
+      .map((line) => line.slice('refs/heads/'.length))
+      .filter((line) => line.length > 0);
   } catch {
     return null;
   }
