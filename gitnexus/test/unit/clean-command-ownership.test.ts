@@ -117,3 +117,60 @@ describe('cleanCommand external storage ownership', () => {
     expect(remainingEntry).toMatchObject({ path: repoA, storagePath: storageB });
   });
 });
+
+describe('cleanCommand named branch empty-dir cleanup (#3331)', () => {
+  let fixture: TestDBHandle;
+  let previousGitNexusHome: string | undefined;
+  let repo: string;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    fixture = await createTempDir();
+    previousGitNexusHome = process.env.GITNEXUS_HOME;
+    const home = path.join(fixture.dbPath, 'home');
+    repo = path.join(fixture.dbPath, 'repo');
+    storagePath = path.join(repo, '.gitnexus');
+    await fs.mkdir(home, { recursive: true });
+    await fs.mkdir(repo, { recursive: true });
+    initGitRepo(repo);
+    process.env.GITNEXUS_HOME = home;
+
+    const { registerRepo, getStoragePaths, saveMeta } =
+      await import('../../src/storage/repo-manager.js');
+    const meta = {
+      repoPath: repo,
+      lastCommit: 'aaa',
+      indexedAt: '2026-09-20T00:00:00.000Z',
+      branch: 'main',
+      stats: { files: 1, nodes: 1 },
+    };
+    await saveMeta(storagePath, meta);
+    await registerRepo(repo, meta);
+    await registerRepo(
+      repo,
+      { ...meta, branch: 'feature/x', lastCommit: 'bbb' },
+      {
+        branch: 'feature/x',
+      },
+    );
+    const branchDir = path.dirname(getStoragePaths(repo, 'feature/x', storagePath).metaPath);
+    await saveMeta(branchDir, { ...meta, branch: 'feature/x' });
+    expect(path.basename(path.dirname(branchDir))).toBe('branches');
+
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (previousGitNexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = previousGitNexusHome;
+    await fixture.cleanup();
+  });
+
+  it('named --branch --force rmdirs empty branches/ and keeps the workspace slot', async () => {
+    await cleanCommand({ branch: 'feature/x', force: true });
+    await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toBeTruthy();
+    await expect(fs.access(path.join(storagePath, 'gitnexus.json'))).resolves.toBeUndefined();
+  });
+});

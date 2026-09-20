@@ -191,6 +191,15 @@ export interface RegistryEntry {
   branches?: BranchSummary[];
 }
 
+/** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
+export const findRegistryEntryByRepoPath = (
+  entries: readonly RegistryEntry[],
+  repoPath: string,
+): RegistryEntry | undefined => {
+  const repoKey = canonicalizePath(repoPath);
+  return entries.find((entry) => registryPathEquals(canonicalizePath(entry.path), repoKey));
+};
+
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
