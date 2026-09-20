@@ -3,10 +3,11 @@
  *
  * Two input modes:
  *   - "github"  → GitHub URL (https://github.com/owner/repo)
- *   - "local"   → Select a local folder via the browser's native directory picker
+ *   - "local"   → Select a local folder via the browser's native directory picker,
+ *                 or drop one onto the upload control
  */
 
-import { useState, useRef, useEffect, useId } from 'react';
+import { useState, useRef, useEffect, useId, type DragEvent as ReactDragEvent } from 'react';
 import {
   Github,
   Gitlab,
@@ -27,7 +28,14 @@ import {
   type JobProgress,
 } from '../services/backend-client';
 import { AnalyzeProgress } from './AnalyzeProgress';
-import { filterRepoFiles } from '@/lib/upload-filter';
+import { filterRepoFiles, type FilterResult } from '@/lib/upload-filter';
+import {
+  collectDropEntries,
+  isFolderDropSupported,
+  readDroppedFolder,
+  DropRejection,
+  type DropRejectionReason,
+} from '@/lib/folder-drop';
 import { useTranslation } from 'react-i18next';
 import { formatBackendError } from '../i18n/error-messages';
 
@@ -53,6 +61,23 @@ function isValidGitlabUrl(value: string): boolean {
 
 function isValidAzureUrl(value: string): boolean {
   return AZURE_RE.test(value.trim());
+}
+
+/** i18n key (under onboarding:repoAnalyzer.upload) for a refused folder drop. */
+function dropRejectionKey(reason: DropRejectionReason): string {
+  switch (reason) {
+    case 'unsupported':
+      return 'dropUnsupported';
+    case 'tooManyFiles':
+      return 'dropTooManyFiles';
+    case 'notSingleFolder':
+      return 'dropSingleFolder';
+  }
+}
+
+/** True for a drag that carries files or folders from the OS, not text or links. */
+function isFileDrag(e: ReactDragEvent): boolean {
+  return Array.from(e.dataTransfer.types).includes('Files');
 }
 
 // ── Mode tabs ────────────────────────────────────────────────────────────────
@@ -198,9 +223,16 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const inputId = useId();
   const [mode, setMode] = useState<InputMode>('github');
   const [uploading, setUploading] = useState(false);
-  const [uploadSummary, setUploadSummary] = useState<{ count: number; dropped: number } | null>(
-    null,
-  );
+  // Files found so far while walking a dropped folder; null when not reading.
+  const [readingCount, setReadingCount] = useState<number | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  // `skippedDirs` is set only for a dropped folder: directories the walk left
+  // out without enumerating them (a directory count, unlike `dropped`).
+  const [uploadSummary, setUploadSummary] = useState<{
+    count: number;
+    dropped: number;
+    skippedDirs?: number;
+  } | null>(null);
   const [githubUrl, setGithubUrl] = useState('');
   const [githubToken, setGithubToken] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
@@ -224,6 +256,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   const requestControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // dragenter/dragleave fire for every child boundary crossed; count them so
+  // the highlight does not flicker while the cursor moves over the button.
+  const dragDepthRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -277,6 +312,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setValidationError(null);
     setUploadSummary(null);
     setUploading(false);
+    // The aborted controller also stops a folder walk that is still running.
+    setReadingCount(null);
+    setDragActive(false);
+    dragDepthRef.current = 0;
     // An aborted request no longer resolves to move `phase` off 'starting';
     // reset so the new mode's form is immediately usable (also clears a stale
     // 'error' phase). Only reachable while showInput is true.
@@ -287,14 +326,17 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // exposes an absolute path, so the old typed-path/browse approach couldn't
   // work — see handleFolderUpload). A typed server path is also still accepted.
 
+  // A folder walk in progress (readingCount) blocks Analyze as well: starting a
+  // request would abort the walk through renewRequestController.
   const canSubmit =
-    mode === 'github'
+    readingCount === null &&
+    (mode === 'github'
       ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
       : mode === 'gitlab'
         ? isValidGitlabUrl(gitlabUrl) && (phase === 'input' || phase === 'error')
         : mode === 'azure'
           ? isValidAzureUrl(azureUrl) && (phase === 'input' || phase === 'error')
-          : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
+          : localPath.trim().length > 1 && (phase === 'input' || phase === 'error'));
 
   const handleAnalyze = async () => {
     if (mode === 'github' && !isValidGithubUrl(githubUrl)) {
@@ -398,20 +440,33 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // Upload a browser-selected folder (webkitdirectory) and start analysis. The
   // upload endpoint returns a jobId, which then joins the normal SSE flow.
   const handleFolderUpload = async (fileList: FileList) => {
-    if (uploading || isLoading) return; // guard against a concurrent upload
-    const { files, manifest, droppedCount } = filterRepoFiles(fileList);
+    // guard against a concurrent upload or a folder walk still running
+    if (uploading || isLoading || readingCount !== null) return;
+    await startFolderUpload(filterRepoFiles(fileList), renewRequestController());
+  };
+
+  // Shared tail of the picker and drop paths: `filtered` is the client-side
+  // filter result, `controller` owns the request, `skippedDirs` is set for a
+  // drop and counts the directories the walk left out before reading them
+  // (the picker enumerates everything and lets filterRepoFiles drop the files
+  // instead, so its count arrives inside `filtered.droppedCount`).
+  const startFolderUpload = async (
+    filtered: FilterResult,
+    controller: AbortController,
+    skippedDirs?: number,
+  ) => {
+    const { files, manifest, droppedCount } = filtered;
     if (files.length === 0) {
       setValidationError(t('onboarding:repoAnalyzer.upload.empty'));
       return;
     }
     setValidationError(null);
-    setUploadSummary({ count: files.length, dropped: droppedCount });
+    setUploadSummary({ count: files.length, dropped: droppedCount, skippedDirs });
     setUploading(true);
     setPhase('starting');
     // The selected folder's name (manifest entries are `<folder>/<rest>`) is a
     // sensible fallback if the server's complete event omits repoName.
     const folderName = manifest[0]?.split('/')[0] ?? null;
-    const controller = renewRequestController();
     try {
       const { jobId } = await uploadFolder(files, manifest, controller.signal);
       if (controller.signal.aborted) {
@@ -436,6 +491,76 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     }
   };
 
+  // Drag and drop a folder onto the upload control. The entries have to be
+  // taken from dataTransfer synchronously inside the drop handler (browsers
+  // empty `items` once the handler yields). Only a single folder is accepted,
+  // mirroring the server's one-top-level-directory rule, and the walk runs
+  // under the same request controller as the upload so a mode switch or an
+  // unmount aborts both.
+  const isDropBlocked = () => uploading || phase === 'starting' || readingCount !== null;
+
+  const handleDragEnter = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    if (isDropBlocked()) return;
+    dragDepthRef.current += 1;
+    setDragActive(true);
+  };
+
+  const handleDragOver = (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    // Without preventDefault the drop never fires and the browser navigates
+    // to the dropped file instead, so it is called even while blocked.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = isDropBlocked() ? 'none' : 'copy';
+  };
+
+  const handleDragLeave = () => {
+    // No type check here: some engines hand dragleave an empty `types` list,
+    // and a stray decrement is harmless because the depth is clamped at 0.
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  };
+
+  const handleDrop = async (e: ReactDragEvent<HTMLDivElement>) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    if (isDropBlocked()) return;
+    const controller = renewRequestController();
+    setValidationError(null);
+    setUploadSummary(null);
+    setReadingCount(0);
+    try {
+      const entries = collectDropEntries(e.dataTransfer); // sync, before any await
+      const { files, skipped, oversized } = await readDroppedFolder(entries, {
+        signal: controller.signal,
+        onProgress: setReadingCount,
+      });
+      // Only the walk that still owns the request controller may clear the
+      // reading mutex. An aborted drop that settles after a later drop started
+      // must not steal the live walk's lock (readingCount === null is what
+      // unblocks Analyze and a second drop).
+      if (requestControllerRef.current === controller) setReadingCount(null);
+      if (controller.signal.aborted) return;
+      const filtered = filterRepoFiles(files);
+      await startFolderUpload(
+        { ...filtered, droppedCount: filtered.droppedCount + oversized },
+        controller,
+        skipped,
+      );
+    } catch (err) {
+      if (requestControllerRef.current === controller) setReadingCount(null);
+      if (controller.signal.aborted) return;
+      setValidationError(
+        err instanceof DropRejection
+          ? t(`onboarding:repoAnalyzer.upload.${dropRejectionKey(err.reason)}`, { max: err.max })
+          : formatBackendError(err, t),
+      );
+    }
+  };
+
   const handleCancel = async () => {
     sseControllerRef.current?.abort();
     sseControllerRef.current = null;
@@ -453,6 +578,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setPhase('input');
     setProgress({ phase: 'queued', percent: 0, message: t('common:analyzePhases.queued') });
     setUploading(false);
+    setReadingCount(null);
     setUploadSummary(null);
   };
 
@@ -658,9 +784,19 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
         </div>
       )}
 
-      {/* Local folder input */}
+      {/* Local folder input. The whole panel is the drop target for a folder:
+          a drop that lands on the path input or the label is caught too, and
+          the browser's default (navigating to the dropped file) never fires. */}
       {showInput && mode === 'local' && (
-        <div className="space-y-2">
+        <div
+          className="space-y-2"
+          data-testid="folder-drop-zone"
+          data-drag-active={dragActive || undefined}
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <label
             htmlFor={`${inputId}-local`}
             className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
@@ -702,7 +838,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             )}
           </div>
           {/* Upload a folder from your computer — no server path or mount needed.
-              The browser can't expose an absolute path, so we upload the files. */}
+              The browser can't expose an absolute path, so we upload the files.
+              Dropping a folder onto this panel walks it with webkitGetAsEntry and
+              feeds the same upload path. */}
           <input
             ref={folderInputRef}
             type="file"
@@ -722,12 +860,35 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             type="button"
             data-testid="upload-folder"
             onClick={() => folderInputRef.current?.click()}
-            disabled={isLoading}
-            className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-border-subtle bg-elevated px-3 py-2 text-xs font-medium text-text-secondary transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50"
+            disabled={isLoading || readingCount !== null}
+            className={`flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border bg-elevated px-3 py-2 text-xs font-medium transition-all duration-150 hover:bg-hover hover:text-text-primary disabled:opacity-50 ${
+              dragActive
+                ? 'border-accent/50 text-text-primary shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
+                : 'border-border-subtle text-text-secondary'
+            }`}
           >
             <FolderOpen className="h-3.5 w-3.5" />
             {t('onboarding:repoAnalyzer.upload.button')}
           </button>
+          {isFolderDropSupported() && !isDropBlocked() && (
+            <p className="text-center text-[11px] text-text-muted" data-testid="drop-hint">
+              {t(
+                dragActive
+                  ? 'onboarding:repoAnalyzer.upload.dropActive'
+                  : 'onboarding:repoAnalyzer.upload.dropHint',
+              )}
+            </p>
+          )}
+          {readingCount !== null && (
+            <div role="status" aria-busy="true" data-testid="drop-reading" className="space-y-1">
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-accent" />
+              </div>
+              <p className="text-xs text-text-muted">
+                {t('onboarding:repoAnalyzer.upload.reading', { fileCount: readingCount })}
+              </p>
+            </div>
+          )}
           {uploading && (
             <div role="status" aria-busy="true" data-testid="upload-progress" className="space-y-1">
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-elevated">
@@ -740,10 +901,16 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           )}
           {uploadSummary && !uploading && phase !== 'error' && (
             <p className="text-xs text-text-muted" data-testid="upload-summary">
-              {t('onboarding:repoAnalyzer.upload.selected', {
-                fileCount: uploadSummary.count,
-                dropped: uploadSummary.dropped,
-              })}
+              {uploadSummary.skippedDirs === undefined
+                ? t('onboarding:repoAnalyzer.upload.selected', {
+                    fileCount: uploadSummary.count,
+                    dropped: uploadSummary.dropped,
+                  })
+                : t('onboarding:repoAnalyzer.upload.selectedDrop', {
+                    fileCount: uploadSummary.count,
+                    dropped: uploadSummary.dropped,
+                    skippedDirs: uploadSummary.skippedDirs,
+                  })}
             </p>
           )}
         </div>
