@@ -2954,6 +2954,7 @@ export class LocalBackend {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<any> {
     // #2175: each consumer resolves the search_query/query alias itself (there is no
@@ -3337,6 +3338,34 @@ export class LocalBackend {
       .slice(0, processLimit);
     timer.stop(); // ranking
 
+    // Optional BFS chain enrichment (mirrors context({chain_depth})). Attached
+    // per ranked process, keyed on the process's entry-point symbol so the
+    // chain starts where the flow starts. Bounded: one BFS per process (at
+    // most processLimit), each internally capped by _computeContextChain (50
+    // nodes per direction per depth layer). Best-effort — a BFS failure drops
+    // that process's chain but never fails the query.
+    const chainByProcessId = new Map<string, any[]>();
+    const requestedChainDepth = Math.max(0, Math.min(3, Number(params.chain_depth ?? 0) || 0));
+    if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
+      timer.start('chain_enrichment');
+      await Promise.all(
+        rankedProcesses.map(async (p) => {
+          if (!p.entryPointId) return;
+          try {
+            const chain = await this._computeContextChain(
+              repo,
+              p.entryPointId,
+              requestedChainDepth,
+            );
+            chainByProcessId.set(p.id, chain);
+          } catch (e) {
+            logQueryError('query:chain-bfs', e);
+          }
+        }),
+      );
+      timer.stop(); // chain_enrichment
+    }
+
     // Step 4: Build response
     timer.start('formatting');
     const processes = rankedProcesses.map((p) => ({
@@ -3347,6 +3376,7 @@ export class LocalBackend {
       process_type: p.processType,
       step_count: p.stepCount,
       ...(p.route ? { route: p.route.url, method: p.route.method || undefined } : {}),
+      ...(chainByProcessId.has(p.id) ? { chain: chainByProcessId.get(p.id) } : {}),
     }));
 
     const processSymbols = rankedProcesses.flatMap((p) =>
@@ -5086,9 +5116,10 @@ export class LocalBackend {
    * layered result so an agent can see the full procedure→workflow→sub-workflow
    * chain in a single call instead of chaining context() invocations.
    *
-   * Output shape (one entry per depth, depth 0 = the seed itself):
+   * Output shape (one entry per depth, 1..maxDepth — layers starts empty and
+   * the loop begins at depth 1, so the seed itself is NOT emitted as its own
+   * entry):
    *   [
-   *     { depth: 0, symbol: {seed} },
    *     { depth: 1, upstream: [...callers], downstream: [...callees] },
    *     { depth: 2, upstream: [...], downstream: [...] },
    *     ...
@@ -8938,6 +8969,7 @@ export class LocalBackend {
       if (typeof params.limit === 'number') queryArgs.limit = params.limit;
       if (typeof params.max_symbols === 'number') queryArgs.max_symbols = params.max_symbols;
       if (params.include_content !== undefined) queryArgs.include_content = params.include_content;
+      if (params.chain_depth !== undefined) queryArgs.chain_depth = params.chain_depth;
       if (params.service !== undefined && params.service !== null)
         queryArgs.service = params.service;
       if (memberRest !== undefined) {

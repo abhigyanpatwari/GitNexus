@@ -771,7 +771,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // captured as unrestricted reexports. Re-extract both facts on warm indexes.
 // v102: ParsedFile gained callResultAssignmentSites; old durable shards do
 // not carry the exact assignment identity required by return-type replay.
-const SCHEMA_BUMP = 102;
+// v103 (#3339 review): tRPC route extraction changed — nested-router paths,
+// a tightened entry gate, and controller-less routes now bind handlers via a
+// same-file CALLS edge. Warm caches replay the flat pre-fix capture set
+// verbatim (route rows are parse-time facts), so both stores re-extract.
+const SCHEMA_BUMP = 103;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

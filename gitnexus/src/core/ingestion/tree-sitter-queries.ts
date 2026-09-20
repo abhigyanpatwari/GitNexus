@@ -226,6 +226,27 @@ export const TYPESCRIPT_QUERIES = `
       (function_expression))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/typescript/query.ts so both
+; pipelines attribute quoted-key procedures identically.
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
 ; so the legacy Call-Resolution DAG and the registry-primary pipeline

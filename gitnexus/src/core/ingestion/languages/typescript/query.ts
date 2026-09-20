@@ -374,6 +374,28 @@ export const TYPESCRIPT_SCOPE_QUERY = `
       (function_expression) @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
+;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+;; Quoted object keys are identical shapes to the identifier-key pairs above —
+;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
+;; otherwise leave its procedures anonymous and file-level attributed.
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
 ;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ;;
 ;; Covers the dominant React UI idiom (\`React.forwardRef\`, \`React.memo\`,

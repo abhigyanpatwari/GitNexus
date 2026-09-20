@@ -207,7 +207,30 @@ export const processRoutesFromExtracted = async (
       await yieldToEventLoop();
     }
 
-    if (!route.controllerName || !route.methodName) continue;
+    if (!route.methodName) continue;
+
+    // tRPC routes carry NO controller: a router is an object binding, not a
+    // class, so the extractor leaves controllerName unset and names the
+    // handler by its object-literal key. Bind the same-file symbol directly,
+    // refusing ambiguity (length !== 1 -> skip, fail-open). Laravel routes
+    // always set controllerName and Django routes leave methodName null, so
+    // this branch is tRPC-only by construction — the laravel guessed-method
+    // fallback below never sees a controller-less route.
+    if (!route.controllerName) {
+      const handlerDefs = model.symbols.lookupExactAll(route.filePath, route.methodName);
+      if (handlerDefs.length !== 1) continue;
+      const sourceId = generateId('File', route.filePath);
+      const relId = generateId('CALLS', sourceId + ':route->' + handlerDefs[0].nodeId);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: handlerDefs[0].nodeId,
+        type: 'CALLS',
+        confidence: ROUTE_EDGE_CONFIDENCE,
+        reason: 'trpc-route',
+      });
+      continue;
+    }
 
     // Resolve the controller class. Qualified-first: when the routes file
     // disambiguated the controller (a `use` import or inline `::class` FQN, both
@@ -429,6 +452,9 @@ export function resolveRouteHandlerSymbols(
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
       if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+    } else if (!route.controllerName && route.methodName) {
+      // tRPC: the handler is a same-file object-key symbol; refuse ambiguity.
+      methodId = uniqueSymbolId(route.filePath, route.methodName);
     }
     claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
   }

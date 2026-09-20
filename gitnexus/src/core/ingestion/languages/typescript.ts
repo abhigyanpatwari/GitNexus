@@ -428,7 +428,7 @@ export const typescriptProvider = defineLanguage({
       framework: 'trpc',
       entryPointMultiplier: 3.0,
       reason: 'trpc-procedure',
-      patterns: ['initTRPC', 'createTRPCRouter', '.mutation(', '.query(', '.subscription('],
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
@@ -508,7 +508,7 @@ export const javascriptProvider = defineLanguage({
       framework: 'trpc',
       entryPointMultiplier: 3.0,
       reason: 'trpc-procedure',
-      patterns: ['initTRPC', 'createTRPCRouter', '.mutation(', '.query(', '.subscription('],
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
     },
     {
       framework: 'expo-router',

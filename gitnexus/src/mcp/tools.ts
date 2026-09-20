@@ -193,6 +193,14 @@ ${HOT_READ_STALENESS_NOTE}`,
             'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
         },
+        chain_depth: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 3,
+          default: 0,
+          description:
+            "Optional: walk CALLS edges up to N hops (0-3) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.",
+        },
         maxTokens: {
           type: 'integer',
           minimum: 1,

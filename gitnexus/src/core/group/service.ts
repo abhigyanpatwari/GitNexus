@@ -84,6 +84,13 @@ export interface GroupToolPort {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
+      /**
+       * Optional per-process BFS chain expansion, same semantics as the
+       * single-repo query tool. Optional so existing GroupToolPort test mocks
+       * that predate chain_depth keep type-checking (same rationale as the
+       * optional context chain_depth above).
+       */
+      chain_depth?: number;
     },
   ): Promise<unknown>;
   impactByUid(
@@ -733,6 +740,7 @@ export class GroupService {
     const servicePrefix = normalizeServicePrefix(params.service);
 
     const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
+    const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
@@ -758,6 +766,7 @@ export class GroupService {
             limit,
             max_symbols: 10,
             include_content: false,
+            chain_depth,
           })) as {
             processes?: Array<Record<string, unknown>>;
             process_symbols?: Array<Record<string, unknown>>;
