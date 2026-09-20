@@ -3,7 +3,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { branchSlug } from '../../src/storage/branch-index.js';
 import { INDEX_METADATA_FILE } from '../../src/storage/storage-constants.js';
-import { listStaleBranchSlots } from '../../src/storage/stale-branch-slots.js';
+import {
+  listRegisteredRepos,
+  registerRepo,
+  type RepoMeta,
+} from '../../src/storage/repo-manager.js';
+import { listStaleBranchSlots, removeBranchSlot } from '../../src/storage/stale-branch-slots.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 
 async function writeSlotMeta(dir: string, branch: string): Promise<void> {
@@ -176,5 +181,124 @@ describe('listStaleBranchSlots (#3331)', () => {
     });
 
     expect(rows).toEqual([]);
+  });
+});
+
+describe('removeBranchSlot (#3331)', () => {
+  let home: TestDBHandle;
+  let fixture: TestDBHandle;
+  let repoPath: string;
+  let storagePath: string;
+  let savedHome: string | undefined;
+
+  const metaFor = (branch: string): RepoMeta => ({
+    repoPath: '',
+    lastCommit: 'abc',
+    indexedAt: '2026-09-20T00:00:00.000Z',
+    branch,
+    stats: { files: 1, nodes: 1 },
+  });
+
+  beforeEach(async () => {
+    home = await createTempDir();
+    fixture = await createTempDir();
+    repoPath = path.join(fixture.dbPath, 'repo');
+    storagePath = path.join(repoPath, '.gitnexus');
+    await fs.mkdir(repoPath, { recursive: true });
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = home.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await fixture.cleanup();
+    await home.cleanup();
+  });
+
+  it('removes the last slot, drops the registry row, and rmdirs empty branches/', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    await fs.writeFile(path.join(storagePath, 'parse-cache.json'), '{}');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: true, keptRegistry: false });
+    await expect(fs.access(dir)).rejects.toThrow();
+    await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toThrow();
+    await expect(fs.readFile(path.join(storagePath, 'parse-cache.json'), 'utf8')).resolves.toBe(
+      '{}',
+    );
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('leaves the other slot and branches/ when two slots exist', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    await registerRepo(repoPath, metaFor('feature/y'), { branch: 'feature/y' });
+    const dirX = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const dirY = path.join(storagePath, 'branches', branchSlug('feature/y'));
+    await writeSlotMeta(dirX, 'feature/x');
+    await writeSlotMeta(dirY, 'feature/y');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: dirX,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.emptiedBranchesDir).toBe(false);
+    await expect(fs.access(dirY)).resolves.toBeUndefined();
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/y']);
+  });
+
+  it('refuses a target outside branches/', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(path.join(storagePath, 'parse-cache.json'), '{}');
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: storagePath,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.keptRegistry).toBe(true);
+    expect(result.emptiedBranchesDir).toBe(false);
+    await expect(fs.readFile(path.join(storagePath, 'parse-cache.json'), 'utf8')).resolves.toBe(
+      '{}',
+    );
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((row) => row.branch)).toEqual(['feature/x']);
+  });
+
+  it('drops a registry-only row without requiring a directory', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: null,
+    });
+
+    expect(result.ok).toBe(true);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toBeUndefined();
   });
 });

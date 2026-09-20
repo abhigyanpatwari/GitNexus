@@ -37,6 +37,7 @@ import {
   saveMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { removeBranchSlot } from '../../src/storage/stale-branch-slots.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import { createTempDir } from '../helpers/test-db.js';
 
@@ -130,5 +131,58 @@ describe('adoptFlatBranchLabel — rm failure keeps the branch summary (#2364 F4
     const [entry] = await listRegisteredRepos();
     expect(entry.branch).toBe('feature/x');
     expect(entry.branches).toBeUndefined();
+  });
+});
+
+describe('removeBranchSlot — rm failure keeps the branch summary (#3331)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const metaFor = (branch: string, lastCommit: string): RepoMeta => ({
+    repoPath: '',
+    lastCommit,
+    indexedAt: '2026-07-03T12:00:00.000Z',
+    branch,
+    stats: { files: 1, nodes: 1 },
+  });
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-stale-rm-failure-home-');
+    tmpRepo = await createTempDir('gitnexus-stale-rm-failure-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    fsCtx.rmMock.mockClear();
+    fsCtx.rmMock.mockImplementation((...args) => fsCtx.realRm!(...args));
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('keeps the registry row and does not rmdir branches/ on EBUSY', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    const { storagePath, metaPath } = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+    const dir = path.dirname(metaPath);
+    await saveMeta(dir, metaFor('feature/x', 'bbb2222'));
+
+    fsCtx.rmMock.mockRejectedValueOnce(Object.assign(new Error('mock busy'), { code: 'EBUSY' }));
+    const result = await removeBranchSlot({
+      repoPath: tmpRepo.dbPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.keptRegistry).toBe(true);
+    expect(result.emptiedBranchesDir).toBe(false);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
+    await expect(fs.access(dir)).resolves.toBeUndefined();
   });
 });

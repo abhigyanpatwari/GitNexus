@@ -1,9 +1,10 @@
 /**
- * Classify leftover per-branch index slots (#3331).
+ * Classify and reclaim leftover per-branch index slots (#3331).
  *
  * Live means a name in local `refs/heads`. Classification never reverses
  * `branchSlug`; registry rows join through the same forward slug path
- * `clean --branch` already computes. This module does not delete.
+ * `clean --branch` already computes. Directory delete happens before the
+ * registry drop; a failed rm keeps the summary so a later clean can retry.
  */
 
 import fs from 'fs/promises';
@@ -11,6 +12,7 @@ import path from 'path';
 import { BRANCHES_DIR, branchSlug } from './branch-index.js';
 import { listLocalHeads } from './git.js';
 import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
+import { removeBranchIndex } from './repo-manager.js';
 
 export type StaleBranchReason = 'ref-missing' | 'registry-only' | 'disk-only' | 'heads-unavailable';
 
@@ -137,4 +139,85 @@ export const listStaleBranchSlots = async (
   }
 
   return rows;
+};
+
+export const isContainedBranchDir = (storagePath: string, dir: string): boolean => {
+  const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
+  const resolved = path.resolve(dir);
+  const relative = path.relative(branchesRoot, resolved);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+};
+
+export const isDeleteCandidate = (slot: StaleBranchSlot): boolean =>
+  slot.reason !== 'heads-unavailable';
+
+export interface RemoveBranchSlotInput {
+  repoPath: string;
+  storagePath: string;
+  branch: string;
+  /** Slot directory to remove, or `null` for a registry-only row. */
+  dir: string | null;
+}
+
+export interface RemoveBranchSlotResult {
+  ok: boolean;
+  emptiedBranchesDir: boolean;
+  keptRegistry: boolean;
+  error?: Error;
+}
+
+const rmdirEmptyBranches = async (storagePath: string): Promise<boolean> => {
+  try {
+    await fs.rmdir(path.join(storagePath, BRANCHES_DIR));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const removeBranchSlot = async (
+  input: RemoveBranchSlotInput,
+): Promise<RemoveBranchSlotResult> => {
+  const { repoPath, storagePath, branch, dir } = input;
+  if (dir !== null) {
+    if (!isContainedBranchDir(storagePath, dir)) {
+      return {
+        ok: false,
+        emptiedBranchesDir: false,
+        keptRegistry: true,
+        error: new Error(
+          `Refusing to clean branch index outside the validated storage slot: ${dir}`,
+        ),
+      };
+    }
+    let rmError: NodeJS.ErrnoException | undefined;
+    await fs.rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
+      rmError = err as NodeJS.ErrnoException;
+    });
+    let dirGone = !rmError;
+    if (rmError) {
+      const probeCode = await fs.access(dir).then(
+        () => null,
+        (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? 'UNKNOWN',
+      );
+      dirGone = probeCode === 'ENOENT' || probeCode === 'ENOTDIR';
+    }
+    if (!dirGone) {
+      return {
+        ok: false,
+        emptiedBranchesDir: false,
+        keptRegistry: true,
+        error: rmError ?? new Error(`Could not remove branch index: ${dir}`),
+      };
+    }
+  }
+
+  await removeBranchIndex(repoPath, branch);
+  const emptiedBranchesDir = await rmdirEmptyBranches(storagePath);
+  return { ok: true, emptiedBranchesDir, keptRegistry: false };
 };

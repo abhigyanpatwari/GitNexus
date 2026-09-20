@@ -13,9 +13,9 @@ import {
   unregisterRepo,
   listRegisteredRepos,
   getStoragePaths,
-  removeBranchIndex,
 } from '../storage/repo-manager.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
+import { removeBranchSlot } from '../storage/stale-branch-slots.js';
 import {
   cleanParkedLbugSidecars,
   inspectLbugSidecars,
@@ -75,13 +75,17 @@ export const cleanCommand = async (options?: {
       console.log(`\n${t('common.runForceConfirm')}`);
       return;
     }
-    try {
-      await fs.rm(branchDir, { recursive: true, force: true });
-      await removeBranchIndex(repo.repoPath, summary.branch);
-      console.log(t('clean.deletedBranch', { branch: summary.branch }));
-    } catch (err) {
-      logger.error({ err }, 'Failed to delete branch index:');
+    const result = await removeBranchSlot({
+      repoPath: repo.repoPath,
+      storagePath,
+      branch: summary.branch,
+      dir: branchDir,
+    });
+    if (!result.ok) {
+      logger.error({ err: result.error }, 'Failed to delete branch index:');
+      return;
     }
+    console.log(t('clean.deletedBranch', { branch: summary.branch }));
     return;
   }
 
