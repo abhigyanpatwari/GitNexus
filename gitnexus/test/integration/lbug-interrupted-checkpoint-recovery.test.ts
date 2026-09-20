@@ -61,6 +61,10 @@ async function plantInterruptedCheckpoint(dbPath: string): Promise<void> {
       await conn.query(`UNWIND [${batch}] AS r CREATE (:Person {name: r.name})`);
     }
     const walBuffer = await fs.readFile(`${dbPath}.wal`);
+    // Honesty check: the rows must actually LIVE in the WAL — on an engine
+    // that tolerates the planted state this is the only proof the plant is
+    // not an empty shell (review finding: unused walBuffer).
+    expect(walBuffer.byteLength).toBeGreaterThan(0);
     // Close WITHOUT checkpoint: rows stay WAL-only, main file stays stale.
     await conn.close().catch(() => {});
     await db.close().catch(() => {});

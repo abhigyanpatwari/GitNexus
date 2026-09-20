@@ -233,17 +233,16 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   return /replay shadow pages under read-only mode/i.test(msg);
 };
 
-// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
-// When bumping LadybugDB, re-validate this regex against the new error format
-// — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
-// Verified by a live occurrence: killing a wiki pod mid-CHECKPOINT left
-// `lbug.wal` + `lbug.shadow` on disk (interrupted checkpoint), and every later
-// read-only open refused with exactly this message (homelab repro
-// 2026-09-19, GitNexus image 1.6.10-20260917). Sibling of
-// `isReadOnlyShadowReplayError` — the two are the read-only refusals an
-// interrupted checkpoint produces, and both are recovered the same way: one
-// writable open replays the WAL/completes the checkpoint, then the read-only
-// open succeeds.
+// LADYBUGDB-CONTRACT: native error text. When bumping LadybugDB, re-validate
+// this regex against the new error format — `git grep "LADYBUGDB-CONTRACT"`
+// enumerates every version-coupled spot.
+// Version honesty (review finding on the interrupted-checkpoint PR): this
+// string is FIRST OBSERVED on @ladybugdb/core 0.19.1 — live-reproduced by
+// SIGKILLing a writer mid-CHECKPOINT (homelab 2026-09-19, GitNexus image
+// 1.6.10-20260917, built on 0.19.x). The 0.18.3 binary does NOT contain it
+// (checked via `strings`), and 0.18.3 tolerates the same on-disk state, so on
+// 0.18.x this classifier simply never fires. If the engine pin ever moves
+// back to ^0.19, the read-path self-heal is already in place.
 export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);

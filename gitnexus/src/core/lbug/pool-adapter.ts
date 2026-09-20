@@ -609,10 +609,17 @@ async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
 
 async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> {
   let db: lbug.Database | undefined;
+  // Mirrors the direct adapter's `probeSucceeded` guard: once the probe has
+  // replayed, a MISSING-SHADOW error can only come from the CHECKPOINT itself
+  // — quarantining the WAL then would park a live sidecar on a db whose main
+  // file just changed underneath it. Fail closed instead (review finding:
+  // policy drift vs the serve path).
+  let replaySucceeded = false;
   try {
     db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: false });
     await db.init();
     await probeDatabaseForShadowReplay(db);
+    replaySucceeded = true;
     // Load-bearing durability step (engine 0.19.1 matrix, homelab repro
     // 2026-09-19): the probe replays the WAL in MEMORY only. Without an
     // explicit CHECKPOINT the engine drops those pages at close and the
@@ -628,7 +635,7 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
       await conn.close().catch(() => {});
     }
   } catch (err) {
-    if (isMissingShadowSidecarError(err)) {
+    if (isMissingShadowSidecarError(err) && !replaySucceeded) {
       await tryQuarantineForMissingShadow(dbPath, {
         reason: 'pool writable replay recovery',
         err,
