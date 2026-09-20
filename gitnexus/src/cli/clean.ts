@@ -9,10 +9,12 @@ import fs from 'fs/promises';
 import path from 'path';
 import { logger } from '../core/logger.js';
 import {
+  canonicalizePath,
   findRepo,
   unregisterRepo,
   listRegisteredRepos,
   getStoragePaths,
+  registryPathEquals,
 } from '../storage/repo-manager.js';
 import { BRANCHES_DIR } from '../storage/branch-index.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
@@ -46,7 +48,9 @@ export const cleanCommand = async (options?: {
       return;
     }
     const entries = await listRegisteredRepos();
-    const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo.repoPath));
+    const entry = entries.find((e) =>
+      registryPathEquals(canonicalizePath(e.path), canonicalizePath(repo.repoPath)),
+    );
     let storagePath: string;
     try {
       storagePath = await requireDeletableStoragePath({
@@ -114,7 +118,9 @@ export const cleanCommand = async (options?: {
       return;
     }
     const entries = await listRegisteredRepos();
-    const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo.repoPath));
+    const entry = entries.find((e) =>
+      registryPathEquals(canonicalizePath(e.path), canonicalizePath(repo.repoPath)),
+    );
     const summary = entry?.branches?.find((b) => b.branch === options.branch);
     if (!summary) {
       console.log(t('clean.branchNotIndexed', { branch: options.branch }));
