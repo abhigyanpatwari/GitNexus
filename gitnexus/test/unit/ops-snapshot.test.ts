@@ -30,6 +30,16 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoPath).toBeUndefined();
   });
 
+  it('strips query and fragment when deriving repoName from repoUrl', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://github.com/user/repo.git?access_token=secret#frag',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.repoName).toBe('repo');
+    expect(view.repoName).not.toContain('access_token');
+    expect(view.repoUrl).toBeUndefined();
+  });
+
   it('summarizes lane metrics including avg duration of terminal jobs', () => {
     const a = manager.createJob({ repoUrl: 'https://github.com/user/a' });
     manager.updateJob(a.id, { status: 'analyzing' });

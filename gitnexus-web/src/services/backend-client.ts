@@ -341,7 +341,9 @@ export function streamSSE<T = unknown>(
         // Stream ended without terminal event — try to reconnect; when the
         // retry budget is spent, surface the same onError path the catch arm
         // already uses so callers (e.g. ops dashboard → poll fallback) can run.
-        if (!scheduleRetry(retryCount)) {
+        // scheduleRetry also returns false when aborted — mirror the catch arm
+        // and do not invoke onError after the caller cancelled the stream.
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
           handlers.onError?.('Stream ended');
         }
       } catch (err: unknown) {

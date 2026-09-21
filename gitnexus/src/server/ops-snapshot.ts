@@ -80,6 +80,28 @@ const emptyByStatus = (): Record<AnalyzeJobStatus, number> => ({
   failed: 0,
 });
 
+/** Basename for ops UI — strip query/fragment so tokens never leak into repoName. */
+export const publicRepoNameFromUrl = (repoUrl: string | undefined): string | undefined => {
+  if (!repoUrl) return undefined;
+  try {
+    const parsed = new URL(repoUrl);
+    const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+    const last = segments.pop();
+    if (!last) return undefined;
+    return last.replace(/\.git$/i, '') || undefined;
+  } catch {
+    // Non-URL fallbacks (scp-like git@host:org/repo.git) — drop query/hash then basename.
+    const cleaned = repoUrl.split(/[?#]/, 1)[0]!.replace(/\/+$/, '').replace(/\.git$/i, '');
+    const last = cleaned.split(/[/\\]/).pop();
+    return last || undefined;
+  }
+};
+
+const publicRepoNameFromPath = (repoPath: string | undefined): string | undefined => {
+  if (!repoPath) return undefined;
+  return repoPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || undefined;
+};
+
 export const serializeOpsJob = (
   job: AnalyzeJob,
   lane: 'analyze' | 'embed',
@@ -89,15 +111,7 @@ export const serializeOpsJob = (
   // Prefer the registered short name. Fall back to a basename only — never
   // emit raw repoUrl/repoPath on the unauthenticated ops feed.
   const repoName =
-    job.repoName ||
-    (job.repoUrl
-      ? job.repoUrl
-          .replace(/\/$/, '')
-          .replace(/\.git$/i, '')
-          .split('/')
-          .pop()
-      : undefined) ||
-    (job.repoPath ? job.repoPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() : undefined);
+    job.repoName || publicRepoNameFromUrl(job.repoUrl) || publicRepoNameFromPath(job.repoPath);
   return {
     id: job.id,
     lane,

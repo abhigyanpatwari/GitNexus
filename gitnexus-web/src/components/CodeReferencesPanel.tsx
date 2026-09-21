@@ -59,6 +59,27 @@ interface CitationSnippet {
 const CITATION_CONTEXT_LINES = 5;
 /** Max lines to fetch when a citation has no start/end range. */
 const RANGELESS_CITATION_LINES = 80;
+/** Cap simultaneous `/api/file` reads when a reply cites many files. */
+const CITATION_SNIPPET_CONCURRENCY = 4;
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(items[currentIndex]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) => {
   const { t } = useTranslation(['common', 'graph']);
@@ -215,34 +236,32 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     let cancelled = false;
     const repo = currentRepo || projectName || undefined;
 
-    Promise.all(
-      pending.map(async (ref) => {
-        const hasRange = typeof ref.startLine === 'number';
-        // Range-less citations must not download/highlight the entire file.
-        const refStart = hasRange ? (ref.startLine as number) : 0;
-        const refEnd = hasRange ? (ref.endLine ?? refStart) : Math.max(0, RANGELESS_CITATION_LINES - 1);
-        const options = {
-          startLine: Math.max(0, refStart - (hasRange ? CITATION_CONTEXT_LINES : 0)),
-          endLine: refEnd + (hasRange ? CITATION_CONTEXT_LINES : 0),
+    mapWithConcurrency(pending, CITATION_SNIPPET_CONCURRENCY, async (ref) => {
+      const hasRange = typeof ref.startLine === 'number';
+      // Range-less citations must not download/highlight the entire file.
+      const refStart = hasRange ? (ref.startLine as number) : 0;
+      const refEnd = hasRange ? (ref.endLine ?? refStart) : Math.max(0, RANGELESS_CITATION_LINES - 1);
+      const options = {
+        startLine: Math.max(0, refStart - (hasRange ? CITATION_CONTEXT_LINES : 0)),
+        endLine: refEnd + (hasRange ? CITATION_CONTEXT_LINES : 0),
+      };
+      try {
+        const result = await readFile(ref.filePath, { ...options, repo });
+        const start = result.startLine ?? 0;
+        const lineCount = result.content.split('\n').length;
+        const snippet: CitationSnippet = {
+          content: result.content,
+          start,
+          end: result.endLine ?? start + lineCount - 1,
+          highlightStart: hasRange ? refStart - start : 0,
+          highlightEnd: hasRange ? refEnd - start : 0,
+          totalLines: result.totalLines,
         };
-        try {
-          const result = await readFile(ref.filePath, { ...options, repo });
-          const start = result.startLine ?? 0;
-          const lineCount = result.content.split('\n').length;
-          const snippet: CitationSnippet = {
-            content: result.content,
-            start,
-            end: result.endLine ?? start + lineCount - 1,
-            highlightStart: hasRange ? refStart - start : 0,
-            highlightEnd: hasRange ? refEnd - start : 0,
-            totalLines: result.totalLines,
-          };
-          return [ref.id, snippet] as const;
-        } catch {
-          return null;
-        }
-      }),
-    ).then((entries) => {
+        return [ref.id, snippet] as const;
+      } catch {
+        return null;
+      }
+    }).then((entries) => {
       if (cancelled) {
         // Free only after settle so a mid-flight aiReferences append does not
         // start duplicate reads for the same ids. Re-schedule still-needed ones.

@@ -139,6 +139,9 @@ export const ExecutionDashboard = () => {
     const params = new URLSearchParams(window.location.search);
     return params.get('server') || getBackendUrl() || DEFAULT_BACKEND_URL;
   });
+  // Applied URL the connection effect binds to — distinct from the input so
+  // keystrokes do not restart SSE/heartbeat, and Connect always reconnects.
+  const [connectedServer, setConnectedServer] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<OpsSnapshot | null>(null);
   const [live, setLive] = useState(false);
   const [streamMode, setStreamMode] = useState<'sse' | 'poll' | 'offline'>('offline');
@@ -150,6 +153,7 @@ export const ExecutionDashboard = () => {
       const url = normalizeServerUrl(raw.trim() || DEFAULT_BACKEND_URL);
       setBackendUrl(url);
       setBackendInput(url);
+      setConnectedServer(url);
       const next = new URL(window.location.href);
       next.searchParams.set('view', 'ops');
       next.searchParams.set('server', url);
@@ -169,6 +173,8 @@ export const ExecutionDashboard = () => {
   }, []);
 
   useEffect(() => {
+    if (!connectedServer) return;
+
     let cancelled = false;
     let pollTimer: ReturnType<typeof setInterval> | undefined;
     let streamAbort: AbortController | undefined;
@@ -183,6 +189,8 @@ export const ExecutionDashboard = () => {
     };
 
     const startPolling = () => {
+      if (cancelled) return;
+      if (pollTimer) clearInterval(pollTimer);
       setStreamMode('poll');
       const tick = async () => {
         try {
@@ -236,6 +244,7 @@ export const ExecutionDashboard = () => {
       // Safety poll in case the first SSE frame is delayed.
       try {
         ingest(await fetchOpsSnapshot());
+        if (cancelled) return;
         setStreamMode((mode) => (mode === 'offline' ? 'poll' : mode));
       } catch {
         startPolling();
@@ -250,7 +259,7 @@ export const ExecutionDashboard = () => {
       streamAbort?.abort();
       stopHeartbeat?.();
     };
-  }, [backendInput]);
+  }, [connectedServer]);
 
   const allJobs = useMemo(() => {
     if (!snapshot) return [] as OpsJobView[];
