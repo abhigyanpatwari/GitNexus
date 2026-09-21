@@ -405,7 +405,7 @@ const ROUTER_OPEN_RE =
 
 // Same-file `const adminRouter = t.router({` / `createTRPCRouter(` / bare `router(`.
 const ROUTER_BINDING_RE =
-  /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|router)\s*\(/;
+  /(?:export\s+)?(?:const|let|var)\s+(\w+)(?:\s*:\s*[^=]+)?\s*=\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|router)\s*\(/;
 
 // Identifier composition: `admin: adminRouter,` / last-property `admin: adminRouter`.
 // Optional `as` / `satisfies` tail (`admin: adminRouter as const`) still mounts.

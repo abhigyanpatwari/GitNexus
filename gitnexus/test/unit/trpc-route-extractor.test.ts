@@ -546,6 +546,19 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['GET /trpc/admin.list', 'GET /trpc/health']);
   });
 
+  it('type-annotated router bindings still compose identifier mounts', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter: AppRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({ admin: adminRouter });',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.list']);
+  });
+
   it('identifier mount still composes with an inline nest inside the subrouter', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
