@@ -774,7 +774,19 @@ export const handleFileRequest = async (
       return;
     }
 
-    const raw = await fs.readFile(fullPath, 'utf-8');
+    // The lexical check above cannot see symlinks: a repo cloned from an
+    // untrusted remote can contain `evil -> /etc/passwd` (or `-> ../../..`)
+    // that passes `path.relative` and is then followed by readFile. Re-check
+    // containment on the resolved (realpath) form of both sides. A missing
+    // file throws ENOENT here and keeps its 404 below.
+    const [realRoot, realFull] = await Promise.all([fs.realpath(repoRoot), fs.realpath(fullPath)]);
+    const realRel = path.relative(realRoot, realFull);
+    if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+      res.status(403).json({ error: 'Path traversal denied' });
+      return;
+    }
+
+    const raw = await fs.readFile(realFull, 'utf-8');
 
     // Optional line-range support: ?startLine=10&endLine=50
     // Returns only the requested slice (0-indexed), plus metadata.
@@ -831,6 +843,26 @@ function readOnlyFtsOptions(skipFts?: true): { readOnly: true; skipFts?: true } 
   return skipFts ? { readOnly: true, skipFts: true } : { readOnly: true };
 }
 
+/**
+ * The server's `resolveRepo` returns `{ __timedOut: true, repoName }` when it
+ * waited the full hold-queue window for an in-flight analysis. Every route
+ * that resolves a repo must handle that sentinel — treating it as a registry
+ * entry crashes on `entry.storagePath` ("path argument must be of type
+ * string", surfaced as a 500). Returns true when a 503 was sent and the
+ * caller should return.
+ */
+export const respondIfAnalysisPending = (
+  entry: unknown,
+  res: { status: (code: number) => { json: (body: unknown) => void } },
+): boolean => {
+  const sentinel = entry as { __timedOut?: boolean; repoName?: string } | null | undefined;
+  if (!sentinel?.__timedOut) return false;
+  res.status(503).json({
+    error: `Repository analysis for "${sentinel.repoName}" is taking longer than expected. Please try again in a moment.`,
+  });
+  return true;
+};
+
 export const handleQueryRequest = async (
   req: express.Request,
   res: express.Response,
@@ -855,6 +887,7 @@ export const handleQueryRequest = async (
       res.status(404).json({ error: 'Repository not found' });
       return;
     }
+    if (respondIfAnalysisPending(entry, res)) return;
     const lbugPath = path.join(entry.storagePath, 'lbug');
     const { skipFts } = await loadFtsSession(entry.storagePath);
     const result = await withLbugDb(
@@ -954,6 +987,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // global body parser so rejected requests do not consume the JSON budget.
   installServeMcpAuth(app);
   app.use(express.json({ limit: '10mb' }));
+  // Express 5 leaves `req.body` undefined when no parser matched (e.g. a POST
+  // without `Content-Type: application/json`). Route handlers read
+  // `req.body.<field>` directly, so normalize to an empty object and let their
+  // own "Missing X in request body" 400s fire instead of a TypeError 500.
+  app.use((req, _res, next) => {
+    if (req.body === undefined) req.body = {};
+    next();
+  });
 
   // Origin guard for write routes: loopback, the server's own bound host, and
   // any configured public origin — prevents CSRF from other devices.
@@ -1065,10 +1106,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               '[debug] resolveRepo waiting for active job',
             );
           }
+          let jobSettledWithoutRepo = false;
           for (let wait = 0; wait < HOLD_QUEUE_TIMEOUT_SECS; wait++) {
             if (clientGone) return null; // client disconnected — stop polling
             const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'failed') break;
+            if (!currentJob || currentJob.status === 'failed') {
+              // The job is over and produced no registry entry. This is a
+              // plain "not found", not "still analyzing" — falling through to
+              // the timed-out sentinel here told callers to keep waiting for
+              // a job that had already failed.
+              jobSettledWithoutRepo = true;
+              break;
+            }
             if (currentJob.status === 'complete') {
               await backend.init();
               const freshRepos = await listRegisteredRepos({
@@ -1078,6 +1127,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
+          if (jobSettledWithoutRepo) return null;
           // Timed out — signal to the caller with a specific message
           return { __timedOut: true, repoName: normalizedName };
         }
@@ -1178,12 +1228,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       // Timed out waiting for an active analysis job
-      if (entry.__timedOut) {
-        res.status(503).json({
-          error: `Repository analysis for "${entry.repoName}" is taking longer than expected. Please try again in a moment.`,
-        });
-        return;
-      }
+      if (respondIfAnalysisPending(entry, res)) return;
       const meta = await loadMeta(entry.storagePath);
       const [staleness, availability] = await Promise.all([
         checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
@@ -1217,6 +1262,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      if (respondIfAnalysisPending(entry, res)) return;
       let storagePath: string;
       try {
         storagePath = await requireDeletableStoragePath(entry);
@@ -1306,6 +1352,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      if (respondIfAnalysisPending(entry, res)) return;
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
@@ -1398,6 +1445,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      if (respondIfAnalysisPending(entry, res)) return;
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
       const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
@@ -1572,6 +1620,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      if (respondIfAnalysisPending(entry, res)) return;
       await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
     } catch (err: any) {
       if (sendStorageRequirementHttp(err, res)) return;
@@ -1591,6 +1640,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      if (respondIfAnalysisPending(entry, res)) return;
       const sourceAvailability = await getSourceAvailability(entry);
       if (!sourceAvailability.available) {
         sendSourceUnavailable(res, sourceAvailability);
@@ -1634,18 +1684,41 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
   });
 
+  // Process / cluster routes resolve `?repo=` through the HTTP resolver
+  // (`resolveRepo` → `resolveRegisteredRepoEntry`) and hand the backend the
+  // registered ABSOLUTE path. Passing the raw param straight to the MCP
+  // resolver bypassed the policy documented on `resolveRegisteredRepoEntry`:
+  // a bare-name miss ran a CWD-relative realpathSync probe on attacker input
+  // and a full registry refresh, and a partial name (`?repo=core`) could
+  // silently pick `my-core-lib`. Same 60 rpm/IP limiter as `/api/repo`.
+  const resolveBackendRepoPath = async (
+    req: express.Request,
+    res: express.Response,
+  ): Promise<string | null> => {
+    const entry = await resolveRepo(requestedRepo(req));
+    if (!entry) {
+      res.status(404).json({ error: 'Repository not found' });
+      return null;
+    }
+    if (respondIfAnalysisPending(entry, res)) return null;
+    return entry.path as string;
+  };
+
   // List all processes
-  app.get('/api/processes', async (req, res) => {
+  app.get('/api/processes', createRouteLimiter(), async (req, res) => {
     try {
-      const result = await backend.queryProcesses(requestedRepo(req));
+      const repoPath = await resolveBackendRepoPath(req, res);
+      if (repoPath === null) return;
+      const result = await backend.queryProcesses(repoPath);
       res.json(result);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query processes'));
     }
   });
 
   // Process detail
-  app.get('/api/process', async (req, res) => {
+  app.get('/api/process', createRouteLimiter(), async (req, res) => {
     try {
       const name = String(req.query.name ?? '').trim();
       if (!name) {
@@ -1653,29 +1726,35 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const result = await backend.queryProcessDetail(name, requestedRepo(req));
+      const repoPath = await resolveBackendRepoPath(req, res);
+      if (repoPath === null) return;
+      const result = await backend.queryProcessDetail(name, repoPath);
       if (result?.error) {
         res.status(404).json({ error: result.error });
         return;
       }
       res.json(result);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query process detail'));
     }
   });
 
   // List all clusters
-  app.get('/api/clusters', async (req, res) => {
+  app.get('/api/clusters', createRouteLimiter(), async (req, res) => {
     try {
-      const result = await backend.queryClusters(requestedRepo(req));
+      const repoPath = await resolveBackendRepoPath(req, res);
+      if (repoPath === null) return;
+      const result = await backend.queryClusters(repoPath);
       res.json(result);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query clusters'));
     }
   });
 
   // Cluster detail
-  app.get('/api/cluster', async (req, res) => {
+  app.get('/api/cluster', createRouteLimiter(), async (req, res) => {
     try {
       const name = String(req.query.name ?? '').trim();
       if (!name) {
@@ -1683,13 +1762,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
 
-      const result = await backend.queryClusterDetail(name, requestedRepo(req));
+      const repoPath = await resolveBackendRepoPath(req, res);
+      if (repoPath === null) return;
+      const result = await backend.queryClusterDetail(name, repoPath);
       if (result?.error) {
         res.status(404).json({ error: result.error });
         return;
       }
       res.json(result);
     } catch (err: any) {
+      if (sendStorageRequirementHttp(err, res)) return;
       res.status(statusFromError(err)).json(httpErrorBody(err, 'Failed to query cluster detail'));
     }
   });
@@ -1960,6 +2042,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           res.status(404).json({ error: 'Repository not found' });
           return;
         }
+
+        if (respondIfAnalysisPending(entry, res)) return;
 
         // Re-check the exact registered slot immediately before taking the lock.
         // The query resolver already validates it, but this closes the gap between
@@ -2299,8 +2383,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const staticDir = await resolveWebDistDir(webDistDir, devWebDistDir);
   registerWebUI(app, staticDir);
 
-  // Global error handler — catch anything the route handlers miss
+  // Global error handler — catch anything the route handlers miss.
+  // body-parser rejections (malformed JSON → 400, > limit → 413, wrong
+  // charset → 415) arrive here as http-errors with a 4xx `status`/`statusCode`
+  // and `expose: true`; report them as the client errors they are instead of
+  // logging them at error level as a 500.
   app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const status = Number(err?.status ?? err?.statusCode);
+    if (Number.isInteger(status) && status >= 400 && status < 500) {
+      const message =
+        err?.expose && typeof err.message === 'string' && err.message ? err.message : 'Bad request';
+      res.status(status).json({ error: message });
+      return;
+    }
     logger.error({ err }, 'Unhandled error:');
     res.status(500).json({ error: 'Internal server error' });
   });

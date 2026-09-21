@@ -88,12 +88,15 @@ export interface AnalyzeJob {
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+/** How long a cancelled worker gets to exit via IPC before a signal is sent. */
+const CANCEL_GRACE_MS = 15_000;
 
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
   private children = new Map<string, ChildProcess>();
   private abortControllers = new Map<string, AbortController>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private cancelGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
 
@@ -215,6 +218,11 @@ export class JobManager {
         clearTimeout(t);
         this.timeouts.delete(jobId);
       }
+      const grace = this.cancelGraceTimers.get(jobId);
+      if (grace) {
+        clearTimeout(grace);
+        this.cancelGraceTimers.delete(jobId);
+      }
     });
   }
 
@@ -228,14 +236,23 @@ export class JobManager {
     this.abortControllers.set(jobId, controller);
   }
 
-  /** Cancel a running job — sends SIGTERM to child process. */
+  /**
+   * Cancel a running job.
+   *
+   * The worker is asked to stop over IPC first (`{ type: 'cancel' }`), which
+   * lets it reach a JS-visible safe point and checkpoint before exiting —
+   * the same cross-platform control path `core/auto-sync` uses. A signal is
+   * sent only as a bounded fallback: on Windows `child.kill('SIGTERM')` is a
+   * forceful termination (Node ignores the signal name there), so leading
+   * with it could kill the worker mid LadybugDB write.
+   */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
     if (!job || this.isTerminal(job.status)) return false;
 
     const child = this.children.get(jobId);
     if (child) {
-      child.kill('SIGTERM');
+      this.requestChildShutdown(jobId, child);
     }
     this.abortControllers.get(jobId)?.abort();
     this.abortControllers.delete(jobId);
@@ -255,12 +272,47 @@ export class JobManager {
     return () => this.emitter.off(event, listener);
   }
 
+  /**
+   * Ask a worker to shut down: IPC cancel now, signal after a grace period if
+   * it has not exited on its own. The grace timer is cleared by the child's
+   * `exit` handler registered in `registerChild`.
+   */
+  private requestChildShutdown(jobId: string, child: ChildProcess): void {
+    let ipcSent = false;
+    if (child.connected) {
+      try {
+        child.send({ type: 'cancel' });
+        ipcSent = true;
+      } catch {
+        // Channel already closed — fall through to the signal path.
+      }
+    }
+    if (!ipcSent) {
+      child.kill('SIGTERM');
+      return;
+    }
+    if (this.cancelGraceTimers.has(jobId)) return;
+    const grace = setTimeout(() => {
+      this.cancelGraceTimers.delete(jobId);
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+      }
+    }, CANCEL_GRACE_MS);
+    grace.unref?.();
+    this.cancelGraceTimers.set(jobId, grace);
+  }
+
   dispose() {
-    // Kill all active child processes
-    for (const child of this.children.values()) {
+    // Kill all active child processes. Server shutdown cannot wait for a
+    // grace period, but the IPC request still goes first so a worker that
+    // checks in between gets the chance to stop at a safe point.
+    for (const [jobId, child] of this.children) {
+      this.requestChildShutdown(jobId, child);
       child.kill('SIGTERM');
     }
     this.children.clear();
+    for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
+    this.cancelGraceTimers.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 

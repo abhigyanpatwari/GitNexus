@@ -193,6 +193,68 @@ describe('JobManager', () => {
     expect(controller.signal.aborted).toBe(true);
   });
 
+  // Cancellation must reach the worker over IPC first. On Windows
+  // `child.kill('SIGTERM')` is a forceful termination, so leading with the
+  // signal could kill the worker mid LadybugDB write; the signal is only a
+  // bounded fallback for a worker that ignores the cancel request.
+  it('cancelJob asks the worker to stop over IPC before sending any signal', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const sent: unknown[] = [];
+    const signals: string[] = [];
+    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: (msg: unknown) => {
+        sent.push(msg);
+        return true;
+      },
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: (event: string, fn: (...args: unknown[]) => void) => {
+        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+
+    expect(sent).toEqual([{ type: 'cancel' }]);
+    expect(signals).toEqual([]);
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+  });
+
+  it('cancelJob falls back to a signal when the IPC channel is already closed', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: false,
+      exitCode: null,
+      signalCode: null,
+      send: () => {
+        throw new Error('channel closed');
+      },
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    manager.cancelJob(job.id);
+
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
   it('cancelJob returns false for terminal jobs', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     manager.updateJob(job.id, { status: 'complete' });

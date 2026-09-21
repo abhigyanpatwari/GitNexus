@@ -1206,8 +1206,16 @@ const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
   // and vice versa. Matches the semantics of `registerRepo` and
   // `resolveRegistryEntry` post-#1003 review.
   const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
+  // Same rule as `registerRepoUnlocked` (#3094): a mutating write must not
+  // treat an unreadable/truncated registry as empty. The lenient reader
+  // returned `[]` on any read error (EBUSY/EPERM racing another gitnexus
+  // process's atomic rename on Windows, EIO, a half-written file) and this
+  // function then wrote `[]` back — deregistering every repo on the machine
+  // to remove one. A missing file means nothing to remove.
+  const entries = await readRegistryStrictIfPresent();
+  if (entries === undefined) return;
   const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
+  if (filtered.length === entries.length) return;
   await writeRegistry(filtered);
 };
 

@@ -237,7 +237,14 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
     const forkWorker = () => {
       const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || isTerminalJobStatus(currentJob.status)) return;
+      if (!currentJob || isTerminalJobStatus(currentJob.status)) {
+        // Cancelled (or timed out) between lock acquisition and the fork, or
+        // during a crash-retry delay. No worker will ever run for this job, so
+        // nothing else drops the lock — release it here or the repo stays
+        // "busy" for analyze/embed/delete until the server restarts.
+        releaseLockOnce();
+        return;
+      }
 
       const child = fork(workerPath, [], {
         execArgv: [...tsxHookArgs, `--max-old-space-size=${workerHeapMb}`],
@@ -418,7 +425,18 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
-        if (!j || isTerminalJobStatus(j.status)) return;
+        if (!j || isTerminalJobStatus(j.status)) {
+          // The job was settled without this handler's help. Two ways here:
+          // (a) `complete`/`error` IPC already ran (finally/branch released the
+          //     lock — this call is an idempotent no-op), or
+          // (b) `cancelJob` marked the job failed and killed the worker BEFORE
+          //     any terminal IPC arrived; the message handler above then drops
+          //     the worker's late `error` as stale, so this exit is the only
+          //     remaining place that can drop the lock. Without it a cancelled
+          //     or timed-out analyze left the repo locked until server restart.
+          releaseLockOnce();
+          return;
+        }
 
         // The worker already reported a terminal outcome; this exit is it
         // winding down, not dying. The job is still non-terminal only because
