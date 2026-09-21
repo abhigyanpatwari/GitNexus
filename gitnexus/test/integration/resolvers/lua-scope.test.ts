@@ -16,6 +16,7 @@ import os from 'node:os';
 import {
   getRelationships,
   getNodesByLabel,
+  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -152,6 +153,43 @@ local value = wrap(require("wrapped"))
         'wrapped.lua',
       ]);
       expect(imports).toHaveLength(3);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe('Lua module export visibility', () => {
+  it('exports local functions only when the module return value exposes them', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-exports-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'module.lua': `local function exposed() end
+local function hidden() end
+function global() end
+return { exposed = exposed }
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const functions = getNodesByLabelFull(result, 'Function').filter((node) =>
+        node.properties.filePath?.endsWith('module.lua'),
+      );
+      expect(functions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'exposed',
+            properties: expect.objectContaining({ isExported: true }),
+          }),
+          expect.objectContaining({
+            name: 'hidden',
+            properties: expect.objectContaining({ isExported: false }),
+          }),
+          expect.objectContaining({
+            name: 'global',
+            properties: expect.objectContaining({ isExported: true }),
+          }),
+        ]),
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
