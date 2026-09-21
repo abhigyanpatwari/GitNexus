@@ -1467,6 +1467,14 @@ export function parseListReposPagination(
  * inputSchema — so the backend rejects out-of-range values the same way
  * parseListReposPagination / pdg_query do (reject, not clamp).
  */
+function describeBoundValue(raw: unknown): string {
+  try {
+    return JSON.stringify(raw) ?? String(raw);
+  } catch {
+    return typeof raw === 'bigint' ? `${raw}n` : Object.prototype.toString.call(raw);
+  }
+}
+
 function parseQueryPageBound(
   value: unknown,
   field: 'limit' | 'max_symbols',
@@ -1477,7 +1485,7 @@ function parseQueryPageBound(
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
     return {
       ok: false,
-      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${JSON.stringify(value)}.`,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${describeBoundValue(value)}.`,
     };
   }
   return { ok: true, value };
@@ -1495,7 +1503,7 @@ function parseChainDepth(
   ) {
     return {
       ok: false,
-      error: `Invalid "chain_depth": expected an integer in [0, ${CONTEXT_CHAIN_MAX_DEPTH}], got ${JSON.stringify(value)}.`,
+      error: `Invalid "chain_depth": expected an integer in [0, ${CONTEXT_CHAIN_MAX_DEPTH}], got ${describeBoundValue(value)}.`,
     };
   }
   return { ok: true, value };

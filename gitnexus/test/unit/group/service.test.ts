@@ -341,25 +341,46 @@ describe('GroupService', () => {
         const query = vi.fn(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
 
-        const overLimit = await svc.groupQuery({
+        const infiniteLimit = await svc.groupQuery({
           name: 'test-group',
           query: 'auth flow',
           limit: Infinity,
-          max_symbols: 9999,
         });
-        expect(overLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
-        expect(query).not.toHaveBeenCalled();
+        expect(infiniteLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
 
-        const overSymbols = await svc.groupQuery({
+        const oversizedLimit = await svc.groupQuery({
           name: 'test-group',
           query: 'auth flow',
-          limit: 3,
+          limit: 101,
+        });
+        expect(oversizedLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
+
+        const infiniteSymbols = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
           max_symbols: Infinity,
         });
-        expect(overSymbols).toMatchObject({
+        expect(infiniteSymbols).toMatchObject({
           error: expect.stringMatching(/Invalid "max_symbols"/),
         });
-        expect(query).not.toHaveBeenCalled();
+
+        const oversizedSymbols = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          max_symbols: 201,
+        });
+        expect(oversizedSymbols).toMatchObject({
+          error: expect.stringMatching(/Invalid "max_symbols"/),
+        });
+
+        const cyclic = { self: null as unknown };
+        cyclic.self = cyclic;
+        const cyclicLimit = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: cyclic,
+        });
+        expect(cyclicLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
 
         const badDepth = await svc.groupQuery({
           name: 'test-group',

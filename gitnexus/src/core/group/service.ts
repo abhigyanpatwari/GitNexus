@@ -463,7 +463,7 @@ function parseGroupQueryBound(
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
     return {
       ok: false,
-      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${JSON.stringify(value)}.`,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${describeValue(value)}.`,
     };
   }
   return { ok: true, value };
@@ -481,7 +481,7 @@ function parseGroupChainDepth(
   ) {
     return {
       ok: false,
-      error: `Invalid "chain_depth": expected an integer in [0, ${GROUP_CHAIN_MAX_DEPTH}], got ${JSON.stringify(value)}.`,
+      error: `Invalid "chain_depth": expected an integer in [0, ${GROUP_CHAIN_MAX_DEPTH}], got ${describeValue(value)}.`,
     };
   }
   return { ok: true, value };

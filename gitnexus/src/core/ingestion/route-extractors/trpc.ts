@@ -496,9 +496,12 @@ function buildMountPathLookup(
       if (out.length > 0) result = out;
     }
     visiting.delete(binding);
-    // Nested cycle cuts return [] for this hop only. Memoizing that empty
-    // walk would drop a later live path (`a.b.list` after `a` ↔ `b`).
-    if (visiting.size === 0) memo.set(binding, result);
+    // Memoize live paths immediately so a depth-N chain is one walk, not one
+    // remount per procedure. Leave nested empty results uncached: a cycle cut
+    // returns [] for this hop only, and memoizing that would drop a later live
+    // path (`a.b.list` after `a` ↔ `b`). A finished top-level [] is real
+    // (unmounted / no root path) and is safe to cache.
+    if (result.length > 0 || visiting.size === 0) memo.set(binding, result);
     return result;
   };
 }
