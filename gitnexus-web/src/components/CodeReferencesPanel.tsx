@@ -46,6 +46,18 @@ export interface CodeReferencesPanelProps {
   onFocusNode: (nodeId: string) => void;
 }
 
+/** A fetched code excerpt for one AI citation card. Line numbers are 0-based file offsets. */
+interface CitationSnippet {
+  content: string;
+  start: number;
+  end: number;
+  /** Highlight range relative to `start`. */
+  highlightStart: number;
+  highlightEnd: number;
+  totalLines: number;
+}
+const CITATION_CONTEXT_LINES = 5;
+
 export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) => {
   const { t } = useTranslation(['common', 'graph']);
   const {
@@ -180,19 +192,85 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     };
   }, [codeReferenceFocus, aiReferences]);
 
+  // Per-citation snippets, fetched from the server around each reference's
+  // (0-based) line range. Keyed by reference id; a failed read stays absent so
+  // the card falls back to the "code not available" notice.
+  const [citationSnippets, setCitationSnippets] = useState<Map<string, CitationSnippet>>(
+    () => new Map(),
+  );
+  // Ids already requested (loaded or failed) — a failed read is not retried.
+  const requestedSnippetIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
+    if (pending.length === 0) return;
+    for (const ref of pending) requestedSnippetIds.current.add(ref.id);
+
+    let cancelled = false;
+    const repo = currentRepo || projectName || undefined;
+
+    Promise.all(
+      pending.map(async (ref) => {
+        const hasRange = typeof ref.startLine === 'number';
+        const refStart = ref.startLine ?? 0;
+        const refEnd = ref.endLine ?? refStart;
+        const options = hasRange
+          ? {
+              startLine: Math.max(0, refStart - CITATION_CONTEXT_LINES),
+              endLine: refEnd + CITATION_CONTEXT_LINES,
+            }
+          : {};
+        try {
+          const result = await readFile(ref.filePath, { ...options, repo });
+          const start = result.startLine ?? 0;
+          const lineCount = result.content.split('\n').length;
+          const snippet: CitationSnippet = {
+            content: result.content,
+            start,
+            end: result.endLine ?? start + lineCount - 1,
+            highlightStart: hasRange ? refStart - start : 0,
+            highlightEnd: hasRange ? refEnd - start : 0,
+            totalLines: result.totalLines,
+          };
+          return [ref.id, snippet] as const;
+        } catch {
+          return null;
+        }
+      }),
+    ).then((entries) => {
+      if (cancelled) {
+        // Unmounted / superseded: let a later effect run retry these ids.
+        for (const ref of pending) requestedSnippetIds.current.delete(ref.id);
+        return;
+      }
+      const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
+      if (loaded.length === 0) return;
+      setCitationSnippets((prev) => {
+        const next = new Map(prev);
+        for (const [id, snippet] of loaded) next.set(id, snippet);
+        return next;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [aiReferences, currentRepo, projectName]);
+
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
+      const snippet = citationSnippets.get(ref.id);
       return {
         ref,
-        content: null as string | null,
-        start: 0,
-        end: 0,
-        highlightStart: 0,
-        highlightEnd: 0,
-        totalLines: 0,
+        content: snippet?.content ?? null,
+        start: snippet?.start ?? 0,
+        end: snippet?.end ?? 0,
+        highlightStart: snippet?.highlightStart ?? 0,
+        highlightEnd: snippet?.highlightEnd ?? 0,
+        totalLines: snippet?.totalLines ?? 0,
       };
     });
-  }, [aiReferences]);
+  }, [aiReferences, citationSnippets]);
 
   const selectedFilePath = selectedNode?.properties?.filePath;
   const selectedIsFile = selectedNode?.label === 'File' && !!selectedFilePath;
@@ -224,7 +302,8 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     setFileResult(null);
     setSourceUnavailable(false);
 
-    // Determine read range: full file for File nodes, buffered for symbols
+    // Determine read range: full file for File nodes, buffered for symbols.
+    // Graph node lines are 1-based; the /api/file range is 0-based.
     const startLine = selectedNode?.properties?.startLine as number | undefined;
     const endLine = selectedNode?.properties?.endLine as number | undefined;
     const isWholeFile = selectedIsFile || startLine === undefined;
@@ -232,8 +311,8 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     const options = isWholeFile
       ? {}
       : {
-          startLine: Math.max(0, startLine - CONTEXT_LINES),
-          endLine: (endLine ?? startLine) + CONTEXT_LINES,
+          startLine: Math.max(0, startLine - 1 - CONTEXT_LINES),
+          endLine: (endLine ?? startLine) - 1 + CONTEXT_LINES,
         };
 
     // Prefer the repo path identity over the display name — duplicate display
@@ -267,7 +346,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     currentRepo,
   ]);
 
-  // Scroll to the selected node's startLine after content loads
+  // Scroll to the selected node's startLine after content loads.
+  // `startLine` is 1-based, matching the displayed line numbers
+  // (`startingLineNumber={fileStartLine + 1}`), so it is used as-is for the
+  // data-line-number lookup and converted to a 0-based index for the fallback.
   useEffect(() => {
     if (!selectedFileContent || !selectedNode?.properties?.startLine) return;
     const startLine = selectedNode.properties.startLine as number;
@@ -279,15 +361,21 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         if (cancelled) return;
         const container = selectedViewerRef.current;
         if (!container) return;
+        // Index into the rendered lines: the viewer starts at `fileStartLine`
+        // (0-based), so the symbol's 0-based file line minus that offset.
+        const renderedIndex = Math.max(0, startLine - 1 - fileStartLine);
         const lineEl =
-          (container.querySelector(`[data-line-number="${startLine + 1}"]`) as HTMLElement) ??
-          (container.querySelectorAll('.linenumber')[startLine] as HTMLElement);
+          (container.querySelector(`[data-line-number="${startLine}"]`) as HTMLElement) ??
+          (container.querySelectorAll('.linenumber')[renderedIndex] as HTMLElement);
         if (lineEl) {
           lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         } else {
           // Fallback: estimate scroll position based on line height
           const lineHeight = 20.8; // 13px font * 1.6 line-height
-          container.scrollTop = Math.max(0, startLine * lineHeight - container.clientHeight / 3);
+          container.scrollTop = Math.max(
+            0,
+            renderedIndex * lineHeight - container.clientHeight / 3,
+          );
         }
       });
       rafIds.push(innerRaf);
@@ -297,7 +385,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       cancelled = true;
       rafIds.forEach((id) => cancelAnimationFrame(id));
     };
-  }, [selectedFileContent, selectedNode?.properties?.startLine]);
+  }, [selectedFileContent, selectedNode?.properties?.startLine, fileStartLine]);
 
   if (isCollapsed) {
     return (
@@ -390,7 +478,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -410,12 +498,14 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     userSelect: 'none',
                   }}
                   lineProps={(lineNumber) => {
+                    // Both `lineNumber` (rendered, via startingLineNumber) and the
+                    // node's startLine/endLine are 1-based — compare directly.
                     const symStart = selectedNode?.properties?.startLine;
                     const symEnd = selectedNode?.properties?.endLine ?? symStart;
                     const isHighlighted =
                       typeof symStart === 'number' &&
-                      lineNumber >= symStart + 1 &&
-                      lineNumber <= (symEnd ?? symStart) + 1;
+                      lineNumber >= symStart &&
+                      lineNumber <= (symEnd ?? symStart);
                     return {
                       style: {
                         display: 'block',
@@ -463,7 +553,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label

@@ -34,6 +34,7 @@ import {
   readFile as backendReadFile,
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
+  BackendError,
   probeBackendStatus,
   // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
   // a plain named import of this helper.
@@ -231,6 +232,8 @@ interface AppState {
   isCodePanelOpen: boolean;
   setCodePanelOpen: (open: boolean) => void;
   addCodeReference: (ref: Omit<CodeReference, 'id'>) => void;
+  /** Resolve a (possibly partial) file path cited by the agent to a real graph file path. */
+  resolveFilePath: (requestedPath: string) => string | null;
   removeCodeReference: (id: string) => void;
   clearAICodeReferences: () => void;
   clearCodeReferences: () => void;
@@ -559,8 +562,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         );
       });
     } catch (error: any) {
-      if (error?.message?.includes('already in progress')) {
-        // Dedup — embeddings already running, just wait
+      // Dedup — a job for this repo is already running. The server answers 409
+      // with "Another job is already active for this repository" (same-repo
+      // lock) or "Analysis already in progress" (single-slot guard); match on
+      // the status so either wording keeps us out of the error state.
+      const isAlreadyRunning =
+        (error instanceof BackendError && error.status === 409) ||
+        error?.message?.includes('already in progress') ||
+        error?.message?.includes('already active');
+      if (isAlreadyRunning) {
         setEmbeddingStatus('embedding');
         return;
       }
@@ -630,6 +640,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     graphModeRef.current = graphMode;
   }, [graphMode]);
+  // Same trick for the display name: initializeAgent has empty deps, so a plain
+  // `projectName` read would be trapped at the initial '' for callers that pass
+  // no override (settings-saved re-init, lazy init from sendChatMessage) and
+  // the system prompt would label the codebase the literal 'project'.
+  const projectNameRef = useRef(projectName);
+  useEffect(() => {
+    projectNameRef.current = projectName;
+  }, [projectName]);
 
   const initializeAgent = useCallback(
     async (
@@ -649,7 +667,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setAgentError(null);
 
       try {
-        const effectiveProjectName = overrideProjectName || projectName || 'project';
+        const effectiveProjectName = overrideProjectName || projectNameRef.current || 'project';
 
         // Sync repoRef so all agent backend calls target the correct repo.
         // initializeAgent can be called from App.tsx (handleServerConnect) which
@@ -1126,6 +1144,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
+      llmSettings.activeProvider,
     ],
   );
 
@@ -1588,6 +1607,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     isCodePanelOpen,
     setCodePanelOpen,
     addCodeReference,
+    resolveFilePath,
     removeCodeReference,
     clearAICodeReferences,
     clearCodeReferences,

@@ -932,18 +932,33 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         return `⚠️ AMBIGUOUS TARGET: Multiple files named "${target}" found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease specify which file you mean by using a more specific path, e.g.:\n- impact("${allPaths[0].split('/').slice(-3).join('/')}")\n- impact("${allPaths[1]?.split('/').slice(-3).join('/') || allPaths[0]}")`;
       }
 
-      // If target contains a path, try to find matching file
+      // If target contains a path, pick the File node for that path. The
+      // lookup above matched on `filePath CONTAINS target`, so every symbol
+      // DEFINED in the file (functions, classes, ...) is also in the result
+      // set and shares the same filePath — a plain "first row" pick could
+      // silently analyze one arbitrary symbol while reporting a file impact.
       let targetNode = targetResults[0];
       if (target.includes('/') && targetResults.length > 1) {
-        const exactMatch = targetResults.find((r: any) => {
-          const path = Array.isArray(r) ? r[2] : r.filePath;
-          return path && path.toLowerCase().includes(target.toLowerCase());
-        });
-        if (exactMatch) {
-          targetNode = exactMatch;
+        const rowType = (r: any) => (Array.isArray(r) ? r[1] : r.nodeType);
+        const rowPath = (r: any): string | undefined => (Array.isArray(r) ? r[2] : r.filePath);
+        const targetLower = target.toLowerCase();
+        const fileRows = targetResults.filter((r: any) => rowType(r) === 'File');
+        const fileMatch =
+          fileRows.find((r: any) => rowPath(r)?.toLowerCase() === targetLower) ??
+          fileRows.find((r: any) => rowPath(r)?.toLowerCase().endsWith(targetLower)) ??
+          (fileRows.length === 1 ? fileRows[0] : undefined);
+        if (fileMatch) {
+          targetNode = fileMatch;
         } else {
-          // Still ambiguous even with path
-          return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+          const distinctPaths = [...new Set<string>(allPaths)];
+          if (distinctPaths.length === 1) {
+            // All rows belong to one file whose File node was not returned
+            // (LIMIT 10) — fall back to the first row of that file.
+            targetNode = targetResults[0];
+          } else {
+            // Still ambiguous even with path
+            return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+          }
         }
       }
 
