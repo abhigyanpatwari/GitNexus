@@ -240,18 +240,65 @@ export const swiftExportChecker: ExportChecker = (node, _name) => {
 /** Ruby: all top-level definitions are public (no export syntax). */
 export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
-/** Lua: `function foo()` is global (reachable from other files via require/_G);
- *  `local function foo()` is module-private. */
-export const luaExportChecker: ExportChecker = (node, _name) => {
+/**
+ * Lua module exports are structural rather than keyword-based:
+ *   - `function foo()` is global and therefore visible across files;
+ *   - `local function foo()` is private unless the module returns it directly
+ *     or exposes it through a returned table (`return { foo = foo }`).
+ *
+ * The query passes the captured identifier node, not the declaration node, so
+ * the declaration must be recovered through the parent chain. Only direct
+ * module-level returns are considered; a return nested in another function
+ * does not make a nested local part of the module API.
+ */
+export const luaExportChecker: ExportChecker = (node, name) => {
   let current: SyntaxNode | null = node;
+  let declaration: SyntaxNode | null = null;
   while (current !== null) {
-    if (current.type === 'local_function_definition_statement') return false;
+    if (current.type === 'local_function_definition_statement') {
+      declaration = current;
+      break;
+    }
     if (current.type === 'function_definition_statement') return true;
     current = current.parent;
   }
-  return true;
+
+  if (declaration === null) return true;
+
+  const root = findLuaRoot(declaration);
+  if (declaration.parent !== root) return false;
+  return luaModuleReturnExposesName(root, name);
 };
 
+function findLuaRoot(node: SyntaxNode): SyntaxNode {
+  let root = node;
+  while (root.parent !== null) root = root.parent;
+  return root;
+}
+
+function luaModuleReturnExposesName(root: SyntaxNode, name: string): boolean {
+  for (const statement of root.namedChildren ?? []) {
+    if (statement.type !== 'return_statement') continue;
+    const expressionList = statement.namedChildren?.find(
+      (child) => child.type === 'expression_list',
+    );
+    const expression = expressionList?.namedChildren?.[0];
+    if (expression === undefined) continue;
+
+    const directName = expression.childForFieldName('name');
+    if (directName?.type === 'identifier' && directName.text === name) return true;
+
+    if (expression.type !== 'table') continue;
+    const fields = expression.namedChildren?.find((child) => child.type === 'field_list');
+    for (const field of fields?.namedChildren ?? []) {
+      if (field.type !== 'field') continue;
+      const value = field.childForFieldName('value');
+      const valueName = value?.childForFieldName('name');
+      if (valueName?.type === 'identifier' && valueName.text === name) return true;
+    }
+  }
+  return false;
+}
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
