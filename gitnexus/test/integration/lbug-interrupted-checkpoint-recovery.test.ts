@@ -149,8 +149,9 @@ describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
         'utf-8',
       ),
     ).version as string;
-    const minor = Number(engineVersion.split('.')[1]);
-    if (Number.isFinite(minor) && minor < 19) {
+    const [major, minor] = engineVersion.split('.').map((part) => Number(part));
+    // Skip only 0.x below 0.19. A 1.0.0 pin is newer than 0.19 and must run.
+    if (Number.isFinite(major) && Number.isFinite(minor) && major === 0 && minor < 19) {
       ctx.skip();
     }
 

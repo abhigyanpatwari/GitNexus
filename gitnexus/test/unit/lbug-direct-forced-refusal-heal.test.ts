@@ -9,7 +9,7 @@
  * mocked native layer so CI enforces it on the 0.18.3 pin too (where no real
  * engine emits the refusal).
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -115,9 +115,6 @@ describe('direct adapter self-heals a refused read-only probe (forced refusal)',
 
   afterEach(async () => {
     await closeLbug().catch(() => {});
-  });
-
-  afterAll(async () => {
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
   });
 

@@ -10,7 +10,7 @@
  * self-heal — writable open, probe, CHECKPOINT, read-only retry — regardless
  * of which engine binary is installed.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -116,9 +116,6 @@ describe('pool adapter self-heals a refused read-only open (forced refusal)', ()
 
   afterEach(async () => {
     await closeLbug(REPO).catch(() => {});
-  });
-
-  afterAll(async () => {
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
