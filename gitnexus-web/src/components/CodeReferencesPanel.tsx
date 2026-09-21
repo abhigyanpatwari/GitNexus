@@ -57,6 +57,8 @@ interface CitationSnippet {
   totalLines: number;
 }
 const CITATION_CONTEXT_LINES = 5;
+/** Max lines to fetch when a citation has no start/end range. */
+const RANGELESS_CITATION_LINES = 80;
 
 export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) => {
   const { t } = useTranslation(['common', 'graph']);
@@ -200,8 +202,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   );
   // Ids already requested (loaded or failed) — a failed read is not retried.
   const requestedSnippetIds = useRef<Set<string>>(new Set());
-  // Ids whose fetch Promise settled while still the active effect.
-  const settledSnippetIds = useRef<Set<string>>(new Set());
+  const aiReferencesRef = useRef(aiReferences);
+  aiReferencesRef.current = aiReferences;
+  // Bump to re-run the effect after a cancelled in-flight batch frees ids.
+  const [snippetRetryEpoch, setSnippetRetryEpoch] = useState(0);
 
   useEffect(() => {
     const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
@@ -214,14 +218,13 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     Promise.all(
       pending.map(async (ref) => {
         const hasRange = typeof ref.startLine === 'number';
-        const refStart = ref.startLine ?? 0;
-        const refEnd = ref.endLine ?? refStart;
-        const options = hasRange
-          ? {
-              startLine: Math.max(0, refStart - CITATION_CONTEXT_LINES),
-              endLine: refEnd + CITATION_CONTEXT_LINES,
-            }
-          : {};
+        // Range-less citations must not download/highlight the entire file.
+        const refStart = hasRange ? (ref.startLine as number) : 0;
+        const refEnd = hasRange ? (ref.endLine ?? refStart) : Math.max(0, RANGELESS_CITATION_LINES - 1);
+        const options = {
+          startLine: Math.max(0, refStart - (hasRange ? CITATION_CONTEXT_LINES : 0)),
+          endLine: refEnd + (hasRange ? CITATION_CONTEXT_LINES : 0),
+        };
         try {
           const result = await readFile(ref.filePath, { ...options, repo });
           const start = result.startLine ?? 0;
@@ -240,10 +243,19 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         }
       }),
     ).then((entries) => {
-      if (cancelled) return;
-      // Mark settled before any later cleanup so streaming updates do not
-      // free these ids and re-fetch them.
-      for (const ref of pending) settledSnippetIds.current.add(ref.id);
+      if (cancelled) {
+        // Free only after settle so a mid-flight aiReferences append does not
+        // start duplicate reads for the same ids. Re-schedule still-needed ones.
+        let needsRetry = false;
+        for (const ref of pending) {
+          if (aiReferencesRef.current.some((r) => r.id === ref.id)) {
+            requestedSnippetIds.current.delete(ref.id);
+            needsRetry = true;
+          }
+        }
+        if (needsRetry) setSnippetRetryEpoch((n) => n + 1);
+        return;
+      }
       const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
       if (loaded.length === 0) return;
       setCitationSnippets((prev) => {
@@ -255,16 +267,8 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
     return () => {
       cancelled = true;
-      // Free only in-flight ids so a replacement effect can retry them.
-      // Deleting only in .then() left them reserved after the next effect
-      // had already bailed on seeing requestedSnippetIds.
-      for (const ref of pending) {
-        if (!settledSnippetIds.current.has(ref.id)) {
-          requestedSnippetIds.current.delete(ref.id);
-        }
-      }
     };
-  }, [aiReferences, currentRepo, projectName]);
+  }, [aiReferences, currentRepo, projectName, snippetRetryEpoch]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
