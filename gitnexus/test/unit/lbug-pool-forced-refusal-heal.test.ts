@@ -24,7 +24,8 @@ const { native } = vi.hoisted(() => {
       /** Every Database construction in order — the self-heal shape. */
       constructions: [] as Array<'ro' | 'rw'>,
       checkpoints: 0,
-      refusalProbes: 0,
+      /** Every MATCH — victim, writable replay probe, and post-heal retry. */
+      probes: 0,
     },
     /** Script the FIRST read-only Database (index 0) as the checkpoint victim. */
     refuseFirst: true,
@@ -32,7 +33,7 @@ const { native } = vi.hoisted(() => {
       native.seq = 0;
       native.calls.constructions = [];
       native.calls.checkpoints = 0;
-      native.calls.refusalProbes = 0;
+      native.calls.probes = 0;
       native.refuseFirst = options.refuseFirst ?? true;
     },
     seq: 0,
@@ -68,8 +69,8 @@ vi.mock('@ladybugdb/core', () => {
   }
   const refuseIfVictim = (db: Database, text: string): void => {
     const t = text.trim().toUpperCase();
+    if (t.startsWith('MATCH')) native.calls.probes++;
     if (db.index === 0 && db.role === 'ro' && native.refuseFirst && t.startsWith('MATCH')) {
-      native.calls.refusalProbes++;
       throw new Error(REFUSAL);
     }
     if (t === 'CHECKPOINT') native.calls.checkpoints++;
@@ -127,6 +128,9 @@ describe('pool adapter self-heals a refused read-only open (forced refusal)', ()
     // read-only retry. Exactly one CHECKPOINT, issued by the recovery.
     expect(native.calls.constructions).toEqual(['ro', 'rw', 'ro']);
     expect(native.calls.checkpoints).toBe(1);
+    // Writable replay MATCH + post-heal read-only MATCH. A CHECKPOINT without
+    // its required replay probe would leave this at 1.
+    expect(native.calls.probes).toBe(2);
 
     const rows = await executeQuery(REPO, 'MATCH (n:Person) RETURN count(n) AS c');
     expect(rows).toEqual([]);
@@ -142,5 +146,6 @@ describe('pool adapter self-heals a refused read-only open (forced refusal)', ()
 
     expect(native.calls.constructions).toEqual(['ro']);
     expect(native.calls.checkpoints).toBe(0);
+    expect(native.calls.probes).toBe(2);
   });
 });
