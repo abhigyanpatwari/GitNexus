@@ -64,6 +64,7 @@ import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captu
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
+  isBlockedPairCallbackRegistration,
   isDefaultExportHocFunctionNode,
 } from '../../ts-js-hoc-utils.js';
 
@@ -1092,6 +1093,13 @@ export function emitJsScopeCaptures(
         continue;
       }
       if (arrowNode !== null && isBlockedDefaultExportHoc(arrowNode)) {
+        continue;
+      }
+      // Pair-value built-in registrations (`{ timer: setTimeout(() => …) }`,
+      // `{ later: promise.then(() => …) }`) bind handles/values, not
+      // callables. See `isBlockedPairCallbackRegistration` for why this
+      // gate lives emit-side rather than in the query predicates.
+      if (arrowNode !== null && isBlockedPairCallbackRegistration(arrowNode)) {
         continue;
       }
       // #2723 — see the matching filter in `typescript/captures.ts`.
