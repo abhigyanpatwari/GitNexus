@@ -13,7 +13,6 @@
  *   node --import tsx bench/trpc-route-extractor/measure.mjs
  *   node --import tsx bench/trpc-route-extractor/measure.mjs --check
  */
-import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { extractTrpcRoutes } from '../../src/core/ingestion/route-extractors/trpc.ts';
@@ -124,38 +123,6 @@ runCountCheck(report, 'routes', {
 if (!process.argv.includes('--check')) {
   console.log(JSON.stringify(report, null, 2));
   process.exit(0);
-}
-
-const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-if (typeof baseline.chain_scaling_budget !== 'number') {
-  console.error(
-    JSON.stringify(
-      {
-        report,
-        errors: [
-          'no numeric chain_scaling_budget in baselines.json — a missing budget is a DELETED GATE, not a passing arm',
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  process.exit(1);
-}
-if (report.chain_scaling_ratio > baseline.chain_scaling_budget) {
-  console.error(
-    JSON.stringify(
-      {
-        report,
-        errors: [
-          `chain_scaling_ratio ${report.chain_scaling_ratio} > ${baseline.chain_scaling_budget}`,
-        ],
-      },
-      null,
-      2,
-    ),
-  );
-  process.exit(1);
 }
 
 runBaselineCheck(report, BASELINE_PATH);

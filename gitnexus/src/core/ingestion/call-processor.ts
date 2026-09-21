@@ -57,9 +57,11 @@ interface RouteHandlerResolutionContext {
  * Pick a same-file route handler from `lookupExactAll` hits.
  *
  * Graph nodes store 0-based `startLine`; `ExtractedRoute.lineNumber` is 1-based
- * (`i + 1` in the tRPC scanner). When several defs share a name, the unique
- * winner is the one whose node startLine equals `toZeroBasedLine(route.lineNumber)`.
- * No unique winner (or no line reader) → `undefined` (fail-open).
+ * (`i + 1` in the tRPC scanner). When several defs share a name, prefer the
+ * unique def whose node startLine equals `toZeroBasedLine(route.lineNumber)`.
+ * If that exact match is missing (common when the arrow starts on the line
+ * after `.mutation(`), take the unique def whose startLine is the nearest
+ * `>=` target. Zero or 2+ winners (or no line reader) → `undefined` (fail-open).
  */
 function pickSameFileHandler(
   defs: readonly SymbolDefinition[],
@@ -69,8 +71,16 @@ function pickSameFileHandler(
   if (defs.length === 1) return defs[0];
   if (defs.length > 1 && getStartLine !== undefined) {
     const targetLine = toZeroBasedLine(route.lineNumber);
-    const matches = defs.filter((def) => Number(getStartLine(def.nodeId)) === targetLine);
-    return matches.length === 1 ? matches[0] : undefined;
+    const withLines = defs
+      .map((def) => ({ def, startLine: Number(getStartLine(def.nodeId)) }))
+      .filter((entry) => Number.isFinite(entry.startLine));
+    const exact = withLines.filter((entry) => entry.startLine === targetLine);
+    if (exact.length === 1) return exact[0].def;
+    const atOrAfter = withLines.filter((entry) => entry.startLine >= targetLine);
+    if (atOrAfter.length === 0) return undefined;
+    const nearestLine = Math.min(...atOrAfter.map((entry) => entry.startLine));
+    const nearest = atOrAfter.filter((entry) => entry.startLine === nearestLine);
+    return nearest.length === 1 ? nearest[0].def : undefined;
   }
   return undefined;
 }
@@ -237,8 +247,6 @@ export const processRoutesFromExtracted = async (
     // tRPC routes carry NO controller: a router is an object binding, not a
     // class, so the extractor leaves controllerName unset and names the
     // handler by its object-literal key. Bind the same-file symbol directly.
-    // A unique name wins; same-name handlers are disambiguated by matching
-    // the graph node's 0-based startLine to route.lineNumber (1-based).
     // No unique match → skip, fail-open. Laravel routes always set
     // controllerName and Django routes leave methodName null, so this
     // branch is tRPC-only by construction — the laravel guessed-method

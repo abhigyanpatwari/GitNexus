@@ -86,6 +86,9 @@ export const IMPACT_MAX_DEPTH = 32;
 /** Advertised query page defaults; backend and group orchestration must match. */
 export const QUERY_DEFAULT_LIMIT = 10;
 export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
+/** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
+export const QUERY_MAX_LIMIT = 100;
+export const QUERY_MAX_MAX_SYMBOLS = 200;
 export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
@@ -146,7 +149,7 @@ AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, cal
 Returns results grouped by process (execution flow):
 - processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
 - process_symbols: search-hit symbols in those flows with file locations and module (functional area). When the process entry is among those hits, it is marked is_entry_point: true.
-- definitions: standalone types/interfaces not in any process
+- definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
@@ -178,17 +181,17 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         limit: {
           type: 'number',
-          description: `Max processes to return (default: ${QUERY_DEFAULT_LIMIT})`,
+          description: `Max processes to return (default: ${QUERY_DEFAULT_LIMIT}, min: 1, max: ${QUERY_MAX_LIMIT}). Values outside [1, ${QUERY_MAX_LIMIT}] are rejected.`,
           default: QUERY_DEFAULT_LIMIT,
           minimum: 1,
-          maximum: 100,
+          maximum: QUERY_MAX_LIMIT,
         },
         max_symbols: {
           type: 'number',
-          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS})`,
+          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS}, min: 1, max: ${QUERY_MAX_MAX_SYMBOLS}). Values outside [1, ${QUERY_MAX_MAX_SYMBOLS}] are rejected.`,
           default: QUERY_DEFAULT_MAX_SYMBOLS,
           minimum: 1,
-          maximum: 200,
+          maximum: QUERY_MAX_MAX_SYMBOLS,
         },
         include_content: {
           type: 'boolean',

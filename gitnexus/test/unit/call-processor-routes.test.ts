@@ -344,6 +344,62 @@ describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', ()
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
+  it('two multiline sibling list procedures bind both handlers when arrow starts after .mutation(', async () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    list: publicProcedure.mutation(',
+      '      async () => {',
+      '        return null;',
+      '      },',
+      '    ),',
+      '  }),',
+      '  billing: t.router({',
+      '    list: publicProcedure.mutation(',
+      '      async () => {',
+      '        return null;',
+      '      },',
+      '    ),',
+      '  }),',
+      '});',
+    ].join('\n');
+    const extracted = extractTrpcRoutes(TRPC_FILE, source);
+    expect(extracted.map((r) => `${r.httpMethod} ${r.routePath}`).sort()).toEqual([
+      'POST /trpc/admin.list',
+      'POST /trpc/billing.list',
+    ]);
+
+    const admin = extracted.find((r) => r.routePath === '/trpc/admin.list');
+    const billing = extracted.find((r) => r.routePath === '/trpc/billing.list');
+    expect(admin?.lineNumber).toBe(6);
+    expect(billing?.lineNumber).toBe(13);
+
+    // Graph Function startLine is 0-based on the arrow, which begins the
+    // line AFTER `.mutation(` — so it cannot equal toZeroBasedLine(terminal).
+    const adminStartLine = 6; // 1-based line 7
+    const billingStartLine = 13; // 1-based line 14
+    expect(adminStartLine).not.toBe((admin?.lineNumber ?? 0) - 1);
+    expect(billingStartLine).not.toBe((billing?.lineNumber ?? 0) - 1);
+
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'list', 'fn:admin.list', 'Function');
+    model.symbols.add(TRPC_FILE, 'list', 'fn:billing.list', 'Function');
+    addFunctionNode(graph, 'fn:admin.list', 'list', TRPC_FILE, adminStartLine);
+    addFunctionNode(graph, 'fn:billing.list', 'list', TRPC_FILE, billingStartLine);
+
+    await processRoutesFromExtracted(graph, extracted, model);
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(2);
+    expect(edges.map((e) => e.targetId).sort()).toEqual(['fn:admin.list', 'fn:billing.list']);
+    expect(edges.every((e) => e.reason === 'trpc-route')).toBe(true);
+    expect(routeCallsEdges(graph)).toHaveLength(0);
+  });
+
   it('two same-name Functions + matching lineNumbers → two trpc-route edges to the two node ids', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();

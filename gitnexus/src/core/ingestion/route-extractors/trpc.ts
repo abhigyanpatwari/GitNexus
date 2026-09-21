@@ -34,17 +34,25 @@ export function shouldScanForTrpcRoutes(filePath: string): boolean {
   return p.includes('/routers/') || p.includes('/trpc/') || p.includes('/server/');
 }
 
-function extractRouterPrefix(content: string, filePath: string): string | null {
+function hasTrpcTerminalKeyword(content: string): boolean {
+  return (
+    content.includes('query') || content.includes('mutation') || content.includes('subscription')
+  );
+}
+
+function prefixFromBinding(
+  masked: string,
+  content: string,
+  filePath: string,
+  binding: RegExpMatchArray | null,
+): string | null {
   // Comments / string literals must not supply a prefix (`// const fooRouter =`
   // or a `.merge('post.'` inside a string). maskNonCode preserves length, so a
   // hit on the mask can be re-read from the original for quoted merge text.
-  const masked = maskSource(content);
 
   // Prefer the exported *Router binding; otherwise the first const/let/var.
   // A file-wide first `.merge('post.', …)` used to prefix every procedure,
   // including a later `export const appRouter = t.router({ health })`.
-  const binding = findPrefixRouterBinding(masked);
-
   if (binding) {
     const rhsStart = binding.index + binding[0].length;
     const rhsMasked = masked.slice(rhsStart);
@@ -91,12 +99,10 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
 // procedureFactory...), letting files that merely REFERENCE procedures pass
 // the gate and emit phantom routes. Every real v9-v11 router imports one of
 // these exact names.
-function isTrpcRouterFile(content: string): boolean {
+function isTrpcRouterFileMasked(masked: string): boolean {
   // Markers and cheap-checks run on the mask: a comment/string `@trpc/server`
   // or `initTRPC` must not open the file for an unrelated `fooProcedure.query`.
   // Real routers keep unquoted identifiers (`initTRPC`, `publicProcedure`).
-  const masked = maskSource(content);
-
   // Cheap reject before the terminal regex: every live procedure still
   // contains one of these identifiers. Whitespace between `.` and the
   // name is allowed by TERMINAL_CALL_RE, so we do not require a literal `.query`.
@@ -383,6 +389,8 @@ function maskSource(content: string): string {
 interface NestFrame {
   name: string;
   openDepth: number;
+  /** `(` depth of the `router(` that opened this nest. */
+  parenDepth: number;
 }
 
 // Router open: 'name: t.router(', 'name: trpc.router(',
@@ -400,9 +408,10 @@ const ROUTER_BINDING_RE =
   /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|router)\s*\(/;
 
 // Identifier composition: `admin: adminRouter,` / last-property `admin: adminRouter`.
+// Optional `as` / `satisfies` tail (`admin: adminRouter as const`) still mounts.
 // `list: publicProcedure.query(` does not match — the next token is `.`.
 const ROUTER_REF_RE =
-  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*([A-Za-z_$][\w$]*)\s*(?:[,}]|$)/;
+  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*([A-Za-z_$][\w$]*)\s*(?:(?:as|satisfies)\b[^,}]*)?(?:[,}]|$)/;
 
 // `/g` copies for matchAll. The non-global originals stay lastIndex-safe for `.test()`.
 const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'gm');
@@ -421,6 +430,12 @@ function matchAll(re: RegExp, text: string): RegExpMatchArray[] {
 }
 
 function findPrefixRouterBinding(masked: string): RegExpMatchArray | null {
+  // Prefer the live composer (`appRouter` / `rootRouter`) when this file both
+  // defines a leaf `export const postRouter` and remounts it on `appRouter`.
+  // Falling through to the first exported *Router would treat that leaf as
+  // root and drop the remount key (`blog: postRouter` → `/trpc/post.list`).
+  const composer = masked.match(/export\s+(?:const|let|var)\s+((?:app|root)Router)\s*=\s*/i);
+  if (composer && composer.index !== undefined) return composer;
   const exportBinding = masked.match(/export\s+(?:const|let|var)\s+(\w+Router)\s*=\s*/);
   const anyBinding = masked.match(/(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*/);
   const binding = exportBinding ?? anyBinding;
@@ -432,11 +447,15 @@ interface RouterMount {
   parent: string | null;
   key: string;
   child: string;
+  /** Inline `t.router({ ... })` names wrapping this identifier mount. */
+  nestParts: string[];
 }
 
 interface BindingFrame {
   name: string;
   openDepth: number;
+  /** `(` depth of the `router(` that opened this object literal. */
+  parenDepth: number;
 }
 
 /**
@@ -456,25 +475,30 @@ function buildMountPathLookup(
     if (!binding || !root || binding === root) return [[]];
     const cached = memo.get(binding);
     if (cached) return cached;
-    if (visiting.has(binding)) return [[]];
+    // A cycle is not a root: returning [[]] fabricated `/trpc/b.list`.
+    if (visiting.has(binding)) return [];
     visiting.add(binding);
     const parents = mountsByChild.get(binding);
-    let result: string[][] = [[]];
+    // Unmounted non-root bindings contribute no paths (pendingEmits drop).
+    let result: string[][] = [];
     if (parents && parents.length > 0) {
       const out: string[][] = [];
       for (const mount of parents) {
+        const hop = [...mount.nestParts, mount.key];
         if (!mount.parent) {
-          out.push([mount.key]);
+          out.push(hop);
           continue;
         }
         for (const prefix of paths(mount.parent)) {
-          out.push([...prefix, mount.key]);
+          out.push([...prefix, ...hop]);
         }
       }
       if (out.length > 0) result = out;
     }
-    memo.set(binding, result);
     visiting.delete(binding);
+    // Nested cycle cuts return [] for this hop only. Memoizing that empty
+    // walk would drop a later live path (`a.b.list` after `a` ↔ `b`).
+    if (visiting.size === 0) memo.set(binding, result);
     return result;
   };
 }
@@ -506,11 +530,16 @@ function terminalDotIndex(text: string, start: number): number {
 }
 
 export function extractTrpcRoutes(filePath: string, content: string): ExtractedRoute[] {
-  if (!isTrpcRouterFile(content)) return [];
+  // Raw miss is decisive: masking never invents `query` / `mutation` /
+  // `subscription`, so skip the per-char mask on files that cannot be routers.
+  if (!hasTrpcTerminalKeyword(content)) return [];
+  const maskedSource = maskSource(content);
+  if (!isTrpcRouterFileMasked(maskedSource)) return [];
 
   const routesByPath = new Map<string, ExtractedRoute>();
-  const prefix = extractRouterPrefix(content, filePath);
-  const rootBinding = findPrefixRouterBinding(maskSource(content))?.[1] ?? null;
+  const binding = findPrefixRouterBinding(maskedSource);
+  const prefix = prefixFromBinding(maskedSource, content, filePath, binding);
+  const rootBinding = binding?.[1] ?? null;
 
   const lines = content.split('\n');
   const nestStack: NestFrame[] = [];
@@ -598,11 +627,11 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       if (ch === '{') {
         depth++;
         if (pendingBindingName !== null) {
-          bindingStack.push({ name: pendingBindingName, openDepth: depth });
+          bindingStack.push({ name: pendingBindingName, openDepth: depth, parenDepth });
           pendingBindingName = null;
         }
         if (pendingRouterName !== null) {
-          nestStack.push({ name: pendingRouterName, openDepth: depth });
+          nestStack.push({ name: pendingRouterName, openDepth: depth, parenDepth });
           pendingRouterName = null;
         }
       } else if (ch === '}') {
@@ -647,11 +676,17 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       }
       const ref = refByIndex.get(c);
       if (ref !== undefined) {
-        mounts.push({
-          parent: bindingStack[bindingStack.length - 1]?.name ?? pendingBindingName,
-          key: ref.key,
-          child: ref.child,
-        });
+        const routerOpen = nestStack[nestStack.length - 1] ?? bindingStack[bindingStack.length - 1];
+        // Only direct properties of a router object: refs inside `.query(` /
+        // callbacks sit at a deeper parenDepth than the router-open `(`.
+        if (!routerOpen || parenDepth <= routerOpen.parenDepth) {
+          mounts.push({
+            parent: bindingStack[bindingStack.length - 1]?.name ?? pendingBindingName,
+            key: ref.key,
+            child: ref.child,
+            nestParts: nestStack.map((frame) => frame.name),
+          });
+        }
       }
 
       const candidate = anyTerminalByIndex.get(c);
@@ -661,7 +696,18 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         parenDepth === currentProcedure.parenDepth &&
         (terminalByIndex.has(c) || prevNonSpace(masked, c) === ')')
       ) {
-        emitProcedure(candidate, currentProcedure, i + 1, lines.slice(i).join('\n').slice(c));
+        // Identifier callbacks are `^`-anchored; current line is enough except
+        // prettier-broken `.query(\n  handler\n)`. Cap at two following lines
+        // so we do not rescan the file tail on every terminal.
+        emitProcedure(
+          candidate,
+          currentProcedure,
+          i + 1,
+          lines
+            .slice(i, i + 3)
+            .join('\n')
+            .slice(c),
+        );
         currentProcedure = null;
       }
     }

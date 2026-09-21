@@ -624,6 +624,145 @@ describe('extractTrpcRoutes', () => {
     ].join('\n');
     expect(paths(source)).toEqual(['GET /trpc/admin.list', 'GET /trpc/billing.list']);
   });
+
+  it('unmounted sibling routers do not emit phantom root routes', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const unusedRouter = t.router({',
+      '  secret: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  health: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/health']);
+  });
+
+  it('identifier mount inside an inline nest keeps the nest prefix', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const usersRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: t.router({',
+      '    users: usersRouter,',
+      '  }),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.users.list']);
+  });
+
+  it('inline nest plus a top-level same-key mount keep distinct live paths', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const aRouter = t.router({',
+      '  list: publicProcedure.query(handlerA),',
+      '});',
+      'const bRouter = t.router({',
+      '  list: publicProcedure.query(handlerB),',
+      '});',
+      'export const appRouter = t.router({',
+      '  users: aRouter,',
+      '  extra: t.router({',
+      '    users: bRouter,',
+      '  }),',
+      '});',
+    ].join('\n');
+    const extracted = extractTrpcRoutes(FILE, source);
+    expect(extracted.map((r) => r.httpMethod + ' ' + r.routePath)).toEqual([
+      'GET /trpc/users.list',
+      'GET /trpc/extra.users.list',
+    ]);
+    expect(extracted.map((r) => r.methodName)).toEqual(['handlerA', 'handlerB']);
+  });
+
+  it('type assertion on an identifier mount still uses the mount key', () => {
+    const asConst = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter as const,',
+      '});',
+    ].join('\n');
+    expect(paths(asConst)).toEqual(['GET /trpc/admin.list']);
+
+    const satisfies = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter satisfies AdminRouter,',
+      '});',
+    ].join('\n');
+    expect(paths(satisfies)).toEqual(['GET /trpc/admin.list']);
+  });
+
+  it('exported appRouter remount key wins over an earlier exported *Router prefix', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const postRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  blog: postRouter,',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/blog.list']);
+  });
+
+  it('cyclic identifier mounts do not fabricate reverse-root paths', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const aRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '  b: bRouter,',
+      '});',
+      'const bRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '  a: aRouter,',
+      '});',
+      'export const appRouter = t.router({',
+      '  a: aRouter,',
+      '});',
+    ].join('\n');
+    const emitted = paths(source);
+    expect(emitted).toEqual(['GET /trpc/a.list', 'GET /trpc/a.b.list']);
+    expect(emitted).not.toContain('GET /trpc/b.list');
+    expect(emitted).not.toContain('GET /trpc/b.a.list');
+  });
+
+  it('router refs inside a procedure callback are not identifier mounts', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  health: publicProcedure.query(() => ({ nested: childRouter })),',
+      '});',
+      'const childRouter = t.router({',
+      '  hidden: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/health']);
+  });
 });
 
 describe('shouldScanForTrpcRoutes', () => {

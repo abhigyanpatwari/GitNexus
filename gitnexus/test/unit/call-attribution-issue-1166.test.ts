@@ -370,6 +370,20 @@ describe('issue #1166 — definition-phase consistency', () => {
     expect(names).toContain('create');
   });
 
+  it('captures curried tRPC pair HOC create: publicProcedure.mutation(withAuth(...))', () => {
+    const names = definedFunctionNames(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures quoted-key curried pair HOC create: mutation(withAuth(function () {}))', () => {
+    const names = definedFunctionNames(`
+      const r = { 'create': mutation(withAuth(function () { return null; })) };
+    `);
+    expect(names).toContain('create');
+  });
+
   it('does not name value-returning pair callbacks then / setTimeout / Array.from', () => {
     const names = definedFunctionNames(`
       const o = {
@@ -420,6 +434,25 @@ describe('issue #1166 — definition-phase consistency', () => {
     expect(jsNames).not.toContain('later');
     expect(jsNames).not.toContain('ids');
     expect(jsNames).toContain('handler');
+  });
+
+  it('TYPESCRIPT_SCOPE_QUERY names curried tRPC pair HOC mutation(withAuth(arrow))', () => {
+    const parser = getTsParser('router.ts');
+    const query = getTsScopeQuery('router.ts');
+    const tree = parser.parse(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    const names: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) names.push(name);
+    }
+    expect(names).toContain('create');
   });
 
   it('TYPESCRIPT_SCOPE_QUERY does not name then / setTimeout / Array.from pair values', () => {
@@ -742,9 +775,23 @@ describe('issue #1166 — JavaScript HOC-wrapped pair values (tRPC)', () => {
     expect(names).toContain('create');
   });
 
+  it('captures create: publicProcedure.mutation(withAuth(...)) in JAVASCRIPT_QUERIES', () => {
+    const names = definedJsFunctionNames(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    expect(names).toContain('create');
+  });
+
   it('captures create: procedure.mutation in JAVASCRIPT_SCOPE_QUERY', () => {
     const names = definedJsScopeFunctionNames(`
       const r = { create: procedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures create: procedure.mutation(withAuth(...)) in JAVASCRIPT_SCOPE_QUERY', () => {
+    const names = definedJsScopeFunctionNames(`
+      const r = { create: procedure.mutation(withAuth(async () => {})) };
     `);
     expect(names).toContain('create');
   });

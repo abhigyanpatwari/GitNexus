@@ -102,6 +102,7 @@ import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
+  isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import {
   emitTsScopeCaptures,
@@ -277,10 +278,7 @@ const tsExtractFunctionName = (
     // that are themselves pair values. The arrow's parent is `arguments`,
     // grandparent is `call_expression`, great-grandparent is `pair`.
     if (declarator?.type === 'pair' || declarator?.type === 'property_assignment') {
-      if (
-        callee?.type === 'identifier' &&
-        DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
-      ) {
+      if (isBlockedCallbackRegistrationCall(callExpr)) {
         return { funcName: null, label: 'Function' };
       }
       return { funcName: pairKeyName(declarator.childForFieldName?.('key')), label: 'Function' };

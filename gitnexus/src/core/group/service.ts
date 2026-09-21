@@ -85,12 +85,6 @@ export interface GroupToolPort {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
-      /**
-       * Optional per-process BFS chain expansion, same semantics as the
-       * single-repo query tool. Optional so existing GroupToolPort test mocks
-       * that predate chain_depth keep type-checking (same rationale as the
-       * optional context chain_depth above).
-       */
       chain_depth?: number;
     },
   ): Promise<unknown>;
@@ -121,12 +115,6 @@ export interface GroupToolPort {
       uid?: string;
       file_path?: string;
       include_content?: boolean;
-      /**
-       * Optional BFS chain expansion, same semantics as the single-repo
-       * `context` tool. Optional so existing GroupToolPort test mocks that
-       * predate `chain_depth` keep type-checking (same rationale as the
-       * optional trace/resolveSymbol members below).
-       */
       chain_depth?: number;
     },
   ): Promise<unknown>;

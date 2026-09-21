@@ -125,6 +125,8 @@ import {
   PDG_QUERY_MAX_LIMIT,
   QUERY_DEFAULT_LIMIT,
   QUERY_DEFAULT_MAX_SYMBOLS,
+  QUERY_MAX_LIMIT,
+  QUERY_MAX_MAX_SYMBOLS,
   CONTEXT_CHAIN_MAX_DEPTH,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
@@ -1458,6 +1460,35 @@ export function parseListReposPagination(
   }
 
   return { limit, offset };
+}
+
+/**
+ * query() page bounds. Schema min/max is advisory — callTool does not enforce
+ * inputSchema — so the backend rejects out-of-range values the same way
+ * parseListReposPagination / pdg_query do (reject, not clamp).
+ */
+function parseQueryPageBound(
+  value: unknown,
+  field: 'limit' | 'max_symbols',
+  fallback: number,
+  max: number,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: fallback };
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    return {
+      ok: false,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${JSON.stringify(value)}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function clampChainDepth(value: unknown): number {
+  return Math.max(0, Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(value ?? 0) || 0));
+}
+
+function routeEnrichmentKey(method: string | undefined, url: string): string {
+  return method ? `${method}:${url}` : url;
 }
 
 /**
@@ -2976,10 +3007,24 @@ export class LocalBackend {
       return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
 
-    await this.ensureInitialized(repo);
+    const parsedLimit = parseQueryPageBound(
+      params.limit,
+      'limit',
+      QUERY_DEFAULT_LIMIT,
+      QUERY_MAX_LIMIT,
+    );
+    if (parsedLimit.ok === false) return { error: parsedLimit.error };
+    const parsedMaxSymbols = parseQueryPageBound(
+      params.max_symbols,
+      'max_symbols',
+      QUERY_DEFAULT_MAX_SYMBOLS,
+      QUERY_MAX_MAX_SYMBOLS,
+    );
+    if (parsedMaxSymbols.ok === false) return { error: parsedMaxSymbols.error };
+    const processLimit = parsedLimit.value;
+    const maxSymbolsPerProcess = parsedMaxSymbols.value;
 
-    const processLimit = params.limit || QUERY_DEFAULT_LIMIT;
-    const maxSymbolsPerProcess = params.max_symbols || QUERY_DEFAULT_MAX_SYMBOLS;
+    await this.ensureInitialized(repo);
     const requestedContent = params.include_content ?? false;
     // Do not trust a lingering graph property when the metadata contract says
     // source-derived text is unavailable. A full rebuild normally removes the
@@ -3276,6 +3321,85 @@ export class LocalBackend {
       }
     }
 
+    const routeDefinitions = definitions.filter(
+      (def) => def.type === 'Route' && typeof def.id === 'string' && def.id.length > 0,
+    );
+    if (routeDefinitions.length > 0) {
+      const handlersByRoute = new Map<
+        string,
+        Array<{
+          handlerId: string;
+          handlerName?: string;
+          handlerFilePath?: string;
+          url?: string;
+          method?: string;
+        }>
+      >();
+      try {
+        for (const ids of chunk(
+          routeDefinitions.map((def) => def.id as string),
+          LBUG_ID_PROBE_BATCH_SIZE,
+        )) {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `
+            MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+            WHERE route.id IN $routeIds
+            RETURN route.id AS routeId, handler.id AS handlerId, handler.name AS handlerName,
+                   handler.filePath AS handlerFilePath, route.name AS url, route.method AS method
+          `,
+            { routeIds: ids },
+          );
+          for (const row of rows) {
+            const routeId = String(row.routeId ?? row[0] ?? '');
+            const handlerId = String(row.handlerId ?? row[1] ?? '');
+            if (!routeId || !handlerId) continue;
+            const list = handlersByRoute.get(routeId) ?? [];
+            list.push({
+              handlerId,
+              handlerName: row.handlerName ?? row[2] ?? undefined,
+              handlerFilePath: row.handlerFilePath ?? row[3] ?? undefined,
+              url: row.url ?? row[4] ?? undefined,
+              method: row.method ?? row[5] ?? undefined,
+            });
+            handlersByRoute.set(routeId, list);
+          }
+        }
+      } catch (e) {
+        logQueryError('query:route-definition-bridge', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+      for (const def of routeDefinitions) {
+        const url = typeof def.name === 'string' && def.name.length > 0 ? def.name : undefined;
+        if (url) {
+          def.follow_up = { tool: 'route_map', route: url };
+        }
+        const handlers = handlersByRoute.get(def.id);
+        const preferred =
+          handlers?.find((h) => h.handlerId.startsWith('Function:')) ?? handlers?.[0];
+        if (preferred) {
+          def.handlerSymbolId = preferred.handlerId;
+          if (preferred.handlerName) def.handlerName = preferred.handlerName;
+          if (preferred.handlerFilePath) def.handlerFilePath = preferred.handlerFilePath;
+        }
+        const routes: Array<{ url: string; method?: string }> = [];
+        const seenRoutes = new Set<string>();
+        for (const handler of handlers ?? []) {
+          const routeUrl = handler.url || url;
+          if (!routeUrl) continue;
+          const methodStr = handler.method ? String(handler.method) : undefined;
+          const key = routeEnrichmentKey(methodStr, routeUrl);
+          if (seenRoutes.has(key)) continue;
+          seenRoutes.add(key);
+          routes.push(methodStr ? { url: routeUrl, method: methodStr } : { url: routeUrl });
+        }
+        if (routes.length === 0 && url) {
+          routes.push({ url });
+        }
+        if (routes.length > 0) def.routes = routes;
+      }
+    }
+
     timer.stop(); // symbol_lookup
 
     // Rank first — route enrichment is unused in the sort and only the
@@ -3307,9 +3431,18 @@ export class LocalBackend {
       try {
         const pidList = rankedProcesses.map((p) => p.id);
         for (const pidChunk of chunk(pidList, LBUG_ID_PROBE_BATCH_SIZE)) {
+          const entryIds = pidChunk
+            .map((pid) => processMap.get(pid)?.entryPointId)
+            .filter((id): id is string => !!id && id.length > 0);
           const routeRows = await executeParameterized(
             repo.lbugPath,
-            `
+            entryIds.length === 0
+              ? `
+            MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(p:Process)
+            WHERE p.id IN $pids
+            RETURN p.id AS pid, route.name AS url, route.method AS method
+          `
+              : `
             MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(p:Process)
             WHERE p.id IN $pids
             RETURN p.id AS pid, route.name AS url, route.method AS method
@@ -3324,9 +3457,7 @@ export class LocalBackend {
           `,
             {
               pids: pidChunk,
-              entryIds: pidChunk
-                .map((pid) => processMap.get(pid)?.entryPointId)
-                .filter((id): id is string => !!id && id.length > 0),
+              entryIds,
             },
           );
           for (const row of routeRows) {
@@ -3338,9 +3469,9 @@ export class LocalBackend {
               : pidByEntryPoint.get(targetPid);
             if (!owningPid || !url) continue;
             const methodStr = method ? String(method) : undefined;
-            const dedupKey = methodStr ? `${methodStr}:${url}` : url;
+            const dedupKey = routeEnrichmentKey(methodStr, url);
             const list = routesByProcessId.get(owningPid) ?? [];
-            if (!list.some((r) => (r.method ? `${r.method}:${r.url}` : r.url) === dedupKey)) {
+            if (!list.some((r) => routeEnrichmentKey(r.method, r.url) === dedupKey)) {
               list.push(methodStr ? { url, method: methodStr } : { url });
               routesByProcessId.set(owningPid, list);
             }
@@ -3366,10 +3497,7 @@ export class LocalBackend {
     // Best-effort — a BFS failure drops that process's chain but never fails
     // the query.
     const chainByProcessId = new Map<string, any[]>();
-    const requestedChainDepth = Math.max(
-      0,
-      Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(params.chain_depth ?? 0) || 0),
-    );
+    const requestedChainDepth = clampChainDepth(params.chain_depth);
     if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
       timer.start('chain_enrichment');
       await mapConcurrent(
@@ -4942,7 +5070,7 @@ export class LocalBackend {
       for (const r of routeRows) {
         const url = r.url ?? r[0];
         const method = r.method ?? r[1];
-        const dedupKey = method ? `${method}:${url}` : url;
+        const dedupKey = routeEnrichmentKey(method ? String(method) : undefined, url);
         if (url && !seenRoutes.has(dedupKey)) {
           seenRoutes.add(dedupKey);
           routes.push(method ? { url, method } : { url });
@@ -5085,17 +5213,8 @@ export class LocalBackend {
       aopMetadataPromise,
     ]);
 
-    // optional BFS chain expansion. When `chain_depth` > 0, walk
-    // CALLS edges up to N hops from this symbol and return the layered result
-    // as a `chain` field. This reveals the full procedure→workflow→sub-workflow
-    // call chain in ONE call instead of forcing the agent to chain context()
-    // invocations. Test-file nodes are deprioritized (pushed to the end of each
-    // depth layer) so real callers/callees surface first.
     let chain: any[] | undefined;
-    const requestedDepth = Math.max(
-      0,
-      Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(chain_depth ?? 0) || 0),
-    );
+    const requestedDepth = clampChainDepth(chain_depth);
     if (requestedDepth > 0) {
       try {
         chain = await this._computeContextChain(repo, symId, requestedDepth);
@@ -5164,8 +5283,7 @@ export class LocalBackend {
    *   ]
    *
    * Test-file nodes are deprioritized (pushed to the end of each list) so real
-   * callers/callees surface first — same ORDER BY logic as the main incoming
-   * /outgoing queries (Fix A). Cycles are broken via a per-direction `visited`
+   * callers/callees surface first. Cycles are broken via a per-direction `visited`
    * set (a node visited at depth N in one direction is not re-emitted at
    * depth N+1 in that same direction even if it has another path back into
    * the frontier). Upstream and downstream do not share visited, so a

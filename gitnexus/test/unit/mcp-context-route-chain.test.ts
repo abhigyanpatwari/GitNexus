@@ -363,4 +363,106 @@ describe('context/query route + chain enrichment', () => {
       },
     ]);
   });
+
+  it.each([
+    ['limit', -1],
+    ['limit', 0],
+    ['limit', 1.5],
+    ['limit', 101],
+    ['limit', Infinity],
+    ['max_symbols', 0],
+    ['max_symbols', 201],
+  ] as const)('query rejects out-of-range %s=%s before search', async (field, value) => {
+    const bm25Search = vi.fn();
+    (backend as any).bm25Search = bm25Search;
+    (backend as any).semanticSearch = vi.fn();
+
+    const result = await backend.callTool('query', { search_query: 'login', [field]: value });
+
+    expect(result).toMatchObject({
+      error: expect.stringMatching(new RegExp(`Invalid "${field}".*\\[1,`)),
+    });
+    expect(bm25Search).not.toHaveBeenCalled();
+  });
+
+  it('query Route FTS hit without a process attaches HANDLES_ROUTE handler + route_map hint', async () => {
+    const routeId = 'Route:/trpc/admin.setSettings';
+    const routeUrl = '/trpc/admin.setSettings';
+    (backend as any).bm25Search = vi.fn().mockResolvedValue({
+      results: [
+        {
+          nodeId: routeId,
+          name: routeUrl,
+          type: 'Route',
+          filePath: 'src/server/trpc/routers/app.ts',
+        },
+      ],
+      ftsUsed: true,
+    });
+    (backend as any).semanticSearch = vi.fn().mockResolvedValue([]);
+    (executeParameterized as any).mockImplementation(async (_db: string, query: string) => {
+      if (query.includes('STEP_IN_PROCESS')) return [];
+      if (query.includes('HANDLES_ROUTE') && query.includes('route.id')) {
+        return [
+          {
+            routeId,
+            handlerId: HANDLER.id,
+            handlerName: HANDLER.name,
+            handlerFilePath: HANDLER.filePath,
+            url: routeUrl,
+            method: 'POST',
+          },
+        ];
+      }
+      return [];
+    });
+
+    const result = await backend.callTool('query', { search_query: '/trpc/admin.setSettings' });
+
+    expect(result).not.toHaveProperty('error');
+    expect(result.processes).toEqual([]);
+    expect(result.definitions).toHaveLength(1);
+    expect(result.definitions[0]).toMatchObject({
+      id: routeId,
+      name: routeUrl,
+      type: 'Route',
+      handlerSymbolId: HANDLER.id,
+      handlerName: HANDLER.name,
+      routes: [{ url: routeUrl, method: 'POST' }],
+      follow_up: { tool: 'route_map', route: routeUrl },
+    });
+  });
+
+  it('query Route FTS hit stays a definition when HANDLES_ROUTE is empty', async () => {
+    const routeId = 'Route:/trpc/orphan';
+    const routeUrl = '/trpc/orphan';
+    (backend as any).bm25Search = vi.fn().mockResolvedValue({
+      results: [
+        {
+          nodeId: routeId,
+          name: routeUrl,
+          type: 'Route',
+        },
+      ],
+      ftsUsed: true,
+    });
+    (backend as any).semanticSearch = vi.fn().mockResolvedValue([]);
+    (executeParameterized as any).mockImplementation(async (_db: string, query: string) => {
+      if (query.includes('STEP_IN_PROCESS')) return [];
+      return [];
+    });
+
+    const result = await backend.callTool('query', { search_query: '/trpc/orphan' });
+
+    expect(result).not.toHaveProperty('error');
+    expect(result.definitions).toEqual([
+      expect.objectContaining({
+        id: routeId,
+        name: routeUrl,
+        type: 'Route',
+        follow_up: { tool: 'route_map', route: routeUrl },
+      }),
+    ]);
+    expect(result.definitions[0]).not.toHaveProperty('handlerSymbolId');
+  });
 });

@@ -270,6 +270,103 @@ export const TYPESCRIPT_QUERIES = `
       (function_expression))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/typescript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
 ; so the legacy Call-Resolution DAG and the registry-primary pipeline
@@ -942,6 +1039,103 @@ export const JAVASCRIPT_QUERIES = `
       property: (property_identifier) @callee)
     arguments: (arguments
       (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/javascript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.

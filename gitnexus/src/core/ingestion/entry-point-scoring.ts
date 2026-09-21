@@ -142,9 +142,8 @@ export function calculateEntryPointScore(
   // JS/JSX routers that match those predicates get `framework: 'trpc'`
   // the same way TS/TSX routers do.
   const frameworkHint = filePath ? detectFrameworkFromPath(filePath) : null;
-  const skipUtilityPenalty = frameworkHint?.framework === 'trpc';
   const trpcAccessorExemption =
-    skipUtilityPenalty && /^(get|set|is|has|can|should|will|did)[A-Z]/.test(name);
+    frameworkHint?.framework === 'trpc' && /^(get|set|is|has|can|should|will|did)[A-Z]/.test(name);
 
   // Check negative patterns first (utilities get penalized)
   if (!trpcAccessorExemption && UTILITY_PATTERNS.some((p) => p.test(name))) {

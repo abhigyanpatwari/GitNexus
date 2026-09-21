@@ -337,6 +337,104 @@ export const JAVASCRIPT_SCOPE_QUERY = `
       (function_expression) @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
+;; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+;; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+;; pair's call_expression. They miss mutation's argument being another
+;; call_expression (withAuth(...)). Object-pair only — do NOT add a
+;; variable-level nested-HOC rule (\`const X = memo(forwardRef(...))\` must
+;; stay a Variable; see typescript-hoc-wrapped.test.ts).
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
 ;; HOC-wrapped variable declarations: const X = HOC((args) => { ... }).
 ;; Covers React.forwardRef, memo, useCallback, useMemo, observer,
 ;; debounce, and any user-defined HOC factory.
