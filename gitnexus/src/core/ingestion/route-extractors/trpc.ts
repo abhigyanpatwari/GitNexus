@@ -413,12 +413,19 @@ const ROUTER_BINDING_RE =
 const ROUTER_REF_RE =
   /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*([A-Za-z_$][\w$]*)\s*(?:(?:as|satisfies)\b[^,}]*)?(?:[,}]|$)/;
 
+// `export const appRouter = t.merge('post.', postRouter)` — the merge string
+// is the file prefix; this records a zero-hop mount so postRouter procedures
+// are not dropped as unmounted.
+const MERGE_ROUTER_REF_RE =
+  /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:t|trpc|tRPC|\w+Router)\s*\.\s*merge\s*\([^,]+,\s*([A-Za-z_$][\w$]*)\s*\)/;
+
 // `/g` copies for matchAll. The non-global originals stay lastIndex-safe for `.test()`.
 const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'gm');
 const PROCEDURE_KEY_RE_G = new RegExp(PROCEDURE_KEY_RE.source, 'g');
 const ROUTER_OPEN_RE_G = new RegExp(ROUTER_OPEN_RE.source, 'g');
 const ROUTER_BINDING_RE_G = new RegExp(ROUTER_BINDING_RE.source, 'g');
 const ROUTER_REF_RE_G = new RegExp(ROUTER_REF_RE.source, 'g');
+const MERGE_ROUTER_REF_RE_G = new RegExp(MERGE_ROUTER_REF_RE.source, 'g');
 // Every `.query(` / `.mutation(` / `.subscription(` — the scanner emits
 // only at the procedure's parenDepth, and only when TERMINAL_CALL_RE
 // matched or the previous non-space is `)` (chained `.input(...).query(`).
@@ -484,7 +491,7 @@ function buildMountPathLookup(
     if (parents && parents.length > 0) {
       const out: string[][] = [];
       for (const mount of parents) {
-        const hop = [...mount.nestParts, mount.key];
+        const hop = mount.key ? [...mount.nestParts, mount.key] : [...mount.nestParts];
         if (!mount.parent) {
           out.push(hop);
           continue;
@@ -714,6 +721,15 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         currentProcedure = null;
       }
     }
+  }
+
+  for (const m of matchAll(MERGE_ROUTER_REF_RE_G, maskedSource)) {
+    mounts.push({
+      parent: m[1],
+      key: '',
+      child: m[2],
+      nestParts: [],
+    });
   }
 
   const mountsByChild = new Map<string, RouterMount[]>();

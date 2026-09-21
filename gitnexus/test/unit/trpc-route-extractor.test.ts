@@ -32,6 +32,19 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['GET /trpc/admin.users.list', 'GET /trpc/billing.users.list']);
   });
 
+  it('t.merge of a named same-file router keeps the merge prefix', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const postRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      "export const appRouter = t.merge('post.', postRouter);",
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/post.list']);
+  });
+
   it('a merge prefix keeps exactly one dot boundary (post. -> post.list)', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
