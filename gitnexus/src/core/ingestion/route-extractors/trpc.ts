@@ -440,8 +440,7 @@ function terminalDotIndex(text: string, start: number): number {
 export function extractTrpcRoutes(filePath: string, content: string): ExtractedRoute[] {
   if (!isTrpcRouterFile(content)) return [];
 
-  const routes: ExtractedRoute[] = [];
-  const seen = new Set<string>();
+  const routesByPath = new Map<string, ExtractedRoute>();
   const prefix = extractRouterPrefix(content, filePath);
 
   const lines = content.split('\n');
@@ -467,30 +466,31 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     const parts = [...nestStack.map((frame) => frame.name), proc.name];
     const procedurePath = [...(prefix ? [prefix] : []), ...parts].join('.');
 
-    if (!seen.has(procedurePath)) {
-      seen.add(procedurePath);
-      routes.push({
-        filePath,
-        httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
-        routePath: '/trpc/' + procedurePath,
-        routeName: procedurePath,
-        // A tRPC router is an object binding, not a class. Route consumers
-        // resolve 'controllerName' through lookupClassByName
-        // (call-processor.ts), which would either skip these routes (no such
-        // class) or mis-link an unrelated same-named class — leave it unset;
-        // call-processor binds the same-file handler symbol directly.
-        controllerName: null,
-        methodName: identifierCallbackName(textFromDot) ?? proc.name,
-        middleware: [],
-        prefix: null,
-        // pickSameFileHandler compares this 1-based line to Function
-        // startLine (0-based). The handler is the terminal callback
-        // (`.query` / `.mutation` / `.subscription`), so emit that line
-        // — not the object-key line, which is often earlier after
-        // `.input()` / `.use()` chaining. Same-line key+terminal is unchanged.
-        lineNumber: terminalLine,
-      });
-    }
+    // Last write wins: `t.router({ list: a, list: b })` is a JS object
+    // literal, so tRPC only ever sees `b`. Keeping the first emit would
+    // bind CALLS to dead handler code. Sibling routers still stay distinct
+    // because `procedurePath` includes the nest (`admin.list` vs `billing.list`).
+    routesByPath.set(procedurePath, {
+      filePath,
+      httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
+      routePath: '/trpc/' + procedurePath,
+      routeName: procedurePath,
+      // A tRPC router is an object binding, not a class. Route consumers
+      // resolve 'controllerName' through lookupClassByName
+      // (call-processor.ts), which would either skip these routes (no such
+      // class) or mis-link an unrelated same-named class — leave it unset;
+      // call-processor binds the same-file handler symbol directly.
+      controllerName: null,
+      methodName: identifierCallbackName(textFromDot) ?? proc.name,
+      middleware: [],
+      prefix: null,
+      // pickSameFileHandler compares this 1-based line to Function
+      // startLine (0-based). The handler is the terminal callback
+      // (`.query` / `.mutation` / `.subscription`), so emit that line
+      // — not the object-key line, which is often earlier after
+      // `.input()` / `.use()` chaining. Same-line key+terminal is unchanged.
+      lineNumber: terminalLine,
+    });
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -576,5 +576,5 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     }
   }
 
-  return routes;
+  return [...routesByPath.values()];
 }

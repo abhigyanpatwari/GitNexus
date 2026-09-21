@@ -286,6 +286,25 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
+  it('duplicate object-literal keys keep the later procedure', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  list: publicProcedure.query(firstHandler),',
+      '  list: publicProcedure.query(secondHandler),',
+      '});',
+    ].join('\n');
+    const extracted = extractTrpcRoutes(FILE, source);
+    expect(extracted).toHaveLength(1);
+    expect(extracted[0]).toMatchObject({
+      routePath: '/trpc/list',
+      methodName: 'secondHandler',
+      lineNumber: 6,
+    });
+  });
+
   it('lowercase procedure builder still emits the create route', () => {
     const source = [
       "import { initTRPC } from '@trpc/server';",
