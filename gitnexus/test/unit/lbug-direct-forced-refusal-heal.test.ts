@@ -26,12 +26,17 @@ const { native } = vi.hoisted(() => {
     },
     /** Script the FIRST read-only Database (index 0) as the checkpoint victim. */
     refuseFirst: true,
-    reset(options: { refuseFirst?: boolean } = {}) {
+    /** Script constructor-time refusal (direct adapter has no init() on open). */
+    refuseOnOpen: false,
+    reset(options: { refuseFirst?: boolean; refuseOnOpen?: boolean } = {}) {
+      native.seq = 0;
       native.calls.constructions = [];
       native.calls.checkpoints = 0;
       native.calls.refusalProbes = 0;
       native.refuseFirst = options.refuseFirst ?? true;
+      native.refuseOnOpen = options.refuseOnOpen ?? false;
     },
+    seq: 0,
   };
   return { native };
 });
@@ -41,7 +46,6 @@ const { native } = vi.hoisted(() => {
 // writable recovery open and the read-only retry (index 1 and 2) never
 // refuse, or the recovery would kill itself.
 vi.mock('@ladybugdb/core', () => {
-  let seq = 0;
   class Database {
     role: 'ro' | 'rw';
     index: number;
@@ -52,8 +56,13 @@ vi.mock('@ladybugdb/core', () => {
       readOnly = false,
     ) {
       this.role = readOnly ? 'ro' : 'rw';
-      this.index = seq++;
+      this.index = native.seq++;
       native.calls.constructions.push(this.role);
+      // Open-time path: `createLbugDatabase` / `openLbugConnection` never
+      // call init(); a 0.19 constructor refusal must surface here.
+      if (this.index === 0 && this.role === 'ro' && native.refuseOnOpen) {
+        throw new Error(REFUSAL);
+      }
     }
     async init(): Promise<void> {}
     async close(): Promise<void> {}
@@ -137,5 +146,15 @@ describe('direct adapter self-heals a refused read-only probe (forced refusal)',
     expect(result).toBe('served');
     expect(native.calls.constructions).toEqual(['ro']);
     expect(native.calls.checkpoints).toBe(0);
+  });
+
+  it('recovers when the read-only constructor refuses before any probe', async () => {
+    native.reset({ refuseFirst: false, refuseOnOpen: true });
+    const result = await withLbugDb(dbPath, async () => 'served', { readOnly: true });
+
+    expect(result).toBe('served');
+    expect(native.calls.constructions).toEqual(['ro', 'rw', 'ro']);
+    expect(native.calls.checkpoints).toBe(1);
+    expect(native.calls.refusalProbes).toBe(0);
   });
 });

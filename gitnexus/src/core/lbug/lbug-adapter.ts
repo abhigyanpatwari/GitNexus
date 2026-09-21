@@ -81,10 +81,12 @@ import {
   type WalCrashEvidence,
   isMissingShadowSidecarError,
   isReadOnlyCheckpointInProgressError,
+  isReadOnlyRecoveryFailure,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
+  readOnlyRecoveryFailureMessage,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
@@ -692,7 +694,7 @@ const recoverReadOnlyViaWritableOpen = async (
     const code = extractErrnoCode(openErr);
     if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
       throw new Error(
-        shadowSidecarRecoveryMessage(dbPath, triggeringErr) +
+        readOnlyRecoveryFailureMessage(dbPath, triggeringErr) +
           '\n  The workspace appears to be read-only — mount it read-write to perform WAL recovery,' +
           ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
       );
@@ -736,7 +738,7 @@ const recoverReadOnlyViaWritableOpen = async (
       isReadOnlyShadowReplayError(err) ||
       isReadOnlyCheckpointInProgressError(err)
     ) {
-      throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+      throw new Error(readOnlyRecoveryFailureMessage(dbPath, err));
     }
     throw err;
   }
@@ -915,7 +917,8 @@ const doInitLbug = async (
       // ("Cannot open database in read-only mode while checkpoint is in
       // progress") before any probe runs. Clear it with one writable open,
       // then reopen read-only — the same self-heal the probe path applies.
-      if (isReadOnlyCheckpointInProgressError(err)) {
+      // Skip already-wrapped failures so we do not re-enter writable recovery.
+      if (isReadOnlyCheckpointInProgressError(err) && !isReadOnlyRecoveryFailure(err)) {
         usable = await recoverReadOnlyViaWritableOpen(dbPath, err);
       } else {
         // Not retryable: the on-disk file's storage version doesn't change on
