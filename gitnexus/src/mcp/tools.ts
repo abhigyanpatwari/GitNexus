@@ -83,6 +83,14 @@ export const PDG_QUERY_MAX_LIMIT = 200;
 // PDG direct backend callers also enforce it before running traversal.
 export const IMPACT_MAX_DEPTH = 32;
 
+/** Advertised query page defaults; backend and group orchestration must match. */
+export const QUERY_DEFAULT_LIMIT = 10;
+export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
+/** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
+export const QUERY_MAX_LIMIT = 100;
+export const QUERY_MAX_MAX_SYMBOLS = 200;
+export const CONTEXT_CHAIN_MAX_DEPTH = 3;
+
 const CWD_AWARE_REPO_OMISSION =
   'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
 const MUTATING_REPO_OMISSION =
@@ -139,9 +147,9 @@ WHEN TO USE: Understanding how code works together. Use this when you need execu
 AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs).
 
 Returns results grouped by process (execution flow):
-- processes: ranked execution flows with relevance priority
-- process_symbols: all symbols in those flows with file locations and module (functional area)
-- definitions: standalone types/interfaces not in any process
+- processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
+- process_symbols: search-hit symbols in those flows with file locations and module (functional area). When the process entry is among those hits, it is marked is_entry_point: true.
+- definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
@@ -173,23 +181,30 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         limit: {
           type: 'number',
-          description: 'Max processes to return (default: 5)',
-          default: 5,
+          description: `Max processes to return (default: ${QUERY_DEFAULT_LIMIT}, min: 1, max: ${QUERY_MAX_LIMIT}). Values outside [1, ${QUERY_MAX_LIMIT}] are rejected.`,
+          default: QUERY_DEFAULT_LIMIT,
           minimum: 1,
-          maximum: 100,
+          maximum: QUERY_MAX_LIMIT,
         },
         max_symbols: {
           type: 'number',
-          description: 'Max symbols per process (default: 10)',
-          default: 10,
+          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS}, min: 1, max: ${QUERY_MAX_MAX_SYMBOLS}). Values outside [1, ${QUERY_MAX_MAX_SYMBOLS}] are rejected.`,
+          default: QUERY_DEFAULT_MAX_SYMBOLS,
           minimum: 1,
-          maximum: 200,
+          maximum: QUERY_MAX_MAX_SYMBOLS,
         },
         include_content: {
           type: 'boolean',
           description:
             'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
+        },
+        chain_depth: {
+          type: 'integer',
+          minimum: 0,
+          maximum: CONTEXT_CHAIN_MAX_DEPTH,
+          default: 0,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.`,
         },
         maxTokens: {
           type: 'integer',
@@ -292,6 +307,7 @@ ${HOT_READ_STALENESS_NOTE}`,
     name: 'context',
     description: `360-degree view of a single code symbol.
 Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
+Also returns (when applicable): routes: [{ url, method? }] — HTTP endpoints this symbol handles via (handler)-[HANDLES_ROUTE]->Route or a Process-linked Route-[ENTRY_POINT_OF]->Process edge; is_entry_point: true when this symbol is a process entry point; chain — layered CALLS neighbours (upstream callers + downstream callees) when chain_depth > 0.
 
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
@@ -342,6 +358,13 @@ ${HOT_READ_STALENESS_NOTE}`,
           description:
             'Include source text retained for this symbol (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
+        },
+        chain_depth: {
+          type: 'integer',
+          minimum: 0,
+          maximum: CONTEXT_CHAIN_MAX_DEPTH,
+          default: 0,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) and return the result as a \`chain\` field (downstream callees + upstream callers layered by depth). 0 = disabled (default). 1 = direct neighbours only. 2-${CONTEXT_CHAIN_MAX_DEPTH} = procedure→workflow→sub-workflow depth. Useful for revealing the full tRPC/RPC call chain in a single call instead of chaining context() invocations.`,
         },
         maxTokens: {
           type: 'integer',

@@ -520,6 +520,17 @@ interface LanguageProviderConfig {
     reader: (relativePath: string) => string | null,
     parser?: Parser | null,
   ) => ExtractedRoute[];
+  /**
+   * Extract routes from file text without an AST.
+   *
+   * Content-based (regex / line scan), not tree-sitter. tRPC uses this hook:
+   * procedure routers are recognized from source text (`publicProcedure.query`)
+   * rather than grammar captures. The parse worker calls this when the hook is
+   * defined. Providers that need a path-gate apply it inside the hook.
+   *
+   * Default: undefined (no text-route extraction).
+   */
+  readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
 
   /**
    * Extract routes that a parsed file declares in its own AST.
