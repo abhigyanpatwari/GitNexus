@@ -200,6 +200,8 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   );
   // Ids already requested (loaded or failed) — a failed read is not retried.
   const requestedSnippetIds = useRef<Set<string>>(new Set());
+  // Ids whose fetch Promise settled while still the active effect.
+  const settledSnippetIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
@@ -238,11 +240,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         }
       }),
     ).then((entries) => {
-      if (cancelled) {
-        // Unmounted / superseded: let a later effect run retry these ids.
-        for (const ref of pending) requestedSnippetIds.current.delete(ref.id);
-        return;
-      }
+      if (cancelled) return;
+      // Mark settled before any later cleanup so streaming updates do not
+      // free these ids and re-fetch them.
+      for (const ref of pending) settledSnippetIds.current.add(ref.id);
       const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
       if (loaded.length === 0) return;
       setCitationSnippets((prev) => {
@@ -254,6 +255,14 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
     return () => {
       cancelled = true;
+      // Free only in-flight ids so a replacement effect can retry them.
+      // Deleting only in .then() left them reserved after the next effect
+      // had already bailed on seeing requestedSnippetIds.
+      for (const ref of pending) {
+        if (!settledSnippetIds.current.has(ref.id)) {
+          requestedSnippetIds.current.delete(ref.id);
+        }
+      }
     };
   }, [aiReferences, currentRepo, projectName]);
 

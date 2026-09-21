@@ -943,10 +943,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const rowPath = (r: any): string | undefined => (Array.isArray(r) ? r[2] : r.filePath);
         const targetLower = target.toLowerCase();
         const fileRows = targetResults.filter((r: any) => rowType(r) === 'File');
+        // Do not treat "one File row" as unique when LIMIT 10 also returned
+        // symbols from other matching paths — that is still ambiguous.
         const fileMatch =
           fileRows.find((r: any) => rowPath(r)?.toLowerCase() === targetLower) ??
-          fileRows.find((r: any) => rowPath(r)?.toLowerCase().endsWith(targetLower)) ??
-          (fileRows.length === 1 ? fileRows[0] : undefined);
+          fileRows.find((r: any) => rowPath(r)?.toLowerCase().endsWith(targetLower));
         if (fileMatch) {
           targetNode = fileMatch;
         } else {

@@ -82,6 +82,10 @@ export const RightPanel = () => {
         endLine1 = parseInt(lineMatch[3] || lineMatch[2], 10);
       }
 
+      // Malformed citations like "[[ :10]]" leave an empty path; refuse rather
+      // than letting the suffix matcher return the first indexed file.
+      if (!rawPath) return;
+
       const resolvedPath = resolveFilePathForUI(rawPath);
       if (!resolvedPath) return;
 

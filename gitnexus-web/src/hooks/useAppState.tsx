@@ -423,6 +423,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const resolveFilePath = useCallback(
     (requestedPath: string): string | null => {
       const normalized = normalizePath(requestedPath);
+      // Empty path would make every key.endsWith('') true and pick the first file.
+      if (!normalized) return null;
       // Exact match
       if (filePathIndex.has(normalized)) return filePathIndex.get(normalized)!;
       // Suffix match (partial paths like "src/utils.ts")
@@ -562,14 +564,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         );
       });
     } catch (error: any) {
-      // Dedup — a job for this repo is already running. The server answers 409
-      // with "Another job is already active for this repository" (same-repo
-      // lock) or "Analysis already in progress" (single-slot guard); match on
-      // the status so either wording keeps us out of the error state.
+      // Dedup only the same-repo lock (acquireRepoLock). A 409 with
+      // "Analysis already in progress" means a *different* repo holds the
+      // single-slot JobManager — do not pretend this repo is embedding.
       const isAlreadyRunning =
-        (error instanceof BackendError && error.status === 409) ||
-        error?.message?.includes('already in progress') ||
-        error?.message?.includes('already active');
+        error instanceof BackendError &&
+        error.status === 409 &&
+        error.message.includes('Another job is already active for this repository');
       if (isAlreadyRunning) {
         setEmbeddingStatus('embedding');
         return;

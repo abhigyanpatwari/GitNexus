@@ -235,13 +235,11 @@ describe('JobManager', () => {
     manager.updateJob(job.id, { status: 'analyzing' });
 
     const signals: string[] = [];
+    // connected:false — requestChildShutdown skips send() and signal-kills.
     const fakeChild = {
       connected: false,
       exitCode: null,
       signalCode: null,
-      send: () => {
-        throw new Error('channel closed');
-      },
       kill: (signal?: string) => {
         signals.push(signal ?? 'SIGTERM');
         return true;

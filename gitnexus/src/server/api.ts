@@ -1699,7 +1699,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     req: express.Request,
     res: express.Response,
   ): Promise<string | null> => {
-    const entry = await resolveRepo(requestedRepo(req));
+    // Pass `req` so resolveRepo can abort its hold-queue wait when the client
+    // disconnects (close listener is only registered when `req` is supplied).
+    const entry = await resolveRepo(requestedRepo(req), false, req);
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
       return null;
