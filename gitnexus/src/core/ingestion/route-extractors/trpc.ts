@@ -439,30 +439,44 @@ interface BindingFrame {
   openDepth: number;
 }
 
-/** Walk identifier mounts from a nested router up to the file's prefix binding. */
-function mountPathsFromRoot(
-  binding: string | null,
+/**
+ * Walk identifier mounts from a nested router up to the file's prefix binding.
+ * Memoized per binding: a depth-N chain used to recopy the ancestor path at
+ * every procedure (O(procedures × depth²) array copies — quadratic-plus on
+ * the C# concentrated-namespace analogue). One table is O(bindings + mounts).
+ */
+function buildMountPathLookup(
   root: string | null,
   mountsByChild: Map<string, RouterMount[]>,
-  seen: Set<string> = new Set(),
-): string[][] {
-  if (!binding || !root || binding === root) return [[]];
-  if (seen.has(binding)) return [[]];
-  const parents = mountsByChild.get(binding);
-  if (!parents || parents.length === 0) return [[]];
-  const nextSeen = new Set(seen);
-  nextSeen.add(binding);
-  const out: string[][] = [];
-  for (const mount of parents) {
-    if (!mount.parent) {
-      out.push([mount.key]);
-      continue;
+): (binding: string | null) => string[][] {
+  const memo = new Map<string, string[][]>();
+  const visiting = new Set<string>();
+
+  return function paths(binding: string | null): string[][] {
+    if (!binding || !root || binding === root) return [[]];
+    const cached = memo.get(binding);
+    if (cached) return cached;
+    if (visiting.has(binding)) return [[]];
+    visiting.add(binding);
+    const parents = mountsByChild.get(binding);
+    let result: string[][] = [[]];
+    if (parents && parents.length > 0) {
+      const out: string[][] = [];
+      for (const mount of parents) {
+        if (!mount.parent) {
+          out.push([mount.key]);
+          continue;
+        }
+        for (const prefix of paths(mount.parent)) {
+          out.push([...prefix, mount.key]);
+        }
+      }
+      if (out.length > 0) result = out;
     }
-    for (const prefix of mountPathsFromRoot(mount.parent, root, mountsByChild, nextSeen)) {
-      out.push([...prefix, mount.key]);
-    }
-  }
-  return out.length > 0 ? out : [[]];
+    memo.set(binding, result);
+    visiting.delete(binding);
+    return result;
+  };
 }
 
 function prevNonSpace(text: string, index: number): string | null {
@@ -661,8 +675,10 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     mountsByChild.set(mount.child, list);
   }
 
+  const mountPathsOf = buildMountPathLookup(rootBinding, mountsByChild);
+
   for (const pending of pendingEmits) {
-    const mountPaths = mountPathsFromRoot(pending.containingBinding, rootBinding, mountsByChild);
+    const mountPaths = mountPathsOf(pending.containingBinding);
     for (const mountParts of mountPaths) {
       const procedurePath = [
         ...(prefix ? [prefix] : []),

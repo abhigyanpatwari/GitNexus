@@ -523,6 +523,15 @@ jobs:
         run: node --import tsx bench/kotlin-star-route-constants/measure.mjs --check
         working-directory: gitnexus
 
+      - name: tRPC identifier-mount route extractor guards (#3339)
+        if: ${{ !cancelled() }}
+        # Build-free: inline-router control vs identifier-mounted subrouters
+        # and a transitive mount chain; fingerprints route paths and guards
+        # scaling + widening overhead (compose must stay linear in procedure
+        # count, and must not degrade the inline scan).
+        run: node --import tsx bench/trpc-route-extractor/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language scope-capture fingerprint + scaling guards
         # Runs even after an earlier guard fails (#2895). Every step here was
         # fail-fast, so the FIRST failing --check aborted the job and every guard
