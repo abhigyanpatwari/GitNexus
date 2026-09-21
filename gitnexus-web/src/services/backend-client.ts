@@ -348,8 +348,9 @@ export function streamSSE<T = unknown>(
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Network error — attempt reconnect with backoff
-        if (!scheduleRetry(retryCount)) {
+        // Network error — attempt reconnect with backoff. Skip onError when the
+        // caller already aborted (scheduleRetry returns false for abort too).
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
           handlers.onError?.(err instanceof Error ? err.message : 'Stream error');
         }
       }

@@ -40,6 +40,16 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoUrl).toBeUndefined();
   });
 
+  it('basenames Windows-like drive paths instead of emitting the full path', () => {
+    const job = manager.createJob({
+      repoUrl: String.raw`C:\Users\alice\private\repo`,
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.repoName).toBe('repo');
+    expect(JSON.stringify(view)).not.toContain('Users');
+    expect(JSON.stringify(view)).not.toContain('alice');
+  });
+
   it('summarizes lane metrics including avg duration of terminal jobs', () => {
     const a = manager.createJob({ repoUrl: 'https://github.com/user/a' });
     manager.updateJob(a.id, { status: 'analyzing' });

@@ -192,7 +192,10 @@ export const ExecutionDashboard = () => {
       if (cancelled) return;
       if (pollTimer) clearInterval(pollTimer);
       setStreamMode('poll');
+      let polling = false;
       const tick = async () => {
+        if (polling || cancelled) return;
+        polling = true;
         try {
           const status = await probeBackendStatus();
           if (cancelled) return;
@@ -206,6 +209,8 @@ export const ExecutionDashboard = () => {
           if (cancelled) return;
           setLive(false);
           setError(err instanceof Error ? err.message : 'Failed to fetch ops snapshot');
+        } finally {
+          polling = false;
         }
       };
       void tick();
@@ -247,6 +252,9 @@ export const ExecutionDashboard = () => {
         if (cancelled) return;
         setStreamMode((mode) => (mode === 'offline' ? 'poll' : mode));
       } catch {
+        // REST snapshot failed — drop SSE so we do not run both transports.
+        streamAbort?.abort();
+        streamAbort = undefined;
         startPolling();
       }
     };

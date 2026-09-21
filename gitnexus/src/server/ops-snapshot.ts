@@ -85,7 +85,9 @@ export const publicRepoNameFromUrl = (repoUrl: string | undefined): string | und
   if (!repoUrl) return undefined;
   try {
     const parsed = new URL(repoUrl);
-    const segments = parsed.pathname.replace(/\/+$/, '').split('/').filter(Boolean);
+    // new URL accepts Windows drive paths as `c:` URLs; split on `\` too so we
+    // never emit a full filesystem pathname on the unauthenticated ops feed.
+    const segments = parsed.pathname.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean);
     const last = segments.pop();
     if (!last) return undefined;
     return last.replace(/\.git$/i, '') || undefined;
