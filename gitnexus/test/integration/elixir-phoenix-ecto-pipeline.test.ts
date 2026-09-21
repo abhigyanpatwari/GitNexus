@@ -43,6 +43,10 @@ defmodule MyAppWeb.Router do
   scope "/", MyAppWeb do
     get "/root", PostController, :index
   end
+  scope alias: MyAppWeb do
+    pipe_through [:browser, :api]
+    get "/keyword", PostController, :index
+  end
 end
 `,
   );
@@ -410,6 +414,12 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
             name: '/root',
             filePath: 'lib/my_app_web/controllers/post_controller.ex',
             startLine: expect.any(Number),
+          }),
+          expect.objectContaining({
+            name: '/keyword',
+            filePath: 'lib/my_app_web/controllers/post_controller.ex',
+            startLine: expect.any(Number),
+            middleware: ['browser', 'api'],
           }),
         ]),
       );

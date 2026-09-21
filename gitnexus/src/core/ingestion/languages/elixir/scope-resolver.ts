@@ -192,6 +192,7 @@ function emitElixirBehaviourMethodEdges(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
+  indexes: ScopeResolutionIndexes,
 ): void {
   const emitted = new Set(
     [...graph.iterRelationshipsByType('METHOD_IMPLEMENTS')].map(
@@ -204,10 +205,15 @@ function emitElixirBehaviourMethodEdges(
       const behaviours = parsedFiles.flatMap((file) =>
         file.localDefs.filter((def) => def.qualifiedName === site.name && def.type === 'Interface'),
       );
-      const implementations = parsed.localDefs.filter((def) => def.type === 'Class');
-      if (behaviours.length !== 1 || implementations.length !== 1) continue;
+      let scope = indexes.scopeTree.getScope(site.inScope);
+      let implementation: SymbolDefinition | undefined;
+      while (scope) {
+        implementation = scope.ownedDefs.find((def) => def.type === 'Class');
+        if (implementation) break;
+        scope = scope.parent ? indexes.scopeTree.getScope(scope.parent) : undefined;
+      }
+      if (behaviours.length !== 1 || !implementation) continue;
       const behaviour = behaviours[0]!;
-      const implementation = implementations[0]!;
       for (const contract of parsedFiles
         .flatMap((file) => file.localDefs)
         .filter(
@@ -270,19 +276,24 @@ function emitElixirFrameworkEdges(
                 file.localDefs.filter(
                   (def) =>
                     def.type === 'Function' &&
-                    def.qualifiedName === `${fact.handler}.${fact.action}`,
+                    def.qualifiedName === `${target.qualifiedName}.${fact.action}`,
                 ),
               )
             : target
               ? [target]
               : [];
-        if (handler.length !== 1) continue;
-        const handlerId = resolveDefGraphId(handler[0]!.filePath, handler[0]!, nodeLookup);
+        const uniqueHandlers = [...new Map(handler.map((def) => [def.nodeId, def])).values()];
+        if (uniqueHandlers.length !== 1) continue;
+        const handlerId = resolveDefGraphId(
+          uniqueHandlers[0]!.filePath,
+          uniqueHandlers[0]!,
+          nodeLookup,
+        );
         if (!handlerId) continue;
         const key = routeNodeKey(fact.method, fact.path);
         const routeId = generateId('Route', key);
         const routeProperties = {
-          filePath: handler[0]!.filePath,
+          filePath: uniqueHandlers[0]!.filePath,
           startLine: toZeroBasedLine(fact.line),
           endLine: toZeroBasedLine(fact.line),
           handlerSymbolId: handlerId,
@@ -296,7 +307,7 @@ function emitElixirFrameworkEdges(
             label: 'Route',
             properties: { name: fact.path, method: fact.method, ...routeProperties },
           });
-        const fileId = generateId('File', handler[0]!.filePath);
+        const fileId = generateId('File', uniqueHandlers[0]!.filePath);
         graph.addRelationship({
           id: generateId('HANDLES_ROUTE', `${fileId}->${routeId}`),
           sourceId: fileId,
@@ -390,8 +401,8 @@ export const elixirScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: false,
   resolveQualifiedReceiverMember: resolveElixirCapturedAliasMember,
   populateNamespaceSiblings: populateElixirImportFilters,
-  emitPostResolutionEdges(graph, parsedFiles, nodeLookup) {
-    emitElixirBehaviourMethodEdges(graph, parsedFiles, nodeLookup);
+  emitPostResolutionEdges(graph, parsedFiles, nodeLookup, indexes) {
+    emitElixirBehaviourMethodEdges(graph, parsedFiles, nodeLookup, indexes);
     emitElixirFrameworkEdges(graph, parsedFiles, nodeLookup);
   },
 };

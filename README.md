@@ -682,10 +682,13 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | Objective-C | ✓      | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
+| Elixir (experimental) | ✓ | —            | ✓       | ✓        | —                | —                     | ✓      | ✓          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
-**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate. TypeScript, JavaScript, and experimental Elixir support it; other languages are planned. Off by default.
+
+Elixir support is experimental. Its provider-owned CFG supports local flow only; destructured Phoenix heads, arbitrary `Repo` receivers, callable-value dispatch, captured-closure taint, macro expansion, and cross-process `receive` flow are not modelled.
 
 ### Multi-Repo Architecture
 

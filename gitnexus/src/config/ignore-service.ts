@@ -25,7 +25,6 @@ const DEFAULT_IGNORE_LIST = new Set([
 
   // Dependencies
   'node_modules',
-  'deps',
   'bower_components',
   'jspm_packages',
   'vendor', // PHP/Go
@@ -390,6 +389,9 @@ export const isHardcodedIgnoredDirectoryAtPath = (
 
   const relative = nodePath.relative(repoRoot, directoryPath).replace(/\\/g, '/');
   if (isRootArtifactDirectory(relative, name)) return true;
+
+  if (name === 'deps' && relative === 'deps' && existsSync(nodePath.join(repoRoot, 'mix.exs')))
+    return true;
 
   return name === 'env' && existsSync(nodePath.join(directoryPath, 'pyvenv.cfg'));
 };

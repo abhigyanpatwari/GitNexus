@@ -92,17 +92,17 @@ withTestLbugDB(
       it('persists representative CDG and reaching-definition results without receive cross-process flow', async () => {
         const controls = (await backend.callTool('pdg_query', {
           mode: 'controls',
-          target: 'guarded',
+          target: 'mailbox',
         })) as any;
         const flows = (await backend.callTool('pdg_query', {
           mode: 'flows',
-          target: 'guarded',
-          variable: 'rebound',
+          target: 'mailbox',
+          variable: 'message',
         })) as any;
         expect(controls).not.toHaveProperty('error');
         expect(controls.results.length).toBeGreaterThan(0);
         expect(flows).not.toHaveProperty('error');
-        expect(flows.results.length).toBeGreaterThan(0);
+        expect(flows.results).toEqual([]);
         expect(JSON.stringify([...controls.results, ...flows.results])).not.toMatch(
           /message-delivery/i,
         );

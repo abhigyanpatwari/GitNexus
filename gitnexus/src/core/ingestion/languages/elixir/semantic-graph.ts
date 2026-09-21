@@ -181,10 +181,11 @@ export function extractElixirSemanticGraph(
   const isMixFile = filePath === 'mix.exs' || filePath.endsWith('/mix.exs');
 
   const collectDefinitions = (node: SyntaxNode): void => {
-    if (node.type === 'call' && DECLARATIONS.has(keyword(node) ?? '')) {
-      const name = declarationName(node);
+    if (!isQuoted(node) && node.type === 'call' && DECLARATIONS.has(keyword(node) ?? '')) {
+      const info = declaration(node);
+      const owner = enclosingModule(node);
       const body = definitionBody(node);
-      if (name && body) definitions.set(name, body);
+      if (info && owner && body) definitions.set(`${owner.name}:${info.name}/${info.arity}`, body);
     }
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
@@ -242,7 +243,9 @@ export function extractElixirSemanticGraph(
             if (appsPath) addEvidence('mix-umbrella', appsPath, node, { appsPath });
             const deps = keywordValue(metadata, 'deps');
             emitMixDependencies(
-              deps?.type === 'call' && keyword(deps) === 'deps' ? definitions.get('deps') : deps,
+              deps?.type === 'call' && keyword(deps) === 'deps'
+                ? definitions.get(`${enclosingModule(node)?.name}:deps/0`)
+                : deps,
               node,
             );
           }
@@ -348,6 +351,15 @@ export function extractElixirSemanticGraph(
         : {}),
       ...(ownerId ? { ownerId } : {}),
     });
+    if (ownerId && (label === 'Function' || label === 'Macro'))
+      relationships.push({
+        id: generateId('HAS_METHOD', `${ownerId}->${id}`),
+        sourceId: ownerId,
+        targetId: id,
+        type: 'HAS_METHOD',
+        confidence: 1,
+        reason: 'elixir module function',
+      });
     if (label === 'Class' || label === 'Interface') moduleIds.set(qualifiedName, id);
   };
 

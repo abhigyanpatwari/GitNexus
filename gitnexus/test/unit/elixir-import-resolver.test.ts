@@ -11,4 +11,17 @@ describe('Elixir import resolver', () => {
       }),
     ).toEqual({ kind: 'files', files: ['lib/prefix/one.ex', 'lib/prefix/two.ex'] });
   });
+
+  it('prefers an exact root module candidate regardless of file-list order', () => {
+    const resolve = createImportResolver(elixirImportConfig);
+    for (const allFileList of [
+      ['apps/umbrella/lib/my_app/user.ex', 'lib/my_app/user.ex'],
+      ['lib/my_app/user.ex', 'apps/umbrella/lib/my_app/user.ex'],
+    ]) {
+      expect(resolve('MyApp.User', 'lib/app.ex', { allFileList })).toEqual({
+        kind: 'files',
+        files: ['lib/my_app/user.ex'],
+      });
+    }
+  });
 });

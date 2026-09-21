@@ -63,12 +63,9 @@ const elixirModuleStrategy: ImportResolverStrategy = (rawImportPath, _filePath, 
     for (const prefix of prefixes) {
       for (const ext of ELIXIR_EXTS) {
         const candidate = `${prefix}${relPath}${ext}`;
-        for (const fp of ctx.allFileList) {
-          if (fp === candidate || fp.endsWith(`/${candidate}`)) {
-            files.push(fp);
-            break;
-          }
-        }
+        const exact = ctx.allFileList.find((fp) => fp === candidate);
+        const fallback = ctx.allFileList.find((fp) => fp.endsWith(`/${candidate}`));
+        if (exact ?? fallback) files.push(exact ?? fallback!);
       }
       // Preserve the existing root-priority rule for each expanded alias.
       if (files.length > resolvedAt) break;

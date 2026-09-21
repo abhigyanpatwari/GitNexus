@@ -100,9 +100,9 @@ function extractElixirParameters(node: SyntaxNode): ParameterInfo[] {
     if (p.type === 'identifier') {
       params.push({ name: p.text, type: null, isOptional: false, isVariadic: false });
     } else if (p.type === 'binary_operator') {
-      // default value: `param \\ default` or `param // default`
+      const operator = p.children.find((child) => !child.isNamed)?.text;
       const left = p.childForFieldName?.('left');
-      if (left?.type === 'identifier') {
+      if (operator === '\\\\' && left?.type === 'identifier') {
         params.push({ name: left.text, type: null, isOptional: true, isVariadic: false });
       }
     }
@@ -122,7 +122,10 @@ function extractElixirVisibility(node: SyntaxNode): MethodVisibility {
 function extractElixirOwnerName(node: SyntaxNode): string | undefined {
   let cur: SyntaxNode | null | undefined = node;
   while (cur) {
-    if (cur.type === 'call' && callKeyword(cur) === 'defmodule') {
+    if (
+      cur.type === 'call' &&
+      (callKeyword(cur) === 'defmodule' || callKeyword(cur) === 'defprotocol')
+    ) {
       const pArgs = findArguments(cur);
       if (pArgs) {
         for (let i = 0; i < pArgs.namedChildCount; i++) {

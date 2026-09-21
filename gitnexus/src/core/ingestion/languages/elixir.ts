@@ -227,16 +227,33 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
         | SyntaxNode
         | undefined;
       if (kind === 'scope' && body) {
-        const path = elixirString(values[0]);
-        const mod = alias(values[1]) ?? scopeModule;
-        if (path !== undefined) {
+        const keywordValue = (name: string) =>
+          values
+            .find((value) => value.type === 'keywords')
+            ?.namedChildren.find(
+              (value) =>
+                value.type === 'pair' &&
+                value.namedChild(0)?.text.trim().replace(/:$/, '') === name,
+            )
+            ?.namedChild(1) as SyntaxNode | undefined;
+        const scopePath = keywordValue('path');
+        const scopeAlias = keywordValue('alias');
+        const path = elixirString(values[0]) ?? elixirString(scopePath);
+        const mod = alias(values[1]) ?? alias(scopeAlias) ?? scopeModule;
+        {
           const scopedPipelines = [
             ...pipelines,
             ...body.namedChildren.flatMap((child) => {
               if (child?.type !== 'call' || callKeyword(child as SyntaxNode) !== 'pipe_through')
                 return [];
               const pipeline = args(child as SyntaxNode)[0];
-              return pipeline?.type === 'atom' ? [pipeline.text.slice(1)] : [];
+              return pipeline?.type === 'atom'
+                ? [pipeline.text.slice(1)]
+                : pipeline?.type === 'list'
+                  ? pipeline.namedChildren
+                      .filter((entry) => entry.type === 'atom')
+                      .map((entry) => entry.text.slice(1))
+                  : [];
             }),
           ];
           for (const child of body.namedChildren)
@@ -244,7 +261,7 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
               child &&
               (child.type !== 'call' || callKeyword(child as SyntaxNode) !== 'pipe_through')
             )
-              visit(child as SyntaxNode, `${prefix}${path}`, scopedPipelines, mod);
+              visit(child as SyntaxNode, `${prefix}${path ?? ''}`, scopedPipelines, mod);
         }
         return;
       }
@@ -535,13 +552,15 @@ function emitElixirScopeCaptures(
         current;
         current = current.parent
       )
-        if (current === ancestor) return true;
+        if (current.startIndex === ancestor.startIndex && current.endIndex === ancestor.endIndex)
+          return true;
       return false;
     };
     const visibleAt = (candidate: SyntaxNode): boolean => {
       for (let current = candidate.parent; current; current = current.parent) {
         if (!contains(current as SyntaxNode, node)) return false;
-        if (current === owner) return true;
+        if (current.startIndex === owner.startIndex && current.endIndex === owner.endIndex)
+          return true;
       }
       return false;
     };
@@ -549,7 +568,6 @@ function emitElixirScopeCaptures(
       if (
         candidate.type === 'call' &&
         callKeyword(candidate) === 'alias' &&
-        enclosingModule(candidate) === owner &&
         candidate.startIndex < node.startIndex &&
         visibleAt(candidate)
       ) {
@@ -601,7 +619,7 @@ function emitElixirScopeCaptures(
             '@declaration.is-exported':
               kind === 'defp' || kind === 'defmacrop' || kind === 'defguardp' ? 'false' : 'true',
           });
-          if (kind === 'defdelegate' && signature.type === 'call') {
+          if (kind === 'defdelegate') {
             const target = keywordValue(node, 'to');
             const delegated = keywordValue(node, 'as');
             if (target?.type === 'alias')
@@ -724,7 +742,12 @@ function emitElixirScopeCaptures(
       }
     } else if (node.type === 'unary_operator' && node.text.startsWith('@behaviour')) {
       const operand = node.childForFieldName?.('operand') ?? node.namedChild(0);
-      const behaviour = operand?.type === 'call' ? firstAliasArgument(operand) : undefined;
+      const behaviour =
+        operand?.type === 'call'
+          ? firstAliasArgument(operand)
+          : operand?.type === 'atom'
+            ? operand.text.slice(1)
+            : undefined;
       if (behaviour) add('@reference.inherits', node, { '@reference.name': behaviour });
     } else if (
       node.type === 'unary_operator' &&

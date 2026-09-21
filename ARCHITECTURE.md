@@ -407,6 +407,8 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 
 18 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 
+Elixir's experimental CFG and framework facts are provider-owned. Its taint model covers local bindings only; destructured Phoenix heads, arbitrary `Repo` receivers, callable-value dispatch, captured-closure taint, macro expansion, and cross-process `receive` flow remain explicit gaps.
+
 ### Unified capture tags
 
 Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@reference.inherits`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.

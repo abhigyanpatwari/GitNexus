@@ -1013,12 +1013,12 @@ describe('Tree-sitter multi-language parsing', () => {
   describe('Elixir', () => {
     const elixirQueries = () => getProvider(SupportedLanguages.Elixir).treeSitterQueries;
 
-    function loadElixirOrSkip() {
-      return loadLanguage(SupportedLanguages.Elixir).catch(() => null);
+    async function loadElixir(): Promise<void> {
+      await loadLanguage(SupportedLanguages.Elixir);
     }
 
     it('parses modules, functions, and protocols', async () => {
-      if (!(await loadElixirOrSkip())) return;
+      await loadElixir();
       const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
       const defs = extractDefinitions(matches);
       const defTypes = defs.map((d) => d.type);
@@ -1037,7 +1037,7 @@ describe('Tree-sitter multi-language parsing', () => {
     });
 
     it('captures import/alias/use/require as @import', async () => {
-      if (!(await loadElixirOrSkip())) return;
+      await loadElixir();
       const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
       const importSources: string[] = [];
       for (const match of matches) {
@@ -1049,7 +1049,7 @@ describe('Tree-sitter multi-language parsing', () => {
     });
 
     it('extracts real calls once and skips definitions/attributes', async () => {
-      if (!(await loadElixirOrSkip())) return;
+      await loadElixir();
       const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
       const provider = getProvider(SupportedLanguages.Elixir);
       const callNames: string[] = [];
@@ -1071,7 +1071,7 @@ describe('Tree-sitter multi-language parsing', () => {
     });
 
     it('resolves defmodule as the enclosing owner for functions', async () => {
-      if (!(await loadElixirOrSkip())) return;
+      await loadElixir();
       const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
       const provider = getProvider(SupportedLanguages.Elixir);
       let createNode: any;

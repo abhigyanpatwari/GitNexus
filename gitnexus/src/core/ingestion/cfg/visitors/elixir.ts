@@ -126,37 +126,70 @@ class ElixirHarvester {
     return this.byName.get(name) ?? this.bind(name, node, 'var');
   }
 
-  private identifiers(node: SyntaxNode): string[] {
+  private identifiers(node: SyntaxNode, excludeBodies = false): string[] {
     const out: string[] = [];
     const walk = (n: SyntaxNode): void => {
       if (n !== node && isFunction(n)) return;
       if (n.type === 'identifier' && n.text !== '_' && !/^(do|end|when)$/.test(n.text))
         out.push(n.text);
       const callTarget = n.type === 'call' ? n.childForFieldName?.('target') : undefined;
-      for (const c of n.namedChildren) if (c !== callTarget) walk(c);
+      for (const c of n.namedChildren)
+        if (
+          c !== callTarget &&
+          !(
+            excludeBodies &&
+            ['do_block', 'else_block', 'rescue_block', 'catch_block', 'after_block'].includes(
+              c.type,
+            )
+          )
+        )
+          walk(c);
     };
     walk(node);
     return out;
   }
 
-  facts(node: SyntaxNode): StatementFacts {
+  facts(node: SyntaxNode, header = false): StatementFacts {
     const defs: number[] = [],
       uses: number[] = [];
     const match =
       node.type === 'binary_operator' &&
       /^\s*(=|<-)\s*$/.test(node.children.find((c) => !c.isNamed)?.text ?? '');
     const left = match ? node.namedChildren[0] : undefined;
-    if (left) for (const name of this.identifiers(left)) defs.push(this.bind(name, left));
+    const leftNames = left ? this.identifiers(left) : [];
+    const pinnedNames = new Set<string>();
+    if (left) {
+      const collectPins = (n: SyntaxNode): void => {
+        if (n.type === 'unary_operator' && n.text.startsWith('^')) {
+          const id = n.namedChildren.find((child) => child.type === 'identifier');
+          if (id) pinnedNames.add(id.text);
+        }
+        for (const child of n.namedChildren) collectPins(child);
+      };
+      collectPins(left);
+    }
+    if (left)
+      for (const name of leftNames) {
+        const pinned = pinnedNames.has(name);
+        if (pinned) uses.push(this.read(name, left));
+        else defs.push(this.bind(name, left));
+      }
     const bareCallee =
       node.type === 'call' && node.childForFieldName?.('target')?.type === 'identifier'
         ? node.childForFieldName('target')!.text
         : undefined;
-    for (const name of this.identifiers(node)) {
+    for (const name of this.identifiers(node, header)) {
       if (name === bareCallee) continue;
-      if (left && this.identifiers(left).includes(name)) continue;
+      if (left && leftNames.includes(name)) continue;
       uses.push(this.read(name, node));
     }
     const sites: SiteRecord[] = [];
+    const memberNodes: SyntaxNode[] = [];
+    const callSites = new Map<string, number>();
+    const key = (n: SyntaxNode) => `${n.startIndex}:${n.endIndex}`;
+    const isPipe = (n: SyntaxNode | null | undefined) =>
+      n?.type === 'binary_operator' &&
+      n.children.find((child) => !child.isNamed)?.text.trim() === '|>';
     // Phoenix exposes request input both through conn.params-like fields and
     // directly through the conventional `params["key"]` map argument.  Keep
     // these as member-read facts: the language-neutral taint matcher owns the
@@ -171,6 +204,7 @@ class ElixirHarvester {
             object: this.read(root.text, root),
             property: root.text,
           });
+          memberNodes.push(n);
         }
       }
       if (n.type === 'call' && n.parent?.type === 'access_call') {
@@ -183,9 +217,19 @@ class ElixirHarvester {
             object: this.read(root.text, root),
             property: property.text,
           });
+          memberNodes.push(n);
         }
       }
-      for (const c of n.namedChildren) visitAccesses(c);
+      for (const c of n.namedChildren)
+        if (
+          !(
+            header &&
+            ['do_block', 'else_block', 'rescue_block', 'catch_block', 'after_block'].includes(
+              c.type,
+            )
+          )
+        )
+          visitAccesses(c);
     };
     visitAccesses(node);
     const visitCalls = (n: SyntaxNode): void => {
@@ -201,17 +245,79 @@ class ElixirHarvester {
           const args = argumentsNode?.namedChildren.map((arg) => [
             ...new Set(this.identifiers(arg).map((name) => this.read(name, arg))),
           ]);
+          const pipeLeft = isPipe(n.parent) ? n.parent.namedChildren[0] : undefined;
+          if (pipeLeft) {
+            const callArgs = args ?? [];
+            callArgs.unshift([
+              ...new Set(this.identifiers(pipeLeft).map((name) => this.read(name, pipeLeft))),
+            ]);
+            sites.push({
+              kind: 'call',
+              callee,
+              ...(callArgs.some((arg) => arg.length) ? { args: callArgs } : {}),
+              at: [start(n), n.startPosition.column],
+            });
+            callSites.set(key(n), sites.length - 1);
+            for (const child of n.namedChildren) visitCalls(child);
+            return;
+          }
+          let parent: [number, number] | undefined;
+          for (let ancestor = n.parent; ancestor; ancestor = ancestor.parent) {
+            if (ancestor.type !== 'call') continue;
+            const parentIndex = callSites.get(key(ancestor)) ?? -1;
+            const parentArgs = ancestor.namedChildren.find((child) => child.type === 'arguments');
+            const rawIndex =
+              parentArgs?.namedChildren.findIndex(
+                (arg) => arg.startIndex <= n.startIndex && arg.endIndex >= n.endIndex,
+              ) ?? -1;
+            if (rawIndex >= 0 && parentIndex >= 0)
+              parent = [parentIndex, rawIndex + (isPipe(ancestor.parent) ? 1 : 0)];
+            break;
+          }
           sites.push({
             kind: 'call',
             callee,
             ...(args?.some((arg) => arg.length) ? { args } : {}),
+            ...(parent ? { parent } : {}),
             at: [start(n), n.startPosition.column],
           });
+          callSites.set(key(n), sites.length - 1);
         }
       }
-      for (const c of n.namedChildren) visitCalls(c);
+      for (const c of n.namedChildren)
+        if (
+          !(
+            header &&
+            ['do_block', 'else_block', 'rescue_block', 'catch_block', 'after_block'].includes(
+              c.type,
+            )
+          )
+        )
+          visitCalls(c);
     };
     visitCalls(node);
+    for (let i = 0; i < memberNodes.length; i++) {
+      const member = memberNodes[i]!;
+      for (let ancestor = member.parent; ancestor; ancestor = ancestor.parent) {
+        if (ancestor.type !== 'call') continue;
+        const args = ancestor.namedChildren.find((child) => child.type === 'arguments');
+        const argIndex =
+          args?.namedChildren.findIndex(
+            (arg) =>
+              arg === member ||
+              (arg.startIndex <= member.startIndex && arg.endIndex >= member.endIndex),
+          ) ?? -1;
+        if (argIndex >= 0) {
+          const parentIndex = callSites.get(key(ancestor)) ?? -1;
+          if (parentIndex >= 0)
+            sites[i] = {
+              ...sites[i]!,
+              parent: [parentIndex, argIndex + (isPipe(ancestor.parent) ? 1 : 0)],
+            };
+        }
+        break;
+      }
+    }
     return {
       line: start(node),
       defs: [...new Set(defs)],
@@ -238,8 +344,8 @@ function buildFunctionCfg(fn: SyntaxNode, filePath: string): FunctionCfg | undef
           child.type,
         ),
     );
-  const block = (node: SyntaxNode) =>
-    builder.newBlock(start(node), end(node), node.text, 'normal', harvest.facts(node));
+  const block = (node: SyntaxNode, header = false) =>
+    builder.newBlock(start(node), end(node), node.text, 'normal', harvest.facts(node, header));
   const keyword = (node: SyntaxNode): string | undefined => {
     if (node.type !== 'call') return undefined;
     const name = node.namedChildren.find((child) => child.type === 'identifier')?.text;
@@ -270,6 +376,11 @@ function buildFunctionCfg(fn: SyntaxNode, filePath: string): FunctionCfg | undef
   };
   const visit = (node: SyntaxNode, incoming: readonly number[]): number[] =>
     builder.withNesting(() => {
+      if (
+        node.type === 'anonymous_function' &&
+        (node.startIndex !== fn.startIndex || node.endIndex !== fn.endIndex)
+      )
+        return [...incoming];
       const form = keyword(node);
       if (!form && node.type === 'binary_operator' && /\b(and|or)\b|&&|\|\|/.test(node.text)) {
         const control = block(node);
@@ -284,7 +395,7 @@ function buildFunctionCfg(fn: SyntaxNode, filePath: string): FunctionCfg | undef
         builder.connect(incoming, normal);
         return [normal];
       }
-      const header = block(node);
+      const header = block(node, true);
       builder.connect(incoming, header);
       const join = builder.newBlock(end(node), end(node), '', 'normal');
       const doBlock = node.namedChildren.find((child) => child.type === 'do_block');
@@ -390,7 +501,7 @@ function buildFunctionCfg(fn: SyntaxNode, filePath: string): FunctionCfg | undef
       return builder.finish(harvest.all);
     }
   }
-  const exits = visitSeq(statementsOf(body), [entry]);
+  const exits = visitSeq(body.type === 'do_block' ? statementsOf(body) : [body], [entry]);
   builder.connect(exits, builder.exitIndex, 'seq');
   return builder.finish(harvest.all);
 }

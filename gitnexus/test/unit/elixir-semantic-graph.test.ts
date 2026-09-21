@@ -101,6 +101,9 @@ describe('Elixir semantic graph', () => {
         }),
       ]),
     );
+    expect(graph.relationships).toContainEqual(
+      expect.objectContaining({ type: 'HAS_METHOD', reason: 'elixir module function' }),
+    );
   });
 
   it('keeps repeated modules as separate ambiguous candidates without qualified call edges', async () => {
