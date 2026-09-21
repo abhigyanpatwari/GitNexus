@@ -440,6 +440,37 @@ describe('processRoutesFromExtracted — tRPC same-file handler CALLS edges', ()
     expect(edges.every((e) => e.reason === 'trpc-route')).toBe(true);
   });
 
+  it('same-name Property nearer the route line does not beat the Function handler', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(TRPC_FILE, 'list', 'prop:user.list', 'Property');
+    model.symbols.add(TRPC_FILE, 'list', 'fn:user.list', 'Function');
+    graph.addNode({
+      id: 'prop:user.list',
+      label: 'Property',
+      properties: { name: 'list', filePath: TRPC_FILE, startLine: 10 },
+    });
+    addFunctionNode(graph, 'fn:user.list', 'list', TRPC_FILE, 12);
+
+    await processRoutesFromExtracted(
+      graph,
+      [
+        makeRoute({
+          filePath: TRPC_FILE,
+          controllerName: null,
+          methodName: 'list',
+          routePath: '/trpc/user.list',
+          lineNumber: 11,
+        }),
+      ],
+      model,
+    );
+
+    const edges = trpcCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('fn:user.list');
+  });
+
   it('two same-name Functions + routes without matching lineNumbers → zero trpc-route edges (fail-open)', async () => {
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();

@@ -674,7 +674,6 @@ export class GroupService {
     const uid = typeof params.uid === 'string' ? params.uid.trim() : undefined;
     const file_path = typeof params.file_path === 'string' ? params.file_path : undefined;
     const include_content = Boolean(params.include_content);
-    const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
     if (
       params.service !== undefined &&
       params.service !== null &&
@@ -692,6 +691,11 @@ export class GroupService {
     if (!uid && !target) {
       return { group: name, error: 'target or uid is required', results: [] };
     }
+    const parsedChainDepth = parseGroupChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) {
+      return { group: name, error: parsedChainDepth.error, results: [] };
+    }
+    const chain_depth = parsedChainDepth.value;
 
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     let config: GroupConfig;

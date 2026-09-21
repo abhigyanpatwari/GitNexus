@@ -546,6 +546,25 @@ repos:
       }
     });
 
+    it('test_groupContext_rejects_non_integer_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const context = vi.fn(async () => ({ status: 'found' }));
+        const svc = new GroupService(makePort({ context }));
+        const r = await svc.groupContext({
+          name: 'test-group',
+          target: 'MySym',
+          chain_depth: '2',
+        });
+        expect(r).toMatchObject({ error: expect.stringMatching(/Invalid "chain_depth"/) });
+        expect(context).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
     it('test_groupContext_forwards_chain_depth', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {

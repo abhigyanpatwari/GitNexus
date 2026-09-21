@@ -53,21 +53,29 @@ interface RouteHandlerResolutionContext {
   readonly nodeStartLine?: (nodeId: string) => number | undefined;
 }
 
+/** Same Function/Method gate as data-route resolution (`routeCallables`). */
+function routeCallableDefs(defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] {
+  return defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+}
+
 /**
  * Pick a same-file route handler from `lookupExactAll` hits.
  *
  * Graph nodes store 0-based `startLine`; `ExtractedRoute.lineNumber` is 1-based
- * (`i + 1` in the tRPC scanner). When several defs share a name, prefer the
- * unique def whose node startLine equals `toZeroBasedLine(route.lineNumber)`.
- * If that exact match is missing (common when the arrow starts on the line
- * after `.mutation(`), take the unique def whose startLine is the nearest
- * `>=` target. Zero or 2+ winners (or no line reader) → `undefined` (fail-open).
+ * (`i + 1` in the tRPC scanner). File-index lookup is not callable-only, so
+ * drop Property/Variable/Const (and other non-callables) first. When several
+ * callables share a name, prefer the unique def whose node startLine equals
+ * `toZeroBasedLine(route.lineNumber)`. If that exact match is missing (common
+ * when the arrow starts on the line after `.mutation(`), take the unique def
+ * whose startLine is the nearest `>=` target. Zero or 2+ winners (or no line
+ * reader) → `undefined` (fail-open).
  */
 function pickSameFileHandler(
   defs: readonly SymbolDefinition[],
   route: { lineNumber: number },
   getStartLine?: (nodeId: string) => number | undefined,
 ): SymbolDefinition | undefined {
+  defs = routeCallableDefs(defs);
   if (defs.length === 1) return defs[0];
   if (defs.length > 1 && getStartLine !== undefined) {
     const targetLine = toZeroBasedLine(route.lineNumber);
@@ -379,7 +387,7 @@ export function resolveRouteHandlerSymbols(
   };
 
   const routeCallables = (defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] =>
-    defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+    routeCallableDefs(defs);
 
   const exportedRouteCallables = (
     defs: readonly SymbolDefinition[],
