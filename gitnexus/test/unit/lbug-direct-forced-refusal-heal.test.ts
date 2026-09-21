@@ -132,11 +132,7 @@ describe('direct adapter self-heals a refused read-only probe (forced refusal)',
   it('does not open writable when the read-only probe succeeds outright', async () => {
     // No refusal scripted: the singleton serves the whole call read-only.
     native.reset({ refuseFirst: false });
-    const result = await withLbugDb(
-      dbPath,
-      async () => 'served',
-      { readOnly: true },
-    );
+    const result = await withLbugDb(dbPath, async () => 'served', { readOnly: true });
 
     expect(result).toBe('served');
     expect(native.calls.constructions).toEqual(['ro']);

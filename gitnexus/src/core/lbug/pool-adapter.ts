@@ -692,10 +692,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
         await probeDatabaseForShadowReplay(db);
         return db;
       }
-      if (
-        !isReadOnlyShadowReplayError(err) &&
-        !isReadOnlyCheckpointInProgressError(err)
-      ) {
+      if (!isReadOnlyShadowReplayError(err) && !isReadOnlyCheckpointInProgressError(err)) {
         throw err;
       }
       await db.close().catch(() => {});
