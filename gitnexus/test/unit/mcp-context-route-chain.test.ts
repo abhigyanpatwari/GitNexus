@@ -187,6 +187,16 @@ describe('context/query route + chain enrichment', () => {
     expect(result.routes).toEqual([{ url: ROUTE.url, method: ROUTE.method }]);
   });
 
+  it.each([0.1, 1.5, 4] as const)(
+    'context rejects non-integer or oversized chain_depth=%s',
+    async (value) => {
+      const result = await backend.callTool('context', { uid: HANDLER.id, chain_depth: value });
+      expect(result).toMatchObject({
+        error: expect.stringMatching(/Invalid "chain_depth".*\[0,/),
+      });
+    },
+  );
+
   it('context({chain_depth:1}) returns chain when BFS rows exist', async () => {
     (executeParameterized as any).mockImplementation(
       mockGraph({ handlesRoute: true, processRows: [], chain: true }),
@@ -372,6 +382,10 @@ describe('context/query route + chain enrichment', () => {
     ['limit', Infinity],
     ['max_symbols', 0],
     ['max_symbols', 201],
+    ['chain_depth', -1],
+    ['chain_depth', 0.1],
+    ['chain_depth', 1.5],
+    ['chain_depth', 4],
   ] as const)('query rejects out-of-range %s=%s before search', async (field, value) => {
     const bm25Search = vi.fn();
     (backend as any).bm25Search = bm25Search;
@@ -380,7 +394,7 @@ describe('context/query route + chain enrichment', () => {
     const result = await backend.callTool('query', { search_query: 'login', [field]: value });
 
     expect(result).toMatchObject({
-      error: expect.stringMatching(new RegExp(`Invalid "${field}".*\\[1,`)),
+      error: expect.stringMatching(new RegExp(`Invalid "${field}"`)),
     });
     expect(bm25Search).not.toHaveBeenCalled();
   });

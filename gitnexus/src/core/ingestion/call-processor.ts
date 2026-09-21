@@ -246,7 +246,8 @@ export const processRoutesFromExtracted = async (
 
     // tRPC routes carry NO controller: a router is an object binding, not a
     // class, so the extractor leaves controllerName unset and names the
-    // handler by its object-literal key. Bind the same-file symbol directly.
+    // handler from the callback identifier when present, otherwise from its
+    // object-literal key. Bind the same-file symbol directly.
     // No unique match → skip, fail-open. Laravel routes always set
     // controllerName and Django routes leave methodName null, so this
     // branch is tRPC-only by construction — the laravel guessed-method

@@ -297,8 +297,12 @@ describe('issue #1166 — Bug B: object-property arrows are named by pair.key', 
         handler: wrap(() => workWrap()),
       };
     `);
-    expect(findCall(sites, 'workThen')?.attributedTo).not.toBe('result');
-    expect(findCall(sites, 'workTimer')?.attributedTo).not.toBe('timer');
+    const workThen = findCall(sites, 'workThen');
+    const workTimer = findCall(sites, 'workTimer');
+    expect(workThen, 'workThen call should be captured').toBeDefined();
+    expect(workTimer, 'workTimer call should be captured').toBeDefined();
+    expect(workThen!.attributedTo).not.toBe('result');
+    expect(workTimer!.attributedTo).not.toBe('timer');
     expect(findCall(sites, 'workWrap')?.attributedTo).toBe('handler');
   });
 });

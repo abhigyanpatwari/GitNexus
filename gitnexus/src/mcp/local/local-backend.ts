@@ -1483,8 +1483,22 @@ function parseQueryPageBound(
   return { ok: true, value };
 }
 
-function clampChainDepth(value: unknown): number {
-  return Math.max(0, Math.min(CONTEXT_CHAIN_MAX_DEPTH, Number(value ?? 0) || 0));
+function parseChainDepth(
+  value: unknown,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: 0 };
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > CONTEXT_CHAIN_MAX_DEPTH
+  ) {
+    return {
+      ok: false,
+      error: `Invalid "chain_depth": expected an integer in [0, ${CONTEXT_CHAIN_MAX_DEPTH}], got ${JSON.stringify(value)}.`,
+    };
+  }
+  return { ok: true, value };
 }
 
 function routeEnrichmentKey(method: string | undefined, url: string): string {
@@ -3021,8 +3035,11 @@ export class LocalBackend {
       QUERY_MAX_MAX_SYMBOLS,
     );
     if (parsedMaxSymbols.ok === false) return { error: parsedMaxSymbols.error };
+    const parsedChainDepth = parseChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) return { error: parsedChainDepth.error };
     const processLimit = parsedLimit.value;
     const maxSymbolsPerProcess = parsedMaxSymbols.value;
+    const requestedChainDepth = parsedChainDepth.value;
 
     await this.ensureInitialized(repo);
     const requestedContent = params.include_content ?? false;
@@ -3497,7 +3514,6 @@ export class LocalBackend {
     // Best-effort — a BFS failure drops that process's chain but never fails
     // the query.
     const chainByProcessId = new Map<string, any[]>();
-    const requestedChainDepth = clampChainDepth(params.chain_depth);
     if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
       timer.start('chain_enrichment');
       await mapConcurrent(
@@ -5214,7 +5230,9 @@ export class LocalBackend {
     ]);
 
     let chain: any[] | undefined;
-    const requestedDepth = clampChainDepth(chain_depth);
+    const parsedDepth = parseChainDepth(chain_depth);
+    if (parsedDepth.ok === false) return { error: parsedDepth.error };
+    const requestedDepth = parsedDepth.value;
     if (requestedDepth > 0) {
       try {
         chain = await this._computeContextChain(repo, symId, requestedDepth);

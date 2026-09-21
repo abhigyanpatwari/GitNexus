@@ -334,35 +334,40 @@ describe('GroupService', () => {
       }
     });
 
-    it('test_groupQuery_clamps_infinite_and_oversized_limit_and_max_symbols', async () => {
+    it('test_groupQuery_rejects_infinite_and_oversized_limit_and_max_symbols', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
         const query = vi.fn(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
 
-        await svc.groupQuery({
+        const overLimit = await svc.groupQuery({
           name: 'test-group',
           query: 'auth flow',
           limit: Infinity,
           max_symbols: 9999,
         });
-        expect(query).toHaveBeenCalledTimes(2);
-        for (const call of query.mock.calls) {
-          expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
-        }
+        expect(overLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
+        expect(query).not.toHaveBeenCalled();
 
-        query.mockClear();
-        await svc.groupQuery({
+        const overSymbols = await svc.groupQuery({
           name: 'test-group',
           query: 'auth flow',
-          limit: 9999,
+          limit: 3,
           max_symbols: Infinity,
         });
-        expect(query).toHaveBeenCalledTimes(2);
-        for (const call of query.mock.calls) {
-          expect(call[1]).toMatchObject({ limit: 100, max_symbols: 200 });
-        }
+        expect(overSymbols).toMatchObject({
+          error: expect.stringMatching(/Invalid "max_symbols"/),
+        });
+        expect(query).not.toHaveBeenCalled();
+
+        const badDepth = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          chain_depth: 0.1,
+        });
+        expect(badDepth).toMatchObject({ error: expect.stringMatching(/Invalid "chain_depth"/) });
+        expect(query).not.toHaveBeenCalled();
       } finally {
         vi.unstubAllEnvs();
         cleanup();

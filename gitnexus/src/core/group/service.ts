@@ -449,14 +449,42 @@ const GROUP_QUERY_DEFAULT_LIMIT = 10;
 const GROUP_QUERY_MAX_LIMIT = 100;
 const GROUP_QUERY_DEFAULT_MAX_SYMBOLS = 25;
 const GROUP_QUERY_MAX_SYMBOLS = 200;
+const GROUP_CHAIN_MAX_DEPTH = 3;
 /** Cap per-member fan-out for group query/context. Complements LocalBackend's per-query BFS cap. */
 const GROUP_MEMBER_CONCURRENCY = 4;
 
-function clampGroupQueryBound(value: unknown, fallback: number, max: number): number {
-  if (typeof value !== 'number' || !(value > 0)) return fallback;
-  if (!Number.isFinite(value)) return max;
-  const n = Math.floor(value);
-  return n < 1 ? fallback : Math.min(max, n);
+function parseGroupQueryBound(
+  value: unknown,
+  field: 'limit' | 'max_symbols',
+  fallback: number,
+  max: number,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: fallback };
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    return {
+      ok: false,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${JSON.stringify(value)}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function parseGroupChainDepth(
+  value: unknown,
+): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > GROUP_CHAIN_MAX_DEPTH
+  ) {
+    return {
+      ok: false,
+      error: `Invalid "chain_depth": expected an integer in [0, ${GROUP_CHAIN_MAX_DEPTH}], got ${JSON.stringify(value)}.`,
+    };
+  }
+  return { ok: true, value };
 }
 
 export class GroupService {
@@ -751,17 +779,25 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
 
-    const limit = clampGroupQueryBound(
+    const parsedLimit = parseGroupQueryBound(
       params.limit,
+      'limit',
       GROUP_QUERY_DEFAULT_LIMIT,
       GROUP_QUERY_MAX_LIMIT,
     );
-    const max_symbols = clampGroupQueryBound(
+    if (parsedLimit.ok === false) return { error: parsedLimit.error };
+    const parsedMaxSymbols = parseGroupQueryBound(
       params.max_symbols,
+      'max_symbols',
       GROUP_QUERY_DEFAULT_MAX_SYMBOLS,
       GROUP_QUERY_MAX_SYMBOLS,
     );
-    const chain_depth = typeof params.chain_depth === 'number' ? params.chain_depth : undefined;
+    if (parsedMaxSymbols.ok === false) return { error: parsedMaxSymbols.error };
+    const parsedChainDepth = parseGroupChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) return { error: parsedChainDepth.error };
+    const limit = parsedLimit.value;
+    const max_symbols = parsedMaxSymbols.value;
+    const chain_depth = parsedChainDepth.value;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
