@@ -29,11 +29,13 @@ const { native } = vi.hoisted(() => {
     /** Script the FIRST read-only Database (index 0) as the checkpoint victim. */
     refuseFirst: true,
     reset(options: { refuseFirst?: boolean } = {}) {
+      native.seq = 0;
       native.calls.constructions = [];
       native.calls.checkpoints = 0;
       native.calls.refusalProbes = 0;
       native.refuseFirst = options.refuseFirst ?? true;
     },
+    seq: 0,
   };
   return { native };
 });
@@ -44,7 +46,6 @@ const { native } = vi.hoisted(() => {
 // recovery open and the read-only retry must never refuse, or the recovery
 // would kill itself.
 vi.mock('@ladybugdb/core', () => {
-  let seq = 0;
   class Database {
     role: 'ro' | 'rw';
     index: number;
@@ -55,7 +56,7 @@ vi.mock('@ladybugdb/core', () => {
       readOnly = false,
     ) {
       this.role = readOnly ? 'ro' : 'rw';
-      this.index = seq++;
+      this.index = native.seq++;
       native.calls.constructions.push(this.role);
     }
     async init(): Promise<void> {
