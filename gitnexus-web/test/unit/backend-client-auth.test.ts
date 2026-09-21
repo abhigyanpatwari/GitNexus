@@ -235,5 +235,22 @@ describe('backend-client access token', () => {
       // Budget spent → the caller finally hears about it.
       expect(onError).toHaveBeenCalledWith('Server returned 401');
     });
+
+    it('exhausts a finite budget across successful-then-closed streams when resetRetriesOnOpen is false', async () => {
+      // Ops dashboard needs this: otherwise every short 200 resets the counter
+      // and onError (poll fallback) never fires.
+      const fetchMock = vi.fn(async () => sseResponse(['data: {"ok":true}\n\n']));
+      vi.stubGlobal('fetch', fetchMock);
+      const onError = vi.fn();
+
+      streamSSE(
+        `${BASE}/api/ops/stream`,
+        { onError },
+        { baseDelayMs: 0, maxRetries: 2, resetRetriesOnOpen: false },
+      );
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('Stream ended'));
+      // Initial + 2 retries = 3 opens before the budget is spent.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
   });
 });

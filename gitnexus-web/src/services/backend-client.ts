@@ -236,6 +236,13 @@ export interface SSEOptions {
    * the edge's token gate resolves itself once a token is entered.
    */
   retryOnHttpError?: boolean;
+  /**
+   * When true (default), a successful HTTP open resets the retry counter so a
+   * long-lived stream can reconnect forever after transient drops. Set false
+   * for finite budgets (ops → poll fallback): otherwise a 200 that then closes
+   * would reset the counter on every reconnect and never reach `onError`.
+   */
+  resetRetriesOnOpen?: boolean;
 }
 
 /**
@@ -256,6 +263,7 @@ export function streamSSE<T = unknown>(
   const maxRetries = options.maxRetries ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 1_000;
   const capDelayMs = options.capDelayMs ?? Infinity;
+  const resetRetriesOnOpen = options.resetRetriesOnOpen ?? true;
 
   let lastEventId = '';
 
@@ -290,8 +298,10 @@ export function streamSSE<T = unknown>(
           return;
         }
 
-        // Reset retry count on successful connection
-        retryCount = 0;
+        // Long-lived streams reset; finite budgets (ops poll fallback) must not.
+        if (resetRetriesOnOpen) {
+          retryCount = 0;
+        }
         handlers.onOpen?.();
 
         const decoder = new TextDecoder();
@@ -396,9 +406,26 @@ export const setBackendUrl = (url: string): void => {
 export const getBackendUrl = (): string => _backendUrl;
 
 /**
+ * Strip `user[:password]@` userinfo from an http(s) URL so credentials never
+ * land in `?server=`, history, or `_backendUrl` display/storage paths.
+ */
+export function stripBackendUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    // URL() may add a trailing slash for bare origins; keep normalize's contract.
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return url.replace(/^(https?:\/\/)[^/]*@/i, '$1');
+  }
+}
+
+/**
  * Normalize a user-entered server URL into a base URL suitable for setBackendUrl().
- * Adds protocol if missing, strips trailing slashes, and strips a trailing /api suffix
- * (since all API methods append their own /api/... paths to _backendUrl).
+ * Adds protocol if missing, strips trailing slashes / userinfo, and strips a
+ * trailing /api suffix (since all API methods append their own /api/... paths).
  */
 export function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, '');
@@ -414,7 +441,7 @@ export function normalizeServerUrl(input: string): string {
   // Strip /api suffix if present — _backendUrl stores the base, not the /api path
   url = url.replace(/\/api$/, '');
 
-  return url;
+  return stripBackendUrlCredentials(url);
 }
 
 // ── Access token ───────────────────────────────────────────────────────────
@@ -1145,7 +1172,14 @@ export const streamOpsSnapshot = (
       onError,
     },
     // Finite retries so onError can fire and the dashboard falls back to poll.
-    { maxRetries: 3, baseDelayMs: 1_000, capDelayMs: 5_000, retryOnHttpError: true },
+    // Do not reset the budget on a successful open — short-lived 200s must count.
+    {
+      maxRetries: 3,
+      baseDelayMs: 1_000,
+      capDelayMs: 5_000,
+      retryOnHttpError: true,
+      resetRetriesOnOpen: false,
+    },
   );
 };
 

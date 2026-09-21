@@ -1920,7 +1920,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 // url+branch: same value as registryName (dir basename), not
                 // the extractWebRepoName stem used only as getCloneDir's first arg.
                 repoName: analyzeBranch ? path.basename(targetPath) : repoName,
-                progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
+                // Never put repoUrl in progress — ops feed is unauthenticated
+                // and may still serialize message (credentials via userinfo).
+                progress: {
+                  phase: 'cloning',
+                  percent: 0,
+                  message: `Cloning ${analyzeBranch ? path.basename(targetPath) : repoName}...`,
+                },
               });
 
               await cloneOrPull(

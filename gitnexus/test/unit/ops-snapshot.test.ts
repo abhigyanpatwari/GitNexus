@@ -40,6 +40,24 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoUrl).toBeUndefined();
   });
 
+  it('redacts https userinfo from progress.message on the public ops view', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://x-access-token:ghs_secret@github.com/user/repo.git',
+    });
+    manager.updateJob(job.id, {
+      status: 'cloning',
+      progress: {
+        phase: 'cloning',
+        percent: 0,
+        message: 'Cloning https://x-access-token:ghs_secret@github.com/user/repo.git...',
+      },
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.progress.message).toBe('Cloning https://github.com/user/repo.git...');
+    expect(JSON.stringify(view)).not.toContain('ghs_secret');
+    expect(JSON.stringify(view)).not.toContain('x-access-token');
+  });
+
   it('basenames Windows-like drive paths instead of emitting the full path', () => {
     const job = manager.createJob({
       repoUrl: String.raw`C:\Users\alice\private\repo`,

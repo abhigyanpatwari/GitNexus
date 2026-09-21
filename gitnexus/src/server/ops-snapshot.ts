@@ -8,6 +8,7 @@
 import {
   isTerminalJobStatus,
   type AnalyzeJob,
+  type AnalyzeJobProgress,
   type AnalyzeJobStatus,
 } from './analyze-job.js';
 
@@ -104,6 +105,18 @@ const publicRepoNameFromPath = (repoPath: string | undefined): string | undefine
   return repoPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || undefined;
 };
 
+/**
+ * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via
+ * progress.message even when the in-memory job still holds them for cloning.
+ */
+export const publicOpsProgress = (progress: AnalyzeJobProgress): AnalyzeJobProgress => ({
+  phase: progress.phase,
+  percent: progress.percent,
+  // Mid-string scrub: stripUrlCredentials only matches at ^, but clone
+  // progress embeds the URL after a prefix ("Cloning https://user:pass@…").
+  message: progress.message.replace(/(https?:\/\/)[^/\s]*@/gi, '$1'),
+});
+
 export const serializeOpsJob = (
   job: AnalyzeJob,
   lane: 'analyze' | 'embed',
@@ -120,7 +133,7 @@ export const serializeOpsJob = (
     status: job.status,
     repoName,
     branch: job.branch,
-    progress: job.progress,
+    progress: publicOpsProgress(job.progress),
     error: job.error,
     partial: job.partial,
     startedAt: job.startedAt,
