@@ -5223,11 +5223,9 @@ export class LocalBackend {
           visited: Array.from(visited),
         });
         if (rows.length === 0) return { nextFrontier: [] };
-        // MATCH is one row per CALLS edge. A node that calls (or is called
-        // by) several IDs in `$frontier` therefore appears more than once;
-        // `visited` is only updated after this layer is built, so the
-        // filter alone cannot collapse those twins. Duplicates would also
-        // consume the 50-row LIMIT and hide other reachable nodes.
+        // MATCH is one row per CALLS edge. Cypher `WITH DISTINCT` applies
+        // LIMIT 50 to unique neighbors; this second pass still collapses
+        // twins if a driver/engine ever returns duplicate rows.
         const seen = new Set<string>();
         const fresh = rows.filter((r: any) => {
           const uid = r.uid;
@@ -5258,6 +5256,7 @@ export class LocalBackend {
             MATCH (caller)-[r:CodeRelation]->(n)
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT caller.id IN $visited
+            WITH DISTINCT caller
             RETURN caller.id AS uid, caller.name AS name,
                    caller.filePath AS filePath, labels(caller) AS kind,
                    ${testOrderExpr('caller')} AS isTest
@@ -5276,6 +5275,7 @@ export class LocalBackend {
             MATCH (n)-[r:CodeRelation]->(target)
             WHERE r.type = 'CALLS' AND n.id IN $frontier
               AND NOT target.id IN $visited
+            WITH DISTINCT target
             RETURN target.id AS uid, target.name AS name,
                    target.filePath AS filePath, labels(target) AS kind,
                    ${testOrderExpr('target')} AS isTest

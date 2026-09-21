@@ -213,9 +213,14 @@ describe('context/query route + chain enrichment', () => {
       async (_db: string, query: string, params: any = {}) => {
         if (isUidLookup(params) || isNameLookup(params)) return [HANDLER];
         if (params?.frontier) {
-          if (query.includes('MATCH (caller)')) return [CALLER, { ...CALLER }];
-          if (query.includes('MATCH (n)-[r:CodeRelation]->(target)'))
+          if (query.includes('MATCH (caller)')) {
+            expect(query).toContain('WITH DISTINCT caller');
+            return [CALLER, { ...CALLER }];
+          }
+          if (query.includes('MATCH (n)-[r:CodeRelation]->(target)')) {
+            expect(query).toContain('WITH DISTINCT target');
             return [CALLEE, { ...CALLEE }];
+          }
           return [];
         }
         if (query.includes('STEP_IN_PROCESS')) return [];

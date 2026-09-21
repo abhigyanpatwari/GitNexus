@@ -15,15 +15,17 @@ const HTTP_METHOD_MAP: Record<string, string> = {
 // The `/m` flag lets the file gate see a line-start `.query(` in
 // whole-file text.
 const TERMINAL_CALL_RE =
-  /(?:(?<=Procedure)|(?<=t\.procedure)|^)\s*\.\s*(query|mutation|subscription)\s*\(/m;
+  /(?:(?<=Procedure)|(?<=\bprocedure)|^)\s*\.\s*(query|mutation|subscription)\s*\(/m;
 
 // Procedure keys may sit at the start of an indented line, or mid-line after
 // `{` / `,` in a compact router (`t.router({ health: publicProcedure.query(...) })`).
 // Quoted keys (`'create'` / `"admin-panel"`) are the same procedure name as the
 // unquoted identifier. Unquoted stays `\w+`; quoted allows hyphens and similar
 // identifier-like punctuation (`$`, `.`). Dual groups: name = m[1] || m[3].
+// `procedure` is the official `const procedure = t.procedure` alias (also the
+// HOC-pair shape in the TS/JS queries); it is not covered by `\w*Procedure`.
 const PROCEDURE_KEY_RE =
-  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(\w*Procedure|t\.procedure)\b/;
+  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(\w*Procedure|t\.procedure|procedure)\b/;
 
 /** Normalize slashes and prefix `/` so a repo-root `routers/foo.ts` matches `/routers/`. */
 export function shouldScanForTrpcRoutes(filePath: string): boolean {

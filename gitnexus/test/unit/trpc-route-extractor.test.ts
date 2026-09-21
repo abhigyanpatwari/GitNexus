@@ -286,6 +286,19 @@ describe('extractTrpcRoutes', () => {
     expect(paths(source)).toEqual(['POST /trpc/create']);
   });
 
+  it('lowercase procedure builder still emits the create route', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const procedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  create: procedure.mutation(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['POST /trpc/create']);
+    expect(extractTrpcRoutes(FILE, source)[0]?.methodName).toBe('create');
+  });
+
   it('identifier callback is the handler name; inline arrows keep the procedure key', () => {
     const ident = [
       "import { initTRPC } from '@trpc/server';",
