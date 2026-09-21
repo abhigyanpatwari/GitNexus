@@ -516,6 +516,114 @@ describe('extractTrpcRoutes', () => {
       ),
     ).toEqual(['GET /trpc/health']);
   });
+
+  it('identifier-mounted same-file subrouter uses the live mount path', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter,',
+      '  health: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.list', 'GET /trpc/health']);
+  });
+
+  it('identifier mount still composes with an inline nest inside the subrouter', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  users: t.router({',
+      '    list: publicProcedure.query(() => null),',
+      '  }),',
+      '});',
+      'export const appRouter = t.router({ admin: adminRouter });',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.users.list']);
+  });
+
+  it('transitive identifier mounts compose admin.users.list', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const usersRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'const adminRouter = t.router({',
+      '  users: usersRouter,',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter,',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.users.list']);
+  });
+
+  it('userRouter prefix plus identifier mount is user.admin.list', () => {
+    const source = [
+      "import { router, publicProcedure } from '../trpc';",
+      'const adminRouter = router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const userRouter = router({',
+      '  admin: adminRouter,',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/user.admin.list']);
+  });
+
+  it('identifier mount declared after appRouter still prefixes the live path', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter,',
+      '});',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.list']);
+  });
+
+  it('quoted identifier mount key is kept', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      "  'admin-panel': adminRouter,",
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin-panel.list']);
+  });
+
+  it('the same subrouter mounted twice emits both live paths', () => {
+    const source = [
+      "import { initTRPC } from '@trpc/server';",
+      'const t = initTRPC.create();',
+      'const publicProcedure = t.procedure;',
+      'const adminRouter = t.router({',
+      '  list: publicProcedure.query(() => null),',
+      '});',
+      'export const appRouter = t.router({',
+      '  admin: adminRouter,',
+      '  billing: adminRouter,',
+      '});',
+    ].join('\n');
+    expect(paths(source)).toEqual(['GET /trpc/admin.list', 'GET /trpc/billing.list']);
+  });
 });
 
 describe('shouldScanForTrpcRoutes', () => {

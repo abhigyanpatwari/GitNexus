@@ -43,11 +43,9 @@ function extractRouterPrefix(content: string, filePath: string): string | null {
   // Prefer the exported *Router binding; otherwise the first const/let/var.
   // A file-wide first `.merge('post.', …)` used to prefix every procedure,
   // including a later `export const appRouter = t.router({ health })`.
-  const exportBinding = masked.match(/export\s+(?:const|let|var)\s+(\w+Router)\s*=\s*/);
-  const anyBinding = masked.match(/(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*/);
-  const binding = exportBinding ?? anyBinding;
+  const binding = findPrefixRouterBinding(masked);
 
-  if (binding && binding.index !== undefined) {
+  if (binding) {
     const rhsStart = binding.index + binding[0].length;
     const rhsMasked = masked.slice(rhsStart);
 
@@ -397,10 +395,21 @@ interface NestFrame {
 const ROUTER_OPEN_RE =
   /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|\w+Procedure\s*\.\s*router|router)\s*\(/;
 
+// Same-file `const adminRouter = t.router({` / `createTRPCRouter(` / bare `router(`.
+const ROUTER_BINDING_RE =
+  /(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:(?:t|trpc|tRPC)\s*\.\s*router|createTRPCRouter|router)\s*\(/;
+
+// Identifier composition: `admin: adminRouter,` / last-property `admin: adminRouter`.
+// `list: publicProcedure.query(` does not match — the next token is `.`.
+const ROUTER_REF_RE =
+  /(?:^|[{,])\s*(?:['"]([\w$.-]+)['"]|((\w+)))\s*:\s*([A-Za-z_$][\w$]*)\s*(?:[,}]|$)/;
+
 // `/g` copies for matchAll. The non-global originals stay lastIndex-safe for `.test()`.
 const TERMINAL_CALL_RE_G = new RegExp(TERMINAL_CALL_RE.source, 'gm');
 const PROCEDURE_KEY_RE_G = new RegExp(PROCEDURE_KEY_RE.source, 'g');
 const ROUTER_OPEN_RE_G = new RegExp(ROUTER_OPEN_RE.source, 'g');
+const ROUTER_BINDING_RE_G = new RegExp(ROUTER_BINDING_RE.source, 'g');
+const ROUTER_REF_RE_G = new RegExp(ROUTER_REF_RE.source, 'g');
 // Every `.query(` / `.mutation(` / `.subscription(` — the scanner emits
 // only at the procedure's parenDepth, and only when TERMINAL_CALL_RE
 // matched or the previous non-space is `)` (chained `.input(...).query(`).
@@ -409,6 +418,51 @@ const ANY_TERMINAL_RE_G = /\.\s*(query|mutation|subscription)\s*\(/g;
 function matchAll(re: RegExp, text: string): RegExpMatchArray[] {
   re.lastIndex = 0;
   return [...text.matchAll(re)];
+}
+
+function findPrefixRouterBinding(masked: string): RegExpMatchArray | null {
+  const exportBinding = masked.match(/export\s+(?:const|let|var)\s+(\w+Router)\s*=\s*/);
+  const anyBinding = masked.match(/(?:export\s+)?(?:const|let|var)\s+(\w+Router)\s*=\s*/);
+  const binding = exportBinding ?? anyBinding;
+  if (!binding || binding.index === undefined) return null;
+  return binding;
+}
+
+interface RouterMount {
+  parent: string | null;
+  key: string;
+  child: string;
+}
+
+interface BindingFrame {
+  name: string;
+  openDepth: number;
+}
+
+/** Walk identifier mounts from a nested router up to the file's prefix binding. */
+function mountPathsFromRoot(
+  binding: string | null,
+  root: string | null,
+  mountsByChild: Map<string, RouterMount[]>,
+  seen: Set<string> = new Set(),
+): string[][] {
+  if (!binding || !root || binding === root) return [[]];
+  if (seen.has(binding)) return [[]];
+  const parents = mountsByChild.get(binding);
+  if (!parents || parents.length === 0) return [[]];
+  const nextSeen = new Set(seen);
+  nextSeen.add(binding);
+  const out: string[][] = [];
+  for (const mount of parents) {
+    if (!mount.parent) {
+      out.push([mount.key]);
+      continue;
+    }
+    for (const prefix of mountPathsFromRoot(mount.parent, root, mountsByChild, nextSeen)) {
+      out.push([...prefix, mount.key]);
+    }
+  }
+  return out.length > 0 ? out : [[]];
 }
 
 function prevNonSpace(text: string, index: number): string | null {
@@ -442,9 +496,13 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
 
   const routesByPath = new Map<string, ExtractedRoute>();
   const prefix = extractRouterPrefix(content, filePath);
+  const rootBinding = findPrefixRouterBinding(maskSource(content))?.[1] ?? null;
 
   const lines = content.split('\n');
   const nestStack: NestFrame[] = [];
+  const bindingStack: BindingFrame[] = [];
+  const mounts: RouterMount[] = [];
+  const routerBindingNames = new Set<string>();
   const scanState = createScanState();
   let depth = 0;
   let parenDepth = 0;
@@ -452,7 +510,16 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
   // router's object literal and pushes the frame (handles both
   // 'user: t.router({' and the rare '{' on the following line).
   let pendingRouterName: string | null = null;
+  let pendingBindingName: string | null = null;
   let currentProcedure: { name: string; depth: number; parenDepth: number } | null = null;
+
+  const pendingEmits: Array<{
+    method: string;
+    localParts: string[];
+    containingBinding: string | null;
+    terminalLine: number;
+    methodName: string;
+  }> = [];
 
   const emitProcedure = (
     method: string,
@@ -462,34 +529,14 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
   ): void => {
     // Nested routers compose the full path ('user.admin.list'): without the
     // stack, same-named procedures in sibling routers deduped to ONE route
-    // and the survivor carried the wrong path.
-    const parts = [...nestStack.map((frame) => frame.name), proc.name];
-    const procedurePath = [...(prefix ? [prefix] : []), ...parts].join('.');
-
-    // Last write wins: `t.router({ list: a, list: b })` is a JS object
-    // literal, so tRPC only ever sees `b`. Keeping the first emit would
-    // bind CALLS to dead handler code. Sibling routers still stay distinct
-    // because `procedurePath` includes the nest (`admin.list` vs `billing.list`).
-    routesByPath.set(procedurePath, {
-      filePath,
-      httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
-      routePath: '/trpc/' + procedurePath,
-      routeName: procedurePath,
-      // A tRPC router is an object binding, not a class. Route consumers
-      // resolve 'controllerName' through lookupClassByName
-      // (call-processor.ts), which would either skip these routes (no such
-      // class) or mis-link an unrelated same-named class — leave it unset;
-      // call-processor binds the same-file handler symbol directly.
-      controllerName: null,
+    // and the survivor carried the wrong path. Identifier mounts
+    // (`admin: adminRouter`) are applied after the scan.
+    pendingEmits.push({
+      method,
+      localParts: [...nestStack.map((frame) => frame.name), proc.name],
+      containingBinding: bindingStack[bindingStack.length - 1]?.name ?? null,
+      terminalLine,
       methodName: identifierCallbackName(textFromDot) ?? proc.name,
-      middleware: [],
-      prefix: null,
-      // pickSameFileHandler compares this 1-based line to Function
-      // startLine (0-based). The handler is the terminal callback
-      // (`.query` / `.mutation` / `.subscription`), so emit that line
-      // — not the object-key line, which is often earlier after
-      // `.input()` / `.use()` chaining. Same-line key+terminal is unchanged.
-      lineNumber: terminalLine,
     });
   };
 
@@ -505,12 +552,23 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
     for (const m of matchAll(ROUTER_OPEN_RE_G, masked)) {
       routerByIndex.set(m.index ?? 0, m[1] || m[3]);
     }
+    const bindingByIndex = new Map<number, string>();
+    for (const m of matchAll(ROUTER_BINDING_RE_G, masked)) {
+      bindingByIndex.set(m.index ?? 0, m[1]);
+      routerBindingNames.add(m[1]);
+    }
     const keyByIndex = new Map<number, string>();
     for (const m of matchAll(PROCEDURE_KEY_RE_G, masked)) {
       const idx = m.index ?? 0;
       // 'admin: adminProcedure.router(' matches both; the router-open wins
       // so we do not poison currentProcedure (the double-prefix bug).
       if (!routerByIndex.has(idx)) keyByIndex.set(idx, m[1] || m[3]);
+    }
+    const refByIndex = new Map<number, { key: string; child: string }>();
+    for (const m of matchAll(ROUTER_REF_RE_G, masked)) {
+      const idx = m.index ?? 0;
+      if (routerByIndex.has(idx) || keyByIndex.has(idx)) continue;
+      refByIndex.set(idx, { key: m[1] || m[3], child: m[4] });
     }
     const terminalByIndex = new Map<number, string>();
     for (const m of matchAll(TERMINAL_CALL_RE_G, masked)) {
@@ -525,6 +583,10 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       const ch = masked[c];
       if (ch === '{') {
         depth++;
+        if (pendingBindingName !== null) {
+          bindingStack.push({ name: pendingBindingName, openDepth: depth });
+          pendingBindingName = null;
+        }
         if (pendingRouterName !== null) {
           nestStack.push({ name: pendingRouterName, openDepth: depth });
           pendingRouterName = null;
@@ -533,6 +595,9 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         depth--;
         while (nestStack.length > 0 && nestStack[nestStack.length - 1].openDepth > depth) {
           nestStack.pop();
+        }
+        while (bindingStack.length > 0 && bindingStack[bindingStack.length - 1].openDepth > depth) {
+          bindingStack.pop();
         }
         // Nested `}),` inside `.input(z.object({...}))` returns TO the
         // recorded depth — the procedure chain is still open. Only a `}`
@@ -553,6 +618,10 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
       // that used `{` or `,` as their regex prefix. `{ admin: t.router({`
       // must set pending on the first `{` *after* that `{` opened the parent,
       // so the inner `{` is the one that pushes `admin`.
+      const bindingName = bindingByIndex.get(c);
+      if (bindingName !== undefined) {
+        pendingBindingName = bindingName;
+      }
       const routerName = routerByIndex.get(c);
       if (routerName !== undefined) {
         pendingRouterName = routerName;
@@ -561,6 +630,14 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         if (keyName !== undefined) {
           currentProcedure = { name: keyName, depth, parenDepth };
         }
+      }
+      const ref = refByIndex.get(c);
+      if (ref !== undefined) {
+        mounts.push({
+          parent: bindingStack[bindingStack.length - 1]?.name ?? pendingBindingName,
+          key: ref.key,
+          child: ref.child,
+        });
       }
 
       const candidate = anyTerminalByIndex.get(c);
@@ -573,6 +650,51 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
         emitProcedure(candidate, currentProcedure, i + 1, lines.slice(i).join('\n').slice(c));
         currentProcedure = null;
       }
+    }
+  }
+
+  const mountsByChild = new Map<string, RouterMount[]>();
+  for (const mount of mounts) {
+    if (!routerBindingNames.has(mount.child)) continue;
+    const list = mountsByChild.get(mount.child) ?? [];
+    list.push(mount);
+    mountsByChild.set(mount.child, list);
+  }
+
+  for (const pending of pendingEmits) {
+    const mountPaths = mountPathsFromRoot(pending.containingBinding, rootBinding, mountsByChild);
+    for (const mountParts of mountPaths) {
+      const procedurePath = [
+        ...(prefix ? [prefix] : []),
+        ...mountParts,
+        ...pending.localParts,
+      ].join('.');
+
+      // Last write wins: `t.router({ list: a, list: b })` is a JS object
+      // literal, so tRPC only ever sees `b`. Keeping the first emit would
+      // bind CALLS to dead handler code. Sibling routers still stay distinct
+      // because `procedurePath` includes the nest (`admin.list` vs `billing.list`).
+      routesByPath.set(procedurePath, {
+        filePath,
+        httpMethod: HTTP_METHOD_MAP[pending.method] ?? 'POST',
+        routePath: '/trpc/' + procedurePath,
+        routeName: procedurePath,
+        // A tRPC router is an object binding, not a class. Route consumers
+        // resolve 'controllerName' through lookupClassByName
+        // (call-processor.ts), which would either skip these routes (no such
+        // class) or mis-link an unrelated same-named class — leave it unset;
+        // call-processor binds the same-file handler symbol directly.
+        controllerName: null,
+        methodName: pending.methodName,
+        middleware: [],
+        prefix: null,
+        // pickSameFileHandler compares this 1-based line to Function
+        // startLine (0-based). The handler is the terminal callback
+        // (`.query` / `.mutation` / `.subscription`), so emit that line
+        // — not the object-key line, which is often earlier after
+        // `.input()` / `.use()` chaining. Same-line key+terminal is unchanged.
+        lineNumber: pending.terminalLine,
+      });
     }
   }
 
