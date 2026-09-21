@@ -3,13 +3,16 @@ import {
   displayWidth,
   doctorCommand,
   localEmbeddingDoctorStatus,
+  orphanedBranchSlotDoctorLines,
   padDisplayEnd,
   nativeStatusLine,
   pageSizeDoctorLines,
   poolSizeDoctorLine,
 } from '../../src/cli/doctor.js';
-import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
+import type { StaleBranchSlot } from '../../src/storage/stale-branch-slots.js';
+import { setCliLanguage, t, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 import type { NativeCheckResult } from '../../src/core/lbug/native-check.js';
+import { createTempDir } from '../helpers/test-db.js';
 
 const nativeProbeState = vi.hoisted(() => ({
   vectorLoaded: true,
@@ -374,5 +377,83 @@ describe('doctor survives a malformed GITNEXUS_EMBEDDING_DIMS (#2385)', () => {
     // (isHttpMode -> readConfig -> throw on the malformed DIMS); now the presence
     // probe never throws, so `gitnexus doctor` completes and reports the backend.
     await expect(doctorCommand()).resolves.toBeUndefined();
+  });
+});
+
+describe('orphanedBranchSlotDoctorLines (#3331)', () => {
+  const slot = (overrides: Partial<StaleBranchSlot>): StaleBranchSlot => ({
+    branch: 'feature/x',
+    dir: '/tmp/branches/feature_x',
+    sizeBytes: 1024,
+    reason: 'ref-missing',
+    ...overrides,
+  });
+
+  it('returns no lines when there are no leftover slots', () => {
+    expect(orphanedBranchSlotDoctorLines([])).toEqual([]);
+  });
+
+  it('prints branch, reason, size, total, and the clean --stale reclaim line', () => {
+    const lines = orphanedBranchSlotDoctorLines([slot({ sizeBytes: 4_800_000 })]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain('feature/x');
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
+    expect(lines.join('\n')).toContain('4.6 MB');
+    expect(lines.join('\n')).toContain(t('doctor.orphanedBranches.reclaim'));
+    expect(lines.join('\n')).toContain('gitnexus clean --stale');
+  });
+
+  it('prints retry-git copy instead of reclaim when heads cannot be listed (#3337)', () => {
+    const lines = orphanedBranchSlotDoctorLines([
+      slot({ reason: 'heads-unavailable', sizeBytes: 2048 }),
+      slot({ branch: 'other', reason: 'ref-missing', sizeBytes: 4096 }),
+    ]);
+    expect(lines).toEqual([t('clean.stale.headsUnavailable')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('prints only listingFailed when listing-failed is mixed with ref-missing', () => {
+    const lines = orphanedBranchSlotDoctorLines([
+      slot({ reason: 'listing-failed', branch: '', dir: null, sizeBytes: 0 }),
+      slot({ reason: 'ref-missing' }),
+    ]);
+    expect(lines).toEqual([t('clean.stale.listingFailed')]);
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('prints heading and probe-failed row without reclaim', () => {
+    const lines = orphanedBranchSlotDoctorLines([slot({ reason: 'probe-failed' })]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain('feature/x');
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).not.toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('includes reclaim when probe-failed is mixed with ref-missing', () => {
+    const lines = orphanedBranchSlotDoctorLines([
+      slot({ reason: 'probe-failed' }),
+      slot({ branch: 'other', reason: 'ref-missing' }),
+    ]);
+    expect(lines[0]).toBe(t('doctor.orphanedBranches'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
+    expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
+    expect(lines.join('\n')).toContain(t('doctor.orphanedBranches.reclaim'));
+  });
+
+  it('does not print leftover slots when cwd is not an indexed repo', async () => {
+    const tmp = await createTempDir();
+    try {
+      vi.spyOn(process, 'cwd').mockReturnValue(tmp.dbPath);
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      await doctorCommand();
+      const output = log.mock.calls.map((args) => args.map(String).join(' ')).join('\n');
+      expect(output).toContain(t('doctor.runtime'));
+      expect(output).not.toContain(t('doctor.orphanedBranches'));
+    } finally {
+      vi.restoreAllMocks();
+      await tmp.cleanup();
+    }
   });
 });

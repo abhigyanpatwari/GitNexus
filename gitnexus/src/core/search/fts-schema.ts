@@ -13,13 +13,17 @@ export interface FTSIndexDefinition {
 // once they are populated by `descriptionExtractor` (#2270/#2286, issue #2299).
 //
 // IMPORTANT: every property must be a real column on its table (see
-// `core/lbug/schema.ts`). `File` has no `description` column, so it stays
-// name+content. All other entries below carry a `description` column.
+// `core/lbug/schema.ts`). `File` and `Route` have no `description` column
+// (`File` stays name+content; `Route` is name-only). All other entries
+// below carry a `description` column.
 //
-// Tables beyond the original 5 mirror `EMBEDDABLE_LABELS` (embeddings/types.ts):
-// indexing the same set keeps a symbol's doc comment both keyword- and
-// semantically-searchable.
+// Symbol tables beyond the original 5 still mirror `EMBEDDABLE_LABELS`
+// (embeddings/types.ts): indexing the same set keeps a symbol's doc comment
+// both keyword- and semantically-searchable. Route is the exception: it is
+// keyword-only (`NAME_ONLY_PROPERTIES`) and is not in EMBEDDABLE_LABELS, so
+// it is not semantically searchable.
 const FTS_PROPERTIES = ['name', 'content', 'description'] as const;
+const NAME_ONLY_PROPERTIES = ['name'] as const;
 
 export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // File has no `description` column — keep it name+content only.
@@ -50,9 +54,12 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   { table: 'Variable', indexName: 'variable_fts', properties: FTS_PROPERTIES },
   // Markdown headings and static document declarations must be discoverable by name.
   { table: 'Section', indexName: 'section_fts', properties: FTS_PROPERTIES },
+  // Route URLs (e.g. "/trpc/admin.setSettings") are keyword-
+  // searchable so agents can find a procedure from its URL without first
+  // resolving the URL → handlerSymbolId → Function node. Route has no
+  // `description`/`content` column (see ROUTE_SCHEMA), so this is name-only.
+  { table: 'Route', indexName: 'route_fts', properties: NAME_ONLY_PROPERTIES },
 ];
-
-const NAME_ONLY_PROPERTIES = ['name'] as const;
 
 /** Return the FTS definitions compatible with one persisted content profile. */
 export const getFtsIndexes = (profile: FtsProfile = 'full'): readonly FTSIndexDefinition[] => {

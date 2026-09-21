@@ -1597,6 +1597,8 @@ async function runFullAnalysisInner(
       if (options.registryName) {
         await registerRepo(repoPath, existingMeta, {
           name: options.registryName,
+          onRename: (previousName, nextName) =>
+            log(`Registry name changed: "${previousName}" -> "${nextName}".`),
           allowDuplicateName: options.allowDuplicateName,
           branch: placement.branch,
           storagePath,
@@ -2179,6 +2181,8 @@ async function runFullAnalysisInner(
         if (options.registryName) {
           await registerRepo(repoPath, existingMeta, {
             name: options.registryName,
+            onRename: (previousName, nextName) =>
+              log(`Registry name changed: "${previousName}" -> "${nextName}".`),
             allowDuplicateName: options.allowDuplicateName,
             branch: placement.branch,
             storagePath,
@@ -4670,6 +4674,8 @@ async function runFullAnalysisInner(
     // will look up (#979).
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
+      onRename: (previousName, nextName) =>
+        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
       allowDuplicateName: options.allowDuplicateName,
       // Non-primary branch runs upsert into the entry's branches[]; the
       // primary/flat run (placement.branch === undefined) refreshes the

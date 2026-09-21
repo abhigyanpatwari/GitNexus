@@ -66,6 +66,17 @@ describe('XAML document declarations (#3202)', () => {
     expect(extractXamlDeclarations('<Button x:Name="Undeclared" />')).toEqual([]);
   });
 
+  it('does not mistake DOCTYPE text inside CDATA, comments, or processing instructions for a DTD', () => {
+    const declarations = extractXamlDeclarations(`<Grid xmlns:x="${NS}" x:Name="ActualView">
+      <![CDATA[<!DOCTYPE example>]]>
+      <!-- <!DOCTYPE example> -->
+      <?example <!DOCTYPE example>?>
+    </Grid>`);
+    expect(declarations).toEqual([
+      expect.objectContaining({ name: 'ActualView', description: 'Grid x:Name declaration' }),
+    ]);
+  });
+
   it.each([
     ['{}escaped', 'escaped'],
     ['{}{x:Type Button}', '{x:Type Button}'],

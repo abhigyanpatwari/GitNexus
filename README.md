@@ -1,4 +1,4 @@
-# GitNexus (Akon Labs)
+# GitNexus
 
 <div align="center">
 
@@ -34,7 +34,6 @@
   <p>
     💬 <a href="https://discord.gg/MgJrmsqr62">Discord</a> ·
     🌐 <a href="https://gitnexus.vercel.app">Web UI</a> ·
-    🏢 <a href="https://akonlabs.com">Enterprise (SaaS & self-hosted)</a>
   </p>
 
 </div>

@@ -191,6 +191,15 @@ export interface RegistryEntry {
   branches?: BranchSummary[];
 }
 
+/** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
+export const findRegistryEntryByRepoPath = (
+  entries: readonly RegistryEntry[],
+  repoPath: string,
+): RegistryEntry | undefined => {
+  const repoKey = canonicalizePath(repoPath);
+  return entries.find((entry) => registryPathEquals(canonicalizePath(entry.path), repoKey));
+};
+
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
@@ -839,6 +848,13 @@ export interface RegisterRepoOptions {
    */
   name?: string;
   /**
+   * Best-effort notification after an explicit alias change has been committed
+   * to the registry. Invoked after the registry lock is released. Callback
+   * failures are ignored: reporting must not turn a successful registry write
+   * into an apparent transaction failure.
+   */
+  onRename?: (previousName: string, nextName: string) => void | Promise<void>;
+  /**
    * Allow two DIFFERENT repo paths to register under the same alias
    * (#829). Mapped from the `--allow-duplicate-name` CLI flag.
    *
@@ -926,6 +942,11 @@ const hasCustomAlias = (entry: RegistryEntry, inferredName: string | null): bool
   return true;
 };
 
+type RegisterRepoUnlockedResult = {
+  name: string;
+  rename?: { previousName: string; nextName: string };
+};
+
 /**
  * Register (add or update) a repo in the global registry.
  * Called after `gitnexus analyze` completes.
@@ -954,7 +975,7 @@ const registerRepoUnlocked = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<string> => {
+): Promise<RegisterRepoUnlockedResult> => {
   // Preserve the caller's chosen path form in the registry — don't
   // canonicalise at write time. This matters for two reasons:
   //   1. `list` and error messages show the path the user actually
@@ -1151,14 +1172,28 @@ const registerRepoUnlocked = async (
   }
 
   await writeRegistry(fresh);
-  return name;
+  const rename =
+    opts?.name !== undefined && freshExisting && freshExisting.name !== name
+      ? { previousName: freshExisting.name, nextName: name }
+      : undefined;
+  return { name, ...(rename ? { rename } : {}) };
 };
 
 export const registerRepo = async (
   repoPath: string,
   meta: RepoMeta,
   opts?: RegisterRepoOptions,
-): Promise<string> => withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
+): Promise<string> => {
+  const { name, rename } = await withRegistryLock(() => registerRepoUnlocked(repoPath, meta, opts));
+  if (rename) {
+    try {
+      await opts?.onRename?.(rename.previousName, rename.nextName);
+    } catch {
+      // The rename is already durable; observer failures cannot roll it back.
+    }
+  }
+  return name;
+};
 
 /**
  * Remove a repo from the global registry.

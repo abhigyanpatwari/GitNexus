@@ -212,7 +212,7 @@ describe('persisted XAML declarations (#3202)', () => {
         expect(
           queries.mock.calls.some(
             ([, statement]) =>
-              statement.includes(predicate) && statement.includes('labels(n) AS type'),
+              statement.includes(predicate) && statement.includes('labels(n) AS nodeLabels'),
           ),
         ).toBe(true);
       } finally {

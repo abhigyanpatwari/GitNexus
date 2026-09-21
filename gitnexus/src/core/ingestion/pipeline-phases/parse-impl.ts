@@ -1907,6 +1907,10 @@ export async function runChunkedParseAndResolve(
       files: routeResolutionFiles,
       resolveImportTarget: resolveRouteImportTarget,
       isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
+      nodeStartLine: (id) => {
+        const n = graph.getNode(id);
+        return typeof n?.properties.startLine === 'number' ? n.properties.startLine : undefined;
+      },
     },
   );
   return {

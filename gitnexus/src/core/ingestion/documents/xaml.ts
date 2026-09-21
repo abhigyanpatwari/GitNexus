@@ -6,11 +6,38 @@ const DIRECTIVES = new Set(['Name', 'Key', 'Class']);
 const META = XMLParser.getMetaDataSymbol() as symbol;
 type XmlNode = Record<string, unknown> & { [key: symbol]: XMLMetaData | undefined };
 
+function containsDoctypeDeclaration(source: string): boolean {
+  let cursor = 0;
+  while ((cursor = source.indexOf('<', cursor)) !== -1) {
+    if (source.startsWith('<!--', cursor)) {
+      const end = source.indexOf('-->', cursor + 4);
+      if (end === -1) return false;
+      cursor = end + 3;
+      continue;
+    }
+    if (source.startsWith('<![CDATA[', cursor)) {
+      const end = source.indexOf(']]>', cursor + 9);
+      if (end === -1) return false;
+      cursor = end + 3;
+      continue;
+    }
+    if (source.startsWith('<?', cursor)) {
+      const end = source.indexOf('?>', cursor + 2);
+      if (end === -1) return false;
+      cursor = end + 2;
+      continue;
+    }
+    if (/^<!DOCTYPE\b/i.test(source.slice(cursor))) return true;
+    cursor++;
+  }
+  return false;
+}
+
 export function extractXamlDeclarations(source: string): DocumentDeclaration[] {
   // fast-xml-parser normalizes newlines before computing its metadata offsets.
   source = source.replace(/\r\n?/g, '\n');
   // Repository documents are untrusted. Never resolve DTDs or expand entities.
-  if (/<!DOCTYPE\b/i.test(source)) throw new Error('DTD declarations are not supported');
+  if (containsDoctypeDeclaration(source)) throw new Error('DTD declarations are not supported');
   if (XMLValidator.validate(source) !== true) {
     throw new Error('Invalid XML');
   }

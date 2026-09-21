@@ -11,7 +11,10 @@
  * `@reference.inherits` captures in each language's `languages/<lang>/captures.ts`.
  */
 
-import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from './ts-js-hoc-utils.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -186,6 +189,183 @@ export const TYPESCRIPT_QUERIES = `
 (pair
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
+
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/typescript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/typescript/query.ts so both
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/typescript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
@@ -395,6 +575,11 @@ export const TYPESCRIPT_QUERIES = `
     (member_expression
       property: (property_identifier) @call.name))
   (type_arguments)) @call
+
+; NOTE: Curried applications f(x)(y) are deliberately not anchored — the inner
+; f(x) is captured by the plain call pattern above, and anchoring the outer
+; application would mis-attribute its arguments to f (wrong arity/argument
+; types for overload resolution).
 
 ; Constructor calls: new Foo()
 (new_expression
@@ -776,6 +961,183 @@ export const JAVASCRIPT_QUERIES = `
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
 
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/javascript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/javascript/query.ts so both
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/javascript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; See TYPESCRIPT_QUERIES section above for the full rationale (issue #1166
 ; follow-up — covers forwardRef / memo / useCallback / useMemo / observer
@@ -883,9 +1245,9 @@ export const JAVASCRIPT_QUERIES = `
     value: (call_expression
       function: (member_expression
         property: (property_identifier) @callee)
-      arguments: (arguments
+        arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (variable_declaration
   (variable_declarator
@@ -895,7 +1257,7 @@ export const JAVASCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped default exports (JS parity with TS patterns above).
  (export_statement
