@@ -67,6 +67,13 @@ describe('isAllowedOrigin: vercel.app', () => {
     expect(isAllowedOrigin('https://gitnexus.vercel.app')).toBe(true);
   });
 
+  it('allows gitnexus-web project deployments on vercel.app', () => {
+    expect(isAllowedOrigin('https://gitnexus-web.vercel.app')).toBe(true);
+    expect(
+      isAllowedOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app'),
+    ).toBe(true);
+  });
+
   it('rejects other vercel.app subdomains', () => {
     expect(isAllowedOrigin('https://evil.vercel.app')).toBe(false);
   });

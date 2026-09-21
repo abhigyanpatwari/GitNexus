@@ -110,6 +110,52 @@ export interface JobStatus {
   completedAt?: number;
 }
 
+/** Snapshot from GET /api/ops — execution metrics for the ops dashboard. */
+export interface OpsLaneMetrics {
+  total: number;
+  active: number;
+  queued: number;
+  complete: number;
+  failed: number;
+  byStatus: Record<JobStatus['status'], number>;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+  activeProgressSum: number;
+}
+
+export interface OpsJobView extends JobStatus {
+  lane: 'analyze' | 'embed';
+  branch?: string;
+  retryCount: number;
+  durationMs: number;
+  partial?: {
+    kind: 'embedding-partial';
+    pendingNodeCount: number;
+    nodesProcessed: number;
+  };
+}
+
+export interface OpsSnapshot {
+  generatedAt: number;
+  uptimeMs: number;
+  health: 'ok';
+  server: {
+    version: string;
+    launchContext: string;
+    nodeVersion: string;
+    latestVersion?: string;
+    updateAvailable?: boolean;
+  };
+  analyze: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  embed: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  totals: {
+    jobs: number;
+    active: number;
+    failed: number;
+    complete: number;
+  };
+}
+
 export class BackendError extends Error {
   constructor(
     message: string,
@@ -1068,6 +1114,31 @@ export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
   );
   await assertOk(response);
   return response.json() as Promise<JobStatus>;
+};
+
+/** Fetch the ops / execution metrics snapshot. */
+export const fetchOpsSnapshot = async (): Promise<OpsSnapshot> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/ops`, {}, 5_000);
+  await assertOk(response);
+  return response.json() as Promise<OpsSnapshot>;
+};
+
+/**
+ * Stream ops snapshots via SSE (≈1 Hz). Falls back callers should use
+ * `fetchOpsSnapshot` polling when the stream cannot be established.
+ */
+export const streamOpsSnapshot = (
+  onSnapshot: (snapshot: OpsSnapshot) => void,
+  onError: (error: string) => void,
+): AbortController => {
+  return streamSSE<OpsSnapshot>(
+    `${_backendUrl}/api/ops/stream`,
+    {
+      onMessage: onSnapshot,
+      onError,
+    },
+    { maxRetries: Infinity, baseDelayMs: 1_000, capDelayMs: 5_000, retryOnHttpError: true },
+  );
 };
 
 /** Cancel a running analysis job. */

@@ -105,6 +105,7 @@ import {
   buildServerInfo,
   createServeUpdateController,
 } from './update-controller.js';
+import { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
 
 export {
   bindServeUpdateControllerLifecycle,
@@ -113,6 +114,7 @@ export {
   type ServerInfoResponse,
   type ServeUpdateController,
 } from './update-controller.js';
+export { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -125,7 +127,8 @@ export {
  *     10.0.0.0/8      → 10.x.x.x
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
- * - https://gitnexus.vercel.app — the deployed GitNexus web UI
+ * - https://gitnexus.vercel.app and https://gitnexus-web*.vercel.app —
+ *   first-party GitNexus web UI deployments (ops dashboard included)
  * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
  *   always, and on scheme and port when the configured value carries them
  *
@@ -146,7 +149,7 @@ export const isAllowedOrigin = (origin: string | undefined): boolean => {
     origin === 'http://127.0.0.1' ||
     origin.startsWith('http://[::1]:') ||
     origin === 'http://[::1]' ||
-    origin === 'https://gitnexus.vercel.app'
+    isGitNexusVercelOrigin(origin)
   ) {
     return true;
   }
@@ -954,6 +957,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   const app = express();
   app.disable('x-powered-by');
+  const serverStartedAt = Date.now();
 
   // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
   // req.ip, and so the per-IP rate limiter, resolves through this.
@@ -2370,6 +2374,47 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     }
     embedJobManager.cancelJob(jobId, 'Cancelled by user');
     res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
+  });
+
+  // GET /api/ops — realtime execution snapshot for the ops dashboard.
+  // In-memory only (analyze + embed JobManagers); no git/fs work, safe to poll.
+  app.get('/api/ops', (_req, res) => {
+    res.json(
+      buildOpsSnapshot({
+        analyzeJobs: jobManager.listJobs(),
+        embedJobs: embedJobManager.listJobs(),
+        serverStartedAt,
+        server: buildServerInfo(updateController.snapshot()),
+      }),
+    );
+  });
+
+  // GET /api/ops/stream — SSE push of the same snapshot every second.
+  app.get('/api/ops/stream', (req, res) => {
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.flushHeaders();
+
+    const push = () => {
+      const snapshot = buildOpsSnapshot({
+        analyzeJobs: jobManager.listJobs(),
+        embedJobs: embedJobManager.listJobs(),
+        serverStartedAt,
+        server: buildServerInfo(updateController.snapshot()),
+      });
+      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+    };
+
+    push();
+    const interval = setInterval(push, 1_000);
+    const keepAlive = setInterval(() => res.write(':ping\n\n'), 15_000);
+    req.on('close', () => {
+      clearInterval(interval);
+      clearInterval(keepAlive);
+    });
   });
 
   // ── Web UI (served at root) ───────────────────────────────────────
