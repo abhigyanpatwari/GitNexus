@@ -146,13 +146,20 @@ export const ExecutionDashboard = () => {
   const [lastTick, setLastTick] = useState<number | null>(null);
 
   const applyBackend = useCallback((raw: string) => {
-    const url = normalizeServerUrl(raw.trim() || DEFAULT_BACKEND_URL);
-    setBackendUrl(url);
-    setBackendInput(url);
-    const next = new URL(window.location.href);
-    next.searchParams.set('view', 'ops');
-    next.searchParams.set('server', url);
-    window.history.replaceState({}, '', next.toString());
+    try {
+      const url = normalizeServerUrl(raw.trim() || DEFAULT_BACKEND_URL);
+      setBackendUrl(url);
+      setBackendInput(url);
+      const next = new URL(window.location.href);
+      next.searchParams.set('view', 'ops');
+      next.searchParams.set('server', url);
+      window.history.replaceState({}, '', next.toString());
+      setError(null);
+    } catch (err) {
+      setLive(false);
+      setStreamMode('offline');
+      setError(err instanceof Error ? err.message : 'Invalid backend URL');
+    }
   }, []);
 
   useEffect(() => {
@@ -180,6 +187,7 @@ export const ExecutionDashboard = () => {
       const tick = async () => {
         try {
           const status = await probeBackendStatus();
+          if (cancelled) return;
           if (status !== 'ok') {
             setLive(false);
             setError(status === 'unauthorized' ? 'Backend requires auth' : 'Backend unreachable');

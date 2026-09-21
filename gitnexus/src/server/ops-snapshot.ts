@@ -86,13 +86,23 @@ export const serializeOpsJob = (
   now: number = Date.now(),
 ): OpsJobView => {
   const end = job.completedAt ?? now;
+  // Prefer the registered short name. Fall back to a basename only — never
+  // emit raw repoUrl/repoPath on the unauthenticated ops feed.
+  const repoName =
+    job.repoName ||
+    (job.repoUrl
+      ? job.repoUrl
+          .replace(/\/$/, '')
+          .replace(/\.git$/i, '')
+          .split('/')
+          .pop()
+      : undefined) ||
+    (job.repoPath ? job.repoPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() : undefined);
   return {
     id: job.id,
     lane,
     status: job.status,
-    repoUrl: job.repoUrl,
-    repoPath: job.repoPath,
-    repoName: job.repoName,
+    repoName,
     branch: job.branch,
     progress: job.progress,
     error: job.error,
@@ -177,7 +187,7 @@ export const buildOpsSnapshot = (input: {
   };
 };
 
-/** True when Origin is a first-party GitNexus Vercel deployment host. */
+/** True when Origin is an exact first-party GitNexus Vercel production host. */
 export const isGitNexusVercelOrigin = (origin: string): boolean => {
   let parsed: URL;
   try {
@@ -187,9 +197,8 @@ export const isGitNexusVercelOrigin = (origin: string): boolean => {
   }
   if (parsed.protocol !== 'https:') return false;
   const host = parsed.hostname.toLowerCase();
-  if (host === 'gitnexus.vercel.app') return true;
-  // Project deployments: gitnexus-web.vercel.app and preview
-  // gitnexus-web-git-<branch>-<team>.vercel.app / gitnexus-web-<hash>-<team>.vercel.app
-  if (!host.endsWith('.vercel.app')) return false;
-  return host === 'gitnexus-web.vercel.app' || host.startsWith('gitnexus-web-');
+  // Exact hosts only — a prefix like `gitnexus-web-` would also match any
+  // attacker-controlled Vercel project named `gitnexus-web-*`. Preview
+  // deployments should set GITNEXUS_PUBLIC_ORIGIN instead.
+  return host === 'gitnexus.vercel.app' || host === 'gitnexus-web.vercel.app';
 };

@@ -127,8 +127,9 @@ export { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
  *     10.0.0.0/8      → 10.x.x.x
  *     172.16.0.0/12   → 172.16.x.x – 172.31.x.x
  *     192.168.0.0/16  → 192.168.x.x
- * - https://gitnexus.vercel.app and https://gitnexus-web*.vercel.app —
- *   first-party GitNexus web UI deployments (ops dashboard included)
+ * - https://gitnexus.vercel.app and https://gitnexus-web.vercel.app —
+ *   first-party GitNexus web UI production hosts (ops dashboard included).
+ *   Preview deployments: set GITNEXUS_PUBLIC_ORIGIN.
  * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
  *   always, and on scheme and port when the configured value carries them
  *
@@ -2380,7 +2381,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // GET /api/ops — realtime execution snapshot for the ops dashboard.
   // In-memory only (analyze + embed JobManagers); no git/fs work, safe to poll.
-  app.get('/api/ops', (_req, res) => {
+  // Rate-limited: snapshot serialization is cheap per call but unbounded
+  // polling from many clients is not.
+  app.get('/api/ops', createRouteLimiter({ limit: 60 }), (_req, res) => {
     res.json(
       buildOpsSnapshot({
         analyzeJobs: jobManager.listJobs(),
@@ -2391,8 +2394,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     );
   });
 
+  // Cap concurrent ops SSE streams — each holds two intervals and serializes
+  // the full job list every second for as long as the client stays connected.
+  let opsStreamConnections = 0;
+  const MAX_OPS_STREAM_CONNECTIONS = 8;
+
   // GET /api/ops/stream — SSE push of the same snapshot every second.
-  app.get('/api/ops/stream', (req, res) => {
+  app.get('/api/ops/stream', createRouteLimiter({ limit: 30 }), (req, res) => {
+    if (opsStreamConnections >= MAX_OPS_STREAM_CONNECTIONS) {
+      res.status(429).json({ error: 'Too many ops stream connections' });
+      return;
+    }
+    opsStreamConnections += 1;
+
     res.set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -2413,10 +2427,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     push();
     const interval = setInterval(push, 1_000);
     const keepAlive = setInterval(() => res.write(':ping\n\n'), 15_000);
-    req.on('close', () => {
+    const release = () => {
       clearInterval(interval);
       clearInterval(keepAlive);
-    });
+      opsStreamConnections = Math.max(0, opsStreamConnections - 1);
+    };
+    req.on('close', release);
   });
 
   // ── Web UI (served at root) ───────────────────────────────────────

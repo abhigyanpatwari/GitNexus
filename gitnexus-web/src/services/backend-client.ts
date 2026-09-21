@@ -338,8 +338,12 @@ export function streamSSE<T = unknown>(
           }
         }
 
-        // Stream ended without terminal event — try to reconnect
-        scheduleRetry(retryCount);
+        // Stream ended without terminal event — try to reconnect; when the
+        // retry budget is spent, surface the same onError path the catch arm
+        // already uses so callers (e.g. ops dashboard → poll fallback) can run.
+        if (!scheduleRetry(retryCount)) {
+          handlers.onError?.('Stream ended');
+        }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         // Network error — attempt reconnect with backoff
@@ -1137,7 +1141,8 @@ export const streamOpsSnapshot = (
       onMessage: onSnapshot,
       onError,
     },
-    { maxRetries: Infinity, baseDelayMs: 1_000, capDelayMs: 5_000, retryOnHttpError: true },
+    // Finite retries so onError can fire and the dashboard falls back to poll.
+    { maxRetries: 3, baseDelayMs: 1_000, capDelayMs: 5_000, retryOnHttpError: true },
   );
 };
 

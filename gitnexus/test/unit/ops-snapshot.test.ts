@@ -25,6 +25,9 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze', now);
     expect(view.durationMs).toBe(5_000);
     expect(view.lane).toBe('analyze');
+    expect(view.repoName).toBe('repo');
+    expect(view.repoUrl).toBeUndefined();
+    expect(view.repoPath).toBeUndefined();
   });
 
   it('summarizes lane metrics including avg duration of terminal jobs', () => {
@@ -90,20 +93,21 @@ describe('buildOpsSnapshot', () => {
 });
 
 describe('isGitNexusVercelOrigin', () => {
-  it('allows official and project vercel hosts', () => {
+  it('allows exact official vercel hosts only', () => {
     expect(isGitNexusVercelOrigin('https://gitnexus.vercel.app')).toBe(true);
     expect(isGitNexusVercelOrigin('https://gitnexus-web.vercel.app')).toBe(true);
+  });
+
+  it('rejects preview and unrelated vercel hosts', () => {
     expect(
       isGitNexusVercelOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app'),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isGitNexusVercelOrigin(
         'https://gitnexus-web-git-local-bridge-v1-mesquitafelipe571-5486.vercel.app',
       ),
-    ).toBe(true);
-  });
-
-  it('rejects unrelated vercel and non-https hosts', () => {
+    ).toBe(false);
+    expect(isGitNexusVercelOrigin('https://gitnexus-web-evil.vercel.app')).toBe(false);
     expect(isGitNexusVercelOrigin('https://evil.vercel.app')).toBe(false);
     expect(isGitNexusVercelOrigin('https://gitnexus-web-attacker.com')).toBe(false);
     expect(isGitNexusVercelOrigin('http://gitnexus-web.vercel.app')).toBe(false);
