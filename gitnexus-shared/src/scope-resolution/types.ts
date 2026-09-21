@@ -379,6 +379,11 @@ type ParsedImportSyntax =
        *  deferred — `use` does not execute
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
+      /**
+       * C/C++ specific. Whether the import is a system header `#include <...>` vs `#include "..."`.
+       * Used during resolution to gate suffix-match fallback.
+       */
+      readonly isSystem?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at

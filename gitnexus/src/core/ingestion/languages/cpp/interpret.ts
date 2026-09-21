@@ -14,9 +14,7 @@ export function interpretCppImport(captures: CaptureMatch): ParsedImport | null 
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
-  // System headers are not resolved to local files
-  if (captures['@import.system'] !== undefined) return null;
-
+  const isSystem = captures['@import.system'] !== undefined;
   const kind = captures['@import.kind']?.text;
 
   if (kind === 'named') {
@@ -27,7 +25,7 @@ export function interpretCppImport(captures: CaptureMatch): ParsedImport | null 
   }
 
   // #include or using namespace — wildcard import
-  return { kind: 'wildcard', targetRaw: source };
+  return { kind: 'wildcard', targetRaw: source, isSystem };
 }
 
 /**

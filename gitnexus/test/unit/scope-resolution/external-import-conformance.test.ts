@@ -342,25 +342,43 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
   [
     SupportedLanguages.C,
     {
+      // Workspace has a local `src/stdio.h` that shadows the system header.
+      // `#include <stdio.h>` (angle-bracket, isSystem:true) must NOT resolve to
+      // it. `#include "./stdio.h"` (quoted relative form, isSystem:false) from
+      // `src/main.c` DOES reach it via sibling lookup — the decoy-reachability
+      // proof. Using './stdio.h' for reachesDecoy vs 'stdio.h' for external lets
+      // the parsedImport factory distinguish the two arms.
       files: ['src/stdio.h', 'include/util.h', 'src/main.c'],
       fromFile: 'src/main.c',
       resolutionConfig: undefined,
       external: 'stdio.h',
       decoy: 'src/stdio.h',
-      reachesDecoy: 'util.h',
+      reachesDecoy: './stdio.h',
+      parsedImport: (targetRaw) => ({
+        kind: 'wildcard',
+        targetRaw,
+        // Bare name → angle-bracket system include; relative path → quoted local.
+        isSystem: !targetRaw.startsWith('.'),
+      }),
     },
   ],
   [
     SupportedLanguages.CPlusPlus,
     {
+      // Same shape as C: a local `src/cstdio.h` that shadows the C++ system
+      // header. `#include <cstdio.h>` (isSystem:true) must NOT resolve to it;
+      // `#include "./cstdio.h"` (isSystem:false) from `src/main.cpp` DOES.
       files: ['src/cstdio.h', 'include/util.hpp', 'src/main.cpp'],
       fromFile: 'src/main.cpp',
       resolutionConfig: undefined,
-      // `cstdio` with no extension would miss the decoy on spelling alone and
-      // post a pass that measures nothing; the header spelling is the real test.
       external: 'cstdio.h',
       decoy: 'src/cstdio.h',
-      reachesDecoy: 'util.hpp',
+      reachesDecoy: './cstdio.h',
+      parsedImport: (targetRaw) => ({
+        kind: 'wildcard',
+        targetRaw,
+        isSystem: !targetRaw.startsWith('.'),
+      }),
     },
   ],
   [
@@ -417,8 +435,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
-  [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
-  [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
 ]);
 
 /**

@@ -113,7 +113,16 @@ export const cppScopeResolver: ScopeResolver = {
     return scanCppHeaderFiles(repoPath);
   },
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    // A gate on the angle/quote form alone closes the reported case (#2965).
+    // System headers (#include <x.h>) search only the implementation-defined
+    // system paths and the configured include path. We do not parse CMake/Make
+    // include paths today, so we refuse them rather than guessing across the
+    // whole repo.
+    if (context?.parsedImport?.kind === 'wildcard' && context.parsedImport.isSystem) {
+      return null;
+    }
+
     // Augment allFilePaths with header files discovered via loadResolutionConfig.
     // C++ .h/.hpp/.hxx/.hh files may be classified differently by language
     // detection but are importable from .cpp files via #include.

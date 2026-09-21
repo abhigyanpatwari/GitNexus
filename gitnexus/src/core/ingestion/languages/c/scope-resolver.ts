@@ -81,7 +81,16 @@ export const cScopeResolver: ScopeResolver = {
   // this process. Runs BEFORE `populateOwners`.
   applyCaptureSideChannel: applyCStaticLinkageSideChannel,
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    // A gate on the angle/quote form alone closes the reported case (#2965).
+    // System headers (#include <x.h>) search only the implementation-defined
+    // system paths and the configured include path. We do not parse CMake/Make
+    // include paths today, so we refuse them rather than guessing across the
+    // whole repo.
+    if (context?.parsedImport?.kind === 'wildcard' && context.parsedImport.isSystem) {
+      return null;
+    }
+
     // Augment allFilePaths with .h files discovered via loadResolutionConfig
     // since the phase only passes .c files to the C resolver but #include
     // targets .h files classified as C++ in language detection.
