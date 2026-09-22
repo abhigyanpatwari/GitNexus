@@ -947,7 +947,10 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const exactFile = fileRows.find((r: any) => rowPath(r)?.toLowerCase() === targetLower);
         const suffixFiles = exactFile
           ? []
-          : fileRows.filter((r: any) => rowPath(r)?.toLowerCase().endsWith(targetLower));
+          : fileRows.filter((r: any) => {
+              const filePath = rowPath(r)?.toLowerCase();
+              return filePath === targetLower || filePath?.endsWith(`/${targetLower}`) === true;
+            });
         const fileMatch = exactFile ?? (suffixFiles.length === 1 ? suffixFiles[0] : undefined);
         if (suffixFiles.length > 1) {
           const paths = suffixFiles.map((r: any) => rowPath(r)).filter(Boolean) as string[];
@@ -957,13 +960,17 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           targetNode = fileMatch;
         } else {
           const distinctPaths = [...new Set<string>(allPaths)];
-          // LIMIT 10 is a cap, not a complete result set. One path among the
-          // first ten rows does not mean the CONTAINS search is unique.
-          if (targetResults.length >= 10 || distinctPaths.length !== 1) {
+          const uniquePath = distinctPaths.length === 1 ? distinctPaths[0] : undefined;
+          const uniqueLower = uniquePath?.toLowerCase();
+          const uniqueIsBounded =
+            uniqueLower === targetLower || uniqueLower?.endsWith(`/${targetLower}`) === true;
+          // LIMIT 10 is a cap, not a complete result set. One CONTAINS hit
+          // that is only a filename substring (src/mylib/foo.ts vs lib/foo.ts)
+          // must not be rebound as a unique File.
+          if (!uniqueIsBounded || targetResults.length >= 10 || !uniquePath) {
             return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
           }
-          const pathOnly = distinctPaths[0];
-          targetNode = { id: `file:${pathOnly}`, nodeType: 'File', filePath: pathOnly };
+          targetNode = { id: `file:${uniquePath}`, nodeType: 'File', filePath: uniquePath };
         }
       }
 

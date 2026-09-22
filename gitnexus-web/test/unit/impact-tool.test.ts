@@ -206,4 +206,25 @@ describe('Graph-RAG impact risk contract', () => {
     expect(output).toContain('enrichment-truncated');
     expect(output).not.toContain('enrichment-budget-exhausted');
   });
+
+  it('does not treat a filename substring as a unique File suffix', async () => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes('filePath CONTAINS')) {
+        return [
+          { id: 'file-mylib', nodeType: 'File', filePath: 'src/mylib/foo.ts' },
+          { id: 'fn-mylib', nodeType: 'Function', filePath: 'src/mylib/foo.ts' },
+        ];
+      }
+      return [];
+    });
+
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'lib/foo.ts',
+      direction: 'upstream',
+      maxDepth: 1,
+    });
+
+    expect(output).toContain('AMBIGUOUS TARGET');
+    expect(output).toContain('lib/foo.ts');
+  });
 });
