@@ -1718,14 +1718,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // Pass `req` so resolveRepo can abort its hold-queue wait when the client
     // disconnects (close listener is only registered when `req` is supplied).
     const requested = requestedRepo(req);
+    let entry;
     if (!requested) {
       const omitted = resolveOmittedRepoSelection(await listRegisteredRepos({ validate: true }));
       if (omitted.ok === false) {
         res.status(omitted.status).json({ error: omitted.error });
         return null;
       }
+      // Keep this snapshot's sole entry. resolveRepo(undefined) would list
+      // again and map an omitted name to repos[0] of a newer registry.
+      entry = await validateResolvedRepoEntry(omitted.entry);
+    } else {
+      entry = await resolveRepo(requested, false, req);
     }
-    const entry = await resolveRepo(requested, false, req);
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
       return null;

@@ -14,6 +14,7 @@ describe('JobManager', () => {
 
   afterEach(() => {
     manager.dispose();
+    vi.useRealTimers();
   });
 
   it('creates a job with queued status', () => {
@@ -272,7 +273,6 @@ describe('JobManager', () => {
     expect(signals).toEqual([]);
     vi.advanceTimersByTime(15_000);
     expect(signals).toEqual(['SIGKILL']);
-    vi.useRealTimers();
   });
 
   it('cancelJob returns false for terminal jobs', () => {

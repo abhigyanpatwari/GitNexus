@@ -40,7 +40,7 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoUrl).toBeUndefined();
   });
 
-  it('redacts https userinfo from job.error on the public ops view', () => {
+  it('redacts the full repository URL from job.error on the public ops view', () => {
     const job = manager.createJob({
       repoUrl: 'https://x-access-token:ghs_secret@github.com/user/repo.git',
     });
@@ -49,12 +49,13 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
       error: 'fatal: unable to access https://x-access-token:ghs_secret@github.com/user/repo.git/',
     });
     const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
-    expect(view.error).toBe('fatal: unable to access https://github.com/user/repo.git/');
+    expect(view.error).toBe('fatal: unable to access [repo]');
     expect(JSON.stringify(view)).not.toContain('ghs_secret');
     expect(JSON.stringify(view)).not.toContain('x-access-token');
+    expect(JSON.stringify(view)).not.toContain('github.com');
   });
 
-  it('redacts https userinfo from progress.message on the public ops view', () => {
+  it('redacts the full repository URL from progress.message on the public ops view', () => {
     const job = manager.createJob({
       repoUrl: 'https://x-access-token:ghs_secret@github.com/user/repo.git',
     });
@@ -67,9 +68,29 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
       },
     });
     const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
-    expect(view.progress.message).toBe('Cloning https://github.com/user/repo.git...');
+    expect(view.progress.message).toBe('Cloning [repo]...');
     expect(JSON.stringify(view)).not.toContain('ghs_secret');
     expect(JSON.stringify(view)).not.toContain('x-access-token');
+    expect(JSON.stringify(view)).not.toContain('github.com');
+  });
+
+  it('redacts host, path, and query from a credential-stripped clone URL', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://git.example/private/repo?token=x',
+    });
+    manager.updateJob(job.id, {
+      status: 'cloning',
+      progress: {
+        phase: 'cloning',
+        percent: 0,
+        message: 'Cloning https://git.example/private/repo?token=x',
+      },
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.progress.message).toBe('Cloning [repo]');
+    expect(JSON.stringify(view)).not.toContain('git.example');
+    expect(JSON.stringify(view)).not.toContain('private/repo');
+    expect(JSON.stringify(view)).not.toContain('token=x');
   });
 
   it('basenames Windows-like drive paths instead of emitting the full path', () => {

@@ -115,12 +115,15 @@ const publicRepoNameFromPath = (repoPath: string | undefined): string | undefine
 };
 
 /**
- * Mid-string scrub for unauthenticated ops/poll payloads. `stripUrlCredentials`
- * only matches at ^; clone progress and worker errors embed the URL after a
- * prefix ("Cloning https://user:pass@…", "fatal: unable to access https://…").
+ * Mid-string scrub for unauthenticated ops/poll payloads. Clone progress and
+ * worker errors embed the URL after a prefix ("Cloning https://…"). Replace
+ * the whole HTTP(S) URL — host, path, and query — not only userinfo.
  */
 export const redactPublicText = (text: string): string =>
-  text.replace(/(https?:\/\/)[^/\s]*@/gi, '$1');
+  text.replace(/https?:\/\/[^\s]+/gi, (raw) => {
+    const trailing = raw.match(/(\.{2,}|[),;]+)$/);
+    return trailing ? `[repo]${trailing[0]}` : '[repo]';
+  });
 
 /**
  * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via

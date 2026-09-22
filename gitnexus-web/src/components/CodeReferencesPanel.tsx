@@ -278,6 +278,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       }
     }).then((entries) => {
       if (cancelled) {
+        // A repo switch already cleared the set and the replacement batch
+        // re-claimed still-present citation IDs. Do not delete those.
+        if (snippetRepoKeyRef.current !== repo) return;
         // Free only after settle so a mid-flight aiReferences append does not
         // start duplicate reads for the same ids. Re-schedule still-needed ones.
         let needsRetry = false;

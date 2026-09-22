@@ -198,9 +198,16 @@ export const ExecutionDashboard = () => {
       setLive(true);
     };
 
+    const stopPolling = () => {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+
     const startPolling = () => {
       if (cancelled) return;
-      if (pollTimer) clearInterval(pollTimer);
+      stopPolling();
       setStreamMode('poll');
       let polling = false;
       const tick = async () => {
@@ -245,6 +252,8 @@ export const ExecutionDashboard = () => {
 
       streamAbort = streamOpsSnapshot(
         (next) => {
+          // Safety poll may already be running after a transient REST miss.
+          stopPolling();
           setStreamMode('sse');
           ingest(next);
         },
@@ -272,7 +281,7 @@ export const ExecutionDashboard = () => {
 
     return () => {
       cancelled = true;
-      if (pollTimer) clearInterval(pollTimer);
+      stopPolling();
       streamAbort?.abort();
       stopHeartbeat?.();
     };
