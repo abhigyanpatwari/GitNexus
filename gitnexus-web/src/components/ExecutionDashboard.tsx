@@ -8,6 +8,7 @@ import {
   setBackendUrl,
   streamOpsSnapshot,
   type OpsJobView,
+  type OpsLaneMetrics,
   type OpsSnapshot,
 } from '../services/backend-client';
 import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
@@ -22,6 +23,32 @@ const STATUS_COLORS: Record<OpsJobView['status'], string> = {
   loading: 'text-violet-400',
   complete: 'text-emerald-400',
   failed: 'text-red-400',
+};
+
+const TONE_CLASS: Record<'default' | 'ok' | 'warn' | 'bad', string> = {
+  default: 'border-border-default text-text-primary',
+  ok: 'border-emerald-500/30 text-emerald-300',
+  warn: 'border-amber-500/30 text-amber-300',
+  bad: 'border-red-500/30 text-red-300',
+};
+
+const EMPTY_LANE_METRICS: OpsLaneMetrics = {
+  total: 0,
+  active: 0,
+  queued: 0,
+  complete: 0,
+  failed: 0,
+  byStatus: {
+    queued: 0,
+    cloning: 0,
+    analyzing: 0,
+    loading: 0,
+    complete: 0,
+    failed: 0,
+  },
+  avgDurationMs: null,
+  maxDurationMs: null,
+  activeProgressSum: 0,
 };
 
 const formatDuration = (ms: number): string => {
@@ -52,14 +79,7 @@ const MetricCard = ({
   hint?: string;
   tone?: 'default' | 'ok' | 'warn' | 'bad';
 }) => {
-  const toneClass =
-    tone === 'ok'
-      ? 'border-emerald-500/30 text-emerald-300'
-      : tone === 'warn'
-        ? 'border-amber-500/30 text-amber-300'
-        : tone === 'bad'
-          ? 'border-red-500/30 text-red-300'
-          : 'border-border-default text-text-primary';
+  const toneClass = TONE_CLASS[tone];
   return (
     <div className={`rounded-xl border bg-surface/80 px-4 py-3 ${toneClass}`}>
       <div className="text-[11px] tracking-wide text-text-muted uppercase">{label}</div>
@@ -72,7 +92,11 @@ const MetricCard = ({
 const JobRow = ({ job }: { job: OpsJobView }) => {
   const pct = Math.max(0, Math.min(100, job.progress.percent));
   return (
-    <div className="rounded-lg border border-border-subtle bg-elevated/60 px-3 py-2.5">
+    <div
+      className="rounded-lg border border-border-subtle bg-elevated/60 px-3 py-2.5"
+      data-testid="ops-job"
+      data-job-id={job.id}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-text-primary">
@@ -247,7 +271,6 @@ export const ExecutionDashboard = () => {
       const status = await probeBackendStatus();
       if (cancelled) return;
       if (status !== 'ok') {
-        setStreamMode('offline');
         setLive(false);
         setError(status === 'unauthorized' ? 'Backend requires auth' : 'Backend unreachable');
         startPolling();
@@ -304,7 +327,10 @@ export const ExecutionDashboard = () => {
   }, [snapshot]);
 
   return (
-    <div className="flex min-h-screen flex-col bg-void text-text-primary">
+    <div
+      className="flex min-h-screen flex-col bg-void text-text-primary"
+      data-testid="ops-dashboard"
+    >
       <header className="border-b border-border-subtle bg-deep/90 px-4 py-3 backdrop-blur">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3">
           <div>
@@ -384,50 +410,12 @@ export const ExecutionDashboard = () => {
           <LanePanel
             title="Analyze lane"
             jobs={snapshot?.analyze.jobs ?? []}
-            metrics={
-              snapshot?.analyze.metrics ?? {
-                total: 0,
-                active: 0,
-                queued: 0,
-                complete: 0,
-                failed: 0,
-                byStatus: {
-                  queued: 0,
-                  cloning: 0,
-                  analyzing: 0,
-                  loading: 0,
-                  complete: 0,
-                  failed: 0,
-                },
-                avgDurationMs: null,
-                maxDurationMs: null,
-                activeProgressSum: 0,
-              }
-            }
+            metrics={snapshot?.analyze.metrics ?? EMPTY_LANE_METRICS}
           />
           <LanePanel
             title="Embed lane"
             jobs={snapshot?.embed.jobs ?? []}
-            metrics={
-              snapshot?.embed.metrics ?? {
-                total: 0,
-                active: 0,
-                queued: 0,
-                complete: 0,
-                failed: 0,
-                byStatus: {
-                  queued: 0,
-                  cloning: 0,
-                  analyzing: 0,
-                  loading: 0,
-                  complete: 0,
-                  failed: 0,
-                },
-                avgDurationMs: null,
-                maxDurationMs: null,
-                activeProgressSum: 0,
-              }
-            }
+            metrics={snapshot?.embed.metrics ?? EMPTY_LANE_METRICS}
           />
         </div>
 

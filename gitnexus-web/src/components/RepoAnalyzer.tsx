@@ -190,6 +190,7 @@ function DoneState({ repoName }: { repoName: string }) {
       className="flex animate-fade-in flex-col items-center gap-3 py-4"
       role="status"
       aria-live="polite"
+      data-testid="analyze-done"
     >
       <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-emerald-500/30 bg-emerald-500/15 shadow-[0_0_20px_rgba(16,185,129,0.15)]">
         <Check className="h-6 w-6 text-emerald-400" />
