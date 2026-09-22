@@ -274,6 +274,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       // `terminalIpcSeen` is already true for that IPC, so a naive
       // "don't release on cancel error" would leak the lock.
       let holdLockUntilExit = false;
+      let childExited = false;
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks += chunk.toString();
         if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
@@ -336,6 +337,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             .then((settled) => {
               if (launchAborted(job.id)) {
                 jobManager.applyPendingCancel(job.id);
+                if (!childExited) holdLockUntilExit = true;
                 return false;
               }
               if (!settled) {
@@ -358,6 +360,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
               if (!readyToPublish) return;
               if (launchAborted(job.id)) {
                 jobManager.applyPendingCancel(job.id);
+                if (!childExited) holdLockUntilExit = true;
                 return;
               }
               // PARITY WITH THE CLI, which is what the IPC projection was added
@@ -434,7 +437,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
               });
             })
             .finally(() => {
-              releaseLockOnce();
+              if (!holdLockUntilExit) releaseLockOnce();
             });
         } else if (msg.type === 'error') {
           // Cancel path: the worker sends this IPC first, then
@@ -473,6 +476,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       });
 
       child.on('exit', (code) => {
+        childExited = true;
         const j = jobManager.getJob(job.id);
         if (!j || isTerminalJobStatus(j.status) || jobManager.hasPendingCancel(job.id)) {
           // (a) complete/error IPC is in flight (`terminalIpcSeen`) — that

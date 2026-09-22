@@ -230,6 +230,10 @@ test.describe('Analyze — other sources and token', () => {
 
     await expect(page.getByRole('button', { name: /Try again/ })).toBeVisible({ timeout: 120_000 });
     expect(posted).toMatchObject({ url: 'https://gitlab.com/gitnexus-e2e-missing/project' });
+    const failureText = page.locator('p.text-red-400');
+    await expect(failureText).toBeVisible();
+    await expect(failureText).not.toContainText('gitlab.com');
+    await expect(failureText).not.toContainText('gitnexus-e2e-missing');
     await capture(page, testInfo, '16-gitlab-failed');
     await assertNoLeaks(page);
   });

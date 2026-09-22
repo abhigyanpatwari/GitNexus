@@ -123,19 +123,15 @@ const lanes: Array<{ lane: Lane; route: string; manager: () => JobManager }> = [
 ];
 
 const fakeChild = () => {
-  let onExit: (() => void) | undefined;
   const child = {
     connected: true,
     exitCode: null,
     signalCode: null,
     send: () => true,
     kill: () => true,
-    on: (_event: string, listener: () => void) => {
-      onExit = listener;
-      return child;
-    },
+    on: () => child,
   };
-  return { child, exit: () => onExit?.() };
+  return child;
 };
 
 const invokeDelete = (route: string, jobId: string): { statusCode: number; body: any } => {
@@ -171,7 +167,7 @@ describe('DELETE analyze/embed cancel body matches JobManager', () => {
       const jobs = manager();
       const job = jobs.createJob({ repoPath: `/tmp/cancel-child-${lane}` });
       jobs.updateJob(job.id, { status: 'analyzing', repoName: `cancel-child-${lane}` });
-      jobs.registerChild(job.id, fakeChild().child as any);
+      jobs.registerChild(job.id, fakeChild() as any);
 
       const res = invokeDelete(route, job.id);
       const live = jobs.getJob(job.id);

@@ -274,6 +274,9 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(done?.error).toBe('Cancelled by user');
     expect(done?.error).not.toMatch(/finalization not visible/);
     expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+
+    child.emit('exit', 0);
     expect(releaseRepoLock).toHaveBeenCalledTimes(1);
   });
 
