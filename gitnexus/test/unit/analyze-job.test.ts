@@ -315,6 +315,64 @@ describe('JobManager', () => {
     expect(signals).toEqual(['SIGKILL']);
   });
 
+  it('dispose on Windows skips immediate SIGTERM and leaves the IPC grace timer', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.dispose();
+
+    expect(signals).toEqual([]);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGKILL']);
+    vi.restoreAllMocks();
+  });
+
+  it('dispose on Unix SIGTERMs after IPC and clears the grace timer', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.dispose();
+
+    expect(signals).toEqual(['SIGTERM']);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGTERM']);
+    vi.restoreAllMocks();
+  });
+
   it('cancelJob returns false for terminal jobs', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     manager.updateJob(job.id, { status: 'complete' });

@@ -338,16 +338,22 @@ export class JobManager {
   }
 
   dispose() {
-    // Kill all active child processes. Server shutdown cannot wait for a
-    // grace period, but the IPC request still goes first so a worker that
-    // checks in between gets the chance to stop at a safe point.
+    // IPC first so a worker that checks in can stop at a safe point.
+    // On Windows `child.kill('SIGTERM')` is TerminateProcess — skip that
+    // immediate kill and leave the 15s grace timer to SIGKILL. On Unix,
+    // SIGTERM after IPC is cooperative, so the grace timers can be dropped.
+    const windows = process.platform === 'win32';
     for (const [jobId, child] of this.children) {
       this.requestChildShutdown(jobId, child);
-      child.kill('SIGTERM');
+      if (!windows) {
+        child.kill('SIGTERM');
+      }
     }
     this.children.clear();
-    for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
-    this.cancelGraceTimers.clear();
+    if (!windows) {
+      for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
+      this.cancelGraceTimers.clear();
+    }
     this.pendingCancelReasons.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
