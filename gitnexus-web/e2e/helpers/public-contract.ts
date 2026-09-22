@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://127.0.0.1:5173';
+export const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
 export const TOKEN_LEAK = 'ghs_secret_e2e_token';
 export const MISSING_GITHUB = 'https://github.com/gitnexus-e2e-missing/no-such-repo';
 
@@ -269,31 +269,46 @@ export async function bindBackend(page: Page, backendUrl: string): Promise<void>
   }, backendUrl);
 }
 
-function frontendHref(pathAndQuery: string): string {
-  const base = FRONTEND_URL.endsWith('/') ? FRONTEND_URL : `${FRONTEND_URL}/`;
-  return new URL(pathAndQuery.replace(/^\//, ''), base).href;
+function frontendHref(base: string, pathAndQuery: string): string {
+  const normalized = base.endsWith('/') ? base : `${base}/`;
+  return new URL(pathAndQuery.replace(/^\//, ''), normalized).href;
+}
+
+const probeFrontend = (url: string) =>
+  fetch(url, { signal: AbortSignal.timeout(2_000) })
+    .then((r) => r.ok)
+    .catch(() => false);
+
+/** Prefer an explicit FRONTEND_URL; otherwise the first listener CI or local Vite bound. */
+async function resolveFrontendUrl(): Promise<string> {
+  if (process.env.FRONTEND_URL) return process.env.FRONTEND_URL;
+  for (const url of ['http://localhost:5173', 'http://127.0.0.1:5173']) {
+    if (await probeFrontend(url)) return url;
+  }
+  return FRONTEND_URL;
 }
 
 export async function openAnalyzeForm(page: Page): Promise<void> {
-  // Stay on the configured frontend (localStorage already has the backend).
+  // Stay on the reachable frontend (localStorage already has the backend).
   // `?server=` makes App auto-load the last graph and never show the form.
   // DropZone on `/` shows onboarding (0 repos) or landing + analyze (N repos).
-  await page.goto(frontendHref('/'));
+  await page.goto(frontendHref(await resolveFrontendUrl(), '/'));
   await expect(page.getByRole('tab', { name: 'GitHub URL' })).toBeVisible({ timeout: 30_000 });
 }
 
 export async function openOps(page: Page, backendUrl: string): Promise<void> {
-  await page.goto(frontendHref(`/?view=ops&server=${encodeURIComponent(backendUrl)}`));
+  await page.goto(
+    frontendHref(await resolveFrontendUrl(), `/?view=ops&server=${encodeURIComponent(backendUrl)}`),
+  );
   await expect(page.locator('[data-testid="ops-dashboard"]')).toBeVisible({ timeout: 20_000 });
 }
 
 /** Empty string means go; otherwise a skip reason (or throw under E2E=1). */
 export async function livePrereqSkipReason(): Promise<string> {
-  const probe = (url: string) =>
-    fetch(url, { signal: AbortSignal.timeout(2_000) })
-      .then((r) => r.ok)
-      .catch(() => false);
-  const frontendUp = (await probe(FRONTEND_URL)) || (await probe('http://localhost:5173'));
+  const frontendUp =
+    (await probeFrontend(FRONTEND_URL)) ||
+    (await probeFrontend('http://localhost:5173')) ||
+    (await probeFrontend('http://127.0.0.1:5173'));
   const cliReady = fs.existsSync(TSX_BIN) || fs.existsSync(CLI_DIST);
   if (process.env.E2E) {
     if (!cliReady) throw new Error(`backend CLI missing (${CLI_TS} / ${CLI_DIST})`);
