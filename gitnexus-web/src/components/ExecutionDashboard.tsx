@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   connectHeartbeat,
   fetchOpsSnapshot,
@@ -156,6 +156,7 @@ export const ExecutionDashboard = () => {
   const [streamMode, setStreamMode] = useState<'sse' | 'poll' | 'offline'>('offline');
   const [error, setError] = useState<string | null>(null);
   const [lastTick, setLastTick] = useState<number | null>(null);
+  const validationErrorRef = useRef(false);
 
   const applyBackend = useCallback((raw: string) => {
     try {
@@ -163,13 +164,17 @@ export const ExecutionDashboard = () => {
       setBackendUrl(url);
       setBackendInput(url);
       setConnectedServer(url);
+      setSnapshot(null);
+      setLastTick(null);
       setConnectNonce((n) => n + 1);
       const next = new URL(window.location.href);
       next.searchParams.set('view', 'ops');
       next.searchParams.set('server', url);
       window.history.replaceState({}, '', next.toString());
+      validationErrorRef.current = false;
       setError(null);
     } catch (err) {
+      validationErrorRef.current = true;
       setLive(false);
       setStreamMode('offline');
       setError(err instanceof Error ? err.message : 'Invalid backend URL');
@@ -194,7 +199,8 @@ export const ExecutionDashboard = () => {
       if (cancelled) return;
       setSnapshot(next);
       setLastTick(Date.now());
-      setError(null);
+      // A failed Connect leaves this stream running; do not wipe its error.
+      if (!validationErrorRef.current) setError(null);
       setLive(true);
     };
 

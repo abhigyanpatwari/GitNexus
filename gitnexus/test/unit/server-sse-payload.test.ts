@@ -70,4 +70,34 @@ describe('mountSSEProgress terminal payload', () => {
       repoPath: REPO_PATH,
     });
   });
+
+  it('redacts repository URLs in progress and error without dropping repoPath', async () => {
+    const job = manager.createJob({ repoPath: REPO_PATH });
+    manager.updateJob(job.id, {
+      repoName: REPO_NAME,
+      status: 'cloning',
+      progress: {
+        phase: 'cloning',
+        percent: 0,
+        message: 'Cloning https://x-access-token:ghs_secret@github.com/user/repo.git...',
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/analyze/${job.id}/progress`);
+    manager.updateJob(job.id, {
+      status: 'failed',
+      repoName: REPO_NAME,
+      error: 'fatal: unable to access https://x-access-token:ghs_secret@github.com/user/repo.git/',
+    });
+
+    const body = await response.text();
+    expect(body).not.toContain('ghs_secret');
+    expect(body).not.toContain('x-access-token');
+    expect(body).toContain('Cloning [repo]...');
+    expect(terminalFrame(body, 'failed')).toEqual({
+      repoName: REPO_NAME,
+      repoPath: REPO_PATH,
+      error: 'fatal: unable to access [repo]',
+    });
+  });
 });

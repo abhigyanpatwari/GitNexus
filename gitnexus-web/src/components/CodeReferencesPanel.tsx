@@ -228,10 +228,6 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   );
   // Ids already requested (loaded or failed) — a failed read is not retried.
   const requestedSnippetIds = useRef<Set<string>>(new Set());
-  const aiReferencesRef = useRef(aiReferences);
-  aiReferencesRef.current = aiReferences;
-  // Bump to re-run the effect after a cancelled in-flight batch frees ids.
-  const [snippetRetryEpoch, setSnippetRetryEpoch] = useState(0);
 
   const snippetRepoKey = currentRepo || projectName || undefined;
   const snippetRepoKeyRef = useRef<string | undefined>(undefined);
@@ -246,7 +242,6 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     if (pending.length === 0) return;
     for (const ref of pending) requestedSnippetIds.current.add(ref.id);
 
-    let cancelled = false;
     const repo = currentRepo || projectName || undefined;
 
     mapWithConcurrency(pending, CITATION_SNIPPET_CONCURRENCY, async (ref) => {
@@ -277,22 +272,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         return null;
       }
     }).then((entries) => {
-      if (cancelled) {
-        // A repo switch already cleared the set and the replacement batch
-        // re-claimed still-present citation IDs. Do not delete those.
-        if (snippetRepoKeyRef.current !== repo) return;
-        // Free only after settle so a mid-flight aiReferences append does not
-        // start duplicate reads for the same ids. Re-schedule still-needed ones.
-        let needsRetry = false;
-        for (const ref of pending) {
-          if (aiReferencesRef.current.some((r) => r.id === ref.id)) {
-            requestedSnippetIds.current.delete(ref.id);
-            needsRetry = true;
-          }
-        }
-        if (needsRetry) setSnippetRetryEpoch((n) => n + 1);
-        return;
-      }
+      // Repo switch already cleared the set and started a replacement batch.
+      // Same-repo append replaces this effect; apply the in-flight reads
+      // instead of freeing ids and bumping a retry epoch (that loop cancels
+      // the replacement batch).
+      if (snippetRepoKeyRef.current !== repo) return;
       const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
       if (loaded.length === 0) return;
       setCitationSnippets((prev) => {
@@ -301,11 +285,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         return next;
       });
     });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [aiReferences, currentRepo, projectName, snippetRetryEpoch]);
+  }, [aiReferences, currentRepo, projectName]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
@@ -523,7 +503,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -596,7 +576,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label

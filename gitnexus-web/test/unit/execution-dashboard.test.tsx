@@ -1,9 +1,10 @@
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExecutionDashboard } from '../../src/components/ExecutionDashboard';
 import {
   connectHeartbeat,
   fetchOpsSnapshot,
+  normalizeServerUrl,
   probeBackendStatus,
   streamOpsSnapshot,
   type OpsSnapshot,
@@ -80,5 +81,57 @@ describe('ExecutionDashboard safety poll', () => {
 
     await waitFor(() => expect(clearIntervalSpy).toHaveBeenCalledWith(timerId));
     expect(getByText(/· sse/)).toBeInTheDocument();
+  });
+
+  it('clears the prior snapshot when connecting to an unreachable server', async () => {
+    const first = emptySnap();
+    first.server = { ...first.server, version: 'old-server' };
+
+    vi.mocked(streamOpsSnapshot).mockImplementation((onSnapshot) => {
+      onSnapshot(first);
+      return { abort: vi.fn() } as unknown as AbortController;
+    });
+    vi.mocked(fetchOpsSnapshot).mockResolvedValue(first);
+
+    const { getByText, getByPlaceholderText, queryByText } = render(<ExecutionDashboard />);
+    await waitFor(() => expect(getByText('old-server')).toBeInTheDocument());
+
+    vi.mocked(probeBackendStatus).mockResolvedValue('unreachable');
+    vi.mocked(fetchOpsSnapshot).mockRejectedValue(new Error('down'));
+    vi.mocked(streamOpsSnapshot).mockImplementation(
+      () => ({ abort: vi.fn() }) as unknown as AbortController,
+    );
+
+    const input = getByPlaceholderText('http://localhost:4747');
+    fireEvent.change(input, { target: { value: 'http://127.0.0.1:9999' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => {
+      expect(queryByText('old-server')).not.toBeInTheDocument();
+    });
+  });
+
+  it('keeps an invalid-server error when the prior stream delivers a snapshot', async () => {
+    let onFrame: ((snapshot: OpsSnapshot) => void) | undefined;
+    vi.mocked(streamOpsSnapshot).mockImplementation((onSnapshot) => {
+      onFrame = onSnapshot;
+      return { abort: vi.fn() } as unknown as AbortController;
+    });
+    vi.mocked(fetchOpsSnapshot).mockResolvedValue(emptySnap());
+    vi.mocked(normalizeServerUrl).mockImplementation((url: string) => {
+      if (url.includes('bad')) throw new Error('Invalid backend URL');
+      return url;
+    });
+
+    const { getByText, getByPlaceholderText } = render(<ExecutionDashboard />);
+    await waitFor(() => expect(onFrame).toBeTypeOf('function'));
+
+    const input = getByPlaceholderText('http://localhost:4747');
+    fireEvent.change(input, { target: { value: 'http://bad' } });
+    fireEvent.submit(input.closest('form')!);
+
+    await waitFor(() => expect(getByText('Invalid backend URL')).toBeInTheDocument());
+    onFrame!(emptySnap());
+    await waitFor(() => expect(getByText('Invalid backend URL')).toBeInTheDocument());
   });
 });

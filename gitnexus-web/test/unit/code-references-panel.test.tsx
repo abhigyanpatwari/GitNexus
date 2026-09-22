@@ -141,4 +141,53 @@ describe('CodeReferencesPanel repo identity (#2420)', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(citationReads()).toHaveLength(2);
   });
+
+  it('does not re-issue in-flight citation reads when a new reference is appended', async () => {
+    appState.codeReferences = [
+      {
+        id: 'cite-1',
+        filePath: 'src/foo.ts',
+        startLine: 0,
+        endLine: 0,
+        source: 'ai',
+      },
+    ];
+    appState.currentRepo = '/ws/a/reels';
+
+    let releaseFirst!: (value: { content: string; startLine: number; totalLines: number }) => void;
+    const firstCitation = new Promise<{ content: string; startLine: number; totalLines: number }>(
+      (resolve) => {
+        releaseFirst = resolve;
+      },
+    );
+    vi.mocked(readFile).mockImplementation((filePath, opts) => {
+      if (opts && 'startLine' in opts) {
+        if (filePath === 'src/foo.ts') return firstCitation;
+        return Promise.resolve({ content: 'const b = 2;', startLine: 0, totalLines: 1 });
+      }
+      return Promise.resolve({ content: 'const a = 1;', totalLines: 1 });
+    });
+
+    const { rerender } = render(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+    await waitFor(() => expect(citationReads()).toHaveLength(1));
+
+    appState.codeReferences = [
+      ...appState.codeReferences,
+      {
+        id: 'cite-2',
+        filePath: 'src/bar.ts',
+        startLine: 0,
+        endLine: 0,
+        source: 'ai',
+      },
+    ];
+    rerender(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+
+    await waitFor(() => expect(citationReads()).toHaveLength(2));
+    expect(citationReads()[1]?.[0]).toBe('src/bar.ts');
+
+    releaseFirst({ content: 'first', startLine: 0, totalLines: 1 });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(citationReads()).toHaveLength(2);
+  });
 });

@@ -251,7 +251,9 @@ describe('JobManager', () => {
   });
 
   it('cancelJob SIGKILLs after the grace period when the worker ignores IPC', () => {
+    manager.dispose();
     vi.useFakeTimers();
+    manager = new JobManager();
     const job = manager.createJob({ repoPath: '/tmp/repo' });
     manager.updateJob(job.id, { status: 'analyzing' });
 
