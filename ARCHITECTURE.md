@@ -487,6 +487,7 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
   ├── lbug.wal       # Write-ahead log
   ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
+  ├── lbug.wal.checkpoint, lbug.checkpoint.{intent,apply}.lock  # checkpoint-in-flight artifacts; left behind only by an interrupted checkpoint, consumed by the next writable open
   ├── lbug.{wal,shadow}.dirty-recovery  # parked sidecars from a crashed run; safe to delete
   ├── gitnexus.json  # lastCommit, indexedAt, stats (primary metadata file)
   └── meta.json      # legacy mirror of gitnexus.json, kept in sync (see MIGRATION.md)
@@ -494,6 +495,12 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
 ~/.gitnexus/
   └── registry.json  # Global repo registry (MCP discovery)
 ```
+
+Read-only opens self-heal an interrupted checkpoint: the refusal is
+classified and cleared by one writable open (probe + `CHECKPOINT`) before
+the read-only open is retried — see `sidecar-recovery.ts`
+(`isReadOnlyCheckpointInProgressError`) and the
+`lbug-interrupted-checkpoint-recovery` integration test.
 
 Managed by `repo-manager.ts`.
 

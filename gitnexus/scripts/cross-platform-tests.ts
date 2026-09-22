@@ -165,6 +165,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-open-retry.test.ts',
   'test/integration/lbug-close-handle-release.test.ts',
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
+  'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
