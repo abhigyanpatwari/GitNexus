@@ -40,6 +40,20 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoUrl).toBeUndefined();
   });
 
+  it('redacts https userinfo from job.error on the public ops view', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://x-access-token:ghs_secret@github.com/user/repo.git',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'fatal: unable to access https://x-access-token:ghs_secret@github.com/user/repo.git/',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('fatal: unable to access https://github.com/user/repo.git/');
+    expect(JSON.stringify(view)).not.toContain('ghs_secret');
+    expect(JSON.stringify(view)).not.toContain('x-access-token');
+  });
+
   it('redacts https userinfo from progress.message on the public ops view', () => {
     const job = manager.createJob({
       repoUrl: 'https://x-access-token:ghs_secret@github.com/user/repo.git',
@@ -149,5 +163,11 @@ describe('isGitNexusVercelOrigin', () => {
     expect(isGitNexusVercelOrigin('https://evil.vercel.app')).toBe(false);
     expect(isGitNexusVercelOrigin('https://gitnexus-web-attacker.com')).toBe(false);
     expect(isGitNexusVercelOrigin('http://gitnexus-web.vercel.app')).toBe(false);
+  });
+
+  it('rejects non-default ports on the official hostnames', () => {
+    expect(isGitNexusVercelOrigin('https://gitnexus-web.vercel.app:8443')).toBe(false);
+    // :443 is the HTTPS default — URL.port is empty, same as the bare origin.
+    expect(isGitNexusVercelOrigin('https://gitnexus.vercel.app')).toBe(true);
   });
 });

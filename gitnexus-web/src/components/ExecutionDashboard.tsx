@@ -69,7 +69,7 @@ const JobRow = ({ job }: { job: OpsJobView }) => {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="truncate text-sm font-medium text-text-primary">
-            {job.repoName || job.repoUrl || job.repoPath || job.id.slice(0, 8)}
+            {job.repoName || job.id.slice(0, 8)}
           </div>
           <div className="mt-0.5 font-mono text-[11px] text-text-muted">
             {job.lane} · {job.id.slice(0, 8)}
@@ -142,6 +142,7 @@ export const ExecutionDashboard = () => {
   // Applied URL the connection effect binds to — distinct from the input so
   // keystrokes do not restart SSE/heartbeat, and Connect always reconnects.
   const [connectedServer, setConnectedServer] = useState<string | null>(null);
+  const [connectNonce, setConnectNonce] = useState(0);
   const [snapshot, setSnapshot] = useState<OpsSnapshot | null>(null);
   const [live, setLive] = useState(false);
   const [streamMode, setStreamMode] = useState<'sse' | 'poll' | 'offline'>('offline');
@@ -154,6 +155,7 @@ export const ExecutionDashboard = () => {
       setBackendUrl(url);
       setBackendInput(url);
       setConnectedServer(url);
+      setConnectNonce((n) => n + 1);
       const next = new URL(window.location.href);
       next.searchParams.set('view', 'ops');
       next.searchParams.set('server', url);
@@ -252,9 +254,8 @@ export const ExecutionDashboard = () => {
         if (cancelled) return;
         setStreamMode((mode) => (mode === 'offline' ? 'poll' : mode));
       } catch {
-        // REST snapshot failed — drop SSE so we do not run both transports.
-        streamAbort?.abort();
-        streamAbort = undefined;
+        // REST snapshot failed — do not abort a live SSE handshake. Polling
+        // covers the gap until the stream opens or its own onError fires.
         startPolling();
       }
     };
@@ -267,7 +268,7 @@ export const ExecutionDashboard = () => {
       streamAbort?.abort();
       stopHeartbeat?.();
     };
-  }, [connectedServer]);
+  }, [connectedServer, connectNonce]);
 
   const allJobs = useMemo(() => {
     if (!snapshot) return [] as OpsJobView[];
@@ -428,7 +429,7 @@ export const ExecutionDashboard = () => {
                     <tr key={`${job.lane}-${job.id}`} className="border-b border-border-subtle/60">
                       <td className="px-4 py-2 font-mono text-xs text-text-secondary">{job.lane}</td>
                       <td className="max-w-[14rem] truncate px-4 py-2">
-                        {job.repoName || job.repoUrl || job.repoPath || '—'}
+                        {job.repoName || '—'}
                       </td>
                       <td className={`px-4 py-2 font-mono text-xs uppercase ${STATUS_COLORS[job.status]}`}>
                         {job.status}

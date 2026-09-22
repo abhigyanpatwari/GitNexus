@@ -4,8 +4,8 @@
 .gitnexus/**
 node_modules
 **/node_modules
-gitnexus
 gitnexus/**
+!gitnexus/package.json
 eval
 eval/**
 .claude

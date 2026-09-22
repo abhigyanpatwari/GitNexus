@@ -243,6 +243,11 @@ export interface SSEOptions {
    * would reset the counter on every reconnect and never reach `onError`.
    */
   resetRetriesOnOpen?: boolean;
+  /**
+   * Abort the handshake if response headers do not arrive in this window.
+   * Fires `onError` so callers (ops → poll) are not stuck on a pending fetch.
+   */
+  connectTimeoutMs?: number;
 }
 
 /**
@@ -279,13 +284,26 @@ export function streamSSE<T = unknown>(
     if (controller.signal.aborted) return;
 
     (async () => {
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const headers = withAuthHeader(new Headers());
         if (lastEventId) {
           headers.set('Last-Event-ID', lastEventId);
         }
 
+        if (options.connectTimeoutMs && options.connectTimeoutMs > 0) {
+          handshakeTimer = setTimeout(() => {
+            if (controller.signal.aborted) return;
+            handlers.onError?.('SSE handshake timed out');
+            controller.abort();
+          }, options.connectTimeoutMs);
+        }
+
         const response = await fetch(url, { signal: controller.signal, headers });
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = undefined;
+        }
         if (!response.ok) {
           if (options.retryOnHttpError && scheduleRetry(retryCount)) return;
           handlers.onError?.(`Server returned ${response.status}`);
@@ -357,6 +375,7 @@ export function streamSSE<T = unknown>(
           handlers.onError?.('Stream ended');
         }
       } catch (err: unknown) {
+        if (handshakeTimer) clearTimeout(handshakeTimer);
         if (err instanceof DOMException && err.name === 'AbortError') return;
         // Network error — attempt reconnect with backoff. Skip onError when the
         // caller already aborted (scheduleRetry returns false for abort too).
@@ -1179,6 +1198,7 @@ export const streamOpsSnapshot = (
       capDelayMs: 5_000,
       retryOnHttpError: true,
       resetRetriesOnOpen: false,
+      connectTimeoutMs: 5_000,
     },
   );
 };

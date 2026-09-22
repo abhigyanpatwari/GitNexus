@@ -295,7 +295,10 @@ export class JobManager {
     const grace = setTimeout(() => {
       this.cancelGraceTimers.delete(jobId);
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill('SIGTERM');
+        // IPC already set the worker's cooperative cancel flag; a second
+        // SIGTERM is a no-op there. SIGKILL is the actual bounded fallback
+        // (on Windows `kill()` is already TerminateProcess).
+        child.kill('SIGKILL');
       }
     }, CANCEL_GRACE_MS);
     grace.unref?.();

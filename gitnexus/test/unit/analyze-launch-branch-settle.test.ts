@@ -253,6 +253,31 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(releaseRepoLock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not release the lock or publish if cancel lands during settle', async () => {
+    vi.useFakeTimers();
+    H.settledDir = '';
+    const releaseRepoLock = vi.fn();
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+    child.emit('message', completeMessage(true));
+
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    jobManager.cancelJob(job.id, 'Cancelled by user');
+    child.emit('exit', 0);
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+
+    H.settledDir = H.STORAGE_PATH;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+  });
+
   it('holds the write lock until settle resolves, then releases once after publish', async () => {
     vi.useFakeTimers();
     H.settledDir = '';

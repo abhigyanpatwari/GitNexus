@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRegisteredRepoEntry, storageRequirementToHttp } from '../../src/server/api.js';
+import {
+  resolveOmittedRepoSelection,
+  resolveRegisteredRepoEntry,
+  storageRequirementToHttp,
+} from '../../src/server/api.js';
 import type { RegistryEntry } from '../../src/storage/repo-manager.js';
 import {
   STATUS_STORAGE_REQUIREMENTS,
@@ -128,6 +132,25 @@ describe('resolveRegisteredRepoEntry', () => {
     });
 
     expect(resolveRegisteredRepoEntry([reels], 'REELS')).toBe(reels);
+  });
+});
+
+describe('resolveOmittedRepoSelection', () => {
+  it('400s when more than one repo is registered and ?repo= is omitted', () => {
+    const first = entry({ name: 'alpha', path: '/tmp/alpha', storagePath: '/tmp/alpha/.gitnexus' });
+    const second = entry({ name: 'beta', path: '/tmp/beta', storagePath: '/tmp/beta/.gitnexus' });
+    const result = resolveOmittedRepoSelection([first, second]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(400);
+    expect(result.error).toMatch(/Multiple repositories indexed/);
+    expect(result.error).toContain('alpha');
+    expect(result.error).toContain('beta');
+  });
+
+  it('allows the sole registered repo when ?repo= is omitted', () => {
+    const only = entry({ name: 'solo' });
+    expect(resolveOmittedRepoSelection([only])).toEqual({ ok: true, entry: only });
   });
 });
 

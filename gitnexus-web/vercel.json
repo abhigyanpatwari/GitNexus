@@ -1,7 +1,8 @@
 {
+  "installCommand": "npm ci --include=dev && cd ../gitnexus-shared && node ../gitnexus-web/node_modules/typescript/lib/tsc.js",
   "rewrites": [
     {
-      "source": "/((?!assets/).*)",
+      "source": "/((?!assets/|api/).*)",
       "destination": "/index.html"
     }
   ],

@@ -16,8 +16,6 @@ export interface OpsJobView {
   id: string;
   lane: 'analyze' | 'embed';
   status: AnalyzeJobStatus;
-  repoUrl?: string;
-  repoPath?: string;
   repoName?: string;
   branch?: string;
   progress: AnalyzeJob['progress'];
@@ -106,15 +104,21 @@ const publicRepoNameFromPath = (repoPath: string | undefined): string | undefine
 };
 
 /**
+ * Mid-string scrub for unauthenticated ops/poll payloads. `stripUrlCredentials`
+ * only matches at ^; clone progress and worker errors embed the URL after a
+ * prefix ("Cloning https://user:pass@…", "fatal: unable to access https://…").
+ */
+export const redactPublicText = (text: string): string =>
+  text.replace(/(https?:\/\/)[^/\s]*@/gi, '$1');
+
+/**
  * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via
  * progress.message even when the in-memory job still holds them for cloning.
  */
 export const publicOpsProgress = (progress: AnalyzeJobProgress): AnalyzeJobProgress => ({
   phase: progress.phase,
   percent: progress.percent,
-  // Mid-string scrub: stripUrlCredentials only matches at ^, but clone
-  // progress embeds the URL after a prefix ("Cloning https://user:pass@…").
-  message: progress.message.replace(/(https?:\/\/)[^/\s]*@/gi, '$1'),
+  message: redactPublicText(progress.message),
 });
 
 export const serializeOpsJob = (
@@ -134,7 +138,7 @@ export const serializeOpsJob = (
     repoName,
     branch: job.branch,
     progress: publicOpsProgress(job.progress),
-    error: job.error,
+    error: job.error ? redactPublicText(job.error) : undefined,
     partial: job.partial,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
@@ -225,6 +229,9 @@ export const isGitNexusVercelOrigin = (origin: string): boolean => {
     return false;
   }
   if (parsed.protocol !== 'https:') return false;
+  // Browsers omit the default port; an explicit :8443 (or even :443) is not
+  // either documented production Origin string.
+  if (parsed.port) return false;
   const host = parsed.hostname.toLowerCase();
   // Exact hosts only — a prefix like `gitnexus-web-` would also match any
   // attacker-controlled Vercel project named `gitnexus-web-*`. Preview

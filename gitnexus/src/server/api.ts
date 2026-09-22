@@ -105,7 +105,7 @@ import {
   buildServerInfo,
   createServeUpdateController,
 } from './update-controller.js';
-import { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
+import { buildOpsSnapshot, isGitNexusVercelOrigin, serializeOpsJob } from './ops-snapshot.js';
 
 export {
   bindServeUpdateControllerLifecycle,
@@ -114,7 +114,7 @@ export {
   type ServerInfoResponse,
   type ServeUpdateController,
 } from './update-controller.js';
-export { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
+export { buildOpsSnapshot, isGitNexusVercelOrigin, serializeOpsJob } from './ops-snapshot.js';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -129,7 +129,9 @@ export { buildOpsSnapshot, isGitNexusVercelOrigin } from './ops-snapshot.js';
  *     192.168.0.0/16  → 192.168.x.x
  * - https://gitnexus.vercel.app and https://gitnexus-web.vercel.app —
  *   first-party GitNexus web UI production hosts (ops dashboard included).
- *   Preview deployments: set GITNEXUS_PUBLIC_ORIGIN.
+ *   Preview hosts cannot set GITNEXUS_PUBLIC_ORIGIN until serve auth exists
+ *   (`assertServeAuthForPublicOrigin` refuses to start). Reach them through a
+ *   proxy that authenticates, or bind loopback.
  * - the origin named by GITNEXUS_PUBLIC_ORIGIN, when set — matched on hostname
  *   always, and on scheme and port when the configured value carries them
  *
@@ -667,6 +669,19 @@ export const resolveRegisteredRepoEntry = (
   );
 };
 
+/** HTTP omit-`?repo=` policy: MCP returns 400 when multiple repos are indexed. */
+export const resolveOmittedRepoSelection = (
+  repos: RegistryEntry[],
+): { ok: true; entry: RegistryEntry } | { ok: false; status: 400 | 404; error: string } => {
+  if (repos.length === 1) return { ok: true, entry: repos[0]! };
+  if (repos.length === 0) return { ok: false, status: 404, error: 'Repository not found' };
+  return {
+    ok: false,
+    status: 400,
+    error: `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${repos.map((r) => r.name).join(', ')}`,
+  };
+};
+
 export interface SourceAvailability {
   available: boolean;
   reason?: 'content-retention' | 'checkout-missing';
@@ -997,7 +1012,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // `req.body.<field>` directly, so normalize to an empty object and let their
   // own "Missing X in request body" 400s fire instead of a TypeError 500.
   app.use((req, _res, next) => {
-    if (req.body === undefined) req.body = {};
+    if (req.body == null) req.body = {};
     next();
   });
 
@@ -1702,7 +1717,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   ): Promise<string | null> => {
     // Pass `req` so resolveRepo can abort its hold-queue wait when the client
     // disconnects (close listener is only registered when `req` is supplied).
-    const entry = await resolveRepo(requestedRepo(req), false, req);
+    const requested = requestedRepo(req);
+    if (!requested) {
+      const omitted = resolveOmittedRepoSelection(await listRegisteredRepos({ validate: true }));
+      if (omitted.ok === false) {
+        res.status(omitted.status).json({ error: omitted.error });
+        return null;
+      }
+    }
+    const entry = await resolveRepo(requested, false, req);
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
       return null;
@@ -2007,17 +2030,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    res.json({
-      id: job.id,
-      status: job.status,
-      repoUrl: job.repoUrl,
-      repoPath: job.repoPath,
-      repoName: job.repoName,
-      progress: job.progress,
-      error: job.error,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-    });
+    // Same public serializer as `/api/ops` — job ids on the ops feed must not
+    // unlock raw repoUrl/repoPath/userinfo through this pre-existing poll.
+    res.json(serializeOpsJob(job, 'analyze'));
   });
 
   // GET /api/analyze/:jobId/progress — SSE stream (shared helper)
@@ -2352,18 +2367,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(404).json({ error: 'Job not found' });
       return;
     }
-    res.json({
-      id: job.id,
-      status: job.status,
-      repoName: job.repoName,
-      progress: job.progress,
-      error: job.error,
-      // Absent unless the run was a partial one — omitted by JSON.stringify, so
-      // the response shape is unchanged for every other outcome (#2790).
-      partial: job.partial,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
-    });
+    res.json(serializeOpsJob(job, 'embed'));
   });
 
   // GET /api/embed/:jobId/progress — SSE stream (shared helper)

@@ -236,6 +236,18 @@ describe('backend-client access token', () => {
       expect(onError).toHaveBeenCalledWith('Server returned 401');
     });
 
+    it('fires onError when the handshake exceeds connectTimeoutMs', async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+      vi.stubGlobal('fetch', fetchMock);
+      const onError = vi.fn();
+
+      streamSSE(`${BASE}/api/ops/stream`, { onError }, { maxRetries: 0, connectTimeoutMs: 50 });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(onError).toHaveBeenCalledWith('SSE handshake timed out');
+      vi.useRealTimers();
+    });
+
     it('exhausts a finite budget across successful-then-closed streams when resetRetriesOnOpen is false', async () => {
       // Ops dashboard needs this: otherwise every short 200 resets the counter
       // and onError (poll fallback) never fires.

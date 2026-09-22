@@ -331,6 +331,8 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             })
             .then((readyToPublish) => {
               if (!readyToPublish) return;
+              const latest = jobManager.getJob(job.id);
+              if (!latest || isTerminalJobStatus(latest.status)) return;
               // PARITY WITH THE CLI, which is what the IPC projection was added
               // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
               // "so a server-side caller sees the same degraded outcome the CLI
@@ -426,15 +428,12 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
         if (!j || isTerminalJobStatus(j.status)) {
-          // The job was settled without this handler's help. Two ways here:
-          // (a) `complete`/`error` IPC already ran (finally/branch released the
-          //     lock — this call is an idempotent no-op), or
-          // (b) `cancelJob` marked the job failed and killed the worker BEFORE
-          //     any terminal IPC arrived; the message handler above then drops
-          //     the worker's late `error` as stale, so this exit is the only
-          //     remaining place that can drop the lock. Without it a cancelled
-          //     or timed-out analyze left the repo locked until server restart.
-          releaseLockOnce();
+          // (a) complete/error IPC is in flight (`terminalIpcSeen`) — that
+          //     chain owns the lock through settle/`backend.init()`/`finally`.
+          //     Releasing here lets a second analyze acquire under a publish.
+          // (b) cancel marked the job failed BEFORE any terminal IPC — this
+          //     exit is the only remaining place that can drop the lock.
+          if (!terminalIpcSeen) releaseLockOnce();
           return;
         }
 

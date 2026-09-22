@@ -957,15 +957,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           targetNode = fileMatch;
         } else {
           const distinctPaths = [...new Set<string>(allPaths)];
-          if (distinctPaths.length === 1) {
-            // File node missing from LIMIT 10 — still analyze as that file path
-            // (File impact queries key off filePath, not symbol id).
-            const pathOnly = distinctPaths[0];
-            targetNode = { id: `file:${pathOnly}`, nodeType: 'File', filePath: pathOnly };
-          } else {
-            // Still ambiguous even with path
+          // LIMIT 10 is a cap, not a complete result set. One path among the
+          // first ten rows does not mean the CONTAINS search is unique.
+          if (targetResults.length >= 10 || distinctPaths.length !== 1) {
             return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
           }
+          const pathOnly = distinctPaths[0];
+          targetNode = { id: `file:${pathOnly}`, nodeType: 'File', filePath: pathOnly };
         }
       }
 

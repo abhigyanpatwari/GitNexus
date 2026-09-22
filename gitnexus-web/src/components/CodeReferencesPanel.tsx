@@ -17,6 +17,11 @@ import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
 import { BackendError, readFile, type ReadFileResult } from '../services/backend-client';
+import {
+  selectedNodeDisplayLine,
+  selectedNodeFileRange,
+  selectedNodeLineHighlighted,
+} from './code-panel-lines';
 import { useTranslation } from 'react-i18next';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
@@ -228,7 +233,15 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   // Bump to re-run the effect after a cancelled in-flight batch frees ids.
   const [snippetRetryEpoch, setSnippetRetryEpoch] = useState(0);
 
+  const snippetRepoKey = currentRepo || projectName || undefined;
+  const snippetRepoKeyRef = useRef<string | undefined>(undefined);
+
   useEffect(() => {
+    if (snippetRepoKeyRef.current !== snippetRepoKey) {
+      snippetRepoKeyRef.current = snippetRepoKey;
+      requestedSnippetIds.current.clear();
+      setCitationSnippets(new Map());
+    }
     const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
     if (pending.length === 0) return;
     for (const ref of pending) requestedSnippetIds.current.add(ref.id);
@@ -335,17 +348,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     setSourceUnavailable(false);
 
     // Determine read range: full file for File nodes, buffered for symbols.
-    // Graph node lines are 1-based; the /api/file range is 0-based.
+    // Graph node lines are 0-based (#2377); /api/file ranges are 0-indexed.
     const startLine = selectedNode?.properties?.startLine as number | undefined;
     const endLine = selectedNode?.properties?.endLine as number | undefined;
     const isWholeFile = selectedIsFile || startLine === undefined;
 
-    const options = isWholeFile
-      ? {}
-      : {
-          startLine: Math.max(0, startLine - 1 - CONTEXT_LINES),
-          endLine: (endLine ?? startLine) - 1 + CONTEXT_LINES,
-        };
+    const options = isWholeFile ? {} : selectedNodeFileRange(startLine, endLine, CONTEXT_LINES);
 
     // Prefer the repo path identity over the display name — duplicate display
     // names would otherwise resolve to the wrong repository's file (#2420).
@@ -379,11 +387,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   ]);
 
   // Scroll to the selected node's startLine after content loads.
-  // `startLine` is 1-based, matching the displayed line numbers
-  // (`startingLineNumber={fileStartLine + 1}`), so it is used as-is for the
-  // data-line-number lookup and converted to a 0-based index for the fallback.
+  // GraphNode startLine is 0-based; displayed gutters are 1-based.
   useEffect(() => {
-    if (!selectedFileContent || !selectedNode?.properties?.startLine) return;
+    if (!selectedFileContent || typeof selectedNode?.properties?.startLine !== 'number') return;
     const startLine = selectedNode.properties.startLine as number;
 
     // Double rAF: wait for SyntaxHighlighter to fully render before scrolling
@@ -395,9 +401,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         if (!container) return;
         // Index into the rendered lines: the viewer starts at `fileStartLine`
         // (0-based), so the symbol's 0-based file line minus that offset.
-        const renderedIndex = Math.max(0, startLine - 1 - fileStartLine);
+        const renderedIndex = Math.max(0, startLine - fileStartLine);
         const lineEl =
-          (container.querySelector(`[data-line-number="${startLine}"]`) as HTMLElement) ??
+          (container.querySelector(
+            `[data-line-number="${selectedNodeDisplayLine(startLine)}"]`,
+          ) as HTMLElement) ??
           (container.querySelectorAll('.linenumber')[renderedIndex] as HTMLElement);
         if (lineEl) {
           lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -530,14 +538,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                     userSelect: 'none',
                   }}
                   lineProps={(lineNumber) => {
-                    // Both `lineNumber` (rendered, via startingLineNumber) and the
-                    // node's startLine/endLine are 1-based — compare directly.
+                    // `lineNumber` is 1-based (startingLineNumber); node lines are 0-based.
                     const symStart = selectedNode?.properties?.startLine;
                     const symEnd = selectedNode?.properties?.endLine ?? symStart;
                     const isHighlighted =
                       typeof symStart === 'number' &&
-                      lineNumber >= symStart &&
-                      lineNumber <= (symEnd ?? symStart);
+                      selectedNodeLineHighlighted(lineNumber, symStart, symEnd);
                     return {
                       style: {
                         display: 'block',

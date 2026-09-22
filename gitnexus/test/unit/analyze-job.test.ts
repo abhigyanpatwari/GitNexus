@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   JobManager,
   isTerminalJobStatus,
@@ -203,7 +203,6 @@ describe('JobManager', () => {
 
     const sent: unknown[] = [];
     const signals: string[] = [];
-    const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
     const fakeChild = {
       connected: true,
       exitCode: null,
@@ -216,10 +215,7 @@ describe('JobManager', () => {
         signals.push(signal ?? 'SIGTERM');
         return true;
       },
-      on: (event: string, fn: (...args: unknown[]) => void) => {
-        listeners.set(event, [...(listeners.get(event) ?? []), fn]);
-        return fakeChild;
-      },
+      on: () => fakeChild,
     };
     manager.registerChild(job.id, fakeChild as any);
 
@@ -251,6 +247,32 @@ describe('JobManager', () => {
     manager.cancelJob(job.id);
 
     expect(signals).toEqual(['SIGTERM']);
+  });
+
+  it('cancelJob SIGKILLs after the grace period when the worker ignores IPC', () => {
+    vi.useFakeTimers();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id)).toBe(true);
+    expect(signals).toEqual([]);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGKILL']);
+    vi.useRealTimers();
   });
 
   it('cancelJob returns false for terminal jobs', () => {
