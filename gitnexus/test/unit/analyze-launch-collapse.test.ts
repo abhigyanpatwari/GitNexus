@@ -102,6 +102,7 @@ interface FakeChild extends EventEmitter {
   stderr: EventEmitter;
   send: Mock<(msg: unknown) => boolean>;
   kill: Mock<(signal?: NodeJS.Signals) => boolean>;
+  pid?: number;
 }
 
 const makeChild = (): FakeChild => {
@@ -465,6 +466,49 @@ describe('createLaunchAnalysisWorker — pending cancel', () => {
     const job = await launchOne();
     child.emit('error', new Error('spawn ENOENT'));
     expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('holds the repo lock until exit after cancel error IPC', async () => {
+    const releaseRepoLock = vi.fn();
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', {
+      type: 'error',
+      message: 'Analysis cancelled (parent requested cancellation)',
+    });
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 0);
+
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('does not release the analyze slot on post-spawn child error until exit', async () => {
+    const job = await launchOne();
+    child.pid = 123;
+    child.emit('error', new Error('write EPIPE'));
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toMatch(/write EPIPE/);
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 1);
+
     expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 });
