@@ -14,7 +14,7 @@
 import type express from 'express';
 import { assertString, BadRequestError } from './validation.js';
 import { isTerminalJobStatus, type AnalyzeJob, type JobManager } from './analyze-job.js';
-import { publicOpsProgress, redactPublicText } from './ops-snapshot.js';
+import { knownJobLocations, publicOpsProgress, redactPublicText } from './ops-snapshot.js';
 
 /**
  * The wire payload of a terminal (`event: complete` / `event: failed`) frame.
@@ -32,7 +32,7 @@ import { publicOpsProgress, redactPublicText } from './ops-snapshot.js';
  */
 const terminalPayload = (job: AnalyzeJob | undefined) => ({
   repoName: job?.repoName,
-  error: job?.error ? redactPublicText(job.error) : undefined,
+  error: job?.error ? redactPublicText(job.error, knownJobLocations(job)) : undefined,
   // Lets a client tell a partial embedding run ("retry these N nodes") from a
   // total failure ("nothing worked") without a new `status` member (#2790).
   partial: job?.partial,
@@ -91,7 +91,9 @@ export const mountSSEProgress = (app: express.Express, routePath: string, jm: Jo
 
     // Send current state immediately
     eventId++;
-    res.write(`id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(job.progress))}\n\n`);
+    res.write(
+      `id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(job.progress, knownJobLocations(job)))}\n\n`,
+    );
 
     // If already terminal, send event and close
     if (isTerminalJobStatus(job.status)) {
@@ -128,7 +130,9 @@ export const mountSSEProgress = (app: express.Express, routePath: string, jm: Jo
           res.end();
           unsubscribe();
         } else {
-          res.write(`id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(progress))}\n\n`);
+          res.write(
+            `id: ${eventId}\ndata: ${JSON.stringify(publicOpsProgress(progress, knownJobLocations(eventJob)))}\n\n`,
+          );
         }
       } catch {
         clearInterval(heartbeat);

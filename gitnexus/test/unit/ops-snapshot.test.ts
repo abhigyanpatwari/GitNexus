@@ -130,6 +130,35 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(JSON.stringify(view)).not.toContain('/home/');
   });
 
+  it('redacts a spaced POSIX clone path from job.error on the public ops view', () => {
+    const repoPath = '/home/Jane Doe/.gitnexus/repos/foo';
+    const job = manager.createJob({ repoPath });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: `Existing clone at ${repoPath} has no remote.origin`,
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toContain('[path]');
+    expect(view.error).toBe('Existing clone at [path] has no remote.origin');
+    expect(JSON.stringify(view)).not.toContain('Jane');
+    expect(JSON.stringify(view)).not.toContain('Doe');
+    expect(JSON.stringify(view)).not.toContain('/home/');
+  });
+
+  it('redacts a spaced Windows clone path from job.error on the public ops view', () => {
+    const repoPath = String.raw`C:\Users\Jane Doe\My Projects\repo`;
+    const job = manager.createJob({ repoPath });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: `Existing clone at ${repoPath} has no remote.origin`,
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toContain('[path]');
+    expect(view.error).toBe('Existing clone at [path] has no remote.origin');
+    expect(JSON.stringify(view)).not.toContain('Jane');
+    expect(JSON.stringify(view)).not.toContain('Projects');
+  });
+
   it('redacts a quoted Node open() path and a file:// URL from job.error', () => {
     const job = manager.createJob({
       repoPath: '/home/alice/src/private-repo',

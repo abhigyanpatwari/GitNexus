@@ -11,6 +11,7 @@ import {
   type AnalyzeJobProgress,
   type AnalyzeJobStatus,
 } from './analyze-job.js';
+import { escapeRegExp } from './validation.js';
 
 export interface OpsJobView {
   id: string;
@@ -119,6 +120,40 @@ const preserveTrailingPunct = (raw: string, token: string): string => {
   return trailing ? `${token}${trailing[0]}` : token;
 };
 
+export const knownJobLocations = (
+  job?: Pick<AnalyzeJob, 'repoPath' | 'repoUrl'> | null,
+): Array<string | undefined> => [job?.repoPath, job?.repoUrl];
+
+/** HTTP(S)/ssh URLs and scp-like remotes redact as `[repo]`; filesystem paths as `[path]`. */
+const knownRedactionToken = (value: string): '[repo]' | '[path]' =>
+  /^(https?:\/\/|ssh:\/\/)/i.test(value) || /^[\w.-]+@[\w.-]+:/.test(value) ? '[repo]' : '[path]';
+
+const redactKnownLocations = (text: string, known?: Array<string | undefined>): string => {
+  const values = (known ?? [])
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .sort((a, b) => b.length - a.length);
+  const seen = new Set<string>();
+  let out = text;
+  for (const value of values) {
+    if (seen.has(value)) continue;
+    seen.add(value);
+    // Swallow trailing slashes only at a sentence/punct boundary so
+    // `https://…/repo.git/` becomes `[repo]`, not `[repo]/`, without eating `/src`.
+    out = out.replace(
+      new RegExp(`${escapeRegExp(value)}(?:[/\\\\]+(?=[\\s"')\\],;.]|$))?`, 'g'),
+      knownRedactionToken(value),
+    );
+  }
+  return out;
+};
+
+/**
+ * After a path separator, consume a single space only when another `/` or `\`
+ * still follows — so `/home/Jane Doe/.gitnexus/foo` is one path, but
+ * `/home/alice/src/private-repo has no remote.origin` keeps the sentence.
+ */
+const PATH_WITH_INTERNAL_SPACE = String.raw`[^\s"')]+(?: [^\s"')]*[\\/][^\s"')]*)*`;
+
 /**
  * Mid-string scrub for unauthenticated ops/poll payloads. Clone progress and
  * worker errors embed the URL after a prefix ("Cloning https://…") and also
@@ -127,17 +162,24 @@ const preserveTrailingPunct = (raw: string, token: string): string => {
  * scp-like `user@host:path` and `ssh://` remotes, and replace absolute POSIX /
  * Windows / UNC filesystem paths so a LAN or official-Vercel origin cannot
  * recover home-directory layout or private org/repo names from /api/ops.
+ *
+ * When the job's `repoPath` / `repoUrl` are known, those literals are replaced
+ * first (longest first) so a clone dir with spaces cannot leak around `[^\s]+`.
  */
-export const redactPublicText = (text: string): string =>
-  text
+export const redactPublicText = (text: string, known?: Array<string | undefined>): string =>
+  redactKnownLocations(text, known)
     .replace(/https?:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/ssh:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/file:\/\/[^\s"']+/gi, (raw) => preserveTrailingPunct(raw, '[path]'))
     .replace(/[\w.-]+@[\w.-]+:[^\s"')]+/g, (raw) => preserveTrailingPunct(raw, '[repo]'))
-    .replace(/[A-Za-z]:[\\/][^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
-    .replace(/\\\\[^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
+    .replace(new RegExp(`[A-Za-z]:[\\\\/]${PATH_WITH_INTERNAL_SPACE}`, 'g'), (raw) =>
+      preserveTrailingPunct(raw, '[path]'),
+    )
+    .replace(new RegExp(`\\\\\\\\${PATH_WITH_INTERNAL_SPACE}`, 'g'), (raw) =>
+      preserveTrailingPunct(raw, '[path]'),
+    )
     .replace(
-      /(^|[\s"'=(])(\/[^\s"')]+)/g,
+      new RegExp(`(^|[\\s"'=(])(/${PATH_WITH_INTERNAL_SPACE})`, 'g'),
       (_m, prefix: string, absPath: string) =>
         `${prefix}${preserveTrailingPunct(absPath, '[path]')}`,
     );
@@ -146,10 +188,13 @@ export const redactPublicText = (text: string): string =>
  * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via
  * progress.message even when the in-memory job still holds them for cloning.
  */
-export const publicOpsProgress = (progress: AnalyzeJobProgress): AnalyzeJobProgress => ({
+export const publicOpsProgress = (
+  progress: AnalyzeJobProgress,
+  known?: Array<string | undefined>,
+): AnalyzeJobProgress => ({
   phase: progress.phase,
   percent: progress.percent,
-  message: redactPublicText(progress.message),
+  message: redactPublicText(progress.message, known),
 });
 
 export const serializeOpsJob = (
@@ -158,6 +203,7 @@ export const serializeOpsJob = (
   now: number = Date.now(),
 ): OpsJobView => {
   const end = job.completedAt ?? now;
+  const known = knownJobLocations(job);
   // Prefer the registered short name. Fall back to a basename only — never
   // emit raw repoUrl/repoPath or the requested branch on the unauthenticated
   // ops feed (a ref can name a private project the same way a path would).
@@ -168,8 +214,8 @@ export const serializeOpsJob = (
     lane,
     status: job.status,
     repoName,
-    progress: publicOpsProgress(job.progress),
-    error: job.error ? redactPublicText(job.error) : undefined,
+    progress: publicOpsProgress(job.progress, known),
+    error: job.error ? redactPublicText(job.error, known) : undefined,
     partial: job.partial,
     startedAt: job.startedAt,
     completedAt: job.completedAt,
