@@ -194,6 +194,39 @@ describe('cleanCommand --stale (#3331)', () => {
     await expect(fs.readFile(dir, 'utf8')).resolves.toBe('not-a-directory');
   });
 
+  it('does not claim leftovers were not deleted after a mid-loop git failure', async () => {
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');
+    commitAll(repo, 'init');
+    await writeOwnedFlat(repo, storagePath);
+    await registerRepo(repo, metaFor('main', repo));
+    await registerRepo(repo, metaFor('feature/x', repo), { branch: 'feature/x' });
+    await registerRepo(repo, metaFor('feature/y', repo), { branch: 'feature/y' });
+    const dirX = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const dirY = path.join(storagePath, 'branches', branchSlug('feature/y'));
+    await saveMeta(dirX, metaFor('feature/x', repo));
+    await saveMeta(dirY, metaFor('feature/y', repo));
+    const realListLocalHeads = git.listLocalHeads;
+    let calls = 0;
+    vi.spyOn(git, 'listLocalHeads').mockImplementation((repoPath: string) => {
+      calls += 1;
+      if (calls <= 2) return realListLocalHeads(repoPath);
+      return null;
+    });
+    vi.spyOn(process, 'cwd').mockReturnValue(repo);
+
+    await cleanCommand({ stale: true, force: true });
+
+    const output = logs.join('\n');
+    const deletedX = output.includes(t('clean.stale.deleted', { branch: 'feature/x' }));
+    const deletedY = output.includes(t('clean.stale.deleted', { branch: 'feature/y' }));
+    expect(deletedX !== deletedY).toBe(true);
+    expect(output).toContain(t('clean.stale.remainingSkipped'));
+    expect(output).not.toContain(t('clean.stale.headsUnavailable'));
+    await expect(deletedX ? fs.access(dirX) : fs.access(dirY)).rejects.toThrow();
+    await expect(deletedX ? fs.access(dirY) : fs.access(dirX)).resolves.toBeUndefined();
+  });
+
   it('does not delete when leftover directories cannot be listed', async () => {
     initGitRepo(repo);
     await fs.writeFile(path.join(repo, 'README.md'), 'hi\n');

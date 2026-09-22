@@ -77,29 +77,77 @@ const probeDirectory = async (dir: string): Promise<DirectoryProbe> => {
   }
 };
 
+/** Lexical / realpath containment: `child` is a proper descendant of `parent`. */
+const isProperChildPath = (parent: string, child: string): boolean => {
+  const root = path.resolve(parent);
+  const resolved = path.resolve(child);
+  const relative = path.relative(root, resolved);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+};
+
+const isSameNormalizedPath = (left: string, right: string): boolean =>
+  path.relative(path.resolve(path.normalize(left)), path.resolve(path.normalize(right))) === '';
+
+const expectedRealSlotPath = (realBranches: string, dir: string): string =>
+  path.join(realBranches, path.basename(path.resolve(dir)));
+
 const directorySizeBytes = async (root: string): Promise<number> => {
+  let realRoot: string;
+  try {
+    const rootStat = await fs.lstat(root);
+    if (rootStat.isSymbolicLink()) return 0;
+    realRoot = await fs.realpath(root);
+    const realParent = await fs.realpath(path.dirname(path.resolve(root)));
+    if (!isSameNormalizedPath(realRoot, expectedRealSlotPath(realParent, root))) {
+      return 0;
+    }
+  } catch {
+    return 0;
+  }
+  const seen = new Set<string>([realRoot]);
   let total = 0;
   const stack = [root];
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
-    let entries;
+    let entries: string[];
     try {
-      entries = await fs.readdir(current, { withFileTypes: true });
+      entries = await fs.readdir(current);
     } catch {
       continue;
     }
-    const files = entries
-      .filter((entry) => entry.isFile())
-      .map((entry) => path.join(current, entry.name));
-    for (const entry of entries) {
-      if (entry.isDirectory()) stack.push(path.join(current, entry.name));
-    }
-    for (const file of files) {
+    for (const name of entries) {
+      const child = path.join(current, name);
+      let stat: Awaited<ReturnType<typeof fs.lstat>>;
       try {
-        total += (await fs.stat(file)).size;
+        stat = await fs.lstat(child);
       } catch {
-        // Skip files that disappear or become unreadable mid-walk.
+        continue;
+      }
+      if (stat.isSymbolicLink()) continue;
+      let real: string;
+      try {
+        real = await fs.realpath(child);
+      } catch {
+        continue;
+      }
+      if (!isProperChildPath(realRoot, real) || seen.has(real)) continue;
+      seen.add(real);
+      if (stat.isDirectory()) {
+        stack.push(child);
+        continue;
+      }
+      if (stat.isFile()) {
+        try {
+          total += (await fs.stat(child)).size;
+        } catch {
+          // Skip files that disappear or become unreadable mid-walk.
+        }
       }
     }
   }
@@ -110,6 +158,50 @@ const metadataBranch = async (dir: string): Promise<string | null> => {
   const meta = await loadMeta(dir);
   return typeof meta?.branch === 'string' && meta.branch.length > 0 ? meta.branch : null;
 };
+
+export const isContainedBranchDir = (storagePath: string, dir: string): boolean =>
+  isProperChildPath(path.resolve(storagePath, BRANCHES_DIR), dir);
+
+/**
+ * One containment rule for preview and force: `branches/` must be a real
+ * directory whose realpath is `realpath(storagePath)/branches`.
+ */
+type BranchesRootProbe =
+  | { status: 'ok'; realBranches: string }
+  | { status: 'missing' }
+  | { status: 'escaped' }
+  | { status: 'unreadable' };
+
+const probeContainedBranchesRoot = async (storagePath: string): Promise<BranchesRootProbe> => {
+  const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
+  let branchesStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    branchesStat = await fs.lstat(branchesRoot);
+  } catch (err) {
+    return isMissingFilesystemError(err) ? { status: 'missing' } : { status: 'unreadable' };
+  }
+  if (branchesStat.isSymbolicLink() || !branchesStat.isDirectory()) {
+    return { status: 'escaped' };
+  }
+  try {
+    const realStorage = await fs.realpath(storagePath);
+    const realBranches = await fs.realpath(branchesRoot);
+    const expectedBranches = path.normalize(path.join(realStorage, BRANCHES_DIR));
+    if (!isSameNormalizedPath(realBranches, expectedBranches)) {
+      return { status: 'escaped' };
+    }
+    return { status: 'ok', realBranches };
+  } catch (err) {
+    return isMissingFilesystemError(err) ? { status: 'missing' } : { status: 'unreadable' };
+  }
+};
+
+const listingFailedRow = (): StaleBranchSlot => ({
+  branch: '',
+  dir: null,
+  sizeBytes: 0,
+  reason: 'listing-failed',
+});
 
 export const listStaleBranchSlots = async (
   input: ListStaleBranchSlotsInput,
@@ -125,17 +217,24 @@ export const listStaleBranchSlots = async (
     );
   }
 
+  const branchesProbe = await probeContainedBranchesRoot(input.storagePath);
+  if (branchesProbe.status === 'escaped' || branchesProbe.status === 'unreadable') {
+    return [listingFailedRow()];
+  }
+
   let diskDirs: string[] = [];
-  try {
-    const entries = await fs.readdir(branchesRoot, { withFileTypes: true });
-    diskDirs = entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(branchesRoot, entry.name));
-  } catch (err) {
-    if (!isMissingFilesystemError(err)) {
-      return [{ branch: '', dir: null, sizeBytes: 0, reason: 'listing-failed' }];
+  if (branchesProbe.status === 'ok') {
+    try {
+      const entries = await fs.readdir(branchesRoot, { withFileTypes: true });
+      diskDirs = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(branchesRoot, entry.name));
+    } catch (err) {
+      if (!isMissingFilesystemError(err)) {
+        return [listingFailedRow()];
+      }
+      diskDirs = [];
     }
-    diskDirs = [];
   }
 
   if (recorded.length === 0 && diskDirs.length === 0) return [];
@@ -162,7 +261,9 @@ export const listStaleBranchSlots = async (
       continue;
     }
     if (!exists) {
-      pending.push({ branch, dir: null, reason: 'registry-only' });
+      if (!live.has(branch)) {
+        pending.push({ branch, dir: null, reason: 'registry-only' });
+      }
       continue;
     }
     if (!live.has(branch)) {
@@ -194,25 +295,6 @@ export const listStaleBranchSlots = async (
   }));
 };
 
-/** Lexical / realpath containment: `child` is a proper descendant of `parent`. */
-const isProperChildPath = (parent: string, child: string): boolean => {
-  const root = path.resolve(parent);
-  const resolved = path.resolve(child);
-  const relative = path.relative(root, resolved);
-  return (
-    relative !== '' &&
-    relative !== '..' &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
-};
-
-const isSameNormalizedPath = (left: string, right: string): boolean =>
-  path.relative(path.resolve(path.normalize(left)), path.resolve(path.normalize(right))) === '';
-
-export const isContainedBranchDir = (storagePath: string, dir: string): boolean =>
-  isProperChildPath(path.resolve(storagePath, BRANCHES_DIR), dir);
-
 const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 const keepRegistryFailure = (error: Error): RemoveBranchSlotResult => ({
@@ -236,6 +318,91 @@ const slotPathExists = async (slotDir: string): Promise<boolean> => {
   }
 };
 
+/** Symlink, Windows junction, or any realpath that leaves `containRoot`. */
+const pathRequiresUnlinkOnly = async (
+  lexicalPath: string,
+  stat: Awaited<ReturnType<typeof fs.lstat>>,
+  containRoot: string,
+): Promise<boolean> => {
+  if (stat.isSymbolicLink()) return true;
+  try {
+    const real = await fs.realpath(lexicalPath);
+    return !isProperChildPath(containRoot, real);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return true;
+    throw err;
+  }
+};
+
+type SlotRootClass =
+  | { kind: 'missing' }
+  | { kind: 'escape' }
+  | { kind: 'file' }
+  | { kind: 'dir'; realSlot: string };
+
+const classifySlotRoot = async (dir: string, realBranches: string): Promise<SlotRootClass> => {
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(dir);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return { kind: 'missing' };
+    throw err;
+  }
+  if (stat.isSymbolicLink()) return { kind: 'escape' };
+  const realSlot = await fs.realpath(dir);
+  if (!isSameNormalizedPath(realSlot, expectedRealSlotPath(realBranches, dir))) {
+    return { kind: 'escape' };
+  }
+  return stat.isDirectory() ? { kind: 'dir', realSlot } : { kind: 'file' };
+};
+
+/**
+ * Close nested junctions/symlinks whose realpath leaves the leftover slot so a
+ * later `fs.rm` cannot walk a sibling index or an outside tree.
+ */
+const unlinkEscapingDescendants = async (
+  dir: string,
+  realSlot: string,
+  seen: Set<string> = new Set([realSlot]),
+): Promise<void> => {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch (err) {
+    if (isMissingFilesystemError(err)) return;
+    throw err;
+  }
+  for (const name of entries) {
+    const child = path.join(dir, name);
+    let stat: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      stat = await fs.lstat(child);
+    } catch (err) {
+      if (isMissingFilesystemError(err)) continue;
+      throw err;
+    }
+    if (await pathRequiresUnlinkOnly(child, stat, realSlot)) {
+      await fs.unlink(child);
+      continue;
+    }
+    let real: string;
+    try {
+      real = await fs.realpath(child);
+    } catch (err) {
+      if (isMissingFilesystemError(err)) continue;
+      throw err;
+    }
+    if (seen.has(real)) {
+      await fs.unlink(child);
+      continue;
+    }
+    seen.add(real);
+    if (stat.isDirectory()) {
+      await unlinkEscapingDescendants(child, realSlot, seen);
+    }
+  }
+};
+
 /**
  * Delete a lexically contained slot. Returns a failure result, or `null` when
  * the slot path is gone and the registry row may drop.
@@ -248,41 +415,14 @@ const removeValidatedSlotDir = async (
     return refuseOutsideSlot(dir);
   }
 
-  const branchesRoot = path.resolve(storagePath, BRANCHES_DIR);
-
-  let branchesStat: Awaited<ReturnType<typeof fs.lstat>>;
-  try {
-    branchesStat = await fs.lstat(branchesRoot);
-  } catch (err) {
-    if (isMissingFilesystemError(err)) return null;
-    return keepRegistryFailure(toError(err));
-  }
-
-  // Never walk a branches/ symlink (rm of a child would delete the target).
-  if (branchesStat.isSymbolicLink()) {
+  const branchesProbe = await probeContainedBranchesRoot(storagePath);
+  if (branchesProbe.status === 'missing') return null;
+  if (branchesProbe.status !== 'ok') {
     return refuseOutsideSlot(dir);
   }
 
-  let realStorage: string;
-  let realBranches: string;
   try {
-    realStorage = await fs.realpath(storagePath);
-    realBranches = await fs.realpath(branchesRoot);
-  } catch (err) {
-    if (isMissingFilesystemError(err)) return null;
-    return keepRegistryFailure(toError(err));
-  }
-
-  // Junctions may not report as symlinks from lstat; realpath must still land
-  // on storagePath/branches, not an outside tree.
-  const expectedBranches = path.normalize(path.join(realStorage, BRANCHES_DIR));
-  if (!isSameNormalizedPath(realBranches, expectedBranches)) {
-    return refuseOutsideSlot(dir);
-  }
-
-  let slotStat: Awaited<ReturnType<typeof fs.lstat>>;
-  try {
-    slotStat = await fs.lstat(dir);
+    await fs.lstat(dir);
   } catch (err) {
     if (isMissingFilesystemError(err)) return null;
     return keepRegistryFailure(toError(err));
@@ -290,30 +430,31 @@ const removeValidatedSlotDir = async (
 
   let deleteError: Error | undefined;
   try {
-    // A symlink, or a Windows junction that lstat reports as a directory,
-    // must be unlinked at the lexical path. Never fs.rm through a target
-    // that realpath places outside branches/.
-    const realDir = slotStat.isSymbolicLink() ? null : await fs.realpath(dir);
-    const unlinkOnly =
-      slotStat.isSymbolicLink() || (realDir !== null && !isProperChildPath(realBranches, realDir));
-
     // Revalidate immediately before the destructive op. Another process can
     // replace branches/ or the slot after the earlier lstat/realpath awaits.
-    const lastBranches = await fs.lstat(branchesRoot);
-    if (lastBranches.isSymbolicLink()) {
+    const lastProbe = await probeContainedBranchesRoot(storagePath);
+    if (lastProbe.status === 'missing') return null;
+    if (lastProbe.status !== 'ok') {
       return refuseOutsideSlot(dir);
     }
-    const lastSlot = await fs.lstat(dir);
-    const lastUnlinkOnly = lastSlot.isSymbolicLink() || unlinkOnly;
-    if (lastUnlinkOnly) {
-      await fs.unlink(dir);
-    } else {
-      const lastReal = await fs.realpath(dir);
-      if (!isProperChildPath(realBranches, lastReal)) {
-        await fs.unlink(dir);
-      } else {
-        await fs.rm(dir, { recursive: true, force: true });
+    const lastSlot = await classifySlotRoot(dir, lastProbe.realBranches);
+    if (lastSlot.kind === 'missing') return null;
+    if (lastSlot.kind === 'dir') {
+      await unlinkEscapingDescendants(dir, lastSlot.realSlot);
+      const preRmProbe = await probeContainedBranchesRoot(storagePath);
+      if (preRmProbe.status === 'missing') return null;
+      if (preRmProbe.status !== 'ok') {
+        return refuseOutsideSlot(dir);
       }
+      const preRmSlot = await classifySlotRoot(dir, preRmProbe.realBranches);
+      if (preRmSlot.kind === 'missing') return null;
+      if (preRmSlot.kind === 'dir') {
+        await fs.rm(dir, { recursive: true, force: true });
+      } else {
+        await fs.unlink(dir);
+      }
+    } else {
+      await fs.unlink(dir);
     }
   } catch (err) {
     deleteError = toError(err);

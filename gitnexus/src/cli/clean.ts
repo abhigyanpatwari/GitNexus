@@ -108,10 +108,13 @@ export const cleanCommand = async (options?: {
       console.log(`\n${t('common.runForceConfirm')}`);
       return;
     }
+    let deletedAny = false;
     for (const slot of candidates) {
       const heads = listLocalHeads(repo.repoPath);
       if (heads === null) {
-        console.log(t('clean.stale.headsUnavailable'));
+        console.log(
+          deletedAny ? t('clean.stale.remainingSkipped') : t('clean.stale.headsUnavailable'),
+        );
         return;
       }
       if (heads.includes(slot.branch)) {
@@ -129,6 +132,7 @@ export const cleanCommand = async (options?: {
         logger.error({ err: result.error }, 'Failed to delete leftover branch index:');
         continue;
       }
+      deletedAny = true;
       console.log(t('clean.stale.deleted', { branch: slot.branch }));
     }
     if (probeFailed.length > 0) {
