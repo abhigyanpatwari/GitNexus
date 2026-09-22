@@ -24,14 +24,14 @@ import { publicOpsProgress, redactPublicText } from './ops-snapshot.js';
  * `undefined` fields are dropped by `JSON.stringify`, which keeps a clean run's
  * payload byte-identical to the pre-`partial` shape.
  *
- * `repoPath` stays on this event so RepoAnalyzer can reconnect by path when
- * basenames collide (#2420). Progress text and `error` use the same public
- * redaction as `/api/ops` / poll — `/api/ops` enumerates job ids, so this
- * stream must not replay raw clone URLs or worker errors.
+ * `repoPath` is omitted: `/api/ops` enumerates job ids, so this unauthenticated
+ * stream must not replay the analyzed filesystem path. Reconnect with the
+ * already-public `repoName` (basename). Progress text and `error` use the same
+ * public redaction as `/api/ops` / poll — raw clone URLs and home-directory
+ * paths stay off the wire.
  */
 const terminalPayload = (job: AnalyzeJob | undefined) => ({
   repoName: job?.repoName,
-  repoPath: job?.repoPath,
   error: job?.error ? redactPublicText(job.error) : undefined,
   // Lets a client tell a partial embedding run ("retry these N nodes") from a
   // total failure ("nothing worked") without a new `status` member (#2790).
@@ -42,9 +42,10 @@ const terminalPayload = (job: AnalyzeJob | undefined) => ({
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
  *
- * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
- * `repoName` so clients can reconnect by path identity — with duplicate
- * basenames, a name-only reconnect resolves to the first same-named sibling.
+ * Terminal payloads carry the display `repoName` only. The analyzed filesystem
+ * path used to ride this event for duplicate-basename reconnect (#2420), but
+ * `/api/ops` lists job ids and this stream is unauthenticated — emitting
+ * `repoPath` leaked operator home directories. Clients reconnect by `repoName`.
  * Exported for unit tests that lock the wire payload shape.
  *
  * ── The stream closes on the JOB'S STATUS, never on a phase string (#2790) ──

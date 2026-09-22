@@ -1,14 +1,15 @@
 /**
  * SSE terminal payload wire shape (mountSSEProgress).
  *
- * The `event: complete` payload must carry `repoPath` (the analyzed path)
- * alongside the display `repoName` at BOTH terminal emit sites:
+ * The `event: complete` payload carries the display `repoName` at BOTH
+ * terminal emit sites:
  *   (a) the already-terminal replay (job finished before the client subscribed)
  *   (b) the live subscription (job finishes while the client is connected)
  *
- * Clients reconnect by this identity after "Analyze new" — with duplicate
- * basenames, a name-only payload makes the web UI connect to the first
- * same-named sibling instead of the repo just analyzed (PR #2420 review R2).
+ * The analyzed filesystem path is NOT on this unauthenticated stream: `/api/ops`
+ * enumerates job ids, so a LAN or official-Vercel origin must not recover
+ * operator home directories from a terminal frame. Clients reconnect by
+ * `repoName`. Older servers that still emit `repoPath` keep working in the UI.
  *
  * Imported from `src/server/sse-progress.ts`, NOT from `src/server/api.ts`:
  * that module pulls Express, cors, the LadybugDB native adapter and the whole
@@ -35,7 +36,7 @@ describe('mountSSEProgress terminal payload', () => {
 
   afterEach(() => harness.close());
 
-  it('already-terminal replay includes repoName AND repoPath', async () => {
+  it('already-terminal replay includes repoName and omits repoPath', async () => {
     const job = manager.createJob({ repoPath: REPO_PATH });
     manager.updateJob(job.id, { status: 'complete', repoName: REPO_NAME });
 
@@ -43,14 +44,14 @@ describe('mountSSEProgress terminal payload', () => {
     const body = await response.text();
 
     expect(body).toContain('event: complete');
+    expect(body).not.toContain(REPO_PATH);
     // Exact match locks the wire shape (error is undefined → omitted by JSON).
     expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
-      repoPath: REPO_PATH,
     });
   });
 
-  it('live subscription terminal event includes repoName AND repoPath', async () => {
+  it('live subscription terminal event includes repoName and omits repoPath', async () => {
     const job = manager.createJob({ repoPath: REPO_PATH });
 
     // fetch resolves once headers arrive — the handler has already subscribed
@@ -65,13 +66,13 @@ describe('mountSSEProgress terminal payload', () => {
     const body = await response.text();
 
     expect(body).toContain('event: complete');
+    expect(body).not.toContain(REPO_PATH);
     expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
-      repoPath: REPO_PATH,
     });
   });
 
-  it('redacts repository URLs in progress and error without dropping repoPath', async () => {
+  it('redacts repository URLs in progress and error without leaking repoPath', async () => {
     const job = manager.createJob({ repoPath: REPO_PATH });
     manager.updateJob(job.id, {
       repoName: REPO_NAME,
@@ -93,10 +94,10 @@ describe('mountSSEProgress terminal payload', () => {
     const body = await response.text();
     expect(body).not.toContain('ghs_secret');
     expect(body).not.toContain('x-access-token');
+    expect(body).not.toContain(REPO_PATH);
     expect(body).toContain('Cloning [repo]...');
     expect(terminalFrame(body, 'failed')).toEqual({
       repoName: REPO_NAME,
-      repoPath: REPO_PATH,
       error: 'fatal: unable to access [repo]',
     });
   });

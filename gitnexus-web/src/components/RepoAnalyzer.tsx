@@ -210,9 +210,11 @@ type InternalPhase = 'input' | 'starting' | 'analyzing' | 'done' | 'error';
 export interface RepoAnalyzerProps {
   variant: 'onboarding' | 'sheet';
   /**
-   * Receives the repo IDENTITY to reconnect with — the analyzed path when the
-   * server provides one (`repoPath` on the SSE complete event), otherwise the
-   * display name. Never rendered; the done screen shows the display name.
+   * Receives the repo IDENTITY to reconnect with — the analyzed path when an
+   * older server still sends `repoPath` on the SSE complete event, otherwise
+   * the display `repoName`. Current servers omit `repoPath` so an unauthenticated
+   * ops-listed job id cannot leak a filesystem path. Never rendered; the done
+   * screen shows the display name.
    */
   onComplete: (repoIdentity: string) => void;
   onCancel?: () => void;
@@ -409,10 +411,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       (p) => setProgress(p),
       (data) => {
         // Display vs identity split: the done screen renders the display name
-        // (never an absolute path), while onComplete receives the identity —
-        // the analyzed path when the server provides it, so the reconnect
-        // targets the exact repo even when basenames collide. Old servers omit
-        // repoPath and degrade to today's name behavior.
+        // (never an absolute path). Current servers omit repoPath on the
+        // unauthenticated SSE terminal frame; onComplete then uses repoName.
+        // Older servers that still send repoPath keep collision-safe reconnect.
         const displayName =
           data.repoName ??
           (fallbackNameSource
