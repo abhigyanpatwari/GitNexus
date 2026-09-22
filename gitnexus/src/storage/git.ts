@@ -674,10 +674,8 @@ export const listLocalHeads = (repoPath: string): string[] | null => {
   try {
     const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
       cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-      maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
+      ...gitPathListExec,
     });
     if (result.error || result.status !== 0) return null;
     const output = (result.stdout ?? '').toString().trim();

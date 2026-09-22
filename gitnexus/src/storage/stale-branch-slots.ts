@@ -12,6 +12,7 @@ import path from 'path';
 import { BRANCHES_DIR } from './branch-index.js';
 import { listLocalHeads } from './git.js';
 import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
+import { mapPool } from './map-pool.js';
 import { getStoragePaths, removeBranchIndex } from './repo-manager.js';
 
 export type StaleBranchReason =
@@ -42,29 +43,8 @@ export interface ListStaleBranchSlotsInput {
 const slotDirForBranch = (repoPath: string, storagePath: string, branch: string): string =>
   path.dirname(getStoragePaths(repoPath, branch, storagePath).metaPath);
 
-/** Same bound as `mapPool` in repo-manager: cap concurrent slot I/O. */
+/** Same bound as `listRegisteredRepos`: cap concurrent slot I/O. */
 const STALE_SLOT_IO_CONCURRENCY = 8;
-
-const mapPool = async <T, R>(
-  items: readonly T[],
-  mapper: (item: T) => Promise<R>,
-): Promise<R[]> => {
-  if (items.length === 0) return [];
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workerCount = Math.max(1, Math.min(STALE_SLOT_IO_CONCURRENCY, items.length));
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const index = next;
-        next += 1;
-        if (index >= items.length) return;
-        results[index] = await mapper(items[index] as T);
-      }
-    }),
-  );
-  return results;
-};
 
 /** Proven directory, proven absence, or a probe error that is not ENOENT/ENOTDIR. */
 type DirectoryProbe = 'dir' | 'missing' | 'unreadable';
@@ -244,11 +224,26 @@ export const listStaleBranchSlots = async (
 
   const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];
 
-  const registryProbes = await mapPool([...registryByDir], async ([resolvedDir, branch]) => ({
-    resolvedDir,
-    branch,
-    probe: await probeDirectory(resolvedDir),
-  }));
+  const leftoverDirs = diskDirs.filter((dir) => !registryByDir.has(path.resolve(dir)));
+  const [registryProbes, leftoverMeta] = await Promise.all([
+    mapPool(
+      [...registryByDir],
+      async ([resolvedDir, branch]) => ({
+        resolvedDir,
+        branch,
+        probe: await probeDirectory(resolvedDir),
+      }),
+      STALE_SLOT_IO_CONCURRENCY,
+    ),
+    mapPool(
+      leftoverDirs,
+      async (dir) => ({
+        dir,
+        branch: await metadataBranch(dir),
+      }),
+      STALE_SLOT_IO_CONCURRENCY,
+    ),
+  ]);
   for (const { resolvedDir, branch, probe } of registryProbes) {
     if (probe === 'unreadable') {
       pending.push({ branch, dir: resolvedDir, reason: 'probe-failed' });
@@ -271,11 +266,6 @@ export const listStaleBranchSlots = async (
     }
   }
 
-  const leftoverDirs = diskDirs.filter((dir) => !registryByDir.has(path.resolve(dir)));
-  const leftoverMeta = await mapPool(leftoverDirs, async (dir) => ({
-    dir,
-    branch: await metadataBranch(dir),
-  }));
   for (const { dir, branch } of leftoverMeta) {
     if (branch === null) continue;
     const resolved = path.resolve(dir);
@@ -289,10 +279,14 @@ export const listStaleBranchSlots = async (
   }
 
   const includeSize = input.includeSize !== false;
-  return mapPool(pending, async (row) => ({
-    ...row,
-    sizeBytes: includeSize && row.dir ? await directorySizeBytes(row.dir) : 0,
-  }));
+  return mapPool(
+    pending,
+    async (row) => ({
+      ...row,
+      sizeBytes: includeSize && row.dir ? await directorySizeBytes(row.dir) : 0,
+    }),
+    STALE_SLOT_IO_CONCURRENCY,
+  );
 };
 
 const toError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
@@ -318,18 +312,20 @@ const slotPathExists = async (slotDir: string): Promise<boolean> => {
   }
 };
 
+type ContainedPathDecision = { kind: 'unlink' } | { kind: 'keep'; real: string };
+
 /** Symlink, Windows junction, or any realpath that leaves `containRoot`. */
-const pathRequiresUnlinkOnly = async (
+const inspectContainedPath = async (
   lexicalPath: string,
   stat: Awaited<ReturnType<typeof fs.lstat>>,
   containRoot: string,
-): Promise<boolean> => {
-  if (stat.isSymbolicLink()) return true;
+): Promise<ContainedPathDecision> => {
+  if (stat.isSymbolicLink()) return { kind: 'unlink' };
   try {
     const real = await fs.realpath(lexicalPath);
-    return !isProperChildPath(containRoot, real);
+    return isProperChildPath(containRoot, real) ? { kind: 'keep', real } : { kind: 'unlink' };
   } catch (err) {
-    if (isMissingFilesystemError(err)) return true;
+    if (isMissingFilesystemError(err)) return { kind: 'unlink' };
     throw err;
   }
 };
@@ -339,6 +335,21 @@ type SlotRootClass =
   | { kind: 'escape' }
   | { kind: 'file' }
   | { kind: 'dir'; realSlot: string };
+
+type ContainedBranchesGate =
+  | { kind: 'gone' }
+  | { kind: 'refuse'; result: RemoveBranchSlotResult }
+  | { kind: 'ok'; realBranches: string };
+
+const gateContainedBranches = async (
+  storagePath: string,
+  dir: string,
+): Promise<ContainedBranchesGate> => {
+  const probe = await probeContainedBranchesRoot(storagePath);
+  if (probe.status === 'missing') return { kind: 'gone' };
+  if (probe.status !== 'ok') return { kind: 'refuse', result: refuseOutsideSlot(dir) };
+  return { kind: 'ok', realBranches: probe.realBranches };
+};
 
 const classifySlotRoot = async (dir: string, realBranches: string): Promise<SlotRootClass> => {
   let stat: Awaited<ReturnType<typeof fs.lstat>>;
@@ -381,22 +392,16 @@ const unlinkEscapingDescendants = async (
       if (isMissingFilesystemError(err)) continue;
       throw err;
     }
-    if (await pathRequiresUnlinkOnly(child, stat, realSlot)) {
+    const decision = await inspectContainedPath(child, stat, realSlot);
+    if (decision.kind === 'unlink') {
       await fs.unlink(child);
       continue;
     }
-    let real: string;
-    try {
-      real = await fs.realpath(child);
-    } catch (err) {
-      if (isMissingFilesystemError(err)) continue;
-      throw err;
-    }
-    if (seen.has(real)) {
+    if (seen.has(decision.real)) {
       await fs.unlink(child);
       continue;
     }
-    seen.add(real);
+    seen.add(decision.real);
     if (stat.isDirectory()) {
       await unlinkEscapingDescendants(child, realSlot, seen);
     }
@@ -415,11 +420,9 @@ const removeValidatedSlotDir = async (
     return refuseOutsideSlot(dir);
   }
 
-  const branchesProbe = await probeContainedBranchesRoot(storagePath);
-  if (branchesProbe.status === 'missing') return null;
-  if (branchesProbe.status !== 'ok') {
-    return refuseOutsideSlot(dir);
-  }
+  const branchesGate = await gateContainedBranches(storagePath, dir);
+  if (branchesGate.kind === 'gone') return null;
+  if (branchesGate.kind === 'refuse') return branchesGate.result;
 
   try {
     await fs.lstat(dir);
@@ -432,21 +435,17 @@ const removeValidatedSlotDir = async (
   try {
     // Revalidate immediately before the destructive op. Another process can
     // replace branches/ or the slot after the earlier lstat/realpath awaits.
-    const lastProbe = await probeContainedBranchesRoot(storagePath);
-    if (lastProbe.status === 'missing') return null;
-    if (lastProbe.status !== 'ok') {
-      return refuseOutsideSlot(dir);
-    }
-    const lastSlot = await classifySlotRoot(dir, lastProbe.realBranches);
+    const lastGate = await gateContainedBranches(storagePath, dir);
+    if (lastGate.kind === 'gone') return null;
+    if (lastGate.kind === 'refuse') return lastGate.result;
+    const lastSlot = await classifySlotRoot(dir, lastGate.realBranches);
     if (lastSlot.kind === 'missing') return null;
     if (lastSlot.kind === 'dir') {
       await unlinkEscapingDescendants(dir, lastSlot.realSlot);
-      const preRmProbe = await probeContainedBranchesRoot(storagePath);
-      if (preRmProbe.status === 'missing') return null;
-      if (preRmProbe.status !== 'ok') {
-        return refuseOutsideSlot(dir);
-      }
-      const preRmSlot = await classifySlotRoot(dir, preRmProbe.realBranches);
+      const preRmGate = await gateContainedBranches(storagePath, dir);
+      if (preRmGate.kind === 'gone') return null;
+      if (preRmGate.kind === 'refuse') return preRmGate.result;
+      const preRmSlot = await classifySlotRoot(dir, preRmGate.realBranches);
       if (preRmSlot.kind === 'missing') return null;
       if (preRmSlot.kind === 'dir') {
         await fs.rm(dir, { recursive: true, force: true });

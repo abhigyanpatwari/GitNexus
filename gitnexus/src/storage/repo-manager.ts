@@ -27,6 +27,7 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { getGlobalDir } from './global-dir.js';
 import { logger } from '../core/logger.js';
+import { mapPool } from './map-pool.js';
 import {
   acquireIndexLock,
   IndexLockTimeoutError,
@@ -1697,28 +1698,6 @@ export const findRegistryEntryByName = (
  * I/O storm cannot make the registry disappear; it remains unconfirmed until a
  * later validating read succeeds.
  */
-const mapPool = async <T, R>(
-  items: readonly T[],
-  mapper: (item: T) => Promise<R>,
-  concurrency: number,
-): Promise<R[]> => {
-  if (items.length === 0) return [];
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const index = next;
-        next += 1;
-        if (index >= items.length) return;
-        results[index] = await mapper(items[index] as T);
-      }
-    }),
-  );
-  return results;
-};
-
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
 }): Promise<RegistryEntry[]> => {

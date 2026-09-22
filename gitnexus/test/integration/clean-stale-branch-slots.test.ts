@@ -37,14 +37,19 @@ describe('clean --stale leftover branch slots (#3331)', () => {
     await home.cleanup();
   });
 
-  it('reclaims a slot after the git branch is deleted', async () => {
+  async function seedFeatureXSlot(opts?: {
+    tag?: boolean;
+    deleteBranch?: boolean;
+  }): Promise<{ repo: string; dir: string; storagePath: string }> {
     const repo = fixture.dbPath;
     initGitRepo(repo);
     await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
     commitAll(repo, 'init');
     execSync('git branch -M main', { cwd: repo, stdio: 'ignore', windowsHide: true });
     execSync('git branch feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-
+    if (opts?.tag) {
+      execSync('git tag feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    }
     const storagePath = path.join(repo, '.gitnexus');
     const meta = (branch: string): RepoMeta => ({
       repoPath: repo,
@@ -58,11 +63,17 @@ describe('clean --stale leftover branch slots (#3331)', () => {
     await registerRepo(repo, meta('feature/x'), { branch: 'feature/x' });
     const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
     await saveMeta(dir, meta('feature/x'));
-    await fs.writeFile(path.join(storagePath, 'parse-cache.json'), '{}');
-
-    execSync('git branch -D feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    if (opts?.deleteBranch) {
+      execSync('git branch -D feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    }
     vi.spyOn(process, 'cwd').mockReturnValue(repo);
     vi.spyOn(console, 'log').mockImplementation(() => {});
+    return { repo, dir, storagePath };
+  }
+
+  it('reclaims a slot after the git branch is deleted', async () => {
+    const { dir, storagePath } = await seedFeatureXSlot({ deleteBranch: true });
+    await fs.writeFile(path.join(storagePath, 'parse-cache.json'), '{}');
 
     await cleanCommand({ stale: true, force: true });
 
@@ -76,30 +87,7 @@ describe('clean --stale leftover branch slots (#3331)', () => {
   });
 
   it('keeps a live slot when a tag shares the branch name', async () => {
-    const repo = fixture.dbPath;
-    initGitRepo(repo);
-    await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
-    commitAll(repo, 'init');
-    execSync('git branch -M main', { cwd: repo, stdio: 'ignore', windowsHide: true });
-    execSync('git branch feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-    execSync('git tag feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-
-    const storagePath = path.join(repo, '.gitnexus');
-    const meta = (branch: string): RepoMeta => ({
-      repoPath: repo,
-      lastCommit: 'aaa',
-      indexedAt: '2026-09-20T00:00:00.000Z',
-      branch,
-      stats: { files: 1, nodes: 1 },
-    });
-    await saveMeta(storagePath, meta('main'));
-    await registerRepo(repo, meta('main'));
-    await registerRepo(repo, meta('feature/x'), { branch: 'feature/x' });
-    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
-    await saveMeta(dir, meta('feature/x'));
-
-    vi.spyOn(process, 'cwd').mockReturnValue(repo);
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { dir } = await seedFeatureXSlot({ tag: true });
 
     await cleanCommand({ stale: true, force: true });
 
@@ -109,31 +97,7 @@ describe('clean --stale leftover branch slots (#3331)', () => {
   });
 
   it('reclaims a slot after the branch is deleted even if a tag keeps the name', async () => {
-    const repo = fixture.dbPath;
-    initGitRepo(repo);
-    await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
-    commitAll(repo, 'init');
-    execSync('git branch -M main', { cwd: repo, stdio: 'ignore', windowsHide: true });
-    execSync('git branch feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-    execSync('git tag feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-
-    const storagePath = path.join(repo, '.gitnexus');
-    const meta = (branch: string): RepoMeta => ({
-      repoPath: repo,
-      lastCommit: 'aaa',
-      indexedAt: '2026-09-20T00:00:00.000Z',
-      branch,
-      stats: { files: 1, nodes: 1 },
-    });
-    await saveMeta(storagePath, meta('main'));
-    await registerRepo(repo, meta('main'));
-    await registerRepo(repo, meta('feature/x'), { branch: 'feature/x' });
-    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
-    await saveMeta(dir, meta('feature/x'));
-
-    execSync('git branch -D feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
-    vi.spyOn(process, 'cwd').mockReturnValue(repo);
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { dir } = await seedFeatureXSlot({ tag: true, deleteBranch: true });
 
     await cleanCommand({ stale: true, force: true });
 
