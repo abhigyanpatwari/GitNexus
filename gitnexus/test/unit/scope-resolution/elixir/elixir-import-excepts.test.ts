@@ -65,10 +65,10 @@ describe('Elixir import except augmentation', () => {
     const importer = {
       filePath: 'importer.ex',
       moduleScope: importerScope,
-      parsedImports: [{ kind: 'wildcard', targetRaw: 'Filtered', declaredAtScope: importerScope }],
+      parsedImports: [],
       localDefs: [],
       referenceSites: [],
-      scopes: [],
+      scopes: [{ id: importerScope, range: { startLine: 1, startCol: 0, endLine: 9, endCol: 0 } }],
       captureSideChannel: {
         kind: 'elixir',
         importExcepts: [
@@ -92,6 +92,7 @@ describe('Elixir import except augmentation', () => {
         callable('visible', 1),
         callable('hidden', 1),
         callable('hidden', 2),
+        { ...callable('nested', 0), qualifiedName: 'Filtered.Nested.nested' },
         callable('private', 0, false),
       ],
     } as unknown as ParsedFile;
@@ -110,6 +111,7 @@ describe('Elixir import except augmentation', () => {
         .get('hidden')
         .map((binding: { def: SymbolDefinition }) => binding.def.parameterCount),
     ).toEqual([2]);
+    expect(augmentations.get(importerScope)!.has('nested')).toBe(false);
   });
 
   it('filters category-only imports by exported Function or Macro kind', () => {

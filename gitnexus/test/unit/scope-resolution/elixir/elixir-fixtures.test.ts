@@ -56,12 +56,16 @@ describe('Elixir scope captures', () => {
         .filter((def) => def.qualifiedName === 'Actual.Name.same')
         .map((def) => def.type),
     ).toEqual(expect.arrayContaining(['Function', 'Macro']));
-    expect(parsed?.parsedImports).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ kind: 'wildcard', targetRaw: 'Filtered' }),
-      ]),
-    );
+    expect(parsed?.parsedImports.some((imp) => imp.targetRaw === 'Filtered')).toBe(false);
     expect(parsed?.parsedImports.some((imp) => imp.targetRaw === 'Helpers')).toBe(false);
+    expect(
+      elixirProvider.collectCaptureSideChannel?.('lib/filename_does_not_define_the_module.ex'),
+    ).toMatchObject({
+      kind: 'elixir',
+      importExcepts: [
+        expect.objectContaining({ target: 'Filtered', excluded: [{ name: 'hidden', arity: 1 }] }),
+      ],
+    });
     const calls = parsed?.referenceSites ?? [];
     expect(calls.filter((site) => site.name === 'allowed').map((site) => site.arity)).toEqual([1]);
     expect(
@@ -87,6 +91,21 @@ describe('Elixir scope captures', () => {
       Nested: 'Actual.Name.Nested',
       One: 'Prefix.One',
       Two: 'Prefix.Two',
+    });
+  });
+
+  it('records a `from p in Schema` query fact without relying on Repo calls', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'from-query.ex');
+    extractParsedFile(
+      elixirProvider,
+      'defmodule Queries do\n  def all, do: from p in MyApp.Post\nend',
+      'lib/from_query.ex',
+    );
+    expect(elixirProvider.collectCaptureSideChannel?.('lib/from_query.ex')).toMatchObject({
+      kind: 'elixir',
+      frameworkFacts: [
+        expect.objectContaining({ kind: 'query', method: 'from', model: 'MyApp.Post' }),
+      ],
     });
   });
 

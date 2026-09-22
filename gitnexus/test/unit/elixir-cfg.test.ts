@@ -114,12 +114,20 @@ describe('Elixir CFG visitor', () => {
     expect(read).toBeGreaterThanOrEqual(0);
     expect(nested[wrapper]!.parent).toEqual([evalSite, 0]);
     expect(nested[read]!.parent).toEqual([wrapper, 0]);
+    const piped = cfg.blocks.find((block) => block.text.includes('|> Code.eval_string'))!
+      .statements![0]!.sites!;
+    const pipedRead = piped.findIndex((site) => site.kind === 'member-read');
+    const pipedEval = piped.findIndex(
+      (site) => site.kind === 'call' && site.callee === 'Code.eval_string',
+    );
+    expect(pipedRead).toBeGreaterThanOrEqual(0);
+    expect(piped[pipedRead]!.parent).toEqual([pipedEval, 0]);
     const findings = computeTaintFlows(
       cfg,
       computeReachingDefs(cfg),
       matchFunctionSites(cfg, ELIXIR_TAINT_MODEL, buildTaintImportIndex([])),
     ).findings.filter((finding) => finding.sink.entryName === 'eval_string');
-    expect(findings).toHaveLength(2);
+    expect(findings).toHaveLength(3);
   });
 
   it('uses source-range parents for repeated callees and shifted pipe arguments', async () => {

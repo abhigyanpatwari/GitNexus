@@ -104,7 +104,12 @@ function populateElixirImportFilters(
       const bucket = augmentations.get(scopeId) ?? new Map<string, BindingRef[]>();
       augmentations.set(scopeId, bucket);
       for (const def of targets[0]!.localDefs) {
-        if ((def.type !== 'Function' && def.type !== 'Macro') || def.isExported === false) continue;
+        if (
+          (def.type !== 'Function' && def.type !== 'Macro') ||
+          def.isExported === false ||
+          def.qualifiedName !== `${fact.target}.${callableName(def)}`
+        )
+          continue;
         if (fact.mode === 'only' && fact.category === 'functions' && def.type !== 'Function')
           continue;
         if (fact.mode === 'only' && fact.category === 'macros' && def.type !== 'Macro') continue;

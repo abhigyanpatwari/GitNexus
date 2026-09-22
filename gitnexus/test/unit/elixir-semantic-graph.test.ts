@@ -61,6 +61,23 @@ describe('Elixir semantic graph', () => {
       expect(graph.nodes.map((node) => node.properties.qualifiedName)).not.toContain(name);
   });
 
+  it('does not classify a module as an interface from a quoted callback', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'quoted-callback.ex');
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const graph = extractElixirSemanticGraph(
+      parser.parse(`defmodule M do
+        quote do
+          @callback run(term()) :: term()
+        end
+      end`),
+      'lib/quoted_callback.ex',
+    );
+    expect(graph.nodes.find((node) => node.properties.qualifiedName === 'M')?.label).toBe('Class');
+  });
+
   it('emits canonical zero-arity ordinary and guarded declarations', async () => {
     await loadLanguage(SupportedLanguages.Elixir, 'zero-arity.ex');
     const parser = new Parser();
@@ -245,12 +262,10 @@ describe('Elixir semantic graph', () => {
         expect.objectContaining({ elixirKind: 'genserver-call', target: 'Worker' }),
       ]),
     );
-    expect(evidence).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ elixirKind: 'supervisor-child', target: 'dynamic_child' }),
-        expect.objectContaining({ elixirKind: 'genserver-cast' }),
-      ]),
+    expect(evidence).not.toContainEqual(
+      expect.objectContaining({ elixirKind: 'supervisor-child', target: 'dynamic_child' }),
     );
+    expect(evidence).not.toContainEqual(expect.objectContaining({ elixirKind: 'genserver-cast' }));
     expect(graph.relationships.filter((edge) => edge.type === 'DECLARES')).toHaveLength(4);
   });
 });

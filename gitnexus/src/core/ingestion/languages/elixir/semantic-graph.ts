@@ -104,6 +104,7 @@ function isBehaviourModule(node: SyntaxNode): boolean {
   const visit = (child: SyntaxNode): void => {
     if (found || (child.type === 'call' && keyword(child) === 'defmodule' && child !== node))
       return;
+    if (child.type === 'call' && keyword(child) === 'quote') return;
     if (child.type === 'unary_operator' && child.text.startsWith('@callback')) found = true;
     for (let i = 0; !found && i < child.namedChildCount; i++) {
       const next = child.namedChild(i);

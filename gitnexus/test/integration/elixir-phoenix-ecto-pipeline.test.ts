@@ -537,40 +537,17 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
       expect(callTargets('MyApp.AliasContainment.after_block')).not.toContain(
         'MyApp.Tasks.ExampleTask.run',
       );
-      expect(graph.relationships).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Blog.wildcard_private',
-            target: 'MyApp.Helpers.private',
-          }),
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Blog.wildcard_private_macro',
-            target: 'MyApp.Helpers.private_macro',
-          }),
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Blog.except_private',
-            target: 'MyApp.Helpers.private',
-          }),
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Blog.except_private_macro',
-            target: 'MyApp.Helpers.private_macro',
-          }),
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Blog.callback_call',
-            target: 'MyApp.Behaviour.required',
-          }),
-          expect.objectContaining({
-            type: 'CALLS',
-            source: 'MyApp.Behaviour.required',
-            target: 'MyApp.Behaviour.required',
-          }),
-        ]),
-      );
+      for (const [source, target] of [
+        ['MyApp.Blog.wildcard_private', 'MyApp.Helpers.private'],
+        ['MyApp.Blog.wildcard_private_macro', 'MyApp.Helpers.private_macro'],
+        ['MyApp.Blog.except_private', 'MyApp.Helpers.private'],
+        ['MyApp.Blog.except_private_macro', 'MyApp.Helpers.private_macro'],
+        ['MyApp.Blog.callback_call', 'MyApp.Behaviour.required'],
+        ['MyApp.Behaviour.required', 'MyApp.Behaviour.required'],
+      ])
+        expect(graph.relationships).not.toContainEqual(
+          expect.objectContaining({ type: 'CALLS', source, target }),
+        );
       expect(graph.relationships).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
@@ -580,18 +557,13 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
           }),
         ]),
       );
-      expect(graph.relationships).not.toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: 'METHOD_IMPLEMENTS',
-            source: 'MyApp.ArityImplementation.mismatch',
-          }),
-          expect.objectContaining({
-            type: 'METHOD_IMPLEMENTS',
-            source: 'MyApp.AmbiguousImplementation.ambiguous',
-          }),
-        ]),
-      );
+      for (const source of [
+        'MyApp.ArityImplementation.mismatch',
+        'MyApp.AmbiguousImplementation.ambiguous',
+      ])
+        expect(graph.relationships).not.toContainEqual(
+          expect.objectContaining({ type: 'METHOD_IMPLEMENTS', source }),
+        );
       expect(
         graph.nodes.filter(
           (node) => node.label === 'Class' && node.qualifiedName === 'MyApp.Blog.Post',

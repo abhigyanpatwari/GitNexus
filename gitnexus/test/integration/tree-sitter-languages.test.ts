@@ -1010,7 +1010,7 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
-  describe('Elixir', () => {
+  describe.skipIf(!isLanguageAvailable(SupportedLanguages.Elixir))('Elixir', () => {
     const elixirQueries = () => getProvider(SupportedLanguages.Elixir).treeSitterQueries;
 
     async function loadElixir(): Promise<void> {

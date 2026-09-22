@@ -298,6 +298,15 @@ class ElixirHarvester {
     visitCalls(node);
     for (let i = 0; i < memberNodes.length; i++) {
       const member = memberNodes[i]!;
+      const pipe = isPipe(member.parent) ? member.parent : undefined;
+      const pipedCall = pipe?.namedChildren[1];
+      if (pipedCall?.type === 'call') {
+        const parentIndex = callSites.get(key(pipedCall)) ?? -1;
+        if (parentIndex >= 0) {
+          sites[i] = { ...sites[i]!, parent: [parentIndex, 0] };
+          continue;
+        }
+      }
       for (let ancestor = member.parent; ancestor; ancestor = ancestor.parent) {
         if (ancestor.type !== 'call') continue;
         const args = ancestor.namedChildren.find((child) => child.type === 'arguments');

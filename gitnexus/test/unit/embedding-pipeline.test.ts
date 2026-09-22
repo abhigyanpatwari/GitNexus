@@ -16,6 +16,7 @@ import {
   STRUCTURAL_LABELS,
 } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
+import { extractStructuralNames } from '../../src/core/embeddings/structural-extractor.js';
 
 const CLASS_CHUNK_SIZE = 90;
 const CLASS_OVERLAP = 10;
@@ -31,6 +32,15 @@ describe('embedding schema column contracts', () => {
     expect(STRUCTURAL_LABELS.has(LABEL_CATEGORY)).toBe(false);
     expect(EMBEDDABLE_LABELS).toContain(LABEL_PROTOCOL);
     expect(EMBEDDABLE_LABELS).toContain(LABEL_CATEGORY);
+  });
+
+  it('extracts method names from an Elixir defmodule snippet', async () => {
+    await expect(
+      extractStructuralNames(
+        'defmodule Example do\n  def run(value), do: value\nend',
+        'example.ex',
+      ),
+    ).resolves.toMatchObject({ methodNames: ['run'] });
   });
 });
 

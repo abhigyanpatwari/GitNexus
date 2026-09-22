@@ -111,6 +111,7 @@ export const findDeclarationNode = (root: any): any | null => {
     'declaration', // Go: type X struct
     'object_declaration', // Kotlin: object
     'impl_item', // Rust: impl
+    'call', // Elixir: defmodule
   ]);
 
   // Iterative DFS — avoids stack overflow on deeply nested ASTs.

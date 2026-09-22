@@ -372,7 +372,16 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
         const inPair = keywords?.namedChildren.find(
           (value) => value.type === 'pair' && value.namedChild(0)?.text.trim() === 'in:',
         );
-        const model = alias(inPair?.namedChild(1) as SyntaxNode);
+        const inExpression = values.find(
+          (value) =>
+            value.type === 'binary_operator' &&
+            value.childForFieldName?.('left')?.type === 'identifier' &&
+            value.childForFieldName?.('right')?.type === 'alias' &&
+            /\bin\b/.test(value.text),
+        );
+        const model = alias(
+          (inPair?.namedChild(1) ?? inExpression?.childForFieldName?.('right')) as SyntaxNode,
+        );
         if (model)
           facts.push({ kind: 'query', model, method: 'from', line: node.startPosition.row + 1 });
       }
@@ -687,7 +696,13 @@ function emitElixirScopeCaptures(
             startCol: node.startPosition.column,
           });
         } else if (target?.type === 'alias') {
-          add('@import.statement', node, { '@import.source': target, '@import.wildcard': target });
+          // `bindingAugmentations` can only add references after wildcard imports
+          // are finalized, so an `except` import must not emit a wildcard here.
+          if (!except)
+            add('@import.statement', node, {
+              '@import.source': target,
+              '@import.wildcard': target,
+            });
           if (except?.type === 'list') {
             const excluded = except.namedChildren
               .flatMap((entry) => (entry.type === 'keywords' ? entry.namedChildren : [entry]))
