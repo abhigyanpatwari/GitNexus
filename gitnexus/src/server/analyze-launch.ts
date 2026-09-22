@@ -444,6 +444,9 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             error: `Worker process error: ${err.message}`,
           });
         }
+        // `fork`/`error` without `exit` (spawn failure) would otherwise keep
+        // the child in JobManager and block every later createJob.
+        jobManager.releaseChild(job.id);
       });
 
       child.on('exit', (code) => {

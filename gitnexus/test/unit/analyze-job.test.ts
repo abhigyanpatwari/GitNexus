@@ -292,6 +292,25 @@ describe('JobManager', () => {
     expect(manager.getJob(job.id)!.error).toBe('Analysis timed out (30 minute limit)');
   });
 
+  it('releaseChild frees the slot when a failed job never emits exit', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.updateJob(job.id, { status: 'failed', error: 'Worker process error: spawn ENOENT' });
+
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+    manager.releaseChild(job.id);
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
   it('cancelJob falls back to a signal when the IPC channel is already closed', () => {
     const job = manager.createJob({ repoPath: '/tmp/repo' });
     manager.updateJob(job.id, { status: 'analyzing' });

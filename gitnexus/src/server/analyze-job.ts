@@ -218,17 +218,7 @@ export class JobManager {
     // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
     // crash-retry) see a still-non-terminal job and fork a replacement worker.
     const onExit = (): void => {
-      this.children.delete(jobId);
-      const t = this.timeouts.get(jobId);
-      if (t) {
-        clearTimeout(t);
-        this.timeouts.delete(jobId);
-      }
-      const grace = this.cancelGraceTimers.get(jobId);
-      if (grace) {
-        clearTimeout(grace);
-        this.cancelGraceTimers.delete(jobId);
-      }
+      this.releaseChild(jobId);
       this.applyPendingCancel(jobId);
     };
     if (typeof child.prependListener === 'function') {
@@ -241,6 +231,25 @@ export class JobManager {
   /** True while cancel was requested and the worker has not exited yet. */
   hasPendingCancel(jobId: string): boolean {
     return this.pendingCancelReasons.has(jobId);
+  }
+
+  /**
+   * Drop a registered child without waiting for `exit`. Spawn failures emit
+   * `error` and never `exit`, which would otherwise leave `isSlotOccupied`
+   * true forever after the job is already failed.
+   */
+  releaseChild(jobId: string): void {
+    this.children.delete(jobId);
+    const t = this.timeouts.get(jobId);
+    if (t) {
+      clearTimeout(t);
+      this.timeouts.delete(jobId);
+    }
+    const grace = this.cancelGraceTimers.get(jobId);
+    if (grace) {
+      clearTimeout(grace);
+      this.cancelGraceTimers.delete(jobId);
+    }
   }
 
   /**

@@ -159,7 +159,8 @@ export const serializeOpsJob = (
 ): OpsJobView => {
   const end = job.completedAt ?? now;
   // Prefer the registered short name. Fall back to a basename only — never
-  // emit raw repoUrl/repoPath on the unauthenticated ops feed.
+  // emit raw repoUrl/repoPath or the requested branch on the unauthenticated
+  // ops feed (a ref can name a private project the same way a path would).
   const repoName =
     job.repoName || publicRepoNameFromUrl(job.repoUrl) || publicRepoNameFromPath(job.repoPath);
   return {
@@ -167,7 +168,6 @@ export const serializeOpsJob = (
     lane,
     status: job.status,
     repoName,
-    branch: job.branch,
     progress: publicOpsProgress(job.progress),
     error: job.error ? redactPublicText(job.error) : undefined,
     partial: job.partial,

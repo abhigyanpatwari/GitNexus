@@ -28,6 +28,18 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.repoName).toBe('repo');
     expect(view.repoUrl).toBeUndefined();
     expect(view.repoPath).toBeUndefined();
+    expect(view.branch).toBeUndefined();
+  });
+
+  it('omits the requested branch from the public ops view', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'customer/acme-release',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.branch).toBeUndefined();
+    expect(JSON.stringify(view)).not.toContain('customer');
+    expect(JSON.stringify(view)).not.toContain('acme-release');
   });
 
   it('strips query and fragment when deriving repoName from repoUrl', () => {

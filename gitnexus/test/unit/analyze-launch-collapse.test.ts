@@ -460,4 +460,11 @@ describe('createLaunchAnalysisWorker — pending cancel', () => {
     expect(jobManager.getJob(job.id)?.status).toBe('failed');
     expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
   });
+
+  it('releases the analyze slot when the worker emits error without exit', async () => {
+    const job = await launchOne();
+    child.emit('error', new Error('spawn ENOENT'));
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
 });
