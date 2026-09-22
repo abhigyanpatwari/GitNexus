@@ -46,7 +46,7 @@ import {
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
-import { normalizePath } from '../lib/path-resolution';
+import { normalizePath, resolveUniqueIndexedPath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
 import { GraphStateProvider, useGraphState, type GraphMode } from './app-state/graph';
 
@@ -421,18 +421,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, [graph]);
 
   const resolveFilePath = useCallback(
-    (requestedPath: string): string | null => {
-      const normalized = normalizePath(requestedPath);
-      // Empty path would make every key.endsWith('') true and pick the first file.
-      if (!normalized) return null;
-      // Exact match
-      if (filePathIndex.has(normalized)) return filePathIndex.get(normalized)!;
-      // Suffix match (partial paths like "src/utils.ts")
-      for (const [key, value] of filePathIndex) {
-        if (key.endsWith(normalized)) return value;
-      }
-      return null;
-    },
+    (requestedPath: string): string | null =>
+      resolveUniqueIndexedPath(filePathIndex, requestedPath),
     [filePathIndex],
   );
 

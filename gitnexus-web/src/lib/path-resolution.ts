@@ -4,6 +4,29 @@ export const normalizePath = (p: string): string => {
 };
 
 /**
+ * Resolve a citation against a normalized→original graph path index.
+ * Exact match wins. A suffix match is accepted only when it is unique —
+ * `index.ts` must not silently pick the first filePathIndex entry.
+ */
+export const resolveUniqueIndexedPath = (
+  filePathIndex: ReadonlyMap<string, string>,
+  requestedPath: string,
+): string | null => {
+  const normalized = normalizePath(requestedPath);
+  if (!normalized) return null;
+  const exact = filePathIndex.get(normalized);
+  if (exact !== undefined) return exact;
+
+  let unique: string | undefined;
+  for (const [key, value] of filePathIndex) {
+    if (!key.endsWith(normalized)) continue;
+    if (unique !== undefined) return null;
+    unique = value;
+  }
+  return unique ?? null;
+};
+
+/**
  * Resolve a user-supplied path (which may be partial) to an exact file path in the repo.
  * Follows the same heuristics previously embedded in useAppState:
  * 1) exact match, 2) ends-with match (prefers shorter paths), 3) segment containment.
