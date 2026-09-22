@@ -164,12 +164,15 @@ test.describe('Analyze — failure, retry, cancel', () => {
     test.setTimeout(180_000);
     const { url, fixtures } = requireBackend();
     const second = writeTinyRepo(fixtures, 'lock-b');
+    await waitForAnalyzeSlotFree(url);
     const hold = await fetch(`${url}/api/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: MISSING_GITHUB }),
     });
+    expect(hold.status).toBe(202);
     const held = (await hold.json()) as { jobId?: string };
+    expect(held.jobId).toBeTruthy();
 
     await openAnalyzeForm(page);
     await page.getByRole('tab', { name: 'Local Folder' }).click();

@@ -953,6 +953,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           const paths = suffixFiles.map((r: any) => rowPath(r)).filter(Boolean) as string[];
           return `⚠️ AMBIGUOUS TARGET: Multiple files match "${target}":\n\n${paths.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
         }
+        // LIMIT 10 is a cap. A single suffix-matching File in that page can
+        // still hide another File past the limit — only exact path is safe.
+        if (!exactFile && fileMatch && targetResults.length >= 10) {
+          const distinctPaths = [...new Set<string>(allPaths)];
+          return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+        }
         if (fileMatch) {
           targetNode = fileMatch;
         } else {

@@ -163,15 +163,19 @@ const PATH_WITH_INTERNAL_SPACE = String.raw`[^\s"')]+(?: [^\s"')]*[\\/][^\s"')]*
  * Windows / UNC filesystem paths so a LAN or official-Vercel origin cannot
  * recover home-directory layout or private org/repo names from /api/ops.
  *
- * When the job's `repoPath` / `repoUrl` are known, those literals are replaced
- * first (longest first) so a clone dir with spaces cannot leak around `[^\s]+`.
+ * Remote URL forms are replaced first. Known `repoPath` / `repoUrl` literals
+ * then run (longest first) so a clone dir with spaces cannot leak around
+ * `[^\s]+`, then the filesystem path regexes.
  */
-export const redactPublicText = (text: string, known?: Array<string | undefined>): string =>
-  redactKnownLocations(text, known)
+const redactRemoteUrls = (text: string): string =>
+  text
     .replace(/https?:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/ssh:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/file:\/\/[^\s"']+/gi, (raw) => preserveTrailingPunct(raw, '[path]'))
-    .replace(/[\w.-]+@[\w.-]+:[^\s"')]+/g, (raw) => preserveTrailingPunct(raw, '[repo]'))
+    .replace(/[\w.-]+@[\w.-]+:[^\s"')]+/g, (raw) => preserveTrailingPunct(raw, '[repo]'));
+
+const redactFilesystemPaths = (text: string): string =>
+  text
     .replace(new RegExp(`[A-Za-z]:[\\\\/]${PATH_WITH_INTERNAL_SPACE}`, 'g'), (raw) =>
       preserveTrailingPunct(raw, '[path]'),
     )
@@ -183,6 +187,15 @@ export const redactPublicText = (text: string, known?: Array<string | undefined>
       (_m, prefix: string, absPath: string) =>
         `${prefix}${preserveTrailingPunct(absPath, '[path]')}`,
     );
+
+/**
+ * Remote URL forms first so a known `repoUrl` that is a prefix of a longer
+ * URL cannot punch a hole (`[repo]/other?token=`) before the URL scrubber
+ * runs. Known filesystem literals still run before the path regexes so a
+ * clone dir with spaces cannot leak around `[^\s]+`.
+ */
+export const redactPublicText = (text: string, known?: Array<string | undefined>): string =>
+  redactFilesystemPaths(redactKnownLocations(redactRemoteUrls(text), known));
 
 /**
  * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via

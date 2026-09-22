@@ -128,9 +128,10 @@ export class JobManager {
           (params.repoUrl && job.repoUrl === params.repoUrl) ||
           (params.repoPath && job.repoPath === params.repoPath);
         if (isSameRepo && job.branch === params.branch) {
-          // A pending cancel still occupies the slot, but the job is dying —
-          // do not 202-reuse it. Fall through to the single-slot throw.
-          if (this.hasPendingCancel(job.id)) continue;
+          // A dying job still occupies the slot (pending cancel, or already
+          // failed while the child/lock is held until exit). Do not 202-reuse
+          // it — fall through to the single-slot throw.
+          if (this.hasPendingCancel(job.id) || this.isTerminal(job.status)) continue;
           return job;
         }
       }

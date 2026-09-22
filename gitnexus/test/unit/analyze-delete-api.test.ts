@@ -94,6 +94,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  for (const manager of captured.managers) manager.dispose();
   for (const event of events) {
     for (const listener of process.listeners(event)) {
       if (!originalListeners.get(event)!.includes(listener)) {

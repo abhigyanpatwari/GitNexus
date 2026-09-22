@@ -296,6 +296,36 @@ describe('JobManager', () => {
     expect(manager.createJob({ repoPath: '/tmp/repo' }).status).toBe('queued');
   });
 
+  it('createJob rejects same-repo reuse after cancel IPC is consumed but the child remains', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(manager.applyPendingCancel(job.id)).toBe(true);
+    expect(manager.getJob(job.id)?.status).toBe('failed');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+    expect(() => manager.createJob({ repoPath: '/tmp/repo' })).toThrow(
+      /Analysis already in progress/,
+    );
+
+    onExit?.();
+    expect(manager.createJob({ repoPath: '/tmp/repo' }).status).toBe('queued');
+  });
+
   it('applyPendingCancel writes the caller reason and ignores a later worker error', () => {
     const job = manager.createJob({ repoPath: '/tmp/repo' });
     manager.updateJob(job.id, { status: 'analyzing' });

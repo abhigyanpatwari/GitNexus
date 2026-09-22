@@ -86,6 +86,21 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(JSON.stringify(view)).not.toContain('github.com');
   });
 
+  it('redacts a longer URL even when the known repoUrl is a prefix of it', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://host/org/repo',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'clone failed https://host/org/repo/other?token=secret',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('clone failed [repo]');
+    expect(JSON.stringify(view)).not.toContain('token=secret');
+    expect(JSON.stringify(view)).not.toContain('/other');
+    expect(JSON.stringify(view)).not.toContain('host/org');
+  });
+
   it('redacts host, path, and query from a credential-stripped clone URL', () => {
     const job = manager.createJob({
       repoUrl: 'https://git.example/private/repo?token=x',

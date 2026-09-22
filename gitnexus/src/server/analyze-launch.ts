@@ -296,7 +296,9 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           });
         } else if (msg.type === 'complete') {
           if (jobManager.applyPendingCancel(job.id)) {
-            releaseLockOnce();
+            // Same as cancel `error` IPC: the worker still runs
+            // `boundedCheckpointBeforeExit` after sending terminal IPC.
+            holdLockUntilExit = true;
             return;
           }
           // Hold the write lock through settle AND the collapse/publish

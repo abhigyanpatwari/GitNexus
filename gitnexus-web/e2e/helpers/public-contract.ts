@@ -103,18 +103,25 @@ export async function startLiveBackend(): Promise<LiveBackend> {
   });
 
   const deadline = Date.now() + 45_000;
-  for (;;) {
-    if (exited !== undefined) {
-      throw new Error(`live backend exited early (code ${exited}):\n${backend.log}`);
+  try {
+    for (;;) {
+      if (exited !== undefined) {
+        throw new Error(`live backend exited early (code ${exited}):\n${backend.log}`);
+      }
+      const ok = await fetch(`${backend.url}/api/health`, {
+        signal: AbortSignal.timeout(2_000),
+      })
+        .then((r) => r.ok)
+        .catch(() => false);
+      if (ok) return backend;
+      if (Date.now() > deadline) {
+        throw new Error(`live backend did not become ready on ${backend.url}:\n${backend.log}`);
+      }
+      await new Promise((r) => setTimeout(r, 250));
     }
-    const ok = await fetch(`${backend.url}/api/health`)
-      .then((r) => r.ok)
-      .catch(() => false);
-    if (ok) return backend;
-    if (Date.now() > deadline) {
-      throw new Error(`live backend did not become ready on ${backend.url}:\n${backend.log}`);
-    }
-    await new Promise((r) => setTimeout(r, 250));
+  } catch (err) {
+    await stopLiveBackend(backend);
+    throw err;
   }
 }
 
@@ -123,7 +130,17 @@ export async function stopLiveBackend(backend: LiveBackend | undefined): Promise
   if (backend.child.exitCode === null && backend.child.signalCode === null) {
     const exited = new Promise<void>((resolve) => backend.child.once('exit', () => resolve()));
     backend.child.kill('SIGTERM');
-    await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        exited,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, 5_000);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
   try {
     fs.rmSync(backend.home, { recursive: true, force: true });
@@ -170,7 +187,8 @@ export async function waitForAnalyzeSlotFree(
   backendUrl: string,
   timeoutMs = 90_000,
 ): Promise<void> {
-  const probe = path.join(os.tmpdir(), `gn-e2e-slot-${Date.now()}.txt`);
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-e2e-slot-'));
+  const probe = path.join(probeDir, 'not-a-repo.txt');
   fs.writeFileSync(probe, 'not-a-repo\n');
   const deadline = Date.now() + timeoutMs;
   try {
@@ -197,7 +215,7 @@ export async function waitForAnalyzeSlotFree(
     }
   } finally {
     try {
-      fs.rmSync(probe, { force: true });
+      fs.rmSync(probeDir, { recursive: true, force: true });
     } catch {
       /* best-effort */
     }
@@ -251,28 +269,31 @@ export async function bindBackend(page: Page, backendUrl: string): Promise<void>
   }, backendUrl);
 }
 
+function frontendHref(pathAndQuery: string): string {
+  const base = FRONTEND_URL.endsWith('/') ? FRONTEND_URL : `${FRONTEND_URL}/`;
+  return new URL(pathAndQuery.replace(/^\//, ''), base).href;
+}
+
 export async function openAnalyzeForm(page: Page): Promise<void> {
-  // Stay on `/` (localStorage already has the backend). `?server=` makes App
-  // auto-load the last graph and never show the form. DropZone on `/` shows
-  // onboarding (0 repos) or landing + analyze (N repos) — no graph download.
-  await page.goto('/');
+  // Stay on the configured frontend (localStorage already has the backend).
+  // `?server=` makes App auto-load the last graph and never show the form.
+  // DropZone on `/` shows onboarding (0 repos) or landing + analyze (N repos).
+  await page.goto(frontendHref('/'));
   await expect(page.getByRole('tab', { name: 'GitHub URL' })).toBeVisible({ timeout: 30_000 });
 }
 
 export async function openOps(page: Page, backendUrl: string): Promise<void> {
-  await page.goto(`/?view=ops&server=${encodeURIComponent(backendUrl)}`);
+  await page.goto(frontendHref(`/?view=ops&server=${encodeURIComponent(backendUrl)}`));
   await expect(page.locator('[data-testid="ops-dashboard"]')).toBeVisible({ timeout: 20_000 });
 }
 
 /** Empty string means go; otherwise a skip reason (or throw under E2E=1). */
 export async function livePrereqSkipReason(): Promise<string> {
-  const frontendUp =
-    (await fetch(FRONTEND_URL)
+  const probe = (url: string) =>
+    fetch(url, { signal: AbortSignal.timeout(2_000) })
       .then((r) => r.ok)
-      .catch(() => false)) ||
-    (await fetch('http://localhost:5173')
-      .then((r) => r.ok)
-      .catch(() => false));
+      .catch(() => false);
+  const frontendUp = (await probe(FRONTEND_URL)) || (await probe('http://localhost:5173'));
   const cliReady = fs.existsSync(TSX_BIN) || fs.existsSync(CLI_DIST);
   if (process.env.E2E) {
     if (!cliReady) throw new Error(`backend CLI missing (${CLI_TS} / ${CLI_DIST})`);

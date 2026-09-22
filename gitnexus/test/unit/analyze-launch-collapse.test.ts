@@ -469,6 +469,33 @@ describe('createLaunchAnalysisWorker — pending cancel', () => {
     expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 
+  it('holds the repo lock until exit after complete IPC when cancel is already pending', async () => {
+    const releaseRepoLock = vi.fn();
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock,
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', completeMessage());
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(() => jobManager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+
+    child.emit('exit', 0);
+
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
   it('holds the repo lock until exit after cancel error IPC', async () => {
     const releaseRepoLock = vi.fn();
     const launch = createLaunchAnalysisWorker({
