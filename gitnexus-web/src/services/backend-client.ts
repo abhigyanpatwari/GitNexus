@@ -428,7 +428,7 @@ export const getBackendUrl = (): string => _backendUrl;
  * Strip `user[:password]@` userinfo from an http(s) URL so credentials never
  * land in `?server=`, history, or `_backendUrl` display/storage paths.
  */
-export function stripBackendUrlCredentials(url: string): string {
+function stripBackendUrlCredentials(url: string): string {
   try {
     const parsed = new URL(url);
     if (!parsed.username && !parsed.password) return url;

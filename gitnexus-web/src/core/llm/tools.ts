@@ -947,10 +947,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         const exactFile = fileRows.find((r: any) => rowPath(r)?.toLowerCase() === targetLower);
         const suffixFiles = exactFile
           ? []
-          : fileRows.filter((r: any) => {
-              const filePath = rowPath(r)?.toLowerCase();
-              return filePath === targetLower || filePath?.endsWith(`/${targetLower}`) === true;
-            });
+          : fileRows.filter((r: any) => rowPath(r)?.toLowerCase()?.endsWith(`/${targetLower}`));
         const fileMatch = exactFile ?? (suffixFiles.length === 1 ? suffixFiles[0] : undefined);
         if (suffixFiles.length > 1) {
           const paths = suffixFiles.map((r: any) => rowPath(r)).filter(Boolean) as string[];

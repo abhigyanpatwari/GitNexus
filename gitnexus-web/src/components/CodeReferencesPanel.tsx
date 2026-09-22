@@ -262,8 +262,6 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     if (pending.length === 0) return;
     for (const ref of pending) requestedSnippetIds.current.add(ref.id);
 
-    const repo = currentRepo || projectName || undefined;
-
     mapWithConcurrency(pending, CITATION_SNIPPET_CONCURRENCY, async (ref) => {
       const hasRange = typeof ref.startLine === 'number';
       // Range-less citations must not download/highlight the entire file.
@@ -271,12 +269,11 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       const refEnd = hasRange
         ? (ref.endLine ?? refStart)
         : Math.max(0, RANGELESS_CITATION_LINES - 1);
-      const options = {
-        startLine: Math.max(0, refStart - (hasRange ? CITATION_CONTEXT_LINES : 0)),
-        endLine: refEnd + (hasRange ? CITATION_CONTEXT_LINES : 0),
-      };
+      const options = hasRange
+        ? selectedNodeFileRange(refStart, refEnd, CITATION_CONTEXT_LINES)
+        : { startLine: 0, endLine: refEnd };
       try {
-        const result = await readFile(ref.filePath, { ...options, repo });
+        const result = await readFile(ref.filePath, { ...options, repo: snippetRepoKey });
         const start = result.startLine ?? 0;
         const lineCount = result.content.split('\n').length;
         const snippet: CitationSnippet = {
@@ -293,10 +290,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       }
     }).then((entries) => {
       // Repo switch already cleared the set and started a replacement batch.
-      // Same-repo append replaces this effect; apply the in-flight reads
-      // instead of freeing ids and bumping a retry epoch (that loop cancels
-      // the replacement batch).
-      if (snippetRepoKeyRef.current !== repo) return;
+      if (snippetRepoKeyRef.current !== snippetRepoKey) return;
       const loaded = entries.filter((e): e is readonly [string, CitationSnippet] => e !== null);
       if (loaded.length === 0) return;
       setCitationSnippets((prev) => {
@@ -307,7 +301,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
         return next;
       });
     });
-  }, [aiReferences, currentRepo, projectName]);
+  }, [aiReferences, snippetRepoKey]);
 
   const refsWithSnippets = useMemo(() => {
     return aiReferences.map((ref) => {
@@ -525,7 +519,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -598,7 +592,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label

@@ -24,7 +24,7 @@ export function selectedNodeLineHighlighted(
   storedStart: number,
   storedEnd: number | undefined,
 ): boolean {
-  const displayStart = storedStart + 1;
-  const displayEnd = (storedEnd ?? storedStart) + 1;
+  const displayStart = selectedNodeDisplayLine(storedStart);
+  const displayEnd = selectedNodeDisplayLine(storedEnd ?? storedStart);
   return displayedLineNumber >= displayStart && displayedLineNumber <= displayEnd;
 }
