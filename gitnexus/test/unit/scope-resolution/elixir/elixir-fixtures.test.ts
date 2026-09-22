@@ -109,6 +109,39 @@ describe('Elixir scope captures', () => {
     });
   });
 
+  it('keeps literal atom resource filters while ignoring dynamic filters', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'routes.ex');
+    extractParsedFile(
+      elixirProvider,
+      `defmodule Router do
+  resources "/only", Controller, only: :index
+  resources "/except", Controller, except: :show
+  resources "/only-list", Controller, only: [:index, :show]
+  resources "/except-list", Controller, except: [:show, :delete]
+  resources "/dynamic", Controller, only: allowed_actions()
+end`,
+      'routes.ex',
+    );
+    const routes =
+      elixirProvider
+        .collectCaptureSideChannel?.('routes.ex')
+        ?.frameworkFacts?.filter((fact) => fact.kind === 'route') ?? [];
+    expect(routes.filter((fact) => fact.path === '/only')).toHaveLength(1);
+    expect(routes.some((fact) => fact.path === '/only/:id')).toBe(false);
+    expect(routes.some((fact) => fact.path === '/except/:id' && fact.action === 'show')).toBe(
+      false,
+    );
+    expect(routes.filter((fact) => fact.path.startsWith('/only-list'))).toHaveLength(2);
+    expect(routes.some((fact) => fact.path === '/only-list/new')).toBe(false);
+    expect(routes.some((fact) => fact.path === '/except-list/:id' && fact.action === 'show')).toBe(
+      false,
+    );
+    expect(
+      routes.some((fact) => fact.path.startsWith('/except-list') && fact.action === 'delete'),
+    ).toBe(false);
+    expect(routes.filter((fact) => fact.path.startsWith('/dynamic'))).toHaveLength(8);
+  });
+
   it('has identical cold and cached-tree ParsedFile output', async () => {
     await loadLanguage(SupportedLanguages.Elixir, 'cached.ex');
     const source =
@@ -164,9 +197,9 @@ describe('Elixir scope captures', () => {
     expect(
       elixirProvider.collectCaptureSideChannel?.('category-import-literals.ex'),
     ).toBeUndefined();
-    expect(parsed?.scopes.flatMap((scope) => [...scope.typeBindings.keys()]) ?? []).not.toEqual(
-      expect.arrayContaining(['Commented', 'Stringified', 'Heredoc', 'Quoted']),
-    );
+    const bindings = parsed?.scopes.flatMap((scope) => [...scope.typeBindings.keys()]) ?? [];
+    for (const forbidden of ['Commented', 'Stringified', 'Heredoc', 'Quoted'])
+      expect(bindings).not.toContain(forbidden);
   });
 
   it('extracts defmodule aliases as method owners and ordinary parameters', async () => {
@@ -221,5 +254,29 @@ describe('Elixir scope captures', () => {
       ]),
     );
     expect(parsed?.referenceSites.find((site) => site.name === 'init')).toBeUndefined();
+  });
+
+  it('classifies callback modules as interfaces and ignores quoted callbacks', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'behaviour.ex');
+    const parsed = extractParsedFile(
+      elixirProvider,
+      `defmodule Runner do
+  @callback run(term()) :: term()
+end
+defmodule Quoted do
+  quote do
+    @callback ignored(term()) :: term()
+  end
+end`,
+      'behaviour.ex',
+    );
+    expect(parsed?.localDefs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ qualifiedName: 'Runner', type: 'Interface' }),
+      ]),
+    );
+    expect(parsed?.localDefs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ qualifiedName: 'Quoted', type: 'Class' })]),
+    );
   });
 });

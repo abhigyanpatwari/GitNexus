@@ -158,6 +158,7 @@ function isInsideModuleAttribute(node: SyntaxNode): boolean {
 function isBehaviourModule(node: SyntaxNode): boolean {
   for (const child of node.namedChildren) {
     if (child.type === 'unary_operator' && child.text.startsWith('@callback')) return true;
+    if (child.type === 'call' && callKeyword(child as SyntaxNode) === 'quote') continue;
     if (child.type !== 'call' || callKeyword(child) !== 'defmodule') {
       if (isBehaviourModule(child as SyntaxNode)) return true;
     }
@@ -297,16 +298,20 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
         const path = elixirString(values[0]);
         const controller = alias(values[1]);
         const keywords = values.find((value) => value.type === 'keywords');
-        const filter = (name: string) =>
-          (
-            keywords?.namedChildren
-              .find(
-                (value) => value.type === 'pair' && value.namedChild(0)?.text.trim() === `${name}:`,
-              )
-              ?.namedChild(1) as SyntaxNode | undefined
-          )?.namedChildren
-            .map((value) => (value.type === 'atom' ? value.text.slice(1) : ''))
-            .filter(Boolean);
+        const filter = (name: string) => {
+          const value = keywords?.namedChildren
+            .find(
+              (entry) => entry.type === 'pair' && entry.namedChild(0)?.text.trim() === `${name}:`,
+            )
+            ?.namedChild(1) as SyntaxNode | undefined;
+          return value?.type === 'atom'
+            ? [value.text.slice(1)]
+            : value?.type === 'list'
+              ? value.namedChildren
+                  .filter((entry) => entry.type === 'atom')
+                  .map((entry) => entry.text.slice(1))
+              : undefined;
+        };
         const only = filter('only');
         const except = filter('except');
         if (path !== undefined && controller)
@@ -492,7 +497,11 @@ function emitElixirScopeCaptures(
     }
     const moduleDeclaration = match.captures.find((capture) => capture.name === 'declaration.class')
       ?.node as SyntaxNode | undefined;
-    if (moduleDeclaration && isBehaviourModule(moduleDeclaration)) {
+    const moduleCall =
+      moduleDeclaration?.type === 'call'
+        ? moduleDeclaration
+        : (moduleDeclaration?.parent?.parent as SyntaxNode | null | undefined);
+    if (moduleCall && isBehaviourModule(moduleCall)) {
       delete grouped['@declaration.class'];
       grouped['@declaration.interface'] = nodeToCapture(
         '@declaration.interface',

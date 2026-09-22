@@ -2999,10 +2999,26 @@ export const ELIXIR_QUERIES = `
       target: (identifier) @name))) @definition.function
 
 (call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+
+(call
   target: (identifier) @_def (#eq? @_def "defmacro")
   (arguments
     (call
       target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
 
 (call
   target: (identifier) @_def (#eq? @_def "defguard")
@@ -3011,10 +3027,26 @@ export const ELIXIR_QUERIES = `
       target: (identifier) @name))) @definition.macro
 
 (call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+
+(call
   target: (identifier) @_def (#eq? @_def "defdelegate")
   (arguments
     (call
       target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
 
 ; ── Private functions & macros ────────────────────────────────────────────────
 (call
@@ -3024,16 +3056,40 @@ export const ELIXIR_QUERIES = `
       target: (identifier) @name))) @definition.function
 
 (call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+
+(call
   target: (identifier) @_def (#eq? @_def "defmacrop")
   (arguments
     (call
       target: (identifier) @name))) @definition.macro
 
 (call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+
+(call
   target: (identifier) @_def (#eq? @_def "defguardp")
   (arguments
     (call
       target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
 
 ; ── Imports: import/use/require ───────────────────────────────────────────────
 (call

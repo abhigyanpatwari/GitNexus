@@ -156,23 +156,26 @@ class ElixirHarvester {
       node.type === 'binary_operator' &&
       /^\s*(=|<-)\s*$/.test(node.children.find((c) => !c.isNamed)?.text ?? '');
     const left = match ? node.namedChildren[0] : undefined;
-    const leftNames = left ? this.identifiers(left) : [];
-    const pinnedNames = new Set<string>();
+    const leftIdentifiers: SyntaxNode[] = [];
+    const pinnedIdentifiers = new Set<SyntaxNode>();
     if (left) {
-      const collectPins = (n: SyntaxNode): void => {
-        if (n.type === 'unary_operator' && n.text.startsWith('^')) {
-          const id = n.namedChildren.find((child) => child.type === 'identifier');
-          if (id) pinnedNames.add(id.text);
+      const collectLeft = (n: SyntaxNode, pinned = false): void => {
+        if (n.type === 'identifier' && n.text !== '_') {
+          leftIdentifiers.push(n);
+          if (pinned) pinnedIdentifiers.add(n);
         }
-        for (const child of n.namedChildren) collectPins(child);
+        if (n.type === 'unary_operator' && n.text.startsWith('^')) {
+          for (const child of n.namedChildren) collectLeft(child, true);
+          return;
+        }
+        for (const child of n.namedChildren) collectLeft(child, pinned);
       };
-      collectPins(left);
+      collectLeft(left);
     }
     if (left)
-      for (const name of leftNames) {
-        const pinned = pinnedNames.has(name);
-        if (pinned) uses.push(this.read(name, left));
-        else defs.push(this.bind(name, left));
+      for (const identifier of leftIdentifiers) {
+        if (pinnedIdentifiers.has(identifier)) uses.push(this.read(identifier.text, identifier));
+        else defs.push(this.bind(identifier.text, identifier));
       }
     const bareCallee =
       node.type === 'call' && node.childForFieldName?.('target')?.type === 'identifier'
@@ -180,7 +183,7 @@ class ElixirHarvester {
         : undefined;
     for (const name of this.identifiers(node, header)) {
       if (name === bareCallee) continue;
-      if (left && leftNames.includes(name)) continue;
+      if (left && leftIdentifiers.some((identifier) => identifier.text === name)) continue;
       uses.push(this.read(name, node));
     }
     const sites: SiteRecord[] = [];

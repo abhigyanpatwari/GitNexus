@@ -1036,6 +1036,57 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defNames).toContain('MyApp.Serializable');
     });
 
+    it('captures zero-arity and guarded declaration heads once', async () => {
+      await loadElixir();
+      const declarations = [
+        ['def zero_def, do: :ok', 'definition.function', 'zero_def'],
+        [
+          'def guarded_def(value) when is_binary(value), do: value',
+          'definition.function',
+          'guarded_def',
+        ],
+        ['defp zero_defp, do: :ok', 'definition.function', 'zero_defp'],
+        [
+          'defp guarded_defp(value) when is_binary(value), do: value',
+          'definition.function',
+          'guarded_defp',
+        ],
+        ['defmacro zero_macro, do: :ok', 'definition.macro', 'zero_macro'],
+        [
+          'defmacro guarded_macro(value) when is_binary(value), do: value',
+          'definition.macro',
+          'guarded_macro',
+        ],
+        ['defmacrop zero_macrop, do: :ok', 'definition.macro', 'zero_macrop'],
+        [
+          'defmacrop guarded_macrop(value) when is_binary(value), do: value',
+          'definition.macro',
+          'guarded_macrop',
+        ],
+        ['defguard zero_guard, do: true', 'definition.macro', 'zero_guard'],
+        [
+          'defguard guarded_guard(value) when is_binary(value)',
+          'definition.macro',
+          'guarded_guard',
+        ],
+        ['defguardp zero_guardp, do: true', 'definition.macro', 'zero_guardp'],
+        [
+          'defguardp guarded_guardp(value) when is_binary(value)',
+          'definition.macro',
+          'guarded_guardp',
+        ],
+        ['defdelegate zero_delegate, to: Remote', 'definition.function', 'zero_delegate'],
+      ] as const;
+      const { matches } = parseAndQuery(
+        parser,
+        declarations.map(([source]) => source).join('\n'),
+        elixirQueries(),
+      );
+      const definitions = extractDefinitions(matches).map(({ type, name }) => ({ type, name }));
+      const expected = declarations.map(([, type, name]) => ({ type, name }));
+      expect(definitions).toEqual(expected);
+    });
+
     it('captures import/alias/use/require as @import', async () => {
       await loadElixir();
       const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());

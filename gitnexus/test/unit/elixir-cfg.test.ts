@@ -53,6 +53,7 @@ describe('Elixir CFG visitor', () => {
     );
     const root = parser.parse(`def f(user_id, pair, flag) do
       {^user_id, id} = pair
+      {^user_id, user_id} = pair
       if flag do body_only(id) end
     end`).rootNode;
     const cfg = createElixirCfgVisitor().buildFunctionCfg(root.namedChildren[0]!, 'pin-header.ex')!;
@@ -60,6 +61,10 @@ describe('Elixir CFG visitor', () => {
       .statements![0]!;
     expect(cfg.bindings[match.uses[0]!]!.name).toBe('user_id');
     expect(cfg.bindings[match.defs[0]!]!.name).toBe('id');
+    const rebound = cfg.blocks.find((block) => block.text.includes('{^user_id, user_id}'))!
+      .statements![0]!;
+    expect(rebound.uses.map((index) => cfg.bindings[index]!.name)).toEqual(['user_id', 'pair']);
+    expect(rebound.defs.map((index) => cfg.bindings[index]!.name)).toEqual(['user_id']);
     const header = cfg.blocks.find((block) => block.text.startsWith('if flag'))!.statements![0]!;
     expect(header.uses.map((index) => cfg.bindings[index]!.name)).toEqual(['flag']);
   });

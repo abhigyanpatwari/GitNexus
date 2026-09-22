@@ -789,7 +789,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v109: Quoted Elixir captures are excluded from runtime call facts.
 // v110: Elixir import-category facts and CFG formal/anonymous-clause captures
 // change persisted worker output, so warm shards must be re-parsed.
-const SCHEMA_BUMP = 110;
+// v111: Elixir declaration captures, behaviour classification, pinned-match
+// CFG def/use facts, and literal Phoenix resource filters change persisted
+// ParsedFile and framework facts.
+const SCHEMA_BUMP = 111;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

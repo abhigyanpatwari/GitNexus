@@ -928,7 +928,8 @@ export const findEnclosingClassInfo = (
   /**
    * Optional: the type a CONTAINER node declares
    * (`LanguageProvider.resolveContainerTypeOwner`). Consulted for every
-   * ancestor the walk meets; it must return null for nodes it does not own.
+   * ancestor that reaches generic container resolution; it must return null
+   * for nodes it does not own.
    * This supports languages whose containers are outside `CLASS_CONTAINER_TYPES`
    * (for example, Elixir's `defmodule` call) or named from context (a
    * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
