@@ -229,14 +229,7 @@ export class JobManager {
         clearTimeout(grace);
         this.cancelGraceTimers.delete(jobId);
       }
-      const reason = this.pendingCancelReasons.get(jobId);
-      if (reason) {
-        this.pendingCancelReasons.delete(jobId);
-        const current = this.jobs.get(jobId);
-        if (current && !this.isTerminal(current.status)) {
-          this.updateJob(jobId, { status: 'failed', error: reason });
-        }
-      }
+      this.applyPendingCancel(jobId);
     };
     if (typeof child.prependListener === 'function') {
       child.prependListener('exit', onExit);
@@ -248,6 +241,23 @@ export class JobManager {
   /** True while cancel was requested and the worker has not exited yet. */
   hasPendingCancel(jobId: string): boolean {
     return this.pendingCancelReasons.has(jobId);
+  }
+
+  /**
+   * Apply a stored cancel reason if one is pending. Returns true when a reason
+   * was consumed. Used by the worker-exit handler and by analyze-launch when
+   * the child reports a generic cancel IPC — that message must not overwrite
+   * the caller's reason (timeout vs user cancel).
+   */
+  applyPendingCancel(jobId: string): boolean {
+    const reason = this.pendingCancelReasons.get(jobId);
+    if (reason === undefined) return false;
+    this.pendingCancelReasons.delete(jobId);
+    const current = this.jobs.get(jobId);
+    if (current && !this.isTerminal(current.status)) {
+      this.updateJob(jobId, { status: 'failed', error: reason });
+    }
+    return true;
   }
 
   /** Register cancellable in-process work for a job. */

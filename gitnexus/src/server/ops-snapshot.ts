@@ -123,14 +123,17 @@ const preserveTrailingPunct = (raw: string, token: string): string => {
  * Mid-string scrub for unauthenticated ops/poll payloads. Clone progress and
  * worker errors embed the URL after a prefix ("Cloning https://…") and also
  * embed local clone paths ("Existing clone at /home/alice/…"). Replace the
- * whole HTTP(S) URL — host, path, and query — not only userinfo, and replace
- * absolute POSIX / Windows / UNC filesystem paths so a LAN or official-Vercel
- * origin cannot recover home-directory layout from /api/ops.
+ * whole HTTP(S) URL — host, path, and query — not only userinfo, replace
+ * scp-like `user@host:path` and `ssh://` remotes, and replace absolute POSIX /
+ * Windows / UNC filesystem paths so a LAN or official-Vercel origin cannot
+ * recover home-directory layout or private org/repo names from /api/ops.
  */
 export const redactPublicText = (text: string): string =>
   text
     .replace(/https?:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
+    .replace(/ssh:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/file:\/\/[^\s"']+/gi, (raw) => preserveTrailingPunct(raw, '[path]'))
+    .replace(/[\w.-]+@[\w.-]+:[^\s"')]+/g, (raw) => preserveTrailingPunct(raw, '[repo]'))
     .replace(/[A-Za-z]:[\\/][^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
     .replace(/\\\\[^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
     .replace(

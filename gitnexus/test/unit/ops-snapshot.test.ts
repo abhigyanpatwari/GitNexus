@@ -133,6 +133,35 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(JSON.stringify(view)).not.toContain('/home/');
   });
 
+  it('redacts an scp-style remote from job.error on the public ops view', () => {
+    const job = manager.createJob({
+      repoUrl: 'git@github.com:private-org/secret.git',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'fatal: could not read from remote git@github.com:private-org/secret.git',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('fatal: could not read from remote [repo]');
+    expect(JSON.stringify(view)).not.toContain('private-org');
+    expect(JSON.stringify(view)).not.toContain('github.com');
+    expect(JSON.stringify(view)).not.toContain('secret.git');
+  });
+
+  it('redacts an ssh:// remote from job.error on the public ops view', () => {
+    const job = manager.createJob({
+      repoUrl: 'ssh://git@github.com/private-org/secret.git',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'fatal: could not read from remote ssh://git@github.com/private-org/secret.git',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('fatal: could not read from remote [repo]');
+    expect(JSON.stringify(view)).not.toContain('private-org');
+    expect(JSON.stringify(view)).not.toContain('github.com');
+  });
+
   it('redacts a Windows drive path from job.error on the public ops view', () => {
     const job = manager.createJob({
       repoPath: String.raw`C:\Users\alice\private\repo`,

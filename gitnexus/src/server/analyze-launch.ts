@@ -285,6 +285,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
           });
         } else if (msg.type === 'complete') {
+          if (jobManager.applyPendingCancel(job.id)) {
+            releaseLockOnce();
+            return;
+          }
           // Hold the write lock through settle AND the collapse/publish
           // decision. Release in `finally` so timeout / collapse / init
           // failure / complete each drop it exactly once. alreadyUpToDate
@@ -336,7 +340,14 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             .then((readyToPublish) => {
               if (!readyToPublish) return;
               const latest = jobManager.getJob(job.id);
-              if (!latest || isTerminalJobStatus(latest.status)) return;
+              if (
+                !latest ||
+                isTerminalJobStatus(latest.status) ||
+                jobManager.hasPendingCancel(job.id)
+              ) {
+                jobManager.applyPendingCancel(job.id);
+                return;
+              }
               // PARITY WITH THE CLI, which is what the IPC projection was added
               // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
               // "so a server-side caller sees the same degraded outcome the CLI
@@ -417,16 +428,22 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           releaseLockOnce();
           // A failed (force) analyze may still have rewritten DB files first.
           void closeDbHandle().catch(() => {});
-          jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
+          // The worker's cancel IPC is always a generic "parent requested
+          // cancellation" error. Prefer the caller's stored reason.
+          if (!jobManager.applyPendingCancel(job.id)) {
+            jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
+          }
         }
       });
 
       child.on('error', (err) => {
         releaseLockOnce();
-        jobManager.updateJob(job.id, {
-          status: 'failed',
-          error: `Worker process error: ${err.message}`,
-        });
+        if (!jobManager.applyPendingCancel(job.id)) {
+          jobManager.updateJob(job.id, {
+            status: 'failed',
+            error: `Worker process error: ${err.message}`,
+          });
+        }
       });
 
       child.on('exit', (code) => {

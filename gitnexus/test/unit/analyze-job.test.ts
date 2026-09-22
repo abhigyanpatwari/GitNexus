@@ -15,6 +15,7 @@ describe('JobManager', () => {
   afterEach(() => {
     manager.dispose();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('creates a job with queued status', () => {
@@ -263,6 +264,32 @@ describe('JobManager', () => {
     expect(manager.getJob(job.id)!.status).toBe('failed');
     expect(manager.hasPendingCancel(job.id)).toBe(false);
     expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('applyPendingCancel writes the caller reason and ignores a later worker error', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Analysis timed out (30 minute limit)')).toBe(true);
+    expect(manager.applyPendingCancel(job.id)).toBe(true);
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.getJob(job.id)!.error).toBe('Analysis timed out (30 minute limit)');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'Analysis cancelled (parent requested cancellation)',
+    });
+    expect(manager.getJob(job.id)!.error).toBe('Analysis timed out (30 minute limit)');
   });
 
   it('cancelJob falls back to a signal when the IPC channel is already closed', () => {

@@ -389,3 +389,75 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     expect(calls.indexOf('backend.init')).toBeLessThan(calls.indexOf('releaseRepoLock'));
   });
 });
+
+describe('createLaunchAnalysisWorker — pending cancel', () => {
+  let jobManager: JobManager;
+  let child: FakeChild;
+  let backendInit: Mock<() => Promise<unknown>>;
+  let closeDbHandle: Mock<() => Promise<void>>;
+
+  const launchOne = async () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launch(job, REPO_PATH, {});
+    return job;
+  };
+
+  beforeEach(() => {
+    H.settleOk = true;
+    jobManager = new JobManager();
+    child = makeChild();
+    forkMock.mockImplementation(() => child);
+    backendInit = vi.fn(async () => true);
+    closeDbHandle = vi.fn(async () => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    jobManager.dispose();
+    vi.restoreAllMocks();
+    forkMock.mockReset();
+    H.settleOk = true;
+  });
+
+  it('keeps the caller cancel reason when the worker reports a generic cancel error', async () => {
+    const job = await launchOne();
+    expect(jobManager.cancelJob(job.id, 'Analysis timed out (30 minute limit)')).toBe(true);
+    child.emit('message', {
+      type: 'error',
+      message: 'Analysis cancelled (parent requested cancellation)',
+    });
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toBe('Analysis timed out (30 minute limit)');
+  });
+
+  it('does not publish after complete IPC if cancel is already pending', async () => {
+    const job = await launchOne();
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    child.emit('message', completeMessage());
+    await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('failed'));
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+  });
+
+  it('does not publish if cancel arrives while settle is in flight', async () => {
+    vi.useFakeTimers();
+    H.settleOk = false;
+    const job = await launchOne();
+    child.emit('message', completeMessage());
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    expect(jobManager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    H.settleOk = true;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(jobManager.getJob(job.id)?.error).toBe('Cancelled by user');
+  });
+});

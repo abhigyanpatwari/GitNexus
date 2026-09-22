@@ -343,6 +343,9 @@ test.describe('Analyze — other sources and token', () => {
 
   test('folder upload reaches the done screen with the folder name', async ({ page }, testInfo) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-upload-e2e-'));
+    testInfo.onTestFinished(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
     const fixtureDir = path.join(root, 'myrepo');
     fs.mkdirSync(path.join(fixtureDir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(fixtureDir, 'README.md'), '# hi\n');

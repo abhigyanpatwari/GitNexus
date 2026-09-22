@@ -211,11 +211,12 @@ type InternalPhase = 'input' | 'starting' | 'analyzing' | 'done' | 'error';
 export interface RepoAnalyzerProps {
   variant: 'onboarding' | 'sheet';
   /**
-   * Receives the repo IDENTITY to reconnect with — the analyzed path when an
-   * older server still sends `repoPath` on the SSE complete event, otherwise
-   * the display `repoName`. Current servers omit `repoPath` so an unauthenticated
-   * ops-listed job id cannot leak a filesystem path. Never rendered; the done
-   * screen shows the display name.
+   * Receives the repo identity used to reconnect. Prefers `repoPath` when an
+   * older server still sends it on the SSE complete event; otherwise the
+   * display name (`repoName`, then the input basename, then the i18n default).
+   * Current servers omit `repoPath` so an unauthenticated ops-listed job id
+   * cannot leak a filesystem path. Never rendered; the done screen shows the
+   * display name.
    */
   onComplete: (repoIdentity: string) => void;
   onCancel?: () => void;
