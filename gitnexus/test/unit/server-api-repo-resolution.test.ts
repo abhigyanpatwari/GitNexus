@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  parseAwaitAnalysisQuery,
   resolveOmittedRepoSelection,
   resolveRegisteredRepoEntry,
   storageRequirementToHttp,
@@ -192,5 +193,18 @@ describe('storageRequirementToHttp — GET /api/repo', () => {
     const err = new StorageRequirementError(inspection('foreign'), STATUS_STORAGE_REQUIREMENTS);
     expect(storageRequirementToHttp(err).status).toBe(503);
     expect(storageRequirementToHttp(err).body.code).toBe('index-unavailable');
+  });
+});
+
+describe('parseAwaitAnalysisQuery', () => {
+  it('defaults to waiting when the flag is omitted', () => {
+    expect(parseAwaitAnalysisQuery(undefined)).toBe(true);
+    expect(parseAwaitAnalysisQuery('true')).toBe(true);
+  });
+
+  it('opts out of the hold-queue for false/0', () => {
+    expect(parseAwaitAnalysisQuery('false')).toBe(false);
+    expect(parseAwaitAnalysisQuery('0')).toBe(false);
+    expect(parseAwaitAnalysisQuery(['false'])).toBe(false);
   });
 });

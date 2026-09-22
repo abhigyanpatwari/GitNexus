@@ -619,6 +619,17 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+/**
+ * Hold-queue opt-out for process/cluster GETs. Default is wait (same as
+ * `/api/repo`). `?awaitAnalysis=false` skips the 300s resolveRepo hold so a
+ * caller can fail fast instead of parking a connection on an in-flight analyze.
+ */
+export const parseAwaitAnalysisQuery = (value: unknown): boolean => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string') return true;
+  return raw !== 'false' && raw !== '0';
+};
+
 const repoParamBasename = (repoName: string): string =>
   repoName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repoName;
 
@@ -1085,7 +1096,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     repoName?: string,
     isRetry = false,
     req?: any,
-    options: { validateStorage?: boolean } = {},
+    options: { validateStorage?: boolean; awaitAnalysis?: boolean } = {},
   ): Promise<any> => {
     const repos = await listRegisteredRepos({
       validate: options.validateStorage !== false,
@@ -1100,7 +1111,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // analyzing this repo. Hold the connection open (up to 5 minutes) until it completes.
     // We only wait for in-progress jobs ('queued'|'cloning'|'analyzing') — a 'complete' job
     // whose repo is still missing means the registry sync failed; the fallback below handles it.
-    if (!found && normalizedName) {
+    if (!found && normalizedName && options.awaitAnalysis !== false) {
       const lower = normalizedName.toLowerCase();
 
       // Track client disconnect to cancel the wait early
@@ -1729,7 +1740,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // again and map an omitted name to repos[0] of a newer registry.
       entry = await validateResolvedRepoEntry(omitted.entry);
     } else {
-      entry = await resolveRepo(requested, false, req);
+      entry = await resolveRepo(requested, false, req, {
+        awaitAnalysis: parseAwaitAnalysisQuery(req.query.awaitAnalysis),
+      });
     }
     if (!entry) {
       res.status(404).json({ error: 'Repository not found' });
