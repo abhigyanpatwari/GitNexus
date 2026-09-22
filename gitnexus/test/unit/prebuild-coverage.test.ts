@@ -311,6 +311,54 @@ describe('prebuild workflow rebuild loop guard', () => {
     });
   });
 
+  it('fetches an unavailable valid synchronize endpoint before preserving the binary-only diff', () => {
+    const remote = mkdtempSync(path.join(tmpdir(), 'gitnexus-prebuild-origin-'));
+    const checkout = mkdtempSync(path.join(tmpdir(), 'gitnexus-prebuild-checkout-'));
+    try {
+      execFileSync('git', ['clone', '--bare', root, remote]);
+      execFileSync('git', ['clone', '--depth', '1', `file://${remote}`, checkout]);
+      expect(() =>
+        execFileSync('git', ['cat-file', '-e', `${source}^{commit}`], {
+          cwd: checkout,
+          stdio: 'ignore',
+        }),
+      ).toThrow();
+
+      const runnerTemp = mkdtempSync(path.join(checkout, 'runner-'));
+      const output = path.join(runnerTemp, 'output');
+      const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+        cwd: checkout,
+        input: script,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          EVENT: 'pull_request',
+          ACTION: 'synchronize',
+          BASE_SHA: base,
+          BEFORE_SHA: source,
+          HEAD_SHA: execFileSync('git', ['rev-parse', 'HEAD'], {
+            cwd: checkout,
+            encoding: 'utf8',
+          }).trim(),
+          INPUT_GRAMMARS: '',
+          INPUT_REF: '',
+          FORCE: 'false',
+          RUNNER_TEMP: runnerTemp,
+          GITHUB_OUTPUT: output,
+        },
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(output, 'utf8')).toBe('any=false\nmatrix={"include":[]}\n');
+      expect(
+        execFileSync('git', ['cat-file', '-e', `${source}^{commit}`], { cwd: checkout }),
+      ).toBeDefined();
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+      rmSync(remote, { recursive: true, force: true });
+    }
+  });
+
   it('stops repeated binary-only updates while the PR still contains new source', () => {
     let before = source;
     for (let build = 2; build <= 4; build++) {
