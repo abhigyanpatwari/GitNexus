@@ -190,4 +190,50 @@ describe('CodeReferencesPanel repo identity (#2420)', () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(citationReads()).toHaveLength(2);
   });
+
+  it('prunes cached citation snippets when AI references are cleared', async () => {
+    appState.codeReferences = [
+      {
+        id: 'cite-1',
+        filePath: 'src/foo.ts',
+        startLine: 0,
+        endLine: 0,
+        source: 'ai',
+      },
+    ];
+    appState.currentRepo = '/ws/a/reels';
+    vi.mocked(readFile).mockImplementation((_path, opts) => {
+      if (opts && 'startLine' in opts) {
+        return Promise.resolve({ content: 'FIRST_SNIPPET', startLine: 0, totalLines: 1 });
+      }
+      return Promise.resolve({ content: 'const a = 1;', totalLines: 1 });
+    });
+
+    const { rerender } = render(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('FIRST_SNIPPET')).toBeInTheDocument());
+
+    appState.codeReferences = [];
+    rerender(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+
+    vi.mocked(readFile).mockImplementation((_path, opts) => {
+      if (opts && 'startLine' in opts) {
+        return Promise.resolve({ content: 'SECOND_SNIPPET', startLine: 0, totalLines: 1 });
+      }
+      return Promise.resolve({ content: 'const a = 1;', totalLines: 1 });
+    });
+    appState.codeReferences = [
+      {
+        id: 'cite-1',
+        filePath: 'src/foo.ts',
+        startLine: 0,
+        endLine: 0,
+        source: 'ai',
+      },
+    ];
+    rerender(<CodeReferencesPanel onFocusNode={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('SECOND_SNIPPET')).toBeInTheDocument());
+    expect(screen.queryByText('FIRST_SNIPPET')).not.toBeInTheDocument();
+    expect(citationReads().length).toBeGreaterThanOrEqual(2);
+  });
 });

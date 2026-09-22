@@ -231,6 +231,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
 
   const snippetRepoKey = currentRepo || projectName || undefined;
   const snippetRepoKeyRef = useRef<string | undefined>(undefined);
+  // Live citation ids at apply time — in-flight batches must not resurrect
+  // excerpts after clearAICodeReferences() mints a fresh list.
+  const liveCitationIdsRef = useRef<Set<string>>(new Set());
+  liveCitationIdsRef.current = new Set(aiReferences.map((ref) => ref.id));
 
   useEffect(() => {
     if (snippetRepoKeyRef.current !== snippetRepoKey) {
@@ -238,6 +242,22 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       requestedSnippetIds.current.clear();
       setCitationSnippets(new Map());
     }
+
+    const liveIds = liveCitationIdsRef.current;
+    for (const id of [...requestedSnippetIds.current]) {
+      if (!liveIds.has(id)) requestedSnippetIds.current.delete(id);
+    }
+    setCitationSnippets((prev) => {
+      if (prev.size === 0) return prev;
+      let removed = false;
+      const next = new Map<string, CitationSnippet>();
+      for (const [id, snippet] of prev) {
+        if (liveIds.has(id)) next.set(id, snippet);
+        else removed = true;
+      }
+      return removed ? next : prev;
+    });
+
     const pending = aiReferences.filter((ref) => !requestedSnippetIds.current.has(ref.id));
     if (pending.length === 0) return;
     for (const ref of pending) requestedSnippetIds.current.add(ref.id);
@@ -281,7 +301,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       if (loaded.length === 0) return;
       setCitationSnippets((prev) => {
         const next = new Map(prev);
-        for (const [id, snippet] of loaded) next.set(id, snippet);
+        for (const [id, snippet] of loaded) {
+          if (liveCitationIdsRef.current.has(id)) next.set(id, snippet);
+        }
         return next;
       });
     });

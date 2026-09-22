@@ -12,6 +12,9 @@ import {
 } from '../services/backend-client';
 import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
+/** GET /api/ops is 60/min; safety REST + immediate tick + 1s would 429. */
+const OPS_POLL_INTERVAL_MS = 2_000;
+
 const STATUS_COLORS: Record<OpsJobView['status'], string> = {
   queued: 'text-text-muted',
   cloning: 'text-sky-400',
@@ -237,7 +240,7 @@ export const ExecutionDashboard = () => {
         }
       };
       void tick();
-      pollTimer = setInterval(() => void tick(), 1_000);
+      pollTimer = setInterval(() => void tick(), OPS_POLL_INTERVAL_MS);
     };
 
     const start = async () => {

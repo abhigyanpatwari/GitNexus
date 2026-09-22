@@ -83,6 +83,19 @@ describe('ExecutionDashboard safety poll', () => {
     expect(getByText(/· sse/)).toBeInTheDocument();
   });
 
+  it('polls /api/ops at 2s so the fallback stays under the 60/min route limit', async () => {
+    vi.mocked(streamOpsSnapshot).mockImplementation(
+      () => ({ abort: vi.fn() }) as unknown as AbortController,
+    );
+    vi.mocked(fetchOpsSnapshot).mockRejectedValue(new Error('rest down'));
+    const setIntervalSpy = vi.spyOn(window, 'setInterval');
+
+    render(<ExecutionDashboard />);
+
+    await waitFor(() => expect(setIntervalSpy).toHaveBeenCalled());
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 2_000);
+  });
+
   it('clears the prior snapshot when connecting to an unreachable server', async () => {
     const first = emptySnap();
     first.server = { ...first.server, version: 'old-server' };
