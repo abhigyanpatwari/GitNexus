@@ -5,8 +5,9 @@ export const normalizePath = (p: string): string => {
 
 /**
  * Resolve a citation against a normalized→original graph path index.
- * Exact match wins. A suffix match is accepted only when it is unique —
- * `index.ts` must not silently pick the first filePathIndex entry.
+ * Exact match wins. A suffix match is accepted only when it is unique among
+ * keys equal to the request or ending in `/${normalized}` — `index.ts` must
+ * not resolve `src/myindex.ts`, nor silently pick the first filePathIndex entry.
  */
 export const resolveUniqueIndexedPath = (
   filePathIndex: ReadonlyMap<string, string>,
@@ -17,9 +18,10 @@ export const resolveUniqueIndexedPath = (
   const exact = filePathIndex.get(normalized);
   if (exact !== undefined) return exact;
 
+  const boundedSuffix = `/${normalized}`;
   let unique: string | undefined;
   for (const [key, value] of filePathIndex) {
-    if (!key.endsWith(normalized)) continue;
+    if (!key.endsWith(boundedSuffix)) continue;
     if (unique !== undefined) return null;
     unique = value;
   }

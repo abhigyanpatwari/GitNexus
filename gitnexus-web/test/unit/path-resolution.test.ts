@@ -52,6 +52,15 @@ describe('resolveUniqueIndexedPath', () => {
     expect(resolveUniqueIndexedPath(index, 'core/utils.ts')).toBe('packages/core/utils.ts');
   });
 
+  it('resolves a unique filename only at a path-component boundary', () => {
+    expect(resolveUniqueIndexedPath(index, 'Header.tsx')).toBe('src/components/Header.tsx');
+  });
+
+  it('does not treat a filename substring as a unique suffix', () => {
+    const substringIndex = new Map<string, string>([['src/myindex.ts', 'src/myindex.ts']]);
+    expect(resolveUniqueIndexedPath(substringIndex, 'index.ts')).toBeNull();
+  });
+
   it('returns null when more than one file shares the suffix', () => {
     expect(resolveUniqueIndexedPath(index, 'index.ts')).toBeNull();
   });
