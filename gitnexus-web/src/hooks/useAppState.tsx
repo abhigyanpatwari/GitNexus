@@ -930,10 +930,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
                   addCodeReference({
                     filePath: resolvedPath,
-                    startLine: node.properties.startLine
-                      ? node.properties.startLine - 1
-                      : undefined,
-                    endLine: node.properties.endLine ? node.properties.endLine - 1 : undefined,
+                    startLine:
+                      typeof node.properties.startLine === 'number'
+                        ? node.properties.startLine
+                        : undefined,
+                    endLine:
+                      typeof node.properties.endLine === 'number'
+                        ? node.properties.endLine
+                        : undefined,
                     nodeId: node.id,
                     label: node.label,
                     name: node.properties.name,

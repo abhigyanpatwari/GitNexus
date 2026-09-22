@@ -189,6 +189,7 @@ describe('isGitNexusVercelOrigin', () => {
   it('rejects non-default ports on the official hostnames', () => {
     expect(isGitNexusVercelOrigin('https://gitnexus-web.vercel.app:8443')).toBe(false);
     // :443 is the HTTPS default — URL.port is empty, same as the bare origin.
+    expect(isGitNexusVercelOrigin('https://gitnexus.vercel.app:443')).toBe(true);
     expect(isGitNexusVercelOrigin('https://gitnexus.vercel.app')).toBe(true);
   });
 });

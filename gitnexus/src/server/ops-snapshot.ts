@@ -243,8 +243,8 @@ export const isGitNexusVercelOrigin = (origin: string): boolean => {
     return false;
   }
   if (parsed.protocol !== 'https:') return false;
-  // Browsers omit the default port; an explicit :8443 (or even :443) is not
-  // either documented production Origin string.
+  // Browsers omit the default port; non-default ports such as :8443 are not
+  // documented production Origin strings. Explicit :443 is the same origin as the bare host.
   if (parsed.port) return false;
   const host = parsed.hostname.toLowerCase();
   // Exact hosts only — a prefix like `gitnexus-web-` would also match any
