@@ -103,6 +103,50 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(JSON.stringify(view)).not.toContain('alice');
   });
 
+  it('redacts a home-directory clone path from job.error on the public ops view', () => {
+    const job = manager.createJob({
+      repoPath: '/home/alice/src/private-repo',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'Existing clone at /home/alice/src/private-repo has no remote.origin',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('Existing clone at [path] has no remote.origin');
+    expect(view.repoName).toBe('private-repo');
+    expect(JSON.stringify(view)).not.toContain('alice');
+    expect(JSON.stringify(view)).not.toContain('/home/');
+  });
+
+  it('redacts a quoted Node open() path and a file:// URL from job.error', () => {
+    const job = manager.createJob({
+      repoPath: '/home/alice/src/private-repo',
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error:
+        "ENOENT: no such file or directory, open '/home/alice/src/private-repo' (file:///home/alice/src/private-repo)",
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe("ENOENT: no such file or directory, open '[path]' ([path])");
+    expect(JSON.stringify(view)).not.toContain('alice');
+    expect(JSON.stringify(view)).not.toContain('/home/');
+  });
+
+  it('redacts a Windows drive path from job.error on the public ops view', () => {
+    const job = manager.createJob({
+      repoPath: String.raw`C:\Users\alice\private\repo`,
+    });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: String.raw`Existing clone at C:\Users\alice\private\repo has no remote.origin`,
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('Existing clone at [path] has no remote.origin');
+    expect(JSON.stringify(view)).not.toContain('alice');
+    expect(JSON.stringify(view)).not.toContain('Users');
+  });
+
   it('summarizes lane metrics including avg duration of terminal jobs', () => {
     const a = manager.createJob({ repoUrl: 'https://github.com/user/a' });
     manager.updateJob(a.id, { status: 'analyzing' });

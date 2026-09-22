@@ -114,16 +114,30 @@ const publicRepoNameFromPath = (repoPath: string | undefined): string | undefine
   );
 };
 
+const preserveTrailingPunct = (raw: string, token: string): string => {
+  const trailing = raw.match(/(\.{2,}|[),;]+)$/);
+  return trailing ? `${token}${trailing[0]}` : token;
+};
+
 /**
  * Mid-string scrub for unauthenticated ops/poll payloads. Clone progress and
- * worker errors embed the URL after a prefix ("Cloning https://…"). Replace
- * the whole HTTP(S) URL — host, path, and query — not only userinfo.
+ * worker errors embed the URL after a prefix ("Cloning https://…") and also
+ * embed local clone paths ("Existing clone at /home/alice/…"). Replace the
+ * whole HTTP(S) URL — host, path, and query — not only userinfo, and replace
+ * absolute POSIX / Windows / UNC filesystem paths so a LAN or official-Vercel
+ * origin cannot recover home-directory layout from /api/ops.
  */
 export const redactPublicText = (text: string): string =>
-  text.replace(/https?:\/\/[^\s]+/gi, (raw) => {
-    const trailing = raw.match(/(\.{2,}|[),;]+)$/);
-    return trailing ? `[repo]${trailing[0]}` : '[repo]';
-  });
+  text
+    .replace(/https?:\/\/[^\s]+/gi, (raw) => preserveTrailingPunct(raw, '[repo]'))
+    .replace(/file:\/\/[^\s"']+/gi, (raw) => preserveTrailingPunct(raw, '[path]'))
+    .replace(/[A-Za-z]:[\\/][^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
+    .replace(/\\\\[^\s]+/g, (raw) => preserveTrailingPunct(raw, '[path]'))
+    .replace(
+      /(^|[\s"'=(])(\/[^\s"')]+)/g,
+      (_m, prefix: string, absPath: string) =>
+        `${prefix}${preserveTrailingPunct(absPath, '[path]')}`,
+    );
 
 /**
  * Ops feed is unauthenticated — never emit raw repo URLs (or userinfo) via
