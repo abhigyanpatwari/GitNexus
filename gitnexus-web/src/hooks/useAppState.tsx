@@ -34,7 +34,6 @@ import {
   readFile as backendReadFile,
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
-  BackendError,
   probeBackendStatus,
   // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
   // a plain named import of this helper.
@@ -69,6 +68,12 @@ const displayNameForIdentity = (repos: BackendRepo[], identity: string): string 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
 export type EmbeddingStatus = 'idle' | 'loading' | 'embedding' | 'indexing' | 'ready' | 'error';
+
+/**
+ * POST /api/embed 409 "Another job is already active for this repository"
+ * is the shared analyze/embed lock, not proof this repo is embedding.
+ */
+export const embeddingStatusForStartFailure = (_error: unknown): EmbeddingStatus => 'error';
 
 export interface QueryResult {
   rows: Record<string, any>[];
@@ -553,19 +558,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           },
         );
       });
-    } catch (error: any) {
-      // Dedup only the same-repo lock (acquireRepoLock). A 409 with
-      // "Analysis already in progress" means a *different* repo holds the
-      // single-slot JobManager — do not pretend this repo is embedding.
-      const isAlreadyRunning =
-        error instanceof BackendError &&
-        error.status === 409 &&
-        error.message.includes('Another job is already active for this repository');
-      if (isAlreadyRunning) {
-        setEmbeddingStatus('embedding');
-        return;
-      }
-      setEmbeddingStatus('error');
+    } catch (error: unknown) {
+      // Shared acquireRepoLock 409 is used for both analyze-held and embed-held
+      // locks. Never treat it as in-progress embedding — that hid an analyze
+      // occupant as a successful embed start.
+      setEmbeddingStatus(embeddingStatusForStartFailure(error));
       throw error;
     }
   }, []);
