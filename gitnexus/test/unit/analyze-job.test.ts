@@ -204,6 +204,7 @@ describe('JobManager', () => {
 
     const sent: unknown[] = [];
     const signals: string[] = [];
+    let onExit: (() => void) | undefined;
     const fakeChild = {
       connected: true,
       exitCode: null,
@@ -216,7 +217,10 @@ describe('JobManager', () => {
         signals.push(signal ?? 'SIGTERM');
         return true;
       },
-      on: () => fakeChild,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
     };
     manager.registerChild(job.id, fakeChild as any);
 
@@ -224,7 +228,41 @@ describe('JobManager', () => {
 
     expect(sent).toEqual([{ type: 'cancel' }]);
     expect(signals).toEqual([]);
+    expect(manager.getJob(job.id)!.status).toBe('analyzing');
+    onExit?.();
     expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.getJob(job.id)!.error).toBe('Cancelled by user');
+  });
+
+  it('cancelJob keeps the slot occupied until the worker exits', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(manager.getJob(job.id)!.status).toBe('analyzing');
+    expect(manager.hasPendingCancel(job.id)).toBe(true);
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(
+      /Analysis already in progress/,
+    );
+
+    onExit?.();
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 
   it('cancelJob falls back to a signal when the IPC channel is already closed', () => {

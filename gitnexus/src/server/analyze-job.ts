@@ -97,6 +97,8 @@ export class JobManager {
   private abortControllers = new Map<string, AbortController>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private cancelGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Cancel reason to apply when a still-running worker exits. */
+  private pendingCancelReasons = new Map<string, string>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
 
@@ -116,9 +118,12 @@ export class JobManager {
    * reject the request outright, which is a truthful answer.
    */
   createJob(params: { repoUrl?: string; repoPath?: string; branch?: string }): AnalyzeJob {
-    // Dedup: return existing active job for the same repo (by URL or path) and branch
+    // Dedup: return existing active job for the same repo (by URL or path) and branch.
+    // A cancelled job still occupies the slot while its worker is registered —
+    // flipping to `failed` before exit used to let a second POST start cloneOrPull
+    // against a LadybugDB file the first worker was still writing.
     for (const job of this.jobs.values()) {
-      if (!this.isTerminal(job.status)) {
+      if (this.isSlotOccupied(job)) {
         const isSameRepo =
           (params.repoUrl && job.repoUrl === params.repoUrl) ||
           (params.repoPath && job.repoPath === params.repoPath);
@@ -130,7 +135,7 @@ export class JobManager {
 
     // Single-slot: reject if another job is active (different repo)
     for (const job of this.jobs.values()) {
-      if (!this.isTerminal(job.status)) {
+      if (this.isSlotOccupied(job)) {
         throw new Error(`Analysis already in progress (job ${job.id})`);
       }
     }
@@ -210,8 +215,9 @@ export class JobManager {
     }, JOB_TIMEOUT_MS);
     this.timeouts.set(jobId, timer);
 
-    // Clean up tracking when child exits
-    child.on('exit', () => {
+    // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
+    // crash-retry) see a still-non-terminal job and fork a replacement worker.
+    const onExit = (): void => {
       this.children.delete(jobId);
       const t = this.timeouts.get(jobId);
       if (t) {
@@ -223,7 +229,25 @@ export class JobManager {
         clearTimeout(grace);
         this.cancelGraceTimers.delete(jobId);
       }
-    });
+      const reason = this.pendingCancelReasons.get(jobId);
+      if (reason) {
+        this.pendingCancelReasons.delete(jobId);
+        const current = this.jobs.get(jobId);
+        if (current && !this.isTerminal(current.status)) {
+          this.updateJob(jobId, { status: 'failed', error: reason });
+        }
+      }
+    };
+    if (typeof child.prependListener === 'function') {
+      child.prependListener('exit', onExit);
+    } else {
+      child.on('exit', onExit);
+    }
+  }
+
+  /** True while cancel was requested and the worker has not exited yet. */
+  hasPendingCancel(jobId: string): boolean {
+    return this.pendingCancelReasons.has(jobId);
   }
 
   /** Register cancellable in-process work for a job. */
@@ -257,9 +281,17 @@ export class JobManager {
     this.abortControllers.get(jobId)?.abort();
     this.abortControllers.delete(jobId);
 
+    const cancelReason = reason || 'Analysis cancelled';
+    if (child) {
+      // Keep the job non-terminal until the worker exits so createJob and
+      // the resolveRepo hold-queue still see the slot as occupied.
+      this.pendingCancelReasons.set(jobId, cancelReason);
+      return true;
+    }
+
     this.updateJob(jobId, {
       status: 'failed',
-      error: reason || 'Analysis cancelled',
+      error: cancelReason,
     });
 
     return true;
@@ -316,6 +348,7 @@ export class JobManager {
     this.children.clear();
     for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
     this.cancelGraceTimers.clear();
+    this.pendingCancelReasons.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 
@@ -331,6 +364,10 @@ export class JobManager {
 
   private isTerminal(status: AnalyzeJob['status']): boolean {
     return isTerminalJobStatus(status);
+  }
+
+  private isSlotOccupied(job: AnalyzeJob): boolean {
+    return !this.isTerminal(job.status) || this.children.has(job.id);
   }
 
   private cleanup() {

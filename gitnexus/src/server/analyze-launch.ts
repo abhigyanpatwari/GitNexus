@@ -237,11 +237,15 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
     const forkWorker = () => {
       const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || isTerminalJobStatus(currentJob.status)) {
+      if (
+        !currentJob ||
+        isTerminalJobStatus(currentJob.status) ||
+        jobManager.hasPendingCancel(job.id)
+      ) {
         // Cancelled (or timed out) between lock acquisition and the fork, or
-        // during a crash-retry delay. No worker will ever run for this job, so
-        // nothing else drops the lock — release it here or the repo stays
-        // "busy" for analyze/embed/delete until the server restarts.
+        // during a crash-retry delay. A pending-cancel job stays non-terminal
+        // until the worker exits — do not fork a replacement. Nothing else
+        // drops the lock here, so release or the repo stays "busy" until restart.
         releaseLockOnce();
         return;
       }
@@ -427,12 +431,12 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
-        if (!j || isTerminalJobStatus(j.status)) {
+        if (!j || isTerminalJobStatus(j.status) || jobManager.hasPendingCancel(job.id)) {
           // (a) complete/error IPC is in flight (`terminalIpcSeen`) — that
           //     chain owns the lock through settle/`backend.init()`/`finally`.
           //     Releasing here lets a second analyze acquire under a publish.
-          // (b) cancel marked the job failed BEFORE any terminal IPC — this
-          //     exit is the only remaining place that can drop the lock.
+          // (b) cancel is pending or already failed BEFORE any terminal IPC —
+          //     this exit is the only remaining place that can drop the lock.
           if (!terminalIpcSeen) releaseLockOnce();
           return;
         }
