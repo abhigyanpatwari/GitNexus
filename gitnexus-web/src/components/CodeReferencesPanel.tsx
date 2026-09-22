@@ -253,7 +253,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
       const hasRange = typeof ref.startLine === 'number';
       // Range-less citations must not download/highlight the entire file.
       const refStart = hasRange ? (ref.startLine as number) : 0;
-      const refEnd = hasRange ? (ref.endLine ?? refStart) : Math.max(0, RANGELESS_CITATION_LINES - 1);
+      const refEnd = hasRange
+        ? (ref.endLine ?? refStart)
+        : Math.max(0, RANGELESS_CITATION_LINES - 1);
       const options = {
         startLine: Math.max(0, refStart - (hasRange ? CITATION_CONTEXT_LINES : 0)),
         endLine: refEnd + (hasRange ? CITATION_CONTEXT_LINES : 0),
@@ -518,7 +520,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
+            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -591,7 +593,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
+            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label

@@ -76,9 +76,7 @@ describe('isAllowedOrigin: vercel.app', () => {
   it('rejects arbitrary gitnexus-web-* vercel preview hosts', () => {
     // Preview hosts must opt in via GITNEXUS_PUBLIC_ORIGIN — a prefix match
     // would also allow attacker-controlled projects named gitnexus-web-*.
-    expect(
-      isAllowedOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app'),
-    ).toBe(false);
+    expect(isAllowedOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app')).toBe(false);
     expect(isAllowedOrigin('https://gitnexus-web-evil.vercel.app')).toBe(false);
   });
 

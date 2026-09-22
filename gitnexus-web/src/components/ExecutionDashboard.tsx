@@ -32,7 +32,11 @@ const formatDuration = (ms: number): string => {
 };
 
 const formatClock = (ts: number): string =>
-  new Date(ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  new Date(ts).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 
 const MetricCard = ({
   label,
@@ -78,10 +82,14 @@ const JobRow = ({ job }: { job: OpsJobView }) => {
           </div>
         </div>
         <div className="flex items-center gap-3 text-right">
-          <span className={`font-mono text-xs font-semibold uppercase ${STATUS_COLORS[job.status]}`}>
+          <span
+            className={`font-mono text-xs font-semibold uppercase ${STATUS_COLORS[job.status]}`}
+          >
             {job.status}
           </span>
-          <span className="font-mono text-xs text-text-muted">{formatDuration(job.durationMs)}</span>
+          <span className="font-mono text-xs text-text-muted">
+            {formatDuration(job.durationMs)}
+          </span>
         </div>
       </div>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-void">
@@ -293,7 +301,9 @@ export const ExecutionDashboard = () => {
                   : 'border-red-500/40 bg-red-500/10 text-red-300'
               }`}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-400' : 'bg-red-400'}`} />
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${live ? 'bg-emerald-400' : 'bg-red-400'}`}
+              />
               {live ? 'live' : 'offline'} · {streamMode}
             </span>
             {snapshot ? (
@@ -344,7 +354,11 @@ export const ExecutionDashboard = () => {
           <MetricCard
             label="Server"
             value={snapshot?.server.version ?? '—'}
-            hint={snapshot ? `${snapshot.server.launchContext} · ${snapshot.server.nodeVersion}` : undefined}
+            hint={
+              snapshot
+                ? `${snapshot.server.launchContext} · ${snapshot.server.nodeVersion}`
+                : undefined
+            }
           />
         </div>
 
@@ -427,18 +441,22 @@ export const ExecutionDashboard = () => {
                 ) : (
                   allJobs.map((job) => (
                     <tr key={`${job.lane}-${job.id}`} className="border-b border-border-subtle/60">
-                      <td className="px-4 py-2 font-mono text-xs text-text-secondary">{job.lane}</td>
-                      <td className="max-w-[14rem] truncate px-4 py-2">
-                        {job.repoName || '—'}
+                      <td className="px-4 py-2 font-mono text-xs text-text-secondary">
+                        {job.lane}
                       </td>
-                      <td className={`px-4 py-2 font-mono text-xs uppercase ${STATUS_COLORS[job.status]}`}>
+                      <td className="max-w-[14rem] truncate px-4 py-2">{job.repoName || '—'}</td>
+                      <td
+                        className={`px-4 py-2 font-mono text-xs uppercase ${STATUS_COLORS[job.status]}`}
+                      >
                         {job.status}
                       </td>
                       <td className="max-w-[16rem] truncate px-4 py-2 text-text-secondary">
                         {job.progress.phase}
                       </td>
                       <td className="px-4 py-2 font-mono text-xs">{job.progress.percent}%</td>
-                      <td className="px-4 py-2 font-mono text-xs">{formatDuration(job.durationMs)}</td>
+                      <td className="px-4 py-2 font-mono text-xs">
+                        {formatDuration(job.durationMs)}
+                      </td>
                       <td className="px-4 py-2 font-mono text-xs text-text-muted">
                         {formatClock(job.startedAt)}
                       </td>

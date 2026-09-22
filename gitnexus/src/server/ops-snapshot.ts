@@ -86,13 +86,19 @@ export const publicRepoNameFromUrl = (repoUrl: string | undefined): string | und
     const parsed = new URL(repoUrl);
     // new URL accepts Windows drive paths as `c:` URLs; split on `\` too so we
     // never emit a full filesystem pathname on the unauthenticated ops feed.
-    const segments = parsed.pathname.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean);
+    const segments = parsed.pathname
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .filter(Boolean);
     const last = segments.pop();
     if (!last) return undefined;
     return last.replace(/\.git$/i, '') || undefined;
   } catch {
     // Non-URL fallbacks (scp-like git@host:org/repo.git) — drop query/hash then basename.
-    const cleaned = repoUrl.split(/[?#]/, 1)[0]!.replace(/\/+$/, '').replace(/\.git$/i, '');
+    const cleaned = repoUrl
+      .split(/[?#]/, 1)[0]!
+      .replace(/\/+$/, '')
+      .replace(/\.git$/i, '');
     const last = cleaned.split(/[/\\]/).pop();
     return last || undefined;
   }
@@ -100,7 +106,12 @@ export const publicRepoNameFromUrl = (repoUrl: string | undefined): string | und
 
 const publicRepoNameFromPath = (repoPath: string | undefined): string | undefined => {
   if (!repoPath) return undefined;
-  return repoPath.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || undefined;
+  return (
+    repoPath
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .pop() || undefined
+  );
 };
 
 /**

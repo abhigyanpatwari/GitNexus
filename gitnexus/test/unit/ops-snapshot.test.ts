@@ -151,9 +151,9 @@ describe('isGitNexusVercelOrigin', () => {
   });
 
   it('rejects preview and unrelated vercel hosts', () => {
-    expect(
-      isGitNexusVercelOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app'),
-    ).toBe(false);
+    expect(isGitNexusVercelOrigin('https://gitnexus-web-mesquitafelipe571-5486.vercel.app')).toBe(
+      false,
+    );
     expect(
       isGitNexusVercelOrigin(
         'https://gitnexus-web-git-local-bridge-v1-mesquitafelipe571-5486.vercel.app',
