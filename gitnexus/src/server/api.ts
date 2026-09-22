@@ -114,7 +114,6 @@ export {
   type ServerInfoResponse,
   type ServeUpdateController,
 } from './update-controller.js';
-export { buildOpsSnapshot, isGitNexusVercelOrigin, serializeOpsJob } from './ops-snapshot.js';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -1137,7 +1136,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               '[debug] resolveRepo waiting for active job',
             );
           }
-          let jobSettledWithoutRepo = false;
           for (let wait = 0; wait < HOLD_QUEUE_TIMEOUT_SECS; wait++) {
             if (clientGone) return null; // client disconnected — stop polling
             const currentJob = jobManager.getJob(job.id);
@@ -1146,8 +1144,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // plain "not found", not "still analyzing" — falling through to
               // the timed-out sentinel here told callers to keep waiting for
               // a job that had already failed.
-              jobSettledWithoutRepo = true;
-              break;
+              return null;
             }
             if (currentJob.status === 'complete') {
               await backend.init();
@@ -1158,7 +1155,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
-          if (jobSettledWithoutRepo) return null;
           // Timed out — signal to the caller with a specific message
           return { __timedOut: true, repoName: normalizedName };
         }
@@ -2069,7 +2065,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       return;
     }
     jobManager.cancelJob(jobId, 'Cancelled by user');
-    res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
+    // Live JobManager view: a registered child stays non-terminal until exit.
+    // Hard-coding `failed` here made clients retry immediately and then 409.
+    res.json(serializeOpsJob(jobManager.getJob(jobId) ?? job, 'analyze'));
   });
 
   // ── Embedding endpoints ────────────────────────────────────────────
@@ -2404,22 +2402,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       return;
     }
     embedJobManager.cancelJob(jobId, 'Cancelled by user');
-    res.json({ id: job.id, status: 'failed', error: 'Cancelled by user' });
+    // Same live serialize as analyze DELETE / GET poll — do not invent `failed`.
+    res.json(serializeOpsJob(embedJobManager.getJob(jobId) ?? job, 'embed'));
   });
+
+  const currentOpsSnapshot = () =>
+    buildOpsSnapshot({
+      analyzeJobs: jobManager.listJobs(),
+      embedJobs: embedJobManager.listJobs(),
+      serverStartedAt,
+      server: buildServerInfo(updateController.snapshot()),
+    });
 
   // GET /api/ops — realtime execution snapshot for the ops dashboard.
   // In-memory only (analyze + embed JobManagers); no git/fs work, safe to poll.
   // Rate-limited: snapshot serialization is cheap per call but unbounded
   // polling from many clients is not.
   app.get('/api/ops', createRouteLimiter({ limit: 60 }), (_req, res) => {
-    res.json(
-      buildOpsSnapshot({
-        analyzeJobs: jobManager.listJobs(),
-        embedJobs: embedJobManager.listJobs(),
-        serverStartedAt,
-        server: buildServerInfo(updateController.snapshot()),
-      }),
-    );
+    res.json(currentOpsSnapshot());
   });
 
   // Cap concurrent ops SSE streams — each holds two intervals and serializes
@@ -2443,13 +2443,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     res.flushHeaders();
 
     const push = () => {
-      const snapshot = buildOpsSnapshot({
-        analyzeJobs: jobManager.listJobs(),
-        embedJobs: embedJobManager.listJobs(),
-        serverStartedAt,
-        server: buildServerInfo(updateController.snapshot()),
-      });
-      res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      res.write(`data: ${JSON.stringify(currentOpsSnapshot())}\n\n`);
     };
 
     push();
