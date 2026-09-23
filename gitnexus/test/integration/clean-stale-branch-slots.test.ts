@@ -68,7 +68,7 @@ describe('clean --stale leftover branch slots (#3331)', () => {
     }
     vi.spyOn(process, 'cwd').mockReturnValue(repo);
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    return { repo, dir, storagePath };
+    return { dir, storagePath };
   }
 
   it('reclaims a slot after the git branch is deleted', async () => {

@@ -65,8 +65,7 @@ test.describe('Ops dashboard — empty and connection states', () => {
   });
 
   test('unreachable backend shows offline and a connect error', async ({ page }, testInfo) => {
-    await page.goto('/?view=ops&server=http://127.0.0.1:5999');
-    await expect(page.locator('[data-testid="ops-dashboard"]')).toBeVisible({ timeout: 15_000 });
+    await openOps(page, 'http://127.0.0.1:5999');
     await expect(page.getByText(/offline/)).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Backend unreachable')).toBeVisible();
     await capture(page, testInfo, '04-unreachable');

@@ -192,10 +192,14 @@ export interface AnalyzePostResult {
   resetMs: number;
 }
 
-/** POST /api/analyze; a 429 waits out the limiter window and retries. */
+/**
+ * POST /api/analyze; a 429 waits out the limiter window and retries, unless
+ * that wait would pass the caller's `deadline`.
+ */
 export async function postAnalyze(
   backendUrl: string,
   body: Record<string, unknown>,
+  deadline = Infinity,
 ): Promise<AnalyzePostResult> {
   for (;;) {
     const res = await fetch(`${backendUrl}/api/analyze`, {
@@ -208,6 +212,9 @@ export async function postAnalyze(
     const resetMs = Number(/reset=(\d+)/.exec(rateLimit)?.[1] ?? 60) * 1000;
     if (res.status === 429) {
       await res.body?.cancel();
+      if (Date.now() + resetMs > deadline) {
+        throw new Error('analyze rate limit outlasts the caller deadline (HTTP 429)');
+      }
       await sleep(resetMs + 250);
       continue;
     }
@@ -244,7 +251,7 @@ export async function waitForAnalyzeSlotFree(
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const probe = await postAnalyze(backendUrl, { url: MISSING_GITHUB });
+    const probe = await postAnalyze(backendUrl, { url: MISSING_GITHUB }, deadline);
     if (probe.http !== 409) {
       if (probe.jobId) await waitForJob(backendUrl, probe.jobId);
       if (probe.remaining < budget) await sleep(probe.resetMs + 250);
@@ -265,7 +272,7 @@ export async function postAnalyzeWhenIdle(
 ): Promise<AnalyzePostResult> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const result = await postAnalyze(backendUrl, body);
+    const result = await postAnalyze(backendUrl, body, deadline);
     if (result.http !== 409) return result;
     if (Date.now() > deadline) {
       throw new Error(`analyze slot stayed busy: ${result.error ?? 'HTTP 409'}`);

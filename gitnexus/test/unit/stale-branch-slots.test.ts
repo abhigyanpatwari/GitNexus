@@ -653,6 +653,44 @@ describe('removeBranchSlot (#3331)', () => {
     expect(entry.branches).toBeUndefined();
   });
 
+  it('does not walk a nested directory swapped for a junction mid-cleanup', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    const inner = path.join(dir, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    const outside = path.join(fixture.dbPath, 'outside-swapped');
+    await fs.mkdir(outside, { recursive: true });
+    const victim = path.join(outside, 'victim-link');
+    await linkDir(fixture.dbPath, victim);
+
+    // Swap `inner` for a junction to `outside` right after its containment
+    // realpath resolves — past the per-child checks, before the recursion.
+    const realRealpath = fs.realpath.bind(fs);
+    let swapped = false;
+    const realpathSpy = vi.spyOn(fs, 'realpath').mockImplementation((async (
+      target: Parameters<typeof fs.realpath>[0],
+    ) => {
+      const resolved = await realRealpath(target);
+      if (!swapped && path.resolve(String(target)) === path.resolve(inner)) {
+        swapped = true;
+        await fs.rm(inner, { recursive: true });
+        await linkDir(outside, inner);
+      }
+      return resolved;
+    }) as typeof fs.realpath);
+
+    try {
+      await removeBranchSlot({ repoPath, storagePath, branch: 'feature/x', dir });
+    } finally {
+      realpathSpy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    await expect(fs.lstat(victim)).resolves.toBeDefined();
+  });
+
   it('unlinks a nested junction aimed at a sibling slot', async () => {
     await registerRepo(repoPath, metaFor('main'));
     await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   connectHeartbeat,
   fetchOpsSnapshot,
+  getAuthToken,
   getBackendUrl,
   normalizeServerUrl,
   probeBackendStatus,
@@ -209,6 +210,19 @@ export const ExecutionDashboard = () => {
   }, []);
 
   useEffect(() => {
+    // A `?server=` link must not carry the session's deploy token to another
+    // origin on its own: prefill it and wait for Connect when a token is held.
+    const linked = new URLSearchParams(window.location.search).get('server');
+    if (linked && getAuthToken()) {
+      let foreign = true;
+      try {
+        foreign = normalizeServerUrl(linked) !== getBackendUrl();
+      } catch {
+        // Invalid input: applyBackend below reports it without connecting.
+        foreign = false;
+      }
+      if (foreign) return;
+    }
     applyBackend(backendInput);
     // Mount-only: wire ?server= into the client once.
     // eslint-disable-next-line react-hooks/exhaustive-deps

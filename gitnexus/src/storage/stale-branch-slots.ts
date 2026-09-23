@@ -225,25 +225,24 @@ export const listStaleBranchSlots = async (
   const pending: Array<Omit<StaleBranchSlot, 'sizeBytes'>> = [];
 
   const leftoverDirs = diskDirs.filter((dir) => !registryByDir.has(path.resolve(dir)));
-  const [registryProbes, leftoverMeta] = await Promise.all([
-    mapPool(
-      [...registryByDir],
-      async ([resolvedDir, branch]) => ({
-        resolvedDir,
-        branch,
-        probe: await probeDirectory(resolvedDir),
-      }),
-      STALE_SLOT_IO_CONCURRENCY,
-    ),
-    mapPool(
-      leftoverDirs,
-      async (dir) => ({
-        dir,
-        branch: await metadataBranch(dir),
-      }),
-      STALE_SLOT_IO_CONCURRENCY,
-    ),
-  ]);
+  // Sequential phases so STALE_SLOT_IO_CONCURRENCY caps total slot I/O.
+  const registryProbes = await mapPool(
+    [...registryByDir],
+    async ([resolvedDir, branch]) => ({
+      resolvedDir,
+      branch,
+      probe: await probeDirectory(resolvedDir),
+    }),
+    STALE_SLOT_IO_CONCURRENCY,
+  );
+  const leftoverMeta = await mapPool(
+    leftoverDirs,
+    async (dir) => ({
+      dir,
+      branch: await metadataBranch(dir),
+    }),
+    STALE_SLOT_IO_CONCURRENCY,
+  );
   for (const { resolvedDir, branch, probe } of registryProbes) {
     if (probe === 'unreadable') {
       pending.push({ branch, dir: resolvedDir, reason: 'probe-failed' });
@@ -374,10 +373,18 @@ const classifySlotRoot = async (dir: string, realBranches: string): Promise<Slot
 const unlinkEscapingDescendants = async (
   dir: string,
   realSlot: string,
+  expectedReal: string = realSlot,
   seen: Set<string> = new Set([realSlot]),
 ): Promise<void> => {
   let entries: string[];
   try {
+    // Revalidate right before readdir: the caller's lstat/realpath awaited, so
+    // this directory may since have been swapped for a symlink/junction.
+    // ponytail: narrows the window, not closes it — Node has no openat/fd walk.
+    const stat = await fs.lstat(dir);
+    if (stat.isSymbolicLink() || !isSameNormalizedPath(await fs.realpath(dir), expectedReal)) {
+      throw new Error(`Branch index directory changed during cleanup: ${dir}`);
+    }
     entries = await fs.readdir(dir);
   } catch (err) {
     if (isMissingFilesystemError(err)) return;
@@ -403,7 +410,7 @@ const unlinkEscapingDescendants = async (
     }
     seen.add(decision.real);
     if (stat.isDirectory()) {
-      await unlinkEscapingDescendants(child, realSlot, seen);
+      await unlinkEscapingDescendants(child, realSlot, decision.real, seen);
     }
   }
 };

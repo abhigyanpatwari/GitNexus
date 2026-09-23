@@ -13,6 +13,7 @@ import { RepoAnalyzer } from '../../src/components/RepoAnalyzer';
 import { i18nReady } from '../../src/i18n';
 import {
   cancelAnalyze,
+  startAnalyze,
   streamAnalyzeProgress,
   uploadFolder,
 } from '../../src/services/backend-client';
@@ -110,5 +111,34 @@ describe('analyze completion identity', () => {
     });
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith('reels');
+  });
+
+  it('reconnects a local-path run by the submitted path when repoPath is omitted', async () => {
+    let sseComplete: ((data: CompleteData) => void) | undefined;
+    vi.mocked(streamAnalyzeProgress).mockImplementation((_jobId, _onProgress, onComplete) => {
+      sseComplete = onComplete;
+      return new AbortController();
+    });
+    vi.mocked(startAnalyze).mockResolvedValue(JOB as never);
+
+    vi.useFakeTimers();
+    const onDone = vi.fn<(repoIdentity: string) => void>();
+    render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
+    fireEvent.change(screen.getByPlaceholderText('/home/you/project'), {
+      target: { value: '/ws/b/reels' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Analyze Repository/ }));
+    await act(async () => {});
+    expect(startAnalyze).toHaveBeenCalledWith({ path: '/ws/b/reels' });
+
+    act(() => {
+      sseComplete?.({ repoName: 'reels' });
+    });
+    expect(screen.queryByText('/ws/b/reels')).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onDone).toHaveBeenCalledWith('/ws/b/reels');
   });
 });

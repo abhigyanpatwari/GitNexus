@@ -392,7 +392,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             : mode === 'azure'
               ? azureUrl.trim()
               : localPath.trim();
-      trackJob(jobId, nameSource);
+      trackJob(jobId, nameSource, mode === 'local' ? localPath.trim() : undefined);
     } catch (err) {
       // Unmount aborts the controller, so this also covers the unmounted case.
       if (controller.signal.aborted) return;
@@ -403,7 +403,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
   // Drive an already-created analysis job through the SSE progress stream to
   // completion. Shared by the path/URL analyze flow and the folder-upload flow.
-  const trackJob = (jobId: string, fallbackNameSource: string | null) => {
+  const trackJob = (jobId: string, fallbackNameSource: string | null, requestedPath?: string) => {
     // Callers reach here only with a live (non-aborted) request controller, so
     // the component is mounted — unmount aborts the controller.
     jobIdRef.current = jobId;
@@ -414,7 +414,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       (data) => {
         // Display vs identity split: the done screen renders the display name
         // (never an absolute path). Current servers omit repoPath on the
-        // unauthenticated SSE terminal frame; onComplete then uses repoName.
+        // unauthenticated SSE terminal frame. A local-path run reconnects by
+        // the path this client submitted (collision-safe, never read off the
+        // wire); URL clones and uploads fall back to repoName.
         // Older servers that still send repoPath keep collision-safe reconnect.
         const displayName =
           data.repoName ??
@@ -422,7 +424,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             ? fallbackNameSource.split(/[/\\]/).filter(Boolean).at(-1)
             : undefined) ??
           t('onboarding:repoAnalyzer.defaultRepoName');
-        const identity = data.repoPath ?? displayName;
+        const identity = data.repoPath ?? requestedPath ?? displayName;
         setCompletedRepoName(displayName);
         setGithubToken('');
         setPhase('done');

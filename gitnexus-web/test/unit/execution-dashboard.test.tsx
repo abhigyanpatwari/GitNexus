@@ -4,8 +4,10 @@ import { ExecutionDashboard } from '../../src/components/ExecutionDashboard';
 import {
   connectHeartbeat,
   fetchOpsSnapshot,
+  getAuthToken,
   normalizeServerUrl,
   probeBackendStatus,
+  setBackendUrl,
   streamOpsSnapshot,
   type OpsSnapshot,
 } from '../../src/services/backend-client';
@@ -13,6 +15,7 @@ import {
 vi.mock('../../src/services/backend-client', () => ({
   connectHeartbeat: vi.fn(() => () => {}),
   fetchOpsSnapshot: vi.fn(),
+  getAuthToken: vi.fn(() => ''),
   getBackendUrl: vi.fn(() => 'http://127.0.0.1:4747'),
   normalizeServerUrl: vi.fn((url: string) => url),
   probeBackendStatus: vi.fn(),
@@ -146,5 +149,35 @@ describe('ExecutionDashboard safety poll', () => {
     await waitFor(() => expect(getByText('Invalid backend URL')).toBeInTheDocument());
     onFrame!(emptySnap());
     await waitFor(() => expect(getByText('Invalid backend URL')).toBeInTheDocument());
+  });
+});
+
+describe('ExecutionDashboard ?server= link', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(probeBackendStatus).mockResolvedValue('ok');
+    vi.mocked(fetchOpsSnapshot).mockResolvedValue(emptySnap());
+    vi.mocked(streamOpsSnapshot).mockReturnValue({ abort: vi.fn() } as unknown as AbortController);
+    window.history.replaceState({}, '', '/?view=ops&server=https://other.example');
+  });
+
+  afterEach(() => {
+    window.history.replaceState({}, '', '/');
+    vi.mocked(getAuthToken).mockReturnValue('');
+  });
+
+  it('does not auto-connect a foreign server while a deploy token is held', async () => {
+    vi.mocked(getAuthToken).mockReturnValue('deploy-token');
+    const { getByDisplayValue } = render(<ExecutionDashboard />);
+
+    expect(getByDisplayValue('https://other.example')).toBeInTheDocument();
+    expect(setBackendUrl).not.toHaveBeenCalled();
+    expect(streamOpsSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('auto-connects the linked server when no token is held', async () => {
+    render(<ExecutionDashboard />);
+
+    await waitFor(() => expect(setBackendUrl).toHaveBeenCalledWith('https://other.example'));
   });
 });
