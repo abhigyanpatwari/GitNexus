@@ -25,6 +25,7 @@ import { querySpringAopMetadata } from './aop-metadata.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
+import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
@@ -3547,38 +3548,9 @@ export class LocalBackend {
 
     // Step 4: Build response
     timer.start('formatting');
-    const processes = rankedProcesses.map((p) => ({
-      id: p.id,
-      summary: p.heuristicLabel || p.label,
-      priority: Math.round(p.priority * 1000) / 1000,
-      symbol_count: p.symbols.length,
-      process_type: p.processType,
-      step_count: p.stepCount,
-      ...(p.routes && p.routes.length > 0
-        ? {
-            route: p.routes[0].url,
-            method: p.routes[0].method || undefined,
-            routes: p.routes,
-          }
-        : {}),
-      ...(chainByProcessId.has(p.id) ? { chain: chainByProcessId.get(p.id) } : {}),
-    }));
-
-    const processSymbols = rankedProcesses.flatMap((p) =>
-      p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
-        ...s,
-        // mark the entry-point symbol so an agent reading the
-        // process can tell procedure vs. workflow vs. helper at a glance.
-        ...(p.entryPointId && s.id === p.entryPointId ? { is_entry_point: true } : {}),
-      })),
-    );
-
-    // Deduplicate process_symbols by id
-    const seen = new Set<string>();
-    const dedupedSymbols = processSymbols.filter((s) => {
-      if (seen.has(s.id)) return false;
-      seen.add(s.id);
-      return true;
+    const { processes, process_symbols } = shapeQueryProcessAttaches(rankedProcesses, {
+      maxSymbolsPerProcess,
+      chainByProcessId,
     });
     timer.stop(); // formatting
 
@@ -3762,7 +3734,7 @@ export class LocalBackend {
 
     return {
       processes,
-      process_symbols: dedupedSymbols,
+      process_symbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
