@@ -235,5 +235,34 @@ describe('backend-client access token', () => {
       // Budget spent → the caller finally hears about it.
       expect(onError).toHaveBeenCalledWith('Server returned 401');
     });
+
+    it('fires onError when the handshake exceeds connectTimeoutMs', async () => {
+      vi.useFakeTimers();
+      const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+      vi.stubGlobal('fetch', fetchMock);
+      const onError = vi.fn();
+
+      streamSSE(`${BASE}/api/ops/stream`, { onError }, { maxRetries: 0, connectTimeoutMs: 50 });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(onError).toHaveBeenCalledWith('SSE handshake timed out');
+      vi.useRealTimers();
+    });
+
+    it('exhausts a finite budget across successful-then-closed streams when resetRetriesOnOpen is false', async () => {
+      // Ops dashboard needs this: otherwise every short 200 resets the counter
+      // and onError (poll fallback) never fires.
+      const fetchMock = vi.fn(async () => sseResponse(['data: {"ok":true}\n\n']));
+      vi.stubGlobal('fetch', fetchMock);
+      const onError = vi.fn();
+
+      streamSSE(
+        `${BASE}/api/ops/stream`,
+        { onError },
+        { baseDelayMs: 0, maxRetries: 2, resetRetriesOnOpen: false },
+      );
+      await vi.waitFor(() => expect(onError).toHaveBeenCalledWith('Stream ended'));
+      // Initial + 2 retries = 3 opens before the budget is spent.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
   });
 });

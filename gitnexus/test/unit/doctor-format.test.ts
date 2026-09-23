@@ -3,7 +3,7 @@ import {
   displayWidth,
   doctorCommand,
   localEmbeddingDoctorStatus,
-  orphanedBranchSlotDoctorLines,
+  leftoverBranchSlotDoctorLines,
   padDisplayEnd,
   nativeStatusLine,
   pageSizeDoctorLines,
@@ -380,7 +380,7 @@ describe('doctor survives a malformed GITNEXUS_EMBEDDING_DIMS (#2385)', () => {
   });
 });
 
-describe('orphanedBranchSlotDoctorLines (#3331)', () => {
+describe('leftoverBranchSlotDoctorLines (#3331)', () => {
   const slot = (overrides: Partial<StaleBranchSlot>): StaleBranchSlot => ({
     branch: 'feature/x',
     dir: '/tmp/branches/feature_x',
@@ -390,11 +390,11 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
   });
 
   it('returns no lines when there are no leftover slots', () => {
-    expect(orphanedBranchSlotDoctorLines([])).toEqual([]);
+    expect(leftoverBranchSlotDoctorLines([])).toEqual([]);
   });
 
   it('prints branch, reason, size, total, and the clean --stale reclaim line', () => {
-    const lines = orphanedBranchSlotDoctorLines([slot({ sizeBytes: 4_800_000 })]);
+    const lines = leftoverBranchSlotDoctorLines([slot({ sizeBytes: 4_800_000 })]);
     expect(lines[0]).toBe(t('doctor.orphanedBranches'));
     expect(lines.join('\n')).toContain('feature/x');
     expect(lines.join('\n')).toContain(t('clean.stale.reason.refMissing'));
@@ -404,7 +404,7 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
   });
 
   it('prints retry-git copy instead of reclaim when heads cannot be listed (#3337)', () => {
-    const lines = orphanedBranchSlotDoctorLines([
+    const lines = leftoverBranchSlotDoctorLines([
       slot({ reason: 'heads-unavailable', sizeBytes: 2048 }),
       slot({ branch: 'other', reason: 'ref-missing', sizeBytes: 4096 }),
     ]);
@@ -414,7 +414,7 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
   });
 
   it('prints only listingFailed when listing-failed is mixed with ref-missing', () => {
-    const lines = orphanedBranchSlotDoctorLines([
+    const lines = leftoverBranchSlotDoctorLines([
       slot({ reason: 'listing-failed', branch: '', dir: null, sizeBytes: 0 }),
       slot({ reason: 'ref-missing' }),
     ]);
@@ -424,7 +424,7 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
   });
 
   it('prints heading and probe-failed row without reclaim', () => {
-    const lines = orphanedBranchSlotDoctorLines([slot({ reason: 'probe-failed' })]);
+    const lines = leftoverBranchSlotDoctorLines([slot({ reason: 'probe-failed' })]);
     expect(lines[0]).toBe(t('doctor.orphanedBranches'));
     expect(lines.join('\n')).toContain('feature/x');
     expect(lines.join('\n')).toContain(t('clean.stale.reason.probeFailed'));
@@ -432,7 +432,7 @@ describe('orphanedBranchSlotDoctorLines (#3331)', () => {
   });
 
   it('includes reclaim when probe-failed is mixed with ref-missing', () => {
-    const lines = orphanedBranchSlotDoctorLines([
+    const lines = leftoverBranchSlotDoctorLines([
       slot({ reason: 'probe-failed' }),
       slot({ branch: 'other', reason: 'ref-missing' }),
     ]);

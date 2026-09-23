@@ -65,6 +65,7 @@ repomix-output*
 # Playwright artifacts
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/
+gitnexus-web/e2e/screenshots/
 
 # Python test artifacts
 eval/.coverage
