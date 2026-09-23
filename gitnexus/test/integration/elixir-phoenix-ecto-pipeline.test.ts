@@ -36,6 +36,8 @@ defmodule MyAppWeb.Router do
     scope "/v1" do
       get "/posts", PostController, :index
       resources "/accounts", AccountController
+      resources "/only-accounts", AccountController, only: :index
+      resources "/except-accounts", AccountController, except: :show
       live "/dashboard", DashboardLive
       get dynamic_path(), PostController, :missing
     end
@@ -94,6 +96,7 @@ defmodule MyApp.Blog.Post do
     has_many :comments, MyApp.Blog.Comment
     embeds_one :metadata, MyApp.Blog.Metadata
   end
+  def runtime_field, do: field(:status)
 end
 defmodule MyApp.Blog.Metadata do
   use Ecto.Schema
@@ -154,6 +157,15 @@ defmodule MyApp.Blog do
   import MyApp.Behaviour
   def callback_call(value), do: required(value)
   def ignored, do: Repo.all(dynamic_schema())
+end
+`,
+  );
+  write(
+    'lib/my_app/query_only.ex',
+    `
+defmodule MyApp.QueryOnly do
+  import Ecto.Query
+  def all, do: from p in MyApp.Blog.Post
 end
 `,
   );
@@ -320,6 +332,7 @@ function snapshot(result: PipelineResult) {
     qualifiedName?: string;
     filePath?: string;
     startLine?: number;
+    method?: string;
     middleware?: unknown;
   }> = [];
   result.graph.forEachNode((node) =>
@@ -329,6 +342,7 @@ function snapshot(result: PipelineResult) {
       qualifiedName: node.properties.qualifiedName as string | undefined,
       filePath: node.properties.filePath as string | undefined,
       startLine: node.properties.startLine as number | undefined,
+      method: node.properties.method as string | undefined,
       middleware: node.properties.middleware,
     }),
   );
@@ -423,6 +437,16 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
           }),
         ]),
       );
+      expect(routes).toContainEqual(
+        expect.objectContaining({ name: '/api/v1/only-accounts', method: 'GET' }),
+      );
+      expect(routes.map((route) => route.name)).not.toContain('/api/v1/only-accounts/:id');
+      expect(routes).toContainEqual(
+        expect.objectContaining({ name: '/api/v1/except-accounts/:id', method: 'PATCH' }),
+      );
+      expect(routes).not.toContainEqual(
+        expect.objectContaining({ name: '/api/v1/except-accounts/:id', method: 'GET' }),
+      );
       expect(routes.map((route) => route.name)).not.toContain('//root');
       expect(routes.map((route) => route.name)).not.toContain('dynamic_path');
 
@@ -452,6 +476,11 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
           expect.objectContaining({
             type: 'QUERIES',
             source: 'blog.ex',
+            target: 'MyApp.Blog.Post',
+          }),
+          expect.objectContaining({
+            type: 'QUERIES',
+            source: 'query_only.ex',
             target: 'MyApp.Blog.Post',
           }),
           expect.objectContaining({
@@ -491,6 +520,13 @@ describe('Elixir Phoenix/Ecto pipeline', () => {
           (edge) => edge.type === 'CALLS' && edge.source === 'MyApp.Delegates.first',
         ),
       ).toEqual([expect.objectContaining({ target: 'MyApp.DelegateTarget.first' })]);
+      const properties = graph.nodes.filter((node) => node.label === 'Property');
+      expect(properties).toContainEqual(
+        expect.objectContaining({ qualifiedName: 'MyApp.Blog.Post.title' }),
+      );
+      expect(properties).not.toContainEqual(
+        expect.objectContaining({ qualifiedName: 'MyApp.Blog.Post.status' }),
+      );
       const callTargets = (source: string) =>
         graph.relationships
           .filter((edge) => edge.type === 'CALLS' && edge.source === source)

@@ -204,6 +204,8 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
       (_, i) => findArguments(node)!.namedChild(i) as SyntaxNode,
     );
   const alias = (node: SyntaxNode | undefined) => (node?.type === 'alias' ? node.text : undefined);
+  const atom = (node: SyntaxNode | undefined) =>
+    node?.type === 'atom' ? node.text.replace(/^:/, '') : undefined;
   const methodAt = (node: SyntaxNode): string | undefined => {
     const target = node.childForFieldName?.('target');
     return target?.type === 'dot' && target.childForFieldName?.('right')?.type === 'identifier'
@@ -214,6 +216,12 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
     for (let n = node.parent; n; n = n.parent)
       if (n.type === 'call' && callKeyword(n) === 'defmodule') return alias(args(n)[0]);
     return undefined;
+  };
+  const isSchemaDeclaration = (node: SyntaxNode): boolean => {
+    const body = node.parent;
+    if (body?.type !== 'do_block' || body.parent?.type !== 'call') return false;
+    const declaration = callKeyword(body.parent);
+    return declaration === 'schema' || declaration === 'embedded_schema';
   };
   const visit = (
     node: SyntaxNode,
@@ -308,8 +316,8 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
             ? [value.text.slice(1)]
             : value?.type === 'list'
               ? value.namedChildren
-                  .filter((entry) => entry.type === 'atom')
-                  .map((entry) => entry.text.slice(1))
+                  .map(atom)
+                  .filter((entry): entry is string => entry !== undefined)
               : undefined;
         };
         const only = filter('only');
@@ -350,6 +358,7 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
       }
       if (
         model &&
+        isSchemaDeclaration(node) &&
         [
           'field',
           'belongs_to',
@@ -360,7 +369,7 @@ function extractElixirFrameworkFacts(tree: Parser.Tree): readonly ElixirFramewor
           'embeds_many',
         ].includes(kind ?? '')
       ) {
-        const name = values[0]?.type === 'atom' ? values[0].text.slice(1) : undefined;
+        const name = atom(values[0]);
         const target = alias(values[1]);
         if (name)
           facts.push({
