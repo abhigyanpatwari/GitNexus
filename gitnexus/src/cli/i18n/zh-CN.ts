@@ -67,6 +67,8 @@ export const zhCN = {
   'clean.stale.registryOnlyPath': '（仅注册表）',
   'clean.stale.headsUnavailable':
     '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.remainingSkipped':
+    '无法列出本地分支，因此已跳过其余残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
   'clean.stale.listingFailed':
     '无法读取残留分支索引目录，因此未删除残留索引。请检查 branches/ 目录权限后重新运行 `gitnexus clean --stale`。',
   'clean.stale.probeFailed': '无法检查残留分支索引路径，因此未删除这些槽位。',

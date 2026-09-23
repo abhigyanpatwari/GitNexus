@@ -208,7 +208,7 @@ export function nativeStatusLine(check: NativeCheckResult): string {
  * When heads cannot be listed, do not title rows as orphaned or name
  * `clean --stale` (#3337): that command refuses to delete in the same state.
  */
-export function orphanedBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
+export function leftoverBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
   if (slots.length === 0) return [];
   const listingBlock = staleListingBlock(slots);
   if (listingBlock === 'heads-unavailable') {
@@ -400,22 +400,20 @@ export const doctorCommand = async () => {
       console.log(`  ${padDisplayEnd('', 12)}${cudaRedirect.detail}`);
     }
   }
-  // Doctor stays runtime-global. Add only a cwd leftover-slot section when
-  // this process is inside an indexed repo. Look up that repo's registry row
-  // for recorded branch slugs; do not report leftovers for every registered
-  // repo, and never delete.
-  const [cwdRepo, entries] = await Promise.all([findRepo(process.cwd()), listRegisteredRepos()]);
+  // Cwd leftover-slot report only; never delete.
+  const cwdRepo = await findRepo(process.cwd());
   if (!cwdRepo) return;
+  const entries = await listRegisteredRepos();
   const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);
   const slots = await listStaleBranchSlots({
     repoPath: cwdRepo.repoPath,
     storagePath: cwdRepo.storagePath,
     branches: entry?.branches,
   });
-  const orphanLines = orphanedBranchSlotDoctorLines(slots);
-  if (orphanLines.length === 0) return;
+  const leftoverLines = leftoverBranchSlotDoctorLines(slots);
+  if (leftoverLines.length === 0) return;
   console.log('');
-  for (const line of orphanLines) {
+  for (const line of leftoverLines) {
     console.log(line);
   }
 };

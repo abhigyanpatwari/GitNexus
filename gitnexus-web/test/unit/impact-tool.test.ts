@@ -206,4 +206,50 @@ describe('Graph-RAG impact risk contract', () => {
     expect(output).toContain('enrichment-truncated');
     expect(output).not.toContain('enrichment-budget-exhausted');
   });
+
+  it('does not treat a filename substring as a unique File suffix', async () => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes('filePath CONTAINS')) {
+        return [
+          { id: 'file-mylib', nodeType: 'File', filePath: 'src/mylib/foo.ts' },
+          { id: 'fn-mylib', nodeType: 'Function', filePath: 'src/mylib/foo.ts' },
+        ];
+      }
+      return [];
+    });
+
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'lib/foo.ts',
+      direction: 'upstream',
+      maxDepth: 1,
+    });
+
+    expect(output).toContain('AMBIGUOUS TARGET');
+    expect(output).toContain('lib/foo.ts');
+  });
+
+  it('does not accept a unique File suffix from a truncated CONTAINS page', async () => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes('filePath CONTAINS')) {
+        return [
+          ...Array.from({ length: 9 }, (_, index) => ({
+            id: `sym-${index}`,
+            nodeType: 'Function',
+            filePath: `src/other-${index}.ts`,
+          })),
+          { id: 'file-visible', nodeType: 'File', filePath: 'apps/web/lib/foo.ts' },
+        ];
+      }
+      return [];
+    });
+
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'lib/foo.ts',
+      direction: 'upstream',
+      maxDepth: 1,
+    });
+
+    expect(output).toContain('AMBIGUOUS TARGET');
+    expect(output).toContain('Could not uniquely match');
+  });
 });

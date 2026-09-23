@@ -68,6 +68,8 @@ export const en = {
   'clean.stale.registryOnlyPath': '(registry only)',
   'clean.stale.headsUnavailable':
     'Could not list local heads; leftover branch indexes were not deleted. Re-run `gitnexus clean --stale` when git is available.',
+  'clean.stale.remainingSkipped':
+    'Could not list local heads; remaining leftover branch indexes were skipped. Re-run `gitnexus clean --stale` when git is available.',
   'clean.stale.listingFailed':
     'Could not read leftover branch index directories; leftover indexes were not deleted. Check permissions on the branches/ directory and re-run `gitnexus clean --stale`.',
   'clean.stale.probeFailed':
