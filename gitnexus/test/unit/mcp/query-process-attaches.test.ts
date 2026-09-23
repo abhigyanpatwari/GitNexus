@@ -102,7 +102,7 @@ describe('shapeQueryProcessAttaches', () => {
     expect(processes[0]?.symbol_count).toBe(1);
   });
 
-  it('keeps include_content on every emitted hub attach (KTD5)', () => {
+  it('keeps include_content only on the first row for a hub id', () => {
     const { process_symbols } = shapeQueryProcessAttaches(
       [
         ranked('proc:login-flow', [
@@ -115,10 +115,9 @@ describe('shapeQueryProcessAttaches', () => {
       { maxSymbolsPerProcess: 25 },
     );
 
-    expect(process_symbols.map((s) => s.content)).toEqual([
-      'function validate() {}',
-      'function validate() {}',
-    ]);
+    expect(process_symbols.map((s) => s.process_id)).toEqual(['proc:login-flow', 'proc:beta-flow']);
+    expect(process_symbols[0]?.content).toBe('function validate() {}');
+    expect(process_symbols[1]).not.toHaveProperty('content');
   });
 
   it('marks the entry-point hit and preserves process card extras', () => {

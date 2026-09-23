@@ -136,6 +136,9 @@ describe('GITNEXUS_TOOLS', () => {
       'when service is set, it counts only attaches under that prefix',
     );
     expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
+    expect(queryTool.description).toContain(
+      'content appears only on the first row for each symbol id',
+    );
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
