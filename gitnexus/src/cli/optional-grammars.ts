@@ -1,13 +1,15 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart, -proto, -swift, -kotlin, -zig, and -lua are vendored under
+ * tree-sitter-dart, -proto, -swift, -kotlin, and -zig are vendored under
  * vendor/ and loaded from there by absolute path (NEVER copied into
  * node_modules — see core/tree-sitter/vendored-grammars.ts / #2111). Each
- * ships committed platform prebuilds activated via node-gyp-build. All can
- * be skipped via GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or
- * can silently soft-fail when no prebuild matches the host platform (and a
- * source build was unavailable / not attempted).
+ * ships committed platform prebuilds activated via node-gyp-build.
+ * tree-sitter-lua is also vendored, but is source-built during install because
+ * it does not currently ship committed prebuilds. All can be skipped via
+ * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
+ * soft-fail when no prebuild matches the host platform (and a source build was
+ * unavailable / not attempted).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single

@@ -166,6 +166,56 @@ function collectLuaImportCaptures(root: Parser.SyntaxNode): readonly CaptureMatc
   return out;
 }
 
+/**
+ * Capture callable local bindings by source/destination position.
+ *
+ * A tree-sitter query that independently matches `variable_list` and a
+ * function-valued `expression_list` cross-pairs Lua multi-assignment:
+ * `local value, callback = 1, function() end` must name only `callback` as a
+ * closure. Keep the positional pairing in the same structural walk used by
+ * import capture collection.
+ */
+function collectLuaCallableBindingCaptures(root: Parser.SyntaxNode): readonly CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.type === 'local_variable_declaration') {
+      const variables =
+        node.namedChildren.find((child) => child.type === 'variable_list')?.namedChildren ?? [];
+      const sources =
+        node.namedChildren.find((child) => child.type === 'expression_list')?.namedChildren ?? [];
+      const count = Math.min(variables.length, sources.length);
+      for (let index = 0; index < count; index++) {
+        const destination = variables[index];
+        const source = sources[index];
+        const name = destination?.childForFieldName('name');
+        if (
+          destination?.type !== 'variable' ||
+          destination.childForFieldName('table') !== null ||
+          destination.childForFieldName('field') !== null ||
+          name?.type !== 'identifier' ||
+          source === undefined
+        ) {
+          continue;
+        }
+        const declarationKind =
+          source.type === 'function_definition'
+            ? '@declaration.function'
+            : source.type === 'variable'
+              ? '@declaration.variable'
+              : undefined;
+        if (declarationKind === undefined) continue;
+        out.push({
+          [declarationKind]: nodeToCapture(declarationKind, node),
+          '@declaration.name': nodeToCapture('@declaration.name', name),
+        });
+      }
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(root);
+  return out;
+}
+
 function collectLuaReturnedNames(root: Parser.SyntaxNode): readonly string[] {
   const returnedNames: string[] = [];
   for (const node of root.namedChildren) {
@@ -366,6 +416,8 @@ export function emitLuaScopeCaptures(
     if (declarationNode !== undefined) addLuaArityCaptures(grouped, declarationNode);
     out.push(grouped);
   }
+
+  out.push(...collectLuaCallableBindingCaptures(tree.rootNode));
 
   // Imports are collected structurally instead of through the generic query:
   // the AST lists preserve positional local/RHS pairing and support all Lua

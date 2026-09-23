@@ -202,7 +202,7 @@ describe('Lua local callable declarations', () => {
       `function target() end
 function entry()
   local alias = target
-  local callback = function() end
+  local value, callback = 1, function() end
   callback()
 end
 `,
@@ -218,10 +218,17 @@ end
     expect(
       captures.some(
         (match) =>
-          match['@declaration.function']?.text === 'local callback = function() end' &&
+          match['@declaration.function']?.text === 'local value, callback = 1, function() end' &&
           match['@declaration.name']?.text === 'callback',
       ),
     ).toBe(true);
+    expect(
+      captures.some(
+        (match) =>
+          match['@declaration.function']?.text === 'local value, callback = 1, function() end' &&
+          match['@declaration.name']?.text === 'value',
+      ),
+    ).toBe(false);
     expect(
       captures.some(
         (match) =>
