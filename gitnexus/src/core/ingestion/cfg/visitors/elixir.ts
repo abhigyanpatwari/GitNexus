@@ -126,12 +126,11 @@ class ElixirHarvester {
     return this.byName.get(name) ?? this.bind(name, node, 'var');
   }
 
-  private identifiers(node: SyntaxNode, excludeBodies = false): string[] {
-    const out: string[] = [];
+  private identifiers(node: SyntaxNode, excludeBodies = false): SyntaxNode[] {
+    const out: SyntaxNode[] = [];
     const walk = (n: SyntaxNode): void => {
       if (n !== node && isFunction(n)) return;
-      if (n.type === 'identifier' && n.text !== '_' && !/^(do|end|when)$/.test(n.text))
-        out.push(n.text);
+      if (n.type === 'identifier' && n.text !== '_' && !/^(do|end|when)$/.test(n.text)) out.push(n);
       const callTarget = n.type === 'call' ? n.childForFieldName?.('target') : undefined;
       for (const c of n.namedChildren)
         if (
@@ -181,10 +180,17 @@ class ElixirHarvester {
       node.type === 'call' && node.childForFieldName?.('target')?.type === 'identifier'
         ? node.childForFieldName('target')!.text
         : undefined;
-    for (const name of this.identifiers(node, header)) {
-      if (name === bareCallee) continue;
-      if (left && leftIdentifiers.some((identifier) => identifier.text === name)) continue;
-      uses.push(this.read(name, node));
+    for (const identifier of this.identifiers(node, header)) {
+      if (identifier.text === bareCallee) continue;
+      if (
+        leftIdentifiers.some(
+          (leftIdentifier) =>
+            leftIdentifier.startIndex === identifier.startIndex &&
+            leftIdentifier.endIndex === identifier.endIndex,
+        )
+      )
+        continue;
+      uses.push(this.read(identifier.text, identifier));
     }
     const sites: SiteRecord[] = [];
     const memberNodes: SyntaxNode[] = [];
@@ -246,13 +252,19 @@ class ElixirHarvester {
         ) {
           const argumentsNode = n.namedChildren.find((c) => c.type === 'arguments');
           const args = argumentsNode?.namedChildren.map((arg) => [
-            ...new Set(this.identifiers(arg).map((name) => this.read(name, arg))),
+            ...new Set(
+              this.identifiers(arg).map((identifier) => this.read(identifier.text, identifier)),
+            ),
           ]);
           const pipeLeft = isPipe(n.parent) ? n.parent.namedChildren[0] : undefined;
           if (pipeLeft) {
             const callArgs = args ?? [];
             callArgs.unshift([
-              ...new Set(this.identifiers(pipeLeft).map((name) => this.read(name, pipeLeft))),
+              ...new Set(
+                this.identifiers(pipeLeft).map((identifier) =>
+                  this.read(identifier.text, identifier),
+                ),
+              ),
             ]);
             sites.push({
               kind: 'call',

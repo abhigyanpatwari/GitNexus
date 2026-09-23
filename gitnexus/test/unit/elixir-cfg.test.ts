@@ -69,6 +69,21 @@ describe('Elixir CFG visitor', () => {
     expect(header.uses.map((index) => cfg.bindings[index]!.name)).toEqual(['flag']);
   });
 
+  it('keeps the previous binding as a use when rebinding it from the RHS', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'rebind.ex');
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const def = parser.parse('def f(count) do\n  count = count + 1\nend').rootNode
+      .namedChildren[0]!;
+    const cfg = createElixirCfgVisitor().buildFunctionCfg(def, 'rebind.ex')!;
+    const rebind = cfg.blocks.find((block) => block.text.includes('count = count + 1'))!
+      .statements![0]!;
+    expect(rebind.defs.map((index) => cfg.bindings[index]!.name)).toEqual(['count']);
+    expect(rebind.uses.map((index) => cfg.bindings[index]!.name)).toEqual(['count']);
+  });
+
   it('propagates Phoenix parameters to dynamic-eval and raw-SQL text only', async () => {
     await loadLanguage(SupportedLanguages.Elixir, 'taint.ex');
     const parser = new Parser();
@@ -132,7 +147,7 @@ describe('Elixir CFG visitor', () => {
       computeReachingDefs(cfg),
       matchFunctionSites(cfg, ELIXIR_TAINT_MODEL, buildTaintImportIndex([])),
     ).findings.filter((finding) => finding.sink.entryName === 'eval_string');
-    expect(findings).toHaveLength(3);
+    expect(findings.map((finding) => finding.sink.point.line).sort()).toEqual([2, 3, 4]);
   });
 
   it('uses source-range parents for repeated callees and shifted pipe arguments', async () => {
