@@ -34,6 +34,12 @@ describe('Elixir scope captures', () => {
     const source = `defmodule Captures do
   def zero, do: :ok
   def guarded(value) when is_binary(value), do: value
+  def guarded_zero when true, do: :ok
+  defp guarded_private when true, do: :ok
+  defmacro guarded_macro when true, do: :ok
+  defmacrop guarded_private_macro when true, do: :ok
+  defguard guarded_guard when true
+  defguardp guarded_private_guard when true
   alias Prefix.{One, Two}
 end`;
     const parser = new Parser();
@@ -44,13 +50,26 @@ end`;
       parser.parse(source).rootNode,
     );
     const definitionNames = matches
-      .filter((match) => match.captures.some((capture) => capture.name === 'definition.function'))
+      .filter((match) =>
+        match.captures.some((capture) =>
+          ['definition.function', 'definition.macro'].includes(capture.name),
+        ),
+      )
       .flatMap((match) =>
         match.captures
           .filter((capture) => capture.name === 'name')
           .map((capture) => capture.node.text),
       );
-    expect(definitionNames).toEqual(['zero', 'guarded']);
+    expect(definitionNames).toEqual([
+      'zero',
+      'guarded',
+      'guarded_zero',
+      'guarded_private',
+      'guarded_macro',
+      'guarded_private_macro',
+      'guarded_guard',
+      'guarded_private_guard',
+    ]);
     expect(
       matches
         .flatMap((match) => match.captures)

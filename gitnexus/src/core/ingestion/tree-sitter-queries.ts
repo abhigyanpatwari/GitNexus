@@ -3005,6 +3005,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "def")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (binary_operator left: (identifier) @name))) @definition.function
+
 
 (call
   target: (identifier) @_def (#eq? @_def "defmacro")
@@ -3019,6 +3023,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "defmacro")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
 
 (call
   target: (identifier) @_def (#eq? @_def "defguard")
@@ -3033,6 +3041,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "defguard")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
 
 (call
   target: (identifier) @_def (#eq? @_def "defdelegate")
@@ -3062,6 +3074,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "defp")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (binary_operator left: (identifier) @name))) @definition.function
+
 
 (call
   target: (identifier) @_def (#eq? @_def "defmacrop")
@@ -3076,6 +3092,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "defmacrop")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
 
 (call
   target: (identifier) @_def (#eq? @_def "defguardp")
@@ -3090,6 +3110,10 @@ export const ELIXIR_QUERIES = `
 (call
   target: (identifier) @_def (#eq? @_def "defguardp")
   (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
 
 ; ── Imports: import/use/require ───────────────────────────────────────────────
 (call
