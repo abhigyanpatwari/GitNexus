@@ -196,6 +196,42 @@ return { exposed = exposed }
   }, 60000);
 });
 
+describe('Lua local callable declarations', () => {
+  it('declares local aliases and closure bindings for callable-flow resolution', () => {
+    const captures = emitLuaScopeCaptures(
+      `function target() end
+function entry()
+  local alias = target
+  local callback = function() end
+  callback()
+end
+`,
+      'main.lua',
+    );
+    expect(
+      captures.some(
+        (match) =>
+          match['@declaration.variable']?.text === 'local alias = target' &&
+          match['@declaration.name']?.text === 'alias',
+      ),
+    ).toBe(true);
+    expect(
+      captures.some(
+        (match) =>
+          match['@declaration.function']?.text === 'local callback = function() end' &&
+          match['@declaration.name']?.text === 'callback',
+      ),
+    ).toBe(true);
+    expect(
+      captures.some(
+        (match) =>
+          match['@callable-flow.seed']?.text === 'local alias = target' &&
+          match['@callable-flow.destination']?.text === 'alias',
+      ),
+    ).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // require("lib.util") + member call util.answer() across files
 // ---------------------------------------------------------------------------

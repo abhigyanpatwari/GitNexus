@@ -1,7 +1,7 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart, -proto, -swift, -kotlin, and -zig are vendored under
+ * tree-sitter-dart, -proto, -swift, -kotlin, -zig, and -lua are vendored under
  * vendor/ and loaded from there by absolute path (NEVER copied into
  * node_modules — see core/tree-sitter/vendored-grammars.ts / #2111). Each
  * ships committed platform prebuilds activated via node-gyp-build. All can
@@ -11,7 +11,7 @@
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt/.zig
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt/.zig/.lua
  * support is unavailable instead of silently getting a degraded index.
  */
 
@@ -61,6 +61,12 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     pkg: 'tree-sitter-zig',
     extensions: ['.zig'],
     language: SupportedLanguages.Zig,
+  },
+  {
+    name: 'tree-sitter-lua',
+    pkg: 'tree-sitter-lua',
+    extensions: ['.lua'],
+    language: SupportedLanguages.Lua,
   },
 ];
 
