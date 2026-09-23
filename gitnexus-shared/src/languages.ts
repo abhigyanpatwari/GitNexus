@@ -24,4 +24,7 @@ export enum SupportedLanguages {
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
   Zig = 'zig',
+  /** Standalone regex processor (Lean 4): declarations + imports via regex;
+   *  proof-dependency edges arrive via the Lean ETL phase (precomputed graph). */
+  Lean = 'lean',
 }

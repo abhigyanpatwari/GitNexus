@@ -28,6 +28,7 @@ import {
   structurePhase,
   markdownPhase,
   cobolPhase,
+  leanETLPhase,
   parsePhase,
   routesPhase,
   toolsPhase,
@@ -335,6 +336,10 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(springConfigPhase)
       .register(markdownPhase)
       .register(cobolPhase)
+      // Lean ETL (precomputed LeanGraph): env-gated, off ⇒ absent ⇒
+      // byte-identical graph (same contract as the pdg-gated phases).
+      // Reads LEAN_ETL_NDJSON/_STATEMENTS/_INFORMAL_DB/_MODULES from env.
+      .register(leanETLPhase, { enabledWhen: () => !!process.env.LEAN_ETL_NDJSON })
       .register(parsePhase)
       .register(routesPhase)
       .register(toolsPhase)
