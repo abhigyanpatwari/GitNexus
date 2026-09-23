@@ -3113,6 +3113,13 @@ export const ELIXIR_QUERIES = `
   (arguments
     (alias) @import.source)) @import
 
+(call
+  target: (identifier) @_kw (#eq? @_kw "alias")
+  (arguments
+    (dot
+      left: (alias)
+      right: (tuple)) @import.source)) @import
+
 ; ── Remote calls: Module.function() ──────────────────────────────────────────
 (call
   target: (dot

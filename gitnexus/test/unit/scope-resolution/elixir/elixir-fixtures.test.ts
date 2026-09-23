@@ -7,6 +7,7 @@ import {
   getLanguageGrammar,
   loadLanguage,
 } from '../../../../src/core/tree-sitter/parser-loader.js';
+import { ELIXIR_QUERIES } from '../../../../src/core/ingestion/tree-sitter-queries.js';
 
 describe('Elixir scope captures', () => {
   it('keeps clause callsites and arities while semantic declarations coalesce separately', async () => {
@@ -26,6 +27,44 @@ describe('Elixir scope captures', () => {
     const targetCalls = parsed?.referenceSites.filter((site) => site.name === 'target') ?? [];
     expect(targetCalls.map((site) => site.atRange.startLine)).toEqual([3, 4]);
     expect(targetCalls.map((site) => site.arity)).toEqual([1, 1]);
+  });
+
+  it('captures zero-arity and guarded definitions once, and grouped aliases into scope', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'captures.ex');
+    const source = `defmodule Captures do
+  def zero, do: :ok
+  def guarded(value) when is_binary(value), do: value
+  alias Prefix.{One, Two}
+end`;
+    const parser = new Parser();
+    parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Elixir) as Parameters<Parser['setLanguage']>[0],
+    );
+    const matches = new Parser.Query(parser.getLanguage(), ELIXIR_QUERIES).matches(
+      parser.parse(source).rootNode,
+    );
+    const definitionNames = matches
+      .filter((match) => match.captures.some((capture) => capture.name === 'definition.function'))
+      .flatMap((match) =>
+        match.captures
+          .filter((capture) => capture.name === 'name')
+          .map((capture) => capture.node.text),
+      );
+    expect(definitionNames).toEqual(['zero', 'guarded']);
+    expect(
+      matches
+        .flatMap((match) => match.captures)
+        .filter((capture) => capture.name === 'import.source')
+        .map((capture) => capture.node.text),
+    ).toEqual(['Prefix.{One, Two}']);
+
+    const parsed = extractParsedFile(elixirProvider, source, 'captures.ex');
+    const bindings = Object.fromEntries(
+      parsed?.scopes.flatMap((scope) =>
+        [...scope.typeBindings].map(([name, ref]) => [name, ref.rawName]),
+      ) ?? [],
+    );
+    expect(bindings).toMatchObject({ One: 'Prefix.One', Two: 'Prefix.Two' });
   });
 
   it('captures aliases, constrained imports, pipelines, captures, delegates, and macro identity', async () => {
