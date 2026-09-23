@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+export const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 export const TOKEN_LEAK = 'ghs_secret_e2e_token';
 export const MISSING_GITHUB = 'https://github.com/gitnexus-e2e-missing/no-such-repo';
 
@@ -15,6 +15,12 @@ const GITNEXUS_DIR = path.resolve(process.cwd(), '..', 'gitnexus');
 const TSX_BIN = path.join(GITNEXUS_DIR, 'node_modules', '.bin', 'tsx');
 const CLI_TS = path.join(GITNEXUS_DIR, 'src', 'cli', 'index.ts');
 const CLI_DIST = path.join(GITNEXUS_DIR, 'dist', 'cli', 'index.js');
+/** Per-request bound so a stalled connection cannot outlive a helper's deadline. */
+const REQUEST_TIMEOUT_MS = 30_000;
+/** POST /api/analyze allows 10/min per IP; 409 polling must not burn that budget. */
+const SLOT_POLL_MS = 2_000;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface LiveBackend {
   url: string;
@@ -82,6 +88,8 @@ export async function startLiveBackend(): Promise<LiveBackend> {
       GITNEXUS_SKIP_FTS: process.env.GITNEXUS_SKIP_FTS ?? '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // Own process group so teardown also reaches the forked analyze worker.
+    detached: process.platform !== 'win32',
   });
   const backend: LiveBackend = {
     url: `http://127.0.0.1:${port}`,
@@ -129,7 +137,16 @@ export async function stopLiveBackend(backend: LiveBackend | undefined): Promise
   if (!backend) return;
   if (backend.child.exitCode === null && backend.child.signalCode === null) {
     const exited = new Promise<void>((resolve) => backend.child.once('exit', () => resolve()));
-    backend.child.kill('SIGTERM');
+    const pid = backend.child.pid;
+    if (pid !== undefined && process.platform !== 'win32') {
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch {
+        backend.child.kill('SIGTERM');
+      }
+    } else {
+      backend.child.kill('SIGTERM');
+    }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
@@ -165,60 +182,78 @@ export function writeTinyRepo(parent: string, name: string): string {
   return dir;
 }
 
+export interface AnalyzePostResult {
+  jobId: string;
+  status?: string;
+  error?: string;
+  http: number;
+  /** From the draft-7 `RateLimit` header; Infinity when absent. */
+  remaining: number;
+  resetMs: number;
+}
+
+/** POST /api/analyze; a 429 waits out the limiter window and retries. */
 export async function postAnalyze(
   backendUrl: string,
   body: Record<string, unknown>,
-): Promise<{ jobId: string; status?: string; error?: string; http: number }> {
-  const res = await fetch(`${backendUrl}/api/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = (await res.json().catch(() => ({}))) as {
-    jobId?: string;
-    status?: string;
-    error?: string;
-  };
-  return { jobId: json.jobId ?? '', status: json.status, error: json.error, http: res.status };
+): Promise<AnalyzePostResult> {
+  for (;;) {
+    const res = await fetch(`${backendUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const rateLimit = res.headers.get('ratelimit') ?? '';
+    const resetMs = Number(/reset=(\d+)/.exec(rateLimit)?.[1] ?? 60) * 1000;
+    if (res.status === 429) {
+      await res.body?.cancel();
+      await sleep(resetMs + 250);
+      continue;
+    }
+    const json = (await res.json().catch(() => ({}))) as {
+      jobId?: string;
+      status?: string;
+      error?: string;
+    };
+    const remaining = /remaining=(\d+)/.exec(rateLimit)?.[1];
+    return {
+      jobId: json.jobId ?? '',
+      status: json.status,
+      error: json.error,
+      http: res.status,
+      remaining: remaining === undefined ? Infinity : Number(remaining),
+      resetMs,
+    };
+  }
 }
 
-/** Wait until the server will accept a new analyze (child may outlive `failed`). */
+/**
+ * Wait until the server will accept a new analyze, with at least `budget`
+ * POST /api/analyze calls left in the rate-limit window so the caller's own
+ * posts are not answered with 429.
+ *
+ * Probes with a clone that fails in-server before any worker fork: a `failed`
+ * probe leaves no child holding the slot. A local-path probe would fork a
+ * worker that outlives its own `failed` status and re-occupy the slot.
+ */
 export async function waitForAnalyzeSlotFree(
   backendUrl: string,
   timeoutMs = 90_000,
+  budget = 3,
 ): Promise<void> {
-  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-e2e-slot-'));
-  const probe = path.join(probeDir, 'not-a-repo.txt');
-  fs.writeFileSync(probe, 'not-a-repo\n');
   const deadline = Date.now() + timeoutMs;
-  try {
-    for (;;) {
-      const first = await postAnalyze(backendUrl, { path: probe });
-      if (first.http === 409) {
-        if (Date.now() > deadline) {
-          throw new Error(`analyze slot stayed busy: ${first.error ?? 'HTTP 409'}`);
-        }
-        await new Promise((r) => setTimeout(r, 400));
-        continue;
-      }
-      if (first.jobId) await waitForJob(backendUrl, first.jobId);
-      const confirm = await postAnalyze(backendUrl, { path: probe });
-      if (confirm.http === 409) {
-        if (Date.now() > deadline) {
-          throw new Error('analyze slot re-occupied after probe job');
-        }
-        await new Promise((r) => setTimeout(r, 400));
-        continue;
-      }
-      if (confirm.jobId) await waitForJob(backendUrl, confirm.jobId);
+  for (;;) {
+    const probe = await postAnalyze(backendUrl, { url: MISSING_GITHUB });
+    if (probe.http !== 409) {
+      if (probe.jobId) await waitForJob(backendUrl, probe.jobId);
+      if (probe.remaining < budget) await sleep(probe.resetMs + 250);
       return;
     }
-  } finally {
-    try {
-      fs.rmSync(probeDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort */
+    if (Date.now() > deadline) {
+      throw new Error(`analyze slot stayed busy: ${probe.error ?? 'HTTP 409'}`);
     }
+    await sleep(SLOT_POLL_MS);
   }
 }
 
@@ -227,7 +262,7 @@ export async function postAnalyzeWhenIdle(
   backendUrl: string,
   body: Record<string, unknown>,
   timeoutMs = 60_000,
-): Promise<{ jobId: string; status?: string; error?: string; http: number }> {
+): Promise<AnalyzePostResult> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const result = await postAnalyze(backendUrl, body);
@@ -235,7 +270,7 @@ export async function postAnalyzeWhenIdle(
     if (Date.now() > deadline) {
       throw new Error(`analyze slot stayed busy: ${result.error ?? 'HTTP 409'}`);
     }
-    await new Promise((r) => setTimeout(r, 400));
+    await sleep(SLOT_POLL_MS);
   }
 }
 
@@ -246,13 +281,15 @@ export async function waitForJob(
 ): Promise<{ status: string; error?: string; repoName?: string }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const poll = await fetch(`${backendUrl}/api/analyze/${jobId}`);
+    const poll = await fetch(`${backendUrl}/api/analyze/${jobId}`, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
     const job = (await poll.json()) as { status: string; error?: string; repoName?: string };
     if (job.status === 'complete' || job.status === 'failed') {
       return job;
     }
     if (Date.now() > deadline) throw new Error(`job ${jobId} timed out at ${job.status}`);
-    await new Promise((r) => setTimeout(r, 400));
+    await sleep(400);
   }
 }
 

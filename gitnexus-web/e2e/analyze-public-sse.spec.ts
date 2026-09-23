@@ -9,6 +9,7 @@ import {
   fetchOps,
   livePrereqSkipReason,
   openAnalyzeForm,
+  postAnalyze,
   startLiveBackend,
   stopLiveBackend,
   waitForAnalyzeSlotFree,
@@ -163,15 +164,13 @@ test.describe('Analyze — failure, retry, cancel', () => {
   test('second analyze while one is running surfaces the live 409', async ({ page }, testInfo) => {
     test.setTimeout(180_000);
     const { url, fixtures } = requireBackend();
+    const first = writeTinyRepo(fixtures, 'lock-a');
     const second = writeTinyRepo(fixtures, 'lock-b');
     await waitForAnalyzeSlotFree(url);
-    const hold = await fetch(`${url}/api/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url: MISSING_GITHUB }),
-    });
-    expect(hold.status).toBe(202);
-    const held = (await hold.json()) as { jobId?: string };
+    // A real local analyze holds the slot for the whole UI round trip; a
+    // missing-repo clone fails in under a second and would free it early.
+    const held = await postAnalyze(url, { path: first });
+    expect(held.http).toBe(202);
     expect(held.jobId).toBeTruthy();
 
     await openAnalyzeForm(page);
@@ -190,7 +189,7 @@ test.describe('Analyze — other sources and token', () => {
     page,
   }, testInfo) => {
     test.setTimeout(180_000);
-    requireBackend();
+    await waitForAnalyzeSlotFree(requireBackend().url);
     let posted: Record<string, unknown> = {};
     page.on('request', (req) => {
       if (req.method() === 'POST' && req.url().endsWith('/api/analyze')) {
@@ -214,7 +213,7 @@ test.describe('Analyze — other sources and token', () => {
     page,
   }, testInfo) => {
     test.setTimeout(180_000);
-    requireBackend();
+    await waitForAnalyzeSlotFree(requireBackend().url);
     let posted: Record<string, unknown> = {};
     page.on('request', (req) => {
       if (req.method() === 'POST' && req.url().endsWith('/api/analyze')) {
