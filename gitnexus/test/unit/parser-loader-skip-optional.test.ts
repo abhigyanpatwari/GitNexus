@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { getOptionalGrammarExtensions } from '../../src/cli/optional-grammars.js';
 
 /**
  * Runtime opt-out for optional grammars (#2091, #2093).
@@ -34,6 +35,10 @@ afterEach(() => {
 });
 
 describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
+  it('includes Lua in the CLI optional-grammar preflight registry', () => {
+    expect(getOptionalGrammarExtensions()).toContain('.lua');
+  });
+
   it('skip=1 reports every optional grammar as unavailable', async () => {
     const { isLanguageAvailable } = await freshLoader('1');
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(false);
