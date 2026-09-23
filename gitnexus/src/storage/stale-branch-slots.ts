@@ -400,12 +400,13 @@ const unlinkEscapingDescendants = async (
       throw err;
     }
     const decision = await inspectContainedPath(child, stat, realSlot);
-    if (decision.kind === 'unlink') {
-      await fs.unlink(child);
-      continue;
-    }
-    if (seen.has(decision.real)) {
-      await fs.unlink(child);
+    if (decision.kind === 'unlink' || seen.has(decision.real)) {
+      try {
+        await fs.unlink(child);
+      } catch (err) {
+        // Already gone between inspection and unlink: nothing left to close.
+        if (!isMissingFilesystemError(err)) throw err;
+      }
       continue;
     }
     seen.add(decision.real);

@@ -214,7 +214,7 @@ export const ExecutionDashboard = () => {
     // origin on its own: prefill it and wait for Connect when a token is held.
     const linked = new URLSearchParams(window.location.search).get('server');
     if (linked && getAuthToken()) {
-      let foreign = true;
+      let foreign: boolean;
       try {
         foreign = normalizeServerUrl(linked) !== getBackendUrl();
       } catch {

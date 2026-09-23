@@ -138,23 +138,30 @@ export async function stopLiveBackend(backend: LiveBackend | undefined): Promise
   if (backend.child.exitCode === null && backend.child.signalCode === null) {
     const exited = new Promise<void>((resolve) => backend.child.once('exit', () => resolve()));
     const pid = backend.child.pid;
-    if (pid !== undefined && process.platform !== 'win32') {
-      try {
-        process.kill(-pid, 'SIGTERM');
-      } catch {
-        backend.child.kill('SIGTERM');
+    const signal = (sig: NodeJS.Signals) => {
+      if (pid !== undefined && process.platform !== 'win32') {
+        try {
+          process.kill(-pid, sig);
+          return;
+        } catch {
+          /* group gone or not a leader: fall back to the child */
+        }
       }
-    } else {
-      backend.child.kill('SIGTERM');
-    }
+      backend.child.kill(sig);
+    };
+    signal('SIGTERM');
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        exited,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, 5_000);
+      const exitedInTime = await Promise.race([
+        exited.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), 5_000);
         }),
       ]);
+      if (!exitedInTime) {
+        signal('SIGKILL');
+        await exited;
+      }
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
