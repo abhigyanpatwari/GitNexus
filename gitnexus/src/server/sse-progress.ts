@@ -14,7 +14,13 @@
 import type express from 'express';
 import { assertString, BadRequestError } from './validation.js';
 import { isTerminalJobStatus, type AnalyzeJob, type JobManager } from './analyze-job.js';
-import { knownJobLocations, publicOpsProgress, redactPublicText } from './ops-snapshot.js';
+import {
+  knownJobLocations,
+  publicJobRepoId,
+  publicJobRepoName,
+  publicOpsProgress,
+  redactPublicText,
+} from './ops-snapshot.js';
 
 /**
  * The wire payload of a terminal (`event: complete` / `event: failed`) frame.
@@ -25,13 +31,15 @@ import { knownJobLocations, publicOpsProgress, redactPublicText } from './ops-sn
  * payload byte-identical to the pre-`partial` shape.
  *
  * `repoPath` is omitted: `/api/ops` enumerates job ids, so this unauthenticated
- * stream must not replay the analyzed filesystem path. Reconnect with the
- * already-public `repoName` (basename). Progress text and `error` use the same
+ * stream must not replay the analyzed filesystem path. `repoName` is a display
+ * label and is not unique; reconnect by matching `repoId` against the `id` on
+ * `GET /api/repos` entries. Progress text and `error` use the same
  * public redaction as `/api/ops` / poll — raw clone URLs and home-directory
  * paths stay off the wire.
  */
 const terminalPayload = (job: AnalyzeJob | undefined) => ({
-  repoName: job?.repoName,
+  repoName: job ? publicJobRepoName(job) : undefined,
+  repoId: job ? publicJobRepoId(job) : undefined,
   error: job?.error ? redactPublicText(job.error, knownJobLocations(job)) : undefined,
   // Lets a client tell a partial embedding run ("retry these N nodes") from a
   // total failure ("nothing worked") without a new `status` member (#2790).
@@ -45,7 +53,7 @@ const terminalPayload = (job: AnalyzeJob | undefined) => ({
  * Terminal payloads carry the display `repoName` only. The analyzed filesystem
  * path used to ride this event for duplicate-basename reconnect (#2420), but
  * `/api/ops` lists job ids and this stream is unauthenticated — emitting
- * `repoPath` leaked operator home directories. Clients reconnect by `repoName`.
+ * `repoPath` leaked operator home directories. Clients reconnect by `repoId`.
  * Exported for unit tests that lock the wire payload shape.
  *
  * ── The stream closes on the JOB'S STATUS, never on a phase string (#2790) ──

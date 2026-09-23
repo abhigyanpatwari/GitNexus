@@ -4,8 +4,9 @@
  * The SSE complete event may carry `repoPath` (the analyzed path). RepoAnalyzer
  * must pass that IDENTITY to onComplete — so the post-analyze reconnect targets
  * the exact repo even when basenames collide — while the done screen keeps
- * rendering the display NAME and never shows an absolute path. Old servers
- * omit repoPath; the name fallback must be preserved.
+ * rendering the display NAME and never shows an absolute path. Current servers
+ * omit repoPath and send an opaque repoId, resolved against /api/repos; with
+ * neither, the name fallback must be preserved.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
@@ -13,7 +14,7 @@ import { RepoAnalyzer } from '../../src/components/RepoAnalyzer';
 import { i18nReady } from '../../src/i18n';
 import {
   cancelAnalyze,
-  startAnalyze,
+  fetchRepos,
   streamAnalyzeProgress,
   uploadFolder,
 } from '../../src/services/backend-client';
@@ -32,13 +33,14 @@ vi.mock('../../src/services/backend-client', () => ({
   },
   startAnalyze: vi.fn(),
   cancelAnalyze: vi.fn(),
+  fetchRepos: vi.fn(),
   streamAnalyzeProgress: vi.fn(),
   uploadFolder: vi.fn(),
 }));
 
 const JOB = { jobId: 'job-1', status: 'queued' };
 
-type CompleteData = { repoName?: string; repoPath?: string };
+type CompleteData = { repoName?: string; repoPath?: string; repoId?: string };
 
 beforeEach(async () => {
   await i18nReady;
@@ -91,7 +93,7 @@ describe('analyze completion identity', () => {
 
     // onComplete fires after the ~1200ms done-screen dwell, with the identity.
     expect(onDone).not.toHaveBeenCalled();
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
@@ -106,39 +108,42 @@ describe('analyze completion identity', () => {
     });
 
     expect(screen.getByText('reels')).toBeInTheDocument();
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone).toHaveBeenCalledWith('reels');
   });
 
-  it('reconnects a local-path run by the submitted path when repoPath is omitted', async () => {
-    let sseComplete: ((data: CompleteData) => void) | undefined;
-    vi.mocked(streamAnalyzeProgress).mockImplementation((_jobId, _onProgress, onComplete) => {
-      sseComplete = onComplete;
-      return new AbortController();
-    });
-    vi.mocked(startAnalyze).mockResolvedValue(JOB as never);
-
-    vi.useFakeTimers();
-    const onDone = vi.fn<(repoIdentity: string) => void>();
-    render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
-    fireEvent.change(screen.getByPlaceholderText('/home/you/project'), {
-      target: { value: '/ws/b/reels' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /Analyze Repository/ }));
-    await act(async () => {});
-    expect(startAnalyze).toHaveBeenCalledWith({ path: '/ws/b/reels' });
+  it('resolves repoId to the exact /api/repos entry when names collide', async () => {
+    vi.mocked(fetchRepos).mockResolvedValue([
+      { id: 'id-a', name: 'reels', path: '/ws/a/reels', indexedAt: '' },
+      { id: 'id-b', name: 'reels', path: '/ws/b/reels', indexedAt: '' },
+    ]);
+    const { onDone, complete } = await startTrackedJob();
 
     act(() => {
-      sseComplete?.({ repoName: 'reels' });
+      complete({ repoName: 'reels', repoId: 'id-b' });
     });
+    expect(screen.getByText('reels')).toBeInTheDocument();
     expect(screen.queryByText('/ws/b/reels')).toBeNull();
-    act(() => {
+
+    await act(async () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledWith('/ws/b/reels');
+  });
+
+  it('falls back to the display name when repoId matches no entry', async () => {
+    vi.mocked(fetchRepos).mockResolvedValue([]);
+    const { onDone, complete } = await startTrackedJob();
+
+    act(() => {
+      complete({ repoName: 'reels', repoId: 'gone' });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    expect(onDone).toHaveBeenCalledWith('reels');
   });
 });

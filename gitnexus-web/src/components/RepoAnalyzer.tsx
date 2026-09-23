@@ -23,6 +23,7 @@ import {
 import {
   startAnalyze,
   cancelAnalyze,
+  fetchRepos,
   streamAnalyzeProgress,
   uploadFolder,
   type JobProgress,
@@ -392,7 +393,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             : mode === 'azure'
               ? azureUrl.trim()
               : localPath.trim();
-      trackJob(jobId, nameSource, mode === 'local' ? localPath.trim() : undefined);
+      trackJob(jobId, nameSource);
     } catch (err) {
       // Unmount aborts the controller, so this also covers the unmounted case.
       if (controller.signal.aborted) return;
@@ -403,7 +404,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
 
   // Drive an already-created analysis job through the SSE progress stream to
   // completion. Shared by the path/URL analyze flow and the folder-upload flow.
-  const trackJob = (jobId: string, fallbackNameSource: string | null, requestedPath?: string) => {
+  const trackJob = (jobId: string, fallbackNameSource: string | null) => {
     // Callers reach here only with a live (non-aborted) request controller, so
     // the component is mounted — unmount aborts the controller.
     jobIdRef.current = jobId;
@@ -414,9 +415,8 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       (data) => {
         // Display vs identity split: the done screen renders the display name
         // (never an absolute path). Current servers omit repoPath on the
-        // unauthenticated SSE terminal frame. A local-path run reconnects by
-        // the path this client submitted (collision-safe, never read off the
-        // wire); URL clones and uploads fall back to repoName.
+        // unauthenticated SSE terminal frame and send an opaque repoId that
+        // selects the exact /api/repos entry (names are not unique).
         // Older servers that still send repoPath keep collision-safe reconnect.
         const displayName =
           data.repoName ??
@@ -424,14 +424,22 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             ? fallbackNameSource.split(/[/\\]/).filter(Boolean).at(-1)
             : undefined) ??
           t('onboarding:repoAnalyzer.defaultRepoName');
-        const identity = data.repoPath ?? requestedPath ?? displayName;
+        const repoId = data.repoId;
+        const identity: Promise<string> = data.repoPath
+          ? Promise.resolve(data.repoPath)
+          : repoId
+            ? fetchRepos().then(
+                (repos) => repos.find((r) => r.id === repoId)?.path ?? displayName,
+                () => displayName,
+              )
+            : Promise.resolve(displayName);
         setCompletedRepoName(displayName);
         setGithubToken('');
         setPhase('done');
         sseControllerRef.current = null;
         completeTimerRef.current = setTimeout(() => {
           completeTimerRef.current = null;
-          onComplete(identity);
+          void identity.then(onComplete);
         }, 1200);
       },
       (errMsg) => {

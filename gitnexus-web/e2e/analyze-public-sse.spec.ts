@@ -96,13 +96,13 @@ test.describe('Analyze — happy path', () => {
     expect(snap).not.toContain(repoDir);
     expect(snap).not.toContain('"repoPath"');
 
+    // Reconnect resolves the SSE repoId against /api/repos and loads the exact
+    // registered path, never a same-named sibling. The path stays off screen.
     await expect
-      .poll(() => repoQueries.length > 0 && repoQueries.every((q) => q === 'courses'), {
+      .poll(() => repoQueries.length > 0 && repoQueries.every((q) => q === repoDir), {
         timeout: 20_000,
       })
       .toBe(true);
-    expect(repoQueries.join('\n')).not.toContain(repoDir);
-    expect(repoQueries.join('\n')).not.toContain('/home/');
     await capture(page, testInfo, '05-after-complete');
     await assertNoLeaks(page, [fixtures]);
   });

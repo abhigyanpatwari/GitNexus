@@ -11,6 +11,7 @@ import {
   type AnalyzeJobProgress,
   type AnalyzeJobStatus,
 } from './analyze-job.js';
+import { publicRepoId } from './public-repo-id.js';
 import { escapeRegExp } from './validation.js';
 
 export interface OpsJobView {
@@ -18,6 +19,8 @@ export interface OpsJobView {
   lane: 'analyze' | 'embed';
   status: AnalyzeJobStatus;
   repoName?: string;
+  /** Opaque `GET /api/repos` entry id; set once the job is complete. */
+  repoId?: string;
   branch?: string;
   progress: AnalyzeJob['progress'];
   error?: string;
@@ -120,6 +123,22 @@ const preserveTrailingPunct = (raw: string, token: string): string => {
   return trailing ? `${token}${trailing[0]}` : token;
 };
 
+/**
+ * Display name for public payloads. A branch-pinned URL clone registers under
+ * its clone-directory name (`<repo>__<branch slug>`), which would put the
+ * requested branch on the unauthenticated feed — use the URL's repo name.
+ * Reconnect goes through {@link publicJobRepoId}, not this label.
+ */
+export const publicJobRepoName = (job: AnalyzeJob): string | undefined =>
+  (job.branch ? publicRepoNameFromUrl(job.repoUrl) : undefined) ||
+  job.repoName ||
+  publicRepoNameFromUrl(job.repoUrl) ||
+  publicRepoNameFromPath(job.repoPath);
+
+/** Opaque registry handle, only once the job's index is published. */
+export const publicJobRepoId = (job: AnalyzeJob): string | undefined =>
+  job.status === 'complete' && job.repoPath ? publicRepoId(job.repoPath) : undefined;
+
 export const knownJobLocations = (
   job?: Pick<AnalyzeJob, 'repoPath' | 'repoUrl'> | null,
 ): Array<string | undefined> => [job?.repoPath, job?.repoUrl];
@@ -217,16 +236,15 @@ export const serializeOpsJob = (
 ): OpsJobView => {
   const end = job.completedAt ?? now;
   const known = knownJobLocations(job);
-  // Prefer the registered short name. Fall back to a basename only — never
-  // emit raw repoUrl/repoPath or the requested branch on the unauthenticated
-  // ops feed (a ref can name a private project the same way a path would).
-  const repoName =
-    job.repoName || publicRepoNameFromUrl(job.repoUrl) || publicRepoNameFromPath(job.repoPath);
+  // Never emit raw repoUrl/repoPath or the requested branch on the
+  // unauthenticated ops feed (a ref can name a private project the same way a
+  // path would).
   return {
     id: job.id,
     lane,
     status: job.status,
-    repoName,
+    repoName: publicJobRepoName(job),
+    repoId: publicJobRepoId(job),
     progress: publicOpsProgress(job.progress, known),
     error: job.error ? redactPublicText(job.error, known) : undefined,
     partial: job.partial,

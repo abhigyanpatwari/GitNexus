@@ -8,8 +8,8 @@
  *
  * The analyzed filesystem path is NOT on this unauthenticated stream: `/api/ops`
  * enumerates job ids, so a LAN or official-Vercel origin must not recover
- * operator home directories from a terminal frame. Clients reconnect by
- * `repoName`. Older servers that still emit `repoPath` keep working in the UI.
+ * operator home directories from a terminal frame. Clients reconnect by the
+ * opaque `repoId` (matches `id` on `GET /api/repos`). Older servers that still emit `repoPath` keep working in the UI.
  *
  * Imported from `src/server/sse-progress.ts`, NOT from `src/server/api.ts`:
  * that module pulls Express, cors, the LadybugDB native adapter and the whole
@@ -17,6 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { JobManager } from '../../src/server/analyze-job.js';
+import { publicRepoId } from '../../src/server/public-repo-id.js';
 import { startSSEHarness, terminalFrame, type SSEHarness } from '../helpers/sse-harness.js';
 
 const REPO_PATH = '/ws/b/reels';
@@ -48,6 +49,7 @@ describe('mountSSEProgress terminal payload', () => {
     // Exact match locks the wire shape (error is undefined → omitted by JSON).
     expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
+      repoId: publicRepoId(REPO_PATH),
     });
   });
 
@@ -69,6 +71,7 @@ describe('mountSSEProgress terminal payload', () => {
     expect(body).not.toContain(REPO_PATH);
     expect(terminalFrame(body, 'complete')).toEqual({
       repoName: REPO_NAME,
+      repoId: publicRepoId(REPO_PATH),
     });
   });
 

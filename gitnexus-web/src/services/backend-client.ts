@@ -18,6 +18,8 @@ import { decideSkipGraph } from '../lib/graph-load-decision';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface BackendRepo {
+  /** Opaque per-server-process handle; matches `repoId` on analyze completion. */
+  id?: string;
   name: string;
   path: string;
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
@@ -1216,7 +1218,7 @@ export const cancelAnalyze = async (jobId: string): Promise<void> => {
 export const streamAnalyzeProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string; repoId?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(

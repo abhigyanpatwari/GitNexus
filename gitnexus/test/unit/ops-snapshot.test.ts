@@ -6,6 +6,7 @@ import {
   serializeOpsJob,
   summarizeOpsLane,
 } from '../../src/server/ops-snapshot.js';
+import { publicRepoId } from '../../src/server/public-repo-id.js';
 
 describe('serializeOpsJob / summarizeOpsLane', () => {
   let manager: JobManager;
@@ -40,6 +41,28 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(view.branch).toBeUndefined();
     expect(JSON.stringify(view)).not.toContain('customer');
     expect(JSON.stringify(view)).not.toContain('acme-release');
+  });
+
+  it('labels a branch-pinned clone by its repo name, not the branch-slug registry name', () => {
+    const job = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'customer/acme-release',
+    });
+    manager.updateJob(job.id, { status: 'complete', repoName: 'repo__customer-acme-r-1a2b3c4d' });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.repoName).toBe('repo');
+    expect(JSON.stringify(view)).not.toContain('acme');
+  });
+
+  it('exposes an opaque repoId only once the job is complete', () => {
+    const job = manager.createJob({ repoPath: '/home/alice/src/api' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    expect(serializeOpsJob(manager.getJob(job.id)!, 'analyze').repoId).toBeUndefined();
+
+    manager.updateJob(job.id, { status: 'complete' });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.repoId).toBe(publicRepoId('/home/alice/src/api'));
+    expect(JSON.stringify(view)).not.toContain('alice');
   });
 
   it('strips query and fragment when deriving repoName from repoUrl', () => {
