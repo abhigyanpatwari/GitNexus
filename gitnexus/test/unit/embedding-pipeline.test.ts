@@ -34,13 +34,17 @@ describe('embedding schema column contracts', () => {
     expect(EMBEDDABLE_LABELS).toContain(LABEL_CATEGORY);
   });
 
-  it('extracts method names from an Elixir defmodule snippet', async () => {
+  it('extracts defmodule methods without treating ordinary calls as declarations', async () => {
     await expect(
       extractStructuralNames(
         'defmodule Example do\n  def run(value), do: value\nend',
         'example.ex',
       ),
     ).resolves.toMatchObject({ methodNames: ['run'] });
+
+    await expect(
+      extractStructuralNames('configure do\n  def leaked(value), do: value\nend', 'example.ex'),
+    ).resolves.toMatchObject({ methodNames: [] });
   });
 });
 

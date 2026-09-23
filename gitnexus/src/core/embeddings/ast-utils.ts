@@ -44,6 +44,25 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   return parseSourceSafe(parserInstance, parseContent);
 };
 
+const ELIXIR_MODULE_CALL_KEYWORDS: Record<string, true> = {
+  defmodule: true,
+  defprotocol: true,
+};
+
+type DeclarationCandidateNode = {
+  type: string;
+  childForFieldName?: (fieldName: string) => { type: string; text: string } | null;
+};
+
+const isElixirModuleCall = (node: DeclarationCandidateNode): boolean => {
+  const target = node.childForFieldName?.('target');
+  return (
+    node.type === 'call' &&
+    target?.type === 'identifier' &&
+    ELIXIR_MODULE_CALL_KEYWORDS[target.text] === true
+  );
+};
+
 const FUNCTION_LIKE_TYPES = new Set([
   'function_declaration',
   'function_definition',
@@ -111,14 +130,13 @@ export const findDeclarationNode = (root: any): any | null => {
     'declaration', // Go: type X struct
     'object_declaration', // Kotlin: object
     'impl_item', // Rust: impl
-    'call', // Elixir: defmodule
   ]);
 
   // Iterative DFS — avoids stack overflow on deeply nested ASTs.
   const stack = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (CLASS_LIKE_TYPES.has(node.type)) return node;
+    if (CLASS_LIKE_TYPES.has(node.type) || isElixirModuleCall(node)) return node;
     for (let i = node.namedChildCount - 1; i >= 0; i--) {
       const child = node.namedChild(i);
       if (child) stack.push(child);
