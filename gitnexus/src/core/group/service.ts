@@ -229,10 +229,17 @@ function filterQueryByServicePrefix(
       servicePrefix,
     ),
   );
-  const allowed = new Set(
-    symbols.map((s) => String((s as { process_id?: string }).process_id ?? '')).filter(Boolean),
-  );
-  const processes = (queryResult.processes || []).filter((p) => allowed.has(String(p.id)));
+  const countByProcess = new Map<string, number>();
+  for (const symbol of symbols) {
+    const pid = String((symbol as { process_id?: string }).process_id ?? '');
+    if (!pid) continue;
+    countByProcess.set(pid, (countByProcess.get(pid) ?? 0) + 1);
+  }
+  const processes = (queryResult.processes || []).filter((p) => countByProcess.has(String(p.id)));
+  for (const process of processes) {
+    const id = String(process.id ?? '');
+    if (id) process.symbol_count = countByProcess.get(id) ?? 0;
+  }
   return { processes, process_symbols: symbols };
 }
 
@@ -834,22 +841,9 @@ export class GroupService {
               processes?: Array<Record<string, unknown>>;
               process_symbols?: Array<Record<string, unknown>>;
             };
-            const filtered = servicePrefix
-              ? filterQueryByServicePrefix(queryResult, servicePrefix)
-              : undefined;
-            const processes = filtered ? filtered.processes : queryResult.processes || [];
-            if (filtered) {
-              const countByProcess = new Map<string, number>();
-              for (const symbol of filtered.process_symbols) {
-                const pid = String((symbol as { process_id?: string }).process_id ?? '');
-                if (!pid) continue;
-                countByProcess.set(pid, (countByProcess.get(pid) ?? 0) + 1);
-              }
-              for (const process of processes) {
-                const id = String(process.id ?? '');
-                if (id) process.symbol_count = countByProcess.get(id) ?? 0;
-              }
-            }
+            const processes = servicePrefix
+              ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
+              : queryResult.processes || [];
             const scored = processes.map((p, idx) => ({
               ...p,
               _rrf_score: 1 / (idx + 1 + 60),

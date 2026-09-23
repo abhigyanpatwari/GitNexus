@@ -56,6 +56,7 @@ export function shapeQueryProcessAttaches<S extends QueryProcessAttach>(
   const { maxSymbolsPerProcess, chainByProcessId } = options;
   const seen = new Set<string>();
   const process_symbols: S[] = [];
+  const countByProcess = new Map<string, number>();
 
   for (const p of rankedProcesses) {
     for (const s of p.symbols.slice(0, maxSymbolsPerProcess)) {
@@ -65,12 +66,8 @@ export function shapeQueryProcessAttaches<S extends QueryProcessAttach>(
       const row =
         p.entryPointId && s.id === p.entryPointId ? ({ ...s, is_entry_point: true } as S) : s;
       process_symbols.push(row);
+      countByProcess.set(s.process_id, (countByProcess.get(s.process_id) ?? 0) + 1);
     }
-  }
-
-  const countByProcess = new Map<string, number>();
-  for (const s of process_symbols) {
-    countByProcess.set(s.process_id, (countByProcess.get(s.process_id) ?? 0) + 1);
   }
 
   const processes = rankedProcesses.map((p) => {

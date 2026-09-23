@@ -131,6 +131,11 @@ describe('GITNEXUS_TOOLS', () => {
     expect(queryTool.description).toContain('symbol_count is the number of those rows');
     expect(queryTool.description).toContain('single-repo envelope');
     expect(queryTool.description).toContain('does not include process_symbols');
+    expect(queryTool.description).toContain('Join processes[].id to process_symbols[].process_id');
+    expect(queryTool.description).toContain(
+      'when service is set, it counts only attaches under that prefix',
+    );
+    expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {

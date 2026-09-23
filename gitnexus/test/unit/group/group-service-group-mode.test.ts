@@ -72,11 +72,41 @@ describe('GroupService group-mode API surface', () => {
         name: 'test-group',
         query: 'validate',
         service: 'services/auth',
-      })) as { results: Array<{ id?: string }>; process_symbols?: unknown };
+      })) as {
+        results: Array<{ id?: string; symbol_count?: number }>;
+        process_symbols?: unknown;
+      };
       const resultIds = r.results.map((row) => row.id);
       expect(resultIds).toContain('proc:A');
       expect(resultIds).toContain('proc:B');
+      expect(r.results.find((row) => row.id === 'proc:A')?.symbol_count).toBe(1);
+      expect(r.results.find((row) => row.id === 'proc:B')?.symbol_count).toBe(1);
       expect(r).not.toHaveProperty('process_symbols');
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
+  it('groupQuery counts only in-prefix attaches on a kept process', async () => {
+    const { tmpDir, cleanup } = makeTmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const query = vi.fn(async () => ({
+        processes: [{ id: 'proc:B', symbol_count: 9 }],
+        process_symbols: [
+          { id: 'func:a', process_id: 'proc:B', filePath: 'services/auth/a.ts' },
+          { id: 'func:b', process_id: 'proc:B', filePath: 'services/auth/b.ts' },
+          { id: 'func:c', process_id: 'proc:B', filePath: 'other/c.ts' },
+        ],
+      }));
+      const svc = new GroupService(makePort({ query }));
+      const r = (await svc.groupQuery({
+        name: 'test-group',
+        query: 'validate',
+        service: 'services/auth',
+      })) as { results: Array<{ id?: string; symbol_count?: number }> };
+      expect(r.results.every((row) => row.id === 'proc:B' && row.symbol_count === 2)).toBe(true);
     } finally {
       vi.unstubAllEnvs();
       cleanup();

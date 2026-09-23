@@ -141,14 +141,14 @@ specify the "repo" parameter explicitly.`,
   {
     name: 'query',
     description: `Query the code knowledge graph for execution flows related to a concept.
-Returns processes (call chains) ranked by relevance, each with its symbols and file locations.
+Returns ranked processes plus a flat process_symbols list. Join processes[].id to process_symbols[].process_id.
 
 WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.
 AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs).
 
 Returns results grouped by process (execution flow):
 - processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
-- process_symbols: search-hit symbols in those flows with file locations and module (functional area). On the single-repo envelope { processes, process_symbols, definitions }: One row per (id, process_id) — the same symbol id may appear under more than one process. Join a process to its rows by process_id; symbol_count is the number of those rows. When the process entry is among those hits, it is marked is_entry_point: true. A repo of "@<group>" returns { group, query, results, per_repo } and does not include process_symbols. results[].symbol_count is the member's post-slice attach count; when service is set, it counts only attaches under that prefix.
+- process_symbols: search-hit symbols in those flows with file locations and module (functional area). On the single-repo envelope { processes, process_symbols, definitions }: One row per (id, process_id) — the same symbol id may appear under more than one process. Join a process to its rows by process_id; symbol_count is the number of those rows. When the process entry is among those hits, it is marked is_entry_point: true. A repo of "@<group>" returns { group, query, results, per_repo } and does not include process_symbols. results[].symbol_count is the member's post-slice attach count; when service is set, it counts only attaches under that prefix. To get process_symbols for one member, query again with repo "@<group>/<memberPath>" (member path from group.yaml, or results[]._repo).
 - definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
