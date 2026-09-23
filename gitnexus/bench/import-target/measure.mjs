@@ -208,12 +208,14 @@
  * workload — identical file, import and resolved counts — laid out the way
  * these languages are actually written: `svcN/internal/`, `SrcN/Models/`, a
  * `mod0.dart`/`mod0.rb` in every package. Measured on that shape the per-import
- * cost is NOT corpus-size-independent for the four resolvers that scan a
+ * cost is NOT corpus-size-independent for the three resolvers that scan a
  * bucket:
  *
  *   - go, csharp and java walk `PackageDirIndex.dirsByLastSegment[seg]`, which
  *     now holds every directory;
- *   - dart walks its basename bucket, which now holds every same-named file;
+ *   - dart formerly walked its basename bucket. Since #2963 its package-URI
+ *     arms use exact declared-package paths; the separate heap probe and
+ *     scan-count regressions still exercise its relative-path suffix index;
  *   - ruby, kotlin, php and cobol answer from keyed maps and are collision-
  *     IMMUNE, so their collide budgets are the linear ones — that immunity is
  *     the assertion, and for cobol the arm is also the only one that reaches
@@ -849,7 +851,8 @@ function uniqueDir(lang, d, i) {
   // and breaks its same-workload invariant. C# therefore exercises the removed
   // rule through progressive stripping rather than through its primary query.
   if (lang === 'csharp') return d % 7 === 0 ? `src/Ns${d}/Sub/Ns${d}` : `src/Ns${d}`;
-  if (lang === 'dart') return d % 3 === 0 ? `lib/feature${d}` : `pkg/feature${d}`;
+  // Keep every synthetic local import valid under app's pubspec lib root.
+  if (lang === 'dart') return `lib/feature${d}`;
   if (lang === 'kotlin') {
     return d % 7 === 0
       ? `mod${d}/src/main/kotlin/com/example/pkg${d}/inner/pkg${d}`
@@ -1500,11 +1503,10 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   }
   if (lang === 'dart') {
     return local
-      ? `package:app/pkg${j % dirs}/lib/src/mod${Math.floor(j / dirs)}.dart`
+      ? `package:pkg${j % dirs}/src/mod${Math.floor(j / dirs)}.dart`
       : (r >>> 3) % 3 === 0
         ? ['dart:core', 'dart:async', 'dart:io'][(r >>> 4) % 3]
-        : // A repeated basename under a directory nothing carries: both
-          // candidates walk the whole basename bucket and miss.
+        : // Foreign package names must miss despite repeated local basenames.
           `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
   }
   if (lang === 'kotlin') {
@@ -1740,6 +1742,16 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * hide their build from rep 2 onward and `fastest()` reports the minimum.
  */
 function newPass(lang, files, pad = 0) {
+  if (lang === 'dart') {
+    // Synthetic pubspec declarations: app at the root, one package per
+    // collision directory. Package imports no longer suffix-match (#2963).
+    const packages = new Map([['app', joinBase(tsBaseUrlFor(pad), 'lib')]]);
+    for (const file of files) {
+      const match = /(?:^|\/)(pkg\d+)\/lib\//.exec(file);
+      if (match) packages.set(match[1], joinBase(tsBaseUrlFor(pad), `${match[1]}/lib`));
+    }
+    return { allFilePaths: new Set(files), config: { packages } };
+  }
   if (HEADER_EXTENSION[lang] !== undefined) {
     const sources = [];
     const headers = [];
@@ -1803,7 +1815,7 @@ function resolveAll(lang, files, imports, pad = 0) {
 function resolveOne(lang, from, target, pass) {
   const allFilePaths = pass.allFilePaths;
   if (lang === 'go') return resolveGoImportTarget(target, from, allFilePaths, GO_MODULE);
-  if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths);
+  if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths, pass.config);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
     const parsedImport = {
@@ -2154,8 +2166,8 @@ const HEAP_PROBE_TARGET = {
   // end. Chosen from the miss family that reaches furthest into each cascade:
   //   - `go` names a missing package inside GO_MODULE, which reaches the
   //     package-directory lookup and forces `PackageDirIndex`;
-  //   - `dart` is an external package, so BOTH candidate paths miss and both
-  //     walk the basename bucket to completion;
+  //   - `dart` uses a relative miss to retain coverage of its basename index;
+  //     package imports now use exact membership and allocate no file index;
   //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
@@ -2165,7 +2177,7 @@ const HEAP_PROBE_TARGET = {
   //     bound compares like with like. `vue`'s is bare rather than `@/…`
   //     because the alias branch rewrites to `src/` and would resolve.
   go: 'example.com/mod/repo0/pkg/util',
-  dart: 'package:ext0/src/thing.dart',
+  dart: './src/thing.dart',
   kotlin: 'com.ghost0.deep.Missing',
   cobol: 'VENDOR0',
   swift: 'ExternalPkg0',

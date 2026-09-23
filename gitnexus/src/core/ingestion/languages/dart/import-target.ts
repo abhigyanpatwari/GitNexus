@@ -1,30 +1,27 @@
 /**
  * `resolveImportTarget` adapter for the Dart `ScopeResolver`. Ports the
- * legacy-DAG Dart import logic (`import-resolvers/configs/dart.ts`):
+ * Dart import logic:
  *
  *   - `dart:` SDK imports          → `null` (external, no edge)
- *   - `package:pkg/path`           → `lib/path` (or bare `path`) matched
- *                                     against the workspace file set
+ *   - `package:pkg/path`           → declared package's exact `lib/path`
  *   - relative `'foo/bar.dart'`    → resolved against the importer's dir
  *   - `__heritage__:` markers      → `null` (synthetic heritage carrier,
  *                                     consumed by `emitDartHeritageEdges`)
  *
- * The `ScopeResolver` hook signature is `(targetRaw, fromFile, allFilePaths)`;
+ * Package identity comes from the workspace's pubspec resolution config;
  * `targetRaw` arrives already quote-stripped from `interpretDartImport`.
  */
 
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
+import type { DartPackageConfig } from './package-config.js';
 
 /**
  * Basename → files carrying it, in `allFilePaths` iteration order, memoized on
  * the Set's identity (#2879).
  *
- * Both resolution legs answered `fp === candidate || fp.endsWith('/' + candidate)`
- * with a full workspace scan, and the `package:` leg ran one scan PER candidate
- * — for an external package both candidates miss, so both scans always ran to
- * completion. The orchestrator passes the same Set to every import in a pass,
- * so the index is built once per run.
+ * Relative-path suffix fallback uses this index instead of scanning the
+ * workspace for each import. Package imports use exact Set membership only.
  *
  * Bucketing by basename is exact rather than a heuristic: a path satisfying
  * either arm of the match ends with `candidate`, so its last `/`-delimited
@@ -89,6 +86,7 @@ export function resolveDartImportTarget(
   targetRaw: string,
   fromFile: string,
   allFilePaths: ReadonlySet<string>,
+  resolutionConfig?: unknown,
 ): string | readonly string[] | null {
   if (targetRaw.startsWith(DART_HERITAGE_PREFIX)) return null;
   // `targetRaw` already arrives quote-stripped from `interpretDartImport`.
@@ -97,17 +95,22 @@ export function resolveDartImportTarget(
   // Dart SDK imports never resolve to a repo file.
   if (targetRaw.startsWith('dart:')) return null;
 
-  // `package:pkg/path.dart` → `lib/path.dart` (or bare `path.dart`).
+  // A package URI never falls back to another package's same-named file.
   if (targetRaw.startsWith('package:')) {
     const slash = targetRaw.indexOf('/');
     if (slash === -1) return null;
+    const packageName = targetRaw.slice('package:'.length, slash);
+    const config = resolutionConfig as DartPackageConfig | undefined;
+    const lib = config?.packages?.get(packageName);
+    if (lib === undefined) return null;
     const relPath = targetRaw.slice(slash + 1);
-    // Candidate priority is load-bearing: `lib/<rel>` before bare `<rel>`.
-    for (const candidate of [`lib/${relPath}`, relPath]) {
-      const hit = findByPathSuffix(allFilePaths, candidate);
-      if (hit !== null) return hit;
-    }
-    return null; // external package
+    if (
+      /[\\%?#:]/.test(relPath) ||
+      relPath.split('/').some((part) => part === '' || part === '.' || part === '..')
+    )
+      return null;
+    const candidate = `${lib}/${relPath}`;
+    return allFilePaths.has(candidate) ? candidate : null;
   }
 
   // Relative import.
