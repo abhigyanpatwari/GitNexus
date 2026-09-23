@@ -3,7 +3,8 @@
  *
  * Captures the structural skeleton the central ScopeExtractor consumes:
  *   - scopes: (chunk) root + function bodies
- *   - declarations: function / local function / method (function Obj:m())
+ *   - declarations: functions, local callable/value bindings, and methods
+ *     (function Obj:m())
  *   - imports: Lua module-loading calls — the call + its string arg
  *   - references: free calls foo() + member calls obj:m() / obj.f()
  *
@@ -36,6 +37,20 @@ const LUA_SCOPE_QUERY = `
 
 (local_function_definition_statement
   name: (identifier) @declaration.name) @declaration.function
+
+;; Local callable bindings need a SymbolDefinition before the shared
+;; callable-flow pass can attach alias/formal/argument facts to their cells.
+;; Keep ordinary variable aliases as Variable nodes, while closure bindings
+;; below are Functions so the anonymous-callable convention can resolve them.
+(local_variable_declaration
+  (variable_list
+    (variable name: (identifier) @declaration.name))) @declaration.variable
+
+(local_variable_declaration
+  (variable_list
+    (variable name: (identifier) @declaration.name))
+  (expression_list
+    value: (function_definition))) @declaration.function
 
 ;; ── Declarations — methods: function Obj:method() / function Obj.field() ────
 ;;   name is a (variable) with table + method (colon) or table + field (dot).
