@@ -116,15 +116,18 @@ const settleDirFor = (
  *
  * Never rejects. Returns `true` once the index is settled. Timing out logs
  * a warning and returns `false` — the caller must fail the job without
- * publishing. The `alreadyUpToDate` fast path never rewrites `lbug` (see
- * `run-analyze.ts`) and is treated as settled without waiting so it does
- * not hold the analyze slot for 60s of polling.
+ * publishing. `shouldAbort` short-circuits the poll (no timeout warning)
+ * so a pending cancel or already-terminal job does not hold the write lock
+ * for the remaining 60s. The `alreadyUpToDate` fast path never rewrites
+ * `lbug` (see `run-analyze.ts`) and is treated as settled without waiting
+ * so it does not hold the analyze slot for 60s of polling.
  */
 const waitForSettledIndex = async (
   storagePath: string,
   jobStartMs: number,
   branch?: string,
   isPrimaryBranch?: boolean,
+  shouldAbort?: () => boolean,
 ): Promise<boolean> => {
   const settled = (probePath: string): boolean => {
     try {
@@ -170,6 +173,7 @@ const waitForSettledIndex = async (
   };
   const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
   for (;;) {
+    if (shouldAbort?.()) return false;
     if (settled(settleDirFor(storagePath, branch, isPrimaryBranch))) return true;
     if (Date.now() > deadline) {
       logger.warn(
@@ -235,9 +239,20 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
     const workerHeapMb =
       Number.isInteger(envHeapMb) && envHeapMb > 0 ? envHeapMb : Math.min(8192, autoHeapCapMb());
 
+    const launchAborted = (jobId: string): boolean => {
+      const current = jobManager.getJob(jobId);
+      return !current || isTerminalJobStatus(current.status) || jobManager.hasPendingCancel(jobId);
+    };
+
     const forkWorker = () => {
-      const currentJob = jobManager.getJob(job.id);
-      if (!currentJob || isTerminalJobStatus(currentJob.status)) return;
+      if (launchAborted(job.id)) {
+        // Cancelled (or timed out) between lock acquisition and the fork, or
+        // during a crash-retry delay. A pending-cancel job stays non-terminal
+        // until the worker exits — do not fork a replacement. Nothing else
+        // drops the lock here, so release or the repo stays "busy" until restart.
+        releaseLockOnce();
+        return;
+      }
 
       const child = fork(workerPath, [], {
         execArgv: [...tsxHookArgs, `--max-old-space-size=${workerHeapMb}`],
@@ -253,6 +268,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       // below reads that clean exit as a crash and retries a SUCCESSFUL
       // analysis, three times, before failing it (#3199 review).
       let terminalIpcSeen = false;
+      // Cancel `error` IPC arrives before the worker's `finally` checkpoint.
+      // Hold the write lock until `exit` so embed cannot acquire under a
+      // still-open native handle. Exit must release when this is set —
+      // `terminalIpcSeen` is already true for that IPC, so a naive
+      // "don't release on cancel error" would leak the lock.
+      let holdLockUntilExit = false;
+      let childExited = false;
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks += chunk.toString();
         if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
@@ -274,6 +296,12 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             progress: { phase: msg.phase, percent: msg.percent, message: msg.message },
           });
         } else if (msg.type === 'complete') {
+          if (jobManager.applyPendingCancel(job.id)) {
+            // Same as cancel `error` IPC: the worker still runs
+            // `boundedCheckpointBeforeExit` after sending terminal IPC.
+            holdLockUntilExit = true;
+            return;
+          }
           // Hold the write lock through settle AND the collapse/publish
           // decision. Release in `finally` so timeout / collapse / init
           // failure / complete each drop it exactly once. alreadyUpToDate
@@ -303,9 +331,15 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
                 jobStartMs,
                 opts.branch,
                 msg.result.isPrimaryBranch,
+                () => launchAborted(job.id),
               );
           settle
             .then((settled) => {
+              if (launchAborted(job.id)) {
+                jobManager.applyPendingCancel(job.id);
+                if (!childExited) holdLockUntilExit = true;
+                return false;
+              }
               if (!settled) {
                 // Finalization never became visible. Do not evict the cached
                 // handle (a previously published index should keep being
@@ -324,6 +358,11 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             })
             .then((readyToPublish) => {
               if (!readyToPublish) return;
+              if (launchAborted(job.id)) {
+                jobManager.applyPendingCancel(job.id);
+                if (!childExited) holdLockUntilExit = true;
+                return;
+              }
               // PARITY WITH THE CLI, which is what the IPC projection was added
               // for. `analyze-worker-ipc.ts` carries `graphWriteCollapsed`
               // "so a server-side caller sees the same degraded outcome the CLI
@@ -398,27 +437,59 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
               });
             })
             .finally(() => {
-              releaseLockOnce();
+              if (!holdLockUntilExit) releaseLockOnce();
             });
         } else if (msg.type === 'error') {
-          releaseLockOnce();
-          // A failed (force) analyze may still have rewritten DB files first.
-          void closeDbHandle().catch(() => {});
-          jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
+          // Cancel path: the worker sends this IPC first, then
+          // `boundedCheckpointBeforeExit` in `finally`. Hold the lock until
+          // `exit` so embed (same `acquireRepoLock`) cannot open mid-checkpoint.
+          if (jobManager.hasPendingCancel(job.id)) {
+            jobManager.applyPendingCancel(job.id);
+            holdLockUntilExit = true;
+          } else {
+            releaseLockOnce();
+            // A failed (force) analyze may still have rewritten DB files first.
+            void closeDbHandle().catch(() => {});
+            jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
+          }
         }
       });
 
       child.on('error', (err) => {
+        // Fake test children have no `pid`. Treat that as pre-spawn so the
+        // spawn-failure path still frees the slot without waiting for `exit`.
+        // A numeric pid is a live child — Node also emits `error` for
+        // post-spawn send/kill failures (e.g. write EPIPE); those still get
+        // `exit`, which drops the lock when `!terminalIpcSeen || holdLockUntilExit`.
+        const preSpawn = typeof child.pid !== 'number';
+        if (!jobManager.applyPendingCancel(job.id)) {
+          jobManager.updateJob(job.id, {
+            status: 'failed',
+            error: `Worker process error: ${err.message}`,
+          });
+        }
+        if (!preSpawn) return;
         releaseLockOnce();
-        jobManager.updateJob(job.id, {
-          status: 'failed',
-          error: `Worker process error: ${err.message}`,
-        });
+        // `fork`/`error` without `exit` (spawn failure) would otherwise keep
+        // the child in JobManager and block every later createJob.
+        jobManager.releaseChild(job.id);
       });
 
       child.on('exit', (code) => {
+        childExited = true;
         const j = jobManager.getJob(job.id);
-        if (!j || isTerminalJobStatus(j.status)) return;
+        if (!j || isTerminalJobStatus(j.status) || jobManager.hasPendingCancel(job.id)) {
+          // (a) complete/error IPC is in flight (`terminalIpcSeen`) — that
+          //     chain owns the lock through settle/`backend.init()`/`finally`.
+          //     Releasing here lets a second analyze acquire under a publish.
+          // (b) cancel is pending or already failed BEFORE any terminal IPC —
+          //     this exit is the only remaining place that can drop the lock.
+          // (c) cancel `error` IPC set `holdLockUntilExit`: `terminalIpcSeen`
+          //     is true, so without this extra clause the lock would leak
+          //     until process restart.
+          if (!terminalIpcSeen || holdLockUntilExit) releaseLockOnce();
+          return;
+        }
 
         // The worker already reported a terminal outcome; this exit is it
         // winding down, not dying. The job is still non-terminal only because

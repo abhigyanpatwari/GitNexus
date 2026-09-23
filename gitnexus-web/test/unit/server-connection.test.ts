@@ -58,6 +58,13 @@ describe('normalizeServerUrl', () => {
   it('preserves existing https://', () => {
     expect(normalizeServerUrl('https://gitnexus.example.com')).toBe('https://gitnexus.example.com');
   });
+
+  it('strips userinfo so credentials never reach ?server= or _backendUrl', () => {
+    expect(normalizeServerUrl('https://user:secret@gitnexus.example.com:8443')).toBe(
+      'https://gitnexus.example.com:8443',
+    );
+    expect(normalizeServerUrl('http://token@localhost:4747/api')).toBe('http://localhost:4747');
+  });
 });
 
 afterEach(() => {
