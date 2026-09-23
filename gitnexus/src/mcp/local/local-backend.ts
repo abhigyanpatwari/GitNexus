@@ -3548,7 +3548,7 @@ export class LocalBackend {
 
     // Step 4: Build response
     timer.start('formatting');
-    const { processes, process_symbols: dedupedSymbols } = shapeQueryProcessAttaches(
+    const { processes, process_symbols } = shapeQueryProcessAttaches(
       rankedProcesses,
       { maxSymbolsPerProcess, chainByProcessId },
     );
@@ -3734,7 +3734,7 @@ export class LocalBackend {
 
     return {
       processes,
-      process_symbols: dedupedSymbols,
+      process_symbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),

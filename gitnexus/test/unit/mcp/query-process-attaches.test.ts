@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   shapeQueryProcessAttaches,
+  type QueryProcessAttach,
   type RankedQueryProcess,
 } from '../../../src/mcp/local/query-process-attaches.js';
 
@@ -13,7 +14,7 @@ function attach(
   id: string,
   processId: string,
   extras: Record<string, unknown> = {},
-): { id: string; process_id: string } & Record<string, unknown> {
+): QueryProcessAttach {
   return { id, process_id: processId, ...extras };
 }
 
