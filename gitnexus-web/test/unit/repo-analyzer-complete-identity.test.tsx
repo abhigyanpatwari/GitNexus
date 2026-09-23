@@ -67,7 +67,7 @@ async function startTrackedJob() {
 
   vi.useFakeTimers();
   const onDone = vi.fn<(repoIdentity: string) => void>();
-  render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
+  const { unmount } = render(<RepoAnalyzer variant="onboarding" onComplete={onDone} />);
   fireEvent.click(screen.getByRole('tab', { name: 'Local Folder' }));
   fireEvent.change(screen.getByTestId('folder-upload-input'), {
     target: { files: [new File(['x'], 'a.ts')] },
@@ -76,7 +76,7 @@ async function startTrackedJob() {
   await act(async () => {});
   expect(streamAnalyzeProgress).toHaveBeenCalledTimes(1);
 
-  return { onDone, complete: (data: CompleteData) => sseComplete?.(data) };
+  return { onDone, unmount, complete: (data: CompleteData) => sseComplete?.(data) };
 }
 
 describe('analyze completion identity', () => {
@@ -145,5 +145,27 @@ describe('analyze completion identity', () => {
       vi.advanceTimersByTime(1200);
     });
     expect(onDone).toHaveBeenCalledWith('reels');
+  });
+
+  it('does not call onComplete when unmounted while repoId is still resolving', async () => {
+    let resolveRepos: ((repos: never[]) => void) | undefined;
+    vi.mocked(fetchRepos).mockReturnValue(
+      new Promise((resolve) => {
+        resolveRepos = resolve;
+      }),
+    );
+    const { onDone, complete, unmount } = await startTrackedJob();
+
+    act(() => {
+      complete({ repoName: 'reels', repoId: 'id-b' });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(1200);
+    });
+    unmount();
+    await act(async () => {
+      resolveRepos?.([]);
+    });
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

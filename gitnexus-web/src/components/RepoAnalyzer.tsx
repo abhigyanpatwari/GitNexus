@@ -261,13 +261,19 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   // arriving after a mode switch / cancel / unmount can never drive state.
   const requestControllerRef = useRef<AbortController | null>(null);
   const completeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The completion identity may still be resolving (`/api/repos`) when the
+  // dwell timer fires; clearing the timer cannot cancel that continuation.
+  const unmountedRef = useRef(false);
   const folderInputRef = useRef<HTMLInputElement>(null);
   // dragenter/dragleave fire for every child boundary crossed; count them so
   // the highlight does not flicker while the cursor moves over the button.
   const dragDepthRef = useRef(0);
 
   useEffect(() => {
+    // Reset on (re)mount: StrictMode runs cleanup then setup again.
+    unmountedRef.current = false;
     return () => {
+      unmountedRef.current = true;
       sseControllerRef.current?.abort();
       requestControllerRef.current?.abort();
       if (completeTimerRef.current) clearTimeout(completeTimerRef.current);
@@ -440,7 +446,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
         sseControllerRef.current = null;
         completeTimerRef.current = setTimeout(() => {
           completeTimerRef.current = null;
-          void identity.then(onComplete);
+          void identity.then((id) => {
+            if (!unmountedRef.current) onComplete(id);
+          });
         }, 1200);
       },
       (errMsg) => {
@@ -843,6 +851,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
               }}
               disabled={isLoading}
               placeholder={isWindows ? 'C:\\Users\\you\\project' : '/home/you/project'}
+              data-testid="local-path-input"
               autoComplete="off"
               spellCheck={false}
               className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"

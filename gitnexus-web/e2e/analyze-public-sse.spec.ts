@@ -71,7 +71,7 @@ test.describe('Analyze — happy path', () => {
     await capture(page, testInfo, '01-empty-form');
 
     await page.getByRole('tab', { name: 'Local Folder' }).click();
-    await page.getByPlaceholder('/home/you/project').fill(repoDir);
+    await page.getByTestId('local-path-input').fill(repoDir);
     await capture(page, testInfo, '02-filled-local-path');
     await page.getByRole('button', { name: /Analyze Repository/ }).click();
 
@@ -117,7 +117,7 @@ test.describe('Analyze — failure, retry, cancel', () => {
 
     await openAnalyzeForm(page);
     await page.getByRole('tab', { name: 'Local Folder' }).click();
-    await page.getByPlaceholder('/home/you/project').fill(notARepo);
+    await page.getByTestId('local-path-input').fill(notARepo);
     await page.getByRole('button', { name: /Analyze Repository/ }).click();
 
     await expect(page.getByRole('button', { name: /Try again/ })).toBeVisible({ timeout: 60_000 });
@@ -149,7 +149,7 @@ test.describe('Analyze — failure, retry, cancel', () => {
 
     await openAnalyzeForm(page);
     await page.getByRole('tab', { name: 'Local Folder' }).click();
-    await page.getByPlaceholder('/home/you/project').fill(repoDir);
+    await page.getByTestId('local-path-input').fill(repoDir);
     await page.getByRole('button', { name: /Analyze Repository/ }).click();
 
     const progress = page.locator('[data-testid="analyze-progress"]');
@@ -177,7 +177,7 @@ test.describe('Analyze — failure, retry, cancel', () => {
 
     await openAnalyzeForm(page);
     await page.getByRole('tab', { name: 'Local Folder' }).click();
-    await page.getByPlaceholder('/home/you/project').fill(second);
+    await page.getByTestId('local-path-input').fill(second);
     await page.getByRole('button', { name: /Analyze Repository/ }).click();
 
     await expect(page.getByText(/already (active|in progress)/i)).toBeVisible({ timeout: 20_000 });

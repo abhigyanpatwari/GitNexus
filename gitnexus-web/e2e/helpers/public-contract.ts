@@ -260,7 +260,9 @@ export async function waitForAnalyzeSlotFree(
   for (;;) {
     const probe = await postAnalyze(backendUrl, { url: MISSING_GITHUB }, deadline);
     if (probe.http !== 409) {
-      if (probe.jobId) await waitForJob(backendUrl, probe.jobId);
+      if (probe.jobId) {
+        await waitForJob(backendUrl, probe.jobId, Math.max(0, deadline - Date.now()));
+      }
       if (probe.remaining < budget) await sleep(probe.resetMs + 250);
       return;
     }
