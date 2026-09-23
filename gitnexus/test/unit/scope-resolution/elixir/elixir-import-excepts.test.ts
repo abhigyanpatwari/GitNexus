@@ -89,9 +89,11 @@ describe('Elixir import except augmentation', () => {
       scopes: [],
       localDefs: [
         { ...callable('Filtered', 0), type: 'Class', qualifiedName: 'Filtered' },
+        { ...callable('Sibling', 0), type: 'Class', qualifiedName: 'Sibling' },
         callable('visible', 1),
         callable('hidden', 1),
         callable('hidden', 2),
+        { ...callable('foreign', 1), qualifiedName: 'Sibling.foreign' },
         { ...callable('nested', 0), qualifiedName: 'Filtered.Nested.nested' },
         callable('private', 0, false),
       ],
@@ -111,6 +113,13 @@ describe('Elixir import except augmentation', () => {
         .get('hidden')
         .map((binding: { def: SymbolDefinition }) => binding.def.parameterCount),
     ).toEqual([2]);
+    expect(
+      augmentations
+        .get(importerScope)!
+        .get('hidden')
+        .some((binding: { def: SymbolDefinition }) => binding.def.parameterCount === 1),
+    ).toBe(false);
+    expect(augmentations.get(importerScope)!.has('foreign')).toBe(false);
     expect(augmentations.get(importerScope)!.has('nested')).toBe(false);
   });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
+import { createRequire } from 'node:module';
 import path from 'path';
 import {
   loadParser,
@@ -12,6 +13,8 @@ import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import { findEnclosingClassInfo } from '../../src/core/ingestion/utils/ast-helpers.js';
 import Parser from 'tree-sitter';
 import { vendoredGrammarDir } from '../../src/core/tree-sitter/vendored-grammars.js';
+
+const _require = createRequire(import.meta.url);
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -1010,10 +1013,19 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
-  describe.skipIf(!isLanguageAvailable(SupportedLanguages.Elixir))('Elixir', () => {
+  const elixirPackageInstalled = (() => {
+    try {
+      _require.resolve('tree-sitter-elixir');
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  describe.skipIf(!elixirPackageInstalled)('Elixir', () => {
     const elixirQueries = () => getProvider(SupportedLanguages.Elixir).treeSitterQueries;
 
     async function loadElixir(): Promise<void> {
+      expect(isLanguageAvailable(SupportedLanguages.Elixir)).toBe(true);
       await loadLanguage(SupportedLanguages.Elixir);
     }
 

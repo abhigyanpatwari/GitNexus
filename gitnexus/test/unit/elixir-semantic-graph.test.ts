@@ -76,6 +76,7 @@ describe('Elixir semantic graph', () => {
       'lib/quoted_callback.ex',
     );
     expect(graph.nodes.find((node) => node.properties.qualifiedName === 'M')?.label).toBe('Class');
+    expect(graph.nodes.some((node) => node.properties.qualifiedName === 'M.run')).toBe(false);
   });
 
   it('emits canonical zero-arity ordinary and guarded declarations', async () => {
