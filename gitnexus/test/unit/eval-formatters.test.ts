@@ -93,6 +93,37 @@ describe('formatQueryResult', () => {
     expect(result).toContain('No matching execution flows');
   });
 
+  it('lists a shared hub under each process that has an attach (R7)', () => {
+    const result = formatQueryResult({
+      processes: [
+        { id: 'proc:A', summary: 'User Login', step_count: 3, symbol_count: 1 },
+        { id: 'proc:B', summary: 'Beta Flow', step_count: 3, symbol_count: 1 },
+      ],
+      process_symbols: [
+        {
+          id: 'func:validate',
+          process_id: 'proc:A',
+          type: 'Function',
+          name: 'validate',
+          filePath: 'src/auth.ts',
+          startLine: 17,
+        },
+        {
+          id: 'func:validate',
+          process_id: 'proc:B',
+          type: 'Function',
+          name: 'validate',
+          filePath: 'src/auth.ts',
+          startLine: 17,
+        },
+      ],
+      definitions: [],
+    });
+    expect(result).toContain('User Login (3 steps, 1 symbols)');
+    expect(result).toContain('Beta Flow (3 steps, 1 symbols)');
+    expect(result.match(/validate → src\/auth\.ts:17/g)).toHaveLength(2);
+  });
+
   it('formats processes with symbols', () => {
     const result = formatQueryResult({
       processes: [{ id: 'p1', summary: 'User Login Flow', step_count: 3, symbol_count: 2 }],

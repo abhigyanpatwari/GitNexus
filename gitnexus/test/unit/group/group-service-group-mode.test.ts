@@ -56,6 +56,33 @@ function makePort(overrides: Partial<GroupToolPort> = {}): GroupToolPort {
 }
 
 describe('GroupService group-mode API surface', () => {
+  it('groupQuery with service keeps a hub-only process after pair-key attaches (AE3)', async () => {
+    const { tmpDir, cleanup } = makeTmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const query = vi.fn(async () => ({
+        processes: [{ id: 'proc:A' }, { id: 'proc:B' }],
+        process_symbols: [
+          { id: 'func:validate', process_id: 'proc:A', filePath: 'services/auth/a.ts' },
+          { id: 'func:validate', process_id: 'proc:B', filePath: 'services/auth/b.ts' },
+        ],
+      }));
+      const svc = new GroupService(makePort({ query }));
+      const r = (await svc.groupQuery({
+        name: 'test-group',
+        query: 'validate',
+        service: 'services/auth',
+      })) as { results: Array<{ id?: string }>; process_symbols?: unknown };
+      const resultIds = r.results.map((row) => row.id);
+      expect(resultIds).toContain('proc:A');
+      expect(resultIds).toContain('proc:B');
+      expect(r).not.toHaveProperty('process_symbols');
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
   it('groupQuery uses name (never @-repo) and optional service filters processes', async () => {
     const { tmpDir, cleanup } = makeTmpGroup();
     vi.stubEnv('GITNEXUS_HOME', tmpDir);

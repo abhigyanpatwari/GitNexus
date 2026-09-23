@@ -316,12 +316,21 @@ withTestLbugDB(
         expect(processIds).toContain('proc:login-flow');
         expect(processIds).toContain('proc:beta-flow');
 
-        // process_symbols dedups by id, so validate appears once carrying the
-        // pid+step of its top-ranked process — they must come from the SAME
-        // shifted row: login-flow⇒step 2, beta-flow⇒step 3.
-        const v = (res.process_symbols ?? []).find((s: any) => s.id === 'func:validate');
-        expect(v).toBeDefined();
-        expect(v.step_index).toBe(v.process_id === 'proc:beta-flow' ? 3 : 2);
+        // process_symbols keeps one row per (id, process_id): validate is a
+        // step in both flows and must appear under each, with that row's
+        // shifted pid↔step pairing (login-flow⇒step 2, beta-flow⇒step 3).
+        const validates = (res.process_symbols ?? []).filter((s: any) => s.id === 'func:validate');
+        expect(validates).toHaveLength(2);
+        const byProcess = Object.fromEntries(validates.map((s: any) => [s.process_id, s]));
+        expect(byProcess['proc:login-flow']?.step_index).toBe(2);
+        expect(byProcess['proc:beta-flow']?.step_index).toBe(3);
+        for (const procId of ['proc:login-flow', 'proc:beta-flow'] as const) {
+          const card = (res.processes ?? []).find((p: any) => p.id === procId);
+          const attachCount = (res.process_symbols ?? []).filter(
+            (s: any) => s.process_id === procId,
+          ).length;
+          expect(card?.symbol_count).toBe(attachCount);
+        }
 
         // Ranking: 'login' surfaces proc:login-flow as the top process.
         const loginRes = await backend.callTool('query', { query: 'login' });

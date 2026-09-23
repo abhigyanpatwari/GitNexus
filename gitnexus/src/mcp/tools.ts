@@ -148,7 +148,7 @@ AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, cal
 
 Returns results grouped by process (execution flow):
 - processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
-- process_symbols: search-hit symbols in those flows with file locations and module (functional area). When the process entry is among those hits, it is marked is_entry_point: true.
+- process_symbols: search-hit symbols in those flows with file locations and module (functional area). One row per (id, process_id) — the same symbol id may appear under more than one process. Join a process to its rows by process_id; symbol_count is the number of those rows. When the process entry is among those hits, it is marked is_entry_point: true.
 - definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.

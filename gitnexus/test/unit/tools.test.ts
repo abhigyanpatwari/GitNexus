@@ -124,6 +124,12 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('query process_symbols description names the (id, process_id) join key (#3351)', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(queryTool.description).toContain('One row per (id, process_id)');
+    expect(queryTool.description).toContain('Join a process to its rows by process_id');
+  });
+
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
     expect(queryTool.inputSchema.required).toContain('search_query');
