@@ -1,12 +1,13 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart, -proto, -swift, -kotlin, and -zig are vendored under
- * vendor/ and loaded from there by absolute path (NEVER copied into
- * node_modules — see core/tree-sitter/vendored-grammars.ts / #2111). Each
- * ships committed platform prebuilds activated via node-gyp-build.
- * tree-sitter-lua is also vendored, but is source-built during install because
- * it does not currently ship committed prebuilds. All can be skipped via
+ * tree-sitter-dart, -proto, -swift, and -kotlin are vendored under vendor/ and
+ * loaded from there by absolute path (NEVER copied into node_modules — see
+ * core/tree-sitter/vendored-grammars.ts / #2111). Each ships committed platform
+ * prebuilds activated via node-gyp-build. tree-sitter-lua is also vendored, but
+ * is source-built during install because it does not currently ship committed
+ * prebuilds. tree-sitter-zig is installed from npm as an optionalDependency.
+ * All can be skipped via
  * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
  * soft-fail when no prebuild matches the host platform (and a source build was
  * unavailable / not attempted).
@@ -18,9 +19,12 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { createRequire } from 'node:module';
 import { isGrammarRuntimeSkipped } from '../core/tree-sitter/parser-loader.js';
 import { requireVendoredGrammar } from '../core/tree-sitter/vendored-grammars.js';
 import { cliWarn } from './cli-message.js';
+
+const _require = createRequire(import.meta.url);
 
 interface OptionalGrammar {
   /** Display name in warnings */
@@ -36,6 +40,12 @@ interface OptionalGrammar {
    * `.proto`, which is a gRPC-extractor concern, not a SupportedLanguages.
    */
   language?: SupportedLanguages;
+  /**
+   * Availability probe. Defaults to `requireVendoredGrammar(pkg)`; grammars
+   * installed from npm as optionalDependencies (currently Zig) override it
+   * with a plain `require` of the package.
+   */
+  probe?: () => unknown;
 }
 
 const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
@@ -45,7 +55,11 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     extensions: ['.dart'],
     language: SupportedLanguages.Dart,
   },
-  { name: 'tree-sitter-proto', pkg: 'tree-sitter-proto', extensions: ['.proto'] },
+  {
+    name: 'tree-sitter-proto',
+    pkg: 'tree-sitter-proto',
+    extensions: ['.proto'],
+  },
   {
     name: 'tree-sitter-swift',
     pkg: 'tree-sitter-swift',
@@ -60,9 +74,10 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
   },
   {
     name: 'tree-sitter-zig',
-    pkg: 'tree-sitter-zig',
+    pkg: '@tree-sitter-grammars/tree-sitter-zig',
     extensions: ['.zig'],
     language: SupportedLanguages.Zig,
+    probe: () => _require('@tree-sitter-grammars/tree-sitter-zig'),
   },
   {
     name: 'tree-sitter-lua',
@@ -115,11 +130,19 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
     // treated as unavailable, with a `skipped` reason so the warning says so
     // instead of suggesting a reinstall (#2101 review).
     if (g.language !== undefined && isGrammarRuntimeSkipped(g.language)) {
-      missing.push({ name: g.name, extensions: g.extensions, reason: 'skipped' });
+      missing.push({
+        name: g.name,
+        extensions: g.extensions,
+        reason: 'skipped',
+      });
       continue;
     }
     try {
-      requireVendoredGrammar(g.pkg);
+      if (g.probe !== undefined) {
+        g.probe();
+      } else {
+        requireVendoredGrammar(g.pkg);
+      }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException | undefined)?.code;
       const msg = err instanceof Error ? err.message : String(err);
@@ -139,7 +162,11 @@ export function detectMissingOptionalGrammars(): MissingGrammar[] {
           { grammar: g.name, extensions: g.extensions, error: msg },
         );
       }
-      missing.push({ name: g.name, extensions: g.extensions, reason: 'missing' });
+      missing.push({
+        name: g.name,
+        extensions: g.extensions,
+        reason: 'missing',
+      });
     }
   }
   return missing;

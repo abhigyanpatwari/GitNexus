@@ -37,11 +37,21 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
 describe('Lua scope resolver binding merge', () => {
   it('retains imported bindings when layering them onto existing bindings', () => {
     const local = {
-      def: { nodeId: 'local', filePath: 'main.lua', type: 'Variable', qualifiedName: 'local' },
+      def: {
+        nodeId: 'local',
+        filePath: 'main.lua',
+        type: 'Variable',
+        qualifiedName: 'local',
+      },
       origin: 'local',
     } satisfies BindingRef;
     const imported = {
-      def: { nodeId: 'imported', filePath: 'lib.lua', type: 'Variable', qualifiedName: 'imported' },
+      def: {
+        nodeId: 'imported',
+        filePath: 'lib.lua',
+        type: 'Variable',
+        qualifiedName: 'imported',
+      },
       origin: 'import',
     } satisfies BindingRef;
 
@@ -166,6 +176,8 @@ describe('Lua module export visibility', () => {
       writeFixtureRepo(tmpDir, {
         'module.lua': `local function exposed() end
 local function hidden() end
+local Private = {}
+function Private.answer() end
 function global() end
 return { exposed = exposed }
 `,
@@ -173,6 +185,17 @@ return { exposed = exposed }
       const result = await runPipelineFromRepo(tmpDir, () => {});
       const functions = getNodesByLabelFull(result, 'Function').filter((node) =>
         node.properties.filePath?.endsWith('module.lua'),
+      );
+      const privateMethods = getNodesByLabelFull(result, 'Method').filter((node) =>
+        node.properties.filePath?.endsWith('module.lua'),
+      );
+      expect(privateMethods).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: 'answer',
+            properties: expect.objectContaining({ isExported: false }),
+          }),
+        ]),
       );
       expect(functions).toEqual(
         expect.arrayContaining([
@@ -542,7 +565,8 @@ describe('Lua scope: middleclass method ownership boundaries', () => {
     try {
       writeFixtureRepo(tmpDir, {
         'dog.lua': `local Dog = class("Dog")
-Dog.bark = function(self)
+local ignored = nil
+ignored, Dog.bark = nil, function(self)
   return "woof"
 end
 return Dog
@@ -802,7 +826,7 @@ end
 return { answer = answer }
 `,
         'main.lua': `local util = require("util")
-local first = util.answer
+local ignored, first = nil, util.answer
 local second = first
 second()
 `,

@@ -259,7 +259,14 @@ export const luaExportChecker: ExportChecker = (node, name) => {
       declaration = current;
       break;
     }
-    if (current.type === 'function_definition_statement') return true;
+    if (current.type === 'function_definition_statement') {
+      const functionName = current.childForFieldName('name');
+      const owner = functionName?.childForFieldName('table');
+      if (owner?.type !== 'identifier') return true;
+      const root = findLuaRoot(current);
+      if (!luaHasTopLevelLocalBinding(root, owner.text, current.startIndex)) return true;
+      return luaModuleReturnExposesName(root, owner.text);
+    }
     current = current.parent;
   }
 
@@ -274,6 +281,20 @@ function findLuaRoot(node: SyntaxNode): SyntaxNode {
   let root = node;
   while (root.parent !== null) root = root.parent;
   return root;
+}
+
+function luaHasTopLevelLocalBinding(root: SyntaxNode, name: string, beforeIndex: number): boolean {
+  for (const statement of root.namedChildren ?? []) {
+    if (statement.type !== 'local_variable_declaration' || statement.startIndex >= beforeIndex)
+      continue;
+    const variables = statement.namedChildren.find((child) => child.type === 'variable_list');
+    if (
+      variables?.namedChildren.some((variable) => variable.childForFieldName('name')?.text === name)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function luaModuleReturnExposesName(root: SyntaxNode, name: string): boolean {
