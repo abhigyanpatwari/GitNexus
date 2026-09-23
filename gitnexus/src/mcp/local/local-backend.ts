@@ -3548,10 +3548,10 @@ export class LocalBackend {
 
     // Step 4: Build response
     timer.start('formatting');
-    const { processes, process_symbols } = shapeQueryProcessAttaches(
-      rankedProcesses,
-      { maxSymbolsPerProcess, chainByProcessId },
-    );
+    const { processes, process_symbols } = shapeQueryProcessAttaches(rankedProcesses, {
+      maxSymbolsPerProcess,
+      chainByProcessId,
+    });
     timer.stop(); // formatting
 
     // End-to-end wall time — deliberately a separate mark so callers can
