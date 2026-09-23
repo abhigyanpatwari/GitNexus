@@ -86,6 +86,21 @@ end`;
     expect(bindings).toMatchObject({ One: 'Prefix.One', Two: 'Prefix.Two' });
   });
 
+  it('does not turn quoted definitions into local declarations', async () => {
+    await loadLanguage(SupportedLanguages.Elixir, 'quoted.ex');
+    const parsed = extractParsedFile(
+      elixirProvider,
+      `defmodule M do
+  def real, do: :ok
+  quote do
+    def generated(value), do: value
+  end
+end`,
+      'quoted.ex',
+    );
+    expect(parsed?.localDefs.map((def) => def.qualifiedName).sort()).toEqual(['M', 'M.real']);
+  });
+
   it('captures aliases, constrained imports, pipelines, captures, delegates, and macro identity', async () => {
     await loadLanguage(SupportedLanguages.Elixir, 'lib/nonconventional_name.ex');
     const parsed = extractParsedFile(
