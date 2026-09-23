@@ -9,6 +9,7 @@ import {
   terminalFrameCount,
   type SSEHarness,
 } from '../helpers/sse-harness.js';
+import { publicRepoId } from '../../src/server/public-repo-id.js';
 import {
   resolveEmbedRunOutcome,
   withMeasuredEmbeddingCount,
@@ -170,10 +171,10 @@ describe('mountSSEProgress terminality (#2790)', () => {
     const body = await response.text();
 
     expect(body).not.toContain('event: complete');
+    expect(body).not.toContain('/ws/embed-partial');
     expect(terminalFrameCount(body)).toBe(1);
     expect(terminalFrame(body, 'failed')).toMatchObject({
       repoName: 'embed-partial',
-      repoPath: '/ws/embed-partial',
       error: expect.stringContaining('finished partially') as unknown as string,
       // The distinction a UI needs to offer "retry 2 nodes" instead of a bare
       // red chip — carried without adding a `status` union member.
@@ -207,9 +208,10 @@ describe('mountSSEProgress terminality (#2790)', () => {
     // Exactly one — the status update carries a `progress` too, and #2264's
     // single-emit rule is what keeps that from double-writing the terminal frame.
     expect(terminalFrameCount(body)).toBe(1);
+    // Public frame: display name + opaque repoId, never the analyzed path.
     expect(terminalFrame(body, 'complete')).toEqual({
       repoName: 'embed-clean',
-      repoPath: '/ws/embed-clean',
+      repoId: publicRepoId('/ws/embed-clean'),
     });
     // The 'finalizing' frame was relayed as ordinary progress, not swallowed.
     expect(body).toContain('"phase":"finalizing"');
@@ -235,7 +237,10 @@ describe('mountSSEProgress terminality (#2790)', () => {
     const body = await response.text();
 
     expect(terminalFrameCount(body)).toBe(1);
-    expect(terminalFrame(body, 'complete')).toEqual({ repoName: 'reels', repoPath: '/ws/reels' });
+    expect(terminalFrame(body, 'complete')).toEqual({
+      repoName: 'reels',
+      repoId: publicRepoId('/ws/reels'),
+    });
   });
 
   it('a job that finished before the client connected replays its outcome', async () => {
