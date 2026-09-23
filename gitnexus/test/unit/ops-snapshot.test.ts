@@ -168,6 +168,26 @@ describe('serializeOpsJob / summarizeOpsLane', () => {
     expect(JSON.stringify(view)).not.toContain('/home/');
   });
 
+  it('redacts a descendant file under the known repoPath, not just the prefix', () => {
+    const job = manager.createJob({ repoPath: '/home/alice/repo' });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'Parse failed in /home/alice/repo/src/secret.ts, aborting',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('Parse failed in [path], aborting');
+  });
+
+  it('does not treat a same-prefix sibling as the known repoPath', () => {
+    const job = manager.createJob({ repoPath: '/home/alice/repo' });
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'Lock held by /home/alice/repo2/x.lock',
+    });
+    const view = serializeOpsJob(manager.getJob(job.id)!, 'analyze');
+    expect(view.error).toBe('Lock held by [path]');
+  });
+
   it('redacts a spaced POSIX clone path from job.error on the public ops view', () => {
     const repoPath = '/home/Jane Doe/.gitnexus/repos/foo';
     const job = manager.createJob({ repoPath });

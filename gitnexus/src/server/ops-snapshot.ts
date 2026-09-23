@@ -147,6 +147,13 @@ export const knownJobLocations = (
 const knownRedactionToken = (value: string): '[repo]' | '[path]' =>
   /^(https?:\/\/|ssh:\/\/)/i.test(value) || /^[\w.-]+@[\w.-]+:/.test(value) ? '[repo]' : '[path]';
 
+/**
+ * After a path separator, consume a single space only when another `/` or `\`
+ * still follows — so `/home/Jane Doe/.gitnexus/foo` is one path, but
+ * `/home/alice/src/private-repo has no remote.origin` keeps the sentence.
+ */
+const PATH_WITH_INTERNAL_SPACE = String.raw`[^\s"')]+(?: [^\s"')]*[\\/][^\s"')]*)*`;
+
 const redactKnownLocations = (text: string, known?: Array<string | undefined>): string => {
   const values = (known ?? [])
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
@@ -156,22 +163,19 @@ const redactKnownLocations = (text: string, known?: Array<string | undefined>): 
   for (const value of values) {
     if (seen.has(value)) continue;
     seen.add(value);
-    // Swallow trailing slashes only at a sentence/punct boundary so
-    // `https://…/repo.git/` becomes `[repo]`, not `[repo]/`, without eating `/src`.
+    // Consume a descendant tail too (`<repoPath>/src/secret.ts`): once the
+    // prefix became `[path]`, the absolute-path scrub below could no longer see
+    // the rest. The lookahead keeps `<repoPath>2/…` (a sibling) for that scrub.
     out = out.replace(
-      new RegExp(`${escapeRegExp(value)}(?:[/\\\\]+(?=[\\s"')\\],;.]|$))?`, 'g'),
-      knownRedactionToken(value),
+      new RegExp(
+        `${escapeRegExp(value)}(?:[/\\\\]${PATH_WITH_INTERNAL_SPACE}|[/\\\\]+)?(?![\\w-]|\\.\\w)`,
+        'g',
+      ),
+      (raw) => preserveTrailingPunct(raw, knownRedactionToken(value)),
     );
   }
   return out;
 };
-
-/**
- * After a path separator, consume a single space only when another `/` or `\`
- * still follows — so `/home/Jane Doe/.gitnexus/foo` is one path, but
- * `/home/alice/src/private-repo has no remote.origin` keeps the sentence.
- */
-const PATH_WITH_INTERNAL_SPACE = String.raw`[^\s"')]+(?: [^\s"')]*[\\/][^\s"')]*)*`;
 
 /**
  * Mid-string scrub for unauthenticated ops/poll payloads. Clone progress and

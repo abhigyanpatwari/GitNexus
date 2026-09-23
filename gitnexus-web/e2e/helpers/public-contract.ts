@@ -308,7 +308,9 @@ export async function waitForJob(
 }
 
 export async function fetchOps(backendUrl: string): Promise<Record<string, unknown>> {
-  const res = await fetch(`${backendUrl}/api/ops`);
+  const res = await fetch(`${backendUrl}/api/ops`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!res.ok) throw new Error(`GET /api/ops → HTTP ${res.status}`);
   return (await res.json()) as Record<string, unknown>;
 }

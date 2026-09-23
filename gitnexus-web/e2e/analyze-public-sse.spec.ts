@@ -136,7 +136,9 @@ test.describe('Analyze — failure, retry, cancel', () => {
     page,
   }, testInfo) => {
     test.setTimeout(180_000);
-    const { fixtures } = requireBackend();
+    const { url, fixtures } = requireBackend();
+    // The previous test's failed local-path job keeps the slot until its worker exits.
+    await waitForAnalyzeSlotFree(url);
     const repoDir = writeTinyRepo(fixtures, 'cancel-me');
     const deletes: string[] = [];
     page.on('request', (req) => {

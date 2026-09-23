@@ -213,11 +213,12 @@ export interface RepoAnalyzerProps {
   variant: 'onboarding' | 'sheet';
   /**
    * Receives the repo identity used to reconnect. Prefers `repoPath` when an
-   * older server still sends it on the SSE complete event; otherwise the
-   * display name (`repoName`, then the input basename, then the i18n default).
-   * Current servers omit `repoPath` so an unauthenticated ops-listed job id
-   * cannot leak a filesystem path. Never rendered; the done screen shows the
-   * display name.
+   * older server still sends it on the SSE complete event. Current servers omit
+   * it (an unauthenticated ops-listed job id must not leak a filesystem path)
+   * and send an opaque `repoId`, which is resolved to the matching
+   * `GET /api/repos` entry's `path`. Falls back to the display name (`repoName`,
+   * then the input basename, then the i18n default) when neither resolves.
+   * Never rendered; the done screen shows the display name.
    */
   onComplete: (repoIdentity: string) => void;
   onCancel?: () => void;

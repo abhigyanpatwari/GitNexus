@@ -50,7 +50,8 @@ const terminalPayload = (job: AnalyzeJob | undefined) => ({
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
  *
- * Terminal payloads carry the display `repoName` only. The analyzed filesystem
+ * Terminal payloads carry the display `repoName` and the opaque `repoId`,
+ * never a path. The analyzed filesystem
  * path used to ride this event for duplicate-basename reconnect (#2420), but
  * `/api/ops` lists job ids and this stream is unauthenticated — emitting
  * `repoPath` leaked operator home directories. Clients reconnect by `repoId`.
