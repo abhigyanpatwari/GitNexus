@@ -121,7 +121,13 @@ describe('formatQueryResult', () => {
     });
     expect(result).toContain('User Login (3 steps, 1 symbols)');
     expect(result).toContain('Beta Flow (3 steps, 1 symbols)');
-    expect(result.match(/validate → src\/auth\.ts:17/g)).toHaveLength(2);
+    const sections = result.split(/\n\d+\. /);
+    expect(sections.find((section) => section.startsWith('User Login'))).toContain(
+      'validate → src/auth.ts:17',
+    );
+    expect(sections.find((section) => section.startsWith('Beta Flow'))).toContain(
+      'validate → src/auth.ts:17',
+    );
   });
 
   it('formats processes with symbols', () => {
