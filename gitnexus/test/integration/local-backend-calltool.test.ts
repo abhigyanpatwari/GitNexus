@@ -324,6 +324,8 @@ withTestLbugDB(
         const byProcess = Object.fromEntries(validates.map((s: any) => [s.process_id, s]));
         expect(byProcess['proc:login-flow']?.step_index).toBe(2);
         expect(byProcess['proc:beta-flow']?.step_index).toBe(3);
+        expect(byProcess['proc:login-flow']?.is_entry_point).toBeUndefined();
+        expect(byProcess['proc:beta-flow']?.is_entry_point).toBeUndefined();
         for (const procId of ['proc:login-flow', 'proc:beta-flow'] as const) {
           const card = (res.processes ?? []).find((p: any) => p.id === procId);
           const attachCount = (res.process_symbols ?? []).filter(

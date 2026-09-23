@@ -113,7 +113,7 @@ describe('formatQueryResult', () => {
           process_id: 'proc:B',
           type: 'Function',
           name: 'validate',
-          filePath: 'src/auth.ts',
+          filePath: 'src/beta.ts',
           startLine: 17,
         },
       ],
@@ -122,12 +122,12 @@ describe('formatQueryResult', () => {
     expect(result).toContain('User Login (3 steps, 1 symbols)');
     expect(result).toContain('Beta Flow (3 steps, 1 symbols)');
     const sections = result.split(/\n\d+\. /);
-    expect(sections.find((section) => section.startsWith('User Login'))).toContain(
-      'validate → src/auth.ts:17',
-    );
-    expect(sections.find((section) => section.startsWith('Beta Flow'))).toContain(
-      'validate → src/auth.ts:17',
-    );
+    const login = sections.find((section) => section.startsWith('User Login'));
+    const beta = sections.find((section) => section.startsWith('Beta Flow'));
+    expect(login).toContain('validate → src/auth.ts:17');
+    expect(login).not.toContain('src/beta.ts');
+    expect(beta).toContain('validate → src/beta.ts:17');
+    expect(beta).not.toContain('src/auth.ts');
   });
 
   it('formats processes with symbols', () => {

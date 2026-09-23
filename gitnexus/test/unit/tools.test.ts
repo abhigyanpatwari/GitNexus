@@ -128,6 +128,9 @@ describe('GITNEXUS_TOOLS', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
     expect(queryTool.description).toContain('One row per (id, process_id)');
     expect(queryTool.description).toContain('Join a process to its rows by process_id');
+    expect(queryTool.description).toContain('symbol_count is the number of those rows');
+    expect(queryTool.description).toContain('single-repo envelope');
+    expect(queryTool.description).toContain('does not include process_symbols');
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {

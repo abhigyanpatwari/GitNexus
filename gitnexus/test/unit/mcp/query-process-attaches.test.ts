@@ -62,12 +62,30 @@ describe('shapeQueryProcessAttaches', () => {
     });
 
     expect(process_symbols).toHaveLength(25);
+    expect(process_symbols.map((s) => s.id)).toEqual(
+      Array.from({ length: 25 }, (_, i) => `func:hit-${i}`),
+    );
     expect(process_symbols.every((s) => s.process_id === 'proc:fat')).toBe(true);
     expect(processes[0]?.symbol_count).toBe(25);
   });
 
-  it('keeps the first row when the same pair appears twice (KTD4)', () => {
+  it('keeps pairs that a colon join would collapse', () => {
     const { process_symbols } = shapeQueryProcessAttaches(
+      [
+        ranked('login-flow', [attach('func:validate:proc', 'login-flow')]),
+        ranked('proc:login-flow', [attach('func:validate', 'proc:login-flow')]),
+      ],
+      { maxSymbolsPerProcess: 25 },
+    );
+
+    expect(process_symbols.map((s) => [s.id, s.process_id])).toEqual([
+      ['func:validate:proc', 'login-flow'],
+      ['func:validate', 'proc:login-flow'],
+    ]);
+  });
+
+  it('keeps the first row when the same pair appears twice (KTD4)', () => {
+    const { processes, process_symbols } = shapeQueryProcessAttaches(
       [
         ranked('proc:login-flow', [
           attach('func:validate', 'proc:login-flow', { step_index: 2, content: 'first' }),
@@ -81,6 +99,7 @@ describe('shapeQueryProcessAttaches', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.step_index).toBe(2);
     expect(rows[0]?.content).toBe('first');
+    expect(processes[0]?.symbol_count).toBe(1);
   });
 
   it('keeps include_content on every emitted hub attach (KTD5)', () => {
@@ -119,6 +138,32 @@ describe('shapeQueryProcessAttaches', () => {
     );
 
     expect(process_symbols[0]?.is_entry_point).toBe(true);
+
+    const mixed = shapeQueryProcessAttaches(
+      [
+        ranked(
+          'proc:login-flow',
+          [attach('func:login', 'proc:login-flow'), attach('func:validate', 'proc:login-flow')],
+          { entryPointId: 'func:login' },
+        ),
+        ranked('proc:beta-flow', [attach('func:login', 'proc:beta-flow')], {
+          entryPointId: 'func:beta',
+        }),
+      ],
+      { maxSymbolsPerProcess: 25 },
+    );
+    const flagged = mixed.process_symbols.filter((s) => s.is_entry_point === true);
+    expect(flagged).toEqual([
+      expect.objectContaining({ id: 'func:login', process_id: 'proc:login-flow' }),
+    ]);
+    expect(
+      mixed.process_symbols
+        .filter((s) => s.is_entry_point !== true)
+        .map((s) => [s.id, s.process_id]),
+    ).toEqual([
+      ['func:validate', 'proc:login-flow'],
+      ['func:login', 'proc:beta-flow'],
+    ]);
     expect(processes[0]).toMatchObject({
       id: 'proc:login-flow',
       summary: 'User Login',
