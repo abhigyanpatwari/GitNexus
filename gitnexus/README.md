@@ -2,7 +2,7 @@
 
 **Graph-powered code intelligence for AI agents.** Index any codebase into a knowledge graph, then query it via MCP or CLI.
 
-Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
+Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Factory** (Droid), **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
 
 [![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
@@ -44,12 +44,13 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))    | **Full**     |
 | **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))   | **Full**     |
+| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](../gitnexus-factory-plugin/))                                   | **Full**     |
 | **OpenCode**             | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
 
 ### Community Integrations
 
@@ -87,6 +88,33 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 ```
 
 > **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
+
+### Factory (Droid) (full support — MCP + skills + hooks)
+
+`gitnexus setup -c droid` writes the MCP server to `~/.factory/mcp.json` and installs skills to
+`~/.factory/skills/`. To configure MCP by hand instead, add to `~/.factory/mcp.json`
+([user scope](https://docs.factory.ai/cli/configuration/mcp) — applies to all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+For the PostToolUse search-augment hook, install the bundled
+[`gitnexus-factory-plugin/`](../gitnexus-factory-plugin/) with `droid plugin install gitnexus@<marketplace>`
+from a marketplace that includes this repo, or point Droid at it via `extraKnownMarketplaces` in
+`.factory/settings.json`.
+
+> **Factory notes:** Droid reads [AGENTS.md natively](https://docs.factory.ai/), which already carries the
+> GitNexus context block, so no SessionStart hook is registered. Pick **one** install route
+> (`gitnexus setup -c droid` **or** the plugin) — the plugin ships its own MCP entry, so installing both
+> can register the server twice.
 
 ### Cursor / Windsurf
 

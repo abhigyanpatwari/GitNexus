@@ -9,7 +9,11 @@ const SURFACES = [
   '.claude-plugin/marketplace.json',
   'gitnexus-claude-plugin/.codex-plugin/plugin.json',
   '.agents/plugins/marketplace.json',
+  'gitnexus-factory-plugin/.factory-plugin/plugin.json',
+  '.factory-plugin/marketplace.json',
 ] as const;
+
+const FACTORY_MCP = 'gitnexus-factory-plugin/mcp.json';
 
 const MCP_SKILL_DIRS = [
   'gitnexus-plan',
@@ -24,11 +28,13 @@ const MCP_SKILL_DIRS = [
   'gitnexus-refactoring',
 ] as const;
 
-const TOTAL_SURFACES = SURFACES.length + MCP_SKILL_DIRS.length;
-
 function mcpPath(dir: string): string {
   return `gitnexus-claude-plugin/skills/${dir}/mcp.json`;
 }
+
+const EXECUTABLE_MCP_FILES = [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP];
+
+const TOTAL_SURFACES = SURFACES.length + EXECUTABLE_MCP_FILES.length;
 
 const tempRoots: string[] = [];
 
@@ -56,8 +62,13 @@ function makeRoot(packageVersion: string, manifestVersion: string): string {
     name: 'gitnexus-marketplace',
     plugins: [{ name: 'gitnexus', version: manifestVersion, category: 'Developer Tools' }],
   });
-  for (const dir of MCP_SKILL_DIRS) {
-    writeJson(root, mcpPath(dir), {
+  writeJson(root, SURFACES[4], { name: 'gitnexus', version: manifestVersion });
+  writeJson(root, SURFACES[5], {
+    name: 'gitnexus-marketplace',
+    plugins: [{ name: 'gitnexus', version: manifestVersion, source: './gitnexus-factory-plugin' }],
+  });
+  for (const dir of EXECUTABLE_MCP_FILES) {
+    writeJson(root, dir, {
       mcpServers: {
         gitnexus: { command: 'npx', args: ['-y', `gitnexus@${manifestVersion}`, 'mcp'] },
       },
@@ -89,19 +100,19 @@ describe('syncPluginManifests (#2445)', () => {
     expect(result.version).toBe('1.6.10-rc.29');
     expect(result.synced).toHaveLength(TOTAL_SURFACES);
     expect(result.stale.map(({ from }) => from)).toEqual(Array(TOTAL_SURFACES).fill('1.6.9'));
-    expect(readVersions(root)).toEqual(Array(4).fill('1.6.10-rc.29'));
+    expect(readVersions(root)).toEqual(Array(SURFACES.length).fill('1.6.10-rc.29'));
   });
 
-  it('pins the gitnexus@<version> launch arg in every plugin skill mcp.json', () => {
+  it('pins the gitnexus@<version> launch arg in every executable mcp.json', () => {
     const root = makeRoot('1.6.10-rc.29', '1.6.9');
 
     syncPluginManifests(root);
 
-    for (const dir of MCP_SKILL_DIRS) {
-      const mcp = JSON.parse(readFileSync(path.join(root, mcpPath(dir)), 'utf8')) as {
+    for (const file of EXECUTABLE_MCP_FILES) {
+      const mcp = JSON.parse(readFileSync(path.join(root, file), 'utf8')) as {
         mcpServers: { gitnexus: { args: string[] } };
       };
-      expect(mcp.mcpServers.gitnexus.args).toEqual(['-y', 'gitnexus@1.6.10-rc.29', 'mcp']);
+      expect(mcp.mcpServers.gitnexus.args, file).toEqual(['-y', 'gitnexus@1.6.10-rc.29', 'mcp']);
     }
   });
 
@@ -131,7 +142,7 @@ describe('syncPluginManifests (#2445)', () => {
 
     expect(result.stale).toHaveLength(TOTAL_SURFACES);
     expect(result.synced).toHaveLength(0);
-    expect(readVersions(root)).toEqual(Array(4).fill('1.6.9'));
+    expect(readVersions(root)).toEqual(Array(SURFACES.length).fill('1.6.9'));
   });
 
   it('changes only the version text and preserves the surrounding formatting', () => {
@@ -199,5 +210,23 @@ describe('syncPluginManifests (#2445)', () => {
     const pkg = await import('../../package.json', { with: { type: 'json' } });
 
     expect(pkg.default.scripts.version).toBe('node scripts/sync-plugin-manifests.mjs');
+  });
+
+  it('stages the synced manifest surfaces in the detached rc release commit', () => {
+    const workflow = readFileSync(
+      path.resolve(__dirname, '..', '..', '..', '.github', 'workflows', 'publish.yml'),
+      'utf8',
+    );
+    const start = workflow.indexOf('# The synced manifest surfaces (#2445)');
+    const end = workflow.indexOf('git commit -m "release: ${VTAG}"', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const releaseCommit = workflow.slice(start, end);
+    // The step runs in gitnexus/, so repo-root surfaces are staged as `../<path>`.
+    const staged = [...releaseCommit.matchAll(/\.\.\/(\S+\.json)/g)].map(([, file]) => file);
+
+    // `--check` reads the working tree, so a surface synced but not staged
+    // passes CI while the v<version> tag's tree keeps the previous version.
+    expect(staged).toEqual(expect.arrayContaining([...SURFACES, ...EXECUTABLE_MCP_FILES]));
   });
 });

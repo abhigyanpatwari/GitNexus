@@ -17,7 +17,7 @@ import { createRequire } from 'node:module';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createFakeProcRoot, type FakeProcEntry } from '../utils/hook-test-helpers.js';
 
 const PROBE_PATH = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-db-lock-probe.cjs');
@@ -27,6 +27,8 @@ type Probe = {
   linuxProcScanFindGitNexusServer?: (dbPathAbs: string, myPid: number) => string;
   getCmdlineMaxBytes?: () => number;
   resolveLinuxProcBudgetMs?: () => number;
+  resolveHookBinary?: (tool: 'lsof' | 'ps') => string;
+  hasMissingHookBinaryOverride?: (tool: 'lsof' | 'ps') => boolean;
 };
 const probe = createRequire(import.meta.url)(PROBE_PATH) as Probe;
 
@@ -44,6 +46,8 @@ const ENV_KEYS = [
   'GITNEXUS_HOOK_PROC_ROOT',
   'GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS',
   'GITNEXUS_HOOK_PROC_CMDLINE_MAX',
+  'GITNEXUS_HOOK_LSOF_PATH',
+  'GITNEXUS_HOOK_PS_PATH',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
 function setEnv(overrides: Record<string, string | undefined>) {
@@ -94,6 +98,49 @@ function runScan(
 
 const GITNEXUS_MCP_ARGV = (script: string) => ['node', script, 'mcp'];
 
+// ── Hook binary override: check and lookup agree on trimming (#2543 review) ──
+//
+// unixLsofPsFindGitNexusServer calls hasMissingHookBinaryOverride (trims) and
+// then resolveHookBinary. If the lookup did NOT trim, a padded-but-valid
+// override such as " /tmp/lsof " passed the missing-check yet fell through to
+// the built-in/PATH binary. Both helpers must see the same trimmed path.
+describe('hook binary override trimming (white-box, #2543 review)', () => {
+  const resolveBin = probe.resolveHookBinary as (tool: 'lsof' | 'ps') => string;
+  const missing = probe.hasMissingHookBinaryOverride as (tool: 'lsof' | 'ps') => boolean;
+
+  function makeFakeBinary(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hookbin-'));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const bin = path.join(dir, 'fake-tool');
+    fs.writeFileSync(bin, '');
+    return bin;
+  }
+
+  it.each(['lsof', 'ps'] as const)(
+    '%s: whitespace-padded override to an existing file resolves to the trimmed path',
+    (tool) => {
+      const bin = makeFakeBinary();
+      const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
+      setEnv({ [envKey]: `  ${bin}\t ` });
+      expect(missing(tool)).toBe(false);
+      expect(resolveBin(tool)).toBe(bin);
+    },
+  );
+
+  it.each(['', '   '])('empty/whitespace override %j is ignored by both helpers', (value) => {
+    setEnv({ GITNEXUS_HOOK_LSOF_PATH: value });
+    expect(missing('lsof')).toBe(false);
+    expect(resolveBin('lsof').trim()).not.toBe('');
+  });
+
+  it('missing-path override is reported missing and never returned by the lookup', () => {
+    const absent = path.join(os.tmpdir(), 'gitnexus-hookbin-does-not-exist', 'lsof');
+    setEnv({ GITNEXUS_HOOK_LSOF_PATH: `  ${absent}  ` });
+    expect(missing('lsof')).toBe(true);
+    expect(resolveBin('lsof')).not.toBe(absent);
+  });
+});
+
 // ── Numeric env parsing (white-box, #2183 review) ──────────────────────
 //
 // getCmdlineMaxBytes / resolveLinuxProcBudgetMs switched from parseInt(.,10) to
@@ -104,6 +151,38 @@ const GITNEXUS_MCP_ARGV = (script: string) => ['node', script, 'mcp'];
 // GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS="" resolve to Number("")===0 => budget 0 =>
 // immediate fail-CLOSED timeout (augment permanently skipped). The added
 // `&& String(raw).trim()` guard keeps ''/whitespace on the 1200 default.
+// GITNEXUS_HOOK_TIMEOUT_PATH relative override (#2543 review): the adapters
+// spawn the returned wrapper with the tool request's `cwd`, so the probe must
+// hand back an ABSOLUTE path resolved against the directory its existsSync
+// check and self-test ran in. The resolution is memoized per module instance,
+// so each case runs in a fresh `node` child whose cwd holds a self-testing
+// guard script (`-k <k> <budget> cmd…` -> exec cmd…).
+describe.skipIf(process.platform === 'win32')(
+  'GITNEXUS_HOOK_TIMEOUT_PATH relative override resolves to absolute (#2543 review)',
+  () => {
+    it.each(['./fake-guard', 'fake-guard'])('override %s -> path.resolve(value)', (value) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-relguard-'));
+      cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+      fs.writeFileSync(path.join(dir, 'fake-guard'), '#!/bin/sh\nshift 3\nexec "$@"\n', {
+        mode: 0o755,
+      });
+      const script =
+        `const p=require(${JSON.stringify(PROBE_PATH)});` +
+        `process.stdout.write(JSON.stringify({cwd:process.cwd(),guard:p.resolveUnixGuardTimeout()}));`;
+      const child = spawnSync(process.execPath, ['-e', script], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, GITNEXUS_HOOK_TIMEOUT_PATH: value },
+        timeout: 15000,
+      });
+      expect(child.status).toBe(0);
+      const out = JSON.parse(child.stdout) as { cwd: string; guard: string | null };
+      expect(out.guard).toBe(path.resolve(out.cwd, value));
+      expect(path.isAbsolute(out.guard ?? '')).toBe(true);
+    });
+  },
+);
+
 describe('numeric env parsing (white-box, #2183 review)', () => {
   const budget = probe.resolveLinuxProcBudgetMs as () => number;
   const cmdlineMax = probe.getCmdlineMaxBytes as () => number;
@@ -150,6 +229,36 @@ describe('numeric env parsing (white-box, #2183 review)', () => {
     setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: undefined });
     expect(cmdlineMax()).toBe(16384);
   });
+
+  // #2543 review: an oversized-but-finite override used to reach
+  // Buffer.allocUnsafe unchanged; the allocation threw, readLinuxCmdline's catch
+  // returned '' (non-candidate) and a real owner was silently missed. Oversized
+  // integers now clamp to the 256 KiB ceiling (the escalation's HARD_CEIL).
+  it.each([
+    ['262145', 262144],
+    [String(2 ** 40), 262144],
+    [String(Number.MAX_SAFE_INTEGER), 262144],
+    ['1e300', 262144],
+  ])('cmdline max: oversized %s clamps to the 256 KiB ceiling', (raw, expected) => {
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+    expect(cmdlineMax()).toBe(expected);
+  });
+
+  it.each(['4096', '8000', '16384', '262144'])(
+    'cmdline max: in-range integer %s is returned unchanged',
+    (raw) => {
+      setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+      expect(cmdlineMax()).toBe(Number(raw));
+    },
+  );
+
+  it.each(['Infinity', '-Infinity', 'NaN', '8192.5', '8abc', '4095', '-1'])(
+    'cmdline max: non-integer / garbage / below-floor %s falls back to the 16384 default',
+    (raw) => {
+      setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+      expect(cmdlineMax()).toBe(16384);
+    },
+  );
 });
 
 describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
@@ -164,6 +273,23 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
         fdTargets: ['/dev/null', lbug],
       },
     ]);
+    expect(owned).toBe(true);
+  });
+
+  it('owned: an oversized GITNEXUS_HOOK_PROC_CMDLINE_MAX (2**40) does not blind the scan (#2543 review)', () => {
+    // Pre-fix, the 2**40 cap reached Buffer.allocUnsafe, threw, and the catch
+    // mapped it to '' (non-candidate) => a real owner silently reported false.
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 4243,
+          comm: 'MainThread',
+          cmdline: GITNEXUS_MCP_ARGV('/opt/app/node_modules/gitnexus/dist/cli/index.js'),
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: String(2 ** 40) },
+    );
     expect(owned).toBe(true);
   });
 
@@ -267,7 +393,7 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
   //
   // The cmdline shape here is deliberate (Codex): the `gitnexus` token sits in
   // the SECOND argv (a SHORT node_modules/gitnexus path, well inside the first
-  // 4 KB chunk) so `if (!hasGitNexus) break` does NOT abort the read; a ~9 KB
+  // 4 KB chunk); a ~9 KB
   // pad argv then pushes the trailing `mcp` mode token PAST 4096, so the first
   // 4 KB chunk has gitnexus-but-no-mode and the loop MUST escalate to a second
   // read to find `mcp`. Setting GITNEXUS_HOOK_PROC_CMDLINE_MAX=4096 makes the
@@ -317,6 +443,62 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
           pid: 10002,
           comm: 'MainThread',
           cmdline: ['node', GITNEXUS_SHORT, padPastCeil, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(false);
+  });
+
+  // ── D3c: a partial read stops early only when DECIDED (#2543 review) ──
+  //
+  // The escalation loop used to stop as soon as the chunk held a mode word, or
+  // as soon as it lacked the gitnexus token. Neither decides ownership: a Node
+  // preload flag can put `mcp` in the first chunk while the gitnexus CLI path
+  // lies past it, and a long interpreter prefix can push BOTH tokens past it.
+  // Either way the old loop returned an incomplete cmdline, Phase 1 rejected it,
+  // and Phase 2 never compared the holder's fd (a fail-OPEN owner miss, #1492).
+  // Now only "both tokens present", EOF, the ceiling, or the budget stop it.
+
+  it('owned: a mode word in the first chunk (`--require mcp`) with the gitnexus path past it', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10050,
+          comm: 'MainThread',
+          // node | --require mcp | 9KB pad | gitnexus path (>4096) | serve
+          cmdline: ['node', '--require', 'mcp', PAD_PAST_4K, GITNEXUS_SHORT, 'serve'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(true);
+  });
+
+  it('owned: neither token in the first chunk, both past it (long interpreter prefix)', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10051,
+          comm: 'MainThread',
+          cmdline: ['node', PAD_PAST_4K, GITNEXUS_SHORT, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(true);
+  });
+
+  it('not-owned: a mode word early but no gitnexus token anywhere is read to EOF and rejected', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10052,
+          comm: 'node',
+          cmdline: ['node', '--require', 'mcp', PAD_PAST_4K, '/app/other-server.js', 'serve'],
           fdTargets: [lbug],
         },
       ],
@@ -470,7 +652,8 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
   // not lock. F1 splits the failure shapes:
   //   - EACCES / EPERM      -> 'timeout'  (unverifiable; fail-closed HONESTLY)
   //   - EIO / ESTALE        -> 'timeout'  (transient I/O; fail-closed)
-  //   - ENOTDIR / other     -> continue   (not a real fd dir; treat as non-owner)
+  //   - ENOTDIR             -> continue   (not a real fd dir; treat as non-owner)
+  //   - any other errno     -> 'timeout'  (EMFILE/ENFILE/ENOMEM/…: inconclusive)
   // The dispatcher collapses owned+timeout to boolean true, so these assert the
   // exported tri-state verdict directly — a boolean check could not tell the F1
   // fix from the old bug.
@@ -527,6 +710,12 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
     { code: 'EIO', expected: 'timeout' },
     { code: 'ESTALE', expected: 'timeout' },
     { code: 'ENOTDIR', expected: 'not-owned' },
+    // Resource/interruption failures say nothing about ownership of an
+    // already-identified server candidate: fail closed, never not-owned.
+    { code: 'EMFILE', expected: 'timeout' },
+    { code: 'ENFILE', expected: 'timeout' },
+    { code: 'ENOMEM', expected: 'timeout' },
+    { code: 'EINTR', expected: 'timeout' },
   ] as const) {
     it(`candidate fd readdir ${code} → verdict ${expected} (uid-agnostic spy)`, () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-fderr-'));
