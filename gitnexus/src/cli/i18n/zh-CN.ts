@@ -68,6 +68,7 @@ export const zhCN = {
   'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
   'clean.gc.none': '没有可回收的共享存储。',
   'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
+  'clean.gc.preview': '共享存储 {{path}}：将移除 {{members}} 个检出并删除 {{graphs}} 个提交图。',
   'clean.localIndex.none': '此检出中没有残留的本地索引。',
   'clean.localIndex.preview': '将删除 {{path}} 处残留的本地索引（{{size}}）。共享索引不受影响。',
   'clean.localIndex.deleted': '已删除 {{path}} 处残留的本地索引（{{size}}）。',

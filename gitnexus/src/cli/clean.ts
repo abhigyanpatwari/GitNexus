@@ -166,7 +166,7 @@ const reportReclaim = (result: ReclaimResult | null): void => {
 };
 
 /** `clean --gc`: collect every shared store under GITNEXUS_HOME (#3352). */
-const collectSharedStores = async (): Promise<void> => {
+const collectSharedStores = async (force: boolean): Promise<void> => {
   const storesDir = path.join(getGlobalDir(), STORES_DIR);
   const names = await fs.readdir(storesDir).catch(() => [] as string[]);
   if (names.length === 0) {
@@ -175,9 +175,10 @@ const collectSharedStores = async (): Promise<void> => {
   }
   for (const name of names) {
     const root = path.join(storesDir, name);
-    const result = await reclaimSharedStore(root, { gc: true });
+    // Without --force this is a preview: same selection, nothing deleted.
+    const result = await reclaimSharedStore(root, { gc: true, dryRun: !force });
     console.log(
-      t('clean.gc.store', {
+      t(force ? 'clean.gc.store' : 'clean.gc.preview', {
         path: root,
         members: result.droppedMembers.length,
         graphs: result.removed.length,
@@ -186,6 +187,7 @@ const collectSharedStores = async (): Promise<void> => {
     if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
     if (result.storeRemoved) console.log(t('clean.shared.storeRemoved', { path: root }));
   }
+  if (!force) console.log(`\n${t('common.runForceConfirm')}`);
 };
 
 export const cleanCommand = async (options?: {
@@ -198,7 +200,7 @@ export const cleanCommand = async (options?: {
   localIndex?: boolean;
 }) => {
   if (options?.gc) {
-    await collectSharedStores();
+    await collectSharedStores(options.force === true);
     return;
   }
 

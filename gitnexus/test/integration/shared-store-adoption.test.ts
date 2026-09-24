@@ -152,6 +152,17 @@ describe('shared store adoption and reporting (#3352)', () => {
     expect((await statusJson(wt)).status).toBe('up-to-date');
   }, 240_000);
 
+  it('status reports a pinned branch index as private even when the flat slot is shared', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await analyze(wt);
+    // The flat slot now holds `wt` and points at a shared commit graph. A
+    // different checked-out branch pinned with --branch gets its own index.
+    git(wt, 'checkout', '-q', '-b', 'pinned');
+    await runFullAnalysis(wt, { branch: 'pinned' }, { onProgress: () => {} });
+    const json = await statusJson(wt);
+    expect(json.sharedStore).toMatchObject({ graph: 'private' });
+  }, 240_000);
+
   it('status reports a private graph for an edited worktree', async () => {
     await analyze(wt);
     await fs.writeFile(path.join(wt, 'a.ts'), 'export function alphaEdited() { return 1; }\n');

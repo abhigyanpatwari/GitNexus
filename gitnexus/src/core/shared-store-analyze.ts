@@ -19,7 +19,7 @@ import { createHash, randomUUID } from 'crypto';
 import { constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { acquireIndexLock } from '../storage/index-lock.js';
+import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { commitDistanceToHead, getRemoteUrl, isWorkingTreeDirty } from '../storage/git.js';
 import {
   canonicalizePath,
@@ -448,16 +448,25 @@ export const optedInSlotToLeave = async (repoPath: string): Promise<string | und
 };
 
 /**
- * After a successful `--no-share` run re-registered the checkout at
- * `<repo>/.gitnexus`: delete its old store slot and reclaim what only that
- * slot referenced.
+ * After a successful `--no-share` run: re-register the checkout at its new
+ * storage and delete its old store slot, both under the old slot's index lock
+ * so an analyze still running on that slot cannot re-register it afterwards
+ * or write into a deleted directory. Then reclaim what only that slot used.
  */
 export const leaveSharedStore = async (
   repoPath: string,
   previousSlot: string,
+  newStoragePath: string,
   log: Log,
 ): Promise<void> => {
-  await fs.rm(previousSlot, { recursive: true, force: true });
+  const lock = await acquireIndexLock(previousSlot);
+  try {
+    requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${previousSlot}.`);
+    await registerLeftStore(repoPath, newStoragePath);
+    await fs.rm(previousSlot, { recursive: true, force: true });
+  } finally {
+    lock.release();
+  }
   await removeSharedStorePointer(repoPath);
   await reclaimAfterSlotRemoval(previousSlot);
   log(`Shared store: left ${previousSlot}.`);

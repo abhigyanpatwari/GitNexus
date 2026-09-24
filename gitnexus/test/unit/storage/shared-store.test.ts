@@ -314,3 +314,29 @@ describe('resolveStoragePath store tier', () => {
     expect(resolveStoragePath(wts[0])).toBe(registered);
   });
 });
+
+describe('slot naming edge cases (#3352 review)', () => {
+  it.each(['CON.txt', 'com1.log', 'Lpt9.tar.gz'])(
+    'prefixes a reserved Windows device name with an extension: %s',
+    (base) => {
+      expect(storageSlotName(path.join(path.sep, 'tmp', base))).toMatch(
+        new RegExp(`^repository-${base.replace('.', '\\.')}-[0-9a-f]{12}$`),
+      );
+    },
+  );
+
+  it('keeps an ordinary name that only starts like a device name', () => {
+    expect(storageSlotName(path.join(path.sep, 'tmp', 'console'))).toMatch(/^console-/);
+  });
+
+  it('accepts a checkout slot whose name starts with two dots', async () => {
+    const layout = sharedStoreLayout('..repo-0123456789ab', '/tmp/..checkout');
+    const graph = path.join(commitGraphDir(layout, 'abc1234', 'deadbeef'), 'lbug');
+    await fs.mkdir(layout.checkoutSlot, { recursive: true });
+    await fs.writeFile(
+      path.join(layout.checkoutSlot, 'gitnexus.json'),
+      JSON.stringify({ graphPath: graph }),
+    );
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(graph);
+  });
+});

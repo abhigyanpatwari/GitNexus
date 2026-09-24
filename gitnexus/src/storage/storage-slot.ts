@@ -3,7 +3,7 @@
  *
  * Kept free of imports from `storage-resolver.ts` and `shared-store.ts` so both
  * can use them without importing each other (#3352). `storage-resolver.ts`
- * re-exports everything here, so existing import sites are unchanged.
+ * re-exports the two env-var names, so existing import sites are unchanged.
  */
 
 import { createHash } from 'node:crypto';
@@ -25,7 +25,8 @@ const sanitizeSlotBasename = (value: string): string => {
     end--;
   }
   const candidate = sanitized.slice(0, end) || 'repository';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
+  // Windows reserves device names with any extension too (`CON.txt`).
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(candidate)
     ? `repository-${candidate}`
     : candidate;
 };

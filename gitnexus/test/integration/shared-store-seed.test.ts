@@ -2,11 +2,21 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { ensurePrivateSharedGraph } from '../../src/core/shared-store-analyze.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import { resolveSharedStore, type SharedStoreLayout } from '../../src/storage/shared-store.js';
 import { createTempDir } from '../helpers/test-db.js';
+
+// These suites exercise sharing; an inherited opt-out would silently disable it.
+const savedSharedStoreSwitch = process.env.GITNEXUS_SHARED_STORE;
+beforeAll(() => {
+  delete process.env.GITNEXUS_SHARED_STORE;
+});
+afterAll(() => {
+  if (savedSharedStoreSwitch === undefined) delete process.env.GITNEXUS_SHARED_STORE;
+  else process.env.GITNEXUS_SHARED_STORE = savedSharedStoreSwitch;
+});
 
 /**
  * #3352 U4 — a checkout that needs its own graph is seeded from the nearest
@@ -274,7 +284,8 @@ describe('ensurePrivateSharedGraph', () => {
     const meta = await loadMeta(slot);
     delete meta?.graphPath;
     await saveMeta(slot, meta as NonNullable<typeof meta>);
+    await fs.writeFile(path.join(slot, 'lbug'), 'private graph bytes');
     expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
-    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe('private graph bytes');
   });
 });

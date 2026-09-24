@@ -298,9 +298,10 @@ function resolveEntryStoragePath(entry) {
   return path.resolve(path.join(entry.path, GITNEXUS_DIR));
 }
 
+// A single path segment: `..repo-<hash>` is a legal slot name, `..` is not.
 function isDirectChild(parent, child) {
   const rel = path.relative(parent, child);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(path.sep);
+  return rel !== '' && rel !== '..' && !path.isAbsolute(rel) && !rel.includes(path.sep);
 }
 
 // Mirror gitnexus/src/storage/shared-store.ts resolveGraphPath (#3352): a

@@ -71,6 +71,8 @@ export const en = {
   'clean.gc.none': 'No shared stores to collect.',
   'clean.gc.store':
     'Shared store {{path}}: dropped {{members}} checkout(s), removed {{graphs}} commit graph(s).',
+  'clean.gc.preview':
+    'Shared store {{path}}: would drop {{members}} checkout(s) and remove {{graphs}} commit graph(s).',
   'clean.localIndex.none': 'No leftover local index in this checkout.',
   'clean.localIndex.preview':
     'This will delete the leftover local index at {{path}} ({{size}}). The shared index is not affected.',

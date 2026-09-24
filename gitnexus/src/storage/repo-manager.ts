@@ -214,9 +214,11 @@ const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
  * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
  * and `metaPath` are scoped under `branches/<slug>/`. For the flat call
  * (no `branch`), `storagePath` and `lbugPath` remain byte-identical to the
- * pre-multi-branch behavior (#2106); `metaPath`'s FILENAME changed from
- * `meta.json` to `gitnexus.json` (PR #2363) — `saveMeta` keeps a `meta.json`
- * mirror in sync for consumers that still read the legacy name.
+ * pre-multi-branch behavior (#2106), except that a shared-store checkout slot
+ * (#3352) returns the commit graph its metadata records (`resolveGraphPath`).
+ * `metaPath`'s FILENAME changed from `meta.json` to `gitnexus.json`
+ * (PR #2363) — `saveMeta` keeps a `meta.json` mirror in sync for consumers
+ * that still read the legacy name.
  *
  * Each branch slot has its own metadata file:
  * - Primary/flat: <repo>/.gitnexus/gitnexus.json

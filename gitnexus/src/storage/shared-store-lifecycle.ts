@@ -95,7 +95,7 @@ const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
  */
 export const reclaimSharedStoreLocked = async (
   storeRoot: string,
-  opts: { gc?: boolean } = {},
+  opts: { gc?: boolean; dryRun?: boolean } = {},
 ): Promise<ReclaimResult> => {
   const result: ReclaimResult = { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
   const checkoutsDir = path.join(storeRoot, 'checkouts');
@@ -105,7 +105,7 @@ export const reclaimSharedStoreLocked = async (
   if (opts.gc) {
     const orphans = await orphanMembers(slots);
     for (const slot of orphans) {
-      await fs.rm(slot, { recursive: true, force: true });
+      if (!opts.dryRun) await fs.rm(slot, { recursive: true, force: true });
       result.droppedMembers.push(slot);
     }
     slots = slots.filter((slot) => !orphans.has(slot));
@@ -118,6 +118,10 @@ export const reclaimSharedStoreLocked = async (
   for (const name of await listDir(commitsDir)) {
     const dir = path.join(commitsDir, name);
     if (referenced.has(dir)) continue;
+    if (opts.dryRun) {
+      if (!name.startsWith('.')) result.removed.push(dir);
+      continue;
+    }
     try {
       await fs.rm(dir, { recursive: true, force: true });
       if (!name.startsWith('.')) result.removed.push(dir);
@@ -129,7 +133,7 @@ export const reclaimSharedStoreLocked = async (
   }
 
   const remaining = (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length;
-  if (remaining === 0) {
+  if (remaining === 0 && !opts.dryRun) {
     // The lock directory lives inside the store; removing it while held is
     // safe on POSIX and is retried on the next reclaim elsewhere.
     await fs
@@ -149,7 +153,7 @@ export const reclaimSharedStoreLocked = async (
  */
 export const reclaimSharedStore = async (
   storeRoot: string,
-  opts: { gc?: boolean } = {},
+  opts: { gc?: boolean; dryRun?: boolean } = {},
 ): Promise<ReclaimResult> => {
   if (!existsSync(storeRoot)) {
     return { removed: [], kept: [], droppedMembers: [], storeRemoved: false };

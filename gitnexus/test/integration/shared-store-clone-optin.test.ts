@@ -2,10 +2,20 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { getStoragePaths, listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { resolveSharedStore, type SharedStoreLayout } from '../../src/storage/shared-store.js';
 import { createTempDir } from '../helpers/test-db.js';
+
+// These suites exercise sharing; an inherited opt-out would silently disable it.
+const savedSharedStoreSwitch = process.env.GITNEXUS_SHARED_STORE;
+beforeAll(() => {
+  delete process.env.GITNEXUS_SHARED_STORE;
+});
+afterAll(() => {
+  if (savedSharedStoreSwitch === undefined) delete process.env.GITNEXUS_SHARED_STORE;
+  else process.env.GITNEXUS_SHARED_STORE = savedSharedStoreSwitch;
+});
 
 /**
  * #3352 U7 — an independent clone joins a shared store only by explicit

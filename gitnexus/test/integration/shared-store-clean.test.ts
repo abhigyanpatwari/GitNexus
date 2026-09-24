@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import {
   resolveSharedStore,
@@ -14,6 +14,16 @@ import {
   reclaimSharedStore,
 } from '../../src/storage/shared-store-lifecycle.js';
 import { createTempDir } from '../helpers/test-db.js';
+
+// These suites exercise sharing; an inherited opt-out would silently disable it.
+const savedSharedStoreSwitch = process.env.GITNEXUS_SHARED_STORE;
+beforeAll(() => {
+  delete process.env.GITNEXUS_SHARED_STORE;
+});
+afterAll(() => {
+  if (savedSharedStoreSwitch === undefined) delete process.env.GITNEXUS_SHARED_STORE;
+  else process.env.GITNEXUS_SHARED_STORE = savedSharedStoreSwitch;
+});
 
 /**
  * #3352 U6 — clean removes only what no remaining member references.
@@ -123,6 +133,21 @@ describe('shared store clean (#3352)', () => {
     expect(await commitDirs(layout)).toHaveLength(1);
   }, 240_000);
 
+  it('clean --gc without --force previews and deletes nothing', async () => {
+    await analyze(wtA);
+    await fs.writeFile(path.join(wtB, 'b.ts'), 'export function beta() { return 2; }\n');
+    commitAll(wtB, 'b');
+    await analyze(wtB);
+    const slotB = layoutOf(wtB).checkoutSlot;
+    git(main, 'worktree', 'remove', '--force', wtB);
+
+    const logs = await cleanIn(main, { gc: true });
+
+    expect(existsSync(slotB)).toBe(true);
+    expect(await commitDirs(layoutOf(wtA))).toHaveLength(2);
+    expect(logs.join('\n')).toMatch(/would drop 1 checkout\(s\) and remove 1 commit graph/);
+  }, 240_000);
+
   it('clean --gc drops a deleted worktree and the graph only it referenced', async () => {
     await analyze(wtA);
     await fs.writeFile(path.join(wtB, 'b.ts'), 'export function beta() { return 2; }\n');
@@ -133,7 +158,7 @@ describe('shared store clean (#3352)', () => {
     expect(await commitDirs(layout)).toHaveLength(2);
 
     git(main, 'worktree', 'remove', '--force', wtB);
-    const logs = await cleanIn(main, { gc: true });
+    const logs = await cleanIn(main, { gc: true, force: true });
 
     expect(existsSync(slotB)).toBe(false);
     expect(await commitDirs(layout)).toHaveLength(1);

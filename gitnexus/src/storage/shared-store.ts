@@ -196,9 +196,10 @@ export const commitGraphDir = (
   return path.join(layout.commitsDir, `${commit}-${featureKey}`);
 };
 
+// A single path segment: `..repo-<hash>` is a legal slot name, `..` is not.
 const isDirectChild = (parent: string, child: string): boolean => {
   const rel = path.relative(parent, child);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(path.sep);
+  return rel !== '' && rel !== '..' && !path.isAbsolute(rel) && !rel.includes(path.sep);
 };
 
 /**

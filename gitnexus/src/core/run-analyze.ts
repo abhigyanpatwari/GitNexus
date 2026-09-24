@@ -1325,8 +1325,11 @@ export async function runFullAnalysis(
         // Leaving a store (`--no-share`, or sharing turned off): the up-to-date
         // path does not re-register, so point the registry at the new storage
         // before the old slot goes away.
-        await registerLeftStore(repoPath, writeTarget.storagePath);
-        if (slotToLeave) await leaveSharedStore(repoPath, slotToLeave, log);
+        if (slotToLeave) {
+          await leaveSharedStore(repoPath, slotToLeave, writeTarget.storagePath, log);
+        } else {
+          await registerLeftStore(repoPath, writeTarget.storagePath);
+        }
       }
       return result;
     } finally {

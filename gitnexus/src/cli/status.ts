@@ -358,7 +358,12 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   const sharedStore = storeRoot
     ? {
         key: path.basename(storeRoot),
-        graph: describeSharedGraph(resolveGraphPath(repo.storagePath), repo.storagePath),
+        // A pinned branch index (`branches/<slug>/lbug`) is always private;
+        // only the flat slot can point at a shared commit graph.
+        graph:
+          activeMeta === repo.meta
+            ? describeSharedGraph(resolveGraphPath(repo.storagePath), repo.storagePath)
+            : ('private' as const),
         commit: activeMeta.lastCommit,
       }
     : null;
