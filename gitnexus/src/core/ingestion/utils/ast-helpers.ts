@@ -1010,6 +1010,24 @@ export const findEnclosingClassInfo = (
         };
       }
     }
+    // Ruby's class factories wrap their members in a `do_block`, which is also
+    // the shape of ordinary iteration/callback blocks and therefore cannot join
+    // the global container set. Let the Ruby hooks jointly opt an exact factory
+    // shape in; arbitrary blocks fall through to their lexical owner unchanged.
+    if (
+      current.type === 'do_block' &&
+      resolveEnclosingOwner !== undefined &&
+      resolveContainerTypeOwner !== undefined &&
+      resolveEnclosingOwner(current) === current
+    ) {
+      const syntheticOwner = resolveContainerTypeOwner(current, filePath);
+      if (syntheticOwner !== null) {
+        return {
+          classId: generateId(syntheticOwner.label, `${filePath}:${syntheticOwner.name}`),
+          className: syntheticOwner.name,
+        };
+      }
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Delegate language-specific container remapping to the provider hook.
       if (resolveEnclosingOwner) {
