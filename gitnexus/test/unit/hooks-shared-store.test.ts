@@ -29,6 +29,15 @@ const HOOK_COPIES = [
     'hooks',
     'registry-query.cjs',
   ),
+  path.resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    'gitnexus-factory-plugin',
+    'hooks',
+    'registry-query.cjs',
+  ),
 ];
 
 type HookRepo = { storagePath: string; lbugPath: string } | null;
@@ -42,6 +51,9 @@ describe('registry-query shared store graph (#3352)', () => {
   let slot: string;
   let commitGraph: string;
   const savedHome = process.env.GITNEXUS_HOME;
+  // Either storage override takes precedence over the registry row in the hook.
+  const savedStoragePath = process.env.GITNEXUS_STORAGE_PATH;
+  const savedStorageRoot = process.env.GITNEXUS_STORAGE_ROOT;
 
   const writeSlot = (meta: Record<string, unknown>) => {
     fs.mkdirSync(slot, { recursive: true });
@@ -70,11 +82,17 @@ describe('registry-query shared store graph (#3352)', () => {
       ]),
     );
     process.env.GITNEXUS_HOME = home;
+    delete process.env.GITNEXUS_STORAGE_PATH;
+    delete process.env.GITNEXUS_STORAGE_ROOT;
   });
 
   afterEach(() => {
     if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
     else process.env.GITNEXUS_HOME = savedHome;
+    if (savedStoragePath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
+    else process.env.GITNEXUS_STORAGE_PATH = savedStoragePath;
+    if (savedStorageRoot === undefined) delete process.env.GITNEXUS_STORAGE_ROOT;
+    else process.env.GITNEXUS_STORAGE_ROOT = savedStorageRoot;
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   commitGraphDir,
   isSharedStoreDisabled,
+  readSharedStorePointer,
   resolveGraphPath,
   resolveSharedStore,
   resolveSharedStoreKey,
@@ -171,7 +172,7 @@ describe('sharedStoreLayout', () => {
   it('maps a symlinked spelling of a worktree to the same slot', async () => {
     const { wts } = await makeRepo(['wt']);
     const link = path.join(await makeTempDir('gn-shared-link-'), 'alias');
-    await fs.symlink(wts[0], link);
+    await fs.symlink(wts[0], link, process.platform === 'win32' ? 'junction' : 'dir');
     expect(layoutOf(link).checkoutSlot).toBe(layoutOf(wts[0]).checkoutSlot);
   });
 
@@ -382,4 +383,16 @@ describe('bare repositories (#3352 review)', () => {
     // The bare dir itself has no working tree to analyze.
     expect(resolveSharedStoreKey(bare, cleanEnv())).toBeNull();
   });
+});
+
+describe('readSharedStorePointer malformed content (#3352 review)', () => {
+  it.each(['null', '42', '"text"', '[]'])(
+    'returns null for a pointer whose JSON is %s',
+    async (body) => {
+      const dir = await makeTempDir('gn-shared-ptr-');
+      await fs.mkdir(path.join(dir, '.gitnexus'));
+      await fs.writeFile(path.join(dir, '.gitnexus', 'store.json'), body);
+      expect(readSharedStorePointer(dir)).toBeNull();
+    },
+  );
 });

@@ -345,7 +345,16 @@ export const publishSharedGraph = async (
       const targetGraph = path.join(target, LBUG_DIRECTORY);
       let published = await exists(targetGraph);
       if (published) {
-        await wipeLbugDbFiles(own);
+        try {
+          await wipeLbugDbFiles(own);
+        } catch (err) {
+          // An open reader (Windows) can block the delete. The analysis
+          // already succeeded; keep the private graph and try next run.
+          published = false;
+          log(
+            `Shared store: could not drop the private graph (${(err as Error).message}); keeping it.`,
+          );
+        }
       } else if ((await exists(own)) && (await inspectLbugSidecars(own)).kind === 'clean') {
         await fs.mkdir(layout.commitsDir, { recursive: true });
         const staging = path.join(layout.commitsDir, `.publish-${randomUUID()}`);
@@ -375,9 +384,14 @@ export const publishSharedGraph = async (
       delete meta.graphPath;
       await saveMeta(slot, meta);
     }
-    const reclaimed = await reclaimSharedStoreLocked(layout.root);
-    if (reclaimed.removed.length > 0) {
-      log(`Shared store: removed ${reclaimed.removed.length} commit graph(s) no checkout uses.`);
+    // Best effort: an unreadable store must not fail a finished analysis.
+    try {
+      const reclaimed = await reclaimSharedStoreLocked(layout.root);
+      if (reclaimed.removed.length > 0) {
+        log(`Shared store: removed ${reclaimed.removed.length} commit graph(s) no checkout uses.`);
+      }
+    } catch (err) {
+      log(`Shared store: skipped cleanup (${(err as Error).message}).`);
     }
   });
 

@@ -1328,7 +1328,9 @@ export async function runFullAnalysis(
       );
       if (flatShared) {
         await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
-      } else if (!writeTarget.placement.branch) {
+      } else if (!writeTarget.sharedStore) {
+        // Also for a `--branch` run routed to a local branch sub-slot: the
+        // checkout still leaves the store.
         // Leaving a store (`--no-share`, or sharing turned off): the up-to-date
         // path does not re-register, so point the registry at the new storage
         // before the old slot goes away.

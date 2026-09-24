@@ -292,6 +292,7 @@ export const readSharedStorePointer = (checkoutPath: string): string | null => {
   } catch {
     return null;
   }
+  if (!pointer || typeof pointer !== 'object' || Array.isArray(pointer)) return null;
   const { checkoutSlot: recorded, storeKey } = pointer;
   if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return null;
   if (typeof storeKey !== 'string') return null;

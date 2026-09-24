@@ -13,6 +13,7 @@ import {
   reclaimAfterSlotRemoval,
   reclaimSharedStore,
 } from '../../src/storage/shared-store-lifecycle.js';
+import { getGlobalDir } from '../../src/storage/global-dir.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 // These suites exercise sharing; an inherited opt-out would silently disable it.
@@ -144,6 +145,13 @@ describe('shared store clean (#3352)', () => {
     expect(await commitDirs(layout)).toHaveLength(1);
   }, 240_000);
 
+  it('clean --gc skips stray files in the stores directory', async () => {
+    await analyze(wtA);
+    await fs.writeFile(path.join(tmpHome.dbPath, 'stores', '.DS_Store'), 'x');
+    const logs = await cleanIn(main, { gc: true, force: true });
+    expect(logs.join('\n')).toMatch(/Shared store .*: dropped 0 checkout/);
+  }, 240_000);
+
   it('clean --gc without --force previews and deletes nothing', async () => {
     await analyze(wtA);
     await fs.writeFile(path.join(wtB, 'b.ts'), 'export function beta() { return 2; }\n');
@@ -256,12 +264,41 @@ describe('reclaimSharedStore', () => {
   });
 
   it('counts references correctly when GITNEXUS_HOME is relative', async () => {
-    const referenced = await commitGraph('ddddddd-4444444444444444');
-    await member('wt-000000000000', { graphPath: path.join(referenced, 'lbug') });
-    const relativeRoot = path.relative(process.cwd(), layout().root);
-    const result = await reclaimSharedStore(relativeRoot);
-    expect(result.removed).toEqual([]);
-    expect(existsSync(referenced)).toBe(true);
+    const absoluteHome = process.env.GITNEXUS_HOME as string;
+    process.env.GITNEXUS_HOME = path.relative(process.cwd(), absoluteHome);
+    try {
+      const referenced = await commitGraph('ddddddd-4444444444444444');
+      await member('wt-000000000000', { graphPath: path.resolve(referenced, 'lbug') });
+      // The root exactly as `clean --gc` builds it: relative under this home.
+      const gcRoot = path.join(getGlobalDir(), 'stores', layout().key);
+      expect(path.isAbsolute(gcRoot)).toBe(false);
+      const result = await reclaimSharedStore(gcRoot);
+      expect(result.removed).toEqual([]);
+      expect(existsSync(referenced)).toBe(true);
+    } finally {
+      process.env.GITNEXUS_HOME = absoluteHome;
+    }
+  });
+
+  it('aborts instead of deleting graphs when the member list cannot be read', async () => {
+    const graph = await commitGraph('eeeeeee-5555555555555555');
+    await member('wt-000000000000', { graphPath: path.join(graph, 'lbug') });
+    const realReaddir = fs.readdir;
+    const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (
+      target: string,
+      ...rest: unknown[]
+    ) => {
+      if (String(target) === layout().checkoutsDir) {
+        throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      }
+      return (realReaddir as (...a: unknown[]) => Promise<unknown>)(target, ...rest);
+    }) as typeof fs.readdir);
+    try {
+      await expect(reclaimSharedStore(layout().root, { gc: true })).rejects.toThrow(/denied/);
+    } finally {
+      readdir.mockRestore();
+    }
+    expect(existsSync(graph)).toBe(true);
   });
 
   it('reports a graph it cannot delete instead of failing', async () => {

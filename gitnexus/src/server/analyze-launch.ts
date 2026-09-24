@@ -10,7 +10,11 @@
  * path is resolved relative to `import.meta.url`.
  */
 
-import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
+import {
+  resolveGraphPath,
+  resolveSharedStore,
+  storeRootOfCheckoutSlot,
+} from '../storage/shared-store.js';
 import path from 'path';
 import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
@@ -338,7 +342,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           const settle = msg.result.alreadyUpToDate
             ? Promise.resolve(true)
             : waitForSettledIndex(
-                analyzeLockKey,
+                // A worktree's first analyze writes a shared-store slot the
+                // launcher's pre-run lookup could not see yet (#3352); the
+                // worker picks it with this same resolver.
+                resolveSharedStore(msg.result.repoPath)?.checkoutSlot ?? analyzeLockKey,
                 jobStartMs,
                 opts.branch,
                 msg.result.isPrimaryBranch,

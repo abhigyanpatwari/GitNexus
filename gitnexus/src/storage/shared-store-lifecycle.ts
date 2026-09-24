@@ -63,6 +63,17 @@ export interface ReclaimResult {
 const listDir = (dir: string): Promise<string[]> => fs.readdir(dir).catch(() => [] as string[]);
 
 /**
+ * Listing for reclaim decisions: only a missing directory is empty. Any other
+ * read error aborts, because treating an unreadable `checkouts/` as "no
+ * members" would delete every commit graph as unreferenced.
+ */
+const listDirStrict = (dir: string): Promise<string[]> =>
+  fs.readdir(dir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return [] as string[];
+    throw err;
+  });
+
+/**
  * Member slots that no registry entry uses any more: the checkout directory is
  * gone, or its entry moved elsewhere (`--no-share`, sharing turned off). The
  * registry is the membership record for opted-in clones and for a main
@@ -104,7 +115,7 @@ export const reclaimSharedStoreLocked = async (
   const checkoutsDir = path.join(storeRoot, 'checkouts');
   const commitsDir = path.join(storeRoot, 'commits');
   const referenced = new Set<string>();
-  let slots = (await listDir(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
+  let slots = (await listDirStrict(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
   if (opts.gc) {
     const orphans = await orphanMembers(slots);
     for (const slot of [...orphans]) {
@@ -140,7 +151,7 @@ export const reclaimSharedStoreLocked = async (
     if (graphPath) referenced.add(path.dirname(path.resolve(graphPath)));
   }
 
-  for (const name of await listDir(commitsDir)) {
+  for (const name of await listDirStrict(commitsDir)) {
     const dir = path.join(commitsDir, name);
     if (referenced.has(dir)) continue;
     if (opts.dryRun) {
@@ -158,7 +169,7 @@ export const reclaimSharedStoreLocked = async (
   }
 
   const isEmpty = async (): Promise<boolean> =>
-    (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length === 0;
+    (await listDirStrict(checkoutsDir)).length + (await listDirStrict(commitsDir)).length === 0;
   if (!opts.dryRun && (await isEmpty())) {
     // Also hold the cache lock (publish -> cache, the only nesting order) so
     // a member saving caches cannot lose them, then re-check: a new member's
@@ -295,4 +306,25 @@ export const removeLegacyLocalIndex = async (
     await fs.rm(path.join(legacy.dir, name), { recursive: true, force: true });
   }
   return legacy;
+};
+
+/**
+ * Run `fn` (delete a slot, unregister its checkout) under the slot's index
+ * lock when `storagePath` is a shared-store checkout slot. An analyze holds
+ * that lock until it has registered the checkout, so it cannot re-register a
+ * slot this removes or write into it afterwards. Other storage runs `fn`
+ * directly, as before.
+ */
+export const withCheckoutSlotLock = async <T>(
+  storagePath: string,
+  fn: () => Promise<T>,
+): Promise<T> => {
+  if (!storeRootOfCheckoutSlot(storagePath)) return fn();
+  const lock = await acquireIndexLock(storagePath);
+  try {
+    requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${storagePath}.`);
+    return await fn();
+  } finally {
+    lock.release();
+  }
 };
