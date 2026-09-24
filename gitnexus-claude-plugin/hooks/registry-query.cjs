@@ -248,29 +248,27 @@ function storageSlotName(repoPath) {
   return `${basename}-${digest}`;
 }
 
+// Definedness matches the CLI's storage-resolver.ts: any value other than
+// undefined (including '') counts as configured.
 function envOverridesStorage() {
-  const envPath = process.env[STORAGE_PATH_ENV];
-  const envRoot = process.env[STORAGE_ROOT_ENV];
-  return (
-    (typeof envPath === 'string' && envPath.length > 0) ||
-    (typeof envRoot === 'string' && envRoot.length > 0)
-  );
+  return process.env[STORAGE_PATH_ENV] !== undefined || process.env[STORAGE_ROOT_ENV] !== undefined;
 }
 
-// A set-but-invalid override makes storage unresolvable (the CLI's
-// storage-resolver.ts throws); never fall back to the registry row.
+// A set-but-invalid override (empty, relative, NUL, root) makes storage
+// unresolvable (the CLI's storage-resolver.ts throws); never fall back to the
+// registry row.
 function resolveEntryStoragePath(entry) {
   const envPath = process.env[STORAGE_PATH_ENV];
-  if (typeof envPath === 'string' && envPath.length > 0) {
-    if (envPath.includes('\0') || !path.isAbsolute(envPath)) return null;
+  if (envPath !== undefined) {
+    if (!envPath || envPath.includes('\0') || !path.isAbsolute(envPath)) return null;
     const resolved = path.resolve(envPath);
     // validateConfiguredStoragePath rejects a filesystem root.
     return path.basename(resolved) ? resolved : null;
   }
 
   const envRoot = process.env[STORAGE_ROOT_ENV];
-  if (typeof envRoot === 'string' && envRoot.length > 0) {
-    if (envRoot.includes('\0') || !path.isAbsolute(envRoot)) return null;
+  if (envRoot !== undefined) {
+    if (!envRoot || envRoot.includes('\0') || !path.isAbsolute(envRoot)) return null;
     const root = path.resolve(envRoot);
     const slot = storageSlotName(entry.path);
     if (!slot) return null;

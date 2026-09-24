@@ -197,6 +197,36 @@ describe('numeric env parsing (white-box, #2183 review)', () => {
     setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: undefined });
     expect(cmdlineMax()).toBe(16384);
   });
+
+  // #2543 review: an oversized-but-finite override used to reach
+  // Buffer.allocUnsafe unchanged; the allocation threw, readLinuxCmdline's catch
+  // returned '' (non-candidate) and a real owner was silently missed. Oversized
+  // integers now clamp to the 256 KiB ceiling (the escalation's HARD_CEIL).
+  it.each([
+    ['262145', 262144],
+    [String(2 ** 40), 262144],
+    [String(Number.MAX_SAFE_INTEGER), 262144],
+    ['1e300', 262144],
+  ])('cmdline max: oversized %s clamps to the 256 KiB ceiling', (raw, expected) => {
+    setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+    expect(cmdlineMax()).toBe(expected);
+  });
+
+  it.each(['4096', '8000', '16384', '262144'])(
+    'cmdline max: in-range integer %s is returned unchanged',
+    (raw) => {
+      setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+      expect(cmdlineMax()).toBe(Number(raw));
+    },
+  );
+
+  it.each(['Infinity', '-Infinity', 'NaN', '8192.5', '8abc', '4095', '-1'])(
+    'cmdline max: non-integer / garbage / below-floor %s falls back to the 16384 default',
+    (raw) => {
+      setEnv({ GITNEXUS_HOOK_PROC_CMDLINE_MAX: raw });
+      expect(cmdlineMax()).toBe(16384);
+    },
+  );
 });
 
 describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
@@ -211,6 +241,23 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
         fdTargets: ['/dev/null', lbug],
       },
     ]);
+    expect(owned).toBe(true);
+  });
+
+  it('owned: an oversized GITNEXUS_HOOK_PROC_CMDLINE_MAX (2**40) does not blind the scan (#2543 review)', () => {
+    // Pre-fix, the 2**40 cap reached Buffer.allocUnsafe, threw, and the catch
+    // mapped it to '' (non-candidate) => a real owner silently reported false.
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 4243,
+          comm: 'MainThread',
+          cmdline: GITNEXUS_MCP_ARGV('/opt/app/node_modules/gitnexus/dist/cli/index.js'),
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: String(2 ** 40) },
+    );
     expect(owned).toBe(true);
   });
 

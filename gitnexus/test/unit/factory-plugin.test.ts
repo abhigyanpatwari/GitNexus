@@ -46,13 +46,13 @@ const BUNDLED_GUARDS = [
 
 // Empty GITNEXUS_HOME and no storage overrides, so behavior tests never pick
 // up the developer's real registry or storage config.
+// Unset means absent: an empty-string override is set-but-invalid (the hook,
+// like the CLI, then resolves no storage), so the keys are removed, not blanked.
 function isolatedEnv(binDir: string, home: string) {
-  return {
-    ...hookEnv(binDir),
-    GITNEXUS_HOME: home,
-    GITNEXUS_STORAGE_PATH: '',
-    GITNEXUS_STORAGE_ROOT: '',
-  };
+  const env: NodeJS.ProcessEnv = { ...hookEnv(binDir), GITNEXUS_HOME: home };
+  delete env.GITNEXUS_STORAGE_PATH;
+  delete env.GITNEXUS_STORAGE_ROOT;
+  return env;
 }
 
 /** Source text of top-level `function <name>(` through its closing brace. */

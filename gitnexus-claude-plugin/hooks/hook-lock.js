@@ -5,6 +5,12 @@ const HOOK_LOCK_SUBDIR = '.hook-locks';
 const HOOK_LOCK_MAX_INFLIGHT = 3;
 const HOOK_LOCK_STALE_MS = 30000;
 
+// An evictor's claim marker older than this belongs to a crashed evictor.
+// The critical section it guards is two syscalls (lstat + unlink), so any
+// live evictor finishes orders of magnitude sooner; kept well under
+// HOOK_LOCK_STALE_MS so an orphan never blocks a slot for long.
+const HOOK_LOCK_EVICT_MARKER_STALE_MS = 5000;
+
 // Same file iff inode identity AND content metadata match. dev+ino alone is
 // not enough: filesystems reuse a freed inode number immediately (ext4), so a
 // slot recreated after an unlink can carry the stale file's ino. bigint stats
@@ -13,38 +19,51 @@ function sameSlotFile(a, b) {
   return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
 }
 
-// Evict a slot judged stale from the `inspected` stat. Never unlink `slotPath`
-// directly: another contender may have removed and recreated it since the
-// inspection, and a path-based unlink would delete that fresh lock. Instead,
-// atomically move whatever is at the path aside to a private tombstone,
-// re-check it is the file we inspected, and only then delete it. A mismatch
-// means we displaced a live owner's fresh lock: put it back with linkSync,
-// which fails (EEXIST) rather than overwrite if a third contender claimed the
-// empty path in the meantime.
+// Evict a slot judged stale from the `inspected` stat. A slot file is only
+// ever deleted, never moved, and only while holding the per-slot
+// `<slot>.evicting` marker (created O_EXCL), so two evictors cannot both
+// delete: the loser leaves the slot alone and the caller's loop re-inspects
+// it or moves on. Under the marker the slot is re-stat'd and deleted only if
+// it is still the exact file inspected; identical dev/ino/size/mtimeNs means
+// its content and age are unchanged, so the stale verdict still holds. A
+// contender that recreated the slot since inspection fails the check and
+// its lock stands.
+//
+// Residual races: (1) a marker older than HOOK_LOCK_EVICT_MARKER_STALE_MS is
+// broken as a crashed evictor's orphan; if that evictor was instead stalled
+// for seconds between its identity check and its unlink, both could act.
+// Each still re-verifies identity immediately before its unlink, so the
+// exposure is only that stall. (2) Between the identity check and the unlink
+// (two adjacent syscalls), a live owner past HOOK_LOCK_STALE_MS could release
+// and a new contender recreate the slot. Neither leaves state behind: a crash
+// at any point orphans at most the marker, which expires on its own.
 function evictStaleSlot(slotPath, inspected) {
-  const tombstone = `${slotPath}.evict-${process.pid}-${Date.now()}`;
+  const marker = `${slotPath}.evicting`;
   try {
-    fs.renameSync(slotPath, tombstone);
-  } catch {
-    return; // Already evicted by another hook — the retry will hit EEXIST.
-  }
-  let isStale = false;
-  try {
-    isStale = sameSlotFile(fs.lstatSync(tombstone, { bigint: true }), inspected);
-  } catch {
-    /* tombstone unreadable — treat as not ours and try to restore it */
-  }
-  if (!isStale) {
-    try {
-      fs.linkSync(tombstone, slotPath);
-    } catch {
-      /* a third contender claimed the path first — its lock stands */
+    const markerStat = fs.statSync(marker);
+    if (Date.now() - markerStat.mtimeMs > HOOK_LOCK_EVICT_MARKER_STALE_MS) {
+      fs.unlinkSync(marker);
     }
+  } catch {
+    /* no marker, or another contender already cleared it */
   }
   try {
-    fs.unlinkSync(tombstone);
+    fs.writeFileSync(marker, String(process.pid), { flag: 'wx' });
   } catch {
-    /* already gone */
+    return; // Another evictor holds this slot — leave it to that evictor.
+  }
+  try {
+    if (sameSlotFile(fs.lstatSync(slotPath, { bigint: true }), inspected)) {
+      fs.unlinkSync(slotPath);
+    }
+  } catch {
+    /* slot already gone — the retry claims it */
+  } finally {
+    try {
+      fs.unlinkSync(marker);
+    } catch {
+      /* already gone */
+    }
   }
 }
 

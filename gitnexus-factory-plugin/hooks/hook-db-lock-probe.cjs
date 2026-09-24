@@ -319,15 +319,30 @@ function getProcRoot() {
 // `node <abs path to .../node_modules/gitnexus/dist/cli/index.js> mcp` line
 // (the `mcp`/`serve` mode token lives at the very tail, so the cap must be large
 // enough to reach it — see PROC_CMDLINE_FLOOR escalation below). Overridable for
-// tests; never goes below PROC_CMDLINE_FLOOR.
+// tests via GITNEXUS_HOOK_PROC_CMDLINE_MAX: an integer in
+// [PROC_CMDLINE_FLOOR, PROC_CMDLINE_CEIL] is used as-is; a larger integer is
+// CLAMPED to PROC_CMDLINE_CEIL; anything else (below the floor, fractional,
+// non-numeric, Infinity) falls back to the 16 KiB default.
 const PROC_CMDLINE_FLOOR = 4096;
+// Upper bound for a single cmdline read chunk, and the absolute ceiling of the
+// escalation path in readLinuxCmdline (same 256 KiB — no single read may exceed
+// what the whole escalation is allowed to collect). Without it, an oversized
+// override (e.g. 2**40 — past buffer.constants.MAX_LENGTH on older Node lines
+// and unallocatable in practice on any) made Buffer.allocUnsafe throw; readLinuxCmdline's catch turned that into '' (a
+// NON-candidate), so a real server owner was silently missed (fail-OPEN, the
+// #1492 race). Oversized values are clamped rather than defaulted: the operator
+// asked for MORE bytes, and the ceiling is the most the read will ever collect
+// anyway, so clamping honours the intent while keeping allocation bounded.
+const PROC_CMDLINE_CEIL = 262144;
 function getCmdlineMaxBytes() {
   const raw = process.env.GITNEXUS_HOOK_PROC_CMDLINE_MAX;
   // Number() (not parseInt) so "8e3" reads as 8000, not 8 (parseInt stops at
   // 'e'). The `raw && String(raw).trim()` guard keeps empty/whitespace on the
   // default; trailing garbage ("8abc") now -> NaN -> default (stricter).
   const n = raw && String(raw).trim() ? Number(String(raw).trim()) : NaN;
-  if (Number.isFinite(n) && n >= PROC_CMDLINE_FLOOR) return n;
+  // Number.isInteger rejects NaN, +/-Infinity and fractions (a fractional
+  // Buffer/readSync length is not a byte count).
+  if (Number.isInteger(n) && n >= PROC_CMDLINE_FLOOR) return Math.min(n, PROC_CMDLINE_CEIL);
   return 16384;
 }
 
@@ -413,7 +428,7 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
     return '';
   }
   try {
-    const HARD_CEIL = 262144; // 256 KiB absolute ceiling for the escalation path
+    const HARD_CEIL = PROC_CMDLINE_CEIL; // 256 KiB absolute ceiling for the escalation path
     let collected = Buffer.alloc(0);
     let offset = 0;
     let chunkCap = cap;
