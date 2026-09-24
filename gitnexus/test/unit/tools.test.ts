@@ -140,9 +140,18 @@ describe('GITNEXUS_TOOLS', () => {
       'content appears only on the first row for each symbol id across the whole process_symbols array, not per process',
     );
     expect(queryTool.description).toContain('even under a different process_id');
-    expect(queryTool.description).toContain('context({uid: id, include_content: true})');
+    expect(queryTool.description).toContain('context({uid: "<id>", include_content: true})');
     expect(queryTool.description).toContain(
       "With include_content, context() also returns that symbol's source.",
+    );
+  });
+
+  it('query include_content property states the once-per-id rule and the context() fallback', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    const description = queryTool.inputSchema.properties.include_content.description;
+    expect(description).toContain('Include source text retained for matching symbols');
+    expect(description).toContain(
+      'Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
     );
   });
 
