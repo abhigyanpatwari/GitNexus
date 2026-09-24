@@ -250,16 +250,40 @@ export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<
   return true;
 };
 
-const withPublishLock = async <T>(layout: SharedStoreLayout, fn: () => Promise<T>): Promise<T> => {
-  const lockDir = path.join(layout.root, 'locks', 'publish');
+/**
+ * Serialize one kind of store-wide write (`publish`, `cache`) across
+ * checkouts. Each checkout's own slot is already covered by its index lock.
+ */
+export const withStoreLock = async <T>(
+  layout: SharedStoreLayout,
+  name: 'publish' | 'cache',
+  fn: () => Promise<T>,
+): Promise<T> => {
+  const lockDir = path.join(layout.root, 'locks', name);
   await fs.mkdir(lockDir, { recursive: true });
   const lock = await acquireIndexLock(lockDir);
   try {
-    requireExclusiveIndexLock(lock, `Cannot acquire the shared-store publish lock at ${lockDir}.`);
+    requireExclusiveIndexLock(lock, `Cannot acquire the shared-store ${name} lock at ${lockDir}.`);
     return await fn();
   } finally {
     lock.release();
   }
+};
+
+/**
+ * Every directory in the store whose metadata may record parse-cache keys:
+ * each checkout slot (its branch slots are read by the caller's per-root
+ * fold) and each commit graph.
+ */
+export const listStoreMetaRoots = async (layout: SharedStoreLayout): Promise<string[]> => {
+  const roots: string[] = [];
+  for (const dir of [layout.checkoutsDir, layout.commitsDir]) {
+    const names = await fs.readdir(dir).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!name.startsWith('.')) roots.push(path.join(dir, name));
+    }
+  }
+  return roots;
 };
 
 /**
@@ -286,7 +310,7 @@ export const publishSharedGraph = async (
   if (shareable) {
     const target = commitGraphDir(layout, currentCommit, featureKeyOf(meta));
     const targetGraph = path.join(target, LBUG_DIRECTORY);
-    const published = await withPublishLock(layout, async () => {
+    const published = await withStoreLock(layout, 'publish', async () => {
       if (await exists(targetGraph)) {
         await wipeLbugDbFiles(own);
         return true;

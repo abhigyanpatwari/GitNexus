@@ -169,8 +169,10 @@ import { resolveSharedStore, type SharedStoreLayout } from '../storage/shared-st
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ensurePrivateSharedGraph,
+  listStoreMetaRoots,
   publishSharedGraph,
   seedSharedSlot,
+  withStoreLock,
 } from './shared-store-analyze.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
@@ -1324,6 +1326,9 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  // Content-addressed caches live once per shared store (#3352), else in the
+  // flat slot shared by its branch slots (#2106 KTD7).
+  const cacheRoot = writeTarget.sharedStore?.cachesDir ?? storagePath;
   let storageWritable: Promise<void> | undefined;
   const ensureWritableStorage = (): Promise<void> => {
     storageWritable ??= ensureStoragePathWritable(storagePath);
@@ -2425,13 +2430,13 @@ async function runFullAnalysisInner(
   // after success. Unique because index locks are per branch slot while this
   // cache root is shared across branches.
   if (options.useParseCache === false) {
-    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
+    coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
     forgetCreatedParseCacheDir(coldParseRebuildDir);
   }
   const parseCache =
     options.useParseCache === false
       ? emptyParseCache(coldParseRebuildDir)
-      : await loadParseCache(storagePath);
+      : await loadParseCache(cacheRoot);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -4839,15 +4844,25 @@ async function runFullAnalysisInner(
     // so the cache file size stays bounded across runs (chunks whose
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
-    try {
+    const saveCaches = async (): Promise<void> => {
       // #2106 R6: the parse cache + durable store are shared across branches.
       // Before pruning to this run's keys, fold in the OTHER branches' recorded
       // chunk keys so a branch switch doesn't evict their still-live shards.
       // Adding to usedKeys makes them survive pruneCache AND land in the saved
       // index (saveParseCache builds the index from usedKeys). Excludes this
       // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today.
-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      // set byte-identical to today. A shared store (#3352) folds in every
+      // member checkout and commit graph the same way.
+      const keyRoots = writeTarget.sharedStore
+        ? await listStoreMetaRoots(writeTarget.sharedStore)
+        : [storagePath];
+      const siblingKeys = new Set<string>();
+      let complete = true;
+      for (const root of keyRoots) {
+        const folded = await collectBranchCacheKeys(root, metaDir);
+        for (const k of folded.keys) siblingKeys.add(k);
+        if (!folded.complete) complete = false;
+      }
       if (complete) {
         for (const k of siblingKeys) parseCache.usedKeys.add(k);
       } else {
@@ -4860,7 +4875,7 @@ async function runFullAnalysisInner(
       if (pruned > 0) {
         log(`Parse cache: pruned ${pruned} stale chunk entries`);
       }
-      const savedKeys = await saveParseCache(storagePath, parseCache);
+      const savedKeys = await saveParseCache(cacheRoot, parseCache);
       // Prune the durable ParsedFile store to EXACTLY the parse cache's
       // surviving keys (#2038 warm-cache coverage), so the two content-addressed
       // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
@@ -4871,11 +4886,16 @@ async function runFullAnalysisInner(
       // durable-store write must never
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
-        storagePath,
-        parseCache.storagePath ?? storagePath,
+        cacheRoot,
+        parseCache.storagePath ?? cacheRoot,
         PARSE_CACHE_VERSION,
         new Set(savedKeys),
       );
+    };
+    try {
+      await (writeTarget.sharedStore
+        ? withStoreLock(writeTarget.sharedStore, 'cache', saveCaches)
+        : saveCaches());
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
