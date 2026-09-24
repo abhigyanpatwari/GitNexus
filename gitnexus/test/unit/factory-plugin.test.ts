@@ -500,3 +500,70 @@ describe('Factory hook behavior — augment fan-out guard', () => {
     }
   });
 });
+
+// ─── Behavior: PATH tier, no GITNEXUS_HOOK_CLI_PATH ─────────────────
+//
+// PATH holds only the fake launchers written here (`#!/bin/sh` shebangs resolve
+// by absolute path, so no other PATH entry is needed), which keeps any real
+// `gitnexus` or `npx` on the host out of the result.
+
+describe.skipIf(process.platform === 'win32')('Factory hook behavior — PATH augment tier', () => {
+  let repoDir: string;
+  let toolsDir: string;
+  let home: string;
+
+  beforeAll(() => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-pathrepo-'));
+    fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, '.gitnexus', 'gitnexus.json'), '{}');
+    toolsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-pathtools-'));
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-pathhome-'));
+  });
+  afterAll(() => {
+    for (const d of [repoDir, toolsDir, home]) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  function makeBinDir(name: string, scripts: Record<string, string>): string {
+    const dir = path.join(toolsDir, name);
+    fs.mkdirSync(dir);
+    for (const [file, body] of Object.entries(scripts)) {
+      fs.writeFileSync(path.join(dir, file), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    }
+    return dir;
+  }
+
+  function runGrepHook(binDir: string) {
+    return runHook(
+      HOOK,
+      {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Grep',
+        tool_input: { pattern: 'validateUser' },
+        cwd: repoDir,
+      },
+      undefined,
+      { env: { ...isolatedEnv(binDir, home), PATH: binDir, GITNEXUS_HOOK_CLI_PATH: '' } },
+    );
+  }
+
+  it('does not re-run augment via npx when the PATH binary finds no match', () => {
+    const marker = path.join(toolsDir, 'npx-called');
+    const binDir = makeBinDir('no-match', {
+      gitnexus: 'exit 0',
+      npx: `: > '${marker}'\nprintf '[GitNexus] from npx' >&2`,
+    });
+    const r = runGrepHook(binDir);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('');
+    expect(fs.existsSync(marker)).toBe(false);
+  });
+
+  it('falls through to npx when no gitnexus launcher is on PATH', () => {
+    const binDir = makeBinDir('npx-only', {
+      npx: "printf '[GitNexus] graph context via npx' >&2",
+    });
+    const r = runGrepHook(binDir);
+    expect(r.status).toBe(0);
+    expect(parseHookOutput(r.stdout)?.additionalContext).toContain('graph context via npx');
+  });
+});

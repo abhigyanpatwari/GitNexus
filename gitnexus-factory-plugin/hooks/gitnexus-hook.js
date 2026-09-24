@@ -309,7 +309,10 @@ function extractPattern(toolName, toolInput) {
  *
  * GITNEXUS_HOOK_CLI_PATH is tried first and run as `node <path>`, the only form
  * that works on Windows, where Node refuses to spawn the `.cmd` shims without a
- * shell (CVE-2024-27980). Then a PATH binary, then a version-pinned npx.
+ * shell (CVE-2024-27980). Otherwise a PATH binary, and a version-pinned npx
+ * only when no PATH binary exists. Exactly one tier runs, so a no-match search
+ * (exit 0, empty stderr) or a timeout never spends a second 8s budget on npx
+ * past the 10s hook timeout in hooks.json.
  *
  * SECURITY: `pattern` follows the `--` end-of-options marker and never reaches a
  * shell (the Windows fallback invokes `npx.cmd` directly rather than
@@ -339,13 +342,17 @@ function runAugment(pattern, cwd) {
     return '';
   }
 
+  // Only ENOENT (no launcher on PATH) falls through to npx. Windows EINVAL for
+  // `gitnexus.cmd` does not: `npx.cmd` would fail the same way without a shell.
   try {
     const child = spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, spawnOpts);
-    if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
-      return child.stderr;
+    if (!child.error || child.error.code !== 'ENOENT') {
+      return !child.error && child.status === 0 && child.stderr && child.stderr.trim()
+        ? child.stderr
+        : '';
     }
-  } catch {
-    /* not on PATH — fall through to npx */
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') return '';
   }
 
   try {
