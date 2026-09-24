@@ -16,7 +16,7 @@ import { acquireIndexLock, requireExclusiveIndexLock, type IndexLockHandle } fro
 import {
   canonicalizePath,
   findRegistryEntryByRepoPath,
-  readRegistry,
+  readRegistryStrictIfPresent,
   registryPathEquals,
 } from './repo-manager.js';
 import { loadMeta } from './repo-meta.js';
@@ -78,17 +78,22 @@ const listDirStrict = (dir: string): Promise<string[]> =>
  * gone, or its entry moved elsewhere (`--no-share`, sharing turned off). The
  * registry is the membership record for opted-in clones and for a main
  * checkout whose last worktree was removed, so identity alone cannot decide.
- * A slot with no attributable `repoPath` is never collected.
+ * A slot with no attributable `repoPath` is never collected. An unreadable
+ * registry aborts; without a registry file only slots whose checkout is gone
+ * are collected.
  */
 const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
-  const entries = await readRegistry();
+  const entries = await readRegistryStrictIfPresent();
   const orphans = new Set<string>();
   for (const slot of slots) {
     const meta = await loadMeta(slot);
     if (!meta?.repoPath) continue;
-    const entry = existsSync(meta.repoPath)
-      ? findRegistryEntryByRepoPath(entries, meta.repoPath)
-      : undefined;
+    if (!existsSync(meta.repoPath)) {
+      orphans.add(slot);
+      continue;
+    }
+    if (!entries) continue;
+    const entry = findRegistryEntryByRepoPath(entries, meta.repoPath);
     if (
       !entry ||
       !registryPathEquals(canonicalizePath(entry.storagePath), canonicalizePath(slot))

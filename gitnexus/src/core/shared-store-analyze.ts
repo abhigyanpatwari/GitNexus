@@ -182,18 +182,26 @@ const seedFromLocalIndex = async (
   log: Log,
 ): Promise<boolean> => {
   const sourceGraph = path.join(source, LBUG_DIRECTORY);
-  const meta = await loadMeta(source);
-  if (!meta || meta.incrementalInProgress || !meta.lastCommit) return false;
-  if (!(await exists(sourceGraph))) return false;
-  if (commitDistanceToHead(repoPath, meta.lastCommit) === null) return false;
+  const usable = (m: RepoMeta | null): m is RepoMeta =>
+    !!m &&
+    !m.incrementalInProgress &&
+    !!m.lastCommit &&
+    commitDistanceToHead(repoPath, m.lastCommit) !== null;
+  if (!usable(await loadMeta(source)) || !(await exists(sourceGraph))) return false;
   let lock;
   try {
     lock = await acquireIndexLock(source, { timeoutMs: 2_000 });
   } catch {
     return false; // another analyze is writing it; seed from scratch instead
   }
+  let meta: RepoMeta;
   try {
     if (lock.lockFree || (await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
+    // Re-read under the lock: an analyze that finished while this waited
+    // rewrote both, and the copied graph must match the saved metadata.
+    const locked = await loadMeta(source);
+    if (!usable(locked)) return false;
+    meta = locked;
     await fs.mkdir(slot, { recursive: true });
     try {
       await cloneGraphFile(sourceGraph, path.join(slot, LBUG_DIRECTORY));

@@ -174,15 +174,23 @@ const collectSharedStores = async (force: boolean): Promise<void> => {
     if (err.code === 'ENOENT') return [] as string[];
     throw err;
   });
-  if (names.length === 0) {
+  // Stray files (`.DS_Store`) are not stores, and a symlink is not followed:
+  // reclaim deletes under the root it is given. A store another collector
+  // removed meanwhile is simply gone.
+  const roots: string[] = [];
+  for (const name of names) {
+    const root = path.join(storesDir, name);
+    const stat = await fs.lstat(root).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+    if (stat?.isDirectory()) roots.push(root);
+  }
+  if (roots.length === 0) {
     console.log(t('clean.gc.none'));
     return;
   }
-  for (const name of names) {
-    const root = path.join(storesDir, name);
-    // Stray files (`.DS_Store`) are not stores, and a symlink is not followed:
-    // reclaim deletes under the root it is given.
-    if (!(await fs.lstat(root)).isDirectory()) continue;
+  for (const root of roots) {
     // Without --force this is a preview: same selection, nothing deleted.
     const result = await reclaimSharedStore(root, { gc: true, dryRun: !force });
     console.log(

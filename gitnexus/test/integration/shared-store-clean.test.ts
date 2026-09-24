@@ -170,6 +170,32 @@ describe('shared store clean (#3352)', () => {
     expect(existsSync(path.join(decoy, 'commits', 'ddddddd-4444444444444444'))).toBe(true);
   }, 240_000);
 
+  it('clean --gc reports no stores when stores/ holds only stray files', async () => {
+    await fs.mkdir(path.join(tmpHome.dbPath, 'stores'), { recursive: true });
+    await fs.writeFile(path.join(tmpHome.dbPath, 'stores', '.DS_Store'), 'x');
+    const logs = await cleanIn(main, { gc: true });
+    expect(logs).toContain('No shared stores to collect.');
+  });
+
+  it('clean --gc skips a store removed by a concurrent collector', async () => {
+    const gone = path.join(tmpHome.dbPath, 'stores', 'repo-0123456789ab');
+    await fs.mkdir(gone, { recursive: true });
+    const realLstat = fs.lstat;
+    const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (
+      target: string,
+      ...rest: unknown[]
+    ) => {
+      if (String(target) === gone) throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+      return (realLstat as (...a: unknown[]) => Promise<unknown>)(target, ...rest);
+    }) as typeof fs.lstat);
+    try {
+      const logs = await cleanIn(main, { gc: true, force: true });
+      expect(logs).toContain('No shared stores to collect.');
+    } finally {
+      lstat.mockRestore();
+    }
+  });
+
   it('clean --gc without --force previews and deletes nothing', async () => {
     await analyze(wtA);
     await fs.writeFile(path.join(wtB, 'b.ts'), 'export function beta() { return 2; }\n');
@@ -338,6 +364,23 @@ describe('reclaimSharedStore', () => {
     }
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(path.join(dir, 'store.json'))).toBe(false);
+  });
+
+  it('aborts instead of collecting members when the registry cannot be read', async () => {
+    const slot = await member('wt-000000000000', { repoPath: tmpHome.dbPath });
+    await fs.writeFile(path.join(tmpHome.dbPath, 'registry.json'), '{not json');
+    await expect(reclaimSharedStore(layout().root, { gc: true })).rejects.toThrow();
+    expect(existsSync(slot)).toBe(true);
+  });
+
+  it('without a registry file collects only members whose checkout is gone', async () => {
+    const live = await member('wt-000000000000', { repoPath: tmpHome.dbPath });
+    const dead = await member('wt-111111111111', {
+      repoPath: path.join(tmpHome.dbPath, 'deleted-worktree'),
+    });
+    await reclaimSharedStore(layout().root, { gc: true });
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(dead)).toBe(false);
   });
 
   it('reports a graph it cannot delete instead of failing', async () => {
