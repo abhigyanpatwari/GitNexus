@@ -71,8 +71,8 @@ describe('shared store adoption and reporting (#3352)', () => {
 
   beforeEach(async () => {
     savedCwd = process.cwd();
-    tmpHome = await createTempDir('gitnexus-adopt-home-');
-    tmpRepo = await createTempDir('gitnexus-adopt-repo-');
+    tmpHome = await createTempDir('gitnexus-test-adopt-home-');
+    tmpRepo = await createTempDir('gitnexus-test-adopt-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     savedSwitch = process.env[SHARED_STORE_ENV];
     delete process.env[SHARED_STORE_ENV];
@@ -237,6 +237,23 @@ describe('shared store adoption and reporting (#3352)', () => {
     const pointer = path.join(wt, '.gitnexus', 'store.json');
     const other = layoutOf(main).checkoutSlot;
     await fs.writeFile(pointer, JSON.stringify({ version: 1, checkoutSlot: other }));
+    expect(readSharedStorePointer(wt)).toBeNull();
+    const ownSlot = layoutOf(wt).checkoutSlot;
+    const otherStoreSlot = path.join(
+      path.dirname(path.dirname(path.dirname(ownSlot))),
+      'other-000000000000',
+      'checkouts',
+      path.basename(ownSlot),
+    );
+    await fs.writeFile(
+      pointer,
+      JSON.stringify({ version: 1, storeKey: 'other-000000000000', checkoutSlot: otherStoreSlot }),
+    );
+    expect(readSharedStorePointer(wt)).toBeNull();
+    await fs.writeFile(
+      pointer,
+      JSON.stringify({ version: 1, storeKey: layoutOf(wt).key, checkoutSlot: otherStoreSlot }),
+    );
     expect(readSharedStorePointer(wt)).toBeNull();
     await fs.writeFile(pointer, JSON.stringify({ version: 1, checkoutSlot: '/etc' }));
     expect(readSharedStorePointer(wt)).toBeNull();

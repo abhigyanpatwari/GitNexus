@@ -73,8 +73,8 @@ describe('shared store seeding (#3352)', () => {
   };
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-seed-home-');
-    tmpRepo = await createTempDir('gitnexus-seed-repo-');
+    tmpHome = await createTempDir('gitnexus-test-seed-home-');
+    tmpRepo = await createTempDir('gitnexus-test-seed-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     root = await fs.realpath(tmpRepo.dbPath);
@@ -226,7 +226,7 @@ describe('ensurePrivateSharedGraph', () => {
   let savedHome: string | undefined;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-private-home-');
+    tmpHome = await createTempDir('gitnexus-test-private-home-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
   });

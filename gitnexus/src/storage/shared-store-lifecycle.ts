@@ -132,16 +132,23 @@ export const reclaimSharedStoreLocked = async (
     }
   }
 
-  const remaining = (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length;
-  if (remaining === 0 && !opts.dryRun) {
-    // The lock directory lives inside the store; removing it while held is
-    // safe on POSIX and is retried on the next reclaim elsewhere.
-    await fs
-      .rm(storeRoot, { recursive: true, force: true })
-      .then(() => {
-        result.storeRemoved = true;
-      })
-      .catch(() => {});
+  const isEmpty = async (): Promise<boolean> =>
+    (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length === 0;
+  if (!opts.dryRun && (await isEmpty())) {
+    // Also hold the cache lock (publish -> cache, the only nesting order) so
+    // a member saving caches cannot lose them, then re-check: a new member's
+    // slot may have appeared while waiting. The lock directories live inside
+    // the store; removing them while held is safe on POSIX and is retried on
+    // the next reclaim elsewhere.
+    await withStoreLock({ root: storeRoot }, 'cache', async () => {
+      if (!(await isEmpty())) return;
+      await fs
+        .rm(storeRoot, { recursive: true, force: true })
+        .then(() => {
+          result.storeRemoved = true;
+        })
+        .catch(() => {});
+    });
   }
   return result;
 };

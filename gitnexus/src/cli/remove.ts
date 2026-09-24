@@ -29,7 +29,10 @@
  *     here there is no pipeline, so no conflation.)
  */
 
-import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
+import {
+  reclaimAfterSlotRemoval,
+  removeSharedStorePointer,
+} from '../storage/shared-store-lifecycle.js';
 import fs from 'fs/promises';
 import { logger } from '../core/logger.js';
 import { cliError } from './cli-message.js';
@@ -101,7 +104,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   try {
     await fs.rm(storagePath, { recursive: true, force: true });
     await unregisterRepo(entry.path);
-    await reclaimAfterSlotRemoval(storagePath);
+    if (await reclaimAfterSlotRemoval(storagePath)) await removeSharedStorePointer(entry.path);
     console.log(t('remove.removed', { name: entry.name }));
     console.log(`   ${t('common.path')}:    ${entry.path}`);
     console.log(`   ${t('common.storage')}: ${entry.storagePath}`);

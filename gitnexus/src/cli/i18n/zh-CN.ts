@@ -30,7 +30,7 @@ export const zhCN = {
   'list.processes': '流程',
   'list.unknown': 'unknown',
   'status.sharedStoreShared': '共享索引：存储 {{key}}，提交 {{commit}} 的共享图',
-  'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改）',
+  'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改或固定分支索引）',
   'status.legacyLocalIndex':
     '残留的本地索引：{{path}}（{{size}}）；使用 `gitnexus clean --local-index --force` 删除',
   'status.notGitRepo': '当前目录不是 git 仓库。',

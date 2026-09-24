@@ -61,8 +61,8 @@ describe('shared sibling store analyze (#3352)', () => {
   let wtB: string;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-shared-home-');
-    tmpRepo = await createTempDir('gitnexus-shared-repo-');
+    tmpHome = await createTempDir('gitnexus-test-shared-home-');
+    tmpRepo = await createTempDir('gitnexus-test-shared-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
 
@@ -259,8 +259,8 @@ describe('publishSharedGraph race (#3352)', () => {
   let savedHome: string | undefined;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-shared-race-home-');
-    tmpRepo = await createTempDir('gitnexus-shared-race-repo-');
+    tmpHome = await createTempDir('gitnexus-test-shared-race-home-');
+    tmpRepo = await createTempDir('gitnexus-test-shared-race-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
   });

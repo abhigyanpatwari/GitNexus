@@ -282,15 +282,31 @@ export const readSharedStorePointer = (checkoutPath: string): string | null => {
   const pointerPath = path.resolve(root, GITNEXUS_DIR, SHARED_STORE_POINTER);
   const pointerRel = path.relative(root, pointerPath);
   if (pointerRel.startsWith('..') || path.isAbsolute(pointerRel)) return null;
-  let recorded: unknown;
+  let pointer: { checkoutSlot?: unknown; storeKey?: unknown };
   try {
-    recorded = (JSON.parse(fs.readFileSync(pointerPath, 'utf-8')) as { checkoutSlot?: unknown })
-      .checkoutSlot;
+    pointer = JSON.parse(fs.readFileSync(pointerPath, 'utf-8')) as typeof pointer;
   } catch {
     return null;
   }
+  const { checkoutSlot: recorded, storeKey } = pointer;
   if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return null;
+  if (typeof storeKey !== 'string') return null;
   const slot = path.resolve(recorded);
-  if (!storeRootOfCheckoutSlot(slot)) return null;
-  return path.basename(slot) === slotName(checkoutPath) ? slot : null;
+  const storeRoot = storeRootOfCheckoutSlot(slot);
+  if (!storeRoot || path.basename(storeRoot) !== storeKey) return null;
+  if (slot !== sharedStoreLayout(storeKey, checkoutPath).checkoutSlot) return null;
+  // The pointer file is editable, so its fields only say where to look. The
+  // binding is the slot's own metadata, written by analyze for this checkout:
+  // a slot in another store for this path exists only if this checkout was
+  // really a member there.
+  const metaPath = path.resolve(slot, INDEX_METADATA_FILE);
+  const metaRel = path.relative(slot, metaPath);
+  if (metaRel.startsWith('..') || path.isAbsolute(metaRel)) return null;
+  let owner: unknown;
+  try {
+    owner = (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { repoPath?: unknown }).repoPath;
+  } catch {
+    return null;
+  }
+  return typeof owner === 'string' && slotName(owner) === slotName(checkoutPath) ? slot : null;
 };

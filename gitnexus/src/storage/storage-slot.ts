@@ -14,7 +14,11 @@ export const STORAGE_ROOT_ENV = 'GITNEXUS_STORAGE_ROOT';
 
 const STORAGE_SLOT_HASH_LENGTH = 12;
 
-const sanitizeSlotBasename = (value: string): string => {
+/** Exported for tests; production callers use {@link slotNameForCanonicalPath}. */
+export const sanitizeSlotBasename = (
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): string => {
   // Linear: a quantified `/[. ]+$/` on attacker-controlled basenames is
   // js/polynomial-redos (CodeQL #1056). Cap first, then walk the tail once.
   const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
@@ -25,10 +29,14 @@ const sanitizeSlotBasename = (value: string): string => {
     end--;
   }
   const candidate = sanitized.slice(0, end) || 'repository';
-  // Windows reserves device names with any extension too (`CON.txt`).
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(candidate)
-    ? `repository-${candidate}`
-    : candidate;
+  // Exact device names were always prefixed. Windows also reserves them with
+  // an extension (`CON.txt`); apply that only there, so existing POSIX slot
+  // names stay stable.
+  const reserved =
+    platform === 'win32'
+      ? /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+      : /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  return reserved.test(candidate) ? `repository-${candidate}` : candidate;
 };
 
 /**

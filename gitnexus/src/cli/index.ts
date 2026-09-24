@@ -358,7 +358,7 @@ program
   .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
   .option(
     '--gc',
-    'Drop shared-store checkouts whose worktree is gone and delete commit graphs nothing references',
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
   )
   .option(
     '--local-index',

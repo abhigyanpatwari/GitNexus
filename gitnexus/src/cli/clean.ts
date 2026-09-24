@@ -372,7 +372,9 @@ export const cleanCommand = async (options?: {
         await fs.rm(storagePath, { recursive: true, force: true });
         await unregisterRepo(entry.path);
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
-        reportReclaim(await reclaimAfterSlotRemoval(storagePath));
+        const reclaim = await reclaimAfterSlotRemoval(storagePath);
+        if (reclaim) await removeSharedStorePointer(entry.path);
+        reportReclaim(reclaim);
       } catch (err) {
         if (err instanceof StorageDeletionError) {
           logger.error(`Refusing to clean ${entry.name}: ${err.message}`);

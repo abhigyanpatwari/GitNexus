@@ -13,6 +13,7 @@ import {
   sharedStoreLayout,
   type SharedStoreLayout,
 } from '../../../src/storage/shared-store.js';
+import { sanitizeSlotBasename } from '../../../src/storage/storage-slot.js';
 import {
   STORAGE_PATH_ENV,
   STORAGE_ROOT_ENV,
@@ -317,13 +318,17 @@ describe('resolveStoragePath store tier', () => {
 
 describe('slot naming edge cases (#3352 review)', () => {
   it.each(['CON.txt', 'com1.log', 'Lpt9.tar.gz'])(
-    'prefixes a reserved Windows device name with an extension: %s',
+    'prefixes a reserved device name with an extension on Windows only: %s',
     (base) => {
-      expect(storageSlotName(path.join(path.sep, 'tmp', base))).toMatch(
-        new RegExp(`^repository-${base.replace('.', '\\.')}-[0-9a-f]{12}$`),
-      );
+      expect(sanitizeSlotBasename(base, 'win32')).toBe(`repository-${base}`);
+      expect(sanitizeSlotBasename(base, 'linux')).toBe(base);
     },
   );
+
+  it.each(['CON', 'nul', 'COM1'])('prefixes an exact device name on every platform: %s', (base) => {
+    expect(sanitizeSlotBasename(base, 'win32')).toBe(`repository-${base}`);
+    expect(sanitizeSlotBasename(base, 'linux')).toBe(`repository-${base}`);
+  });
 
   it('keeps an ordinary name that only starts like a device name', () => {
     expect(storageSlotName(path.join(path.sep, 'tmp', 'console'))).toMatch(/^console-/);

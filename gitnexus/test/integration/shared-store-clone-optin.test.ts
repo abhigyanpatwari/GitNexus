@@ -51,8 +51,8 @@ describe('shared store clone opt-in (#3352)', () => {
     (await listRegisteredRepos()).find((e) => e.path === checkout)?.storagePath;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-optin-home-');
-    tmpRepo = await createTempDir('gitnexus-optin-repo-');
+    tmpHome = await createTempDir('gitnexus-test-optin-home-');
+    tmpRepo = await createTempDir('gitnexus-test-optin-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     root = await fs.realpath(tmpRepo.dbPath);
@@ -169,6 +169,12 @@ describe('shared store clone opt-in (#3352)', () => {
   }, 240_000);
 
   it('rejects --no-share in a linked worktree', async () => {
+    const before = await fs.readFile(path.join(storeLayout.checkoutSlot, 'gitnexus.json'), 'utf-8');
     await expect(analyze(wt, { noShare: true })).rejects.toThrow(/GITNEXUS_SHARED_STORE=off/);
+    // Rejected before any work: no local index, slot metadata untouched.
+    expect(existsSync(path.join(wt, '.gitnexus', 'lbug'))).toBe(false);
+    expect(await fs.readFile(path.join(storeLayout.checkoutSlot, 'gitnexus.json'), 'utf-8')).toBe(
+      before,
+    );
   }, 240_000);
 });

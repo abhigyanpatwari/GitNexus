@@ -54,8 +54,8 @@ describe('shared store caches (#3352)', () => {
   let wtB: string;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-cache-home-');
-    tmpRepo = await createTempDir('gitnexus-cache-repo-');
+    tmpHome = await createTempDir('gitnexus-test-cache-home-');
+    tmpRepo = await createTempDir('gitnexus-test-cache-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     const root = await fs.realpath(tmpRepo.dbPath);
@@ -119,7 +119,7 @@ describe('withStoreLock', () => {
   let savedHome: string | undefined;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-store-lock-home-');
+    tmpHome = await createTempDir('gitnexus-test-store-lock-home-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
   });

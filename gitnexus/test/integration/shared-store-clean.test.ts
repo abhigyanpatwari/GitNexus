@@ -76,8 +76,8 @@ describe('shared store clean (#3352)', () => {
 
   beforeEach(async () => {
     savedCwd = process.cwd();
-    tmpHome = await createTempDir('gitnexus-clean-home-');
-    tmpRepo = await createTempDir('gitnexus-clean-repo-');
+    tmpHome = await createTempDir('gitnexus-test-clean-home-');
+    tmpRepo = await createTempDir('gitnexus-test-clean-repo-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     const root = await fs.realpath(tmpRepo.dbPath);
@@ -123,6 +123,17 @@ describe('shared store clean (#3352)', () => {
     expect(await commitDirs(layout)).toEqual([]);
     expect(existsSync(layout.root)).toBe(false);
     expect(logs.join('\n')).toMatch(/removed 1 commit graph/);
+  }, 240_000);
+
+  it('clean --all --force removes each shared checkout pointer with its slot', async () => {
+    await analyze(wtA);
+    await analyze(wtB);
+    expect(existsSync(path.join(wtA, '.gitnexus', 'store.json'))).toBe(true);
+    await cleanIn(wtA, { all: true, force: true });
+    for (const wt of [wtA, wtB]) {
+      expect(existsSync(path.join(wt, '.gitnexus', 'store.json'))).toBe(false);
+    }
+    expect(existsSync(layoutOf(wtA).root)).toBe(false);
   }, 240_000);
 
   it('previews without --force and deletes nothing', async () => {
@@ -172,7 +183,7 @@ describe('reclaimSharedStore', () => {
   let savedHome: string | undefined;
 
   beforeEach(async () => {
-    tmpHome = await createTempDir('gitnexus-reclaim-home-');
+    tmpHome = await createTempDir('gitnexus-test-reclaim-home-');
     savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
   });

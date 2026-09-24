@@ -1137,6 +1137,13 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   const storageRequirements = options.force
     ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
     : ANALYZE_STORAGE_REQUIREMENTS;
+  if (options.noShare && resolveSharedStore(repoPath)) {
+    // Fail before any lock or indexing; only an opted-in clone can leave.
+    throw new Error(
+      '--no-share: linked worktrees always use the shared index store. ' +
+        'Set GITNEXUS_SHARED_STORE=off to index every checkout into its own .gitnexus.',
+    );
+  }
   const sharingOff = options.noShare || isSharedStoreDisabled();
   const sharedStore = sharingOff
     ? undefined
