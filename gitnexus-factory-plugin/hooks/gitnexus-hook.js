@@ -362,16 +362,20 @@ function runAugment(pattern, cwd) {
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   };
-
-  const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
-  if (hookCli && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
+  // Only a clean exit 0 yields context; a spawn error, throw or non-zero exit is ''.
+  const spawnAugment = (cmd, argv) => {
     try {
-      const child = spawnSync(process.execPath, [String(hookCli), ...args], spawnOpts);
+      const child = spawnSync(cmd, argv, spawnOpts);
       if (!child.error && child.status === 0) return extractAugmentContext(child.stderr);
     } catch {
       /* graceful failure */
     }
     return '';
+  };
+
+  const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
+  if (hookCli && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
+    return spawnAugment(process.execPath, [String(hookCli), ...args]);
   }
 
   // Only ENOENT (no launcher on PATH) falls through to npx. Windows EINVAL for
@@ -385,18 +389,7 @@ function runAugment(pattern, cwd) {
     if (!err || err.code !== 'ENOENT') return '';
   }
 
-  try {
-    const child = spawnSync(
-      isWin ? 'npx.cmd' : 'npx',
-      ['-y', `gitnexus@${PINNED_VERSION}`, ...args],
-      spawnOpts,
-    );
-    if (!child.error && child.status === 0) return extractAugmentContext(child.stderr);
-  } catch {
-    /* graceful failure */
-  }
-
-  return '';
+  return spawnAugment(isWin ? 'npx.cmd' : 'npx', ['-y', `gitnexus@${PINNED_VERSION}`, ...args]);
 }
 
 function main() {
@@ -406,16 +399,17 @@ function main() {
 
     const cwd = input.cwd || process.cwd();
     if (!path.isAbsolute(cwd)) return;
-    // Registry row first (persisted external storagePath wins); a local owned
-    // `.gitnexus` is the fallback — same lookup as the Claude/Cursor hooks.
-    const repo = resolveHookRepo(cwd);
-    if (!repo) return;
 
     const toolName = input.tool_name || '';
     if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Execute') return;
 
     const pattern = extractPattern(toolName, input.tool_input || {});
     if (!pattern || pattern.length < 3) return;
+
+    // Registry row first (persisted external storagePath wins); a local owned
+    // `.gitnexus` is the fallback — same lookup as the Claude/Cursor hooks.
+    const repo = resolveHookRepo(cwd);
+    if (!repo) return;
 
     const release = acquireHookSlot(repo.storagePath);
     if (!release) return; // all per-repo augment slots held by concurrent sessions

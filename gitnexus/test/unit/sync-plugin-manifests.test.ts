@@ -28,11 +28,13 @@ const MCP_SKILL_DIRS = [
   'gitnexus-refactoring',
 ] as const;
 
-const TOTAL_SURFACES = SURFACES.length + MCP_SKILL_DIRS.length + 1;
-
 function mcpPath(dir: string): string {
   return `gitnexus-claude-plugin/skills/${dir}/mcp.json`;
 }
+
+const EXECUTABLE_MCP_FILES = [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP];
+
+const TOTAL_SURFACES = SURFACES.length + EXECUTABLE_MCP_FILES.length;
 
 const tempRoots: string[] = [];
 
@@ -65,7 +67,7 @@ function makeRoot(packageVersion: string, manifestVersion: string): string {
     name: 'gitnexus-marketplace',
     plugins: [{ name: 'gitnexus', version: manifestVersion, source: './gitnexus-factory-plugin' }],
   });
-  for (const dir of [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP]) {
+  for (const dir of EXECUTABLE_MCP_FILES) {
     writeJson(root, dir, {
       mcpServers: {
         gitnexus: { command: 'npx', args: ['-y', `gitnexus@${manifestVersion}`, 'mcp'] },
@@ -106,7 +108,7 @@ describe('syncPluginManifests (#2445)', () => {
 
     syncPluginManifests(root);
 
-    for (const file of [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP]) {
+    for (const file of EXECUTABLE_MCP_FILES) {
       const mcp = JSON.parse(readFileSync(path.join(root, file), 'utf8')) as {
         mcpServers: { gitnexus: { args: string[] } };
       };

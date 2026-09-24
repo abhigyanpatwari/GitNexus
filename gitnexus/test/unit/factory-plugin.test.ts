@@ -59,7 +59,9 @@ function isolatedEnv(binDir: string, home: string) {
 function fnSource(file: string, name: string): string {
   const src = fs.readFileSync(file, 'utf-8');
   const start = src.indexOf(`function ${name}(`);
-  return src.slice(start, src.indexOf('\n}\n', start) + 3);
+  const end = start < 0 ? -1 : src.indexOf('\n}\n', start);
+  if (end < 0) throw new Error(`${name} not found in ${file}`);
+  return src.slice(start, end + 3);
 }
 
 const require_ = createRequire(import.meta.url);
@@ -201,10 +203,12 @@ describe('Factory hook source regressions', () => {
   });
 
   it('never passes shell: true / shell: isWin to spawnSync (injection risk)', () => {
-    for (const line of source.split('\n')) {
-      const t = line.trim();
-      if (t.startsWith('//') || t.startsWith('*')) continue;
-      expect(/shell:\s*(true|isWin)/.test(line), `injection risk: ${t}`).toBe(false);
+    const codeLines = source
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((t) => !t.startsWith('//') && !t.startsWith('*'));
+    for (const t of codeLines) {
+      expect(/shell:\s*(true|isWin)/.test(t), `injection risk: ${t}`).toBe(false);
     }
   });
 
@@ -225,7 +229,8 @@ describe('Factory hook source regressions', () => {
   // there. Same escape hatch the Claude adapter honors.
   it('prefers GITNEXUS_HOOK_CLI_PATH via process.execPath', () => {
     expect(source).toContain('GITNEXUS_HOOK_CLI_PATH');
-    expect(source).toMatch(/spawnSync\(\s*process\.execPath/);
+    expect(source).toMatch(/spawnAugment\(\s*process\.execPath/);
+    expect(source).toContain('spawnSync(cmd, argv, spawnOpts)');
   });
 
   it('passes the pattern after the -- end-of-options marker', () => {
