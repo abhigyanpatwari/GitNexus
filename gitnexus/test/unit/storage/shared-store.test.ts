@@ -155,6 +155,7 @@ describe('sharedStoreLayout', () => {
       commitsDir: path.join(root, 'commits'),
       checkoutsDir: path.join(root, 'checkouts'),
       checkoutSlot: path.join(root, 'checkouts', storageSlotName(wts[0])),
+      canonicalCheckout: main,
     });
   });
 

@@ -55,6 +55,8 @@ export interface SharedStoreLayout {
   checkoutsDir: string;
   /** This checkout's slot — the registry `storagePath` for a shared checkout. */
   checkoutSlot: string;
+  /** The main checkout (parent of the git common dir); null for a bare repository. */
+  canonicalCheckout: string | null;
 }
 
 /** Sharing is off globally, or an explicit storage env override takes precedence. */
@@ -111,21 +113,30 @@ const readCommonDir = (checkoutPath: string): string | null => {
  * Store key for a checkout, or null when the checkout does not share.
  * Main checkout and every linked worktree of one repository get the same key.
  */
-export const resolveSharedStoreKey = (
+const resolveIdentity = (
   checkoutPath: string,
-  env: NodeJS.ProcessEnv = process.env,
-): string | null => {
+  env: NodeJS.ProcessEnv,
+): { key: string; canonicalCheckout: string | null } | null => {
   if (isSharedStoreDisabled(env)) return null;
   const commonDir = readCommonDir(path.resolve(checkoutPath));
   if (!commonDir || !hasLinkedWorktrees(commonDir)) return null;
   // `<repo>/.git` keys on `<repo>` for a readable name; a bare common dir
   // (`repo.git`) keys on itself. Both hash the canonical absolute path.
-  const identity = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir;
-  return slotName(identity);
+  const canonicalCheckout = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : null;
+  return { key: slotName(canonicalCheckout ?? commonDir), canonicalCheckout };
 };
 
+export const resolveSharedStoreKey = (
+  checkoutPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null => resolveIdentity(checkoutPath, env)?.key ?? null;
+
 /** Name every store path for `checkoutPath` under store `key`. */
-export const sharedStoreLayout = (key: string, checkoutPath: string): SharedStoreLayout => {
+export const sharedStoreLayout = (
+  key: string,
+  checkoutPath: string,
+  canonicalCheckout: string | null = null,
+): SharedStoreLayout => {
   const storesRoot = path.join(getGlobalDir(), STORES_DIR);
   const root = path.resolve(storesRoot, key);
   if (path.dirname(root) !== path.resolve(storesRoot)) {
@@ -139,6 +150,7 @@ export const sharedStoreLayout = (key: string, checkoutPath: string): SharedStor
     commitsDir: path.join(root, 'commits'),
     checkoutsDir,
     checkoutSlot: path.join(checkoutsDir, slotName(checkoutPath)),
+    canonicalCheckout,
   };
 };
 
@@ -147,8 +159,10 @@ export const resolveSharedStore = (
   checkoutPath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): SharedStoreLayout | null => {
-  const key = resolveSharedStoreKey(checkoutPath, env);
-  return key ? sharedStoreLayout(key, checkoutPath) : null;
+  const identity = resolveIdentity(checkoutPath, env);
+  return identity
+    ? sharedStoreLayout(identity.key, checkoutPath, identity.canonicalCheckout)
+    : null;
 };
 
 /** Directory of the immutable graph for one commit and feature key. */

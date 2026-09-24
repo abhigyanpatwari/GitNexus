@@ -28,7 +28,7 @@ import {
   resolveGraphPath,
   type SharedStoreLayout,
 } from '../storage/shared-store.js';
-import { INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
+import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { wipeLbugDbFiles } from './lbug/lbug-adapter.js';
 import { inspectLbugSidecars } from './lbug/sidecar-recovery.js';
 
@@ -134,9 +134,60 @@ const pickSeed = (repoPath: string, graphs: CommitGraph[]): CommitGraph | null =
 };
 
 /**
- * Give a slot with no metadata a pointer to the best commit graph, so the
- * run that follows is up to date (same commit, clean) or incremental from
- * that graph's file hashes. Caller holds the slot's index lock.
+ * Copy a repository-local index (`<checkout>/.gitnexus`) into an empty slot
+ * as its private graph. Used before the store has any commit graph: the main
+ * checkout was indexed before its first worktree existed, or a worktree still
+ * has its pre-store index. The source is left untouched (R12). Returns false
+ * when the source is missing, not an ancestor of HEAD, busy, or not
+ * consolidated.
+ */
+const seedFromLocalIndex = async (
+  slot: string,
+  repoPath: string,
+  source: string,
+  log: Log,
+): Promise<boolean> => {
+  const sourceGraph = path.join(source, LBUG_DIRECTORY);
+  const meta = await loadMeta(source);
+  if (!meta || meta.incrementalInProgress || !meta.lastCommit) return false;
+  if (!(await exists(sourceGraph))) return false;
+  if (commitDistanceToHead(repoPath, meta.lastCommit) === null) return false;
+  let lock;
+  try {
+    lock = await acquireIndexLock(source, { timeoutMs: 2_000 });
+  } catch {
+    return false; // another analyze is writing it; seed from scratch instead
+  }
+  try {
+    if (lock.lockFree || (await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
+    await fs.mkdir(slot, { recursive: true });
+    const own = path.join(slot, LBUG_DIRECTORY);
+    const tmp = `${own}.new.${randomUUID()}`;
+    try {
+      await fs.copyFile(sourceGraph, tmp, fsConstants.COPYFILE_FICLONE);
+      await fs.rename(tmp, own);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      log(`Shared store: could not copy ${sourceGraph} (${(err as Error).message}).`);
+      return false;
+    }
+  } finally {
+    lock.release();
+  }
+  const seeded: RepoMeta = { ...meta, repoPath, storagePath: slot };
+  delete seeded.graphPath;
+  await saveMeta(slot, seeded);
+  log(`Shared store: seeded from the local index at ${source}.`);
+  return true;
+};
+
+/**
+ * Seed a slot that has no metadata so the run that follows is up to date or
+ * incremental instead of a full build. Preference order:
+ *   1. a pointer to the store's commit graph nearest to HEAD;
+ *   2. a copy of this checkout's own repository-local index;
+ *   3. a copy of the main checkout's repository-local index.
+ * Caller holds the slot's index lock.
  */
 export const seedSharedSlot = async (
   layout: SharedStoreLayout,
@@ -145,40 +196,58 @@ export const seedSharedSlot = async (
 ): Promise<void> => {
   if (await loadMeta(layout.checkoutSlot)) return;
   const seed = pickSeed(repoPath, await listCommitGraphs(layout));
-  if (!seed) return;
-  await fs.mkdir(layout.checkoutSlot, { recursive: true });
-  const meta: RepoMeta = {
-    ...seed.meta,
-    repoPath,
-    storagePath: layout.checkoutSlot,
-    graphPath: path.join(seed.dir, LBUG_DIRECTORY),
-  };
-  delete meta.incrementalInProgress;
-  await saveMeta(layout.checkoutSlot, meta);
-  log(`Shared store: seeded from commit graph ${seed.commit.slice(0, 12)}.`);
+  if (seed) {
+    await fs.mkdir(layout.checkoutSlot, { recursive: true });
+    const meta: RepoMeta = {
+      ...seed.meta,
+      repoPath,
+      storagePath: layout.checkoutSlot,
+      graphPath: path.join(seed.dir, LBUG_DIRECTORY),
+    };
+    delete meta.incrementalInProgress;
+    await saveMeta(layout.checkoutSlot, meta);
+    log(`Shared store: seeded from commit graph ${seed.commit.slice(0, 12)}.`);
+    return;
+  }
+  const locals = [repoPath, layout.canonicalCheckout]
+    .filter((p): p is string => p !== null)
+    .map((p) => path.join(p, GITNEXUS_DIR));
+  for (const source of new Set(locals)) {
+    if (await seedFromLocalIndex(layout.checkoutSlot, repoPath, source, log)) return;
+  }
 };
 
 /**
  * Turn a pointer slot into a private one before analyze opens or writes the
- * graph. No-op for a slot that already owns its graph or has no graph at all.
- * Caller holds the slot's index lock.
+ * graph. Returns false when the pointed-at shared graph cannot be copied
+ * (garbage-collected or unreadable): the slot's file hashes then describe a
+ * graph that is not there, and the caller must do a full build. Caller holds
+ * the slot's index lock.
  */
-export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<void> => {
+export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<boolean> => {
   const own = path.join(slot, LBUG_DIRECTORY);
   const pointed = resolveGraphPath(slot);
-  if (pointed === own) return;
+  if (pointed === own) return true;
   const meta = await loadMeta(slot);
-  if (!meta) return;
+  if (!meta) return true;
   if (!(await exists(own))) {
     // `lbug.new.<id>` is swept by the slot lock if this process dies mid-copy.
     const tmp = `${own}.new.${randomUUID()}`;
     const started = Date.now();
-    await fs.copyFile(pointed, tmp, fsConstants.COPYFILE_FICLONE);
-    await fs.rename(tmp, own);
+    try {
+      await fs.copyFile(pointed, tmp, fsConstants.COPYFILE_FICLONE);
+      await fs.rename(tmp, own);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => {});
+      const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+      log(`Shared store: shared graph unavailable (${reason}); doing a full build.`);
+      return false;
+    }
     log(`Shared store: copied the shared graph for local changes in ${Date.now() - started}ms.`);
   }
   delete meta.graphPath;
   await saveMeta(slot, meta);
+  return true;
 };
 
 const withPublishLock = async <T>(layout: SharedStoreLayout, fn: () => Promise<T>): Promise<T> => {

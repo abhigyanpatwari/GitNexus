@@ -1360,9 +1360,11 @@ async function runFullAnalysisInner(
   // first graph open: here for the paths that open it before the up-to-date
   // check, and below once that check falls through.
   const ensurePrivateGraph = async (): Promise<void> => {
-    if (writeTarget.sharedStore && !placement.branch) {
-      await ensurePrivateSharedGraph(metaDir, log);
-    }
+    if (!writeTarget.sharedStore || placement.branch) return;
+    if (!(await ensurePrivateSharedGraph(metaDir, log))) options = { ...options, force: true };
+    // Later dirty-flag writes spread the in-memory metadata; keep them from
+    // re-recording the pointer this slot just left.
+    delete loadedMeta?.graphPath;
   };
   const loadedMeta = await loadMeta(metaDir);
   if (loadedMeta?.incrementalInProgress || options.repairFts) await ensurePrivateGraph();
@@ -2320,6 +2322,7 @@ async function runFullAnalysisInner(
 
   await ensureWritableStorage();
   await ensurePrivateGraph();
+  delete existingMeta?.graphPath;
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
