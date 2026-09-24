@@ -107,6 +107,20 @@ describe('shared sibling store analyze (#3352)', () => {
     }
   }, 180_000);
 
+  it('reports a checkout that reads a commit graph as indexed', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+    await runFullAnalysis(wtB, {}, { onProgress: () => {} });
+    const slot = layoutOf(wtB).checkoutSlot;
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+
+    const { inspectRegisteredStorage } = await import('../../src/storage/storage-resolver.js');
+    const inspection = await inspectRegisteredStorage({ path: wtB, storagePath: slot });
+    expect(inspection).toMatchObject({ state: 'owned', hasCodeIndexDB: true });
+    const validated = await listRegisteredRepos({ validate: true });
+    expect(validated.map((e) => e.path)).toEqual(expect.arrayContaining([wtA, wtB]));
+  }, 180_000);
+
   it('serves a sibling the same relative file paths from the shared graph', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     await runFullAnalysis(wtA, {}, { onProgress: () => {} });

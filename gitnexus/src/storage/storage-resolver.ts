@@ -9,7 +9,7 @@ import {
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,
 } from './storage-constants.js';
-import { resolveSharedStore } from './shared-store.js';
+import { resolveGraphPath, resolveSharedStore } from './shared-store.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
 export { STORAGE_PATH_ENV, STORAGE_ROOT_ENV };
@@ -387,8 +387,13 @@ const inspectCodeIndexDB = async (
   if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
     return { present: false };
   }
+  // A shared-store checkout slot (#3352) may read a commit graph instead of
+  // owning one; `resolveGraphPath` only returns a path inside the same store's
+  // commit graphs, else the slot's own graph.
+  const graphPath = resolveGraphPath(resolved);
+  const target = graphPath === lbugPath ? lbugPath : graphPath;
   try {
-    await fsp.access(lbugPath);
+    await fsp.access(target);
     return { present: true };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
