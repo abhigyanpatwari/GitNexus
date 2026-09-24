@@ -251,6 +251,31 @@ export const isGitRepo = (repoPath: string): boolean => {
   }
 };
 
+/**
+ * Number of commits from `ancestor` to HEAD, or null when `ancestor` is not
+ * an ancestor of HEAD (or git fails). 0 means `ancestor` is HEAD.
+ */
+export const commitDistanceToHead = (repoPath: string, ancestor: string): number | null => {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestor, 'HEAD'], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    const count = Number(
+      execFileSync('git', ['rev-list', '--count', `${ancestor}..HEAD`], {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      }).trim(),
+    );
+    return Number.isInteger(count) ? count : null;
+  } catch {
+    return null;
+  }
+};
+
 export const getCurrentCommit = (repoPath: string): string => {
   try {
     return execSync('git rev-parse HEAD', {

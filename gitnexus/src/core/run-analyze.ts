@@ -162,8 +162,16 @@ import {
 import {
   ANALYZE_FORCE_STORAGE_REQUIREMENTS,
   ANALYZE_STORAGE_REQUIREMENTS,
+  requireRegisteredStoragePath,
   requireStoragePath,
 } from '../storage/storage-resolver.js';
+import { resolveSharedStore, type SharedStoreLayout } from '../storage/shared-store.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
+import {
+  ensurePrivateSharedGraph,
+  publishSharedGraph,
+  seedSharedSlot,
+} from './shared-store-analyze.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -1085,6 +1093,8 @@ interface WriteTarget {
   lbugPath: string;
   metaPath: string;
   metaDir: string;
+  /** Set when this checkout writes into a shared sibling store (#3352). */
+  sharedStore?: SharedStoreLayout;
 }
 
 /**
@@ -1101,10 +1111,19 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   // a cached path string must not skip ownership (STORAGE_PATH can move to a
   // foreign slot while the lock is waited out). `--force` may adopt a
   // repository-local foreign slot; the non-force set stays ANALYZE_STORAGE.
-  const storagePath = await requireStoragePath(
-    repoPath,
-    options.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
-  );
+  // A linked-worktree checkout writes its own slot in the shared store
+  // (#3352); that slot replaces any repository-local `.gitnexus`, which is left
+  // untouched.
+  const storageRequirements = options.force
+    ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
+    : ANALYZE_STORAGE_REQUIREMENTS;
+  const sharedStore = resolveSharedStore(repoPath) ?? undefined;
+  const storagePath = sharedStore
+    ? await requireRegisteredStoragePath(
+        { path: repoPath, storagePath: sharedStore.checkoutSlot },
+        storageRequirements,
+      )
+    : await requireStoragePath(repoPath, storageRequirements);
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   // Normalize the auto-detected branch the same way an explicit `--branch` is
@@ -1131,7 +1150,11 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   const placement = options.branch
     ? await resolveBranchPlacement(repoPath, branchLabel, storagePath)
     : {};
-  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch, storagePath);
+  const paths = getStoragePaths(repoPath, placement.branch, storagePath);
+  const { metaPath } = paths;
+  // Analyze always writes a shared slot's own graph; a recorded `graphPath`
+  // only redirects readers.
+  const lbugPath = sharedStore ? path.join(path.dirname(metaPath), LBUG_DIRECTORY) : paths.lbugPath;
   return {
     storagePath,
     repoHasGit,
@@ -1143,6 +1166,7 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     lbugPath,
     metaPath,
     metaDir: path.dirname(metaPath),
+    sharedStore,
   };
 }
 
@@ -1253,7 +1277,9 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
-      return await runFullAnalysisInner(
+      const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
+      if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      const result = await runFullAnalysisInner(
         repoPath,
         options,
         callbacks,
@@ -1261,6 +1287,10 @@ export async function runFullAnalysis(
         contentRetention,
         runnerIdentityAtBootstrap,
       );
+      if (flatShared) {
+        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
+      }
+      return result;
     } finally {
       discardScopedEmbeddingSpills();
       lock.release();
@@ -1326,7 +1356,16 @@ async function runFullAnalysisInner(
     log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
   }
 
+  // Shared-store pointer slots (#3352) get a private graph just before the
+  // first graph open: here for the paths that open it before the up-to-date
+  // check, and below once that check falls through.
+  const ensurePrivateGraph = async (): Promise<void> => {
+    if (writeTarget.sharedStore && !placement.branch) {
+      await ensurePrivateSharedGraph(metaDir, log);
+    }
+  };
   const loadedMeta = await loadMeta(metaDir);
+  if (loadedMeta?.incrementalInProgress || options.repairFts) await ensurePrivateGraph();
   if (options.preserveExistingPdg && options.pdg === undefined) {
     if (loadedMeta) {
       options = { ...options, pdg: loadedMeta.pdg !== undefined };
@@ -2280,6 +2319,7 @@ async function runFullAnalysisInner(
   }
 
   await ensureWritableStorage();
+  await ensurePrivateGraph();
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
