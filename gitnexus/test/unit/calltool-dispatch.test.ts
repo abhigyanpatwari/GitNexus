@@ -622,6 +622,38 @@ describe('LocalBackend.callTool', () => {
     });
   });
 
+  it('reports UNKNOWN instead of a blast radius when the target resolves without a node id (#3354)', async () => {
+    // Every query returns the same id-less row: the resolver picks it as the
+    // single match, and the frontier query would answer for no symbol at all.
+    (executeParameterized as any).mockResolvedValue([{ name: 'runSweep', type: 'Function' }]);
+
+    const result = await backend.callTool('impact', { target: 'runSweep', direction: 'upstream' });
+
+    expect(result).toMatchObject({
+      target: { name: 'runSweep' },
+      impactedCount: null,
+      risk: 'UNKNOWN',
+    });
+    expect(result.error).toMatch(/without a node id/);
+    expect(result).not.toHaveProperty('byDepthCounts');
+  });
+
+  it('treats a whitespace target_uid as omitted and resolves the name (#3354)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', {
+      target: 'validate',
+      target_uid: ' ',
+      direction: 'upstream',
+    });
+
+    // Name resolution ran (no rows → not found by NAME), not a lookup of uid ' '.
+    expect(result.error).toBe("Target 'validate' not found");
+    const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+    expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+    expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
+  });
+
   it('normalizes impact aliases before @group forwarding', async () => {
     resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
     const groupImpactSpy = vi

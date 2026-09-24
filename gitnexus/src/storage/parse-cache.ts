@@ -778,7 +778,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
 // `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
 // capture set (anonymous arrows, no Function name), so both stores re-extract.
-const SCHEMA_BUMP = 104;
+// v112 (#3354): callable-value flow now follows each branch of `a ?? f`,
+// `a || f`, and `c ? f : g`. Warm caches replay the pre-fix flow facts, which
+// have no flow for those assignments, so both stores re-extract. 105-111 are
+// claimed by open PR #3326 (Elixir).
+const SCHEMA_BUMP = 112;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

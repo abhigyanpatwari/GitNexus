@@ -216,7 +216,15 @@ export function synthesizeCallableFlowCaptures(
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
-    emitAssignmentFact(assignment, knownCallableNames, valueBindings, options, out);
+    for (const source of valueAlternatives(assignment.source)) {
+      emitAssignmentFact(
+        { ...assignment, source },
+        knownCallableNames,
+        valueBindings,
+        options,
+        out,
+      );
+    }
   }
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
@@ -585,6 +593,34 @@ function assignmentParts(
   }
   if (destination === null || source === null) return [];
   return [{ container: node, destination, source }];
+}
+
+/** Operators whose result is one of their operands, not a computed value. */
+const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or', '?:']);
+
+/**
+ * The operands a value-selecting expression can evaluate to (#3354):
+ * `a ?? b`, `a || b`, `a or b`, and `c ? a : b` each yield one of their
+ * branches, so each branch flows into the destination. Anything else is its
+ * own single alternative, which leaves every other source shape untouched.
+ */
+function valueAlternatives(node: SyntaxNode): SyntaxNode[] {
+  let inner = node;
+  while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
+    inner = inner.namedChild(0)!;
+  }
+  const consequence = inner.childForFieldName('consequence');
+  const alternative = inner.childForFieldName('alternative');
+  if (consequence !== null && alternative !== null && inner.childForFieldName('condition')) {
+    return [...valueAlternatives(consequence), ...valueAlternatives(alternative)];
+  }
+  const left = inner.childForFieldName('left');
+  const right = inner.childForFieldName('right');
+  const operator = inner.childForFieldName('operator')?.type;
+  if (left !== null && right !== null && operator && VALUE_SELECTING_OPERATORS.has(operator)) {
+    return [...valueAlternatives(left), ...valueAlternatives(right)];
+  }
+  return [node];
 }
 
 function emitAssignmentFact(
