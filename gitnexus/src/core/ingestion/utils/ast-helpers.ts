@@ -1015,7 +1015,7 @@ export const findEnclosingClassInfo = (
     // the global container set. Let the Ruby hooks jointly opt an exact factory
     // shape in; arbitrary blocks fall through to their lexical owner unchanged.
     if (
-      current.type === 'do_block' &&
+      (current.type === 'do_block' || current.type === 'block') &&
       resolveEnclosingOwner !== undefined &&
       resolveContainerTypeOwner !== undefined &&
       resolveEnclosingOwner(current) === current

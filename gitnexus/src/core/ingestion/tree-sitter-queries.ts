@@ -2243,7 +2243,25 @@ export const RUBY_QUERIES = `
   right: (call
     receiver: (constant) @_factory.receiver
     method: (identifier) @_factory.method
+    block: (block) @definition.struct))
+  (#eq? @_factory.receiver "Struct")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
     block: (do_block) @definition.class))
+  (#eq? @_factory.receiver "Data")
+  (#eq? @_factory.method "define"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block) @definition.class))
   (#eq? @_factory.receiver "Data")
   (#eq? @_factory.method "define"))
 
@@ -2261,7 +2279,25 @@ export const RUBY_QUERIES = `
   right: (call
     receiver: (constant) @_factory.receiver
     method: (identifier) @_factory.method
+    block: (block) @definition.class))
+  (#eq? @_factory.receiver "Class")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
     block: (do_block))) @definition.module
+  (#eq? @_factory.receiver "Module")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block))) @definition.module
   (#eq? @_factory.receiver "Module")
   (#eq? @_factory.method "new"))
 

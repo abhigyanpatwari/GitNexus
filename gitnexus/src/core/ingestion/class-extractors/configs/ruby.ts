@@ -15,7 +15,7 @@ export type RubyFactoryType = ClassLikeNodeLabel | 'Trait';
  * type container.
  */
 export const rubyFactoryType = (node: SyntaxNode): RubyFactoryType | undefined => {
-  if (node.type !== 'do_block') return undefined;
+  if (node.type !== 'do_block' && node.type !== 'block') return undefined;
   const call = node.parent;
   if (call?.type !== 'call' || call.childForFieldName?.('block') !== node) return undefined;
 

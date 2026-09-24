@@ -33,6 +33,10 @@ class Outer
     def module_method = 1
   end
 
+  BraceType = Class.new {
+    def brace_method = 1
+  }
+
   ArbitraryType = Builder.make do
     def arbitrary_method = 1
   end
@@ -57,6 +61,7 @@ end
     ['DataType', 'Class', 'data_method'],
     ['ClassType', 'Class', 'class_method'],
     ['ModuleType', 'Trait', 'module_method'],
+    ['BraceType', 'Class', 'brace_method'],
   ])(
     'materializes %s as a %s and attributes its factory-block method',
     (owner, ownerLabel, method) => {
@@ -96,6 +101,8 @@ end
 
     expect(owners).toHaveLength(2);
     expect(new Set(owners.map((node) => node.id)).size).toBe(2);
-    expect(ownership.map((edge) => edge.source)).toEqual(['ClassType']);
+    const nestedOwner = owners.find((node) => node.id.includes('Outer.Nested.ClassType'));
+    expect(nestedOwner).toBeDefined();
+    expect(ownership.map((edge) => edge.rel.sourceId)).toEqual([nestedOwner?.id]);
   });
 });
