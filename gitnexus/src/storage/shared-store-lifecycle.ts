@@ -252,12 +252,17 @@ export const writeSharedStorePointer = async (
   await fs.writeFile(path.join(dir, '.gitignore'), '*\n', { flag: 'wx' }).catch(() => {});
 };
 
-/** Remove the pointer file (the directory stays if it holds anything else). */
+/**
+ * Remove the pointer file. The directory stays if it holds anything else, or
+ * if it cannot be listed (its contents are then unknown).
+ */
 export const removeSharedStorePointer = async (checkoutPath: string): Promise<void> => {
   const dir = path.join(checkoutPath, GITNEXUS_DIR);
   await fs.rm(path.join(dir, SHARED_STORE_POINTER), { force: true });
-  const rest = await listDir(dir);
-  if (rest.every((name) => POINTER_DIR_KEEP.has(name))) {
+  const rest = await fs
+    .readdir(dir)
+    .catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? [] : null));
+  if (rest?.every((name) => POINTER_DIR_KEEP.has(name))) {
     await fs.rm(dir, { recursive: true, force: true });
   }
 };
@@ -310,20 +315,24 @@ export const removeLegacyLocalIndex = async (
 
 /**
  * Run `fn` (delete a slot, unregister its checkout) under the slot's index
- * lock when `storagePath` is a shared-store checkout slot. An analyze holds
- * that lock until it has registered the checkout, so it cannot re-register a
- * slot this removes or write into it afterwards. Other storage runs `fn`
- * directly, as before.
+ * lock when `storagePath` is a shared-store checkout slot, then remove
+ * `checkoutPath`'s store pointer before releasing it. An analyze holds that
+ * lock until it has registered the checkout and written its pointer, so it
+ * cannot re-register a slot this removes, write into it, or have its new
+ * pointer deleted afterwards. Other storage runs `fn` directly, as before.
  */
 export const withCheckoutSlotLock = async <T>(
   storagePath: string,
   fn: () => Promise<T>,
+  checkoutPath?: string,
 ): Promise<T> => {
   if (!storeRootOfCheckoutSlot(storagePath)) return fn();
   const lock = await acquireIndexLock(storagePath);
   try {
     requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${storagePath}.`);
-    return await fn();
+    const result = await fn();
+    if (checkoutPath) await removeSharedStorePointer(checkoutPath);
+    return result;
   } finally {
     lock.release();
   }

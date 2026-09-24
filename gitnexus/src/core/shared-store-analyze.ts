@@ -478,10 +478,10 @@ export const leaveSharedStore = async (
     requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${previousSlot}.`);
     await registerLeftStore(repoPath, newStoragePath);
     await fs.rm(previousSlot, { recursive: true, force: true });
+    await removeSharedStorePointer(repoPath);
   } finally {
     lock.release();
   }
-  await removeSharedStorePointer(repoPath);
   await reclaimAfterSlotRemoval(previousSlot);
   log(`Shared store: left ${previousSlot}.`);
 };

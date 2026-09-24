@@ -31,7 +31,6 @@
 
 import {
   reclaimAfterSlotRemoval,
-  removeSharedStorePointer,
   withCheckoutSlotLock,
 } from '../storage/shared-store-lifecycle.js';
 import fs from 'fs/promises';
@@ -103,11 +102,15 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // orphaned — `listRegisteredRepos({ validate: true })` prunes those on
   // next read, so the failure is self-healing.
   try {
-    await withCheckoutSlotLock(storagePath, async () => {
-      await fs.rm(storagePath, { recursive: true, force: true });
-      await unregisterRepo(entry.path);
-    });
-    if (await reclaimAfterSlotRemoval(storagePath)) await removeSharedStorePointer(entry.path);
+    await withCheckoutSlotLock(
+      storagePath,
+      async () => {
+        await fs.rm(storagePath, { recursive: true, force: true });
+        await unregisterRepo(entry.path);
+      },
+      entry.path,
+    );
+    await reclaimAfterSlotRemoval(storagePath);
     console.log(t('remove.removed', { name: entry.name }));
     console.log(`   ${t('common.path')}:    ${entry.path}`);
     console.log(`   ${t('common.storage')}: ${entry.storagePath}`);

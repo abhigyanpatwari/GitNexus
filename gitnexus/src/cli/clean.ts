@@ -40,7 +40,6 @@ import {
   reclaimAfterSlotRemoval,
   reclaimSharedStore,
   removeLegacyLocalIndex,
-  removeSharedStorePointer,
   withCheckoutSlotLock,
   type ReclaimResult,
 } from '../storage/shared-store-lifecycle.js';
@@ -181,8 +180,9 @@ const collectSharedStores = async (force: boolean): Promise<void> => {
   }
   for (const name of names) {
     const root = path.join(storesDir, name);
-    // Stray files (`.DS_Store`) are not stores.
-    if (!(await fs.stat(root)).isDirectory()) continue;
+    // Stray files (`.DS_Store`) are not stores, and a symlink is not followed:
+    // reclaim deletes under the root it is given.
+    if (!(await fs.lstat(root)).isDirectory()) continue;
     // Without --force this is a preview: same selection, nothing deleted.
     const result = await reclaimSharedStore(root, { gc: true, dryRun: !force });
     console.log(
@@ -377,14 +377,16 @@ export const cleanCommand = async (options?: {
     for (const entry of entries) {
       try {
         const storagePath = await requireDeletableStoragePath(entry);
-        await withCheckoutSlotLock(storagePath, async () => {
-          await fs.rm(storagePath, { recursive: true, force: true });
-          await unregisterRepo(entry.path);
-        });
+        await withCheckoutSlotLock(
+          storagePath,
+          async () => {
+            await fs.rm(storagePath, { recursive: true, force: true });
+            await unregisterRepo(entry.path);
+          },
+          entry.path,
+        );
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
-        const reclaim = await reclaimAfterSlotRemoval(storagePath);
-        if (reclaim) await removeSharedStorePointer(entry.path);
-        reportReclaim(reclaim);
+        reportReclaim(await reclaimAfterSlotRemoval(storagePath));
       } catch (err) {
         if (err instanceof StorageDeletionError) {
           logger.error(`Refusing to clean ${entry.name}: ${err.message}`);
@@ -428,14 +430,16 @@ export const cleanCommand = async (options?: {
   }
 
   try {
-    await withCheckoutSlotLock(storagePath, async () => {
-      await fs.rm(storagePath, { recursive: true, force: true });
-      await unregisterRepo(repo.repoPath);
-    });
+    await withCheckoutSlotLock(
+      storagePath,
+      async () => {
+        await fs.rm(storagePath, { recursive: true, force: true });
+        await unregisterRepo(repo.repoPath);
+      },
+      repo.repoPath,
+    );
     console.log(t('common.deleted', { target: storagePath }));
-    const reclaim = await reclaimAfterSlotRemoval(storagePath);
-    if (reclaim) await removeSharedStorePointer(repo.repoPath);
-    reportReclaim(reclaim);
+    reportReclaim(await reclaimAfterSlotRemoval(storagePath));
   } catch (err) {
     logger.error({ err }, 'Failed to delete:');
   }

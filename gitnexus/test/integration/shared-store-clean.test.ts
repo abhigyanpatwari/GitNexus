@@ -12,6 +12,7 @@ import {
 import {
   reclaimAfterSlotRemoval,
   reclaimSharedStore,
+  removeSharedStorePointer,
 } from '../../src/storage/shared-store-lifecycle.js';
 import { getGlobalDir } from '../../src/storage/global-dir.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -150,6 +151,23 @@ describe('shared store clean (#3352)', () => {
     await fs.writeFile(path.join(tmpHome.dbPath, 'stores', '.DS_Store'), 'x');
     const logs = await cleanIn(main, { gc: true, force: true });
     expect(logs.join('\n')).toMatch(/Shared store .*: dropped 0 checkout/);
+  }, 240_000);
+
+  it('clean --gc does not follow a symlink in the stores directory', async () => {
+    const decoy = path.join(tmpRepo.dbPath, 'decoy');
+    await fs.mkdir(path.join(decoy, 'checkouts'), { recursive: true });
+    await fs.mkdir(path.join(decoy, 'commits', 'ddddddd-4444444444444444'), { recursive: true });
+    const stores = path.join(tmpHome.dbPath, 'stores');
+    await fs.mkdir(stores, { recursive: true });
+    await fs.symlink(
+      decoy,
+      path.join(stores, 'repo-0123456789ab'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    await cleanIn(main, { gc: true, force: true });
+
+    expect(existsSync(path.join(decoy, 'commits', 'ddddddd-4444444444444444'))).toBe(true);
   }, 240_000);
 
   it('clean --gc without --force previews and deletes nothing', async () => {
@@ -299,6 +317,27 @@ describe('reclaimSharedStore', () => {
       readdir.mockRestore();
     }
     expect(existsSync(graph)).toBe(true);
+  });
+
+  it('keeps a checkout .gitnexus directory it cannot list', async () => {
+    const dir = path.join(tmpHome.dbPath, 'checkout', '.gitnexus');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'store.json'), '{}');
+    const realReaddir = fs.readdir;
+    const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (
+      target: string,
+      ...rest: unknown[]
+    ) => {
+      if (String(target) === dir) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      return (realReaddir as (...a: unknown[]) => Promise<unknown>)(target, ...rest);
+    }) as typeof fs.readdir);
+    try {
+      await removeSharedStorePointer(path.dirname(dir));
+    } finally {
+      readdir.mockRestore();
+    }
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(path.join(dir, 'store.json'))).toBe(false);
   });
 
   it('reports a graph it cannot delete instead of failing', async () => {
