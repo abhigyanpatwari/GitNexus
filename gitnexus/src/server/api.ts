@@ -8,6 +8,7 @@
  * CORS is restricted to localhost, private/LAN networks, and the deployed site.
  */
 
+import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -1318,6 +1319,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         // 1. Delete the .gitnexus index/storage directory
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+        await reclaimAfterSlotRemoval(storagePath);
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
         // getCloneDir now throws on names that are not filesystem-safe (e.g.

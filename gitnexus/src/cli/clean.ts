@@ -33,6 +33,13 @@ import {
   listParkedLbugSidecars,
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
+import { getGlobalDir } from '../storage/global-dir.js';
+import { STORES_DIR } from '../storage/shared-store.js';
+import {
+  reclaimAfterSlotRemoval,
+  reclaimSharedStore,
+  type ReclaimResult,
+} from '../storage/shared-store-lifecycle.js';
 
 type OwnedCwdStorage = {
   repo: NonNullable<Awaited<ReturnType<typeof findRepo>>>;
@@ -147,13 +154,50 @@ const cleanStaleBranchSlots = async (force: boolean): Promise<void> => {
   }
 };
 
+const reportReclaim = (result: ReclaimResult | null): void => {
+  if (!result) return;
+  if (result.removed.length > 0) {
+    console.log(t('clean.shared.reclaimed', { count: result.removed.length }));
+  }
+  if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
+};
+
+/** `clean --gc`: collect every shared store under GITNEXUS_HOME (#3352). */
+const collectSharedStores = async (): Promise<void> => {
+  const storesDir = path.join(getGlobalDir(), STORES_DIR);
+  const names = await fs.readdir(storesDir).catch(() => [] as string[]);
+  if (names.length === 0) {
+    console.log(t('clean.gc.none'));
+    return;
+  }
+  for (const name of names) {
+    const root = path.join(storesDir, name);
+    const result = await reclaimSharedStore(root, { gc: true });
+    console.log(
+      t('clean.gc.store', {
+        path: root,
+        members: result.droppedMembers.length,
+        graphs: result.removed.length,
+      }),
+    );
+    if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
+    if (result.storeRemoved) console.log(t('clean.shared.storeRemoved', { path: root }));
+  }
+};
+
 export const cleanCommand = async (options?: {
   force?: boolean;
   all?: boolean;
   lbugSidecars?: boolean;
   stale?: boolean;
   branch?: string;
+  gc?: boolean;
 }) => {
+  if (options?.gc) {
+    await collectSharedStores();
+    return;
+  }
+
   // --stale: reclaim leftover per-branch slots whose recorded branch is not
   // a live local head (#3331). Exclusive arm before --branch.
   if (options?.stale) {
@@ -295,6 +339,7 @@ export const cleanCommand = async (options?: {
         await fs.rm(storagePath, { recursive: true, force: true });
         await unregisterRepo(entry.path);
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
+        reportReclaim(await reclaimAfterSlotRemoval(storagePath));
       } catch (err) {
         if (err instanceof StorageDeletionError) {
           logger.error(`Refusing to clean ${entry.name}: ${err.message}`);
@@ -341,6 +386,7 @@ export const cleanCommand = async (options?: {
     await fs.rm(storagePath, { recursive: true, force: true });
     await unregisterRepo(repo.repoPath);
     console.log(t('common.deleted', { target: storagePath }));
+    reportReclaim(await reclaimAfterSlotRemoval(storagePath));
   } catch (err) {
     logger.error({ err }, 'Failed to delete:');
   }

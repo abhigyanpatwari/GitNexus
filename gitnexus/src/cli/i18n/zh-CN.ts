@@ -58,6 +58,12 @@ export const zhCN = {
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
+  'clean.shared.reclaimed': '共享存储：已删除 {{count}} 个不再被任何检出引用的提交图。',
+  'clean.shared.kept':
+    '共享存储：保留了 {{count}} 个仍处于打开状态的未引用提交图；请稍后运行 `gitnexus clean --gc`。',
+  'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
+  'clean.gc.none': '没有可回收的共享存储。',
+  'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
   'clean.branchNotIndexed':
     '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',

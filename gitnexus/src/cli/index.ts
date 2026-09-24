@@ -351,6 +351,10 @@ program
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
   .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
   .option(
+    '--gc',
+    'Drop shared-store checkouts whose worktree is gone and delete commit graphs nothing references',
+  )
+  .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   )

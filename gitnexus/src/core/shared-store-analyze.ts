@@ -19,7 +19,8 @@ import { createHash, randomUUID } from 'crypto';
 import { constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
+import { acquireIndexLock } from '../storage/index-lock.js';
+import { withStoreLock } from '../storage/shared-store-lifecycle.js';
 import { commitDistanceToHead, isWorkingTreeDirty } from '../storage/git.js';
 import { registerRepo, saveMeta } from '../storage/repo-manager.js';
 import { loadMeta, type RepoMeta } from '../storage/repo-meta.js';
@@ -251,26 +252,6 @@ export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<
 };
 
 /**
- * Serialize one kind of store-wide write (`publish`, `cache`) across
- * checkouts. Each checkout's own slot is already covered by its index lock.
- */
-export const withStoreLock = async <T>(
-  layout: SharedStoreLayout,
-  name: 'publish' | 'cache',
-  fn: () => Promise<T>,
-): Promise<T> => {
-  const lockDir = path.join(layout.root, 'locks', name);
-  await fs.mkdir(lockDir, { recursive: true });
-  const lock = await acquireIndexLock(lockDir);
-  try {
-    requireExclusiveIndexLock(lock, `Cannot acquire the shared-store ${name} lock at ${lockDir}.`);
-    return await fn();
-  } finally {
-    lock.release();
-  }
-};
-
-/**
  * Every directory in the store whose metadata may record parse-cache keys:
  * each checkout slot (its branch slots are read by the caller's per-root
  * fold) and each commit graph.
@@ -350,3 +331,5 @@ export const publishSharedGraph = async (
   // must still end up registered at its slot.
   await registerRepo(repoPath, meta, { storagePath: slot });
 };
+
+export { withStoreLock };

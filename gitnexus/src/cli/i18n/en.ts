@@ -59,6 +59,14 @@ export const en = {
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',
   'clean.deletedRepo': 'Deleted: {{name}} ({{storagePath}})',
   'clean.notFoundHere': 'No indexed repository found in this directory.',
+  'clean.shared.reclaimed':
+    'Shared store: removed {{count}} commit graph(s) no checkout references.',
+  'clean.shared.kept':
+    'Shared store: kept {{count}} unreferenced commit graph(s) that are still open; run `gitnexus clean --gc` later.',
+  'clean.shared.storeRemoved': 'Shared store: removed {{path}} (no checkouts remain).',
+  'clean.gc.none': 'No shared stores to collect.',
+  'clean.gc.store':
+    'Shared store {{path}}: dropped {{members}} checkout(s), removed {{graphs}} commit graph(s).',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
   'clean.branchNotIndexed':
     'No indexed branch named "{{branch}}" for this repository. Use `gitnexus clean --stale` to reclaim leftover branch indexes, or `gitnexus list` to see recorded names.',
