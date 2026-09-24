@@ -198,7 +198,7 @@ export const en = {
   'help.option.help': 'display help for command',
   'help.option.version': 'output the version number',
   'help.command.setup.description':
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex, Factory Droid',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
   'help.command.autoSync.description':
