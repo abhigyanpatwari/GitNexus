@@ -174,7 +174,7 @@ export const zhCN = {
   'help.option.help': '显示命令帮助',
   'help.option.version': '输出版本号',
   'help.command.setup.description':
-    '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex 配置 MCP',
+    '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex、Factory Droid 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
   'help.command.autoSync.description':
