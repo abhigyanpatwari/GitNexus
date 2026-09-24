@@ -895,6 +895,17 @@ describe('acquireHookSlot stale-slot eviction', () => {
       }) as typeof fs.lstatSync);
     };
 
+    it(`${label}: release unregisters its exit listener`, () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-exit-'));
+      const before = process.listenerCount('exit');
+      try {
+        Array.from({ length: 12 }).forEach(() => loadAcquire()(dir)?.());
+        expect(process.listenerCount('exit')).toBe(before);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it(`${label}: evicts a dead-pid slot without renaming it or leaving a marker`, () => {
       const { dir, lockDir, slot0 } = makeLockDir();
       const renameSpy = vi.spyOn(fs, 'renameSync');

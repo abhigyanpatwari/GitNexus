@@ -151,6 +151,7 @@ function acquireHookSlot(gitNexusDir) {
         const release = () => {
           if (released) return;
           released = true;
+          process.removeListener('exit', release);
           try {
             // Only unlink if we still own the slot. If we appeared stale and
             // another hook took over, the file now belongs to it — leave alone.
