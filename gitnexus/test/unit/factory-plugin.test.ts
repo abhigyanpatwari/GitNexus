@@ -55,6 +55,13 @@ function isolatedEnv(binDir: string, home: string) {
   };
 }
 
+/** Source text of top-level `function <name>(` through its closing brace. */
+function fnSource(file: string, name: string): string {
+  const src = fs.readFileSync(file, 'utf-8');
+  const start = src.indexOf(`function ${name}(`);
+  return src.slice(start, src.indexOf('\n}\n', start) + 3);
+}
+
 const require_ = createRequire(import.meta.url);
 const { parseRgGrepPattern } = require_(HOOK) as {
   parseRgGrepPattern: (command: string) => string | null;
@@ -277,18 +284,24 @@ describe('Factory Execute pattern parser', () => {
   it.each(['tokenizeShellWords', 'parseRgGrepPattern'])(
     '%s is identical to the Cursor adapter',
     (name) => {
-      const fnSource = (file: string) => {
-        const src = fs.readFileSync(file, 'utf-8');
-        const start = src.indexOf(`function ${name}(`);
-        return src.slice(start, src.indexOf('\n}\n', start) + 3);
-      };
       const cursor = path.join(
         REPO_ROOT,
         'gitnexus-cursor-integration',
         'hooks',
         'gitnexus-hook.cjs',
       );
-      expect(fnSource(HOOK)).toBe(fnSource(cursor));
+      expect(fnSource(HOOK, name)).toBe(fnSource(cursor, name));
+    },
+  );
+});
+
+// Same augment-stderr filter as the Claude adapter; fails if either copy drifts.
+describe('Factory augment stderr filter', () => {
+  it.each(['extractAugmentContext', 'isDebugEnabled'])(
+    '%s is identical to the Claude adapter',
+    (name) => {
+      const claude = path.join(CLAUDE_HOOKS, 'gitnexus-hook.js');
+      expect(fnSource(HOOK, name)).toBe(fnSource(claude, name));
     },
   );
 });
@@ -565,5 +578,27 @@ describe.skipIf(process.platform === 'win32')('Factory hook behavior — PATH au
     const r = runGrepHook(binDir);
     expect(r.status).toBe(0);
     expect(parseHookOutput(r.stdout)?.additionalContext).toContain('graph context via npx');
+  });
+
+  it('drops launcher noise ahead of the [GitNexus] block', () => {
+    const binDir = makeBinDir('noisy-match', {
+      gitnexus:
+        "printf 'npm warn config production\\n(node:42) ExperimentalWarning: noise\\n[GitNexus] graph context for validateUser\\n' >&2",
+    });
+    const r = runGrepHook(binDir);
+    expect(r.status).toBe(0);
+    const context = parseHookOutput(r.stdout)?.additionalContext;
+    expect(context).toBe('[GitNexus] graph context for validateUser');
+    expect(context).not.toContain('npm warn');
+    expect(context).not.toContain('ExperimentalWarning');
+  });
+
+  it('emits nothing when augment stderr is only noise (no [GitNexus] marker)', () => {
+    const binDir = makeBinDir('noise-only', {
+      gitnexus: "printf 'npm warn config production\\n(node:42) ExperimentalWarning: noise\\n' >&2",
+    });
+    const r = runGrepHook(binDir);
+    expect(r.status).toBe(0);
+    expect(r.stdout.trim()).toBe('');
   });
 });

@@ -303,9 +303,43 @@ function extractPattern(toolName, toolInput) {
 }
 
 /**
- * Run `gitnexus augment` for `pattern` and return its stderr — the augment CLI
- * writes results there because LadybugDB's native module captures stdout at the
- * OS fd level.
+ * Whether opt-in diagnostics should be written to the hook's stderr. Strict
+ * hook runners (e.g. Codex `PreToolUse`) validate hook output, so normal,
+ * non-error skip paths must stay silent unless the operator explicitly asks
+ * for diagnostics via GITNEXUS_DEBUG. See issue #1913.
+ */
+function isDebugEnabled() {
+  return process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+}
+
+/**
+ * Keep only the augment block: stderr from the first `[GitNexus]` marker on, or
+ * '' when there is none, so npm/Node/LadybugDB warnings never reach the agent.
+ * Kept identical to the Claude adapter's copy so the two can be shared later.
+ */
+function extractAugmentContext(stderr) {
+  const output = (stderr || '').trim();
+  const marker = output.indexOf('[GitNexus]');
+  const debug = isDebugEnabled();
+  if (debug && output.length > 0) {
+    // Emit the FULL discarded prefix (everything before the marker, or all of
+    // it when no marker is present) so suppressed diagnostics — LadybugDB lock
+    // warnings, parser errors, etc. — remain recoverable on the hook's own
+    // stderr. The untruncated payload lets operators see exactly what was
+    // filtered out instead of a 180-char JSON-quoted preview.
+    const discarded = marker === -1 ? output : output.slice(0, marker).trim();
+    if (discarded.length > 0) {
+      process.stderr.write(`[GitNexus hook] augment stderr discarded prefix:\n${discarded}\n`);
+    }
+  }
+  return marker === -1 ? '' : output.slice(marker).trim();
+}
+
+/**
+ * Run `gitnexus augment` for `pattern` and return its `[GitNexus]` block — the
+ * augment CLI writes results to stderr because LadybugDB's native module
+ * captures stdout at the OS fd level. Launcher noise is filtered out by
+ * extractAugmentContext, so noise-only stderr yields ''.
  *
  * GITNEXUS_HOOK_CLI_PATH is tried first and run as `node <path>`, the only form
  * that works on Windows, where Node refuses to spawn the `.cmd` shims without a
@@ -333,9 +367,7 @@ function runAugment(pattern, cwd) {
   if (hookCli && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
     try {
       const child = spawnSync(process.execPath, [String(hookCli), ...args], spawnOpts);
-      if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
-        return child.stderr;
-      }
+      if (!child.error && child.status === 0) return extractAugmentContext(child.stderr);
     } catch {
       /* graceful failure */
     }
@@ -347,9 +379,7 @@ function runAugment(pattern, cwd) {
   try {
     const child = spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, spawnOpts);
     if (!child.error || child.error.code !== 'ENOENT') {
-      return !child.error && child.status === 0 && child.stderr && child.stderr.trim()
-        ? child.stderr
-        : '';
+      return !child.error && child.status === 0 ? extractAugmentContext(child.stderr) : '';
     }
   } catch (err) {
     if (!err || err.code !== 'ENOENT') return '';
@@ -361,9 +391,7 @@ function runAugment(pattern, cwd) {
       ['-y', `gitnexus@${PINNED_VERSION}`, ...args],
       spawnOpts,
     );
-    if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
-      return child.stderr;
-    }
+    if (!child.error && child.status === 0) return extractAugmentContext(child.stderr);
   } catch {
     /* graceful failure */
   }
