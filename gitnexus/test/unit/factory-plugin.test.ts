@@ -169,10 +169,11 @@ describe('Factory hooks.json wiring', () => {
     expect(entry.matcher).not.toMatch(/\bBash\b/);
   });
 
-  it('invokes the hook via the ${DROID_PLUGIN_ROOT} plugin-root variable', () => {
+  it('invokes the hook via the quoted ${DROID_PLUGIN_ROOT} plugin-root path', () => {
+    // The path must be quoted so a plugin root containing spaces (e.g.
+    // `C:\Users\First Last\...`) stays one argv word — mirrors the Claude plugin.
     const command: string = entry.hooks[0].command;
-    expect(command).toContain('${DROID_PLUGIN_ROOT}');
-    expect(command).toContain('hooks/gitnexus-hook.js');
+    expect(command).toBe('node "${DROID_PLUGIN_ROOT}/hooks/gitnexus-hook.js"');
   });
 
   it('declares timeout in seconds (not milliseconds)', () => {

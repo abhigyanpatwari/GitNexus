@@ -5,7 +5,7 @@
       "hooks": [
         {
           "type": "command",
-          "command": "node ${DROID_PLUGIN_ROOT}/hooks/gitnexus-hook.js",
+          "command": "node \"${DROID_PLUGIN_ROOT}/hooks/gitnexus-hook.js\"",
           "timeout": 10
         }
       ]
