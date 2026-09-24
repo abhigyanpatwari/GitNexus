@@ -179,6 +179,7 @@ import {
   listStoreMetaRoots,
   leaveSharedStore,
   optedInSlotToLeave,
+  registerLeftStore,
   publishSharedGraph,
   resolveOptedInStore,
   seedSharedSlot,
@@ -1320,8 +1321,12 @@ export async function runFullAnalysis(
       );
       if (flatShared) {
         await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
-      } else if (slotToLeave) {
-        await leaveSharedStore(repoPath, slotToLeave, log);
+      } else if (!writeTarget.placement.branch) {
+        // Leaving a store (`--no-share`, or sharing turned off): the up-to-date
+        // path does not re-register, so point the registry at the new storage
+        // before the old slot goes away.
+        await registerLeftStore(repoPath, writeTarget.storagePath);
+        if (slotToLeave) await leaveSharedStore(repoPath, slotToLeave, log);
       }
       return result;
     } finally {

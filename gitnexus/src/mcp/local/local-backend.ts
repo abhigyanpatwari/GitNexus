@@ -2111,7 +2111,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return this.applyBranchScope(result, branch);
+      return this.applyBranchScope(this.followSharedGraph(result), branch);
     }
 
     // Still no match — throw with helpful message
@@ -2166,6 +2166,21 @@ export class LocalBackend {
    *   and restamped labels the cached handle predates resolve on the next
    *   call.
    */
+  /**
+   * A shared-store checkout (#3352) moves between immutable commit graphs and
+   * its private graph as it is re-analyzed, while the cached handle keeps the
+   * graph it resolved first. Re-resolve the flat graph (one stat when the slot
+   * metadata is unchanged) and update the cached handle when it moved, so the
+   * pool opens the graph the checkout reads now.
+   */
+  private followSharedGraph(handle: RepoHandle): RepoHandle {
+    const current = resolveGraphPath(handle.storagePath);
+    if (current === handle.lbugPath) return handle;
+    const moved = { ...handle, lbugPath: current };
+    if (this.repos.get(handle.id) === handle) this.repos.set(handle.id, moved);
+    return moved;
+  }
+
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
     // At most one cache refresh per resolution: enough for the NEXT call to
@@ -2180,7 +2195,10 @@ export class LocalBackend {
     // One small JSON read per scoped call; mid-run meta writes preserve the
     // old label until the end-of-run atomic stamp (run-analyze dirty stamps
     // spread the existing meta), so this read never runs ahead of the DB.
-    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    // The flat slot's own metadata, not the graph's directory: a shared-store
+    // checkout's graph sits in a commit directory whose metadata carries no
+    // branch label (#3352).
+    const flatMeta = await loadMeta(handle.storagePath);
     if (flatMeta?.branch && flatMeta.branch === branch) {
       // The disk meta decides routing, so it also supplies the metadata —
       // the cached handle's label/commit/stats can predate the restamp.

@@ -211,17 +211,31 @@ export const storeRootOfCheckoutSlot = (storagePath: string): string | null => {
  * private slot, unreadable metadata) falls back to the slot's own graph so a
  * hand-edited file cannot redirect reads.
  */
+// Store-slot metadata can be megabytes (file hashes, cache keys) and this runs
+// on hot paths (MCP repo refresh, every getStoragePaths). Re-parse only when
+// the file's identity changes; a stat is the per-call cost.
+// ponytail: unbounded map keyed by slot path — one entry per shared checkout,
+// small; add eviction if a process ever tracks thousands of slots.
+const recordedGraphCache = new Map<string, { key: string; recorded: unknown }>();
+
+const readRecordedGraphPath = (metaPath: string): unknown => {
+  const stat = fs.statSync(metaPath);
+  const key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  const cached = recordedGraphCache.get(metaPath);
+  if (cached?.key === key) return cached.recorded;
+  const recorded = (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { graphPath?: unknown })
+    .graphPath;
+  recordedGraphCache.set(metaPath, { key, recorded });
+  return recorded;
+};
+
 export const resolveGraphPath = (storagePath: string): string => {
   const own = path.join(storagePath, LBUG_DIRECTORY);
   const root = storeRootOfCheckoutSlot(storagePath);
   if (!root) return own;
   let recorded: unknown;
   try {
-    recorded = (
-      JSON.parse(fs.readFileSync(path.join(storagePath, INDEX_METADATA_FILE), 'utf-8')) as {
-        graphPath?: unknown;
-      }
-    ).graphPath;
+    recorded = readRecordedGraphPath(path.join(storagePath, INDEX_METADATA_FILE));
   } catch {
     return own;
   }

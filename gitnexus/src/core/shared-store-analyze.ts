@@ -22,8 +22,11 @@ import path from 'path';
 import { acquireIndexLock } from '../storage/index-lock.js';
 import { commitDistanceToHead, getRemoteUrl, isWorkingTreeDirty } from '../storage/git.js';
 import {
+  canonicalizePath,
+  findRegistryEntryByRepoPath,
   readRegistry,
   registerRepo,
+  registryPathEquals,
   resolveRegistryEntry,
   saveMeta,
 } from '../storage/repo-manager.js';
@@ -38,6 +41,7 @@ import {
 } from '../storage/shared-store.js';
 import {
   reclaimAfterSlotRemoval,
+  reclaimSharedStoreLocked,
   removeSharedStorePointer,
   withStoreLock,
   writeSharedStorePointer,
@@ -200,7 +204,10 @@ const seedFromLocalIndex = async (
   } finally {
     lock.release();
   }
-  const seeded: RepoMeta = { ...meta, repoPath, storagePath: slot };
+  // A local index may hold uncommitted edits from when it was built. Clearing
+  // lastCommit forces the next run through the file-hash diff, which rewrites
+  // any file whose content differs, instead of trusting the up-to-date path.
+  const seeded: RepoMeta = { ...meta, repoPath, storagePath: slot, lastCommit: '' };
   delete seeded.graphPath;
   await saveMeta(slot, seeded);
   log(`Shared store: seeded from the local index at ${source}.`);
@@ -222,16 +229,25 @@ export const seedSharedSlot = async (
 ): Promise<void> => {
   if (await loadMeta(layout.checkoutSlot)) return;
   const seed = pickSeed(repoPath, await listCommitGraphs(layout));
-  if (seed) {
-    await fs.mkdir(layout.checkoutSlot, { recursive: true });
-    const meta: RepoMeta = {
-      ...seed.meta,
-      repoPath,
-      storagePath: layout.checkoutSlot,
-      graphPath: path.join(seed.dir, LBUG_DIRECTORY),
-    };
-    delete meta.incrementalInProgress;
-    await saveMeta(layout.checkoutSlot, meta);
+  // Record the pointer under the publish lock, where reclaim counts
+  // references, so the graph cannot be deleted between the pick and the save.
+  const pointed =
+    seed &&
+    (await withStoreLock(layout, 'publish', async () => {
+      const graph = path.join(seed.dir, LBUG_DIRECTORY);
+      if (!(await exists(graph))) return false;
+      await fs.mkdir(layout.checkoutSlot, { recursive: true });
+      const meta: RepoMeta = {
+        ...seed.meta,
+        repoPath,
+        storagePath: layout.checkoutSlot,
+        graphPath: graph,
+      };
+      delete meta.incrementalInProgress;
+      await saveMeta(layout.checkoutSlot, meta);
+      return true;
+    }));
+  if (seed && pointed) {
     log(`Shared store: seeded from commit graph ${seed.commit.slice(0, 12)}.`);
     return;
   }
@@ -304,53 +320,68 @@ export const publishSharedGraph = async (
   if (!meta) return;
   const own = path.join(slot, LBUG_DIRECTORY);
 
+  // A graph built while files were dirty still holds those edits even after
+  // they are reverted (the up-to-date path does not re-diff a clean tree), so
+  // only a graph whose build saw no dirty covered file may become shared.
+  const builtClean = (meta.indexCoverage?.dirtyPaths ?? []).length === 0;
   const shareable =
     currentCommit !== '' &&
     meta.lastCommit === currentCommit &&
     !meta.incrementalInProgress &&
+    builtClean &&
     !isWorkingTreeDirty(repoPath);
-  if (shareable) {
-    const target = commitGraphDir(layout, currentCommit, featureKeyOf(meta));
-    const targetGraph = path.join(target, LBUG_DIRECTORY);
-    const published = await withStoreLock(layout, 'publish', async () => {
-      if (await exists(targetGraph)) {
+  // Every pointer change and the reclaim that follows run under one publish
+  // lock, so a concurrent reclaim never sees a half-recorded reference.
+  await withStoreLock(layout, 'publish', async () => {
+    if (shareable) {
+      const target = commitGraphDir(layout, currentCommit, featureKeyOf(meta));
+      const targetGraph = path.join(target, LBUG_DIRECTORY);
+      let published = await exists(targetGraph);
+      if (published) {
         await wipeLbugDbFiles(own);
-        return true;
+      } else if ((await exists(own)) && (await inspectLbugSidecars(own)).kind === 'clean') {
+        await fs.mkdir(layout.commitsDir, { recursive: true });
+        const staging = path.join(layout.commitsDir, `.publish-${randomUUID()}`);
+        await fs.mkdir(staging);
+        const commitMeta: Record<string, unknown> = { ...meta };
+        for (const field of CHECKOUT_FIELDS) delete commitMeta[field];
+        try {
+          await fs.rename(own, path.join(staging, LBUG_DIRECTORY));
+          await fs.writeFile(path.join(staging, INDEX_METADATA_FILE), JSON.stringify(commitMeta));
+          await fs.rename(staging, target);
+          published = true;
+          log(`Shared store: published commit graph ${currentCommit.slice(0, 12)}.`);
+        } catch (err) {
+          // Put the graph back so the slot stays usable as a private index.
+          await fs.rename(path.join(staging, LBUG_DIRECTORY), own).catch(() => {});
+          await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+          log(
+            `Shared store: could not publish (${(err as Error).message}); keeping a private graph.`,
+          );
+        }
       }
-      if (!(await exists(own)) || (await inspectLbugSidecars(own)).kind !== 'clean') return false;
-      await fs.mkdir(layout.commitsDir, { recursive: true });
-      const staging = path.join(layout.commitsDir, `.publish-${randomUUID()}`);
-      await fs.mkdir(staging);
-      const commitMeta: Record<string, unknown> = { ...meta };
-      for (const field of CHECKOUT_FIELDS) delete commitMeta[field];
-      try {
-        await fs.rename(own, path.join(staging, LBUG_DIRECTORY));
-        await fs.writeFile(path.join(staging, INDEX_METADATA_FILE), JSON.stringify(commitMeta));
-        await fs.rename(staging, target);
-      } catch (err) {
-        // Put the graph back so the slot stays usable as a private index.
-        await fs.rename(path.join(staging, LBUG_DIRECTORY), own).catch(() => {});
-        await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-        log(
-          `Shared store: could not publish (${(err as Error).message}); keeping a private graph.`,
-        );
-        return false;
+      if (published) {
+        meta.graphPath = targetGraph;
+        await saveMeta(slot, meta);
       }
-      log(`Shared store: published commit graph ${currentCommit.slice(0, 12)}.`);
-      return true;
-    });
-    if (published) {
-      meta.graphPath = targetGraph;
+    } else if (meta.graphPath !== undefined && (await exists(own))) {
+      delete meta.graphPath;
       await saveMeta(slot, meta);
     }
-  } else if (meta.graphPath !== undefined && (await exists(own))) {
-    delete meta.graphPath;
-    await saveMeta(slot, meta);
-  }
+    const reclaimed = await reclaimSharedStoreLocked(layout.root);
+    if (reclaimed.removed.length > 0) {
+      log(`Shared store: removed ${reclaimed.removed.length} commit graph(s) no checkout uses.`);
+    }
+  });
 
   // The up-to-date fast path skips registration; a seeded or adopted checkout
-  // must still end up registered at its slot.
-  await registerRepo(repoPath, meta, { storagePath: slot });
+  // must still end up registered at its slot. Branch summaries recorded for a
+  // previous storage location point at sub-indexes the slot does not hold.
+  const previous = findRegistryEntryByRepoPath(await readRegistry(), repoPath);
+  const moved =
+    previous !== undefined &&
+    !registryPathEquals(canonicalizePath(previous.storagePath), canonicalizePath(slot));
+  await registerRepo(repoPath, meta, { storagePath: slot, dropBranches: moved });
   await writeSharedStorePointer(repoPath, layout);
 };
 
@@ -389,7 +420,7 @@ export const resolveOptedInStore = async (
     }
     return sharedStoreLayout(path.basename(root), repoPath);
   }
-  const own = entries.find((e) => path.resolve(e.path) === path.resolve(repoPath));
+  const own = findRegistryEntryByRepoPath(entries, repoPath);
   const root = own ? storeRootOfCheckoutSlot(own.storagePath) : null;
   return root ? sharedStoreLayout(path.basename(root), repoPath) : undefined;
 };
@@ -423,4 +454,18 @@ export const leaveSharedStore = async (
   await removeSharedStorePointer(repoPath);
   await reclaimAfterSlotRemoval(previousSlot);
   log(`Shared store: left ${previousSlot}.`);
+};
+
+/**
+ * After a run that indexed outside a store: if the registry still names a
+ * store slot for this checkout, re-register it at `storagePath`. No-op when
+ * the entry is already elsewhere or the new location has no finished index.
+ */
+export const registerLeftStore = async (repoPath: string, storagePath: string): Promise<void> => {
+  const entry = findRegistryEntryByRepoPath(await readRegistry(), repoPath);
+  if (!entry || !storeRootOfCheckoutSlot(entry.storagePath)) return;
+  const meta = await loadMeta(storagePath);
+  if (!meta?.lastCommit) return;
+  await registerRepo(repoPath, meta, { storagePath });
+  await removeSharedStorePointer(repoPath);
 };

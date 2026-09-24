@@ -135,6 +135,29 @@ describe('shared store clone opt-in (#3352)', () => {
     );
   }, 240_000);
 
+  it('--no-share on an up-to-date local index still re-registers there', async () => {
+    const clone = cloneWithRemote('clone', REMOTE);
+    await analyze(clone);
+    await analyze(clone, { shareWith: wt });
+    const slot = (await registeredStorage(clone)) as string;
+
+    const result = await analyze(clone, { noShare: true });
+
+    expect(result.alreadyUpToDate).toBe(true);
+    expect(await registeredStorage(clone)).toBe(path.join(clone, '.gitnexus'));
+    expect(existsSync(slot)).toBe(false);
+  }, 240_000);
+
+  it('clean --gc keeps an opted-in clone that is still registered at its slot', async () => {
+    const clone = cloneWithRemote('clone', REMOTE);
+    await analyze(clone, { shareWith: wt });
+    const slot = (await registeredStorage(clone)) as string;
+    const { reclaimSharedStore } = await import('../../src/storage/shared-store-lifecycle.js');
+    const result = await reclaimSharedStore(storeLayout.root, { gc: true });
+    expect(result.droppedMembers).toEqual([]);
+    expect(existsSync(slot)).toBe(true);
+  }, 240_000);
+
   it('rejects --no-share in a linked worktree', async () => {
     await expect(analyze(wt, { noShare: true })).rejects.toThrow(/GITNEXUS_SHARED_STORE=off/);
   }, 240_000);

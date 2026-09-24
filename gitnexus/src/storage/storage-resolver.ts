@@ -27,6 +27,7 @@ const INDEX_LOCK_ARTIFACTS = new Set([
   // are not index data either.
   SHARED_STORE_POINTER,
   '.gitignore',
+  'run.cjs',
 ]);
 
 export type StorageState =

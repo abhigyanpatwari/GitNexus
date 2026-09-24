@@ -13,9 +13,14 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock, requireExclusiveIndexLock } from './index-lock.js';
+import {
+  canonicalizePath,
+  findRegistryEntryByRepoPath,
+  readRegistry,
+  registryPathEquals,
+} from './repo-manager.js';
 import { loadMeta } from './repo-meta.js';
 import {
-  resolveSharedStore,
   SHARED_STORE_POINTER,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
@@ -58,77 +63,100 @@ export interface ReclaimResult {
 const listDir = (dir: string): Promise<string[]> => fs.readdir(dir).catch(() => [] as string[]);
 
 /**
- * A member slot whose checkout is gone or no longer resolves to this store
- * (the worktree was deleted, or sharing was turned off for it).
+ * Member slots that no registry entry uses any more: the checkout directory is
+ * gone, or its entry moved elsewhere (`--no-share`, sharing turned off). The
+ * registry is the membership record for opted-in clones and for a main
+ * checkout whose last worktree was removed, so identity alone cannot decide.
+ * A slot with no attributable `repoPath` is never collected.
  */
-const isOrphanMember = async (slot: string, storeRoot: string): Promise<boolean> => {
-  const meta = await loadMeta(slot);
-  if (!meta?.repoPath) return false; // unknown slot: never collect what we cannot attribute
-  if (!existsSync(meta.repoPath)) return true;
-  const layout = resolveSharedStore(meta.repoPath);
-  return !layout || layout.root !== storeRoot || layout.checkoutSlot !== slot;
+const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
+  const entries = await readRegistry();
+  const orphans = new Set<string>();
+  for (const slot of slots) {
+    const meta = await loadMeta(slot);
+    if (!meta?.repoPath) continue;
+    const entry = existsSync(meta.repoPath)
+      ? findRegistryEntryByRepoPath(entries, meta.repoPath)
+      : undefined;
+    if (
+      !entry ||
+      !registryPathEquals(canonicalizePath(entry.storagePath), canonicalizePath(slot))
+    ) {
+      orphans.add(slot);
+    }
+  }
+  return orphans;
+};
+
+/**
+ * Reclaim with the store's publish lock already held. Analyze calls this right
+ * after publishing so graphs a checkout stopped using are deleted at once
+ * (KTD7), and slot pointers written under the same lock are always counted.
+ */
+export const reclaimSharedStoreLocked = async (
+  storeRoot: string,
+  opts: { gc?: boolean } = {},
+): Promise<ReclaimResult> => {
+  const result: ReclaimResult = { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
+  const checkoutsDir = path.join(storeRoot, 'checkouts');
+  const commitsDir = path.join(storeRoot, 'commits');
+  const referenced = new Set<string>();
+  let slots = (await listDir(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
+  if (opts.gc) {
+    const orphans = await orphanMembers(slots);
+    for (const slot of orphans) {
+      await fs.rm(slot, { recursive: true, force: true });
+      result.droppedMembers.push(slot);
+    }
+    slots = slots.filter((slot) => !orphans.has(slot));
+  }
+  for (const slot of slots) {
+    const graphPath = (await loadMeta(slot))?.graphPath;
+    if (graphPath) referenced.add(path.dirname(path.resolve(graphPath)));
+  }
+
+  for (const name of await listDir(commitsDir)) {
+    const dir = path.join(commitsDir, name);
+    if (referenced.has(dir)) continue;
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+      if (!name.startsWith('.')) result.removed.push(dir);
+    } catch {
+      // Windows refuses to delete a file another process has open (an MCP
+      // reader). Keep it for the next reclaim instead of failing the caller.
+      if (!name.startsWith('.')) result.kept.push(dir);
+    }
+  }
+
+  const remaining = (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length;
+  if (remaining === 0) {
+    // The lock directory lives inside the store; removing it while held is
+    // safe on POSIX and is retried on the next reclaim elsewhere.
+    await fs
+      .rm(storeRoot, { recursive: true, force: true })
+      .then(() => {
+        result.storeRemoved = true;
+      })
+      .catch(() => {});
+  }
+  return result;
 };
 
 /**
  * Delete unreferenced commit graphs, stale publish staging, and — with `gc` —
- * member slots whose checkout no longer belongs to the store. Removes the
- * store itself when nothing remains.
+ * member slots no registry entry uses. Removes the store itself when nothing
+ * remains.
  */
 export const reclaimSharedStore = async (
   storeRoot: string,
   opts: { gc?: boolean } = {},
 ): Promise<ReclaimResult> => {
-  const result: ReclaimResult = { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
-  if (!existsSync(storeRoot)) return result;
-  const checkoutsDir = path.join(storeRoot, 'checkouts');
-  const commitsDir = path.join(storeRoot, 'commits');
-
-  await withStoreLock({ root: storeRoot }, 'publish', async () => {
-    const referenced = new Set<string>();
-    let slots = (await listDir(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
-    if (opts.gc) {
-      const live: string[] = [];
-      for (const slot of slots) {
-        if (await isOrphanMember(slot, storeRoot)) {
-          await fs.rm(slot, { recursive: true, force: true });
-          result.droppedMembers.push(slot);
-        } else {
-          live.push(slot);
-        }
-      }
-      slots = live;
-    }
-    for (const slot of slots) {
-      const graphPath = (await loadMeta(slot))?.graphPath;
-      if (graphPath) referenced.add(path.dirname(path.resolve(graphPath)));
-    }
-
-    for (const name of await listDir(commitsDir)) {
-      const dir = path.join(commitsDir, name);
-      if (referenced.has(dir)) continue;
-      try {
-        await fs.rm(dir, { recursive: true, force: true });
-        if (!name.startsWith('.')) result.removed.push(dir);
-      } catch {
-        // Windows refuses to delete a file another process has open (an MCP
-        // reader). Keep it for the next reclaim instead of failing the clean.
-        if (!name.startsWith('.')) result.kept.push(dir);
-      }
-    }
-
-    const remaining = (await listDir(checkoutsDir)).length + (await listDir(commitsDir)).length;
-    if (remaining === 0) {
-      // The lock directory lives inside the store; removing it while held is
-      // safe on POSIX and is retried on the next reclaim elsewhere.
-      await fs
-        .rm(storeRoot, { recursive: true, force: true })
-        .then(() => {
-          result.storeRemoved = true;
-        })
-        .catch(() => {});
-    }
-  });
-  return result;
+  if (!existsSync(storeRoot)) {
+    return { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
+  }
+  return withStoreLock({ root: storeRoot }, 'publish', () =>
+    reclaimSharedStoreLocked(storeRoot, opts),
+  );
 };
 
 /**
@@ -158,7 +186,7 @@ export const describeSharedGraph = (
     : 'shared';
 
 /** Files a shared checkout keeps in `<checkout>/.gitnexus`; everything else there is legacy. */
-const POINTER_DIR_KEEP = new Set([SHARED_STORE_POINTER, '.gitignore']);
+const POINTER_DIR_KEEP = new Set([SHARED_STORE_POINTER, '.gitignore', 'run.cjs']);
 
 /**
  * Point `<checkout>/.gitnexus` at the checkout's store slot (#3352 R16). The
@@ -182,8 +210,9 @@ export const removeSharedStorePointer = async (checkoutPath: string): Promise<vo
   const dir = path.join(checkoutPath, GITNEXUS_DIR);
   await fs.rm(path.join(dir, SHARED_STORE_POINTER), { force: true });
   const rest = await listDir(dir);
-  if (rest.length === 1 && rest[0] === '.gitignore')
+  if (rest.every((name) => POINTER_DIR_KEEP.has(name))) {
     await fs.rm(dir, { recursive: true, force: true });
+  }
 };
 
 const sizeOf = async (target: string): Promise<number> => {

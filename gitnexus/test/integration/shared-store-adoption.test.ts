@@ -104,7 +104,9 @@ describe('shared store adoption and reporting (#3352)', () => {
 
     const result = await analyze(wt);
 
-    expect(result.alreadyUpToDate).toBe(true); // seeded from its own index
+    // Seeded from its own index, then verified by a file-hash diff rather than
+    // trusted: a local index may hold edits that were later reverted.
+    expect(result.alreadyUpToDate).not.toBe(true);
     const layout = layoutOf(wt);
     expect((await fs.readdir(layout.commitsDir)).filter((n) => !n.startsWith('.'))).toHaveLength(1);
     expect(await fs.readFile(path.join(wt, '.gitnexus', 'lbug'))).toEqual(legacyGraph);
@@ -143,6 +145,7 @@ describe('shared store adoption and reporting (#3352)', () => {
     await runIn(wt, () => cleanCommand({ localIndex: true, force: true }));
     expect((await fs.readdir(path.join(wt, '.gitnexus'))).sort()).toEqual([
       '.gitignore',
+      'run.cjs',
       'store.json',
     ]);
     expect((await statusJson(wt)).legacyLocalIndex).toBeNull();
@@ -176,6 +179,46 @@ describe('shared store adoption and reporting (#3352)', () => {
       path.join(wt, '.gitnexus'),
     );
     expect(await fs.readFile(commitGraph)).toEqual(before);
+  }, 240_000);
+
+  it('keeps committed agent docs pointing at a runner inside the checkout', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await runFullAnalysis(wt, { registryName: 'wt' }, { onProgress: () => {} });
+    expect(existsSync(path.join(wt, '.gitnexus', 'run.cjs'))).toBe(true);
+    const agents = await fs.readFile(path.join(wt, 'AGENTS.md'), 'utf-8');
+    expect(agents).toContain('.gitnexus/run.cjs');
+    expect(agents).not.toContain('stores/');
+  }, 240_000);
+
+  it('drops pinned branch summaries when a checkout moves into the store', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    process.env[SHARED_STORE_ENV] = 'off';
+    try {
+      await runFullAnalysis(wt, { branch: 'wt' }, { onProgress: () => {} });
+      await analyze(wt);
+    } finally {
+      delete process.env[SHARED_STORE_ENV];
+    }
+    await analyze(wt);
+    const entry = (await listRegisteredRepos()).find((e) => e.path === wt);
+    expect(entry?.storagePath).toBe(layoutOf(wt).checkoutSlot);
+    expect(entry?.branches).toBeUndefined();
+  }, 240_000);
+
+  it('re-registers at .gitnexus when sharing is turned off on an up-to-date index', async () => {
+    await legacyIndex(wt);
+    await analyze(wt);
+    process.env[SHARED_STORE_ENV] = 'off';
+    try {
+      const result = await analyze(wt);
+      expect(result.alreadyUpToDate).toBe(true);
+    } finally {
+      delete process.env[SHARED_STORE_ENV];
+    }
+    expect((await listRegisteredRepos()).find((e) => e.path === wt)?.storagePath).toBe(
+      path.join(wt, '.gitnexus'),
+    );
+    expect(readSharedStorePointer(wt)).toBeNull();
   }, 240_000);
 
   it('rejects a pointer that names another checkout slot', async () => {

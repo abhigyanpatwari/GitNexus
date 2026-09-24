@@ -890,6 +890,12 @@ export interface RegisterRepoOptions {
    * analysis or index operation has begun.
    */
   storagePath?: string;
+  /**
+   * Drop recorded `branches[]` summaries on a primary run. Set when the entry
+   * moves to a different storage location (a shared-store slot, #3352): the
+   * summaries name `branches/<slug>` sub-indexes the new location does not hold.
+   */
+  dropBranches?: boolean;
 }
 
 /**
@@ -1166,7 +1172,7 @@ const registerRepoUnlocked = async (
     // Primary run: apply our refreshed top-level, but defer to the FRESH
     // branches[] (a concurrent branch upsert or `clean --branch` wins).
     merged = { ...entry };
-    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    if (freshExisting?.branches && !opts?.dropBranches) merged.branches = freshExisting.branches;
     else delete merged.branches;
   }
   if (freshIdx >= 0) {

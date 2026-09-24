@@ -183,7 +183,22 @@ describe('shared sibling store analyze (#3352)', () => {
     expect(meta?.graphPath).toBe(
       path.join(commitGraphDir(layout, head, featureKeyOf(meta as RepoMeta)), 'lbug'),
     );
-    expect(await listCommitDirs(layout)).toHaveLength(2);
+    // The previous commit's graph is no longer referenced and is reclaimed at once.
+    expect(await listCommitDirs(layout)).toEqual([
+      path.basename(path.dirname(meta?.graphPath as string)),
+    ]);
+  }, 180_000);
+
+  it('never publishes a graph that was built from uncommitted edits', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await fs.writeFile(path.join(wtA, 'a.ts'), 'export function uncommitted() { return 9; }\n');
+    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+    git(wtA, 'checkout', '--', 'a.ts');
+    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+
+    const layout = layoutOf(wtA);
+    expect(await listCommitDirs(layout)).toEqual([]);
+    expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(true);
   }, 180_000);
 });
 
