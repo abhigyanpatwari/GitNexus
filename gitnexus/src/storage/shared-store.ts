@@ -71,11 +71,37 @@ export const isSharedStoreDisabled = (env: NodeJS.ProcessEnv = process.env): boo
   return env[STORAGE_PATH_ENV] !== undefined || env[STORAGE_ROOT_ENV] !== undefined;
 };
 
+// Every filesystem sink below rebuilds its path under a fixed parent and keeps
+// an inline `path.relative` barrier on that value: checkout paths arrive from
+// the HTTP analyze API and CodeQL does not treat a helper as a sanitizer.
+
 const hasLinkedWorktrees = (commonDir: string): boolean => {
+  const parent = path.resolve(commonDir);
+  const worktrees = path.resolve(parent, 'worktrees');
+  const rel = path.relative(parent, worktrees);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return false;
   try {
-    return fs.readdirSync(path.join(commonDir, 'worktrees')).length > 0;
+    return fs.readdirSync(worktrees).length > 0;
   } catch {
     return false;
+  }
+};
+
+/** Read a small text file inside `parent`, or null when it is absent/unreadable. */
+const readFileIn = (
+  parent: string,
+  name: string,
+): { text: string } | { directory: true } | null => {
+  const root = path.resolve(parent);
+  const target = path.resolve(root, name);
+  const rel = path.relative(root, target);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  try {
+    return { text: fs.readFileSync(target, 'utf-8') };
+  } catch (err) {
+    // A single read (no stat first) avoids a check-then-use race; a directory
+    // answers with EISDIR.
+    return (err as NodeJS.ErrnoException).code === 'EISDIR' ? { directory: true } : null;
   }
 };
 
@@ -84,34 +110,21 @@ const hasLinkedWorktrees = (commonDir: string): boolean => {
  * not a tree root (non-git folder or an arbitrary subdirectory).
  */
 const readCommonDir = (checkoutPath: string): string | null => {
-  const dotGit = path.join(checkoutPath, '.git');
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(dotGit);
-  } catch {
-    return null;
-  }
-  if (stat.isDirectory()) return dotGit;
-  if (!stat.isFile()) return null;
+  const root = path.resolve(checkoutPath);
+  const dotGit = readFileIn(root, '.git');
+  if (!dotGit) return null;
+  if ('directory' in dotGit) return path.join(root, '.git');
 
   // Linked worktree: `.git` is a file `gitdir: <common>/worktrees/<name>`, and
   // that per-worktree dir holds a `commondir` file pointing back at <common>.
-  let gitDir: string;
-  try {
-    const match = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
-    if (!match) return null;
-    gitDir = path.resolve(checkoutPath, match[1]);
-  } catch {
-    return null;
-  }
-  try {
-    const common = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim();
-    return path.resolve(gitDir, common);
-  } catch {
-    // Submodules also use a `gitdir:` file but have no `commondir`; they are
-    // standalone repositories, not linked worktrees.
-    return null;
-  }
+  const match = /^gitdir:\s*(.+?)\s*$/m.exec(dotGit.text);
+  if (!match) return null;
+  const gitDir = path.resolve(root, match[1]);
+  const common = readFileIn(gitDir, 'commondir');
+  // Submodules also use a `gitdir:` file but have no `commondir`; they are
+  // standalone repositories, not linked worktrees.
+  if (!common || !('text' in common)) return null;
+  return path.resolve(gitDir, common.text.trim());
 };
 
 /**
@@ -218,15 +231,26 @@ export const storeRootOfCheckoutSlot = (storagePath: string): string | null => {
 // small; add eviction if a process ever tracks thousands of slots.
 const recordedGraphCache = new Map<string, { key: string; recorded: unknown }>();
 
-const readRecordedGraphPath = (metaPath: string): unknown => {
-  const stat = fs.statSync(metaPath);
-  const key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-  const cached = recordedGraphCache.get(metaPath);
-  if (cached?.key === key) return cached.recorded;
-  const recorded = (JSON.parse(fs.readFileSync(metaPath, 'utf-8')) as { graphPath?: unknown })
-    .graphPath;
-  recordedGraphCache.set(metaPath, { key, recorded });
-  return recorded;
+const readRecordedGraphPath = (slot: string): unknown => {
+  const root = path.resolve(slot);
+  const metaPath = path.resolve(root, INDEX_METADATA_FILE);
+  const rel = path.relative(root, metaPath);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  // One open, then stat and read through the same descriptor, so the cache
+  // key always describes the bytes that were parsed.
+  const fd = fs.openSync(metaPath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    const key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    const cached = recordedGraphCache.get(metaPath);
+    if (cached?.key === key) return cached.recorded;
+    const recorded = (JSON.parse(fs.readFileSync(fd, 'utf-8')) as { graphPath?: unknown })
+      .graphPath;
+    recordedGraphCache.set(metaPath, { key, recorded });
+    return recorded;
+  } finally {
+    fs.closeSync(fd);
+  }
 };
 
 export const resolveGraphPath = (storagePath: string): string => {
@@ -235,7 +259,7 @@ export const resolveGraphPath = (storagePath: string): string => {
   if (!root) return own;
   let recorded: unknown;
   try {
-    recorded = readRecordedGraphPath(path.join(storagePath, INDEX_METADATA_FILE));
+    recorded = readRecordedGraphPath(storagePath);
   } catch {
     return own;
   }
@@ -253,13 +277,14 @@ export const resolveGraphPath = (storagePath: string): string => {
  * so a copied or hand-edited pointer cannot redirect reads to another index.
  */
 export const readSharedStorePointer = (checkoutPath: string): string | null => {
+  const root = path.resolve(checkoutPath);
+  const pointerPath = path.resolve(root, GITNEXUS_DIR, SHARED_STORE_POINTER);
+  const pointerRel = path.relative(root, pointerPath);
+  if (pointerRel.startsWith('..') || path.isAbsolute(pointerRel)) return null;
   let recorded: unknown;
   try {
-    recorded = (
-      JSON.parse(
-        fs.readFileSync(path.join(checkoutPath, GITNEXUS_DIR, SHARED_STORE_POINTER), 'utf-8'),
-      ) as { checkoutSlot?: unknown }
-    ).checkoutSlot;
+    recorded = (JSON.parse(fs.readFileSync(pointerPath, 'utf-8')) as { checkoutSlot?: unknown })
+      .checkoutSlot;
   } catch {
     return null;
   }
