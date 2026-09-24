@@ -17,7 +17,7 @@ import { createRequire } from 'node:module';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createFakeProcRoot, type FakeProcEntry } from '../utils/hook-test-helpers.js';
 
 const PROBE_PATH = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-db-lock-probe.cjs');
@@ -151,6 +151,38 @@ describe('hook binary override trimming (white-box, #2543 review)', () => {
 // GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS="" resolve to Number("")===0 => budget 0 =>
 // immediate fail-CLOSED timeout (augment permanently skipped). The added
 // `&& String(raw).trim()` guard keeps ''/whitespace on the 1200 default.
+// GITNEXUS_HOOK_TIMEOUT_PATH relative override (#2543 review): the adapters
+// spawn the returned wrapper with the tool request's `cwd`, so the probe must
+// hand back an ABSOLUTE path resolved against the directory its existsSync
+// check and self-test ran in. The resolution is memoized per module instance,
+// so each case runs in a fresh `node` child whose cwd holds a self-testing
+// guard script (`-k <k> <budget> cmd…` -> exec cmd…).
+describe.skipIf(process.platform === 'win32')(
+  'GITNEXUS_HOOK_TIMEOUT_PATH relative override resolves to absolute (#2543 review)',
+  () => {
+    it.each(['./fake-guard', 'fake-guard'])('override %s -> path.resolve(value)', (value) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-relguard-'));
+      cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+      fs.writeFileSync(path.join(dir, 'fake-guard'), '#!/bin/sh\nshift 3\nexec "$@"\n', {
+        mode: 0o755,
+      });
+      const script =
+        `const p=require(${JSON.stringify(PROBE_PATH)});` +
+        `process.stdout.write(JSON.stringify({cwd:process.cwd(),guard:p.resolveUnixGuardTimeout()}));`;
+      const child = spawnSync(process.execPath, ['-e', script], {
+        cwd: dir,
+        encoding: 'utf-8',
+        env: { ...process.env, GITNEXUS_HOOK_TIMEOUT_PATH: value },
+        timeout: 15000,
+      });
+      expect(child.status).toBe(0);
+      const out = JSON.parse(child.stdout) as { cwd: string; guard: string | null };
+      expect(out.guard).toBe(path.resolve(out.cwd, value));
+      expect(path.isAbsolute(out.guard ?? '')).toBe(true);
+    });
+  },
+);
+
 describe('numeric env parsing (white-box, #2183 review)', () => {
   const budget = probe.resolveLinuxProcBudgetMs as () => number;
   const cmdlineMax = probe.getCmdlineMaxBytes as () => number;
@@ -620,7 +652,8 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
   // not lock. F1 splits the failure shapes:
   //   - EACCES / EPERM      -> 'timeout'  (unverifiable; fail-closed HONESTLY)
   //   - EIO / ESTALE        -> 'timeout'  (transient I/O; fail-closed)
-  //   - ENOTDIR / other     -> continue   (not a real fd dir; treat as non-owner)
+  //   - ENOTDIR             -> continue   (not a real fd dir; treat as non-owner)
+  //   - any other errno     -> 'timeout'  (EMFILE/ENFILE/ENOMEM/…: inconclusive)
   // The dispatcher collapses owned+timeout to boolean true, so these assert the
   // exported tri-state verdict directly — a boolean check could not tell the F1
   // fix from the old bug.
@@ -677,6 +710,12 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
     { code: 'EIO', expected: 'timeout' },
     { code: 'ESTALE', expected: 'timeout' },
     { code: 'ENOTDIR', expected: 'not-owned' },
+    // Resource/interruption failures say nothing about ownership of an
+    // already-identified server candidate: fail closed, never not-owned.
+    { code: 'EMFILE', expected: 'timeout' },
+    { code: 'ENFILE', expected: 'timeout' },
+    { code: 'ENOMEM', expected: 'timeout' },
+    { code: 'EINTR', expected: 'timeout' },
   ] as const) {
     it(`candidate fd readdir ${code} → verdict ${expected} (uid-agnostic spy)`, () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-probe-fderr-'));
