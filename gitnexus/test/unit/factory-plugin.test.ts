@@ -35,9 +35,20 @@ const PLUGIN_JSON = path.join(PLUGIN_DIR, '.factory-plugin', 'plugin.json');
 const MCP_JSON = path.join(PLUGIN_DIR, 'mcp.json');
 const CLAUDE_HOOKS = path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'hooks');
 
-// Guard modules bundled into the Factory plugin, kept byte-identical to the
-// canonical Claude-adapter copies.
-const BUNDLED_GUARDS = ['hook-lock.js', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1'] as const;
+// Guard and repo-lookup modules bundled into the Factory plugin, kept
+// byte-identical to the canonical Claude-adapter copies.
+const BUNDLED_GUARDS = [
+  'hook-lock.js',
+  'hook-db-lock-probe.cjs',
+  'win-rm-list-json.ps1',
+  'registry-query.cjs',
+] as const;
+
+// Empty GITNEXUS_HOME so behavior tests never read the developer's real
+// ~/.gitnexus/registry.json.
+function isolatedEnv(binDir: string, home: string) {
+  return { ...hookEnv(binDir), GITNEXUS_HOME: home };
+}
 
 const require_ = createRequire(import.meta.url);
 const { parseRgGrepPattern } = require_(HOOK) as {
@@ -208,9 +219,17 @@ describe('Factory hook source regressions', () => {
     expect(source).toMatch(/'augment',\s*'--',\s*pattern/);
   });
 
-  it('validates cwd is absolute and gates on a non-registry .gitnexus dir', () => {
+  it('validates cwd is absolute and resolves the repo via the shared registry lookup', () => {
     expect(source).toMatch(/path\.isAbsolute\(cwd\)/);
-    expect(source).toContain('isGlobalRegistryDir');
+    expect(source).toContain("require('./registry-query.cjs')");
+    expect(source).toContain('resolveHookRepo(cwd)');
+  });
+
+  // #3060: indexes can live outside the repo, so the slot and the DB-owner
+  // probe must target the resolved storage, not a hardcoded `<cwd>/.gitnexus`.
+  it('keys the slot and DB-owner probe on the resolved storage', () => {
+    expect(source).toContain('acquireHookSlot(repo.storagePath)');
+    expect(source).toContain('hasGitNexusDbLockedByGitNexusServer(repo.lbugPath');
   });
 
   it('emits Factory-shape hookSpecificOutput.additionalContext', () => {
@@ -328,17 +347,21 @@ describe('Factory hook behavior — early exits', () => {
 describe('Factory hook behavior — augment', () => {
   let repoDir: string;
   let binDir: string;
+  let home: string;
 
   beforeAll(() => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-repo-'));
-    // Bare .gitnexus/ (no registry.json/repos) → treated as a repo index; no
-    // `lbug` file → the DB-owner probe short-circuits false and augment runs.
+    // Repo-local index metadata → resolved as a local owned index; no `lbug`
+    // file → the DB-owner probe short-circuits false and augment runs.
     fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(repoDir, '.gitnexus', 'gitnexus.json'), '{}');
     binDir = createHookToolDir({ gitnexusStderr: '[GitNexus] graph context for validateUser' });
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-home-'));
   });
   afterAll(() => {
     fs.rmSync(repoDir, { recursive: true, force: true });
     fs.rmSync(binDir, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
   });
 
   it('emits augment stderr as additionalContext for a Grep search', () => {
@@ -351,12 +374,50 @@ describe('Factory hook behavior — augment', () => {
         cwd: repoDir,
       },
       undefined,
-      { env: hookEnv(binDir) },
+      { env: isolatedEnv(binDir, home) },
     );
     expect(r.status).toBe(0);
     const out = parseHookOutput(r.stdout);
     expect(out?.hookEventName).toBe('PostToolUse');
     expect(out?.additionalContext).toContain('graph context for validateUser');
+  });
+
+  it('augments against an external index registered in GITNEXUS_HOME (#3060)', () => {
+    const extRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-extrepo-'));
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-storage-'));
+    const extHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-exthome-'));
+    try {
+      // No repo-local .gitnexus: only the registry row points at the index.
+      fs.writeFileSync(
+        path.join(storage, 'gitnexus.json'),
+        JSON.stringify({ repoPath: extRepo, storagePath: storage }),
+      );
+      fs.writeFileSync(
+        path.join(extHome, 'registry.json'),
+        JSON.stringify([{ name: 'ext', path: extRepo, storagePath: storage }]),
+      );
+
+      const r = runHook(
+        HOOK,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Grep',
+          tool_input: { pattern: 'validateUser' },
+          cwd: extRepo,
+        },
+        undefined,
+        { env: isolatedEnv(binDir, extHome) },
+      );
+      expect(r.status).toBe(0);
+      expect(parseHookOutput(r.stdout)?.additionalContext).toContain(
+        'graph context for validateUser',
+      );
+      // The fan-out slot lives in the resolved storage, not the repo.
+      expect(fs.existsSync(path.join(storage, '.hook-locks'))).toBe(true);
+      expect(fs.existsSync(path.join(extRepo, '.gitnexus'))).toBe(false);
+    } finally {
+      for (const d of [extRepo, storage, extHome]) fs.rmSync(d, { recursive: true, force: true });
+    }
   });
 });
 
@@ -367,7 +428,11 @@ describe('Factory hook behavior — augment fan-out guard', () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-slots-'));
     const lockDir = path.join(repoDir, '.gitnexus', '.hook-locks');
     fs.mkdirSync(lockDir, { recursive: true });
+    // Index metadata so the hook resolves the repo and reaches the slot guard,
+    // rather than exiting early for having no index.
+    fs.writeFileSync(path.join(repoDir, '.gitnexus', 'gitnexus.json'), '{}');
     const binDir = createHookToolDir({ gitnexusStderr: 'should never be emitted' });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-home-'));
 
     const { spawn } = await import('child_process');
     const sleepers = [0, 1, 2].map(() =>
@@ -387,7 +452,7 @@ describe('Factory hook behavior — augment fan-out guard', () => {
           cwd: repoDir,
         },
         undefined,
-        { env: hookEnv(binDir) },
+        { env: isolatedEnv(binDir, home) },
       );
 
       expect(r.status).toBe(0);
@@ -402,6 +467,7 @@ describe('Factory hook behavior — augment fan-out guard', () => {
       }
       fs.rmSync(repoDir, { recursive: true, force: true });
       fs.rmSync(binDir, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

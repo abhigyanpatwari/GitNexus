@@ -8,7 +8,9 @@
  * Reuses the Claude adapter's guards, bundled byte-identical: acquireHookSlot
  * caps concurrent augment children per repo (#1486), and the LadybugDB owner
  * probe skips the CLI augment when an MCP/serve process already holds the
- * single-writer lock (#2396).
+ * single-writer lock (#2396). The repo and its index storage are resolved via
+ * the same bundled registry lookup (registry-query.cjs), so external and
+ * branch-slot indexes work (#3060).
  *
  * The augment child is not wrapped in the coreutils `timeout` orphan guard the
  * full Claude adapter uses (#2163) — same scope as the Cursor integration.
@@ -19,6 +21,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
 const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const { resolveHookRepo } = require('./registry-query.cjs');
 
 // Pin the CLI instead of tracking `latest`: npm versions are immutable, so only
 // a plugin revision can change what the fallback below executes. The release
@@ -31,36 +34,6 @@ function readInput() {
   } catch {
     return {};
   }
-}
-
-/**
- * A `.gitnexus/` holding `registry.json`/`repos` (and no per-repo index
- * metadata) is the global registry, not a repo index — never augment against it.
- */
-function isGlobalRegistryDir(candidate) {
-  if (
-    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
-    fs.existsSync(path.join(candidate, 'meta.json'))
-  ) {
-    return false;
-  }
-  return (
-    fs.existsSync(path.join(candidate, 'registry.json')) ||
-    fs.existsSync(path.join(candidate, 'repos'))
-  );
-}
-
-/** Walk up from startDir for a non-registry `.gitnexus/`, at most 5 levels. */
-function findGitNexusDir(startDir) {
-  let dir = startDir || process.cwd();
-  for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.gitnexus');
-    if (fs.existsSync(candidate) && !isGlobalRegistryDir(candidate)) return candidate;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
 }
 
 /**
@@ -285,8 +258,10 @@ function main() {
 
     const cwd = input.cwd || process.cwd();
     if (!path.isAbsolute(cwd)) return;
-    const gitNexusDir = findGitNexusDir(cwd);
-    if (!gitNexusDir) return;
+    // Registry row first (persisted external storagePath wins); a local owned
+    // `.gitnexus` is the fallback — same lookup as the Claude/Cursor hooks.
+    const repo = resolveHookRepo(cwd);
+    if (!repo) return;
 
     const toolName = input.tool_name || '';
     if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Execute') return;
@@ -294,12 +269,12 @@ function main() {
     const pattern = extractPattern(toolName, input.tool_input || {});
     if (!pattern || pattern.length < 3) return;
 
-    const release = acquireHookSlot(gitNexusDir);
+    const release = acquireHookSlot(repo.storagePath);
     if (!release) return; // all per-repo augment slots held by concurrent sessions
 
     let result = '';
     try {
-      if (hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid)) {
+      if (hasGitNexusDbLockedByGitNexusServer(repo.lbugPath, process.pid)) {
         // #2396: an MCP/serve process owns the single-writer DB, so a competing
         // CLI augment would only contend on the lock. Its MCP tools cover
         // augmentation instead — skip silently.
