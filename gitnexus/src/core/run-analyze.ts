@@ -146,6 +146,7 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  setShareOptOut,
   adoptFlatBranchLabel,
   isReadOnlyFilesystemError,
   isRepoRegistered,
@@ -1340,6 +1341,9 @@ export async function runFullAnalysis(
           await registerLeftStore(repoPath, writeTarget.storagePath);
         }
       }
+      // A clone that left stays out of sibling stores until `--share-with`.
+      if (options.noShare) await setShareOptOut(repoPath, true);
+      else if (options.shareWith) await setShareOptOut(repoPath, false);
       return result;
     } finally {
       discardScopedEmbeddingSpills();

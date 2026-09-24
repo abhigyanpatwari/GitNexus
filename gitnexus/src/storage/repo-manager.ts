@@ -191,6 +191,11 @@ export interface RegistryEntry {
    * legacy registry shape.
    */
   branches?: BranchSummary[];
+  /**
+   * The checkout left sharing with `analyze --no-share` (#3352), so it does
+   * not join a sibling clone's store automatically. Cleared by `--share-with`.
+   */
+  shareOptOut?: true;
 }
 
 /** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
@@ -1176,6 +1181,7 @@ const registerRepoUnlocked = async (
     merged = { ...entry };
     if (freshExisting?.branches && !opts?.dropBranches) merged.branches = freshExisting.branches;
     else delete merged.branches;
+    if (freshExisting?.shareOptOut) merged.shareOptOut = true;
   }
   if (freshIdx >= 0) {
     fresh[freshIdx] = merged;
@@ -1233,6 +1239,20 @@ const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
 
 export const unregisterRepo = async (repoPath: string): Promise<void> =>
   withRegistryLock(() => unregisterRepoUnlocked(repoPath));
+
+/**
+ * Record (or clear) a checkout's opt-out from automatic clone sharing
+ * (#3352). A no-op when the checkout is not registered.
+ */
+export const setShareOptOut = async (repoPath: string, optOut: boolean): Promise<void> =>
+  withRegistryLock(async () => {
+    const entries = await readRegistryStrict();
+    const entry = findRegistryEntryByRepoPath(entries, repoPath);
+    if (!entry || !!entry.shareOptOut === optOut) return;
+    if (optOut) entry.shareOptOut = true;
+    else delete entry.shareOptOut;
+    await writeRegistry(entries);
+  });
 
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry

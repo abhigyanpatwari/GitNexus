@@ -147,13 +147,15 @@ program
   )
   .option(
     '--share-with <repo>',
-    'Join the shared index store of a registered worktree of the same repository ' +
-      '(name or path); the remote URL must match. Remembered for later runs.',
+    'Join the shared index store of a registered checkout of the same repository ' +
+      '(name or path); the remote URL must match. Clones join a sibling clone’s store ' +
+      'automatically; this names one explicitly and clears a --no-share opt-out.',
   )
   .option(
     '--no-share',
-    'Opted-in clones only: leave the shared index store and index into <repo>/.gitnexus again ' +
-      '(linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop ' +
+      'joining sibling clones automatically until --share-with (linked worktrees always share; ' +
+      'set GITNEXUS_SHARED_STORE=off instead)',
   )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(

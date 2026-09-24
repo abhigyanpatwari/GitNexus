@@ -5,7 +5,11 @@
  */
 
 import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
-import { describeSharedGraph, findLegacyLocalIndex } from '../storage/shared-store-lifecycle.js';
+import {
+  describeSharedGraph,
+  findLegacyLocalIndex,
+  readGraphCloneKind,
+} from '../storage/shared-store-lifecycle.js';
 import { formatSlotSize } from './stale-branch-format.js';
 import path from 'path';
 import {
@@ -367,6 +371,12 @@ export const statusCommand = async (options: StatusOptions = {}) => {
         commit: activeMeta.lastCommit,
       }
     : null;
+  // A private flat graph copied from a shared one: say whether the filesystem
+  // shared its unchanged pages (copy-on-write) or it is a full copy.
+  const privateClone =
+    sharedStore?.graph === 'private' && activeMeta === repo.meta
+      ? await readGraphCloneKind(repo.storagePath)
+      : null;
   const legacyLocalIndex = await findLegacyLocalIndex(repo.repoPath, repo.storagePath);
   if (options.json) {
     console.log(
@@ -388,7 +398,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
           runnerIdentity: currentRunnerIdentity,
         },
         contentDrift: describeContentDrift(contentDrift),
-        sharedStore,
+        sharedStore: sharedStore ? { ...sharedStore, privateClone } : null,
         legacyLocalIndex: legacyLocalIndex
           ? { path: legacyLocalIndex.dir, bytes: legacyLocalIndex.bytes }
           : null,
@@ -414,6 +424,15 @@ export const statusCommand = async (options: StatusOptions = {}) => {
           })
         : t('status.sharedStorePrivate', { key: sharedStore.key }),
     );
+    if (privateClone) {
+      console.log(
+        t(
+          privateClone === 'copy-on-write'
+            ? 'status.sharedStoreCloneCow'
+            : 'status.sharedStoreCloneCopy',
+        ),
+      );
+    }
   }
   if (legacyLocalIndex) {
     console.log(

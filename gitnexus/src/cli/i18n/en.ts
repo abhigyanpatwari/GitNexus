@@ -31,6 +31,10 @@ export const en = {
   'status.sharedStoreShared': 'Shared index: store {{key}}, shared graph for commit {{commit}}',
   'status.sharedStorePrivate':
     'Shared index: store {{key}}, private graph (local changes or a pinned branch index)',
+  'status.sharedStoreCloneCow':
+    '  Copied copy-on-write: unchanged pages are shared with the commit graph on disk',
+  'status.sharedStoreCloneCopy':
+    '  Full copy: this filesystem cannot clone copy-on-write (APFS, btrfs and XFS can)',
   'status.legacyLocalIndex':
     'Leftover local index: {{path}} ({{size}}); remove it with `gitnexus clean --local-index --force`',
   'status.notGitRepo': 'Not a git repository.',
@@ -291,9 +295,9 @@ export const en = {
   'help.option.analyze.allowDuplicateName':
     'Register this repo even if another path already uses the same --name alias. Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   'help.option.analyze.shareWith':
-    'Join the shared index store of a registered worktree of the same repository (name or path); the remote URL must match. Remembered for later runs.',
+    'Join the shared index store of a registered checkout of the same repository (name or path); the remote URL must match. Clones join a sibling clone’s store automatically; this names one explicitly and clears a --no-share opt-out.',
   'help.option.analyze.noShare':
-    'Opted-in clones only: leave the shared index store and index into <repo>/.gitnexus again (linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop joining sibling clones automatically until --share-with (linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
   'help.option.verbose': 'Enable verbose output',
   'help.option.analyze.maxFileSize':
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',

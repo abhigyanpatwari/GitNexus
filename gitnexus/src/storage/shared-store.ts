@@ -145,6 +145,12 @@ const resolveIdentity = (
   return { key: slotName(canonicalCheckout ?? commonDir), canonicalCheckout };
 };
 
+/**
+ * Key for a store founded by a standalone clone (#3352): the clone's own
+ * checkout path, in the same canonical form a main checkout keys on.
+ */
+export const cloneStoreKey = (checkoutPath: string): string => slotName(checkoutPath);
+
 export const resolveSharedStoreKey = (
   checkoutPath: string,
   env: NodeJS.ProcessEnv = process.env,

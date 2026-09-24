@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { constants as fsConstants, existsSync, readFileSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import {
 } from '../../src/storage/shared-store.js';
 import {
   reclaimAfterSlotRemoval,
+  readGraphCloneKind,
   reclaimSharedStore,
   removeSharedStorePointer,
 } from '../../src/storage/shared-store-lifecycle.js';
@@ -437,5 +438,75 @@ describe('reclaimSharedStore', () => {
     } finally {
       rm.mockRestore();
     }
+  });
+});
+
+describe('private graph copies (#3352)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let savedHome: string | undefined;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-test-clone-kind-home-');
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await tmpHome.cleanup();
+  });
+
+  const pointerSlot = async (): Promise<string> => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/wt');
+    const graph = path.join(layout.commitsDir, 'aaaaaaa-1111111111111111');
+    await fs.mkdir(graph, { recursive: true });
+    await fs.writeFile(path.join(graph, 'lbug'), 'graph');
+    await fs.mkdir(layout.checkoutSlot, { recursive: true });
+    await saveMeta(layout.checkoutSlot, {
+      lastCommit: 'aaaaaaa',
+      indexedAt: '',
+      repoPath: '/tmp/wt',
+      graphPath: path.join(graph, 'lbug'),
+    });
+    return layout.checkoutSlot;
+  };
+
+  // Stand in for the filesystem: FICLONE_FORCE succeeds only when `cow` is set.
+  const fakeCopyFile = (cow: boolean) => {
+    const realCopyFile = fs.copyFile;
+    vi.spyOn(fs, 'copyFile').mockImplementation(async (src, dest, mode) => {
+      if (mode === fsConstants.COPYFILE_FICLONE_FORCE && !cow) {
+        throw Object.assign(new Error('not supported'), { code: 'ENOTSUP' });
+      }
+      return realCopyFile(src, dest);
+    });
+  };
+
+  it('records a copy-on-write clone', async () => {
+    const slot = await pointerSlot();
+    fakeCopyFile(true);
+    const { ensurePrivateSharedGraph } = await import('../../src/core/shared-store-analyze.js');
+    expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
+    expect(await readGraphCloneKind(slot)).toBe('copy-on-write');
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe('graph');
+  });
+
+  it('falls back to a full copy and records it', async () => {
+    const slot = await pointerSlot();
+    fakeCopyFile(false);
+    const { ensurePrivateSharedGraph } = await import('../../src/core/shared-store-analyze.js');
+    expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
+    expect(await readGraphCloneKind(slot)).toBe('copy');
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe('graph');
+  });
+
+  it('forgets the record when the private graph is rebuilt instead of copied', async () => {
+    const slot = await pointerSlot();
+    await fs.writeFile(path.join(slot, 'graph-clone'), 'copy');
+    const { ensurePrivateSharedGraph } = await import('../../src/core/shared-store-analyze.js');
+    await ensurePrivateSharedGraph(slot, () => {}, { copy: false });
+    expect(await readGraphCloneKind(slot)).toBeNull();
   });
 });

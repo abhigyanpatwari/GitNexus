@@ -125,6 +125,7 @@ describe('shared store adoption and reporting (#3352)', () => {
       key: layoutOf(wt).key,
       graph: 'shared',
       commit: git(wt, 'rev-parse', 'HEAD'),
+      privateClone: null,
     });
     expect(json.legacyLocalIndex).toMatchObject({ path: path.join(wt, '.gitnexus') });
 

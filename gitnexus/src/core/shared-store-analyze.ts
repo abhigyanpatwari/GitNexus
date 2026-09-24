@@ -16,7 +16,7 @@
  */
 
 import { createHash, randomUUID } from 'crypto';
-import { constants as fsConstants } from 'fs';
+import { existsSync, constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
@@ -29,9 +29,11 @@ import {
   registryPathEquals,
   resolveRegistryEntry,
   saveMeta,
+  type RegistryEntry,
 } from '../storage/repo-manager.js';
 import { loadMeta, type RepoMeta } from '../storage/repo-meta.js';
 import {
+  cloneStoreKey,
   commitGraphDir,
   resolveGraphPath,
   resolveSharedStore,
@@ -40,6 +42,8 @@ import {
   type SharedStoreLayout,
 } from '../storage/shared-store.js';
 import {
+  GRAPH_CLONE_MARKER,
+  type GraphCloneKind,
   reclaimAfterSlotRemoval,
   reclaimSharedStoreLocked,
   removeSharedStorePointer,
@@ -108,13 +112,24 @@ const exists = (p: string): Promise<boolean> =>
 /**
  * Copy a graph file to `dest` via a unique `lbug.new.<id>` temp (swept by the
  * slot lock if this process dies mid-copy), cloning copy-on-write where the
- * filesystem supports it. On failure the temp is removed and the error thrown.
+ * filesystem supports it (APFS, btrfs, XFS with reflink). A clone shares every
+ * unchanged page with the source, so a private graph costs only what the
+ * checkout's edits rewrite; elsewhere it is a full copy. Which one happened is
+ * recorded next to `dest` for `status`. On failure the temp is removed and
+ * the error thrown.
  */
 const cloneGraphFile = async (source: string, dest: string): Promise<void> => {
   const tmp = `${dest}.new.${randomUUID()}`;
   try {
-    await fs.copyFile(source, tmp, fsConstants.COPYFILE_FICLONE);
+    let kind: GraphCloneKind = 'copy-on-write';
+    try {
+      await fs.copyFile(source, tmp, fsConstants.COPYFILE_FICLONE_FORCE);
+    } catch {
+      kind = 'copy';
+      await fs.copyFile(source, tmp);
+    }
     await fs.rename(tmp, dest);
+    await fs.writeFile(path.join(path.dirname(dest), GRAPH_CLONE_MARKER), kind);
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     throw err;
@@ -287,7 +302,9 @@ export const ensurePrivateSharedGraph = async (
   if (!meta) return true;
   // `copy: false` — the caller rebuilds from scratch and reads nothing from
   // the old graph, so only the pointer is dropped.
-  if (opts.copy !== false && !(await exists(own))) {
+  if (opts.copy === false) {
+    await fs.rm(path.join(slot, GRAPH_CLONE_MARKER), { force: true });
+  } else if (!(await exists(own))) {
     const started = Date.now();
     try {
       await cloneGraphFile(pointed, own);
@@ -414,11 +431,52 @@ export const publishSharedGraph = async (
   await writeSharedStorePointer(repoPath, layout);
 };
 
+/** The store a checkout's registry entry already points into, if any. */
+const registeredStore = (
+  entries: readonly RegistryEntry[],
+  repoPath: string,
+): SharedStoreLayout | undefined => {
+  const own = findRegistryEntryByRepoPath(entries, repoPath);
+  const root = own ? storeRootOfCheckoutSlot(own.storagePath) : null;
+  return root ? sharedStoreLayout(path.basename(root), repoPath) : undefined;
+};
+
+/**
+ * Store for a clone with no store of its own: the store a registered sibling
+ * clone (same normalized `origin` URL, checkout still present) already uses,
+ * or, when siblings exist but none shares yet, a new store keyed on this
+ * clone. Graphs are keyed by commit and feature key, so clones only ever share
+ * a graph built from the same commit with the same settings. A lone clone
+ * keeps its repository-local index.
+ */
+const siblingCloneStore = (
+  entries: readonly RegistryEntry[],
+  repoPath: string,
+): SharedStoreLayout | undefined => {
+  const remote = getRemoteUrl(repoPath);
+  if (!remote) return undefined;
+  const self = canonicalizePath(repoPath);
+  const siblings = entries.filter(
+    (e) =>
+      e.remoteUrl === remote &&
+      !registryPathEquals(canonicalizePath(e.path), self) &&
+      existsSync(e.path),
+  );
+  if (siblings.length === 0) return undefined;
+  const keys = siblings
+    .map((e) => storeRootOfCheckoutSlot(e.storagePath))
+    .filter((root): root is string => root !== null)
+    .map((root) => path.basename(root))
+    .sort();
+  return sharedStoreLayout(keys[0] ?? cloneStoreKey(repoPath), repoPath);
+};
+
 /**
  * Store for a checkout that is not a linked worktree: the store named by
- * `--share-with`, or the one its registry entry already points into. Clones
- * only join by explicit opt-in (#3352 R2), and only when their normalized
- * remote URL matches the member they name (R3).
+ * `--share-with`, the one its registry entry already points into, or a
+ * sibling clone's store (#3352). `--share-with` requires the normalized remote
+ * URL to match the member it names (R3); `analyze --no-share` records an
+ * opt-out that stops automatic joining.
  */
 export const resolveOptedInStore = async (
   repoPath: string,
@@ -449,15 +507,16 @@ export const resolveOptedInStore = async (
     }
     return sharedStoreLayout(path.basename(root), repoPath);
   }
-  const own = findRegistryEntryByRepoPath(entries, repoPath);
-  const root = own ? storeRootOfCheckoutSlot(own.storagePath) : null;
-  return root ? sharedStoreLayout(path.basename(root), repoPath) : undefined;
+  const registered = registeredStore(entries, repoPath);
+  if (registered) return registered;
+  if (findRegistryEntryByRepoPath(entries, repoPath)?.shareOptOut) return undefined;
+  return siblingCloneStore(entries, repoPath);
 };
 
 /**
  * The store slot a checkout is registered at, for `--no-share`. Linked
  * worktrees always share (turn sharing off with GITNEXUS_SHARED_STORE=off),
- * so only an opted-in clone can leave.
+ * so only a clone can leave.
  */
 export const optedInSlotToLeave = async (repoPath: string): Promise<string | undefined> => {
   if (resolveSharedStore(repoPath)) {
@@ -466,7 +525,7 @@ export const optedInSlotToLeave = async (repoPath: string): Promise<string | und
         'Set GITNEXUS_SHARED_STORE=off to index every checkout into its own .gitnexus.',
     );
   }
-  return (await resolveOptedInStore(repoPath, undefined))?.checkoutSlot;
+  return registeredStore(await readRegistry(), repoPath)?.checkoutSlot;
 };
 
 /**

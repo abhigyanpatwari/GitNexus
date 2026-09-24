@@ -225,6 +225,18 @@ export const reclaimAfterSlotRemoval = async (
   }
 };
 
+/** Records in a checkout slot how its private graph was copied from a shared one. */
+export const GRAPH_CLONE_MARKER = 'graph-clone';
+export type GraphCloneKind = 'copy-on-write' | 'copy';
+
+/** How the slot's private graph was copied, or null when it was built, not copied. */
+export const readGraphCloneKind = async (storagePath: string): Promise<GraphCloneKind | null> => {
+  const text = await fs
+    .readFile(path.join(storagePath, GRAPH_CLONE_MARKER), 'utf-8')
+    .catch(() => null);
+  return text === 'copy-on-write' || text === 'copy' ? text : null;
+};
+
 /** Whether a checkout slot reads a shared commit graph or its own private graph. */
 export const describeSharedGraph = (
   graphPath: string,

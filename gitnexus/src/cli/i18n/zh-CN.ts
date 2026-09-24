@@ -31,6 +31,9 @@ export const zhCN = {
   'list.unknown': 'unknown',
   'status.sharedStoreShared': '共享索引：存储 {{key}}，提交 {{commit}} 的共享图',
   'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改或固定分支索引）',
+  'status.sharedStoreCloneCow': '  写时复制副本：未更改的页面在磁盘上与提交图共享',
+  'status.sharedStoreCloneCopy':
+    '  完整副本：此文件系统不支持写时复制克隆（APFS、btrfs 和 XFS 支持）',
   'status.legacyLocalIndex':
     '残留的本地索引：{{path}}（{{size}}）；使用 `gitnexus clean --local-index --force` 删除',
   'status.notGitRepo': '当前目录不是 git 仓库。',
@@ -266,9 +269,9 @@ export const zhCN = {
   'help.option.analyze.allowDuplicateName':
     '即使已有其他路径使用相同 --name 别名，也注册该仓库。会使两个路径的 `-r <name>` 产生歧义；请用 -r <path> 消除歧义。',
   'help.option.analyze.shareWith':
-    '加入同一仓库已注册工作树的共享索引存储（名称或路径）；远程 URL 必须一致。之后的运行会记住此选择。',
+    '加入同一仓库已注册检出的共享索引存储（名称或路径）；远程 URL 必须一致。克隆会自动加入同源克隆的存储；此选项显式指定存储，并清除 --no-share 的退出设置。',
   'help.option.analyze.noShare':
-    '仅限已加入的克隆：离开共享索引存储，重新索引到 <repo>/.gitnexus（链接工作树始终共享；请改用 GITNEXUS_SHARED_STORE=off）',
+    '仅限克隆：离开共享索引存储，重新索引到 <repo>/.gitnexus，并在使用 --share-with 之前不再自动加入同源克隆（链接工作树始终共享；请改用 GITNEXUS_SHARED_STORE=off）',
   'help.option.verbose': '启用详细输出',
   'help.option.analyze.maxFileSize':
     '跳过大于该值的文件（KB）。默认：512。硬上限：32768（tree-sitter 限制）。',

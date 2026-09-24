@@ -18,15 +18,16 @@ afterAll(() => {
 });
 
 /**
- * #3352 U7 — an independent clone joins a shared store only by explicit
- * opt-in, and only when its remote matches the member it names.
+ * #3352 U7 — an independent clone joins the store of a registered sibling
+ * clone (same normalized origin URL) automatically, or the member named by
+ * `--share-with`; `--no-share` leaves and stays out.
  */
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf-8' }).trim();
 
 const REMOTE = 'https://example.com/acme/widgets';
 
-describe('shared store clone opt-in (#3352)', () => {
+describe('shared store clone sharing (#3352)', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let savedHome: string | undefined;
@@ -77,11 +78,48 @@ describe('shared store clone opt-in (#3352)', () => {
     await tmpHome.cleanup();
   });
 
-  it('Covers AE7: a clone that has not opted in keeps its own .gitnexus', async () => {
+  it('a clone joins the store of a registered sibling and reuses the commit graph', async () => {
     const clone = cloneWithRemote('clone', REMOTE);
+    const result = await analyze(clone);
+
+    const slot = await registeredStorage(clone);
+    expect(path.dirname(slot as string)).toBe(storeLayout.checkoutsDir);
+    expect(result.alreadyUpToDate).toBe(true);
+    expect(getStoragePaths(clone, undefined, slot).lbugPath).toBe(
+      getStoragePaths(wt, undefined, storeLayout.checkoutSlot).lbugPath,
+    );
+    expect(existsSync(path.join(clone, '.gitnexus', 'lbug'))).toBe(false);
+  }, 240_000);
+
+  it('Covers AE7: a clone with no registered sibling keeps its own .gitnexus', async () => {
+    const clone = cloneWithRemote('clone', 'https://example.com/acme/gadgets');
     await analyze(clone);
     expect(await registeredStorage(clone)).toBe(path.join(clone, '.gitnexus'));
     expect(existsSync(path.join(clone, '.gitnexus', 'lbug'))).toBe(true);
+  }, 240_000);
+
+  it('two standalone clones of one repository found a store and share its graph', async () => {
+    const solo = 'https://example.com/acme/solo';
+    const first = cloneWithRemote('first', solo);
+    await analyze(first);
+    expect(await registeredStorage(first)).toBe(path.join(first, '.gitnexus'));
+
+    const second = cloneWithRemote('second', solo);
+    await analyze(second);
+    const secondSlot = (await registeredStorage(second)) as string;
+    const checkouts = path.dirname(secondSlot);
+    expect(path.basename(checkouts)).toBe('checkouts');
+    expect(checkouts).not.toBe(storeLayout.checkoutsDir);
+
+    // The first clone joins on its next analyze and reads the same graph.
+    await analyze(first);
+    const firstSlot = (await registeredStorage(first)) as string;
+    expect(path.dirname(firstSlot)).toBe(checkouts);
+    expect(getStoragePaths(first, undefined, firstSlot).lbugPath).toBe(
+      getStoragePaths(second, undefined, secondSlot).lbugPath,
+    );
+    // Adoption leaves the old repository-local index in place.
+    expect(existsSync(path.join(first, '.gitnexus', 'lbug'))).toBe(true);
   }, 240_000);
 
   it('joins the store with --share-with and reuses the commit graph at its HEAD', async () => {
@@ -124,7 +162,7 @@ describe('shared store clone opt-in (#3352)', () => {
 
   it('refuses a --share-with target that is not in a shared store', async () => {
     const plain = cloneWithRemote('plain', REMOTE);
-    await analyze(plain);
+    await analyze(plain, { noShare: true });
     const clone = cloneWithRemote('clone', REMOTE);
     await expect(analyze(clone, { shareWith: plain })).rejects.toThrow(
       /does not use a shared index store/,
@@ -143,11 +181,20 @@ describe('shared store clone opt-in (#3352)', () => {
     expect(existsSync(getStoragePaths(wt, undefined, storeLayout.checkoutSlot).lbugPath)).toBe(
       true,
     );
+
+    // The opt-out sticks: a plain analyze does not rejoin the sibling store.
+    await analyze(clone);
+    expect(await registeredStorage(clone)).toBe(path.join(clone, '.gitnexus'));
+
+    // --share-with clears it: the clone is back in, and stays in.
+    await analyze(clone, { shareWith: wt });
+    await analyze(clone);
+    expect(path.dirname((await registeredStorage(clone)) as string)).toBe(storeLayout.checkoutsDir);
   }, 240_000);
 
   it('--no-share on an up-to-date local index still re-registers there', async () => {
     const clone = cloneWithRemote('clone', REMOTE);
-    await analyze(clone);
+    await analyze(clone, { noShare: true });
     await analyze(clone, { shareWith: wt });
     const slot = (await registeredStorage(clone)) as string;
 
