@@ -6,6 +6,7 @@
 
 import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
 import { describeSharedGraph, findLegacyLocalIndex } from '../storage/shared-store-lifecycle.js';
+import { formatSlotSize } from './stale-branch-format.js';
 import path from 'path';
 import {
   getStoragePaths,
@@ -413,7 +414,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     console.log(
       t('status.legacyLocalIndex', {
         path: legacyLocalIndex.dir,
-        size: `${Math.ceil(legacyLocalIndex.bytes / 1024)} KB`,
+        size: formatSlotSize(legacyLocalIndex.bytes),
       }),
     );
   }

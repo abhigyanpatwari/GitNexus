@@ -148,7 +148,7 @@ export const reclaimAfterSlotRemoval = async (
   }
 };
 
-/** Graph directory a checkout slot reads, for reporting. */
+/** Whether a checkout slot reads a shared commit graph or its own private graph. */
 export const describeSharedGraph = (
   graphPath: string,
   storagePath: string,

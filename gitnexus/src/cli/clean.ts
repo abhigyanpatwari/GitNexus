@@ -17,7 +17,7 @@ import {
   type RegistryEntry,
 } from '../storage/repo-manager.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
-import { formatStaleSlotLine } from './stale-branch-format.js';
+import { formatSlotSize, formatStaleSlotLine } from './stale-branch-format.js';
 import { listLocalHeads } from '../storage/git.js';
 import {
   isContainedBranchDir,
@@ -157,11 +157,6 @@ const cleanStaleBranchSlots = async (force: boolean): Promise<void> => {
   }
 };
 
-const formatBytes = (bytes: number): string =>
-  bytes >= 1024 * 1024
-    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    : `${Math.ceil(bytes / 1024)} KB`;
-
 const reportReclaim = (result: ReclaimResult | null): void => {
   if (!result) return;
   if (result.removed.length > 0) {
@@ -222,14 +217,14 @@ export const cleanCommand = async (options?: {
     }
     if (!options.force) {
       console.log(
-        t('clean.localIndex.preview', { path: legacy.dir, size: formatBytes(legacy.bytes) }),
+        t('clean.localIndex.preview', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
       );
       console.log(`\n${t('common.runForceConfirm')}`);
       return;
     }
     await removeLegacyLocalIndex(repo.repoPath, repo.storagePath);
     console.log(
-      t('clean.localIndex.deleted', { path: legacy.dir, size: formatBytes(legacy.bytes) }),
+      t('clean.localIndex.deleted', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
     );
     return;
   }

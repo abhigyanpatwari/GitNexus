@@ -20,7 +20,6 @@ import { constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock } from '../storage/index-lock.js';
-import { withStoreLock } from '../storage/shared-store-lifecycle.js';
 import { commitDistanceToHead, getRemoteUrl, isWorkingTreeDirty } from '../storage/git.js';
 import {
   readRegistry,
@@ -33,13 +32,14 @@ import {
   commitGraphDir,
   resolveGraphPath,
   resolveSharedStore,
-  SHARED_STORE_POINTER,
   sharedStoreLayout,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from '../storage/shared-store.js';
 import {
   reclaimAfterSlotRemoval,
+  removeSharedStorePointer,
+  withStoreLock,
   writeSharedStorePointer,
 } from '../storage/shared-store-lifecycle.js';
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
@@ -100,6 +100,22 @@ const exists = (p: string): Promise<boolean> =>
     () => true,
     () => false,
   );
+
+/**
+ * Copy a graph file to `dest` via a unique `lbug.new.<id>` temp (swept by the
+ * slot lock if this process dies mid-copy), cloning copy-on-write where the
+ * filesystem supports it. On failure the temp is removed and the error thrown.
+ */
+const cloneGraphFile = async (source: string, dest: string): Promise<void> => {
+  const tmp = `${dest}.new.${randomUUID()}`;
+  try {
+    await fs.copyFile(source, tmp, fsConstants.COPYFILE_FICLONE);
+    await fs.rename(tmp, dest);
+  } catch (err) {
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+};
 
 interface CommitGraph {
   dir: string;
@@ -175,13 +191,9 @@ const seedFromLocalIndex = async (
   try {
     if (lock.lockFree || (await inspectLbugSidecars(sourceGraph)).kind !== 'clean') return false;
     await fs.mkdir(slot, { recursive: true });
-    const own = path.join(slot, LBUG_DIRECTORY);
-    const tmp = `${own}.new.${randomUUID()}`;
     try {
-      await fs.copyFile(sourceGraph, tmp, fsConstants.COPYFILE_FICLONE);
-      await fs.rename(tmp, own);
+      await cloneGraphFile(sourceGraph, path.join(slot, LBUG_DIRECTORY));
     } catch (err) {
-      await fs.rm(tmp, { force: true }).catch(() => {});
       log(`Shared store: could not copy ${sourceGraph} (${(err as Error).message}).`);
       return false;
     }
@@ -245,14 +257,10 @@ export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<
   const meta = await loadMeta(slot);
   if (!meta) return true;
   if (!(await exists(own))) {
-    // `lbug.new.<id>` is swept by the slot lock if this process dies mid-copy.
-    const tmp = `${own}.new.${randomUUID()}`;
     const started = Date.now();
     try {
-      await fs.copyFile(pointed, tmp, fsConstants.COPYFILE_FICLONE);
-      await fs.rename(tmp, own);
+      await cloneGraphFile(pointed, own);
     } catch (err) {
-      await fs.rm(tmp, { force: true }).catch(() => {});
       const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
       log(`Shared store: shared graph unavailable (${reason}); doing a full build.`);
       return false;
@@ -346,8 +354,6 @@ export const publishSharedGraph = async (
   await writeSharedStorePointer(repoPath, layout);
 };
 
-export { withStoreLock };
-
 /**
  * Store for a checkout that is not a linked worktree: the store named by
  * `--share-with`, or the one its registry entry already points into. Clones
@@ -414,7 +420,7 @@ export const leaveSharedStore = async (
   log: Log,
 ): Promise<void> => {
   await fs.rm(previousSlot, { recursive: true, force: true });
-  await fs.rm(path.join(repoPath, GITNEXUS_DIR, SHARED_STORE_POINTER), { force: true });
+  await removeSharedStorePointer(repoPath);
   await reclaimAfterSlotRemoval(previousSlot);
   log(`Shared store: left ${previousSlot}.`);
 };

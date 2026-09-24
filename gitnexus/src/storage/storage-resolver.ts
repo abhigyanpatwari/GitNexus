@@ -405,9 +405,8 @@ const inspectCodeIndexDB = async (
   // owning one; `resolveGraphPath` only returns a path inside the same store's
   // commit graphs, else the slot's own graph.
   const graphPath = resolveGraphPath(resolved);
-  const target = graphPath === lbugPath ? lbugPath : graphPath;
   try {
-    await fsp.access(target);
+    await fsp.access(graphPath);
     return { present: true };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;

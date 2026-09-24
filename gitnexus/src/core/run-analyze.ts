@@ -182,8 +182,8 @@ import {
   publishSharedGraph,
   resolveOptedInStore,
   seedSharedSlot,
-  withStoreLock,
 } from './shared-store-analyze.js';
+import { withStoreLock } from '../storage/shared-store-lifecycle.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,

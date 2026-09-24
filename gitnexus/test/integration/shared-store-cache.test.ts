@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { withStoreLock } from '../../src/core/shared-store-analyze.js';
+import { withStoreLock } from '../../src/storage/shared-store-lifecycle.js';
 import { loadMeta } from '../../src/storage/repo-manager.js';
 import {
   resolveSharedStore,
