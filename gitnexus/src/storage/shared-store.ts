@@ -23,11 +23,16 @@ import fs from 'fs';
 import path from 'path';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { getGlobalDir } from './global-dir.js';
-import { INDEX_METADATA_FILE, LBUG_DIRECTORY } from './storage-constants.js';
+import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from './storage-constants.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
 export const SHARED_STORE_ENV = 'GITNEXUS_SHARED_STORE';
 export const STORES_DIR = 'stores';
+/**
+ * Written into `<checkout>/.gitnexus/` when a checkout's index lives in a
+ * shared store, so tools that probe the checkout can find it (#3352 R16).
+ */
+export const SHARED_STORE_POINTER = 'store.json';
 
 // Same canonical form as storage-resolver's `storageSlotName`, so a checkout's
 // slot name does not depend on which spelling (symlink, 8.3 name) reached it.
@@ -226,4 +231,26 @@ export const resolveGraphPath = (storagePath: string): string => {
   const valid =
     path.basename(graph) === LBUG_DIRECTORY && isDirectChild(path.join(root, 'commits'), commitDir);
   return valid ? graph : own;
+};
+
+/**
+ * The store slot named by `<checkout>/.gitnexus/store.json`, or null. The
+ * recorded slot must be this checkout's own slot under the stores directory,
+ * so a copied or hand-edited pointer cannot redirect reads to another index.
+ */
+export const readSharedStorePointer = (checkoutPath: string): string | null => {
+  let recorded: unknown;
+  try {
+    recorded = (
+      JSON.parse(
+        fs.readFileSync(path.join(checkoutPath, GITNEXUS_DIR, SHARED_STORE_POINTER), 'utf-8'),
+      ) as { checkoutSlot?: unknown }
+    ).checkoutSlot;
+  } catch {
+    return null;
+  }
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return null;
+  const slot = path.resolve(recorded);
+  if (!storeRootOfCheckoutSlot(slot)) return null;
+  return path.basename(slot) === slotName(checkoutPath) ? slot : null;
 };

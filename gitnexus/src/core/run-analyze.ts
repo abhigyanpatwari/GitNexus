@@ -165,8 +165,14 @@ import {
   defaultStoragePath,
   requireRegisteredStoragePath,
   requireStoragePath,
+  resolveStoragePath,
 } from '../storage/storage-resolver.js';
-import { resolveSharedStore, type SharedStoreLayout } from '../storage/shared-store.js';
+import {
+  isSharedStoreDisabled,
+  resolveSharedStore,
+  storeRootOfCheckoutSlot,
+  type SharedStoreLayout,
+} from '../storage/shared-store.js';
 import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ensurePrivateSharedGraph,
@@ -1130,11 +1136,16 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   const storageRequirements = options.force
     ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
     : ANALYZE_STORAGE_REQUIREMENTS;
-  const sharedStore = options.noShare
+  const sharingOff = options.noShare || isSharedStoreDisabled();
+  const sharedStore = sharingOff
     ? undefined
     : (resolveSharedStore(repoPath) ?? (await resolveOptedInStore(repoPath, options.shareWith)));
+  // A checkout still registered in a store after sharing was turned off
+  // indexes into its own `.gitnexus` again; its slot is left for `clean --gc`.
+  const leavingStore =
+    !sharedStore && storeRootOfCheckoutSlot(resolveStoragePath(repoPath)) !== null;
   const explicitStorage =
-    sharedStore?.checkoutSlot ?? (options.noShare ? defaultStoragePath(repoPath) : undefined);
+    sharedStore?.checkoutSlot ?? (leavingStore ? defaultStoragePath(repoPath) : undefined);
   const storagePath = explicitStorage
     ? await requireRegisteredStoragePath(
         { path: repoPath, storagePath: explicitStorage },
@@ -1169,9 +1180,11 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     : {};
   const paths = getStoragePaths(repoPath, placement.branch, storagePath);
   const { metaPath } = paths;
-  // Analyze always writes a shared slot's own graph; a recorded `graphPath`
-  // only redirects readers.
-  const lbugPath = sharedStore ? path.join(path.dirname(metaPath), LBUG_DIRECTORY) : paths.lbugPath;
+  // Analyze always writes a store slot's own graph; a recorded `graphPath`
+  // (an immutable commit graph) only redirects readers.
+  const lbugPath = storeRootOfCheckoutSlot(storagePath)
+    ? path.join(path.dirname(metaPath), LBUG_DIRECTORY)
+    : paths.lbugPath;
   return {
     storagePath,
     repoHasGit,
@@ -1308,7 +1321,7 @@ export async function runFullAnalysis(
       if (flatShared) {
         await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
       } else if (slotToLeave) {
-        await leaveSharedStore(slotToLeave, log);
+        await leaveSharedStore(repoPath, slotToLeave, log);
       }
       return result;
     } finally {

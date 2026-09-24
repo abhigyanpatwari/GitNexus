@@ -36,8 +36,11 @@ import { t } from './i18n/index.js';
 import { getGlobalDir } from '../storage/global-dir.js';
 import { STORES_DIR } from '../storage/shared-store.js';
 import {
+  findLegacyLocalIndex,
   reclaimAfterSlotRemoval,
   reclaimSharedStore,
+  removeLegacyLocalIndex,
+  removeSharedStorePointer,
   type ReclaimResult,
 } from '../storage/shared-store-lifecycle.js';
 
@@ -154,6 +157,11 @@ const cleanStaleBranchSlots = async (force: boolean): Promise<void> => {
   }
 };
 
+const formatBytes = (bytes: number): string =>
+  bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : `${Math.ceil(bytes / 1024)} KB`;
+
 const reportReclaim = (result: ReclaimResult | null): void => {
   if (!result) return;
   if (result.removed.length > 0) {
@@ -192,9 +200,37 @@ export const cleanCommand = async (options?: {
   stale?: boolean;
   branch?: string;
   gc?: boolean;
+  localIndex?: boolean;
 }) => {
   if (options?.gc) {
     await collectSharedStores();
+    return;
+  }
+
+  // --local-index: delete a pre-adoption index left in <checkout>/.gitnexus
+  // after the checkout moved into a shared store (#3352). Keeps the pointer.
+  if (options?.localIndex) {
+    const repo = await findRepo(process.cwd());
+    if (!repo) {
+      console.log(t('clean.notFoundHere'));
+      return;
+    }
+    const legacy = await findLegacyLocalIndex(repo.repoPath, repo.storagePath);
+    if (!legacy) {
+      console.log(t('clean.localIndex.none'));
+      return;
+    }
+    if (!options.force) {
+      console.log(
+        t('clean.localIndex.preview', { path: legacy.dir, size: formatBytes(legacy.bytes) }),
+      );
+      console.log(`\n${t('common.runForceConfirm')}`);
+      return;
+    }
+    await removeLegacyLocalIndex(repo.repoPath, repo.storagePath);
+    console.log(
+      t('clean.localIndex.deleted', { path: legacy.dir, size: formatBytes(legacy.bytes) }),
+    );
     return;
   }
 
@@ -386,7 +422,9 @@ export const cleanCommand = async (options?: {
     await fs.rm(storagePath, { recursive: true, force: true });
     await unregisterRepo(repo.repoPath);
     console.log(t('common.deleted', { target: storagePath }));
-    reportReclaim(await reclaimAfterSlotRemoval(storagePath));
+    const reclaim = await reclaimAfterSlotRemoval(storagePath);
+    if (reclaim) await removeSharedStorePointer(repo.repoPath);
+    reportReclaim(reclaim);
   } catch (err) {
     logger.error({ err }, 'Failed to delete:');
   }

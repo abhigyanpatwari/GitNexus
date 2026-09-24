@@ -4,6 +4,8 @@
  * Shows the indexing status of the current repository.
  */
 
+import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
+import { describeSharedGraph, findLegacyLocalIndex } from '../storage/shared-store-lifecycle.js';
 import path from 'path';
 import {
   getStoragePaths,
@@ -349,6 +351,17 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       !isWorkingTreeDirty(repo.repoPath));
 
   const isUpToDate = metadataIsCurrent && contentIsCurrent;
+  // Shared sibling store (#3352): which graph this checkout reads, and any
+  // pre-adoption index still sitting in <repo>/.gitnexus.
+  const storeRoot = storeRootOfCheckoutSlot(repo.storagePath);
+  const sharedStore = storeRoot
+    ? {
+        key: path.basename(storeRoot),
+        graph: describeSharedGraph(resolveGraphPath(repo.storagePath), repo.storagePath),
+        commit: activeMeta.lastCommit,
+      }
+    : null;
+  const legacyLocalIndex = await findLegacyLocalIndex(repo.repoPath, repo.storagePath);
   if (options.json) {
     console.log(
       JSON.stringify({
@@ -369,6 +382,10 @@ export const statusCommand = async (options: StatusOptions = {}) => {
           runnerIdentity: currentRunnerIdentity,
         },
         contentDrift: describeContentDrift(contentDrift),
+        sharedStore,
+        legacyLocalIndex: legacyLocalIndex
+          ? { path: legacyLocalIndex.dir, bytes: legacyLocalIndex.bytes }
+          : null,
         status: isUpToDate ? 'up-to-date' : 'stale',
       }),
     );
@@ -382,6 +399,24 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     console.log(t('status.workspaceIndexLabel', { primary: repo.meta.branch ?? '' }));
   }
 
+  if (sharedStore) {
+    console.log(
+      sharedStore.graph === 'shared'
+        ? t('status.sharedStoreShared', {
+            key: sharedStore.key,
+            commit: sharedStore.commit.slice(0, 7),
+          })
+        : t('status.sharedStorePrivate', { key: sharedStore.key }),
+    );
+  }
+  if (legacyLocalIndex) {
+    console.log(
+      t('status.legacyLocalIndex', {
+        path: legacyLocalIndex.dir,
+        size: `${Math.ceil(legacyLocalIndex.bytes / 1024)} KB`,
+      }),
+    );
+  }
   console.log(`${t('status.indexed')}: ${new Date(activeMeta.indexedAt).toLocaleString()}`);
   console.log(`${t('status.indexedCommit')}: ${activeMeta.lastCommit?.slice(0, 7)}`);
   console.log(`${t('status.currentCommit')}: ${currentCommit?.slice(0, 7)}`);

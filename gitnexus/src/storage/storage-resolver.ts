@@ -9,13 +9,25 @@ import {
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,
 } from './storage-constants.js';
-import { resolveGraphPath, resolveSharedStore } from './shared-store.js';
+import {
+  readSharedStorePointer,
+  resolveGraphPath,
+  resolveSharedStore,
+  SHARED_STORE_POINTER,
+} from './shared-store.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
 export { STORAGE_PATH_ENV, STORAGE_ROOT_ENV };
 
 /** File-backend lock sidecars (`index-lock.ts`). Not ownership data. */
-const INDEX_LOCK_ARTIFACTS = new Set(['analyze.lock', 'analyze.lock.guard']);
+const INDEX_LOCK_ARTIFACTS = new Set([
+  'analyze.lock',
+  'analyze.lock.guard',
+  // A shared-store checkout's pointer (#3352) and the ignore file beside it
+  // are not index data either.
+  SHARED_STORE_POINTER,
+  '.gitignore',
+]);
 
 export type StorageState =
   | 'invalid_param'
@@ -314,6 +326,8 @@ export const resolveStoragePath = (repoPath: string): string => {
   // the store at analyze time; a read never switches to an empty slot.
   const shared = resolveSharedStore(resolvedRepoPath);
   if (shared && fs.existsSync(shared.checkoutSlot)) return shared.checkoutSlot;
+  const pointed = readSharedStorePointer(resolvedRepoPath);
+  if (pointed && fs.existsSync(pointed)) return pointed;
 
   return defaultStoragePath(resolvedRepoPath);
 };

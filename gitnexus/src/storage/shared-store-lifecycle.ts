@@ -16,10 +16,11 @@ import { acquireIndexLock, requireExclusiveIndexLock } from './index-lock.js';
 import { loadMeta } from './repo-meta.js';
 import {
   resolveSharedStore,
+  SHARED_STORE_POINTER,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from './shared-store.js';
-import { LBUG_DIRECTORY } from './storage-constants.js';
+import { GITNEXUS_DIR, LBUG_DIRECTORY } from './storage-constants.js';
 
 type StoreRoot = Pick<SharedStoreLayout, 'root'>;
 
@@ -155,3 +156,78 @@ export const describeSharedGraph = (
   path.resolve(graphPath) === path.join(path.resolve(storagePath), LBUG_DIRECTORY)
     ? 'private'
     : 'shared';
+
+/** Files a shared checkout keeps in `<checkout>/.gitnexus`; everything else there is legacy. */
+const POINTER_DIR_KEEP = new Set([SHARED_STORE_POINTER, '.gitignore']);
+
+/**
+ * Point `<checkout>/.gitnexus` at the checkout's store slot (#3352 R16). The
+ * directory's other contents — a pre-adoption index — are left untouched.
+ */
+export const writeSharedStorePointer = async (
+  checkoutPath: string,
+  layout: Pick<SharedStoreLayout, 'key' | 'checkoutSlot'>,
+): Promise<void> => {
+  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(
+    path.join(dir, SHARED_STORE_POINTER),
+    `${JSON.stringify({ version: 1, storeKey: layout.key, checkoutSlot: layout.checkoutSlot }, null, 2)}\n`,
+  );
+  await fs.writeFile(path.join(dir, '.gitignore'), '*\n', { flag: 'wx' }).catch(() => {});
+};
+
+/** Remove the pointer file (the directory stays if it holds anything else). */
+export const removeSharedStorePointer = async (checkoutPath: string): Promise<void> => {
+  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  await fs.rm(path.join(dir, SHARED_STORE_POINTER), { force: true });
+  const rest = await listDir(dir);
+  if (rest.length === 1 && rest[0] === '.gitignore')
+    await fs.rm(dir, { recursive: true, force: true });
+};
+
+const sizeOf = async (target: string): Promise<number> => {
+  const stat = await fs.lstat(target).catch(() => null);
+  if (!stat) return 0;
+  if (!stat.isDirectory()) return stat.size;
+  let total = 0;
+  for (const name of await listDir(target)) total += await sizeOf(path.join(target, name));
+  return total;
+};
+
+export interface LegacyLocalIndex {
+  dir: string;
+  entries: string[];
+  bytes: number;
+}
+
+/**
+ * A pre-adoption index left in `<checkout>/.gitnexus` after the checkout moved
+ * into a shared store (#3352 R13). Null when the checkout is not shared or
+ * the directory holds only the pointer.
+ */
+export const findLegacyLocalIndex = async (
+  checkoutPath: string,
+  storagePath: string,
+): Promise<LegacyLocalIndex | null> => {
+  if (!storeRootOfCheckoutSlot(storagePath)) return null;
+  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  const entries = (await listDir(dir)).filter((name) => !POINTER_DIR_KEEP.has(name));
+  if (entries.length === 0) return null;
+  let bytes = 0;
+  for (const name of entries) bytes += await sizeOf(path.join(dir, name));
+  return { dir, entries, bytes };
+};
+
+/** Delete a legacy local index, keeping the pointer. Returns what was removed. */
+export const removeLegacyLocalIndex = async (
+  checkoutPath: string,
+  storagePath: string,
+): Promise<LegacyLocalIndex | null> => {
+  const legacy = await findLegacyLocalIndex(checkoutPath, storagePath);
+  if (!legacy) return null;
+  for (const name of legacy.entries) {
+    await fs.rm(path.join(legacy.dir, name), { recursive: true, force: true });
+  }
+  return legacy;
+};

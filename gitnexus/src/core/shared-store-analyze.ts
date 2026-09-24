@@ -33,11 +33,15 @@ import {
   commitGraphDir,
   resolveGraphPath,
   resolveSharedStore,
+  SHARED_STORE_POINTER,
   sharedStoreLayout,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from '../storage/shared-store.js';
-import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
+import {
+  reclaimAfterSlotRemoval,
+  writeSharedStorePointer,
+} from '../storage/shared-store-lifecycle.js';
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { wipeLbugDbFiles } from './lbug/lbug-adapter.js';
 import { inspectLbugSidecars } from './lbug/sidecar-recovery.js';
@@ -339,6 +343,7 @@ export const publishSharedGraph = async (
   // The up-to-date fast path skips registration; a seeded or adopted checkout
   // must still end up registered at its slot.
   await registerRepo(repoPath, meta, { storagePath: slot });
+  await writeSharedStorePointer(repoPath, layout);
 };
 
 export { withStoreLock };
@@ -403,8 +408,13 @@ export const optedInSlotToLeave = async (repoPath: string): Promise<string | und
  * `<repo>/.gitnexus`: delete its old store slot and reclaim what only that
  * slot referenced.
  */
-export const leaveSharedStore = async (previousSlot: string, log: Log): Promise<void> => {
+export const leaveSharedStore = async (
+  repoPath: string,
+  previousSlot: string,
+  log: Log,
+): Promise<void> => {
   await fs.rm(previousSlot, { recursive: true, force: true });
+  await fs.rm(path.join(repoPath, GITNEXUS_DIR, SHARED_STORE_POINTER), { force: true });
   await reclaimAfterSlotRemoval(previousSlot);
   log(`Shared store: left ${previousSlot}.`);
 };

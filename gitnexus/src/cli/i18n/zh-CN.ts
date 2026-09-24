@@ -29,6 +29,10 @@ export const zhCN = {
   'list.clusters': '聚类',
   'list.processes': '流程',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': '共享索引：存储 {{key}}，提交 {{commit}} 的共享图',
+  'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改）',
+  'status.legacyLocalIndex':
+    '残留的本地索引：{{path}}（{{size}}）；使用 `gitnexus clean --local-index --force` 删除',
   'status.notGitRepo': '当前目录不是 git 仓库。',
   'status.staleKuzu': '仓库包含旧版本遗留的 KuzuDB 索引。',
   'status.rebuildLadybug': '运行：gitnexus analyze   （使用 LadybugDB 重建索引）',
@@ -64,6 +68,9 @@ export const zhCN = {
   'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
   'clean.gc.none': '没有可回收的共享存储。',
   'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
+  'clean.localIndex.none': '此检出中没有残留的本地索引。',
+  'clean.localIndex.preview': '将删除 {{path}} 处残留的本地索引（{{size}}）。共享索引不受影响。',
+  'clean.localIndex.deleted': '已删除 {{path}} 处残留的本地索引（{{size}}）。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
   'clean.branchNotIndexed':
     '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',

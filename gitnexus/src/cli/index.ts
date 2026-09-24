@@ -361,6 +361,10 @@ program
     'Drop shared-store checkouts whose worktree is gone and delete commit graphs nothing references',
   )
   .option(
+    '--local-index',
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
+  )
+  .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   )

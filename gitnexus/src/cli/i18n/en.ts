@@ -28,6 +28,10 @@ export const en = {
   'list.clusters': 'Clusters',
   'list.processes': 'Processes',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': 'Shared index: store {{key}}, shared graph for commit {{commit}}',
+  'status.sharedStorePrivate': 'Shared index: store {{key}}, private graph (local changes)',
+  'status.legacyLocalIndex':
+    'Leftover local index: {{path}} ({{size}}); remove it with `gitnexus clean --local-index --force`',
   'status.notGitRepo': 'Not a git repository.',
   'status.staleKuzu': 'Repository has a stale KuzuDB index from a previous version.',
   'status.rebuildLadybug': 'Run: gitnexus analyze   (rebuilds the index with LadybugDB)',
@@ -67,6 +71,10 @@ export const en = {
   'clean.gc.none': 'No shared stores to collect.',
   'clean.gc.store':
     'Shared store {{path}}: dropped {{members}} checkout(s), removed {{graphs}} commit graph(s).',
+  'clean.localIndex.none': 'No leftover local index in this checkout.',
+  'clean.localIndex.preview':
+    'This will delete the leftover local index at {{path}} ({{size}}). The shared index is not affected.',
+  'clean.localIndex.deleted': 'Deleted the leftover local index at {{path}} ({{size}}).',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
   'clean.branchNotIndexed':
     'No indexed branch named "{{branch}}" for this repository. Use `gitnexus clean --stale` to reclaim leftover branch indexes, or `gitnexus list` to see recorded names.',
