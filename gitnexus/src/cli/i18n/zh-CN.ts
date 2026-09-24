@@ -264,6 +264,9 @@ export const zhCN = {
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',
   'help.option.analyze.allowDuplicateName':
     '即使已有其他路径使用相同 --name 别名，也注册该仓库。会使两个路径的 `-r <name>` 产生歧义；请用 -r <path> 消除歧义。',
+  'help.option.analyze.shareWith':
+    '加入同一仓库已注册工作树的共享索引存储（名称或路径）；远程 URL 必须一致。之后的运行会记住此选择。',
+  'help.option.analyze.noShare': '离开共享索引存储，重新索引到 <repo>/.gitnexus',
   'help.option.verbose': '启用详细输出',
   'help.option.analyze.maxFileSize':
     '跳过大于该值的文件（KB）。默认：512。硬上限：32768（tree-sitter 限制）。',
@@ -300,6 +303,8 @@ export const zhCN = {
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
   'help.option.clean.stale': '回收已不是本地 head 的残留分支索引',
+  'help.option.clean.gc': '移除注册表不再使用的共享存储检出，并删除无人引用的提交图',
+  'help.option.clean.localIndex': '删除此检出迁入共享存储后遗留在 <repo>/.gitnexus 中的索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',

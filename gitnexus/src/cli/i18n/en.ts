@@ -287,6 +287,10 @@ export const en = {
     'Register this repo under a custom name in ~/.gitnexus/registry.json (disambiguates repos whose paths share a basename, e.g. two different .../app folders)',
   'help.option.analyze.allowDuplicateName':
     'Register this repo even if another path already uses the same --name alias. Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
+  'help.option.analyze.shareWith':
+    'Join the shared index store of a registered worktree of the same repository (name or path); the remote URL must match. Remembered for later runs.',
+  'help.option.analyze.noShare':
+    'Leave the shared index store and index into <repo>/.gitnexus again',
   'help.option.verbose': 'Enable verbose output',
   'help.option.analyze.maxFileSize':
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
@@ -326,6 +330,10 @@ export const en = {
   'help.option.clean.lbugSidecars':
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.clean.stale': 'Reclaim leftover branch indexes that are not a live local head',
+  'help.option.clean.gc':
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  'help.option.clean.localIndex':
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
