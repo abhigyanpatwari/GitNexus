@@ -1,4 +1,15 @@
-import { runSweep, runAlias, runOr, runThen, runElse } from './sweep';
+import {
+  runSweep,
+  runAlias,
+  runOr,
+  runThen,
+  runElse,
+  runChained,
+  runParen,
+  runLeft,
+  runAndLeft,
+  runAndRight,
+} from './sweep';
 
 type Handler = (env: unknown) => Promise<void>;
 
@@ -19,5 +30,27 @@ export async function logicalOr(env: { override?: Handler }) {
 
 export async function ternary(env: unknown, fast: boolean) {
   const run = fast ? runThen : runElse;
+  await run(env);
+}
+
+export async function chained(env: { a?: Handler; b?: Handler }) {
+  const run = env.a ?? env.b ?? runChained;
+  await run(env);
+}
+
+export async function parenthesized(env: { a?: Handler }) {
+  const run = (env.a ?? runParen);
+  await run(env);
+}
+
+export async function callableLeft(env: { fallback: Handler }) {
+  const run = runLeft ?? env.fallback;
+  await run(env);
+}
+
+// `&&` is not expanded into branches: a callable left operand is truthy, so
+// it is never the value. The assignment keeps its pre-#3354 single source.
+export async function logicalAnd(env: unknown) {
+  const run = runAndLeft && runAndRight;
   await run(env);
 }

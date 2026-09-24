@@ -39,6 +39,10 @@
     "captureGroups": 18,
     "digest": "194c1ca21a7d5d8d85cf9aecfdc4edd881c5d3447de1ad574b56cff5a411bab1"
   },
+  "ruby-callable-alternatives/app.rb": {
+    "captureGroups": 33,
+    "digest": "d3fe15a75710d65ed0d5116d9fcc7b6891e460ff037a478472fda999161aed49"
+  },
   "ruby-calls/lib/one_arg.rb": {
     "captureGroups": 8,
     "digest": "61300083e7a2e6d9a116c3975ddd3b78a593a9a0e397c252bedb160d481c20b7"

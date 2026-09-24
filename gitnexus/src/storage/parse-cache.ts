@@ -782,6 +782,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // `a || f`, and `c ? f : g`. Warm caches replay the pre-fix flow facts, which
 // have no flow for those assignments, so both stores re-extract. 105-111 are
 // claimed by open PR #3326 (Elixir).
+// Same v112: the `valueAlternatives` provider hook extends it to Kotlin
+// `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
+// Ruby multi-statement `if` one opaque source.
 const SCHEMA_BUMP = 112;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

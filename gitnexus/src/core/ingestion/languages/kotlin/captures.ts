@@ -89,7 +89,41 @@ const KOTLIN_CALLABLE_CAPTURE_OPTIONS = {
     return destination === undefined || source === undefined ? undefined : { destination, source };
   },
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
+  valueAlternatives: (node: SyntaxNode) => kotlinValueAlternatives(node),
 } as const;
+
+const isKotlinComment = (node: SyntaxNode): boolean =>
+  node.type === 'line_comment' || node.type === 'multiline_comment';
+
+/**
+ * Branches of a Kotlin value-selecting expression (#3354). `a ?: b` is a
+ * FIELDLESS `elvis_expression` (positional operands), so the shared
+ * field-based rule never saw it and only the last operand flowed. An
+ * `if_expression` fields its branches as `control_structure_body` wrappers:
+ * a wrapper holding one expression is that expression's value, anything
+ * else (a multi-statement block) keeps the whole `if` one opaque source.
+ */
+function kotlinValueAlternatives(node: SyntaxNode): readonly SyntaxNode[] | undefined {
+  if (node.type === 'elvis_expression') {
+    const operands = node.namedChildren.filter(
+      (child): child is SyntaxNode => child !== null && !isKotlinComment(child),
+    );
+    return operands.length === 2 ? operands : undefined;
+  }
+  if (node.type !== 'if_expression') return undefined;
+  const branches: SyntaxNode[] = [];
+  for (const field of ['consequence', 'alternative'] as const) {
+    const body = node.childForFieldName(field);
+    if (body === null) return [node];
+    const values = body.namedChildren.filter(
+      (child): child is SyntaxNode => child !== null && !isKotlinComment(child),
+    );
+    const [value] = values;
+    if (values.length !== 1 || value === undefined) return [node];
+    branches.push(value);
+  }
+  return branches;
+}
 
 export function emitKotlinScopeCaptures(
   sourceText: string,

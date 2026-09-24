@@ -19,6 +19,14 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+/**
+ * `&&` is not value-selecting for a callable, so #3354 leaves it on the single-
+ * source path: whatever the pre-#3354 capture (one seed for the last operand,
+ * qualified by the whole expression, byte-identical before and after this
+ * change) resolved to must stay exactly that: no edge at all.
+ */
+const PRE_3354_LOGICAL_AND_EDGES: string[] = [];
+
 describe('TypeScript callable chosen by ?? / || / ?:', () => {
   let result: PipelineResult;
 
@@ -49,5 +57,22 @@ describe('TypeScript callable chosen by ?? / || / ?:', () => {
 
   it('`c ? f : g` reaches both branches', () => {
     expect(calls()).toEqual(expect.arrayContaining(['ternary → runThen', 'ternary → runElse']));
+  });
+
+  it('a chain `a ?? b ?? fn` reaches fn', () => {
+    expect(calls()).toContain('chained → runChained');
+  });
+
+  it('a parenthesized `(a ?? fn)` reaches fn', () => {
+    expect(calls()).toContain('parenthesized → runParen');
+  });
+
+  it('a callable LEFT operand `fn ?? fallback` reaches fn', () => {
+    expect(calls()).toContain('callableLeft → runLeft');
+  });
+
+  it('`&&` is not expanded: its left operand gains no edge', () => {
+    const fromLogicalAnd = calls().filter((edge) => edge.startsWith('logicalAnd → '));
+    expect(fromLogicalAnd).toEqual(PRE_3354_LOGICAL_AND_EDGES);
   });
 });

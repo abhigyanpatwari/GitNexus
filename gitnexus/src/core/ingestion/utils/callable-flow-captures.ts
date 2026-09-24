@@ -47,6 +47,12 @@
  *   `extractAssignment` (Kotlin's `assignment`, Dart's
  *   `initialized_identifier`). Returning `undefined` falls back to the shared
  *   path, so one callback can handle the odd node and leave the rest alone.
+ * - A **fieldless or oddly-fielded** `??`/`?:`/elvis/ternary node is invisible
+ *   to the shared branch expansion, so only one operand (if any) flows.
+ *   Supply `valueAlternatives` (Kotlin's `elvis_expression`, Swift's
+ *   `nil_coalescing_expression`, Dart's `if_null_expression`, Python's
+ *   `conditional_expression`); return `[node]` to keep a statement-bodied
+ *   `if` opaque (Ruby).
  * - A binding needs a `SymbolDefinition` for the pass to attach to. Captures
  *   alone are not enough: without a `@declaration.*` for the bound name, the
  *   seed has no cell to key on.
@@ -150,6 +156,20 @@ export interface CallableFlowCaptureOptions {
         readonly qualifiedName?: string;
       }
     | undefined;
+  /**
+   * Provider-owned branches of a value-selecting expression (#3354). The
+   * shared rule only knows the field shapes `left`/`operator`/`right` (with a
+   * `??`/`||`/`or` operator) and `condition`/`consequence`/`alternative`; a
+   * grammar that spells the same construct differently (fieldless children,
+   * `value`/`if_nil`, `first`/`second`, a ternary without a `condition`
+   * field) supplies the branches here. Each returned branch is expanded again,
+   * so chains work. Returning `[node]` means "recognized, but opaque": the
+   * whole expression stays one source, which is how a provider keeps the
+   * shared ternary rule off a statement-bodied `if` whose branches are
+   * statement lists, not values. `undefined` falls back to the shared rule
+   * (mirrors `extractAssignment`).
+   */
+  readonly valueAlternatives?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
 }
 
 interface OperandSyntax {
@@ -216,7 +236,7 @@ export function synthesizeCallableFlowCaptures(
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
-    for (const source of valueAlternatives(assignment.source)) {
+    for (const source of valueAlternatives(assignment.source, options)) {
       emitAssignmentFact(
         { ...assignment, source },
         knownCallableNames,
@@ -596,29 +616,36 @@ function assignmentParts(
 }
 
 /** Operators whose result is one of their operands, not a computed value. */
-const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or', '?:']);
+const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or']);
 
 /**
  * The operands a value-selecting expression can evaluate to (#3354):
  * `a ?? b`, `a || b`, `a or b`, and `c ? a : b` each yield one of their
  * branches, so each branch flows into the destination. Anything else is its
  * own single alternative, which leaves every other source shape untouched.
+ * `options.valueAlternatives` is consulted first for grammars whose shape the
+ * field-based rule below cannot see.
  */
-function valueAlternatives(node: SyntaxNode): SyntaxNode[] {
+function valueAlternatives(node: SyntaxNode, options: CallableFlowCaptureOptions): SyntaxNode[] {
   let inner = node;
   while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
     inner = inner.namedChild(0)!;
   }
+  const provided = options.valueAlternatives?.(inner);
+  if (provided !== undefined) {
+    if (provided.length === 1 && provided[0]?.id === inner.id) return [node];
+    return provided.flatMap((branch) => valueAlternatives(branch, options));
+  }
   const consequence = inner.childForFieldName('consequence');
   const alternative = inner.childForFieldName('alternative');
   if (consequence !== null && alternative !== null && inner.childForFieldName('condition')) {
-    return [...valueAlternatives(consequence), ...valueAlternatives(alternative)];
+    return [...valueAlternatives(consequence, options), ...valueAlternatives(alternative, options)];
   }
   const left = inner.childForFieldName('left');
   const right = inner.childForFieldName('right');
   const operator = inner.childForFieldName('operator')?.type;
   if (left !== null && right !== null && operator && VALUE_SELECTING_OPERATORS.has(operator)) {
-    return [...valueAlternatives(left), ...valueAlternatives(right)];
+    return [...valueAlternatives(left, options), ...valueAlternatives(right, options)];
   }
   return [node];
 }
