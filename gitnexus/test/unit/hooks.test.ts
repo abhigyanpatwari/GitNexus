@@ -802,17 +802,22 @@ describe('PreToolUse concurrency guard', () => {
 
 // ─── Unit: stale-slot eviction never deletes or moves a live slot ──
 //
-// Eviction deletes a slot only while holding the per-slot `.evicting` marker
-// and only if the slot is still the exact file judged stale. Races are
-// driven deterministically: fs.writeFileSync is wrapped so a concurrent
-// action fires exactly when the marker is claimed — after inspection,
-// before the identity re-check.
+// Eviction deletes a slot only while its per-slot `.evicting` marker still
+// carries the evictor's own token, and only if the slot is still the exact
+// file judged stale. Markers are removed only after the same kind of check.
+// Races are driven deterministically: an fs call is wrapped so a concurrent
+// action fires at one exact point of the evictor's sequence.
 
 type AcquireHookSlot = (gitNexusDir: string) => (() => void) | null;
 type WriteFileArgs = Parameters<typeof fs.writeFileSync>;
+type ReadFileArgs = Parameters<typeof fs.readFileSync>;
+type LstatArgs = Parameters<typeof fs.lstatSync>;
 
 describe('acquireHookSlot stale-slot eviction', () => {
   const DEAD_PID = '2147483640';
+  // Another evictor's claim: a token this process never writes.
+  const FOREIGN_TOKEN = `${process.ppid}:ffffffffffffffff`;
+  const OWN_TOKEN = new RegExp(`^${process.pid}:[0-9a-f]{16}$`);
 
   for (const [label, lockPath] of [
     ['CJS', CJS_HOOK_LOCK],
@@ -831,6 +836,13 @@ describe('acquireHookSlot stale-slot eviction', () => {
       return { dir, lockDir, slot0, marker: `${slot0}.evicting` };
     };
 
+    // Another claimant replaces the marker (a stalled evictor's claim was
+    // broken and re-taken). Fresh mtime, different size: a new file.
+    const replaceMarker = (marker: string) => () => {
+      fs.rmSync(marker, { force: true });
+      fs.writeFileSync(marker, FOREIGN_TOKEN, { flag: 'wx' });
+    };
+
     // Runs `action` once, just before the real write to `target`.
     const onWriteTo = (target: string, action: () => void) => {
       const realWrite = fs.writeFileSync;
@@ -842,6 +854,46 @@ describe('acquireHookSlot stale-slot eviction', () => {
         fire?.();
         realWrite(...args);
       });
+    };
+
+    // Runs `action` once, just after the real write to `target`.
+    const afterWriteTo = (target: string, action: () => void) => {
+      const realWrite = fs.writeFileSync;
+      const pending = new Map([[target, action]]);
+      return vi.spyOn(fs, 'writeFileSync').mockImplementation((...args: WriteFileArgs) => {
+        realWrite(...args);
+        const key = String(args[0]);
+        const fire = pending.get(key);
+        pending.delete(key);
+        fire?.();
+      });
+    };
+
+    // Runs `action` once, just after the first real read of `target`.
+    const afterFirstReadOf = (target: string, action: () => void) => {
+      const realRead = fs.readFileSync;
+      const pending = new Map([[target, action]]);
+      return vi.spyOn(fs, 'readFileSync').mockImplementation(((...args: ReadFileArgs) => {
+        const out = realRead(...args);
+        const key = String(args[0]);
+        const fire = pending.get(key);
+        pending.delete(key);
+        fire?.();
+        return out;
+      }) as typeof fs.readFileSync);
+    };
+
+    // Runs `action` once, just before the first real lstat of `target`.
+    const beforeFirstLstatOf = (target: string, action: () => void) => {
+      const realLstat = fs.lstatSync;
+      const pending = new Map([[target, action]]);
+      return vi.spyOn(fs, 'lstatSync').mockImplementation(((...args: LstatArgs) => {
+        const key = String(args[0]);
+        const fire = pending.get(key);
+        pending.delete(key);
+        fire?.();
+        return realLstat(...args);
+      }) as typeof fs.lstatSync);
     };
 
     it(`${label}: evicts a dead-pid slot without renaming it or leaving a marker`, () => {
@@ -875,7 +927,9 @@ describe('acquireHookSlot stale-slot eviction', () => {
       });
       const release = loadAcquire()(dir);
       try {
-        expect(writeSpy).toHaveBeenCalledWith(marker, String(process.pid), { flag: 'wx' });
+        expect(writeSpy).toHaveBeenCalledWith(marker, expect.stringMatching(OWN_TOKEN), {
+          flag: 'wx',
+        });
         // The fresh lock survived with its owner intact…
         expect(fs.readFileSync(slot0, 'utf-8')).toBe(freshOwner);
         // …so this contender respected it and took the next slot instead.
@@ -893,15 +947,57 @@ describe('acquireHookSlot stale-slot eviction', () => {
       }
     });
 
+    it(`${label}: an evictor whose marker was replaced does not delete the slot`, () => {
+      const { dir, lockDir, slot0, marker } = makeLockDir();
+      // Right after this evictor claims the marker, it loses the claim (as if
+      // stalled past the orphan threshold and broken by another evictor).
+      const writeSpy = afterWriteTo(marker, replaceMarker(marker));
+      const release = loadAcquire()(dir);
+      try {
+        // The slot belongs to the new marker holder, not to this evictor…
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(DEAD_PID);
+        // …whose claim this evictor did not remove on the way out…
+        expect(fs.readFileSync(marker, 'utf-8')).toBe(FOREIGN_TOKEN);
+        // …and this contender moved on to the next slot.
+        expect(release).not.toBeNull();
+        expect(fs.readFileSync(path.join(lockDir, 'slot-1.lock'), 'utf-8')).toBe(
+          String(process.pid),
+        );
+      } finally {
+        writeSpy.mockRestore();
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: leaves a marker another evictor claimed during eviction`, () => {
+      const { dir, lockDir, slot0, marker } = makeLockDir();
+      // After this evictor's token check, just before its slot identity
+      // check, its marker passes to another claimant.
+      const lstatSpy = beforeFirstLstatOf(slot0, replaceMarker(marker));
+      const release = loadAcquire()(dir);
+      try {
+        expect(release).not.toBeNull();
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(String(process.pid));
+        // The finally block saw a foreign token and left the new claim alone.
+        expect(fs.readFileSync(marker, 'utf-8')).toBe(FOREIGN_TOKEN);
+        expect(fs.readdirSync(lockDir).sort()).toEqual(['slot-0.lock', 'slot-0.lock.evicting']);
+      } finally {
+        lstatSpy.mockRestore();
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it(`${label}: an evictor holding the marker blocks a second evictor`, () => {
       const { dir, lockDir, slot0, marker } = makeLockDir();
       // A concurrent evictor's fresh claim on slot-0.
-      fs.writeFileSync(marker, String(process.ppid), { flag: 'wx' });
+      fs.writeFileSync(marker, FOREIGN_TOKEN, { flag: 'wx' });
       const release = loadAcquire()(dir);
       try {
         // The stale slot is left to the marker holder, not deleted twice…
         expect(fs.readFileSync(slot0, 'utf-8')).toBe(DEAD_PID);
-        expect(fs.readFileSync(marker, 'utf-8')).toBe(String(process.ppid));
+        expect(fs.readFileSync(marker, 'utf-8')).toBe(FOREIGN_TOKEN);
         // …and this contender moved on to the next slot.
         expect(release).not.toBeNull();
         expect(fs.readFileSync(path.join(lockDir, 'slot-1.lock'), 'utf-8')).toBe(
@@ -929,6 +1025,30 @@ describe('acquireHookSlot stale-slot eviction', () => {
         expect(fs.readFileSync(slot0, 'utf-8')).toBe(String(process.pid));
         expect(fs.readdirSync(lockDir)).toEqual(['slot-0.lock']);
       } finally {
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: does not break a fresh marker that replaced a stale one`, () => {
+      const { dir, lockDir, slot0, marker } = makeLockDir();
+      fs.writeFileSync(marker, DEAD_PID, { flag: 'wx' });
+      fs.utimesSync(marker, 1000, 1000);
+      // Once the old marker has been judged stale, its holder finishes and a
+      // new evictor claims a fresh one before the orphan unlink.
+      const readSpy = afterFirstReadOf(marker, replaceMarker(marker));
+      const release = loadAcquire()(dir);
+      try {
+        // The fresh claim stands, and the slot is left to its holder…
+        expect(fs.readFileSync(marker, 'utf-8')).toBe(FOREIGN_TOKEN);
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(DEAD_PID);
+        // …while this contender took the next slot.
+        expect(release).not.toBeNull();
+        expect(fs.readFileSync(path.join(lockDir, 'slot-1.lock'), 'utf-8')).toBe(
+          String(process.pid),
+        );
+      } finally {
+        readSpy.mockRestore();
         release?.();
         fs.rmSync(dir, { recursive: true, force: true });
       }
