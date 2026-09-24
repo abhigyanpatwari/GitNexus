@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
+import { createRequire } from 'node:module';
 import path from 'path';
 import {
   loadParser,
@@ -9,8 +10,11 @@ import {
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { findEnclosingClassInfo } from '../../src/core/ingestion/utils/ast-helpers.js';
 import Parser from 'tree-sitter';
 import { vendoredGrammarDir } from '../../src/core/tree-sitter/vendored-grammars.js';
+
+const _require = createRequire(import.meta.url);
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -1006,6 +1010,151 @@ describe('Tree-sitter multi-language parsing', () => {
         const defs = extractDefinitions(matches);
         expect(defs.length, `${lang} (${fixture}) should have definitions`).toBeGreaterThan(0);
       }
+    });
+  });
+
+  const elixirPackageInstalled = (() => {
+    try {
+      _require.resolve('tree-sitter-elixir');
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  describe.skipIf(!elixirPackageInstalled)('Elixir', () => {
+    const elixirQueries = () => getProvider(SupportedLanguages.Elixir).treeSitterQueries;
+
+    async function loadElixir(): Promise<void> {
+      expect(isLanguageAvailable(SupportedLanguages.Elixir)).toBe(true);
+      await loadLanguage(SupportedLanguages.Elixir);
+    }
+
+    it('parses modules, functions, and protocols', async () => {
+      await loadElixir();
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const defs = extractDefinitions(matches);
+      const defTypes = defs.map((d) => d.type);
+      const defNames = defs.map((d) => d.name);
+
+      expect(defTypes).toContain('definition.class');
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.interface');
+
+      expect(defNames).toContain('MyApp.User');
+      expect(defNames).toContain('get');
+      expect(defNames).toContain('get_by_email');
+      expect(defNames).toContain('validate');
+      expect(defNames).toContain('create');
+      expect(defNames).toContain('MyApp.Serializable');
+    });
+
+    it('captures zero-arity and guarded declaration heads once', async () => {
+      await loadElixir();
+      const declarations = [
+        ['def zero_def, do: :ok', 'definition.function', 'zero_def'],
+        [
+          'def guarded_def(value) when is_binary(value), do: value',
+          'definition.function',
+          'guarded_def',
+        ],
+        ['defp zero_defp, do: :ok', 'definition.function', 'zero_defp'],
+        [
+          'defp guarded_defp(value) when is_binary(value), do: value',
+          'definition.function',
+          'guarded_defp',
+        ],
+        ['defmacro zero_macro, do: :ok', 'definition.macro', 'zero_macro'],
+        [
+          'defmacro guarded_macro(value) when is_binary(value), do: value',
+          'definition.macro',
+          'guarded_macro',
+        ],
+        ['defmacrop zero_macrop, do: :ok', 'definition.macro', 'zero_macrop'],
+        [
+          'defmacrop guarded_macrop(value) when is_binary(value), do: value',
+          'definition.macro',
+          'guarded_macrop',
+        ],
+        ['defguard zero_guard, do: true', 'definition.macro', 'zero_guard'],
+        [
+          'defguard guarded_guard(value) when is_binary(value)',
+          'definition.macro',
+          'guarded_guard',
+        ],
+        ['defguardp zero_guardp, do: true', 'definition.macro', 'zero_guardp'],
+        [
+          'defguardp guarded_guardp(value) when is_binary(value)',
+          'definition.macro',
+          'guarded_guardp',
+        ],
+        ['defdelegate zero_delegate, to: Remote', 'definition.function', 'zero_delegate'],
+      ] as const;
+      const { matches } = parseAndQuery(
+        parser,
+        declarations.map(([source]) => source).join('\n'),
+        elixirQueries(),
+      );
+      const definitions = extractDefinitions(matches).map(({ type, name }) => ({ type, name }));
+      const expected = declarations.map(([, type, name]) => ({ type, name }));
+      expect(definitions).toEqual(expected);
+    });
+
+    it('captures import/alias/use/require as @import', async () => {
+      await loadElixir();
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const importSources: string[] = [];
+      for (const match of matches) {
+        for (const c of match.captures) {
+          if (c.name === 'import.source') importSources.push(c.node.text);
+        }
+      }
+      expect(importSources).toEqual(['MyApp.Repo', 'Ecto.Query', 'Phoenix.LiveView', 'Logger']);
+    });
+
+    it('extracts real calls once and skips definitions/attributes', async () => {
+      await loadElixir();
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const provider = getProvider(SupportedLanguages.Elixir);
+      const callNames: string[] = [];
+      for (const match of matches) {
+        const captureMap: Record<string, any> = {};
+        for (const c of match.captures) {
+          captureMap[c.name] = c.node;
+        }
+        if (captureMap['call']) {
+          const extracted = provider.callExtractor?.extract(
+            captureMap['call'],
+            captureMap['call.name'],
+          );
+          if (extracted) callNames.push(extracted.calledName);
+        }
+      }
+
+      expect(callNames).toEqual(['get', 'from', 'one', 'changeset', 'insert']);
+    });
+
+    it('resolves defmodule as the enclosing owner for functions', async () => {
+      await loadElixir();
+      const { matches } = parseAndQuery(parser, readFixture('simple.ex'), elixirQueries());
+      const provider = getProvider(SupportedLanguages.Elixir);
+      let createNode: any;
+      for (const match of matches) {
+        const hasFunctionDef = match.captures.some((c: any) => c.name === 'definition.function');
+        const nameCapture = match.captures.find((c: any) => c.name === 'name');
+        if (hasFunctionDef && nameCapture?.node.text === 'create') {
+          createNode = nameCapture.node;
+        }
+      }
+
+      const owner = findEnclosingClassInfo(
+        createNode,
+        'lib/my_app/user.ex',
+        provider.resolveEnclosingOwner,
+        undefined,
+        provider.resolveFileTypeOwner,
+        provider.resolveContainerTypeOwner,
+      );
+      expect(owner?.className).toBe('MyApp.User');
     });
   });
 

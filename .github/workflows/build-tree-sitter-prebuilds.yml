@@ -219,8 +219,18 @@ jobs:
                 throw new Error('synchronize requires valid before/head SHAs; refusing an unbounded rebuild');
               }
             }
-            // Fail closed if either commit is unavailable. Never fall back to
-            // the cumulative PR diff, which would re-enable the loop.
+            // The checkout can be a PR merge ref and omit the previous PR-head
+            // commit despite fetch-depth: 0. Fetch the validated endpoint on
+            // demand; if that still fails, keep failing closed rather than
+            // falling back to the cumulative PR diff and re-enabling the loop.
+            for (const sha of [before, head]) {
+              try {
+                execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`]);
+              } catch {
+                execFileSync('git', ['fetch', '--no-tags', 'origin', sha]);
+                execFileSync('git', ['cat-file', '-e', `${sha}^{commit}`]);
+              }
+            }
             const changed = execFileSync('git', [
               'diff', '--name-only', '--no-renames', '-z', before, head, '--',
             ], { encoding: 'utf8' }).split('\0').filter(Boolean);

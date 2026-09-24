@@ -20,6 +20,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
 import { JAVA_TAINT_MODEL } from './java-model.js';
 import { PYTHON_TAINT_MODEL } from './python-model.js';
+import { ELIXIR_TAINT_MODEL } from './elixir-model.js';
 import { registerSourceSinkConfig } from './source-sink-registry.js';
 
 /**
@@ -135,6 +136,7 @@ export const BUILTIN_TAINT_MODELS = {
   [SupportedLanguages.Java]: JAVA_TAINT_MODEL,
   [SupportedLanguages.JavaScript]: TS_JS_TAINT_MODEL,
   [SupportedLanguages.Python]: PYTHON_TAINT_MODEL,
+  [SupportedLanguages.Elixir]: ELIXIR_TAINT_MODEL,
   [SupportedLanguages.TypeScript]: TS_JS_TAINT_MODEL,
 } as const satisfies Record<string, SourceSinkSanitizerSpec>;
 
@@ -145,7 +147,7 @@ export const BUILTIN_TAINT_MODELS = {
 export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
 
 /**
- * Register the built-in models for Java, TypeScript, JavaScript, and Python.
+ * Register the built-in models for Java, TypeScript, JavaScript, Python, and Elixir.
  * Explicit init seam for the U4 emit path (call before the pdg window
  * consumes the registry); idempotent. Other language ids remain unregistered
  * until they have a dedicated model.
@@ -155,4 +157,5 @@ export function registerBuiltinTaintModels(): void {
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.JavaScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.Python, PYTHON_TAINT_MODEL);
+  registerSourceSinkConfig(SupportedLanguages.Elixir, ELIXIR_TAINT_MODEL);
 }

@@ -257,6 +257,7 @@ describe('shouldIgnorePath', () => {
 describe('isHardcodedIgnoredDirectory', () => {
   it('returns true for known ignored directories', () => {
     expect(isHardcodedIgnoredDirectory('node_modules')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('deps')).toBe(false);
     expect(isHardcodedIgnoredDirectory('.git')).toBe(true);
     expect(isHardcodedIgnoredDirectory('dist')).toBe(true);
     expect(isHardcodedIgnoredDirectory('monaco-workers')).toBe(true);
@@ -579,6 +580,9 @@ describe('createIgnoreFilter', () => {
     // Simulate a Path-like object
     const mockPath = { name: 'node_modules', relative: () => 'node_modules' } as any;
     expect(filter.childrenIgnored(mockPath)).toBe(true);
+
+    const sourceDepsPath = { name: 'deps', relative: () => 'src/deps' } as any;
+    expect(filter.childrenIgnored(sourceDepsPath)).toBe(false);
 
     const srcPath = { name: 'src', relative: () => 'src' } as any;
     expect(filter.childrenIgnored(srcPath)).toBe(false);

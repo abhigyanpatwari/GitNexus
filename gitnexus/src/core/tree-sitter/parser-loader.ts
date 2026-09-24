@@ -197,6 +197,14 @@ const SOURCES: Record<string, GrammarSource> = {
       '`gitnexus/vendor/tree-sitter-zig`) failed to load. ' +
       'Likely cause: no prebuilt `.node` for this platform/architecture.',
   },
+  [SupportedLanguages.Elixir]: {
+    load: () => _require('tree-sitter-elixir'),
+    optional: true,
+    severity: 'error',
+    unavailableNote:
+      'Elixir parsing disabled: `tree-sitter-elixir` could not be loaded. ' +
+      'Try `npm rebuild tree-sitter-elixir` or reinstalling, then re-run analyze.',
+  },
 };
 
 /**

@@ -484,6 +484,7 @@ import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swi
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
 import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.ts';
 import { resolvePythonImportTarget } from '../../src/core/ingestion/languages/python/import-target.ts';
+import { elixirScopeResolver } from '../../src/core/ingestion/languages/elixir/scope-resolver.ts';
 import { makeJsResolveImportTarget } from '../../src/core/ingestion/languages/javascript/import-target.ts';
 import { makeVueResolveImportTarget } from '../../src/core/ingestion/languages/vue/import-target.ts';
 // The two `ScopeResolver`s, not their inner resolvers — see `RESOLVE_HOOK`.
@@ -600,6 +601,7 @@ const HEAP_BUDGETED = [
   'go',
   'cpp',
   'objc',
+  'elixir',
 ];
 // javascript, typescript and vue were budgeted here until #2953 and are now
 // BOUNDED, which is a demotion in gate strength and a promotion in what the
@@ -627,7 +629,7 @@ const HEAP_BUDGETED = [
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'elixir'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -759,6 +761,7 @@ const EXTENSION = {
   c: '.c',
   cpp: '.cpp',
   objc: '.m',
+  elixir: '.ex',
   zig: '.zig',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
@@ -883,6 +886,7 @@ function uniqueDir(lang, d, i) {
   // `resolutionConfig` load-bearing. Odd `i` is the header.
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `include/comp${d}` : `src/comp${d}`;
   if (lang === 'objc') return `src/comp${d}`;
+  if (lang === 'elixir') return `lib/App${d}`;
   if (lang === 'ruby') return `lib/mod${d}`;
   // One flat `src/mod{d}/` per index and NO nested slice, on purpose: a Zig
   // import is spelled RELATIVE TO THE IMPORTER, and `uniqueTarget` does not
@@ -979,6 +983,7 @@ function collideDir(lang, d, i) {
   if (lang === 'vue') return `src/pkg${d}/components`;
   if (lang === 'c' || lang === 'cpp') return i % 2 === 1 ? `svc${d}/include` : `svc${d}/src`;
   if (lang === 'objc') return `svc${d}/src`;
+  if (lang === 'elixir') return `lib/Svc${d}/App`;
   if (lang === 'ruby') return `svc${d}/lib/models`;
   // Rust's reasoning, verbatim: the resolver walks path components and probes
   // `.has()`, never searches, so file count is not an axis its cost has and a
@@ -1408,6 +1413,9 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
   if (lang === 'objc') {
     return local ? `comp${j % dirs}/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
   }
+  if (lang === 'elixir') {
+    return local ? `App${j % dirs}.file${j}` : `Vendor${(r >>> 4) % 97}.Missing`;
+  }
   if (lang === 'ruby') {
     return local
       ? `mod${d}/file${j}`
@@ -1640,6 +1648,9 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
   }
   if (lang === 'objc') {
     return local ? `src/file${j}.m` : `vendor${(r >>> 4) % 97}/missing.m`;
+  }
+  if (lang === 'elixir') {
+    return local ? `App.file${j}` : `Vendor${(r >>> 4) % 97}.Missing`;
   }
   if (lang === 'ruby') {
     // `models/mod{n}.rb` in every package. Ruby answers `require` from a keyed
@@ -1926,6 +1937,15 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'objc') {
     return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
+  if (lang === 'elixir') {
+    return elixirScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, { kind: 'namespace', localName: 'X', importedName: 'X', targetRaw: target }),
+    );
+  }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
     return resolveCsharpImportTarget(
       { kind: 'namespace', localName: '_', importedName: '_', targetRaw: target },
@@ -2147,6 +2167,7 @@ const HEAP_PROBE_TARGET = {
   python: 'vendor0.deep.missing',
   c: 'vendor0/missing.h',
   objc: 'vendor0/missing.m',
+  elixir: 'Vendor0.Missing',
   // The entries below cover the BOUNDED tier — see `HEAP_BOUNDED`, which
   // derives to cobol, swift and rust; the rest were promoted. Same rule as the
   // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
@@ -2346,6 +2367,14 @@ const CONTEXT_PROBE = {
       probeFile('Sources/Client/Main.swift', [['Class', 'Client.Main']]),
     ],
   },
+  elixir: {
+    from: 'lib/Client.ex',
+    target: 'Demo.Target',
+    parsedFiles: [
+      probeFile('lib/Client.ex', [['Class', 'Client']]),
+      probeFile('lib/Target.ex', [['Class', 'Demo.Target']]),
+    ],
+  },
 };
 
 /** Resolve the probe twice through `resolveOne` — once with the pass's parsed
@@ -2430,6 +2459,7 @@ const LANG_REGISTRY = {
   c: SupportedLanguages.C,
   cpp: SupportedLanguages.CPlusPlus,
   objc: SupportedLanguages.ObjectiveC,
+  elixir: SupportedLanguages.Elixir,
   zig: SupportedLanguages.Zig,
 };
 const LANGS = Object.keys(LANG_REGISTRY);

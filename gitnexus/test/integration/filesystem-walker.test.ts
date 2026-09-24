@@ -18,6 +18,8 @@ describe('filesystem-walker', () => {
     // Create test directory structure
     await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'src', 'components'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'src', 'deps', 'sample', 'lib'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'deps', 'sample', 'lib'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, 'node_modules', 'lodash'), { recursive: true });
     await fs.mkdir(path.join(tmpDir, '.git'), { recursive: true });
 
@@ -27,6 +29,15 @@ describe('filesystem-walker', () => {
       path.join(tmpDir, 'src', 'components', 'Button.tsx'),
       'export const Button = () => <div/>',
     );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'deps', 'sample', 'lib', 'sample.ex'),
+      'defmodule Sample do\nend\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'deps', 'sample', 'lib', 'sample.ex'),
+      'defmodule Dependency do\nend\n',
+    );
+    await fs.writeFile(path.join(tmpDir, 'mix.exs'), 'defmodule Fixture.MixProject do\nend\n');
     await fs.writeFile(
       path.join(tmpDir, 'node_modules', 'lodash', 'index.js'),
       'module.exports = {}',
@@ -65,6 +76,13 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(tmpDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths.every((p) => !p.includes('node_modules'))).toBe(true);
+    });
+
+    it('skips root Mix dependencies without excluding nested first-party deps directories', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+      expect(paths).not.toContain('deps/sample/lib/sample.ex');
+      expect(paths).toContain('src/deps/sample/lib/sample.ex');
     });
 
     it('skips .git directory', async () => {

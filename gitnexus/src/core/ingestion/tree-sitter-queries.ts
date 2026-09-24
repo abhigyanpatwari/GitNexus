@@ -2978,6 +2978,183 @@ export const ZIG_QUERIES = `
     member: (identifier) @call.name)) @call
 `;
 
+export const ELIXIR_QUERIES = `
+; ── Modules ──────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defmodule")
+  (arguments
+    (alias) @name)) @definition.class
+
+; ── Protocols ─────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defprotocol")
+  (arguments
+    (alias) @name)) @definition.interface
+
+; ── Public functions & macros ─────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+(call
+  target: (identifier) @_def (#eq? @_def "def")
+  (arguments (binary_operator left: (identifier) @name))) @definition.function
+
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defmacro")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defguard")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defdelegate")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+
+; ── Private functions & macros ────────────────────────────────────────────────
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (identifier) @name)) @definition.function
+
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.function
+(call
+  target: (identifier) @_def (#eq? @_def "defp")
+  (arguments (binary_operator left: (identifier) @name))) @definition.function
+
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defmacrop")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments
+    (call
+      target: (identifier) @name))) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (identifier) @name)) @definition.macro
+
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (binary_operator left: (call target: (identifier) @name)))) @definition.macro
+(call
+  target: (identifier) @_def (#eq? @_def "defguardp")
+  (arguments (binary_operator left: (identifier) @name))) @definition.macro
+
+
+; ── Imports: import/use/require ───────────────────────────────────────────────
+(call
+  target: (identifier) @_kw (#eq? @_kw "import")
+  (arguments
+    (alias) @import.source)) @import
+
+(call
+  target: (identifier) @_kw (#eq? @_kw "use")
+  (arguments
+    (alias) @import.source)) @import
+
+(call
+  target: (identifier) @_kw (#eq? @_kw "require")
+  (arguments
+    (alias) @import.source)) @import
+
+; ── Aliases ───────────────────────────────────────────────────────────────────
+(call
+  target: (identifier) @_kw (#eq? @_kw "alias")
+  (arguments
+    (alias) @import.source)) @import
+
+(call
+  target: (identifier) @_kw (#eq? @_kw "alias")
+  (arguments
+    (dot
+      left: (alias)
+      right: (tuple)) @import.source)) @import
+
+; ── Remote calls: Module.function() ──────────────────────────────────────────
+(call
+  target: (dot
+    left: (alias) @call.receiver
+    right: (identifier) @call.name)) @call
+
+; ── Local calls: function() — provider filters definitions/control-flow ───────
+(call
+  target: (identifier) @call.name) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 const OBJECTIVE_C_QUERIES = `((translation_unit) @objc.root)`;
@@ -3001,4 +3178,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
   [SupportedLanguages.Zig]: ZIG_QUERIES,
+  [SupportedLanguages.Elixir]: ELIXIR_QUERIES,
 };

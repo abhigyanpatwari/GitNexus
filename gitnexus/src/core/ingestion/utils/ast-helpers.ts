@@ -928,8 +928,10 @@ export const findEnclosingClassInfo = (
   /**
    * Optional: the type a CONTAINER node declares
    * (`LanguageProvider.resolveContainerTypeOwner`). Consulted for every
-   * `CLASS_CONTAINER_TYPES` node the walk meets, before the generic name-child
-   * derivation, for languages whose containers are named from context (a
+   * ancestor that reaches generic container resolution; it must return null
+   * for nodes it does not own.
+   * This supports languages whose containers are outside `CLASS_CONTAINER_TYPES`
+   * (for example, Elixir's `defmodule` call) or named from context (a
    * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
    * through to the generic derivation.
    */
@@ -1010,6 +1012,17 @@ export const findEnclosingClassInfo = (
         };
       }
     }
+    // Provider-owned containers may use grammar nodes outside the generic class
+    // list (Elixir's `defmodule` is a call). Returning null preserves fallback.
+    if (resolveContainerTypeOwner !== undefined) {
+      const containerOwner = resolveContainerTypeOwner(current, filePath);
+      if (containerOwner !== null) {
+        return {
+          classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
+          className: containerOwner.name,
+        };
+      }
+    }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {
       // Delegate language-specific container remapping to the provider hook.
       if (resolveEnclosingOwner) {
@@ -1031,19 +1044,6 @@ export const findEnclosingClassInfo = (
           // Provider remapped to a different node — re-evaluate from there.
           current = resolved;
           continue;
-        }
-      }
-
-      // A container the PROVIDER names from context (binding wrapper,
-      // enclosing callable, anonymous ordinal — Zig). The name is what the
-      // class-like node is minted under, so owner id == node id.
-      if (resolveContainerTypeOwner !== undefined) {
-        const containerOwner = resolveContainerTypeOwner(current, filePath);
-        if (containerOwner !== null) {
-          return {
-            classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
-            className: containerOwner.name,
-          };
         }
       }
 

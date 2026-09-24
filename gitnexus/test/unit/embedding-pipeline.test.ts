@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createRequire } from 'node:module';
 import { createHash } from 'crypto';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { SupportedLanguages } from 'gitnexus-shared';
 import {
   contentHashForNode,
   EMBEDDING_TEXT_VERSION,
@@ -16,9 +18,21 @@ import {
   STRUCTURAL_LABELS,
 } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
+import { extractStructuralNames } from '../../src/core/embeddings/structural-extractor.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 
 const CLASS_CHUNK_SIZE = 90;
 const CLASS_OVERLAP = 10;
+
+const _require = createRequire(import.meta.url);
+const elixirPackageInstalled = (() => {
+  try {
+    _require.resolve('tree-sitter-elixir');
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 describe('embedding schema column contracts', () => {
   it('does not query Objective-C protocol/category tables for an isExported column', () => {
@@ -32,6 +46,24 @@ describe('embedding schema column contracts', () => {
     expect(EMBEDDABLE_LABELS).toContain(LABEL_PROTOCOL);
     expect(EMBEDDABLE_LABELS).toContain(LABEL_CATEGORY);
   });
+
+  it.skipIf(!elixirPackageInstalled)(
+    'extracts defmodule methods without treating ordinary calls as declarations',
+    async () => {
+      expect(isLanguageAvailable(SupportedLanguages.Elixir)).toBe(true);
+
+      await expect(
+        extractStructuralNames(
+          'defmodule Example do\n  def run(value), do: value\nend',
+          'example.ex',
+        ),
+      ).resolves.toMatchObject({ methodNames: ['run'] });
+
+      await expect(
+        extractStructuralNames('configure do\n  def leaked(value), do: value\nend', 'example.ex'),
+      ).resolves.toMatchObject({ methodNames: [] });
+    },
+  );
 });
 
 // ────────────────────────────────────────────────────────────────────────────
