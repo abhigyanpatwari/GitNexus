@@ -6,6 +6,7 @@
  * LadybugDB connections are opened lazily per repo on first query.
  */
 
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -1902,7 +1903,7 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = path.join(storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(storagePath);
 
       const handle: RepoHandle = {
         id,

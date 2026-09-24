@@ -8,6 +8,8 @@
  * CORS is restricted to localhost, private/LAN networks, and the deployed site.
  */
 
+import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
+import { resolveGraphPath } from '../storage/shared-store.js';
 import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
 import express from 'express';
 import cors from 'cors';
@@ -918,7 +920,7 @@ export const handleQueryRequest = async (
       return;
     }
     if (respondIfAnalysisPending(entry, res)) return;
-    const lbugPath = path.join(entry.storagePath, 'lbug');
+    const lbugPath = resolveGraphPath(entry.storagePath);
     const { skipFts } = await loadFtsSession(entry.storagePath);
     const result = await withLbugDb(
       lbugPath,
@@ -1382,7 +1384,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       if (respondIfAnalysisPending(entry, res)) return;
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
       const { skipFts } = await loadFtsSession(entry.storagePath);
@@ -1475,7 +1477,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       if (respondIfAnalysisPending(entry, res)) return;
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const parsedLimit = Number(req.body.limit ?? 10);
       const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
       const limit = Number.isFinite(parsedLimit)
@@ -1682,7 +1684,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const repoRoot = path.resolve(entry.path);
       const { skipFts } = await loadFtsSession(entry.storagePath);
 
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const fileRows = await withLbugDb(
         lbugPath,
         () =>
@@ -2128,6 +2130,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
+            // Writes go to the slot's own graph; a shared-store checkout
+            // reading an immutable commit graph (#3352) takes a private copy.
+            if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
+              throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
+            }
             const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
             const ftsSession = await loadFtsSession(storagePath);
             let embeddingMeta = ftsSession.meta;

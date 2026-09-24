@@ -10,6 +10,7 @@
  * path is resolved relative to `import.meta.url`.
  */
 
+import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
 import path from 'path';
 import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
@@ -141,23 +142,33 @@ const waitForSettledIndex = async (
         return false;
       }
 
-      const lbugPath = path.resolve(probeRoot, LBUG_DIRECTORY);
-      const lbugRel = path.relative(storageRoot, lbugPath);
-      if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
-        return false;
-      }
-      const lbugStat = statSync(lbugPath);
-
       const metaPath = path.resolve(probeRoot, INDEX_METADATA_FILE);
       const metaRel = path.relative(storageRoot, metaPath);
       if (metaRel.startsWith('..') || path.isAbsolute(metaRel)) {
         return false;
       }
       const metaStat = statSync(metaPath);
+      if (metaStat.mtimeMs < jobStartMs) return false;
 
-      if (lbugStat.mtimeMs < jobStartMs || metaStat.mtimeMs < jobStartMs) {
+      // A shared-store checkout slot (#3352) may point at an immutable commit
+      // graph, published consolidated and never rewritten, instead of owning a
+      // graph file. Fresh metadata naming an existing commit graph is settled.
+      const storeRoot = probeRoot === storageRoot ? storeRootOfCheckoutSlot(storageRoot) : null;
+      if (storeRoot) {
+        const graph = path.resolve(resolveGraphPath(storageRoot));
+        const graphRel = path.relative(path.join(storeRoot, 'commits'), graph);
+        if (!graphRel.startsWith('..') && !path.isAbsolute(graphRel) && graphRel !== '') {
+          return existsSync(graph);
+        }
+      }
+
+      const lbugPath = path.resolve(probeRoot, LBUG_DIRECTORY);
+      const lbugRel = path.relative(storageRoot, lbugPath);
+      if (lbugRel.startsWith('..') || path.isAbsolute(lbugRel)) {
         return false;
       }
+      const lbugStat = statSync(lbugPath);
+      if (lbugStat.mtimeMs < jobStartMs) return false;
 
       return ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every((name) => {
         const sidePath = path.resolve(probeRoot, name);

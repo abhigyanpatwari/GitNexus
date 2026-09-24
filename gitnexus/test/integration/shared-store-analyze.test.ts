@@ -121,6 +121,37 @@ describe('shared sibling store analyze (#3352)', () => {
     expect(validated.map((e) => e.path)).toEqual(expect.arrayContaining([wtA, wtB]));
   }, 180_000);
 
+  it('Covers AE1: MCP opens one database for three checkouts on one commit graph', async () => {
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    for (const checkout of [main, wtA, wtB]) {
+      await runFullAnalysis(checkout, {}, { onProgress: () => {} });
+    }
+    const graphs = [main, wtA, wtB].map(
+      (c) => getStoragePaths(c, undefined, layoutOf(c).checkoutSlot).lbugPath,
+    );
+    expect(new Set(graphs).size).toBe(1);
+
+    const { initLbug, closeLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const savedTrace = process.env.GITNEXUS_POOL_RSS_TRACE;
+    process.env.GITNEXUS_POOL_RSS_TRACE = '1';
+    const traces: string[] = [];
+    const write = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+      if (String(chunk).startsWith('[pool-rss]')) traces.push(String(chunk));
+      return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+    }) as typeof process.stderr.write;
+    try {
+      for (const [i, graph] of graphs.entries()) await initLbug(`shared-${i}`, graph);
+    } finally {
+      process.stderr.write = write;
+      if (savedTrace === undefined) delete process.env.GITNEXUS_POOL_RSS_TRACE;
+      else process.env.GITNEXUS_POOL_RSS_TRACE = savedTrace;
+      await closeLbug();
+    }
+    const last = traces.filter((t) => t.includes(' init ')).pop();
+    expect(last).toMatch(/pool=3 dbCache=1 /);
+  }, 240_000);
+
   it('serves a sibling the same relative file paths from the shared graph', async () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     await runFullAnalysis(wtA, {}, { onProgress: () => {} });
