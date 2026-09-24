@@ -209,4 +209,22 @@ describe('syncPluginManifests (#2445)', () => {
 
     expect(pkg.default.scripts.version).toBe('node scripts/sync-plugin-manifests.mjs');
   });
+
+  it('stages the synced manifest surfaces in the detached rc release commit', () => {
+    const workflow = readFileSync(
+      path.resolve(__dirname, '..', '..', '..', '.github', 'workflows', 'publish.yml'),
+      'utf8',
+    );
+    const start = workflow.indexOf('# The synced manifest surfaces (#2445)');
+    const end = workflow.indexOf('git commit -m "release: ${VTAG}"', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const releaseCommit = workflow.slice(start, end);
+    // The step runs in gitnexus/, so repo-root surfaces are staged as `../<path>`.
+    const staged = [...releaseCommit.matchAll(/\.\.\/(\S+\.json)/g)].map(([, file]) => file);
+
+    // `--check` reads the working tree, so a surface synced but not staged
+    // passes CI while the v<version> tag's tree keeps the previous version.
+    expect(staged).toEqual(expect.arrayContaining([...SURFACES, FACTORY_MCP]));
+  });
 });

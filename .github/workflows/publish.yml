@@ -692,7 +692,10 @@ jobs:
           git add ../gitnexus-claude-plugin/.claude-plugin/plugin.json \
             ../.claude-plugin/marketplace.json \
             ../gitnexus-claude-plugin/.codex-plugin/plugin.json \
-            ../.agents/plugins/marketplace.json
+            ../.agents/plugins/marketplace.json \
+            ../gitnexus-factory-plugin/.factory-plugin/plugin.json \
+            ../gitnexus-factory-plugin/mcp.json \
+            ../.factory-plugin/marketplace.json
           git commit -m "release: ${VTAG}" --allow-empty
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "Detached release commit: $RELEASE_SHA"
