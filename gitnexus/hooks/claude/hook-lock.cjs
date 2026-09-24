@@ -28,28 +28,40 @@ function readMarkerToken(marker) {
   }
 }
 
+// Stat and token of a marker, both taken from one open descriptor so they
+// describe the same file (a path stat followed by a path read could straddle
+// a replacement). O_NOFOLLOW where the platform has it: a marker is always a
+// regular file this module created. Returns null when there is no marker.
+function readMarkerSnapshot(marker) {
+  let fd;
+  try {
+    fd = fs.openSync(marker, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    return { stat: fs.fstatSync(fd, { bigint: true }), token: fs.readFileSync(fd, 'utf-8') };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
 // Break an evictor's claim marker only if it is an orphan: older than
 // HOOK_LOCK_EVICT_MARKER_STALE_MS, and still the exact file (identity and
 // owner token) judged old when it is re-checked just before the unlink. A
 // marker released and re-created by a new claimant in between is fresh, so
 // it fails the check and stays.
 function breakOrphanedMarker(marker) {
-  let seen;
-  let seenToken;
+  const seen = readMarkerSnapshot(marker);
+  if (!seen || Date.now() - Number(seen.stat.mtimeMs) <= HOOK_LOCK_EVICT_MARKER_STALE_MS) return;
+  const now = readMarkerSnapshot(marker);
+  if (!now || !sameSlotFile(now.stat, seen.stat) || now.token !== seen.token) return;
   try {
-    seen = fs.lstatSync(marker, { bigint: true });
-    if (Date.now() - Number(seen.mtimeMs) <= HOOK_LOCK_EVICT_MARKER_STALE_MS) return;
-    seenToken = fs.readFileSync(marker, 'utf-8');
-  } catch {
-    return; // no marker
-  }
-  try {
-    if (
-      sameSlotFile(fs.lstatSync(marker, { bigint: true }), seen) &&
-      readMarkerToken(marker) === seenToken
-    ) {
-      fs.unlinkSync(marker);
-    }
+    fs.unlinkSync(marker);
   } catch {
     /* another contender already cleared it */
   }

@@ -810,7 +810,7 @@ describe('PreToolUse concurrency guard', () => {
 
 type AcquireHookSlot = (gitNexusDir: string) => (() => void) | null;
 type WriteFileArgs = Parameters<typeof fs.writeFileSync>;
-type ReadFileArgs = Parameters<typeof fs.readFileSync>;
+type OpenArgs = Parameters<typeof fs.openSync>;
 type LstatArgs = Parameters<typeof fs.lstatSync>;
 
 describe('acquireHookSlot stale-slot eviction', () => {
@@ -869,18 +869,17 @@ describe('acquireHookSlot stale-slot eviction', () => {
       });
     };
 
-    // Runs `action` once, just after the first real read of `target`.
-    const afterFirstReadOf = (target: string, action: () => void) => {
-      const realRead = fs.readFileSync;
-      const pending = new Map([[target, action]]);
-      return vi.spyOn(fs, 'readFileSync').mockImplementation(((...args: ReadFileArgs) => {
-        const out = realRead(...args);
-        const key = String(args[0]);
-        const fire = pending.get(key);
-        pending.delete(key);
-        fire?.();
-        return out;
-      }) as typeof fs.readFileSync);
+    // Runs `action` once, just before the second real open of `target` — i.e.
+    // between a marker snapshot (open + fstat + read) and its re-check.
+    const beforeSecondOpenOf = (target: string, action: () => void) => {
+      const realOpen = fs.openSync;
+      let targetOpens = 0;
+      return vi.spyOn(fs, 'openSync').mockImplementation(((...args: OpenArgs) => {
+        const isTarget = String(args[0]) === target;
+        targetOpens += Number(isTarget);
+        [action].filter(() => isTarget && targetOpens === 2).forEach((fire) => fire());
+        return realOpen(...args);
+      }) as typeof fs.openSync);
     };
 
     // Runs `action` once, just before the first real lstat of `target`.
@@ -1036,7 +1035,7 @@ describe('acquireHookSlot stale-slot eviction', () => {
       fs.utimesSync(marker, 1000, 1000);
       // Once the old marker has been judged stale, its holder finishes and a
       // new evictor claims a fresh one before the orphan unlink.
-      const readSpy = afterFirstReadOf(marker, replaceMarker(marker));
+      const readSpy = beforeSecondOpenOf(marker, replaceMarker(marker));
       const release = loadAcquire()(dir);
       try {
         // The fresh claim stands, and the slot is left to its holder…
