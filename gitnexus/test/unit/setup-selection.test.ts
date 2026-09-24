@@ -101,7 +101,7 @@ describe('setupCommand coding-agent selection', () => {
     expect(process.exitCode).toBe(1);
     expect(stderr).toHaveBeenCalledWith(
       expect.stringContaining(
-        'Valid values: cursor, claude, antigravity, opencode, codebuddy, qoder, codex',
+        'Valid values: cursor, claude, antigravity, opencode, codebuddy, qoder, codex, droid',
       ),
     );
     await expect(

@@ -248,40 +248,35 @@ function storageSlotName(repoPath) {
   return `${basename}-${digest}`;
 }
 
+// Definedness matches the CLI's storage-resolver.ts: any value other than
+// undefined (including '') counts as configured.
 function envOverridesStorage() {
-  const envPath = process.env[STORAGE_PATH_ENV];
-  const envRoot = process.env[STORAGE_ROOT_ENV];
-  return (
-    (typeof envPath === 'string' && envPath.length > 0) ||
-    (typeof envRoot === 'string' && envRoot.length > 0)
-  );
+  return process.env[STORAGE_PATH_ENV] !== undefined || process.env[STORAGE_ROOT_ENV] !== undefined;
 }
 
+// A set-but-invalid override (empty, relative, or containing NUL) makes
+// storage unresolvable (the CLI's storage-resolver.ts throws); never fall
+// back to the registry row. A filesystem root is invalid only for
+// GITNEXUS_STORAGE_PATH (validateConfiguredStoragePath rejects it);
+// GITNEXUS_STORAGE_ROOT accepts a filesystem root — storagePathFromRoot
+// resolves the slot directly under it.
 function resolveEntryStoragePath(entry) {
   const envPath = process.env[STORAGE_PATH_ENV];
-  if (
-    typeof envPath === 'string' &&
-    envPath.length > 0 &&
-    !envPath.includes('\0') &&
-    path.isAbsolute(envPath)
-  ) {
+  if (envPath !== undefined) {
+    if (!envPath || envPath.includes('\0') || !path.isAbsolute(envPath)) return null;
     const resolved = path.resolve(envPath);
-    if (path.isAbsolute(resolved)) return resolved;
+    // validateConfiguredStoragePath rejects a filesystem root.
+    return path.basename(resolved) ? resolved : null;
   }
 
   const envRoot = process.env[STORAGE_ROOT_ENV];
-  if (
-    typeof envRoot === 'string' &&
-    envRoot.length > 0 &&
-    !envRoot.includes('\0') &&
-    path.isAbsolute(envRoot)
-  ) {
+  if (envRoot !== undefined) {
+    if (!envRoot || envRoot.includes('\0') || !path.isAbsolute(envRoot)) return null;
     const root = path.resolve(envRoot);
     const slot = storageSlotName(entry.path);
-    if (slot) {
-      const storagePath = path.join(root, slot);
-      if (samePath(path.dirname(storagePath), root)) return storagePath;
-    }
+    if (!slot) return null;
+    const storagePath = path.join(root, slot);
+    return samePath(path.dirname(storagePath), root) ? storagePath : null;
   }
 
   if (entry.storagePath !== undefined) {
