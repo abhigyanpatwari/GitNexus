@@ -745,8 +745,11 @@ describe('setupDroid (Factory)', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    process.env.HOME = originalHome;
-    process.env.USERPROFILE = originalUserProfile;
+    // Assigning undefined would set the string "undefined"; delete instead.
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = originalUserProfile;
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 

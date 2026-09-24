@@ -44,10 +44,15 @@ const BUNDLED_GUARDS = [
   'registry-query.cjs',
 ] as const;
 
-// Empty GITNEXUS_HOME so behavior tests never read the developer's real
-// ~/.gitnexus/registry.json.
+// Empty GITNEXUS_HOME and no storage overrides, so behavior tests never pick
+// up the developer's real registry or storage config.
 function isolatedEnv(binDir: string, home: string) {
-  return { ...hookEnv(binDir), GITNEXUS_HOME: home };
+  return {
+    ...hookEnv(binDir),
+    GITNEXUS_HOME: home,
+    GITNEXUS_STORAGE_PATH: '',
+    GITNEXUS_STORAGE_ROOT: '',
+  };
 }
 
 const require_ = createRequire(import.meta.url);
@@ -259,9 +264,33 @@ describe('Factory Execute pattern parser', () => {
     ['rg -t ts UserService src/', 'UserService'],
     ['rg --glob "*.ts" UserService', 'UserService'],
     ['rg ab src/', null],
+    // rg/grep only counts at command position, not as an argument.
+    ['echo rg UserService', null],
+    // -f reads patterns from a file; later positionals are paths.
+    ['rg -f patterns.txt src/', null],
+    ['grep --file=patterns.txt src/', null],
   ])('extracts %j from %j', (command, expected) => {
     expect(parseRgGrepPattern(command)).toBe(expected);
   });
+
+  // Same parser as the Cursor adapter; fails if either copy drifts.
+  it.each(['tokenizeShellWords', 'parseRgGrepPattern'])(
+    '%s is identical to the Cursor adapter',
+    (name) => {
+      const fnSource = (file: string) => {
+        const src = fs.readFileSync(file, 'utf-8');
+        const start = src.indexOf(`function ${name}(`);
+        return src.slice(start, src.indexOf('\n}\n', start) + 3);
+      };
+      const cursor = path.join(
+        REPO_ROOT,
+        'gitnexus-cursor-integration',
+        'hooks',
+        'gitnexus-hook.cjs',
+      );
+      expect(fnSource(HOOK)).toBe(fnSource(cursor));
+    },
+  );
 });
 
 // ─── Behavior: early-exit paths (no augment spawned) ────────────────

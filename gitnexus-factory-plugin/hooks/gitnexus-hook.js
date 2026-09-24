@@ -69,8 +69,6 @@ function tokenizeShellWords(command) {
         quote = null;
       } else if (char === '\\') {
         const next = command[index + 1];
-        // Inside double quotes a backslash only escapes these four; otherwise
-        // it is a literal character (so Windows paths survive intact).
         if (next === '$' || next === '`' || next === '"' || next === '\\') {
           escaped = true;
         } else {
@@ -84,7 +82,13 @@ function tokenizeShellWords(command) {
     }
 
     if (char === '\\') {
-      escaped = true;
+      const next = command[index + 1];
+      if (next === undefined || /\s/.test(next) || next === "'" || next === '"' || next === '\\') {
+        escaped = true;
+      } else {
+        current += '\\' + next;
+        index += 1;
+      }
       hasToken = true;
     } else if (char === "'" || char === '"') {
       quote = char;
@@ -93,6 +97,17 @@ function tokenizeShellWords(command) {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
+    } else if (char === ';' || char === '|' || char === '&') {
+      if (hasToken) tokens.push(current);
+      current = '';
+      hasToken = false;
+      const next = command[index + 1];
+      if ((char === '|' || char === '&') && next === char) {
+        tokens.push(char + char);
+        index += 1;
+      } else {
+        tokens.push(char);
+      }
     } else {
       current += char;
       hasToken = true;
@@ -111,41 +126,116 @@ function parseRgGrepPattern(cmd) {
   let skipNext = false;
   let skipNextAsPattern = false;
   let endOfOptions = false;
+  let explicitPatternSeen = false;
+  let patternFileSeen = false;
   const flagsWithValues = new Set([
     '-e',
     '-f',
+    '--file',
     '-m',
+    '--max-count',
     '-A',
     '-B',
     '-C',
     '-g',
     '--glob',
+    '--iglob',
     '-t',
     '--type',
     '--include',
     '--exclude',
+    '--encoding',
+    '--path',
   ]);
+  const rgValueFlags = new Set(['-r', '--replace']);
   const patternFlags = new Set(['-e', '--regexp']);
+  const connectors = new Set(['&&', '||', ';', '|', '&']);
+  const wrappers = new Set([
+    'npx',
+    'bunx',
+    'pnpm',
+    'yarn',
+    'npm',
+    'sudo',
+    'env',
+    'command',
+    'time',
+    'nice',
+    'xargs',
+    'dlx',
+    'exec',
+    'run',
+    'git',
+  ]);
+  const wrapperFlagsWithValues = new Set([
+    '--package',
+    '-p',
+    '--call',
+    '--prefix',
+    '--shell',
+    '--filter',
+    '--workspace',
+    '--dir',
+    '--cwd',
+  ]);
+  const basename = (token) =>
+    token
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.(exe|cmd|bat)$/i, '');
 
+  let previousToken;
+  let seenWrapper = false;
+  let searchCommand = null;
   for (const token of tokens) {
     if (skipNext) {
       skipNext = false;
       if (skipNextAsPattern) {
-        return token.length >= 3 ? token : null;
+        skipNextAsPattern = false;
+        if (token.length >= 3) return token;
       }
+      previousToken = token;
       continue;
     }
     if (!foundCmd) {
-      // Match on the basename so absolute paths (`/usr/bin/rg`) and Windows
-      // `rg.exe` count as the command.
-      const commandName = token
-        .split(/[\\/]/)
-        .pop()
-        ?.replace(/\.exe$/i, '');
-      if (commandName === 'rg' || commandName === 'grep') foundCmd = true;
+      if (connectors.has(token)) {
+        seenWrapper = false;
+        previousToken = token;
+        continue;
+      }
+      const commandName = basename(token);
+      if (wrappers.has(commandName)) {
+        seenWrapper = true;
+        previousToken = token;
+        continue;
+      }
+      if (seenWrapper && token.startsWith('-')) {
+        const flagName = token.split('=', 1)[0];
+        if (!token.includes('=') && wrapperFlagsWithValues.has(flagName)) skipNext = true;
+        previousToken = token;
+        continue;
+      }
+      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        previousToken = token;
+        continue;
+      }
+      const atCommandPosition =
+        previousToken === undefined ||
+        connectors.has(previousToken) ||
+        wrappers.has(basename(previousToken)) ||
+        seenWrapper;
+      if (atCommandPosition && (commandName === 'rg' || commandName === 'grep')) {
+        foundCmd = true;
+        searchCommand = commandName;
+      } else if (seenWrapper) {
+        seenWrapper = false;
+      }
+      previousToken = token;
       continue;
     }
+    previousToken = token;
     if (endOfOptions) {
+      if (explicitPatternSeen || patternFileSeen) continue;
       return token.length >= 3 ? token : null;
     }
     if (token === '--') {
@@ -153,16 +243,39 @@ function parseRgGrepPattern(cmd) {
       continue;
     }
     if (token.startsWith('-')) {
-      const attachedPattern = token.match(/^--regexp=(.+)$/) || token.match(/^-e(.+)$/);
-      if (attachedPattern) {
-        return attachedPattern[1].length >= 3 ? attachedPattern[1] : null;
+      if (token === '-f' || token === '--file') {
+        skipNext = true;
+        patternFileSeen = true;
+        continue;
       }
-      if (flagsWithValues.has(token) || patternFlags.has(token)) {
+      if (token.startsWith('--file=')) {
+        patternFileSeen = true;
+        continue;
+      }
+      if (token.startsWith('--regexp=')) {
+        explicitPatternSeen = true;
+        const value = token.slice('--regexp='.length);
+        if (value.length >= 3) return value;
+        continue;
+      }
+      const attachedPattern = token.match(/^-e(.+)$/);
+      if (attachedPattern) {
+        explicitPatternSeen = true;
+        if (attachedPattern[1].length >= 3) return attachedPattern[1];
+        continue;
+      }
+      if (
+        flagsWithValues.has(token) ||
+        patternFlags.has(token) ||
+        (searchCommand === 'rg' && rgValueFlags.has(token))
+      ) {
         skipNext = true;
         skipNextAsPattern = patternFlags.has(token);
+        if (skipNextAsPattern) explicitPatternSeen = true;
       }
       continue;
     }
+    if (explicitPatternSeen || patternFileSeen) continue;
     return token.length >= 3 ? token : null;
   }
   return null;
