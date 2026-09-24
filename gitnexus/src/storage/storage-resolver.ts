@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
@@ -10,11 +9,9 @@ import {
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,
 } from './storage-constants.js';
+import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
-export const STORAGE_PATH_ENV = 'GITNEXUS_STORAGE_PATH';
-export const STORAGE_ROOT_ENV = 'GITNEXUS_STORAGE_ROOT';
-
-const STORAGE_SLOT_HASH_LENGTH = 12;
+export { STORAGE_PATH_ENV, STORAGE_ROOT_ENV };
 
 /** File-backend lock sidecars (`index-lock.ts`). Not ownership data. */
 const INDEX_LOCK_ARTIFACTS = new Set(['analyze.lock', 'analyze.lock.guard']);
@@ -211,37 +208,13 @@ const comparablePath = (value: string): string => {
   return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
 };
 
-const sanitizeSlotBasename = (value: string): string => {
-  // Linear: a quantified `/[. ]+$/` on attacker-controlled basenames is
-  // js/polynomial-redos (CodeQL #1056). Cap first, then walk the tail once.
-  const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
-  let end = sanitized.length;
-  while (end > 0) {
-    const code = sanitized.charCodeAt(end - 1);
-    if (code !== 0x20 && code !== 0x2e) break;
-    end--;
-  }
-  const candidate = sanitized.slice(0, end) || 'repository';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
-    ? `repository-${candidate}`
-    : candidate;
-};
-
 /**
  * Stable slot name for one checkout inside a configured external storage root.
  * The canonical absolute path prevents symlink aliases from creating duplicate
  * slots, while the hash keeps same-basename repositories isolated.
  */
-export const storageSlotName = (repoPath: string): string => {
-  const canonical = canonicalRepoPath(repoPath);
-  const identity = process.platform === 'win32' ? canonical.toLowerCase() : canonical;
-  const basename = sanitizeSlotBasename(path.basename(canonical));
-  const digest = createHash('sha256')
-    .update(identity)
-    .digest('hex')
-    .slice(0, STORAGE_SLOT_HASH_LENGTH);
-  return `${basename}-${digest}`;
-};
+export const storageSlotName = (repoPath: string): string =>
+  slotNameForCanonicalPath(canonicalRepoPath(repoPath));
 
 export const defaultStoragePath = (repoPath: string): string =>
   path.join(resolveRepoPath(repoPath), GITNEXUS_DIR);
