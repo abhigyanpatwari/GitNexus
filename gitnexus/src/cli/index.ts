@@ -145,6 +145,12 @@ program
     'Register this repo even if another path already uses the same --name alias. ' +
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   )
+  .option(
+    '--share-with <repo>',
+    'Join the shared index store of a registered worktree of the same repository ' +
+      '(name or path); the remote URL must match. Remembered for later runs.',
+  )
+  .option('--no-share', 'Leave the shared index store and index into <repo>/.gitnexus again')
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(
     '--max-file-size <kb>',

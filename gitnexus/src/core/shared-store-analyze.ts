@@ -21,14 +21,23 @@ import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock } from '../storage/index-lock.js';
 import { withStoreLock } from '../storage/shared-store-lifecycle.js';
-import { commitDistanceToHead, isWorkingTreeDirty } from '../storage/git.js';
-import { registerRepo, saveMeta } from '../storage/repo-manager.js';
+import { commitDistanceToHead, getRemoteUrl, isWorkingTreeDirty } from '../storage/git.js';
+import {
+  readRegistry,
+  registerRepo,
+  resolveRegistryEntry,
+  saveMeta,
+} from '../storage/repo-manager.js';
 import { loadMeta, type RepoMeta } from '../storage/repo-meta.js';
 import {
   commitGraphDir,
   resolveGraphPath,
+  resolveSharedStore,
+  sharedStoreLayout,
+  storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from '../storage/shared-store.js';
+import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { wipeLbugDbFiles } from './lbug/lbug-adapter.js';
 import { inspectLbugSidecars } from './lbug/sidecar-recovery.js';
@@ -333,3 +342,69 @@ export const publishSharedGraph = async (
 };
 
 export { withStoreLock };
+
+/**
+ * Store for a checkout that is not a linked worktree: the store named by
+ * `--share-with`, or the one its registry entry already points into. Clones
+ * only join by explicit opt-in (#3352 R2), and only when their normalized
+ * remote URL matches the member they name (R3).
+ */
+export const resolveOptedInStore = async (
+  repoPath: string,
+  shareWith: string | undefined,
+): Promise<SharedStoreLayout | undefined> => {
+  const entries = await readRegistry();
+  if (shareWith) {
+    let target;
+    try {
+      target = resolveRegistryEntry(entries, shareWith);
+    } catch {
+      throw new Error(`--share-with: "${shareWith}" is not a registered repository.`);
+    }
+    const root = storeRootOfCheckoutSlot(target.storagePath);
+    if (!root) {
+      throw new Error(
+        `--share-with: "${shareWith}" does not use a shared index store. ` +
+          'Name a linked worktree of the repository (analyze it first).',
+      );
+    }
+    const remote = getRemoteUrl(repoPath);
+    if (!remote || remote !== target.remoteUrl) {
+      throw new Error(
+        `--share-with: remote URL mismatch — this checkout is "${remote ?? '(no origin remote)'}", ` +
+          `"${target.name}" is "${target.remoteUrl ?? '(no origin remote)'}". ` +
+          'Only clones of the same repository can share an index store.',
+      );
+    }
+    return sharedStoreLayout(path.basename(root), repoPath);
+  }
+  const own = entries.find((e) => path.resolve(e.path) === path.resolve(repoPath));
+  const root = own ? storeRootOfCheckoutSlot(own.storagePath) : null;
+  return root ? sharedStoreLayout(path.basename(root), repoPath) : undefined;
+};
+
+/**
+ * The store slot a checkout is registered at, for `--no-share`. Linked
+ * worktrees always share (turn sharing off with GITNEXUS_SHARED_STORE=off),
+ * so only an opted-in clone can leave.
+ */
+export const optedInSlotToLeave = async (repoPath: string): Promise<string | undefined> => {
+  if (resolveSharedStore(repoPath)) {
+    throw new Error(
+      '--no-share: linked worktrees always use the shared index store. ' +
+        'Set GITNEXUS_SHARED_STORE=off to index every checkout into its own .gitnexus.',
+    );
+  }
+  return (await resolveOptedInStore(repoPath, undefined))?.checkoutSlot;
+};
+
+/**
+ * After a successful `--no-share` run re-registered the checkout at
+ * `<repo>/.gitnexus`: delete its old store slot and reclaim what only that
+ * slot referenced.
+ */
+export const leaveSharedStore = async (previousSlot: string, log: Log): Promise<void> => {
+  await fs.rm(previousSlot, { recursive: true, force: true });
+  await reclaimAfterSlotRemoval(previousSlot);
+  log(`Shared store: left ${previousSlot}.`);
+};

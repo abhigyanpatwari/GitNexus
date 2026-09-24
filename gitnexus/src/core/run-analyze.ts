@@ -162,6 +162,7 @@ import {
 import {
   ANALYZE_FORCE_STORAGE_REQUIREMENTS,
   ANALYZE_STORAGE_REQUIREMENTS,
+  defaultStoragePath,
   requireRegisteredStoragePath,
   requireStoragePath,
 } from '../storage/storage-resolver.js';
@@ -170,7 +171,10 @@ import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import {
   ensurePrivateSharedGraph,
   listStoreMetaRoots,
+  leaveSharedStore,
+  optedInSlotToLeave,
   publishSharedGraph,
+  resolveOptedInStore,
   seedSharedSlot,
   withStoreLock,
 } from './shared-store-analyze.js';
@@ -538,6 +542,13 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Join the shared store of this registered worktree (name or path), after
+   * checking the remote URL matches (#3352). Persisted through the registry.
+   */
+  shareWith?: string;
+  /** Leave the shared store and index into `<repo>/.gitnexus` (#3352). */
+  noShare?: boolean;
   /**
    * Worker pool size override, threaded from the CLI `--workers` flag.
    * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
@@ -1119,10 +1130,14 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   const storageRequirements = options.force
     ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
     : ANALYZE_STORAGE_REQUIREMENTS;
-  const sharedStore = resolveSharedStore(repoPath) ?? undefined;
-  const storagePath = sharedStore
+  const sharedStore = options.noShare
+    ? undefined
+    : (resolveSharedStore(repoPath) ?? (await resolveOptedInStore(repoPath, options.shareWith)));
+  const explicitStorage =
+    sharedStore?.checkoutSlot ?? (options.noShare ? defaultStoragePath(repoPath) : undefined);
+  const storagePath = explicitStorage
     ? await requireRegisteredStoragePath(
-        { path: repoPath, storagePath: sharedStore.checkoutSlot },
+        { path: repoPath, storagePath: explicitStorage },
         storageRequirements,
       )
     : await requireStoragePath(repoPath, storageRequirements);
@@ -1281,6 +1296,7 @@ export async function runFullAnalysis(
       }
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
       if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
         repoPath,
         options,
@@ -1291,6 +1307,8 @@ export async function runFullAnalysis(
       );
       if (flatShared) {
         await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
+      } else if (slotToLeave) {
+        await leaveSharedStore(slotToLeave, log);
       }
       return result;
     } finally {
