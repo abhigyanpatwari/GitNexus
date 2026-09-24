@@ -252,6 +252,37 @@ describe('getNextStepHint (via tool call response)', () => {
     // The actual hint logic is tested via the integration path.
     expect(backend.callTool).not.toHaveBeenCalled(); // not called until request
   });
+
+  const QUERY_HINT_BASE =
+    '\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>", repo: "demo"}) to see categorized refs and process participation.';
+
+  it('query hint is unchanged when include_content is not set', async () => {
+    const backend = createMockBackend({
+      callTool: vi.fn().mockResolvedValue({ processes: [] }),
+    });
+    const { text } = await callToolThroughServer(backend, 'query', {
+      search_query: 'auth',
+      repo: 'demo',
+    });
+    expect(text.endsWith(QUERY_HINT_BASE)).toBe(true);
+    expect(text).not.toContain('context({uid:');
+  });
+
+  it('query hint names the context({uid, include_content}) fallback when include_content is true', async () => {
+    const backend = createMockBackend({
+      callTool: vi.fn().mockResolvedValue({ processes: [] }),
+    });
+    const { text } = await callToolThroughServer(backend, 'query', {
+      search_query: 'auth',
+      repo: 'demo',
+      include_content: true,
+    });
+    expect(
+      text.endsWith(
+        `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`,
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('MCP output budgets', () => {

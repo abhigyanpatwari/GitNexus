@@ -5,6 +5,8 @@
  * Aggregation already pushes a hub onto every owning process. This helper
  * is the last shaping step: slice each process to `max_symbols`, keep one
  * row per `(id, process_id)`, then set `symbol_count` from those rows.
+ * `content` stays only on the first row for each symbol id so a hub in
+ * many flows does not repeat its source text.
  */
 
 export type QueryProcessAttach = {
@@ -55,6 +57,7 @@ export function shapeQueryProcessAttaches<S extends QueryProcessAttach>(
 ): { processes: QueryProcessCard[]; process_symbols: S[] } {
   const { maxSymbolsPerProcess, chainByProcessId } = options;
   const seen = new Set<string>();
+  const contentSeen = new Set<string>();
   const process_symbols: S[] = [];
   const countByProcess = new Map<string, number>();
 
@@ -63,8 +66,16 @@ export function shapeQueryProcessAttaches<S extends QueryProcessAttach>(
       const key = attachPairKey(s.id, s.process_id);
       if (seen.has(key)) continue;
       seen.add(key);
-      const row =
-        p.entryPointId && s.id === p.entryPointId ? ({ ...s, is_entry_point: true } as S) : s;
+      let row: S = s;
+      if (s.content !== undefined) {
+        if (contentSeen.has(s.id)) {
+          const { content: _content, ...rest } = s;
+          row = rest as S;
+        } else {
+          contentSeen.add(s.id);
+        }
+      }
+      if (p.entryPointId && s.id === p.entryPointId) row = { ...row, is_entry_point: true };
       process_symbols.push(row);
       countByProcess.set(s.process_id, (countByProcess.get(s.process_id) ?? 0) + 1);
     }
