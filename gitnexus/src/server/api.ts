@@ -17,7 +17,7 @@ import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
 import { resolveGraphPath } from '../storage/shared-store.js';
 import {
   reclaimAfterSlotRemoval,
-  withCheckoutSlotLock,
+  removeCheckoutStorage,
 } from '../storage/shared-store-lifecycle.js';
 import express from 'express';
 import cors from 'cors';
@@ -1328,9 +1328,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {}
 
         // 1. Delete the .gitnexus index/storage directory
-        await withCheckoutSlotLock(storagePath, () =>
-          fs.rm(storagePath, { recursive: true, force: true }),
-        ).catch(() => {});
+        await removeCheckoutStorage(storagePath).catch(() => {});
         await reclaimAfterSlotRemoval(storagePath);
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.

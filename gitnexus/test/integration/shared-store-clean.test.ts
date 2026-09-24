@@ -1,5 +1,5 @@
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -136,6 +136,32 @@ describe('shared store clean (#3352)', () => {
       expect(existsSync(path.join(wt, '.gitnexus', 'store.json'))).toBe(false);
     }
     expect(existsSync(layoutOf(wtA).root)).toBe(false);
+  }, 240_000);
+
+  it('deletes the slot directory last, after unregistering and removing the pointer', async () => {
+    await analyze(wtA);
+    const slot = layoutOf(wtA).checkoutSlot;
+    const pointer = path.join(wtA, '.gitnexus', 'store.json');
+    const registry = path.join(tmpHome.dbPath, 'registry.json');
+    expect(readFileSync(registry, 'utf-8')).toContain(JSON.stringify(wtA).slice(1, -1));
+    const seen: { pointer: boolean; registered: boolean }[] = [];
+    const realRm = fs.rm;
+    const rm = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      if (String(target) === slot) {
+        seen.push({
+          pointer: existsSync(pointer),
+          registered: readFileSync(registry, 'utf-8').includes(JSON.stringify(wtA).slice(1, -1)),
+        });
+      }
+      return realRm(target, options);
+    });
+    try {
+      await cleanIn(wtA, { force: true });
+    } finally {
+      rm.mockRestore();
+    }
+    expect(seen).toEqual([{ pointer: false, registered: false }]);
+    expect(existsSync(slot)).toBe(false);
   }, 240_000);
 
   it('previews without --force and deletes nothing', async () => {
@@ -305,6 +331,21 @@ describe('reclaimSharedStore', () => {
     }
     const after = await reclaimSharedStore(layout().root, { gc: true });
     expect(after.droppedMembers).toEqual([slot]);
+  });
+
+  it('clean --gc preview does not count a slot whose index lock is held', async () => {
+    const slot = await member('busy-000000000000', { repoPath: '/nonexistent/checkout' });
+    const { acquireIndexLock } = await import('../../src/storage/index-lock.js');
+    const lock = await acquireIndexLock(slot);
+    try {
+      const preview = await reclaimSharedStore(layout().root, { gc: true, dryRun: true });
+      expect(preview.droppedMembers).toEqual([]);
+    } finally {
+      lock.release();
+    }
+    const after = await reclaimSharedStore(layout().root, { gc: true, dryRun: true });
+    expect(after.droppedMembers).toEqual([slot]);
+    expect(existsSync(slot)).toBe(true);
   });
 
   it('counts references correctly when GITNEXUS_HOME is relative', async () => {

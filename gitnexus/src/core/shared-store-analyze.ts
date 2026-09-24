@@ -485,8 +485,9 @@ export const leaveSharedStore = async (
   try {
     requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${previousSlot}.`);
     await registerLeftStore(repoPath, newStoragePath);
-    await fs.rm(previousSlot, { recursive: true, force: true });
     await removeSharedStorePointer(repoPath);
+    // Last: the file lock backend keeps its lock file inside this directory.
+    await fs.rm(previousSlot, { recursive: true, force: true });
   } finally {
     lock.release();
   }

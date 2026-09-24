@@ -124,13 +124,10 @@ export const reclaimSharedStoreLocked = async (
   if (opts.gc) {
     const orphans = await orphanMembers(slots);
     for (const slot of [...orphans]) {
-      if (opts.dryRun) {
-        result.droppedMembers.push(slot);
-        continue;
-      }
       // An analyze holds its slot's index lock until it has registered the
       // checkout, so a slot that is seeded but not yet registered is busy,
-      // not orphaned. Judge and delete only a slot whose lock is free.
+      // not orphaned. Judge (and, unless previewing, delete) only a slot
+      // whose lock is free, so the preview matches what --force would do.
       let lock: IndexLockHandle;
       try {
         lock = await acquireIndexLock(slot, { timeoutMs: 1 });
@@ -143,7 +140,7 @@ export const reclaimSharedStoreLocked = async (
           orphans.delete(slot);
           continue;
         }
-        await fs.rm(slot, { recursive: true, force: true });
+        if (!opts.dryRun) await fs.rm(slot, { recursive: true, force: true });
         result.droppedMembers.push(slot);
       } finally {
         lock.release();
@@ -319,25 +316,31 @@ export const removeLegacyLocalIndex = async (
 };
 
 /**
- * Run `fn` (delete a slot, unregister its checkout) under the slot's index
- * lock when `storagePath` is a shared-store checkout slot, then remove
- * `checkoutPath`'s store pointer before releasing it. An analyze holds that
- * lock until it has registered the checkout and written its pointer, so it
- * cannot re-register a slot this removes, write into it, or have its new
- * pointer deleted afterwards. Other storage runs `fn` directly, as before.
+ * Delete a checkout's index storage and run `unregister`. For a shared-store
+ * checkout slot this happens under the slot's index lock, which an analyze
+ * holds until it has registered the checkout and written its pointer, so it
+ * cannot re-register a removed slot, write into it, or have its new pointer
+ * deleted. There `unregister` and removing `checkoutPath`'s pointer run
+ * first and the slot directory goes last: the file lock backend keeps its
+ * lock file inside that directory, so nothing may depend on the lock after
+ * it is deleted. Other storage is deleted, then unregistered, as before.
  */
-export const withCheckoutSlotLock = async <T>(
+export const removeCheckoutStorage = async (
   storagePath: string,
-  fn: () => Promise<T>,
+  unregister: () => Promise<void> = async () => {},
   checkoutPath?: string,
-): Promise<T> => {
-  if (!storeRootOfCheckoutSlot(storagePath)) return fn();
+): Promise<void> => {
+  if (!storeRootOfCheckoutSlot(storagePath)) {
+    await fs.rm(storagePath, { recursive: true, force: true });
+    await unregister();
+    return;
+  }
   const lock = await acquireIndexLock(storagePath);
   try {
     requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${storagePath}.`);
-    const result = await fn();
+    await unregister();
     if (checkoutPath) await removeSharedStorePointer(checkoutPath);
-    return result;
+    await fs.rm(storagePath, { recursive: true, force: true });
   } finally {
     lock.release();
   }

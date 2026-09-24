@@ -40,7 +40,7 @@ import {
   reclaimAfterSlotRemoval,
   reclaimSharedStore,
   removeLegacyLocalIndex,
-  withCheckoutSlotLock,
+  removeCheckoutStorage,
   type ReclaimResult,
 } from '../storage/shared-store-lifecycle.js';
 
@@ -385,14 +385,7 @@ export const cleanCommand = async (options?: {
     for (const entry of entries) {
       try {
         const storagePath = await requireDeletableStoragePath(entry);
-        await withCheckoutSlotLock(
-          storagePath,
-          async () => {
-            await fs.rm(storagePath, { recursive: true, force: true });
-            await unregisterRepo(entry.path);
-          },
-          entry.path,
-        );
+        await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
         reportReclaim(await reclaimAfterSlotRemoval(storagePath));
       } catch (err) {
@@ -438,14 +431,7 @@ export const cleanCommand = async (options?: {
   }
 
   try {
-    await withCheckoutSlotLock(
-      storagePath,
-      async () => {
-        await fs.rm(storagePath, { recursive: true, force: true });
-        await unregisterRepo(repo.repoPath);
-      },
-      repo.repoPath,
-    );
+    await removeCheckoutStorage(storagePath, () => unregisterRepo(repo.repoPath), repo.repoPath);
     console.log(t('common.deleted', { target: storagePath }));
     reportReclaim(await reclaimAfterSlotRemoval(storagePath));
   } catch (err) {
