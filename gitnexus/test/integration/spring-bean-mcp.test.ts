@@ -14,12 +14,19 @@ const KOTLIN_BEAN_ID = 'Class:src/KotlinBillingService.kt:KotlinBillingService';
 const PLAIN_ID = 'Class:src/PlainUtility.java:PlainUtility';
 const NON_JAVA_ID = 'Class:src/AppProvider.ts:AppProvider';
 const CONFLICT_ID = 'Class:src/ConflictingBean.java:ConflictingBean';
+const FACTORY_METHOD_ID = 'Method:src/AppConfiguration.java:AppConfiguration.billingService#0';
+const FACTORY_BEAN_ID = `CodeElement:spring-bean:${FACTORY_METHOD_ID}`;
+const FACTORY_REASON =
+  'spring-bean-factory:{"names":["billingService","billingAlias"],"namesKnown":true,"providedType":"BillingService"}';
 const SEED = [
   `CREATE (c:Class {id:'${BEAN_ID}', name:'BillingService', filePath:'src/BillingService.java', startLine:0, endLine:3, isExported:false, content:'class BillingService {}', description:'', frameworkAnnotations:['org.springframework.stereotype.Service']})`,
   `CREATE (c:Class {id:'${KOTLIN_BEAN_ID}', name:'KotlinBillingService', filePath:'src/KotlinBillingService.kt', startLine:0, endLine:3, isExported:false, content:'class KotlinBillingService', description:'', frameworkAnnotations:['org.springframework.stereotype.Service']})`,
   `CREATE (c:Class {id:'${PLAIN_ID}', name:'PlainUtility', filePath:'src/PlainUtility.java', startLine:0, endLine:1, isExported:false, content:'class PlainUtility {}', description:'', frameworkAnnotations:[]})`,
   `CREATE (c:Class {id:'${NON_JAVA_ID}', name:'AppProvider', filePath:'src/AppProvider.ts', startLine:0, endLine:1, isExported:true, content:'class AppProvider {}', description:'', frameworkAnnotations:['@nestjs/common.Injectable']})`,
   `CREATE (c:Class {id:'${CONFLICT_ID}', name:'ConflictingBean', filePath:'src/ConflictingBean.java', startLine:0, endLine:1, isExported:false, content:'class ConflictingBean {}', description:'', frameworkAnnotations:['org.springframework.stereotype.Service', 'org.springframework.stereotype.Component']})`,
+  `CREATE (m:Method {id:'${FACTORY_METHOD_ID}', name:'billingService', filePath:'src/AppConfiguration.java', startLine:4, endLine:6, isExported:false, content:'@Bean BillingService billingService()', description:'', parameterCount:0, returnType:'BillingService'})`,
+  `CREATE (b:CodeElement {id:'${FACTORY_BEAN_ID}', name:'billingService', filePath:'src/AppConfiguration.java', startLine:4, endLine:6, isExported:false, content:'', description:'Spring Bean factory declaration'})`,
+  `MATCH (m:Method {id:'${FACTORY_METHOD_ID}'}), (b:CodeElement {id:'${FACTORY_BEAN_ID}'}) CREATE (m)-[:CodeRelation {type:'DECLARES', confidence:1.0, reason:'${FACTORY_REASON}', step:0}]->(b)`,
 ];
 
 withTestLbugDB(
@@ -75,6 +82,21 @@ withTestLbugDB(
 
         expect(nonJava.symbol).not.toHaveProperty('bean');
         expect(conflict.target).not.toHaveProperty('bean');
+      });
+
+      it('enriches both Bean factory methods and their synthetic declarations', async () => {
+        const methodContext = await backend.callTool('context', { uid: FACTORY_METHOD_ID });
+        const declarationContext = await backend.callTool('context', { uid: FACTORY_BEAN_ID });
+        const expectedFactoryBean = {
+          framework: 'spring',
+          role: 'factory-method',
+          annotation: 'org.springframework.context.annotation.Bean',
+          names: ['billingService', 'billingAlias'],
+          providedType: 'BillingService',
+        };
+
+        expect(methodContext.symbol.bean).toEqual(expectedFactoryBean);
+        expect(declarationContext.symbol.bean).toEqual(expectedFactoryBean);
       });
     });
   },

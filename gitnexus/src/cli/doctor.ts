@@ -14,6 +14,7 @@ import {
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import {
   checkLbugNative,
+  ftsAvailabilityLabel,
   type NativeCheckResult,
   probeFtsExtensionLoad,
   probeVectorExtensionLoad,
@@ -23,9 +24,28 @@ import {
   getOsPageSize,
   isPageSizeAwareLadybug,
 } from '../core/lbug/lbug-config.js';
-import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
-import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
+import { diagnoseExtensionLoad, extractExtensionPath } from '../core/lbug/extension-load-error.js';
+import { resolveFtsVersionPair } from '../core/lbug/vendored-extension-path.js';
+import {
+  getExtensionInstallPolicy,
+  resolveAnalyzeInstallPolicy,
+} from '../core/lbug/extension-loader.js';
+import { updateEligibleInstallSync } from '../core/install-context.js';
+import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
+import { cachedUpdateNoticeLine } from './update-notice.js';
+import { formatSlotSize, staleReasonLabel } from './stale-branch-format.js';
+import {
+  findRegistryEntryByRepoPath,
+  findRepo,
+  listRegisteredRepos,
+} from '../storage/repo-manager.js';
+import {
+  isDeleteCandidate,
+  listStaleBranchSlots,
+  staleListingBlock,
+  type StaleBranchSlot,
+} from '../storage/stale-branch-slots.js';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -100,12 +120,10 @@ export function localEmbeddingDoctorStatus(opts: {
   if (blocker) {
     return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
   }
-  // The stack is an optionalDependency — npm prunes it when onnxruntime-node's
-  // postinstall can't download its CUDA binaries (proxy/firewall, #2370).
   const resolution = opts.resolution !== undefined ? opts.resolution : resolveEmbeddingRuntime();
   if (resolution === null) {
     return {
-      status: '✗ optional embedding stack not installed',
+      status: '✗ local embedding stack not installed',
       detail: localEmbeddingStackMissingMessage(),
     };
   }
@@ -185,6 +203,35 @@ export function nativeStatusLine(check: NativeCheckResult): string {
   return `  ${padDisplayEnd('native', 10)}${nativeStatusText(check)}`;
 }
 
+/**
+ * Cwd leftover-slot lines (#3331). Pure: no deletes and no registry scan.
+ * When heads cannot be listed, do not title rows as orphaned or name
+ * `clean --stale` (#3337): that command refuses to delete in the same state.
+ */
+export function leftoverBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
+  if (slots.length === 0) return [];
+  const listingBlock = staleListingBlock(slots);
+  if (listingBlock === 'heads-unavailable') {
+    return [t('clean.stale.headsUnavailable')];
+  }
+  if (listingBlock === 'listing-failed') {
+    return [t('clean.stale.listingFailed')];
+  }
+  const lines = [t('doctor.orphanedBranches')];
+  let total = 0;
+  for (const slot of slots) {
+    total += slot.sizeBytes;
+    lines.push(
+      `  ${slot.branch}  ${staleReasonLabel(slot.reason)}  ${formatSlotSize(slot.sizeBytes)}`,
+    );
+  }
+  lines.push(`  ${t('doctor.orphanedBranches.total', { size: formatSlotSize(total) })}`);
+  if (slots.some(isDeleteCandidate)) {
+    lines.push(`  ${t('doctor.orphanedBranches.reclaim')}`);
+  }
+  return lines;
+}
+
 function nativeStatusText(check: NativeCheckResult): string {
   if (check.ok) return '✓ lbugjs.node loaded';
   switch (check.kind) {
@@ -192,10 +239,23 @@ function nativeStatusText(check: NativeCheckResult): string {
       return '✗ @ladybugdb/core not installed';
     case 'load_failed':
       return '✗ lbugjs.node present but failed to load';
+    case 'binary_unwritable':
+      // The prebuilt exists; only the copy into node_modules was refused. Saying
+      // "missing" here would contradict the detail printed underneath (#2672).
+      return '✗ lbugjs.node not installed (node_modules not writable)';
     default:
       // 'binary_missing', and any future kind: the conservative claim.
       return '✗ lbugjs.node missing';
   }
+}
+
+export function cachedUpdateDoctorLine(options: {
+  installedVersion: string;
+  eligible: boolean;
+  env: NodeJS.ProcessEnv;
+  readCache: () => ValidatedUpdateCache | null;
+}): string | null {
+  return cachedUpdateNoticeLine(options);
 }
 
 export const doctorCommand = async () => {
@@ -208,6 +268,13 @@ export const doctorCommand = async () => {
   console.log(`  ${label('doctor.labels.os', 10)}${fingerprint.platform}/${fingerprint.arch}`);
   console.log(`  ${label('doctor.labels.node', 10)}${fingerprint.node}`);
   console.log(`  ${label('doctor.labels.gitnexus', 10)}${fingerprint.gitnexus}`);
+  const updateLine = cachedUpdateDoctorLine({
+    installedVersion: fingerprint.gitnexus,
+    eligible: updateEligibleInstallSync(),
+    env: process.env,
+    readCache: () => readValidatedUpdateCacheSync(),
+  });
+  if (updateLine) console.log(`  ${updateLine}`);
   console.log(`  ${label('doctor.labels.ladybugdb', 10)}${fingerprint.ladybugdb ?? 'unknown'}`);
   // OS page size next to the LadybugDB version because the two interact:
   // @ladybugdb/core < 0.18.0 assumed 4 KiB pages in its buffer manager and
@@ -235,9 +302,7 @@ export const doctorCommand = async () => {
   const ftsProbe = nativeCheck.ok
     ? await probeFtsExtensionLoad()
     : { loaded: false, reason: 'LadybugDB native module (lbugjs.node) failed to load' };
-  console.log(
-    `  ${label('doctor.labels.fullTextSearch', 18)}${ftsProbe.loaded ? 'available' : 'unavailable'}`,
-  );
+  console.log(`  ${label('doctor.labels.fullTextSearch', 18)}${ftsAvailabilityLabel(ftsProbe)}`);
   if (!ftsProbe.loaded && ftsProbe.reason) {
     console.log(`  ${padDisplayEnd('', 18)}${ftsProbe.reason}`);
     // Add an actionable remedy for recognized failure classes (#2374). The
@@ -245,7 +310,15 @@ export const doctorCommand = async () => {
     // ("specified module could not be found") is opaque, so name the fix (VC++
     // redist, then OpenSSL) instead of leaving the user to reinstall in vain.
     // `unknown`'s remedy is "run doctor", which would be circular here.
-    const { kind, remedy } = diagnoseExtensionLoad(ftsProbe.reason);
+    // Policy `never` is not a load failure — skip structural diagnosis.
+    const { kind, remedy } = ftsProbe.suppressed
+      ? { kind: 'unknown' as const, remedy: '' }
+      : diagnoseExtensionLoad(
+          ftsProbe.reason,
+          'FTS',
+          extractExtensionPath(ftsProbe.reason),
+          resolveFtsVersionPair(extractExtensionPath(ftsProbe.reason)),
+        );
     if (kind !== 'unknown') {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
@@ -268,25 +341,30 @@ export const doctorCommand = async () => {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
   }
-  // Semantic mode follows the probe, not the platform: without a loadable
-  // VECTOR extension the index can be neither built nor queried, so search is
-  // really on exact scan no matter what the platform would allow.
+  // Doctor has no repository target, so this probe can report only whether the
+  // runtime can load VECTOR. It cannot claim that a repository has built the
+  // named HNSW index. Keep the capability and repository state distinct.
   console.log(
-    `  ${label('doctor.labels.semanticMode', 18)}${
-      vectorProbe.loaded ? capabilities.semanticMode : 'exact-scan'
-    }`,
+    `  ${label('doctor.labels.semanticMode', 18)}${t(
+      vectorProbe.loaded
+        ? 'doctor.vectorCapability.indexUnverified'
+        : 'doctor.vectorCapability.exactScanOnly',
+    )}`,
   );
   // Surface the optional-extension install policy so offline users can see
   // whether analyze/query will reach the network (extension.ladybugdb.com).
   // Literal label (like the 'native' line) to avoid adding i18n keys.
-  const installPolicy = getExtensionInstallPolicy();
-  const policyHint =
-    installPolicy === 'load-only'
+  const serveQueryPolicy = getExtensionInstallPolicy();
+  const analyzePolicy = resolveAnalyzeInstallPolicy();
+  const policyHint = (policy: string) =>
+    policy === 'load-only'
       ? ' (offline; load only, no network install)'
-      : installPolicy === 'never'
+      : policy === 'never'
         ? ' (optional extensions disabled)'
         : ' (installs missing extensions over network)';
-  console.log(`  ${padDisplayEnd('Ext install:', 18)}${installPolicy}${policyHint}`);
+  console.log(
+    `  ${padDisplayEnd('Ext install:', 18)}serve/query=${serveQueryPolicy}${policyHint(serveQueryPolicy)}; analyze=${analyzePolicy}${policyHint(analyzePolicy)}`,
+  );
   console.log(
     `  ${label('doctor.labels.exactScanLimit', 18)}${t('doctor.chunks', { count: capabilities.exactScanLimit })}`,
   );
@@ -321,5 +399,21 @@ export const doctorCommand = async () => {
     if (cudaRedirect.detail) {
       console.log(`  ${padDisplayEnd('', 12)}${cudaRedirect.detail}`);
     }
+  }
+  // Cwd leftover-slot report only; never delete.
+  const cwdRepo = await findRepo(process.cwd());
+  if (!cwdRepo) return;
+  const entries = await listRegisteredRepos();
+  const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);
+  const slots = await listStaleBranchSlots({
+    repoPath: cwdRepo.repoPath,
+    storagePath: cwdRepo.storagePath,
+    branches: entry?.branches,
+  });
+  const leftoverLines = leftoverBranchSlotDoctorLines(slots);
+  if (leftoverLines.length === 0) return;
+  console.log('');
+  for (const line of leftoverLines) {
+    console.log(line);
   }
 };

@@ -37,11 +37,18 @@ const REPOS: RepoListing[] = [
 function createBackend(repos = REPOS) {
   return {
     listRepos: vi.fn().mockResolvedValue(repos.map((repo) => ({ ...repo }))),
+    countRepos: vi.fn().mockResolvedValue(repos.length),
+    cachedRepoCount: vi.fn().mockReturnValue(repos.length),
     callTool: vi.fn().mockImplementation(async (name: string, args: Record<string, unknown>) => ({
       name,
       args,
     })),
     resolveRepo: vi.fn().mockImplementation(async (repo?: string) => ({
+      name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
+      repoPath: repo ?? repos[0]?.path,
+      lastCommit: 'a'.repeat(40),
+    })),
+    selectToolRepository: vi.fn().mockImplementation(async (repo?: string) => ({
       name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
       repoPath: repo ?? repos[0]?.path,
       lastCommit: 'a'.repeat(40),
@@ -138,6 +145,39 @@ describe('MCP repository policy', () => {
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
+  it('aligns unrestricted schema with the refreshed snapshot when count and cache diverge', async () => {
+    const backend = createBackend();
+    vi.mocked(backend.countRepos).mockResolvedValue(2);
+    vi.mocked(backend.cachedRepoCount).mockReturnValue(1);
+    const policy = await createMcpRepositoryPolicy(backend, {});
+    await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
+      readOnlyRequiresRepo: false,
+      mutatingRequiresRepo: false,
+    });
+    expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
+      allowCwdDefault: true,
+      refreshRegistry: true,
+    });
+  });
+
+  it('keeps restricted schemas explicit when a multi-repo allowlist listing shrinks', async () => {
+    const backend = createBackend();
+    const policy = await createMcpRepositoryPolicy(backend, {
+      GITNEXUS_MCP_ALLOWED_REPOS: 'Alpha,Beta',
+    });
+    const alpha = REPOS[0];
+    if (!alpha) throw new Error('Alpha fixture is required');
+    vi.mocked(backend.listRepos).mockResolvedValue([{ ...alpha }]);
+
+    await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
+      readOnlyRequiresRepo: true,
+      mutatingRequiresRepo: true,
+    });
+    await expect(
+      policy.scopeBackend(backend).callTool('query', { search_query: 'auth' }),
+    ).rejects.toThrow(/explicit repo.*multiple repositories are allowed/i);
+  });
+
   it('fails startup when the default is outside the allowlist after canonical resolution', async () => {
     const backend = createBackend();
     await expect(
@@ -199,6 +239,7 @@ describe('MCP repository policy', () => {
     const scoped = policy.scopeBackend(backend);
 
     await expect(scoped.resolveRepo('Beta')).rejects.toThrow(/not available/i);
+    await expect(scoped.selectToolRepository('Beta')).rejects.toThrow(/not available/i);
     await expect(scoped.readGroupStatusResource('portfolio')).rejects.toThrow(
       /group.*unavailable/i,
     );

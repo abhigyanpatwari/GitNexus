@@ -9,15 +9,12 @@
  * Reference: `languages/python/scope-resolver.ts`.
  */
 
-import path from 'node:path';
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cobolProvider } from '../cobol.js';
-
-// Copybook file extensions for COPY name resolution
-const COPYBOOK_EXTENSIONS = new Set(['.cpy', '.copybook']);
+import { resolveCobolCopyTarget } from './copy-target.js';
 
 const cobolScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Cobol,
@@ -25,24 +22,9 @@ const cobolScopeResolver: ScopeResolver = {
   importEdgeReason: 'cobol-scope: copy',
 
   // ── Resolve COPY bookname to file path ─────────────────────────────
-  resolveImportTarget: (targetRaw, _fromFile, allFilePaths) => {
-    const upper = targetRaw.toUpperCase();
-    // Check copybook files first
-    for (const fp of allFilePaths) {
-      const ext = path.extname(fp).toLowerCase();
-      if (!COPYBOOK_EXTENSIONS.has(ext)) continue;
-      const basename = path.basename(fp, ext).toUpperCase();
-      if (basename === upper) return fp;
-    }
-    // Also search COBOL source files (.cbl, .cob, .cobol)
-    const COBOL_SOURCE_EXTS = new Set(['.cbl', '.cob', '.cobol']);
-    for (const fp of allFilePaths) {
-      const ext = path.extname(fp).toLowerCase();
-      if (!COBOL_SOURCE_EXTS.has(ext)) continue;
-      const basename = path.basename(fp, ext).toUpperCase();
-      if (basename === upper) return fp;
-    }
-    return null;
+  // Shared with the regex processor's resolveCopy (#2967 lockstep).
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
+    return resolveCobolCopyTarget(targetRaw, fromFile, allFilePaths);
   },
 
   // COBOL has no binding-merge rules beyond the default (local-first-then-imports).

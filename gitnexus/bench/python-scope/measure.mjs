@@ -42,6 +42,9 @@ const FIXTURE_ROOT = path.resolve(__dirname, '..', '..', 'test', 'fixtures', 'la
 function canonicalizeMatch(match) {
   const parts = [];
   for (const tag of Object.keys(match)) {
+    // Scope-only lexical shadow metadata is correctness-tested separately and
+    // does not alter capture matching or the benchmark's scaling contract.
+    if (tag === '@scope.lexical-names') continue;
     const cap = match[tag];
     const r = cap.range;
     parts.push(`${tag}|${cap.text}|${r.startLine}:${r.startCol}-${r.endLine}:${r.endCol}`);

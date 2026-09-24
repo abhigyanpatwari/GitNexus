@@ -111,6 +111,14 @@ function captureKotlinSpringDiFacts(
   return collectKotlinCaptureSideChannel(filePath)?.springDiFacts ?? [];
 }
 
+function collectKotlinSpringNonHttpHandlerFactsFromSource(
+  code: string,
+): NonNullable<KotlinCaptureSideChannel['springNonHttpHandlerFacts']> {
+  const filePath = 'src/Test.kt';
+  emitKotlinScopeCaptures(code, filePath);
+  return collectKotlinCaptureSideChannel(filePath)?.springNonHttpHandlerFacts ?? [];
+}
+
 describe('Kotlin class annotation capture', () => {
   it('captures supported class forms and excludes non-candidate declarations', () => {
     const facts = captureKotlinClassAnnotations(`
@@ -143,6 +151,50 @@ describe('Kotlin class annotation capture', () => {
     await kotlinScopeResolver.loadResolutionConfig?.('/tmp/repo');
 
     expect(collectKotlinCaptureSideChannel(filePath)).toBeUndefined();
+  });
+});
+
+describe('Kotlin Spring non-HTTP handler syntax capture', () => {
+  it('captures class-like owners while persisting only annotation resolution fields', () => {
+    const facts = collectKotlinSpringNonHttpHandlerFactsFromSource(`
+      class RegularHandlers {
+        @Scheduled fun regularHandler() {}
+        @receiver:EventListener fun String.targetedHandler() {}
+      }
+
+      object SingletonHandlers {
+        @KafkaListener(topics = ["orders"])
+        fun singletonHandler() {}
+      }
+
+      class CompanionHolder {
+        companion object {
+          @TransactionalEventListener fun companionHandler(event: Any) {}
+        }
+      }
+
+      enum class EnumHandlers {
+        READY;
+        @XxlJob("enum-handler") fun enumHandler() {}
+      }
+    `);
+
+    const annotations = facts
+      .flatMap((fact) => fact.annotations)
+      .sort((left, right) => left.name.localeCompare(right.name));
+    expect(annotations).toEqual([
+      { name: 'EventListener', useSiteTarget: 'receiver' },
+      { name: 'KafkaListener', args: [{ name: 'topics', text: '["orders"]' }] },
+      { name: 'Scheduled' },
+      { name: 'TransactionalEventListener' },
+      { name: 'XxlJob', args: [{ text: '"enum-handler"' }] },
+    ]);
+    for (const annotation of annotations) {
+      // `text` and `line` describe the DI capture, not the handler; only the
+      // fields a later resolution phase reads may cross the side channel.
+      expect(annotation).not.toHaveProperty('text');
+      expect(annotation).not.toHaveProperty('line');
+    }
   });
 });
 

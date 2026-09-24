@@ -6,6 +6,17 @@
   "connected": "已连接",
   "notConnected": "未连接",
   "runServeHint": "运行 `gitnexus serve` 将 Web UI 连接到本地后端。",
+  "accessToken": {
+    "label": "访问令牌",
+    "placeholder": "粘贴部署访问令牌",
+    "hint": "仅在启用访问控制的部署中需要。可在 Render 控制台的 gitnexus-web 服务的 GITNEXUS_SERVE_AUTH_TOKEN 环境变量中找到。本地服务器请留空。",
+    "title": "此部署需要访问令牌",
+    "promptHint": "GitNexus 服务器正在运行，但已启用访问控制。请在 Render 控制台的 gitnexus-web 服务的 GITNEXUS_SERVE_AUTH_TOKEN 环境变量中查看该令牌。",
+    "connect": "连接",
+    "reveal": "显示访问令牌",
+    "hide": "隐藏访问令牌",
+    "sessionNote": "仅在当前浏览器会话中保存。新标签页或重新打开浏览器后需要重新输入。"
+  },
   "provider": "提供商",
   "apiKey": "API Key",
   "learnMore": "了解更多",
@@ -65,8 +76,20 @@
       "apiKeyPlaceholder": "输入 MiniMax API Key",
       "helperText": "从这里获取 API Key：",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "例如：MiniMax-M2.5、MiniMax-M2.5-highspeed",
-      "helperModel": "可用：MiniMax-M2.5（默认）、MiniMax-M2.5-highspeed（更快）"
+      "modelPlaceholder": "例如：MiniMax-M3 或 MiniMax-M2.7",
+      "helperModel": "可用：MiniMax-M3（默认）和 MiniMax-M2.7",
+      "endpoint": "区域端点",
+      "endpoints": {
+        "global": "全球（api.minimax.io）",
+        "china": "中国（api.minimaxi.com）"
+      },
+      "thinking": "思考模式",
+      "thinkingModes": {
+        "adaptive": "自适应",
+        "disabled": "关闭",
+        "always_on": "始终开启"
+      },
+      "capabilities": "{{contextWindow}} token 上下文 | 输入：{{modalities}}"
     },
     "glm": {
       "apiKeyPlaceholder": "输入 Z.AI API Key"

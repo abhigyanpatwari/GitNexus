@@ -1,17 +1,17 @@
 /**
  * Optional grammar availability check.
  *
- * tree-sitter-dart, -proto, -swift, and -kotlin are vendored under vendor/ and
- * loaded from there by absolute path (NEVER copied into node_modules — see
- * core/tree-sitter/vendored-grammars.ts / #2111). Each ships committed platform
- * prebuilds activated via node-gyp-build. All can be skipped via
- * GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or can silently
- * soft-fail when no prebuild matches the host platform (and a source build was
- * unavailable / not attempted).
+ * tree-sitter-dart, -proto, -swift, -kotlin, and -zig are vendored under
+ * vendor/ and loaded from there by absolute path (NEVER copied into
+ * node_modules — see core/tree-sitter/vendored-grammars.ts / #2111). Each
+ * ships committed platform prebuilds activated via node-gyp-build. All can
+ * be skipped via GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (postinstall scripts), or
+ * can silently soft-fail when no prebuild matches the host platform (and a
+ * source build was unavailable / not attempted).
  *
  * Either path produces the same observable: the .node binding is absent
  * at runtime. This helper detects that condition and surfaces a single
- * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt
+ * stderr line per missing grammar so users learn why .dart/.proto/.swift/.kt/.zig
  * support is unavailable instead of silently getting a degraded index.
  */
 
@@ -55,6 +55,12 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     pkg: 'tree-sitter-kotlin',
     extensions: ['.kt', '.kts'],
     language: SupportedLanguages.Kotlin,
+  },
+  {
+    name: 'tree-sitter-zig',
+    pkg: 'tree-sitter-zig',
+    extensions: ['.zig'],
+    language: SupportedLanguages.Zig,
   },
 ];
 

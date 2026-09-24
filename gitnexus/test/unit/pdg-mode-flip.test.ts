@@ -261,6 +261,31 @@ describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
 });
 
 describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
+  it('resolves preserveExistingPdg from metadata after entering the locked analysis path', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const cb = { onProgress: () => {}, onLog: () => {} };
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true, pdg: true }, cb);
+      const blocks = await countBasicBlocks(repo.dbPath);
+      expect(blocks).toBeGreaterThan(0);
+
+      const preserved = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, preserveExistingPdg: true },
+        cb,
+      );
+
+      expect(preserved.alreadyUpToDate).toBe(true);
+      expect((await loadMeta(storagePath))!.pdg).toBeDefined();
+      expect(await countBasicBlocks(repo.dbPath)).toBe(blocks);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
   it('off→on flip forces a full writeback that persists the CFG layer; on→off removes it', async () => {
     const repo = await setupMiniRepo();
     try {

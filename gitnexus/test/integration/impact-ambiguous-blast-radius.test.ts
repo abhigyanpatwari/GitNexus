@@ -55,6 +55,18 @@ const SEED = [
   `CREATE (rv:Const {id: 'Const:test/registry.test.ts:Registry', name: 'Registry', filePath: 'test/registry.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
   `CREATE (ru:Function {id: 'Function:src/boot.ts:boot', name: 'boot', filePath: 'src/boot.ts', startLine: 1, endLine: 5, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/boot.ts:boot'}), (b:Class {id:'Class:src/registry.ts:Registry'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.85, reason:'direct', step:0}]->(b)`,
+
+  // #2787 review F4 — the two shapes the Class/Interface collapse must now tell
+  // apart. `Panel`: ONE Class plus its Constructor (the literal #480 case) —
+  // exactly one candidate carries the label, so collapsing is a correct
+  // confident answer. `Widget`: TWO Classes in different files plus a same-named
+  // value binding — more than one candidate carries the label, so there is no
+  // right answer to pick and the caller must be told.
+  `CREATE (:Class {id: 'Class:src/panel.ts:Panel', name: 'Panel', filePath: 'src/panel.ts', startLine: 1, endLine: 12, isExported: true, content: '', description: ''})`,
+  `CREATE (:Constructor {id: 'Constructor:src/panel.ts:Panel', name: 'Panel', filePath: 'src/panel.ts', startLine: 2, endLine: 4, content: '', description: ''})`,
+  `CREATE (:Class {id: 'Class:src/widgets/alpha.ts:Widget', name: 'Widget', filePath: 'src/widgets/alpha.ts', startLine: 1, endLine: 20, isExported: true, content: '', description: ''})`,
+  `CREATE (:Class {id: 'Class:src/widgets/beta.ts:Widget', name: 'Widget', filePath: 'src/widgets/beta.ts', startLine: 1, endLine: 20, isExported: true, content: '', description: ''})`,
+  `CREATE (:Const {id: 'Const:test/widget.test.ts:Widget', name: 'Widget', filePath: 'test/widget.test.ts', startLine: 3, endLine: 3, content: '', description: ''})`,
 ];
 
 withTestLbugDB(
@@ -151,6 +163,41 @@ withTestLbugDB(
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
     });
 
+    it('still collapses a lone Class against its same-named Constructor (#480, #2787 review F4)', async () => {
+      // Non-regression half of the F4 fix. The collapse probe went from
+      // `LIMIT 1` to `LIMIT 2` and now requires EXACTLY one row — one Class plus
+      // one Constructor still yields exactly one Class row, so the confident
+      // answer #480 introduced is unchanged. If this flips to `ambiguous`, the
+      // uniqueness guard was made too strict and every resolver-backed tool
+      // loses a previously confident resolution.
+      const result = await backend.callTool('context', { name: 'Panel' });
+
+      expect(result).toMatchObject({ status: 'found' });
+      expect(result.symbol).toMatchObject({ uid: 'Class:src/panel.ts:Panel', kind: 'Class' });
+    });
+
+    it('refuses to collapse when TWO candidates carry the Class label (#2787 review F4)', async () => {
+      // Collapsing returns `kind: 'ok'` — the caller never sees the scorer or
+      // the ambiguity report — and it is the ONLY confident path a bare name can
+      // take (scoreCandidate tops out at 0.60 without a file_path hint; the
+      // confident gate needs >= 0.95). With `LIMIT 1` the probe took whichever
+      // labelled row came back and answered confidently; adding `ORDER BY n.id`
+      // made that wrong pick REPEATABLE rather than right — `context`/`impact`
+      // would silently analyse src/widgets/alpha.ts and never mention beta.
+      // `LIMIT 2` turns the second row into a uniqueness check.
+      const result = await backend.callTool('context', { name: 'Widget' });
+
+      expect(result).toMatchObject({ status: 'ambiguous' });
+      expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid).sort()).toEqual([
+        'Class:src/widgets/alpha.ts:Widget',
+        'Class:src/widgets/beta.ts:Widget',
+        'Const:test/widget.test.ts:Widget',
+      ]);
+      // Both classes are offered, so the caller can disambiguate — the file the
+      // old code silently discarded is the second entry above.
+      expect(result.totalCandidates).toBe(3);
+    });
+
     it('reports an undetermined impactedCount for an ambiguous pdg target (#2687)', async () => {
       // The pdg branch has no per-candidate fan-out, so it carries no
       // maxImpactedCount at all — a numeric zero here is even less correctable.
@@ -197,6 +244,76 @@ withTestLbugDB(
           indexedAt: new Date().toISOString(),
           lastCommit: 'abc123',
           stats: { files: 5, nodes: 6, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
+/**
+ * #2787 — the resolver's LIMIT 20 window must be pinned by ORDER BY.
+ *
+ * 25 Functions share one name, seeded in DESCENDING id order. Without an
+ * ORDER BY, LadybugDB hands back the first 20 it scans (insertion order on a
+ * fixture this small, an arbitrary subset on a real index) — `collide-z25`
+ * down to `collide-z06`. With `ORDER BY n.id` it returns the 20 lowest ids,
+ * `collide-z01` through `collide-z20`. The two sets are disjoint on 10
+ * elements, so the exact-list assertion below distinguishes them.
+ *
+ * `context` is the observable surface, not `impact`: it returns every resolver
+ * candidate untruncated, while `impact` slices to AMBIGUOUS_MAX_CANDIDATES and
+ * re-sorts by blast radius, which would hide the window difference.
+ */
+const COLLIDE_COUNT = 25;
+const COLLIDE_IDS = Array.from(
+  { length: COLLIDE_COUNT },
+  (_, i) => `Function:src/z${String(i + 1).padStart(2, '0')}.ts:collide`,
+);
+
+withTestLbugDB(
+  'resolver-window-ordering-2787',
+  (handle) => {
+    let backend: LocalBackend;
+    beforeAll(() => {
+      backend = (handle as any)._backend;
+    });
+
+    it('returns the 20 lowest-id candidates, not an arbitrary window (#2787)', async () => {
+      const result = await backend.callTool('context', { name: 'collide' });
+
+      expect(result.status).toBe('ambiguous');
+      // 25 is the TRUE match count (a COUNT alongside the window); 20 is the
+      // window. Reporting the window here claimed the cap was the total.
+      expect(result).toMatchObject({ totalCandidates: COLLIDE_COUNT, candidatesTruncated: true });
+      expect(result.message).toContain(`Found ${COLLIDE_COUNT} symbols`);
+      expect(result.message).toContain('showing 20');
+      expect((result.candidates as Array<{ uid: string }>).map((c) => c.uid)).toEqual(
+        COLLIDE_IDS.slice(0, 20),
+      );
+    });
+  },
+  {
+    // Descending: the highest id is inserted first, so an unordered scan that
+    // follows insertion order returns exactly the wrong half.
+    seed: [...COLLIDE_IDS]
+      .reverse()
+      .map(
+        (id, i) =>
+          `CREATE (:Function {id: '${id}', name: 'collide', filePath: 'src/z${String(COLLIDE_COUNT - i).padStart(2, '0')}.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+      ),
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-repo',
+          path: '/test/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: COLLIDE_COUNT, nodes: COLLIDE_COUNT, communities: 0, processes: 0 },
         },
       ]);
       const backend = new LocalBackend();

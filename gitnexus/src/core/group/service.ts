@@ -6,7 +6,18 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
-import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
+import { stalenessStatus, type StalenessInfo, type StalenessStatus } from '../staleness-status.js';
+import { mapConcurrent } from '../../lib/utils.js';
+import {
+  canonicalizePath,
+  loadMeta,
+  readRegistryStrict,
+  registryPathEquals,
+  type RegistryEntry,
+  type RepoMeta,
+} from '../../storage/repo-manager.js';
+import { crossRepoCompleteness } from './completeness.js';
+import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -14,7 +25,10 @@ import {
   repoInSubgroup,
 } from './group-path-utils.js';
 import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
-import { syncGroup } from './sync.js';
+// `./sync.js` is imported LAZILY in `groupSync` — see the comment at its call
+// site. It statically pulls the six contract extractors and, through them, the
+// native tree-sitter binding; a static import here puts all of that on MCP
+// server startup, which never syncs.
 import { logger } from '../logger.js';
 import type {
   ContractRegistry,
@@ -39,6 +53,17 @@ export interface GroupToolPort {
     repo: GroupRepoHandle,
     params: {
       target: string;
+      /**
+       * Target-selector params, same semantics as the single-repo `impact`
+       * tool: `target_uid` is the zero-ambiguity lookup (it wins over the
+       * name), `file_path`/`kind` narrow a name shared by several symbols
+       * (e.g. same-named Api/Impl/Controller layers). The port implementation
+       * consumes them directly; the Phase-1 caller in cross-impact.ts is
+       * responsible for threading them from the MCP `impact` args.
+       */
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -60,6 +85,7 @@ export interface GroupToolPort {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<unknown>;
   impactByUid(
@@ -89,6 +115,7 @@ export interface GroupToolPort {
       uid?: string;
       file_path?: string;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<unknown>;
   // ── Cross-repo trace support (optional on the port) ────────────────
@@ -202,10 +229,17 @@ function filterQueryByServicePrefix(
       servicePrefix,
     ),
   );
-  const allowed = new Set(
-    symbols.map((s) => String((s as { process_id?: string }).process_id ?? '')).filter(Boolean),
-  );
-  const processes = (queryResult.processes || []).filter((p) => allowed.has(String(p.id)));
+  const countByProcess = new Map<string, number>();
+  for (const symbol of symbols) {
+    const pid = String((symbol as { process_id?: string }).process_id ?? '');
+    if (!pid) continue;
+    countByProcess.set(pid, (countByProcess.get(pid) ?? 0) + 1);
+  }
+  const processes = (queryResult.processes || []).filter((p) => countByProcess.has(String(p.id)));
+  for (const process of processes) {
+    const id = String(process.id ?? '');
+    if (id) process.symbol_count = countByProcess.get(id) ?? 0;
+  }
   return { processes, process_symbols: symbols };
 }
 
@@ -219,10 +253,39 @@ function isCrossLink(raw: unknown): raw is CrossLink {
   return typeof o.contractId === 'string' && typeof o.type === 'string';
 }
 
+/**
+ * Does the global registry hold a row for this configured group member?
+ *
+ * Consulted only once resolution has ALREADY failed, to choose which of the
+ * two failures `group status` reports. It mirrors the two tiers
+ * `LocalBackend.resolveRepo` matches a bare group-config value on — the
+ * registry `name`, case-insensitively, and the repo `path` — and deliberately
+ * stops short of its hashed-id and partial-name tiers: those exist to be
+ * generous about what an operator typed, while this predicate only decides
+ * between two labels, and a looser match here would relabel a genuine registry
+ * miss as an unresolvable row. That is the same conflation this reporting
+ * exists to remove, pointed the other way.
+ */
+function registryIdentifies(entries: RegistryEntry[], registryName: string): boolean {
+  const wantedName = registryName.toLowerCase();
+  // Path equality goes through the registry's own rule rather than a local
+  // `resolve` + platform-case compare. `canonicalizePath` also follows symlinks,
+  // so a row registered through one and looked up through the other still
+  // matches — and there is one definition of registry path identity instead of
+  // a third, weaker copy of it living in a group module nobody would grep.
+  const wantedPath = canonicalizePath(registryName);
+  return entries.some((entry) => {
+    if (typeof entry.name === 'string' && entry.name.toLowerCase() === wantedName) return true;
+    if (typeof entry.path !== 'string') return false;
+    return registryPathEquals(canonicalizePath(entry.path), wantedPath);
+  });
+}
+
 async function loadContractRegistryResilient(
   groupDir: string,
 ): Promise<
-  { ok: true; registry: ContractRegistry; skippedCorrupt: number } | { ok: false; error: string }
+  | { ok: true; registry: ContractRegistry; skippedCorrupt: number; suppressionUnreadable: boolean }
+  | { ok: false; error: string }
 > {
   const filePath = path.join(groupDir, 'contracts.json');
   let raw: string;
@@ -285,6 +348,17 @@ async function loadContractRegistryResilient(
     }
   }
 
+  // Bound once: the gate is a full array scan and the ternary below used it twice.
+  const recordedUnreadable = recordedRepoList(base.unreadableRepos);
+  const recordedSuppressed = recordedMatchStages(base.suppressedMatchStages);
+  // Present-but-unreadable is NOT the same as absent. `recordedMatchStages` is
+  // all-or-nothing, so garbage collapses to `undefined` — and a consumer that
+  // reads `undefined` as "nothing was suppressed" would throw that safety away
+  // and report a registry it could not parse as complete. Absent stays
+  // legitimate (a registry predating the field); only a value that was there
+  // and unreadable forces the answer to a floor.
+  const suppressionUnreadable =
+    base.suppressedMatchStages !== undefined && recordedSuppressed === undefined;
   const registry: ContractRegistry = {
     version: typeof base.version === 'number' ? base.version : 0,
     generatedAt: typeof base.generatedAt === 'string' ? base.generatedAt : '',
@@ -292,12 +366,132 @@ async function loadContractRegistryResilient(
       base.repoSnapshots && typeof base.repoSnapshots === 'object' && base.repoSnapshots !== null
         ? (base.repoSnapshots as Record<string, { indexedAt: string; lastCommit: string }>)
         : {},
-    missingRepos: Array.isArray(base.missingRepos) ? (base.missingRepos as string[]) : [],
+    // Same gate as `groupStatus` uses on the same field, for the same reason:
+    // `Array.isArray` alone waves through `[{repo:'x'}]`, and `groupContracts`
+    // now returns this list AND folds it into its completeness answer, so a
+    // value we could not read would be reported as a repo name. `missingRepos`
+    // has always been required, so — unlike `unreadableRepos` below — there is
+    // no "not recorded" state to preserve: an unreadable value degrades to empty.
+    missingRepos: recordedRepoList(base.missingRepos) ?? [],
+    // Spread, not `?? []`. `ContractRegistry.unreadableRepos` documents absence
+    // as "not recorded", and a registry written before the field existed has no
+    // opinion about which indexes were readable. Normalizing that to `[]` hands
+    // the caller "the last sync found none unreadable" — an unmeasured state
+    // rendered as a clean result, which is the same conflation this whole
+    // change removes.
+    ...(recordedUnreadable ? { unreadableRepos: recordedUnreadable } : {}),
+    // Same omit-when-unrecorded rule. This reader rebuilds the envelope field
+    // by field with no spread of `base`, so a new on-disk field is dropped
+    // unless it is named here.
+    ...(recordedSuppressed ? { suppressedMatchStages: recordedSuppressed } : {}),
     contracts,
     crossLinks,
   };
 
-  return { ok: true, registry, skippedCorrupt };
+  return { ok: true, registry, skippedCorrupt, suppressionUnreadable };
+}
+
+/**
+ * Validate a boolean MCP parameter — reject, never coerce.
+ *
+ * `Boolean(params.x)` is the trap this exists to close: the string `"false"`
+ * is truthy, and an LLM caller emitting JSON produces that shape routinely.
+ * While `exactOnly` was inert the coercion was harmless; now that it gates a
+ * matching stage, a coerced `"false"` suppresses that stage and persists a
+ * registry with fewer cross-links than the caller asked for.
+ *
+ * Absent stays absent-as-false (the unchanged default). Anything that is not
+ * a real boolean returns a structured `{ error }`, mirroring
+ * `validateImpactMode` — the established shape for this boundary, and the one
+ * `groupSync`'s other guards already use.
+ */
+function validateBooleanParam(name: string, raw: unknown): { value: boolean } | { error: string } {
+  if (raw === undefined) return { value: false };
+  if (typeof raw === 'boolean') return { value: raw };
+  return { error: `Invalid "${name}": expected true or false, got ${describeValue(raw)}.` };
+}
+
+/**
+ * Render an untrusted value for an error message, without throwing.
+ *
+ * `JSON.stringify` is the right shape here — it distinguishes the string
+ * `"false"` from the boolean, which is the whole point of the message — but it
+ * throws on a BigInt and on a cyclic object. A validator whose ERROR path can
+ * throw does not return the structured `{ error }` it promises: the caller gets
+ * a rejected promise instead of feedback it can act on, and `callTool` is
+ * reachable directly, so neither input is hypothetical.
+ */
+function describeValue(raw: unknown): string {
+  try {
+    const rendered = JSON.stringify(raw);
+    // `undefined`, a function, or a symbol serialize to `undefined`.
+    return rendered ?? String(raw);
+  } catch {
+    return typeof raw === 'bigint' ? `${raw}n` : Object.prototype.toString.call(raw);
+  }
+}
+
+/**
+ * Refuse parameters this tool used to accept and no longer does.
+ *
+ * The CLI rejects a removed flag outright because commander errors on an
+ * unknown option. The MCP path had no equivalent, so an agent working from a
+ * cached tool schema kept sending a retired key and was told nothing — the
+ * removal took away discoverability, not acceptance. Naming the parameter is
+ * what lets the caller correct itself on the next call.
+ */
+function rejectRetiredSyncParams(params: Record<string, unknown>): { error: string } | null {
+  for (const retired of ['skipEmbeddings', 'allowStale']) {
+    if (params[retired] !== undefined) {
+      return {
+        error: `"${retired}" was removed and is no longer accepted. Drop it from the call.`,
+      };
+    }
+  }
+  return null;
+}
+
+/** Advertised MCP query page bounds (tools.ts schema). Mirrored so core stays MCP-free. */
+const GROUP_QUERY_DEFAULT_LIMIT = 10;
+const GROUP_QUERY_MAX_LIMIT = 100;
+const GROUP_QUERY_DEFAULT_MAX_SYMBOLS = 25;
+const GROUP_QUERY_MAX_SYMBOLS = 200;
+const GROUP_CHAIN_MAX_DEPTH = 3;
+/** Cap per-member fan-out for group query/context. Complements LocalBackend's per-query BFS cap. */
+const GROUP_MEMBER_CONCURRENCY = 4;
+
+function parseGroupQueryBound(
+  value: unknown,
+  field: 'limit' | 'max_symbols',
+  fallback: number,
+  max: number,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: fallback };
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    return {
+      ok: false,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${describeValue(value)}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function parseGroupChainDepth(
+  value: unknown,
+): { ok: true; value: number | undefined } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: undefined };
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > GROUP_CHAIN_MAX_DEPTH
+  ) {
+    return {
+      ok: false,
+      error: `Invalid "chain_depth": expected an integer in [0, ${GROUP_CHAIN_MAX_DEPTH}], got ${describeValue(value)}.`,
+    };
+  }
+  return { ok: true, value };
 }
 
 export class GroupService {
@@ -329,6 +523,13 @@ export class GroupService {
   async groupSync(params: Record<string, unknown>): Promise<unknown> {
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
+    // Before anything reads the group off disk: the MCP SDK does not enforce a
+    // tool's advertised `inputSchema` and `callTool` is reachable directly, so
+    // this method is the real validation boundary.
+    const exactOnly = validateBooleanParam('exactOnly', params.exactOnly);
+    if ('error' in exactOnly) return exactOnly;
+    const retired = rejectRetiredSyncParams(params);
+    if (retired) return retired;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     let config: GroupConfig;
     try {
@@ -338,18 +539,57 @@ export class GroupService {
         return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
       throw err;
     }
-    const result = await syncGroup(config, {
-      groupDir,
-      exactOnly: Boolean(params.exactOnly),
-      skipEmbeddings: Boolean(params.skipEmbeddings),
-      allowStale: Boolean(params.allowStale),
-      verbose: Boolean(params.verbose),
-    });
+    // Lazy: `sync.js` reaches the six contract extractors and the native
+    // tree-sitter binding. `groupSync` is the ONLY consumer — the other seven
+    // group tools never need it — so deferring it here keeps that closure off
+    // MCP server startup entirely and off every non-sync group call. The CLI
+    // already does exactly this at `cli/group.ts`'s sync command.
+    const { syncGroup, formatGroupSyncAmbiguousError } = await import('./sync.js');
+    const { GroupSyncLockError } = await import('./group-lock.js');
+    const { RegistryAmbiguousTargetError } = await import('../../storage/repo-manager.js');
+    let result: Awaited<ReturnType<typeof syncGroup>>;
+    try {
+      result = await syncGroup(config, {
+        groupDir,
+        exactOnly: exactOnly.value,
+        // `verbose` is deliberately NOT accepted here. It gates diagnostics on
+        // the server's logger, which an MCP caller cannot observe — advertising
+        // it would be exactly the kind of knob that does not do what the caller
+        // expects. `SyncOptions.verbose` stays for the CLI, which can see them.
+      });
+    } catch (err) {
+      if (err instanceof RegistryAmbiguousTargetError) {
+        return { error: formatGroupSyncAmbiguousError(err) };
+      }
+      // Fails closed (R9): this sync could not be protected against a concurrent
+      // one, so it did not run and wrote nothing. Return it through the same
+      // error channel a missing group uses — NEVER as a success payload of zeroes,
+      // which an agent would read as "the group genuinely has no contracts".
+      if (!(err instanceof GroupSyncLockError)) throw err;
+      return { error: err.message };
+    }
     return {
       contracts: result.contracts.length,
       crossLinks: result.crossLinks.length,
       unmatched: result.unmatched.length,
       missingRepos: result.missingRepos,
+      unreadableRepos: result.unreadableRepos,
+      // The agent-facing half of the skipped-stage signal. A human sees it in
+      // the CLI summary; without this an agent would have to issue a second
+      // `group_contracts` call to discover its own sync was narrowed.
+      suppressedMatchStages: result.suppressedMatchStages,
+      // An agent that calls group_sync and then group_contracts a moment later
+      // can otherwise see contract counts that disagree with this payload, with
+      // nothing here explaining why the write was skipped.
+      registryOutcome: result.registryOutcome,
+      // Data-quality signals surfaced from the sync run: links whose provider
+      // endpoint never resolved to a graph symbol, per-repo extraction
+      // failures with reasons, and operator warnings (e.g. bridge.lbug write
+      // failed after contracts.json was written). Always present so MCP
+      // consumers can branch on them without existence checks.
+      degradedLinks: result.degradedLinks,
+      failedRepos: result.failedRepos,
+      warnings: result.warnings,
     };
   }
 
@@ -377,7 +617,50 @@ export class GroupService {
       );
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
     }
-    const out: Record<string, unknown> = { contracts, crossLinks: registry.crossLinks };
+    // `loadContractRegistryResilient` already applied `recordedRepoList` to
+    // both: `undefined` here is "the last sync recorded no opinion" (a registry
+    // written before the field existed, or a value we could not read), which is
+    // NOT the same answer as the measured empty list.
+    const { unreadableRepos, missingRepos } = registry;
+    // `incompleteRepos` is dropped on this surface only because the two lists it
+    // is derived from are returned verbatim right below; the truncation triple is
+    // the part that has no other channel here.
+    const { incompleteRepos: _incompleteRepos, ...truncation } = crossRepoCompleteness({
+      unreadableRepos,
+      missingRepos,
+      suppressedMatchStages: registry.suppressedMatchStages,
+      // An unrecorded `unreadableRepos` means this listing cannot say which
+      // repos the sync failed to read — so it cannot claim to be complete.
+      // Either kind of unreadable provenance forces the floor: a sync that
+      // could not say which repos it read, or a suppression record that was
+      // present and could not be parsed. Reading the second as "nothing was
+      // suppressed" would report an unparseable registry as complete.
+      provenanceUnknown: unreadableRepos === undefined || loaded.suppressionUnreadable,
+      // A contract LISTING declares no scope to intersect with: it is the whole
+      // registry, so every configured repo is in scope by construction. The
+      // `type`/`repo`/`unmatchedOnly` filters above narrow which rows are shown,
+      // not which repos the sync had to read to produce them.
+      inScope: () => true,
+    });
+    const out: Record<string, unknown> = {
+      contracts,
+      crossLinks: registry.crossLinks,
+      missingRepos,
+      // Omitted rather than `[]` when the registry never recorded it — the same
+      // convention `skippedCorrupt` follows below, and the difference between
+      // "the sync measured zero unreadable repos" and "the sync never said".
+      ...(unreadableRepos ? { unreadableRepos } : {}),
+      // Same omit-when-unrecorded rule, and deliberately NOT folded into the
+      // truncation triple below: that triple reports limits a run hit by
+      // accident, whose remedy is to fix the repo. A suppressed stage was
+      // asked for, and its remedy is to re-sync without that flag.
+      ...(registry.suppressedMatchStages
+        ? { suppressedMatchStages: registry.suppressedMatchStages }
+        : {}),
+      // The structured triple, verbatim from the impact surface (KTD10):
+      // `truncated` always, `truncationReason` + `riskEpistemic` with it.
+      ...truncation,
+    };
     if (skippedCorrupt > 0) out.skippedCorrupt = skippedCorrupt;
     return out;
   }
@@ -415,6 +698,11 @@ export class GroupService {
     if (!uid && !target) {
       return { group: name, error: 'target or uid is required', results: [] };
     }
+    const parsedChainDepth = parseGroupChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) {
+      return { group: name, error: parsedChainDepth.error, results: [] };
+    }
+    const chain_depth = parsedChainDepth.value;
 
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     let config: GroupConfig;
@@ -442,35 +730,44 @@ export class GroupService {
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    const results: GroupContextResult['results'] = await Promise.all(
-      memberEntries.map(async ([repoPath, registryName]) => {
-        try {
-          const repoObj = await this.port.resolveRepo(registryName);
-          const payload = await this.port.context(repoObj, {
-            name: target || undefined,
-            uid,
-            file_path,
-            include_content,
-          });
+    const results: GroupContextResult['results'] = (
+      await mapConcurrent(
+        memberEntries,
+        async ([repoPath, registryName]) => {
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            const payload = await this.port.context(repoObj, {
+              name: target || undefined,
+              uid,
+              file_path,
+              include_content,
+              chain_depth,
+            });
 
-          if (servicePrefix) {
-            const st = (payload as { status?: string })?.status;
-            const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
-            if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
-              return { repoPath, registryName, payload: {} };
+            if (servicePrefix) {
+              const st = (payload as { status?: string })?.status;
+              const sym = (payload as { symbol?: { filePath?: string } })?.symbol;
+              if (st === 'found' && !fileMatchesServicePrefix(sym?.filePath, servicePrefix)) {
+                return { repoPath, registryName, payload: {} };
+              }
             }
-          }
 
-          return { repoPath, registryName, payload };
-        } catch (e) {
-          return {
-            repoPath,
-            registryName,
-            payload: { error: e instanceof Error ? e.message : String(e) },
-          };
-        }
-      }),
-    );
+            return { repoPath, registryName, payload };
+          } catch (e) {
+            return {
+              repoPath,
+              registryName,
+              payload: { error: e instanceof Error ? e.message : String(e) },
+            };
+          }
+        },
+        { concurrency: GROUP_MEMBER_CONCURRENCY },
+      )
+    ).map((result, index) => {
+      if (result) return result;
+      const [repoPath, registryName] = memberEntries[index]!;
+      return { repoPath, registryName, payload: {} };
+    });
 
     return {
       group: name,
@@ -493,7 +790,25 @@ export class GroupService {
     }
     const servicePrefix = normalizeServicePrefix(params.service);
 
-    const limit = typeof params.limit === 'number' && params.limit > 0 ? params.limit : 5;
+    const parsedLimit = parseGroupQueryBound(
+      params.limit,
+      'limit',
+      GROUP_QUERY_DEFAULT_LIMIT,
+      GROUP_QUERY_MAX_LIMIT,
+    );
+    if (parsedLimit.ok === false) return { error: parsedLimit.error };
+    const parsedMaxSymbols = parseGroupQueryBound(
+      params.max_symbols,
+      'max_symbols',
+      GROUP_QUERY_DEFAULT_MAX_SYMBOLS,
+      GROUP_QUERY_MAX_SYMBOLS,
+    );
+    if (parsedMaxSymbols.ok === false) return { error: parsedMaxSymbols.error };
+    const parsedChainDepth = parseGroupChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) return { error: parsedChainDepth.error };
+    const limit = parsedLimit.value;
+    const max_symbols = parsedMaxSymbols.value;
+    const chain_depth = parsedChainDepth.value;
     const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
     const subgroupExact = params.subgroupExact === true;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
@@ -510,33 +825,42 @@ export class GroupService {
       repoInSubgroup(repoPath, subgroup, subgroupExact),
     );
 
-    const perRepo = await Promise.all(
-      memberEntries.map(async ([repoPath, registryName]) => {
-        try {
-          const repoObj = await this.port.resolveRepo(registryName);
-          const queryResult = (await this.port.query(repoObj, {
-            query: queryText,
-            limit,
-            max_symbols: 10,
-            include_content: false,
-          })) as {
-            processes?: Array<Record<string, unknown>>;
-            process_symbols?: Array<Record<string, unknown>>;
-          };
-          const processes = servicePrefix
-            ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
-            : queryResult.processes || [];
-          const scored = processes.map((p, idx) => ({
-            ...p,
-            _rrf_score: 1 / (idx + 1 + 60),
-            _repo: repoPath,
-          }));
-          return { repo: repoPath, score: 0, processes: scored as unknown[] };
-        } catch {
-          return { repo: repoPath, score: 0, processes: [] as unknown[] };
-        }
-      }),
-    );
+    const perRepo = (
+      await mapConcurrent(
+        memberEntries,
+        async ([repoPath, registryName]) => {
+          try {
+            const repoObj = await this.port.resolveRepo(registryName);
+            const queryResult = (await this.port.query(repoObj, {
+              query: queryText,
+              limit,
+              max_symbols,
+              include_content: false,
+              chain_depth,
+            })) as {
+              processes?: Array<Record<string, unknown>>;
+              process_symbols?: Array<Record<string, unknown>>;
+            };
+            const processes = servicePrefix
+              ? filterQueryByServicePrefix(queryResult, servicePrefix).processes
+              : queryResult.processes || [];
+            const scored = processes.map((p, idx) => ({
+              ...p,
+              _rrf_score: 1 / (idx + 1 + 60),
+              _repo: repoPath,
+            }));
+            return { repo: repoPath, score: 0, processes: scored as unknown[] };
+          } catch {
+            return { repo: repoPath, score: 0, processes: [] as unknown[] };
+          }
+        },
+        { concurrency: GROUP_MEMBER_CONCURRENCY },
+      )
+    ).map((result, index) => {
+      if (result) return result;
+      const [repoPath] = memberEntries[index]!;
+      return { repo: repoPath, score: 0, processes: [] as unknown[] };
+    });
 
     const allProcesses = perRepo.flatMap((r) => r.processes as Array<Record<string, unknown>>);
     allProcesses.sort((a, b) => (b._rrf_score as number) - (a._rrf_score as number));
@@ -564,27 +888,101 @@ export class GroupService {
     }
     const registry = await readContractRegistry(groupDir);
 
+    /**
+     * The STRICT global-registry read, deliberately — this is the one caller
+     * that has to tell "the registry says nothing about this repo" apart from
+     * "the registry could not be read at all", and only the strict mode can.
+     * `readRegistry`'s `catch { return [] }` collapses a malformed registry
+     * into an empty one, which is indistinguishable from a genuine absence and
+     * would report every configured repo as having no entry — the exact
+     * conflation the two labels below exist to remove.
+     *
+     * The consequence is accepted knowingly: the strict read rejects the WHOLE
+     * registry when any single row fails to identify a repo, so one malformed
+     * row renders every member of the group unresolvable, including members
+     * whose own rows are fine. That is the honest verdict — a registry the
+     * resolver cannot trust row-wise cannot be trusted about any row — and it
+     * is reported as an unresolved state, never as a clean one.
+     *
+     * ENOENT is not a failure in either mode: no registry file genuinely means
+     * nothing has been registered yet, so every repo is legitimately missing.
+     */
+    let registryEntries: RegistryEntry[] | null = null;
+    let registryReadError: string | null = null;
+    try {
+      registryEntries = await readRegistryStrict();
+    } catch (err) {
+      registryReadError = err instanceof Error ? err.message : String(err);
+    }
+
     const repoStatuses: Record<
       string,
       {
         indexStale: boolean;
         contractsStale: boolean;
+        /**
+         * Unchanged meaning: this repo has no usable status. It stays `true`
+         * for BOTH failures below, so a consumer written before the split
+         * still sees every unusable repo flagged. Reporting an unresolvable
+         * repo as `missing: false` would hand that consumer `indexStale:
+         * false` for a repo nothing was ever read from — a false all-clear.
+         */
         missing: boolean;
+        /**
+         * Which failure `missing` means: `false` is a genuine registry miss,
+         * `true` is an entry the resolver could not turn into a repo. Additive
+         * — always present on every row, so an agent can branch on it without
+         * having to treat an absent key as either answer.
+         */
+        unresolvable: boolean;
+        /** Set only when `unresolvable`; says what could not be resolved. */
+        unresolvableReason?: string;
         commitsBehind?: number;
+        /**
+         * What the staleness check could establish (#3256). Additive:
+         * `indexStale` and `commitsBehind` keep their meaning. Two rows report
+         * `unknown` and they do NOT agree on those two fields, so read them
+         * together with this one: no commit was recorded (`indexStale: true`,
+         * `commitsBehind: -1`, the sentinel that case has always used), or the
+         * git probe could not answer (`indexStale: false`, `commitsBehind: 0`,
+         * straight from `checkStaleness`). MCP/HTTP `stalenessPayload` reports
+         * neither number — it omits `commitsBehind` for `unknown` entirely.
+         */
+        status?: StalenessStatus;
       }
     > = {};
 
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
+      if (registryEntries === null) {
+        repoStatuses[repoPath] = {
+          indexStale: false,
+          contractsStale: false,
+          missing: true,
+          unresolvable: true,
+          unresolvableReason: `the global registry could not be read: ${registryReadError}`,
+        };
+        continue;
+      }
+      // Only `resolveRepo` is inside the try that produces the
+      // "did not resolve" label, so the label is earned rather than assumed.
+      // `loadMeta` and `checkStaleness` cannot throw — the first returns null on
+      // every error, the second catches everything — but the reading below them
+      // can, and did: `registry.repoSnapshots` is read off a bare
+      // `JSON.parse(...) as ContractRegistry` with no shape check, so a
+      // contracts.json missing that field threw a TypeError into this catch and
+      // reported every repo as an unresolvable GLOBAL-registry entry. That sent
+      // the operator to repair the wrong file. The optional chain below closes
+      // the crash; this split stops the next one being mislabelled the same way.
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
           (await loadMeta(repoObj.storagePath)) ?? {};
 
-        const staleness = meta.lastCommit
+        const staleness: StalenessInfo = meta.lastCommit
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)
-          : { isStale: true, commitsBehind: -1 };
+          : { isStale: true, commitsBehind: -1, status: 'unknown' };
 
-        const snapshot = registry?.repoSnapshots[repoPath];
+        const snapshot = registry?.repoSnapshots?.[repoPath];
         const contractsStale =
           snapshot && meta.indexedAt ? snapshot.indexedAt !== meta.indexedAt : !snapshot;
 
@@ -592,17 +990,50 @@ export class GroupService {
           indexStale: staleness.isStale,
           contractsStale: Boolean(contractsStale),
           missing: false,
+          unresolvable: false,
           commitsBehind: staleness.commitsBehind,
+          status: stalenessStatus(staleness),
         };
-      } catch {
-        repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+      } catch (err) {
+        // The registry read succeeded, so its answer about this row is
+        // trustworthy: a row that is there and still would not resolve is a
+        // different fact from a row that was never there, and the operator's
+        // next move differs (repair the entry vs. index the repo).
+        const known = registryIdentifies(registryEntries, registryName);
+        const reason = err instanceof Error ? err.message : String(err);
+        repoStatuses[repoPath] = {
+          indexStale: false,
+          contractsStale: false,
+          missing: true,
+          unresolvable: known,
+          ...(known
+            ? { unresolvableReason: `registry entry "${registryName}" did not resolve: ${reason}` }
+            : {}),
+        };
       }
     }
 
     return {
       group: name,
       lastSync: registry?.generatedAt || null,
-      missingRepos: registry?.missingRepos || [],
+      // `readContractRegistry` is a bare `JSON.parse(...) as ContractRegistry`,
+      // so both of these are whatever the file happened to hold — the
+      // validation in `loadContractRegistryResilient` never runs on this path.
+      // A `contracts.json` carrying a string here reached `cli/group.ts` and
+      // died in `.join(', ')`, i.e. an unreadable registry crashing the command
+      // whose job is to explain unreadable things.
+      //
+      // `missingRepos` has always been required, so there is no "not recorded"
+      // state to preserve for it — an unreadable value degrades to empty.
+      missingRepos: recordedRepoList(registry?.missingRepos) ?? [],
+      // `unreadableRepos` does have one: absent means "not recorded", not
+      // "none" (see ContractRegistry), and a value we could not read is equally
+      // unrecorded. Reporting either as an empty list is the same conflation.
+      unreadableRepos: recordedRepoList(registry?.unreadableRepos),
+      // Same tri-state, same reason: `group status` is where an operator goes
+      // to ask "is this group's answer trustworthy right now", and a registry
+      // narrowed on purpose is a different answer from a complete one.
+      suppressedMatchStages: recordedMatchStages(registry?.suppressedMatchStages),
       repos: repoStatuses,
     };
   }

@@ -10,7 +10,7 @@ export { synthesizeGoTypeBindings } from './type-binding.js';
 export { goArityCompatibility } from './arity.js';
 export { goMergeBindings } from './merge-bindings.js';
 export { goBindingScopeFor, goImportOwningScope, goReceiverBinding } from './simple-hooks.js';
-export { resolveGoImportTarget, type GoResolveContext } from './import-target.js';
+export { resolveGoImportTarget } from './import-target.js';
 export { populateGoPackageSiblings } from './package-siblings.js';
 export { populateGoRangeBindings } from './range-binding.js';
 export { detectGoInterfaceImplementations } from './interface-impls.js';

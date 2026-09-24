@@ -47,25 +47,38 @@ const mkClassScope = (): Scope =>
     ownedDefs: [],
   }) as unknown as Scope;
 
-const mkScopes = (scope: Scope): ScopeResolutionIndexes =>
+const mkScopes = (
+  scope: Scope,
+  mroByOwner: ReadonlyMap<string, readonly string[]> = new Map(),
+): ScopeResolutionIndexes =>
   ({
     scopeTree: {
       getScope: (id: ScopeId) => (id === scope.id ? scope : undefined),
     },
+    methodDispatch: {
+      mroFor: (classDefId: string) => mroByOwner.get(classDefId) ?? [],
+    },
   }) as unknown as ScopeResolutionIndexes;
 
-const mkWorkspaceIndex = (mapping: ReadonlyMap<ScopeId, string>): WorkspaceResolutionIndex =>
+const mkWorkspaceIndex = (
+  mapping: ReadonlyMap<ScopeId, string>,
+  classScopeByDefId: ReadonlyMap<string, Scope> = new Map(),
+): WorkspaceResolutionIndex =>
   ({
     classScopeIdToDefId: mapping,
+    classScopeByDefId,
   }) as unknown as WorkspaceResolutionIndex;
 
 const mkModel = (
   overloadsByName: ReadonlyMap<string, readonly SymbolDefinition[]>,
+  overloadsByOwnerAndName: ReadonlyMap<string, readonly SymbolDefinition[]> = new Map(),
 ): SemanticModel =>
   ({
     methods: {
-      lookupAllByOwner: (_classDefId: string, name: string) =>
-        overloadsByName.get(name) ?? ([] as readonly SymbolDefinition[]),
+      lookupAllByOwner: (classDefId: string, name: string) =>
+        overloadsByOwnerAndName.get(`${classDefId}::${name}`) ??
+        overloadsByName.get(name) ??
+        ([] as readonly SymbolDefinition[]),
     },
   }) as unknown as SemanticModel;
 
@@ -152,5 +165,240 @@ describe('pickImplicitThisOverload — uniqueness guard (Codex #1497 finding 2)'
     );
 
     expect(result).toBeUndefined();
+  });
+});
+
+describe('pickImplicitThisOverload — inherited implicit-this', () => {
+  const PROTO_A = 'def:P.swift:A';
+  const PROTO_B = 'def:P.swift:B';
+  const site0 = {
+    inScope: CLASS_SCOPE_ID,
+    name: 'foo',
+    arity: 0,
+    argumentTypes: undefined,
+  };
+
+  it('arity-narrows a singleton on the enclosing type instead of returning it blindly', () => {
+    const oneArg = mkMethod({
+      nodeId: 'm:own-1',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+    });
+    const scopes = mkScopes(mkClassScope());
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = mkModel(new Map([['foo', [oneArg]]]));
+
+    expect(pickImplicitThisOverload(site0, scopes, workspace, model)?.nodeId).toBeUndefined();
+  });
+
+  it('unions inherited owners and arity-narrows instead of taking the first MRO name hit', () => {
+    const aFoo = mkMethod({
+      nodeId: 'm:A.foo',
+      ownerId: PROTO_A,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+    });
+    const bFoo = mkMethod({
+      nodeId: 'm:B.foo',
+      ownerId: PROTO_B,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [PROTO_A, PROTO_B]]]));
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${PROTO_A}::foo`, [aFoo]],
+        [`${PROTO_B}::foo`, [bFoo]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:B.foo');
+  });
+
+  it('picks the nearest inherited override when two MRO ancestors share a signature', () => {
+    const MID = 'def:Mid.swift:Mid';
+    const GRAND = 'def:Grand.swift:Grand';
+    const midFoo = mkMethod({
+      nodeId: 'm:Mid.foo',
+      ownerId: MID,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const grandFoo = mkMethod({
+      nodeId: 'm:Grand.foo',
+      ownerId: GRAND,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [MID, GRAND]]]));
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${MID}::foo`, [midFoo]],
+        [`${GRAND}::foo`, [grandFoo]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:Mid.foo');
+  });
+
+  it('prefers a protocol-extension default over the protocol requirement of the same arity', () => {
+    const requirement = mkMethod({
+      nodeId: 'm:P.req',
+      ownerId: PROTO_A,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const body = mkMethod({
+      nodeId: 'm:P.ext',
+      ownerId: PROTO_A,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const protocolScope = {
+      id: 'scope:P.swift#1:1-20:1:Class' as ScopeId,
+      parent: null,
+      kind: 'Class',
+      range: { startLine: 1, startCol: 1, endLine: 20, endCol: 1 },
+      filePath: 'P.swift',
+      bindings: new Map(),
+      typeBindings: new Map(),
+      ownedDefs: [
+        {
+          nodeId: PROTO_A,
+          filePath: 'P.swift',
+          type: 'Protocol',
+          qualifiedName: 'A',
+        } as SymbolDefinition,
+        requirement,
+      ],
+    } as unknown as Scope;
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [PROTO_A]]]));
+    const workspace = mkWorkspaceIndex(
+      new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]),
+      new Map([[PROTO_A, protocolScope]]),
+    );
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${PROTO_A}::foo`, [requirement, body]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:P.ext');
+  });
+
+  it('does not prefer a protocol-extension witness over an inherited class member', () => {
+    const BASE = 'def:Base.swift:Base';
+    const baseType = {
+      nodeId: BASE,
+      filePath: 'Base.swift',
+      type: 'Class',
+      qualifiedName: 'Base',
+    } as SymbolDefinition;
+    const baseFoo = mkMethod({
+      nodeId: 'm:Base.foo',
+      ownerId: BASE,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const extFoo = mkMethod({
+      nodeId: 'm:P.ext',
+      ownerId: PROTO_A,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const baseScope = {
+      id: 'scope:Base.swift#1:1-20:1:Class' as ScopeId,
+      parent: null,
+      kind: 'Class',
+      range: { startLine: 1, startCol: 1, endLine: 20, endCol: 1 },
+      filePath: 'Base.swift',
+      bindings: new Map(),
+      typeBindings: new Map(),
+      ownedDefs: [baseType, baseFoo],
+    } as unknown as Scope;
+    const protocolScope = {
+      id: 'scope:P.swift#1:1-20:1:Class' as ScopeId,
+      parent: null,
+      kind: 'Class',
+      range: { startLine: 1, startCol: 1, endLine: 20, endCol: 1 },
+      filePath: 'P.swift',
+      bindings: new Map(),
+      typeBindings: new Map(),
+      ownedDefs: [
+        {
+          nodeId: PROTO_A,
+          filePath: 'P.swift',
+          type: 'Protocol',
+          qualifiedName: 'A',
+        } as SymbolDefinition,
+      ],
+    } as unknown as Scope;
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [BASE, PROTO_A]]]));
+    const workspace = mkWorkspaceIndex(
+      new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]),
+      new Map([
+        [BASE, baseScope],
+        [PROTO_A, protocolScope],
+      ]),
+    );
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, []],
+        [`${BASE}::foo`, [baseFoo]],
+        [`${PROTO_A}::foo`, [extFoo]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:Base.foo');
+  });
+
+  it('falls through to inherited when the enclosing type only has an arity-incompatible decoy', () => {
+    const decoy = mkMethod({
+      nodeId: 'm:own-decoy',
+      ownerId: CLASS_DEF_ID,
+      parameterCount: 1,
+      requiredParameterCount: 1,
+    });
+    const inherited = mkMethod({
+      nodeId: 'm:ext',
+      ownerId: PROTO_A,
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const scopes = mkScopes(mkClassScope(), new Map([[CLASS_DEF_ID, [PROTO_A]]]));
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = mkModel(
+      new Map(),
+      new Map([
+        [`${CLASS_DEF_ID}::foo`, [decoy]],
+        [`${PROTO_A}::foo`, [inherited]],
+      ]),
+    );
+
+    const result = pickImplicitThisOverload(site0, scopes, workspace, model, {
+      implicitThisWalksMro: true,
+    });
+    expect(result?.nodeId).toBe('m:ext');
   });
 });

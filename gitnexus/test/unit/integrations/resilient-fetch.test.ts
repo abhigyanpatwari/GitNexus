@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   CircuitBreaker,
   CircuitOpenError,
+  isTerminalNetworkError,
   parseRetryAfter,
   resilientFetch,
   ResilientFetchExhaustedError,
@@ -27,6 +28,40 @@ describe('parseRetryAfter', () => {
   it('returns 0 (not negative) on past HTTP-date', () => {
     const now = () => Date.parse('Wed, 21 Oct 2025 08:00:00 GMT');
     expect(parseRetryAfter('Wed, 21 Oct 2025 07:28:00 GMT', now)).toBe(0);
+  });
+});
+
+describe('isTerminalNetworkError', () => {
+  // Exported so call sites hooking into the retry loop (the embedding client's
+  // `fetchImpl`, which re-wraps its own `.json()` rejections) test the same
+  // predicate the loop tests instead of hand-copying the condition.
+  it('accepts both abort DOMExceptions', () => {
+    expect(isTerminalNetworkError(new DOMException('timed out', 'TimeoutError'))).toBe(true);
+    expect(isTerminalNetworkError(new DOMException('cancelled', 'AbortError'))).toBe(true);
+  });
+  it('rejects a non-DOMException wearing an abort name', () => {
+    // The narrow `instanceof` test is load-bearing: a name-only check would
+    // call these terminal while `classifyOutcome` still retries them.
+    expect(isTerminalNetworkError(Object.assign(new Error('nope'), { name: 'AbortError' }))).toBe(
+      false,
+    );
+    expect(isTerminalNetworkError(new TypeError('fetch failed'))).toBe(false);
+    expect(isTerminalNetworkError(new DOMException('boom', 'DataError'))).toBe(false);
+    expect(isTerminalNetworkError('AbortError')).toBe(false);
+    expect(isTerminalNetworkError(undefined)).toBe(false);
+  });
+  it('agrees with classifyOutcome on every error it is asked about', () => {
+    const now = () => 1_700_000_000_000;
+    const errors: unknown[] = [
+      new DOMException('timed out', 'TimeoutError'),
+      new DOMException('cancelled', 'AbortError'),
+      new DOMException('boom', 'DataError'),
+      Object.assign(new Error('nope'), { name: 'AbortError' }),
+      new TypeError('fetch failed'),
+    ];
+    expect(
+      errors.map((err) => classifyOutcome({ kind: 'error', err }, now).kind === 'terminal-network'),
+    ).toEqual(errors.map((err) => isTerminalNetworkError(err)));
   });
 });
 

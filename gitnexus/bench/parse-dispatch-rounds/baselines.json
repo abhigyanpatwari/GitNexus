@@ -1,0 +1,31 @@
+{
+  "_what": "Baselines for bench/parse-dispatch-rounds/measure.mjs --check. Guards parse-cache pack layout and dispatch-round cadence. Neither is visible in graph output — batching that changed output would be a bug — so nothing else in the repo can see these regress. Four of the five arms are deterministic; only pack_scaling_ratio is a timing signal.",
+
+  "_triage": "READ THIS BEFORE RE-RUNNING. layout_fingerprint, packs, single_file_packs, rounds, cjk_rounds and ascii_rounds are DETERMINISTIC: a re-run never changes them, and none may be re-baselined to make CI green. pack_scaling_ratio is the only timing arm; runner contention dominates it, so re-run on an idle machine before investigating and read the reported `reps` first. If exactly one arm fails and it is that one, suspect the machine.",
+
+  "layout_fingerprint": "cc875fd264498964b463aef55cec0166d57468a092303e94f1ed7f09fe141a44",
+  "_layout_fingerprint_note": "sha256 over the sorted pack membership — which files share a pack, and their order within it. Every parse-cache key derives from a pack's file set, so a change here invalidates every cached chunk for every user. This is a CORRECTNESS gate: drift needs a SCHEMA_BUMP in src/storage/parse-cache.ts alongside a new fingerprint, never a lone re-baseline.",
+
+  "packs": 774,
+  "single_file_packs": 251,
+  "_shape_note": "THE FLOOR. Without these two, every arm below is a ceiling over nothing. `rounds` only asserts something while the corpus OVER-SPLITS — 774 packs where the byte budget alone needs 5, 251 of them holding a single file. Shrink the corpus until packing stops over-splitting and rounds still reads 5 and still passes, asserting a property the corpus no longer has. bench/import-target learned this the hard way: four heap arms read 0 B and passed every ceiling, because a ceiling says 'not too big' and nothing said 'still measuring something'.",
+
+  "rounds": 5,
+  "_rounds_note": "Exact round count for the fixed corpus at the 2MB budget, folded through the production accumulator in pipeline-phases/parse-round-budget.ts. HIGHER (toward packs=774) means dispatch went back to one barrier per cache pack — the #3196 regression, measured at ~1.5x on a cold analyze with no visible symptom. LOWER (toward 1) means the close condition stopped firing, so an open round retains the whole repo until the tail drain (#2649 heap shape). Both directions verified to fail this arm before it was recorded: forcing close-every-chunk reads 774, disabling the close reads 1.",
+
+  "cjk_rounds": 8,
+  "ascii_rounds": 3,
+  "_encoding_note": "The round budget bounds what the MAIN THREAD HOLDS, so it must count UTF-8 bytes. String.length returns UTF-16 code units: a CJK character is one unit but three UTF-8 bytes, so reverting the unit would let a CJK-heavy repo hold ~3x its nominal budget before draining. The two corpora are constructed to have IDENTICAL UTF-16 length and differ only in encoded size, so under String.length both close 3 rounds and the arm collapses. Verified: reverting roundFileBytes to content.length takes cjk_rounds 8 -> 3. This is the arm that pins the change no unit test could — round cadence changes no graph output, so a test asserting output passes either way.",
+
+  "pack_scaling_budget": 1.6,
+  "_pack_scaling_note": "(t_4n / t_n) / 4 for packParseCacheChunks; ~1.0 is linear. A RATIO rather than a millisecond ceiling, deliberately: wall-clock is runner-speed-dependent, and this repo has already been bitten by a fixed ms budget — bench/callable-value-flow's widening_overhead gate failed twice on a shared runner at 2.07 and 1.975 against a 1.9 budget while the code was correct, on a sub-11ms measurement. A ratio divides the machine out. Measured over 5 runs on a NON-idle box: 0.940, 0.946, 0.977, 0.998, 1.085 (peak-to-peak 1.154). Budget is 1.6, i.e. 1.47x the measured maximum — this file's siblings use ~1.5x on ratios. It catches packParseCacheChunks going superlinear (it sorts within each bucket, so a global sort or a nested scan lands here) and is not tight enough to police drift. min-of-15 estimator, matching bench/import-target's finding that N=5 tripped its own budget ~1 run in 20 while N=15 held every language inside a 1.13-1.26x swing.",
+
+  "_measured": {
+    "pack_scaling_ratio": 1.085,
+    "pack_scaling_ratio_samples": [0.94, 0.946, 0.977, 0.998, 1.085],
+    "small_ms": 1.91,
+    "large_ms_4x": 7.46,
+    "reps": 15
+  },
+  "_measured_note": "Maxima over 5 runs on a box that was NOT idle, so the ratio spread is an upper bound on its real noise. small_ms/large_ms_4x are recorded for context only — nothing gates on them, because an absolute millisecond is exactly the gate this file avoids."
+}

@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { link, mkdir, readFile, readdir, symlink, unlink, writeFile } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -34,6 +43,10 @@ describe('analyzer runner identity', () => {
       await writeFile(path.join(fixture.dbPath, 'package-lock.json'), '{"lockfileVersion":3}\n');
       await writeFile(modulePath, 'export const analyzer = 1;\n');
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
+      const resolvedModulePath = await realpath(modulePath);
+      const resolvedSourceRoot = await realpath(sourceRoot);
+      const resolvedManifestPath = await realpath(path.join(fixture.dbPath, 'package.json'));
+      const resolvedLockfilePath = await realpath(path.join(fixture.dbPath, 'package-lock.json'));
 
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
@@ -50,18 +63,18 @@ describe('analyzer runner identity', () => {
           libc: expect.any(String),
         },
         invokedArtifact: {
-          path: modulePath,
+          path: resolvedModulePath,
           digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         },
         build: {
           kind: 'source',
-          rootPath: sourceRoot,
+          rootPath: resolvedSourceRoot,
           canonicalization: 'gitnexus-analyzer-build-v2',
           digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
         },
         dependencyRuntime: {
-          manifestPath: path.join(fixture.dbPath, 'package.json'),
-          lockfilePath: path.join(fixture.dbPath, 'package-lock.json'),
+          manifestPath: resolvedManifestPath,
+          lockfilePath: resolvedLockfilePath,
           canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
           packageCount: 1,
           artifactCount: 0,
@@ -76,6 +89,16 @@ describe('analyzer runner identity', () => {
       expect(second.invokedArtifact.digest).toBe(first.invokedArtifact.digest);
       expect(second.build.digest).not.toBe(first.build.digest);
       expect(second.dependencyRuntime.digest).toBe(first.dependencyRuntime.digest);
+      // THE #2798 INVARIANT: the build digest moved while nothing else did.
+      // Node-id formats, wire formats, resolution tiers and emit ordering live in
+      // analyzer code, not in DDL, so `SCHEMA_FINGERPRINT` (lbug/schema.ts) is
+      // structurally incapable of firing on a change shaped like this one — it is
+      // a digest of the node+relation DDL and of nothing else. #2798 deleted the
+      // hand-incremented INCREMENTAL_SCHEMA_VERSION ladder, and roughly 30 of its
+      // ~35 bumps were exactly this shape: semantic, no DDL. This receipt is their
+      // only remaining cover, so a moved build digest MUST refuse index reuse.
+      // (call-summary-schema-version.test.ts holds the DDL-blind half of the split.)
+      expect(analyzerRunnerIdentitiesEqual(second, first)).toBe(false);
     } finally {
       await fixture.cleanup();
     }
@@ -302,7 +325,7 @@ describe('analyzer runner identity', () => {
         return bytes;
       };
 
-      process.env.GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR = protectedCache.dbPath;
+      process.env.GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR = await realpath(protectedCache.dbPath);
       _clearAnalyzerIdentityProcessCacheForTests();
       expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
       _clearAnalyzerIdentityProcessCacheForTests();
@@ -592,7 +615,7 @@ describe('analyzer runner identity', () => {
       const withLock = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
       });
-      expect(withLock.dependencyRuntime.lockfilePath).toBe(ancestorLock);
+      expect(withLock.dependencyRuntime.lockfilePath).toBe(await realpath(ancestorLock));
       expect(withLock.dependencyRuntime.digest).not.toBe(withoutLock.dependencyRuntime.digest);
     } finally {
       await fixture.cleanup();
@@ -1085,7 +1108,9 @@ describe('analyzer runner identity', () => {
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
         cacheDirectory,
       });
-      expect(first.dependencyRuntime.lockfilePath).toBe(lockLink);
+      expect(first.dependencyRuntime.lockfilePath).toBe(
+        path.join(await realpath(path.dirname(lockLink)), path.basename(lockLink)),
+      );
 
       await writeFile(lockTarget, '{"lockfileVersion":4,"changed":true}\n');
       const targetChanged = resolveAnalyzerRunnerIdentity(pathToFileURL(modulePath).href, {
@@ -1282,6 +1307,12 @@ describe('analyzer runner identity', () => {
           identity,
         ),
       ).toBe(false);
+      // Fail-closed on a receipt that cannot be read at all — the same posture as
+      // an absent schemaFingerprint. An index predating the field stamps nothing
+      // (undefined) and a cleared/legacy field reads back as null; neither is ever
+      // grandfathered into an incremental top-up (#2798).
+      expect(analyzerRunnerIdentitiesEqual(undefined, identity)).toBe(false);
+      expect(analyzerRunnerIdentitiesEqual(null, identity)).toBe(false);
 
       await writeFile(
         path.join(sourceRoot, 'new-semantic-input.ts'),

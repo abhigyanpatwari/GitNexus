@@ -1,16 +1,18 @@
+import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-resolver.js';
+import { extractElementTypeFromString } from '../../type-extractors/shared.js';
+
 /**
- * C# collection-accessor unwrapping.
+ * C# container element-type unwrapping.
  *
  * When the compound-receiver resolver encounters a trailing
  * `.Values` / `.Keys` on a dotted member-access chain, it calls the
- * provider's `unwrapCollectionAccessor` hook to find the element
+ * provider's `elementTypeOf` hook to find the element
  * type. This module supplies the C# implementation — recognizing
  * Dictionary-family generics and returning the value or key type.
  *
- * Other languages (Python, Java, TypeScript) use method-call syntax
- * for the same access (`.values()` / `.keys()`), which the compound-
- * receiver's call-expression branch already handles; they leave this
- * hook undefined.
+ * Other languages (Python, Java, TypeScript) use method-call syntax for the
+ * same access (`.values()` / `.keys()`), which the compound-receiver's
+ * call-expression branch already handles; they answer only the `index` route.
  */
 
 /** Extract (K, V) from `Dictionary<K, V>` / `IDictionary<K, V>` /
@@ -46,12 +48,19 @@ function extractDictionaryArgs(rawName: string): { key: string; value: string } 
  * receiver / accessor combination we don't recognize, letting the
  * compound-receiver pass fall through to the regular field walk.
  */
-export function unwrapCsharpCollectionAccessor(
-  receiverType: string,
-  accessor: string,
+export function unwrapCsharpElementType(
+  containerType: string,
+  via: ElementAccessRoute,
 ): string | undefined {
-  if (accessor !== 'Values' && accessor !== 'Keys') return undefined;
-  const args = extractDictionaryArgs(receiverType);
+  const args = extractDictionaryArgs(containerType);
+  // Subscript on a dictionary yields the VALUE type — `dict["k"]` is a V, never
+  // a K. Previously this route returned nothing at all for C#, because the
+  // dictionary parse below was reachable only from the accessor hook.
+  if (via.kind === 'index') {
+    if (args !== undefined) return args.value;
+    return extractElementTypeFromString(containerType);
+  }
+  if (via.name !== 'Values' && via.name !== 'Keys') return undefined;
   if (args === undefined) return undefined;
-  return accessor === 'Values' ? args.value : args.key;
+  return via.name === 'Values' ? args.value : args.key;
 }

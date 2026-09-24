@@ -40,6 +40,7 @@ import {
 } from './llm-client.js';
 
 import { callCursorLLM, resolveCursorConfig } from './cursor-client.js';
+import { callGrokLLM, resolveGrokConfig } from './grok-client.js';
 import {
   callClaudeLLM,
   callCodexLLM,
@@ -224,6 +225,13 @@ export class WikiGenerator {
         workingDirectory: this.repoPath,
       });
       return callCursorLLM(prompt, cursorConfig, systemPrompt, options);
+    }
+    if (this.llmConfig.provider === 'grok') {
+      const grokConfig = resolveGrokConfig({
+        model: this.llmConfig.model,
+        requestTimeoutMs: this.llmConfig.requestTimeoutMs,
+      });
+      return callGrokLLM(prompt, grokConfig, systemPrompt, options);
     }
     if (
       this.llmConfig.provider === 'claude' ||

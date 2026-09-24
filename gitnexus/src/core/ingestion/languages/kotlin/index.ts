@@ -8,6 +8,11 @@ export { getKotlinCaptureCacheStats, resetKotlinCaptureCacheStats } from './cach
 export { interpretKotlinImport, interpretKotlinTypeBinding } from './interpret.js';
 export { kotlinArityCompatibility } from './arity.js';
 export { resolveKotlinImportTarget, type KotlinResolveContext } from './import-target.js';
+export {
+  buildKotlinPackageIndex,
+  resolveKotlinModule,
+  type KotlinPackageIndex,
+} from './module-resolution.js';
 export { kotlinMergeBindings } from './merge-bindings.js';
 export { populateKotlinOwners } from './owners.js';
 export {

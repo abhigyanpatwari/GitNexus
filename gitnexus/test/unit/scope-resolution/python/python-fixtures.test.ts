@@ -187,71 +187,155 @@ describe('Python imports — interpretImport', () => {
   it('case 10: `import numpy` → namespace import', () => {
     const f = parse('import numpy\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'numpy', importedName: 'numpy', targetRaw: 'numpy' },
+      {
+        kind: 'namespace',
+        localName: 'numpy',
+        importedName: 'numpy',
+        targetRaw: 'numpy',
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 11: `import numpy as np` → namespace import with rename', () => {
     const f = parse('import numpy as np\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'np', importedName: 'numpy', targetRaw: 'numpy' },
+      {
+        kind: 'namespace',
+        localName: 'np',
+        importedName: 'numpy',
+        targetRaw: 'numpy',
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 12: `import a.b.c` exposes the leading segment as the local name', () => {
     const f = parse('import a.b.c\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'a', importedName: 'a.b.c', targetRaw: 'a.b.c' },
+      {
+        kind: 'namespace',
+        localName: 'a',
+        importedName: 'a.b.c',
+        targetRaw: 'a.b.c',
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 13: `import a, b as c` decomposes into one ParsedImport per name', () => {
     const f = parse('import a, b as c\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'namespace', localName: 'a', importedName: 'a', targetRaw: 'a' },
-      { kind: 'namespace', localName: 'c', importedName: 'b', targetRaw: 'b' },
+      {
+        kind: 'namespace',
+        localName: 'a',
+        importedName: 'a',
+        targetRaw: 'a',
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'namespace',
+        localName: 'c',
+        importedName: 'b',
+        targetRaw: 'b',
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 14: `from m import x` → named import', () => {
     const f = parse('from m import x\n');
+    // `reexportsName`: Python republishes the name as `<module>.x`, so it must
+    // enter the re-export closure for `from <module> import x` elsewhere.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm' },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 15: `from m import x as y` → alias import', () => {
     const f = parse('from m import x as y\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'alias', localName: 'y', importedName: 'x', alias: 'y', targetRaw: 'm' },
+      {
+        kind: 'alias',
+        localName: 'y',
+        importedName: 'x',
+        alias: 'y',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 16: `from m import x, y, z` decomposes into three ParsedImports', () => {
     const f = parse('from m import x, y, z\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: 'm' },
-      { kind: 'named', localName: 'y', importedName: 'y', targetRaw: 'm' },
-      { kind: 'named', localName: 'z', importedName: 'z', targetRaw: 'm' },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'y',
+        importedName: 'y',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'z',
+        importedName: 'z',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 17: `from m import *` → wildcard', () => {
     const f = parse('from m import *\n');
-    expect(f.parsedImports).toEqual([{ kind: 'wildcard', targetRaw: 'm' }]);
+    expect(f.parsedImports).toEqual([
+      { kind: 'wildcard', targetRaw: 'm', declaredAtScope: f.moduleScope },
+    ]);
   });
 
   it('case 18: PEP-328 dotted relative import `from .pkg import x`', () => {
     const f = parse('from .pkg import x\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '.pkg' },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: '.pkg',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 
   it('case 19: PEP-328 parent-relative import `from ..pkg.sub import x`', () => {
     const f = parse('from ..pkg.sub import x\n');
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'x', importedName: 'x', targetRaw: '..pkg.sub' },
+      {
+        kind: 'named',
+        localName: 'x',
+        importedName: 'x',
+        targetRaw: '..pkg.sub',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 });
@@ -259,11 +343,80 @@ describe('Python imports — interpretImport', () => {
 // ─── Imports inside functions ─────────────────────────────────────────────
 
 describe('Python imports — function-local', () => {
-  it('case 20: function-local `from x import Y` is captured (visible to importOwningScope)', () => {
+  it('case 20: function-local `from x import Y` is captured but does NOT republish', () => {
     const f = parse('def loader():\n    from m import X\n');
-    // Decomposed at parse time; finalize will route via importOwningScope.
+    // No `reexportsName`: a function-body import binds `X` locally and puts
+    // nothing in the module namespace, so `from <this module> import X`
+    // elsewhere is an ImportError. Verified against CPython 3.11.
+    //
+    // `runsOnlyWhenCalled` is the separate, language-agnostic fact the central
+    // extractor decides from the scope tree: `m` is not imported until someone
+    // calls `loader()`, so the pair cannot force an initialization order. It is
+    // set here and nowhere later — see `ParsedImport.runsOnlyWhenCalled`.
     expect(f.parsedImports).toEqual([
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: 'm' },
+      {
+        kind: 'named',
+        localName: 'X',
+        importedName: 'X',
+        targetRaw: 'm',
+        runsOnlyWhenCalled: true,
+        declaredAtScope: scopesByKind(f, 'Function')[0]!.id,
+      },
+    ]);
+  });
+
+  it('case 21: class-body `from x import Y` does NOT republish either', () => {
+    const f = parse('class C:\n    from m import X\n');
+    // `class C: from m import X` makes `X` a class attribute (`C.X`), not a
+    // module attribute — same suppression as a function body.
+    //
+    // But NO `runsOnlyWhenCalled`: a class body executes where it is written,
+    // during module initialization, so this import really does force an
+    // initialization order. The two facts are separate on purpose — this is
+    // the case where suppression and deferral disagree.
+    expect(f.parsedImports).toEqual([
+      {
+        kind: 'named',
+        localName: 'X',
+        importedName: 'X',
+        targetRaw: 'm',
+        declaredAtScope: scopesByKind(f, 'Class')[0]!.id,
+      },
+    ]);
+  });
+
+  it('case 22: `if` / `try` / `for` bodies DO republish — Python has no block scope', () => {
+    // The counterpart negative control: these are still module-level bindings
+    // in CPython, so narrowing the flag to "top level" must not narrow it to
+    // "first indentation level". Verified against CPython 3.11.
+    const f = parse(
+      'if TYPE_CHECKING:\n    from m import A\ntry:\n    from m import B\nexcept ImportError:\n    B = None\nfor _ in r:\n    from m import C\n',
+    );
+    expect(f.parsedImports).toEqual([
+      {
+        kind: 'named',
+        localName: 'A',
+        importedName: 'A',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'B',
+        importedName: 'B',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
+      {
+        kind: 'named',
+        localName: 'C',
+        importedName: 'C',
+        targetRaw: 'm',
+        reexportsName: true,
+        declaredAtScope: f.moduleScope,
+      },
     ]);
   });
 });

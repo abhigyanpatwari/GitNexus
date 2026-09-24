@@ -87,6 +87,48 @@ describe('Spring @RequestMapping route ingestion pipeline', () => {
     expect(names).toContain('/api/admin/settings');
   });
 
+  it('emits wildcard and explicit method-level @RequestMapping routes', () => {
+    const routes = new Set<string>();
+    const handlerNames = new Set<string>();
+    const handledLegacyRoutes = new Set<string>();
+    result.graph.forEachNode((node) => {
+      if (node.label !== 'Route') return;
+      routes.add(`${String(node.properties.method)} ${String(node.properties.name)}`);
+      if (node.properties.handlerSymbolId) {
+        const handler = result.graph.getNode(String(node.properties.handlerSymbolId));
+        if (handler) handlerNames.add(String(handler.properties.name));
+      }
+    });
+    result.graph.forEachRelationship((relationship) => {
+      if (relationship.type !== 'HANDLES_ROUTE') return;
+      const file = result.graph.getNode(relationship.sourceId);
+      const route = result.graph.getNode(relationship.targetId);
+      if (
+        file?.label === 'File' &&
+        String(file.properties.name).includes('LegacyController.java') &&
+        route?.label === 'Route'
+      ) {
+        handledLegacyRoutes.add(
+          `${String(route.properties.method)} ${String(route.properties.name)}`,
+        );
+      }
+    });
+
+    const expectedRoutes = [
+      '* /api/legacy/all',
+      'POST /api/legacy/save',
+      'GET /api/legacy/inspect',
+      'HEAD /api/legacy/inspect',
+    ];
+    for (const route of expectedRoutes) {
+      expect(routes).toContain(route);
+      expect(handledLegacyRoutes).toContain(route);
+    }
+    for (const handlerName of ['allMethods', 'save', 'inspect']) {
+      expect(handlerNames).toContain(handlerName);
+    }
+  });
+
   it('emits HANDLES_ROUTE edges linking Route nodes to their handler files', () => {
     const handlesRouteEdges: Array<{ routeName: string; filePath: string }> = [];
     result.graph.forEachRelationship((r) => {

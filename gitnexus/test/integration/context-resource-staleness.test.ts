@@ -4,10 +4,11 @@
  * End-to-end flow with real git and real registry/meta I/O.
  */
 import { execFileSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
+import { initGitRepo } from '../helpers/temp-git-repo.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 
@@ -40,6 +41,10 @@ async function seedIndexedRepo(
   meta: RepoMeta,
   repoName: string = 'test-repo',
 ): Promise<void> {
+  // Registry validation accepts only an owned storage directory that contains
+  // the index path. The context resource itself reads metadata only, so a
+  // minimal placeholder directory is sufficient for this fixture.
+  mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
   await saveMeta(storagePath, meta);
   await registerRepo(repoPath, meta, { name: repoName });
 }
@@ -61,9 +66,7 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
     process.env.GITNEXUS_HOME = path.join(repoPath, '.gitnexus-home');
     storagePath = getStoragePaths(repoPath).storagePath;
 
-    runGit(repoPath, 'init');
-    runGit(repoPath, 'config', 'user.name', 'GitNexus Test');
-    runGit(repoPath, 'config', 'user.email', 'gitnexus@example.com');
+    initGitRepo(repoPath, { name: 'GitNexus Test', email: 'gitnexus@example.com' });
   });
 
   afterEach(async () => {

@@ -31,6 +31,8 @@ npm-debug.log*
 
 # Testing
 coverage/
+.tmp-test/
+gitnexus/.tmp-test/
 
 # Misc
 *.local
@@ -63,6 +65,7 @@ repomix-output*
 # Playwright artifacts
 gitnexus-web/playwright-report/
 gitnexus-web/test-results/
+gitnexus-web/e2e/screenshots/
 
 # Python test artifacts
 eval/.coverage
@@ -70,6 +73,8 @@ eval/.hypothesis/
 
 # Local docs — planning output (gitnexus-plan / gitnexus-work) stays local, not tracked
 docs/*
+!docs/fork/
+!docs/fork/**
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude

@@ -178,6 +178,41 @@ const RUBY_SCOPE_QUERY = `
     method: (identifier) @_new_method2
     (#eq? @_new_method2 "new"))) @type-binding.constructor
 
+;; Instance-variable constructor: \`@service = UserService.new\` (#2807).
+;; The patterns above bind locals and constants; an instance variable — the
+;; only way a Ruby object gets a field at all — bound nothing, so \`@service.run\`
+;; had no receiver type and the fold declined the whole chain.
+;;
+;; \`@type-binding.name\` is captured on the \`instance_variable\` node, so the
+;; bound name keeps its \`@\` sigil and matches the receiver text at the call
+;; site verbatim. The narrow \`@type-binding.ivar-field\` marker rides the same
+;; node for \`rubyBindingScopeFor\` to hoist on; anchorCaptureFor takes the
+;; broadest range, so the assignment stays the anchor and the source stays
+;; \`constructor-inferred\`.
+;;
+;; These patterns match unconditionally HERE; captures.ts then discards the
+;; whole binding via \`isRubyInstanceIvarWrite\` unless \`self\` at the write is
+;; provably an instance of the enclosing lexical class — which rules out
+;; \`def self.x\`, \`class << self\`, the class body itself, and any write reached
+;; through a block, whose \`self\` its receiver chooses (\`class_eval\`,
+;; \`Class.new\`, \`instance_eval\`, \`define_method\`, …). A tree-sitter pattern
+;; cannot state "and no singleton or block ancestor", so the ownership test has
+;; to be a walk.
+
+(assignment
+  left: (instance_variable) @type-binding.name @type-binding.ivar-field
+  right: (call
+    receiver: (constant) @type-binding.type
+    method: (identifier) @_new_ivar
+    (#eq? @_new_ivar "new"))) @type-binding.constructor
+
+(assignment
+  left: (instance_variable) @type-binding.name @type-binding.ivar-field
+  right: (call
+    receiver: (scope_resolution) @type-binding.type
+    method: (identifier) @_new_ivar_q
+    (#eq? @_new_ivar_q "new"))) @type-binding.constructor
+
 ;; Constant constructor: SERVICE = UserService.new (left is constant, not identifier)
 
 (assignment

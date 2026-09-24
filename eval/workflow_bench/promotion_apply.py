@@ -42,6 +42,8 @@ def mirror_targets(relative: PurePosixPath) -> list[PurePosixPath]:
     rest = PurePosixPath(*relative.parts[3:])
     targets = [relative]
     targets += [PurePosixPath(root, skill, rest) for root in MIRROR_SKILL_ROOTS]
+    if skill == "gitnexus-review":
+        targets.append(PurePosixPath("gitnexus-cursor-integration/skills", skill, rest))
     return targets
 
 

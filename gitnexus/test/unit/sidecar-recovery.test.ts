@@ -5,6 +5,8 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
+  assertReadOnlyFtsCrashSafe,
+  FtsReaderUnrepairableError,
   cleanParkedDirtyRecoverySidecars,
   cleanParkedLbugSidecars,
   cleanQuarantinedMissingShadowWals,
@@ -13,7 +15,12 @@ import {
   inspectLbugSidecars,
   isMissingShadowSidecarError,
   isPermissionRenameError,
+  INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX,
+  isReadOnlyCheckpointInProgressError,
+  isReadOnlyRecoveryFailure,
   isReadOnlyShadowReplayError,
+  PENDING_SHADOW_REPLAY_RECOVERY_PREFIX,
+  readOnlyRecoveryFailureMessage,
   listParkedDirtyRecoverySidecars,
   listParkedLbugSidecars,
   listQuarantinedMissingShadowWals,
@@ -226,13 +233,125 @@ describe('LadybugDB sidecar recovery', () => {
       expect(source).not.toMatch(/replay shadow pages under read-only mode/);
     });
 
-    it('structural: sidecar-recovery.ts carries exactly two LADYBUGDB-CONTRACT markers (one per shadow predicate)', () => {
+    it('structural: sidecar-recovery.ts carries exactly three LADYBUGDB-CONTRACT markers (one per native-error predicate)', () => {
       const source = readFileSync(
         path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'sidecar-recovery.ts'),
         'utf-8',
       );
       const markers = source.match(/\/\/ LADYBUGDB-CONTRACT:/g) ?? [];
-      expect(markers.length).toBe(2);
+      expect(markers.length).toBe(3);
+    });
+  });
+
+  describe('isReadOnlyCheckpointInProgressError (interrupted checkpoint, homelab repro 2026-09-19)', () => {
+    // Byte text from the live occurrence: a wiki pod killed mid-CHECKPOINT
+    // left lbug.wal + lbug.shadow, and every later read-only open refused with
+    // exactly this message (wrapped by the pool as "LadybugDB unavailable for
+    // __wiki__ ...").
+    const CANONICAL =
+      'Connection exception: Cannot open database in read-only mode while checkpoint is in progress.';
+
+    it('matches the canonical native message', () => {
+      expect(isReadOnlyCheckpointInProgressError(new Error(CANONICAL))).toBe(true);
+    });
+
+    it('matches prefix-wrapped and case-variant forms', () => {
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error(`LadybugDB unavailable for __wiki__. Retry later. (${CANONICAL})`),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error('cannot Open Database in Read-Only Mode while checkpoint is in Progress'),
+        ),
+      ).toBe(true);
+    });
+
+    it('accepts non-Error values and rejects unrelated read-only errors', () => {
+      expect(isReadOnlyCheckpointInProgressError(CANONICAL)).toBe(true);
+      expect(isReadOnlyCheckpointInProgressError(null)).toBe(false);
+      expect(isReadOnlyCheckpointInProgressError(undefined)).toBe(false);
+      // The sibling refusals must NOT match — each has its own classifier and
+      // its own recovery nuance.
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error("Couldn't replay shadow pages under read-only mode."),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error('Cannot execute write operations in a read-only database!'),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyCheckpointInProgressError(new Error('Cannot open file x.shadow: No such file')),
+      ).toBe(false);
+    });
+
+    it('structural: both adapters route the new classifier through the writable-recovery path', () => {
+      for (const file of ['lbug-adapter.ts', 'pool-adapter.ts']) {
+        const source = readFileSync(
+          path.join(__dirname, '..', '..', 'src', 'core', 'lbug', file),
+          'utf-8',
+        );
+        expect(source, file).toContain('isReadOnlyCheckpointInProgressError');
+        // The refusal rides the SAME recovery as the shadow-replay error —
+        // neither adapter may quarantine or rebuild for this state. The
+        // leading `!` matters: this must pin the THROW-THROUGH guard
+        // (`!shadowReplay && !checkpoint`), and a substring match without it
+        // would also accept the inverted predicate that recovers ONLY the
+        // shadow-replay class — the exact regression this guards against.
+        expect(source, file).toMatch(
+          /!isReadOnlyShadowReplayError\(err\) &&\s*!isReadOnlyCheckpointInProgressError\(err\)/,
+        );
+      }
+      // The classifier regex itself lives only in sidecar-recovery.ts.
+      const adapter = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
+        'utf-8',
+      );
+      expect(adapter).not.toMatch(/checkpoint is in progress\/i/);
+      expect(adapter).toContain('readOnlyRecoveryFailureMessage');
+      expect(adapter).toContain('isReadOnlyRecoveryFailure');
+      const pool = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'pool-adapter.ts'),
+        'utf-8',
+      );
+      expect(pool).not.toMatch(/checkpoint is in progress\/i/);
+    });
+  });
+
+  describe('readOnlyRecoveryFailureMessage does not rematch native classifiers', () => {
+    const CANONICAL =
+      'Connection exception: Cannot open database in read-only mode while checkpoint is in progress.';
+    const SHADOW =
+      "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.";
+
+    it('wraps checkpoint refusal without rematching the native classifier', () => {
+      const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(CANONICAL));
+      expect(wrapped.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX)).toBe(true);
+      expect(wrapped).toMatch(/gitnexus analyze/);
+      expect(wrapped).not.toMatch(/sidecar is missing/i);
+      expect(wrapped).not.toMatch(/--force/);
+      expect(wrapped).not.toContain(CANONICAL);
+      expect(isReadOnlyCheckpointInProgressError(new Error(wrapped))).toBe(false);
+      expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
+    });
+
+    it('wraps shadow-replay refusal without rematching the native classifier', () => {
+      const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(SHADOW));
+      expect(wrapped.startsWith(PENDING_SHADOW_REPLAY_RECOVERY_PREFIX)).toBe(true);
+      expect(wrapped).not.toContain(SHADOW);
+      expect(isReadOnlyShadowReplayError(new Error(wrapped))).toBe(false);
+      expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
+    });
+
+    it('delegates missing-shadow to shadowSidecarRecoveryMessage', () => {
+      const err = new Error('Cannot open file /tmp/lbug.shadow: No such file or directory');
+      expect(readOnlyRecoveryFailureMessage('/tmp/lbug', err)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', err),
+      );
     });
   });
 
@@ -416,6 +535,189 @@ describe('LadybugDB sidecar recovery', () => {
 
       expect(log.warn).toHaveBeenCalledTimes(1);
       expect(log.debug).toHaveBeenCalled();
+    });
+
+    it('parks a large orphan WAL only with fts-inplace-checkpointed evidence', async () => {
+      const wal = Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab);
+      await fs.writeFile(`${dbPath}.wal`, wal);
+      await guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+        kind: 'fts-inplace-checkpointed',
+      });
+      expect(Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), wal)).toBe(0);
+      await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('still refuses a large orphan WAL when crash evidence is omitted', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger()),
+      ).rejects.toThrow(/Rebuild the index/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('still refuses a present shadow even with crash evidence', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/present but unreachable/);
+      await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+    });
+
+    it('names gitnexus clean --lbug-sidecars when an evidenced park fails', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      const originalRename: typeof fs.rename = fs.rename;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(to).includes('.dirty-recovery')) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRename(from, to);
+      });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p) === `${dbPath}.wal`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
+      await expect(
+        guardWalQuarantine(dbPath, 'writable', new Error('trigger'), logger(), {
+          kind: 'fts-inplace-checkpointed',
+        }),
+      ).rejects.toThrow(/gitnexus clean --lbug-sidecars/);
+    });
+  });
+
+  describe('assertReadOnlyFtsCrashSafe (KTD10 reader refuse)', () => {
+    const ftsDirtyMeta = {
+      incrementalInProgress: {
+        startedAt: 1,
+        toWriteCount: 0,
+        phase: 'fts',
+        writePlan: 'in-place',
+        checkpointSucceeded: true,
+      },
+    };
+
+    const snapshotDir = async (): Promise<string> => {
+      const names = (await fs.readdir(dir)).sort();
+      const parts = await Promise.all(
+        names.map(async (name) => {
+          const bytes = await fs.readFile(path.join(dir, name));
+          return `${name}:${bytes.length}:${Buffer.from(bytes).toString('hex').slice(0, 32)}`;
+        }),
+      );
+      return parts.join('|');
+    };
+
+    it('refuses a large orphan WAL when FTS crash evidence is on disk, without touching files', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), JSON.stringify(ftsDirtyMeta));
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toThrow(
+        /gitnexus analyze --repair-fts/,
+      );
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through when meta is missing so today large-WAL readers stay unchanged', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through when meta is corrupt', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), '{not-json');
+      const before = await snapshotDir();
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+      expect(await snapshotDir()).toBe(before);
+    });
+
+    it('falls through for a non-FTS dirty flag', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          incrementalInProgress: { startedAt: 1, toWriteCount: 3, phase: 'load-graph' },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+    });
+
+    it('refuses an in-place FTS dirty WAL even when the boundary checkpoint failed', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          incrementalInProgress: {
+            startedAt: 1,
+            toWriteCount: 0,
+            phase: 'fts',
+            writePlan: 'in-place',
+            checkpointSucceeded: false,
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+    });
+
+    it('refuses a persisted in-place native-abort plus a live WAL after the dirty flag is gone', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          capabilities: {
+            fts: {
+              provider: 'ladybugdb-fts',
+              status: 'unavailable',
+              skipReason: 'native-abort',
+              writePlan: 'in-place',
+            },
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
+    });
+
+    it('falls through for a persisted staging native-abort so the live WAL can replay', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1, 0xab));
+      await fs.writeFile(
+        path.join(dir, 'gitnexus.json'),
+        JSON.stringify({
+          capabilities: {
+            fts: {
+              provider: 'ladybugdb-fts',
+              status: 'unavailable',
+              skipReason: 'native-abort',
+              writePlan: 'staging',
+            },
+          },
+        }),
+      );
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).resolves.toBeUndefined();
+    });
+
+    it('refuses a tiny orphan WAL when in-place FTS crash evidence is on disk', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES, 0xab));
+      await fs.writeFile(path.join(dir, 'gitnexus.json'), JSON.stringify(ftsDirtyMeta));
+      await expect(assertReadOnlyFtsCrashSafe(dbPath)).rejects.toBeInstanceOf(
+        FtsReaderUnrepairableError,
+      );
     });
   });
 

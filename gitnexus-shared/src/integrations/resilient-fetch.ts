@@ -81,6 +81,25 @@ type Outcome =
   | { kind: 'terminal-network'; err: unknown } // TimeoutError or AbortError: no retry, breaker neutral
   | { kind: 'retryable-network'; err: unknown }; // DNS, ECONNRESET, etc.
 
+/**
+ * The network errors `resilientFetch` treats as terminal — never retried, and
+ * routed through the breaker's neutral path.
+ *
+ * Both timer-fired aborts (`AbortSignal.timeout()` → `TimeoutError`) and
+ * caller-driven aborts (`AbortController.abort()` → `AbortError`) qualify:
+ * retrying against an already-aborted signal would fail again immediately, and
+ * neither outcome reflects backend health.
+ *
+ * Exported because callers that hook into the retry loop (a `fetchImpl` that
+ * inspects or re-wraps its own throws) have to agree with {@link
+ * classifyOutcome} about which errors are terminal. Sharing this predicate is
+ * what makes that agreement structural instead of a hand-copied condition that
+ * can drift.
+ */
+export function isTerminalNetworkError(err: unknown): err is DOMException {
+  return err instanceof DOMException && (err.name === 'TimeoutError' || err.name === 'AbortError');
+}
+
 /** Exported for unit tests. */
 export function classifyOutcome(
   result: { kind: 'error'; err: unknown } | { kind: 'response'; resp: Response },
@@ -88,15 +107,7 @@ export function classifyOutcome(
   retryAfterCapMs = RETRY_AFTER_CAP_MS,
 ): Outcome {
   if (result.kind === 'error') {
-    // Both timer-fired aborts (`AbortSignal.timeout()` → `TimeoutError`)
-    // and caller-driven aborts (`AbortController.abort()` → `AbortError`)
-    // are terminal: retrying against an already-aborted signal would
-    // fail again immediately, and neither outcome reflects backend
-    // health. They route through the breaker's neutral path.
-    if (
-      result.err instanceof DOMException &&
-      (result.err.name === 'TimeoutError' || result.err.name === 'AbortError')
-    ) {
+    if (isTerminalNetworkError(result.err)) {
       return { kind: 'terminal-network', err: result.err };
     }
     return { kind: 'retryable-network', err: result.err };

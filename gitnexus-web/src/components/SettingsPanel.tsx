@@ -20,9 +20,17 @@ import {
   getAvailableModels,
   fetchOpenRouterModels,
 } from '../core/llm/settings-service';
-import type { LLMSettings, LLMProvider } from '../core/llm/types';
+import { getAuthToken, setAuthToken } from '../services/backend-client';
+import type { LLMSettings, LLMProvider, MiniMaxThinkingMode } from '../core/llm/types';
+import {
+  getMiniMaxModelCapabilities,
+  MINIMAX_ANTHROPIC_BASE_URLS,
+  MINIMAX_DOCS_ROOTS,
+  MINIMAX_MODEL_IDS,
+} from '../core/llm/types';
 import { DEFAULT_OLLAMA_BASE_URL } from '../config/ui-constants';
 import { ProviderConfigCard } from './settings/ProviderConfigCard';
+import { SecretInput } from './settings/SecretInput';
 import { useTranslation } from 'react-i18next';
 
 interface SettingsPanelProps {
@@ -253,6 +261,8 @@ export const SettingsPanel = ({
   const { t } = useTranslation(['common', 'settings']);
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
+  /** Deploy access token. Stored outside LLM settings, persisted on Save. */
+  const [authToken, setAuthTokenState] = useState(getAuthToken);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle');
   const saveTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // Ollama connection state
@@ -275,6 +285,7 @@ export const SettingsPanel = ({
   useEffect(() => {
     if (isOpen) {
       setSettings(loadSettings());
+      setAuthTokenState(getAuthToken());
       setSaveStatus('idle');
       setOllamaError(null);
     }
@@ -315,6 +326,10 @@ export const SettingsPanel = ({
   const handleSave = () => {
     try {
       saveSettings(settings);
+      // The token persists on Save with everything else, not per keystroke: it
+      // is the only affordance this panel gives for "committed", and a
+      // half-typed token would otherwise ride the next probe.
+      setAuthToken(authToken);
       setSaveStatus('saved');
       onSettingsSaved?.();
       if (saveTimerRef.current) {
@@ -331,6 +346,20 @@ export const SettingsPanel = ({
   };
 
   if (!isOpen) return null;
+
+  const miniMaxModel = settings.minimax?.model ?? MINIMAX_MODEL_IDS[0];
+  const miniMaxCapabilities = getMiniMaxModelCapabilities(miniMaxModel);
+  const configuredMiniMaxThinkingMode = settings.minimax?.thinkingMode;
+  const miniMaxThinkingMode =
+    configuredMiniMaxThinkingMode &&
+    miniMaxCapabilities?.thinkingModes.includes(configuredMiniMaxThinkingMode)
+      ? configuredMiniMaxThinkingMode
+      : (miniMaxCapabilities?.thinkingModes[0] ?? configuredMiniMaxThinkingMode ?? 'adaptive');
+  const miniMaxBaseUrl = settings.minimax?.baseUrl ?? MINIMAX_ANTHROPIC_BASE_URLS.global_en;
+  const miniMaxDocsRoot =
+    miniMaxBaseUrl === MINIMAX_ANTHROPIC_BASE_URLS.cn_zh
+      ? MINIMAX_DOCS_ROOTS.cn_zh
+      : MINIMAX_DOCS_ROOTS.global_en;
 
   const providers: LLMProvider[] = [
     'openai',
@@ -372,6 +401,25 @@ export const SettingsPanel = ({
 
         {/* Content */}
         <div className="flex-1 space-y-6 overflow-y-auto p-6">
+          {/* Deploy access token. Rendered unconditionally, unlike the Local
+              Server block below, which only appears when a caller passes the
+              backend-URL props. An empty token is a valid state — a local
+              `gitnexus serve` or `docker compose` deploy has no gate. */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-text-secondary">
+              {t('settings:accessToken.label')}
+            </label>
+            <SecretInput
+              value={authToken}
+              onChange={setAuthTokenState}
+              label={t('settings:accessToken.label')}
+              placeholder={t('settings:accessToken.placeholder')}
+              revealLabel={t('settings:accessToken.reveal')}
+              hideLabel={t('settings:accessToken.hide')}
+            />
+            <p className="text-xs text-text-muted">{t('settings:accessToken.hint')}</p>
+          </div>
+
           {/* Local Server */}
           {backendUrl !== undefined && onBackendUrlChange && (
             <div className="space-y-3">
@@ -836,7 +884,7 @@ export const SettingsPanel = ({
                 value: settings.minimax?.apiKey ?? '',
                 placeholder: t('settings:providers.minimax.apiKeyPlaceholder'),
                 helperText: t('settings:providers.minimax.helperText'),
-                helperLink: 'https://platform.minimax.io',
+                helperLink: miniMaxDocsRoot,
                 helperLinkLabel: t('settings:providers.minimax.helperLinkLabel'),
                 isVisible: !!showApiKey['minimax'],
                 onChange: (value) =>
@@ -847,16 +895,79 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('minimax'),
               }}
               model={{
-                value: settings.minimax?.model ?? 'MiniMax-M2.5',
+                value: miniMaxModel,
                 placeholder: t('settings:providers.minimax.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
-                    minimax: { ...prev.minimax!, model: value },
+                    minimax: {
+                      ...prev.minimax!,
+                      model: value,
+                      thinkingMode:
+                        getMiniMaxModelCapabilities(value)?.thinkingModes[0] ??
+                        prev.minimax?.thinkingMode,
+                    },
                   })),
                 helperText: t('settings:providers.minimax.helperModel'),
               }}
-            />
+            >
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">
+                  {t('settings:providers.minimax.endpoint')}
+                </label>
+                <select
+                  value={miniMaxBaseUrl}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      minimax: { ...prev.minimax!, baseUrl: event.target.value },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                >
+                  <option value={MINIMAX_ANTHROPIC_BASE_URLS.global_en}>
+                    {t('settings:providers.minimax.endpoints.global')}
+                  </option>
+                  <option value={MINIMAX_ANTHROPIC_BASE_URLS.cn_zh}>
+                    {t('settings:providers.minimax.endpoints.china')}
+                  </option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">
+                  {t('settings:providers.minimax.thinking')}
+                </label>
+                <select
+                  value={miniMaxThinkingMode}
+                  disabled={miniMaxCapabilities?.thinkingModes.length === 1}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      minimax: {
+                        ...prev.minimax!,
+                        thinkingMode: event.target.value as MiniMaxThinkingMode,
+                      },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {(miniMaxCapabilities?.thinkingModes ?? ['adaptive', 'disabled']).map((mode) => (
+                    <option key={mode} value={mode}>
+                      {t(`settings:providers.minimax.thinkingModes.${mode}`)}
+                    </option>
+                  ))}
+                </select>
+                {miniMaxCapabilities && (
+                  <p className="text-xs text-text-muted">
+                    {t('settings:providers.minimax.capabilities', {
+                      contextWindow: miniMaxCapabilities.contextWindow.toLocaleString(),
+                      modalities: miniMaxCapabilities.inputModalities.join(', '),
+                    })}
+                  </p>
+                )}
+              </div>
+            </ProviderConfigCard>
           )}
 
           {/* DeepSeek Settings */}

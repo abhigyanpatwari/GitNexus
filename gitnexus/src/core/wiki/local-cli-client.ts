@@ -29,11 +29,13 @@ const COMMANDS: Record<LocalAgentProvider, string> = {
   opencode: 'opencode',
 };
 
-interface LocalCommand {
+export interface ResolvedCliCommand {
   displayName: string;
   command: string;
   argsPrefix: string[];
 }
+
+type LocalCommand = ResolvedCliCommand;
 
 function killChildTree(child: import('child_process').ChildProcess): void {
   if (process.platform === 'win32' && child.pid !== undefined) {
@@ -387,10 +389,33 @@ function getDetectedCommand(provider: LocalAgentProvider): LocalCommand | null {
   return cachedCommands.get(provider) ?? null;
 }
 
+/**
+ * Resolve a PATH command for spawn/execFile without a shell.
+ * On Windows, npm shims are `.cmd` files that Node cannot execFile/spawn
+ * directly — prefer a native `.exe` from `where.exe`, else `cmd.exe /d /s /c`.
+ */
+export function resolveWindowsCliCommand(displayName: string): ResolvedCliCommand {
+  if (process.platform !== 'win32') {
+    return { displayName, command: displayName, argsPrefix: [] };
+  }
+
+  const located = findWindowsCommand(`${displayName}.cmd`) || findWindowsCommand(displayName);
+  if (located && /\.exe$/i.test(located)) {
+    return { displayName, command: located, argsPrefix: [] };
+  }
+
+  // Last-resort fallback for installations that only expose a .cmd shim.
+  return {
+    displayName,
+    command: process.env.ComSpec || 'cmd.exe',
+    argsPrefix: ['/d', '/s', '/c', displayName],
+  };
+}
+
 function resolveLocalCommand(provider: LocalAgentProvider): LocalCommand {
   const displayName = COMMANDS[provider];
   if (process.platform !== 'win32') {
-    return { displayName, command: displayName, argsPrefix: [] };
+    return resolveWindowsCliCommand(displayName);
   }
 
   const npmBin = findWindowsCommand(`${displayName}.cmd`) || findWindowsCommand(displayName);
@@ -418,14 +443,7 @@ function resolveLocalCommand(provider: LocalAgentProvider): LocalCommand {
     }
   }
 
-  // Last-resort fallback for non-npm Windows installations that only expose a
-  // .cmd shim. Prompts are passed via stdin, so repo content is not placed on
-  // the command line.
-  return {
-    displayName,
-    command: process.env.ComSpec || 'cmd.exe',
-    argsPrefix: ['/d', '/s', '/c', displayName],
-  };
+  return resolveWindowsCliCommand(displayName);
 }
 
 function findWindowsCommand(command: string): string | null {

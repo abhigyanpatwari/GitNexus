@@ -7,6 +7,7 @@ import os
 import secrets
 import stat
 import statistics
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -21,9 +22,94 @@ from .proposer_sandbox import (
 CANDIDATE_ARMS = {
     "candidate_workflow": "workflow",
     "candidate_workflow_direct": "workflow_direct",
+    "candidate_review": "review",
 }
+PROMOTION_SCHEMA_VERSION = 6
+
+
+def promotion_policy(
+    candidate_arms: Sequence[str],
+    *,
+    metric: str = "cost_usd",
+    min_runs: int = 3,
+    min_improvement_pct: float = 5.0,
+    max_task_regression_pct: float = 20.0,
+) -> dict[str, dict[str, Any]]:
+    """The exact per-arm policy shared by evidence production and application."""
+    if not candidate_arms or len(set(candidate_arms)) != len(candidate_arms):
+        raise ValueError("promotion policy requires unique candidate arms")
+    policies = {}
+    for arm in candidate_arms:
+        if arm not in CANDIDATE_ARMS:
+            raise ValueError(f"unsupported candidate arm: {arm}")
+        policies[arm] = (
+            {
+                "metric": "review_weighted_f1",
+                "min_runs": min_runs,
+                "min_improvement": 0.01,
+                "quality_rule": "correct verdict on every repeat; minimum blocker recall; no clean-control regression",
+            }
+            if arm == "candidate_review"
+            else {
+                "metric": metric,
+                "min_runs": min_runs,
+                "min_improvement_pct": min_improvement_pct,
+                "max_task_regression_pct": max_task_regression_pct,
+                "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
+                "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
+                "quality_rule": "no per-task resolution-rate regression",
+            }
+        )
+    return policies
+
+
+def promotion_evidence(
+    results: dict[str, dict[str, dict[str, Any]]],
+    *,
+    policy: dict[str, dict[str, Any]],
+    model: str | None,
+    complete: bool,
+) -> dict[str, Any]:
+    """Produce discriminated, recomputable decisions, including partial reports."""
+    decisions = []
+    for candidate, rules in policy.items():
+        common = {
+            "incumbent_arm": CANDIDATE_ARMS[candidate],
+            "candidate_arm": candidate,
+            "model": model,
+            "min_runs": rules["min_runs"],
+        }
+        if candidate == "candidate_review":
+            decision = evaluate_review_candidate(results, **common, min_improvement=rules["min_improvement"])
+        else:
+            decision = evaluate_candidate(
+                results,
+                **common,
+                **{
+                    key: rules[key]
+                    for key in (
+                        "metric",
+                        "min_improvement_pct",
+                        "max_task_regression_pct",
+                        "max_failed_task_regression_pct",
+                    )
+                },
+            )
+        if not complete:
+            decision["decision"] = "insufficient_evidence"
+            decision["reasons"].append("sweep aborted; partial evidence cannot promote")
+        decisions.append(decision)
+    return {
+        "schema_version": PROMOTION_SCHEMA_VERSION,
+        "run_status": "complete" if complete else "aborted",
+        "policy": policy,
+        "decisions": decisions,
+    }
+
+
 CANDIDATE_SKILLS = {
     "gitnexus-plan",
+    "gitnexus-review",
     "gitnexus-work",
 }
 # Skills each incumbent arm actually loads in its sessions. An overlay that
@@ -32,6 +118,7 @@ CANDIDATE_SKILLS = {
 ARM_SKILLS = {
     "workflow": ("gitnexus-plan", "gitnexus-work"),
     "workflow_direct": ("gitnexus-work",),
+    "review": ("gitnexus-review",),
 }
 # Repo-local prompts whose bytes are evidence for each executed arm. Keep this
 # distinct from ``ARM_SKILLS``: that mapping defines which skills a promotable
@@ -54,6 +141,19 @@ MAIN_LOOP_ONLY_WARNING = (
     "each run output, deduplicating events "
     "that share one message.id."
 )
+# Failure kinds the prompts under test cause, not the task: the skill never
+# ran at all. Both arms failing a task this way is evidence about the skills,
+# so such a task stays inside the gate however unresolvable it looks.
+SKILL_ATTRIBUTABLE_ERROR_KINDS = frozenset({"skill-not-invoked"})
+# Leaving the quality gate is not leaving the spend gate. A candidate may fail
+# the same oracle the incumbent fails, but not at a multiple of its cost — an
+# ungated task is still real money and still ranks on the metric.
+MAX_FAILED_TASK_REGRESSION_PCT = 100.0
+# Promotion must rest on a real evidence base. Half the paired tasks is the
+# loosest rule the three-task production set can carry: it tolerates the one
+# scenario neither arm resolves and refuses a generation that has quietly
+# decayed to a single gated task deciding everything.
+MIN_GATED_TASK_RATIO = 0.5
 EVIDENCE_MAX_AGE_DAYS = 90
 MAX_CANDIDATE_OVERLAY_BYTES = 4 * 1024 * 1024
 MAX_SKILL_FINGERPRINT_BYTES = 4 * 1024 * 1024
@@ -325,7 +425,7 @@ def candidate_overlay_files(overlay: Path) -> list[Path]:
         ):
             raise ValueError(
                 "candidate overlays may only contain Markdown files under "
-                ".claude/skills/gitnexus-{plan,work}: "
+                ".claude/skills/gitnexus-{plan,review,work}: "
                 f"{relative}"
             )
     return entries
@@ -345,6 +445,8 @@ def required_candidate_arms(overlay: Path) -> list[str]:
         required.append("candidate_workflow")
     if "gitnexus-work" in touched:
         required.append("candidate_workflow_direct")
+    if "gitnexus-review" in touched:
+        required.append("candidate_review")
     return required
 
 
@@ -365,6 +467,69 @@ def candidate_overlay_digest(overlay: Path) -> str:
     return digest
 
 
+def _commit_sandbox_paths(
+    sandbox: SandboxSession,
+    relative_paths: Sequence[str],
+    *,
+    message: str,
+    require_change: bool,
+) -> bool:
+    """Stage and commit paths inside the outer sandbox.
+
+    Returns True when a commit was created. ``require_change`` keeps the
+    candidate-overlay contract: a no-op overlay is an error, while an
+    incumbent skill seed may already match the historical tree.
+    """
+
+    mkdir_command = ["/bin/mkdir", "-p", f"{SANDBOX_TMP}/wfbench-empty-hooks"]
+    mkdir_result = sandbox.run(
+        mkdir_command,
+        timeout=60,
+        env=build_sandbox_environment(),
+    )
+    if not mkdir_result.ok:
+        raise ManagedProcessError(mkdir_command, mkdir_result)
+    if not relative_paths:
+        if require_change:
+            raise ValueError("candidate overlay is byte-identical to the incumbent skills")
+        return False
+
+    # Historical review SHAs gitignore `.claude/skills/*` and lack the current
+    # per-skill allowlist. Force-add so a seed or overlay of harness-owned
+    # skill bytes is not rejected as an ignored path.
+    command, added = _sandbox_overlay_git(sandbox, ["add", "-f", "--", *relative_paths])
+    if not added.ok:
+        raise ManagedProcessError(command, added)
+    command, changed = _sandbox_overlay_git(
+        sandbox,
+        ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--"],
+    )
+    if changed.returncode == 0:
+        if require_change:
+            raise ValueError("candidate overlay is byte-identical to the incumbent skills")
+        return False
+    if changed.returncode != 1:
+        raise ManagedProcessError(command, changed)
+
+    command, committed = _sandbox_overlay_git(
+        sandbox,
+        [
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+        extra_config=(
+            "user.name=workflow-bench",
+            "user.email=workflow-bench@invalid",
+        ),
+    )
+    if not committed.ok:
+        raise ManagedProcessError(command, committed)
+    return True
+
+
 def apply_candidate_overlay(
     overlay: Path,
     worktree: Path,
@@ -383,45 +548,94 @@ def apply_candidate_overlay(
     for relative, content in payload:
         _replace_regular_file(worktree, relative, content)
         relative_paths.append(relative.as_posix())
-
-    mkdir_command = ["/bin/mkdir", "-p", f"{SANDBOX_TMP}/wfbench-empty-hooks"]
-    mkdir_result = sandbox.run(
-        mkdir_command,
-        timeout=60,
-        env=build_sandbox_environment(),
-    )
-    if not mkdir_result.ok:
-        raise ManagedProcessError(mkdir_command, mkdir_result)
-
-    command, added = _sandbox_overlay_git(sandbox, ["add", "--", *relative_paths])
-    if not added.ok:
-        raise ManagedProcessError(command, added)
-    command, changed = _sandbox_overlay_git(
+    _commit_sandbox_paths(
         sandbox,
-        ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--"],
+        relative_paths,
+        message="benchmark candidate skill overlay",
+        require_change=True,
     )
-    if changed.returncode == 0:
-        raise ValueError("candidate overlay is byte-identical to the incumbent skills")
-    if changed.returncode != 1:
-        raise ManagedProcessError(command, changed)
-
-    command, committed = _sandbox_overlay_git(
-        sandbox,
-        [
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "-m",
-            "benchmark candidate skill overlay",
-        ],
-        extra_config=(
-            "user.name=workflow-bench",
-            "user.email=workflow-bench@invalid",
-        ),
-    )
-    if not committed.ok:
-        raise ManagedProcessError(command, committed)
     return digest
+
+
+def seed_evaluated_skills(
+    source_repo: Path,
+    worktree: Path,
+    *,
+    sandbox: SandboxSession,
+    arm: str,
+) -> None:
+    """Install the current evaluated skill tree into a historical clone.
+
+    Review evolution scores the current (or overlay) ``gitnexus-review`` skill
+    against a historical PR checkout. Older SHAs predate that skill, and
+    using whatever prose happened to exist at the reviewed commit would make
+    the incumbent arm a moving target. Copy the harness checkout's skill
+    bytes and commit them before setup so ``git status`` still shows only
+    the task patch.
+    """
+
+    skill_names = EVALUATED_ARM_SKILLS.get(arm)
+    if not skill_names:
+        return
+
+    source_repo = source_repo.expanduser().absolute()
+    expected_clone = Path(os.path.abspath(worktree.expanduser()))
+    sandbox_clone = Path(os.path.abspath(sandbox.clone.expanduser()))
+    if sandbox_clone != expected_clone:
+        raise ValueError("skill seed sandbox does not bind the requested clone")
+    _require_real_directory(source_repo, label="incumbent skill repository")
+    if source_repo.resolve(strict=True) != source_repo:
+        raise ValueError(f"incumbent skill repository cannot traverse symlinks: {source_repo}")
+
+    relative_paths: list[str] = []
+    total = 0
+    for skill_name in skill_names:
+        _require_directory_chain(
+            source_repo,
+            Path(".claude") / "skills" / skill_name,
+            label="incumbent skill root",
+        )
+        skill_root = source_repo / ".claude" / "skills" / skill_name
+        pending = [skill_root]
+        while pending:
+            directory = pending.pop()
+            try:
+                children = list(os.scandir(directory))
+            except OSError as exc:
+                raise ValueError(f"incumbent skill directory is unreadable: {directory}: {exc}") from exc
+            for item in children:
+                path = Path(item.path)
+                if item.is_symlink():
+                    raise ValueError(
+                        "incumbent skill seed cannot contain symlinks: "
+                        f"{path.relative_to(source_repo)}"
+                    )
+                if item.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                    continue
+                if not item.is_file(follow_symlinks=False):
+                    raise ValueError(
+                        "incumbent skill seed entries must be regular files: "
+                        f"{path.relative_to(source_repo)}"
+                    )
+                total += item.stat(follow_symlinks=False).st_size
+                if total > MAX_SKILL_FINGERPRINT_BYTES:
+                    raise ValueError("incumbent skill seed exceeds the bounded evidence limit")
+                relative = Path(".claude") / "skills" / skill_name / path.relative_to(skill_root)
+                content = _bounded_regular_bytes(
+                    path,
+                    limit=MAX_SKILL_FINGERPRINT_BYTES,
+                    label="incumbent skill file",
+                )
+                _replace_regular_file(worktree, relative, content)
+                relative_paths.append(PurePosixPath(relative.as_posix()).as_posix())
+
+    _commit_sandbox_paths(
+        sandbox,
+        relative_paths,
+        message="benchmark incumbent review skill",
+        require_change=False,
+    )
 
 
 def unexercised_overlay_skills(overlay: Path, candidate_arms: list[str]) -> list[str]:
@@ -475,6 +689,133 @@ def skill_fingerprint(worktree: Path, arm: str) -> str | None:
     return fingerprint_files(worktree, files)
 
 
+def evaluate_review_candidate(
+    results: dict[str, dict[str, dict[str, Any]]],
+    *,
+    incumbent_arm: str,
+    candidate_arm: str,
+    model: str | None,
+    min_runs: int = 3,
+    min_improvement: float = 0.01,
+) -> dict[str, Any]:
+    """Quality-first promotion gate for paired read-only review arms."""
+
+    reasons: list[str] = []
+    task_rows: list[dict[str, Any]] = []
+    insufficient = not model
+    regression = False
+    improvement = False
+    if not model:
+        reasons.append("a named --model is required so review evidence cannot drift")
+
+    for task_id, arms in sorted(results.items()):
+        if incumbent_arm not in arms or candidate_arm not in arms:
+            insufficient = True
+            reasons.append(f"{task_id}: both {incumbent_arm} and {candidate_arm} are required")
+            continue
+        incumbent = arms[incumbent_arm]
+        candidate = arms[candidate_arm]
+        incumbent_runs = int(incumbent.get("valid_runs", 0))
+        candidate_runs = int(candidate.get("valid_runs", 0))
+        incumbent_score = incumbent.get("review_weighted_f1")
+        candidate_score = candidate.get("review_weighted_f1")
+        incumbent_blockers = incumbent.get("review_blocker_recall")
+        candidate_blockers = candidate.get("review_blocker_recall")
+        incumbent_fp = incumbent.get("review_false_positives")
+        candidate_fp = candidate.get("review_false_positives")
+        clean = bool(incumbent.get("review_clean_control", candidate.get("review_clean_control", False)))
+        incumbent_clean_pass = incumbent.get("review_clean_pass")
+        candidate_clean_pass = candidate.get("review_clean_pass")
+        task_rows.append(
+            {
+                "task": task_id,
+                "class": incumbent.get("class", ""),
+                "incumbent_weighted_f1": incumbent_score,
+                "incumbent": dict(incumbent),
+                "candidate": dict(candidate),
+                "gated": True,
+                "candidate_weighted_f1": candidate_score,
+                "incumbent_blocker_recall": incumbent_blockers,
+                "candidate_blocker_recall": candidate_blockers,
+                "incumbent_false_positives": incumbent_fp,
+                "candidate_false_positives": candidate_fp,
+                "clean_control": clean,
+                "incumbent_clean_pass": incumbent_clean_pass,
+                "candidate_clean_pass": candidate_clean_pass,
+            }
+        )
+        if (
+            incumbent_runs < min_runs
+            or candidate_runs < min_runs
+            or incumbent_runs != candidate_runs
+            or incumbent.get("excluded_runs")
+            or candidate.get("excluded_runs")
+        ):
+            insufficient = True
+            reasons.append(
+                f"{task_id}: needs {min_runs} valid paired runs with zero exclusions "
+                f"(got {incumbent_runs}/{candidate_runs})"
+            )
+        required_values = (
+            (incumbent_fp, candidate_fp, incumbent_clean_pass, candidate_clean_pass)
+            if clean
+            else (incumbent_score, candidate_score, incumbent_fp, candidate_fp)
+        )
+        if any(value is None for value in required_values):
+            insufficient = True
+            reasons.append(f"{task_id}: structured review quality metrics are incomplete")
+            continue
+        if candidate.get("review_verdict_correct") is None:
+            insufficient = True
+            reasons.append(f"{task_id}: candidate verdict evidence is incomplete")
+        elif candidate["review_verdict_correct"] is not True:
+            regression = True
+            reasons.append(f"{task_id}: candidate verdict was incorrect on a valid repeat")
+        if (incumbent_blockers is None) != (candidate_blockers is None):
+            insufficient = True
+            reasons.append(f"{task_id}: blocker recall evidence is incomplete")
+        if incumbent_blockers is not None and candidate_blockers is not None and float(candidate_blockers) < float(
+            incumbent_blockers
+        ):
+            regression = True
+            reasons.append(f"{task_id}: blocker recall regressed")
+        if clean and float(candidate_fp) > float(incumbent_fp):
+            regression = True
+            reasons.append(f"{task_id}: false positives increased on a clean control")
+        if clean and bool(incumbent_clean_pass) and not bool(candidate_clean_pass):
+            regression = True
+            reasons.append(f"{task_id}: clean-control verdict regressed")
+        if not clean and float(candidate_score) + 1e-9 < float(incumbent_score):
+            regression = True
+            reasons.append(f"{task_id}: weighted review score regressed")
+        if not clean and float(candidate_score) >= float(incumbent_score) + min_improvement:
+            improvement = True
+
+    if not task_rows:
+        insufficient = True
+        reasons.append("no paired review task results were found")
+    if insufficient:
+        decision = "insufficient_evidence"
+    elif regression:
+        decision = "keep_incumbent"
+    elif not improvement:
+        decision = "keep_incumbent"
+        reasons.append("candidate did not improve weighted review quality on any corpus case")
+    else:
+        decision = "promote"
+        reasons.append("candidate improved weighted review quality without blocker or clean-control regression")
+    return {
+        "candidate_arm": candidate_arm,
+        "incumbent_arm": incumbent_arm,
+        "decision": decision,
+        "metric": "review_weighted_f1",
+        "model": model,
+        "tasks": task_rows,
+        "ungated_tasks": [],
+        "reasons": reasons,
+    }
+
+
 def evaluate_candidate(
     results: dict[str, dict[str, dict[str, Any]]],
     *,
@@ -485,12 +826,18 @@ def evaluate_candidate(
     min_runs: int = 3,
     min_improvement_pct: float = 5.0,
     max_task_regression_pct: float = 20.0,
+    max_failed_task_regression_pct: float = MAX_FAILED_TASK_REGRESSION_PCT,
 ) -> dict[str, Any]:
     """Deterministically decide whether a prompt candidate is promotable.
 
     Resolution is lexicographically primary: a cheaper candidate that fails
     more tasks never wins. With equal quality, the candidate must clear the
     configured median efficiency gain without a large per-task regression.
+
+    A task neither arm can resolve leaves the quality gate, but only on
+    evidence: a comparable metric, no skill-not-invoked run, and enough tasks
+    left inside the gate to decide anything. It still ranks against the
+    failed-task spend cap.
     """
     if metric not in PROMOTION_METRICS:
         raise ValueError(f"unsupported promotion metric: {metric}")
@@ -536,20 +883,66 @@ def evaluate_candidate(
             if (not metric_unavailable and incumbent_metric)
             else None
         )
+        # A task that both arms measured cleanly and neither ever resolved sits
+        # outside both arms' current capability. It carries no quality signal
+        # about the candidate, and its metric compares who spent more while
+        # failing the same oracle — so gating on it measures the task, not the
+        # candidate, and one such task vetoes every future promotion for as
+        # long as it stays in the set. Keep it in the evidence, out of the gate,
+        # and name it as task health instead.
+        #
+        # Ungating is itself a claim, so it needs evidence: the failures must
+        # be the task's (not a skill that never loaded) and the metric must be
+        # comparable, otherwise the task stays gated and the checks below name
+        # what is missing.
+        fully_measured = (
+            incumbent_runs >= min_runs
+            and candidate_runs >= min_runs
+            and incumbent_runs == candidate_runs
+            and not incumbent_excluded
+            and not candidate_excluded
+        )
+        skill_attributable = bool(
+            (set(incumbent.get("error_kinds", {})) | set(candidate.get("error_kinds", {})))
+            & SKILL_ATTRIBUTABLE_ERROR_KINDS
+        )
+        mutually_unresolved = fully_measured and not incumbent["resolved"] and not candidate["resolved"]
+        gated = not (mutually_unresolved and not skill_attributable and improvement is not None)
+        # The floor asks the candidate to be reliable where the incumbent is.
+        # On a task the incumbent never resolves there is no reliability to
+        # match, and holding partial candidate progress to it punished a
+        # candidate for resolving 1 of 3 runs while excusing it for resolving
+        # none — the strictly worse result. A skill that never loaded is the
+        # exception: those failures belong to the prompts, so the floor applies
+        # even with nothing on the incumbent's side to match.
+        quality_floor_enforced = bool(incumbent["resolved"]) or skill_attributable
         task_rows.append(
             {
                 "task": task_id,
                 "class": incumbent.get("class", ""),
                 "incumbent_resolved": f"{incumbent['resolved']}/{incumbent_runs}",
+                "incumbent": dict(incumbent),
+                "candidate": dict(candidate),
                 "candidate_resolved": f"{candidate['resolved']}/{candidate_runs}",
                 "incumbent_excluded_runs": incumbent_excluded,
                 "candidate_excluded_runs": candidate_excluded,
                 "candidate_quality_floor_met": candidate_runs > 0 and candidate["resolved"] == candidate_runs,
+                "quality_floor_enforced": quality_floor_enforced,
                 "incumbent_metric": incumbent_metric,
                 "candidate_metric": candidate_metric,
                 "improvement_pct": improvement,
+                "gated": gated,
+                "skill_attributable_failure": skill_attributable,
             }
         )
+        if not gated:
+            if improvement < -max_failed_task_regression_pct:
+                efficiency_regression = True
+                reasons.append(
+                    f"{task_id}: {metric} regressed {-improvement:.1f}% on a task neither arm resolved, "
+                    f"above the {max_failed_task_regression_pct:.1f}% failed-task cap"
+                )
+            continue
 
         if incumbent_runs < min_runs or candidate_runs < min_runs:
             insufficient = True
@@ -571,11 +964,16 @@ def evaluate_candidate(
         if candidate_rate < incumbent_rate:
             quality_regression = True
             reasons.append(f"{task_id}: resolution regressed from {incumbent_rate:.0%} to {candidate_rate:.0%}")
-        if candidate_runs > 0 and candidate["resolved"] != candidate_runs:
+        if quality_floor_enforced and candidate_runs > 0 and candidate["resolved"] != candidate_runs:
             quality_floor_failed = True
+            floor_trigger = (
+                "a run never invoked the skill under test"
+                if skill_attributable
+                else f"the incumbent resolves {incumbent['resolved']}/{incumbent_runs}"
+            )
             reasons.append(
                 f"{task_id}: candidate must resolve every valid run for the oracle-backed quality floor "
-                f"(got {candidate['resolved']}/{candidate_runs})"
+                f"({floor_trigger}; got {candidate['resolved']}/{candidate_runs})"
             )
         if metric_unavailable:
             insufficient = True
@@ -592,11 +990,36 @@ def evaluate_candidate(
                 f"{task_id}: {metric} regressed {-improvement:.1f}%, above the {max_task_regression_pct:.1f}% task cap"
             )
 
+    ungated_tasks = [row["task"] for row in task_rows if not row["gated"]]
+    gated_tasks = [row["task"] for row in task_rows if row["gated"]]
+    if ungated_tasks:
+        # One line, not one per task: `reasons` is truncated to three entries
+        # when it is fed back to the proposer (evolve.summarize_gate), and a
+        # growing set of unsolvable tasks must not crowd out the reason the
+        # candidate actually won or lost. The full list ships structurally.
+        reasons.append(
+            f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)} "
+            f"(evidence base: {len(gated_tasks)}/{len(task_rows)} paired tasks gated)"
+        )
     if not task_rows:
         insufficient = True
         reasons.append("no paired task results were found")
+    elif not gated_tasks:
+        # Every paired task was ungated, so nothing in this generation says
+        # anything about candidate quality. Refuse rather than fall through to
+        # an efficiency-only verdict on runs that all failed their oracle.
+        insufficient = True
+        reasons.append("no task supplied quality signal: neither arm resolved a run anywhere in the set")
+    elif len(gated_tasks) < MIN_GATED_TASK_RATIO * len(task_rows):
+        # Ungating one unsolvable task keeps promotion reachable; ungating most
+        # of the set turns "promote" into a verdict from whatever is left.
+        insufficient = True
+        reasons.append(
+            f"promotion evidence base is too thin: {len(gated_tasks)}/{len(task_rows)} paired tasks are gated "
+            f"(at least {MIN_GATED_TASK_RATIO:.0%} required)"
+        )
 
-    improvements = [row["improvement_pct"] for row in task_rows if row["improvement_pct"] is not None]
+    improvements = [row["improvement_pct"] for row in task_rows if row["gated"] and row["improvement_pct"] is not None]
     median_improvement = round(statistics.median(improvements), 1) if improvements else None
     incumbent_resolved = sum(
         arms[incumbent_arm]["resolved"] for arms in results.values() if incumbent_arm in arms and candidate_arm in arms
@@ -640,6 +1063,8 @@ def evaluate_candidate(
         "metric": metric,
         "metric_warning": (MAIN_LOOP_ONLY_WARNING if metric in MAIN_LOOP_ONLY_METRICS else None),
         "median_improvement_pct": median_improvement,
+        "ungated_tasks": ungated_tasks,
+        "gated_tasks": gated_tasks,
         "reasons": reasons,
         "tasks": task_rows,
     }

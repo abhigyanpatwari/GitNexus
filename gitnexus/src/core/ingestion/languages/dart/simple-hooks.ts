@@ -23,6 +23,7 @@ import type {
   TypeRef,
   CaptureMatch,
 } from 'gitnexus-shared';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 export function dartBindingScopeFor(
   decl: CaptureMatch,
@@ -39,6 +40,15 @@ export function dartBindingScopeFor(
     }
     if (cur !== undefined && cur.kind === 'Module') return cur.id;
     return null;
+  }
+
+  // (1b) A field typed from a constructor assigned to it (`r = Outer();` in a
+  // constructor body) must live on the CLASS scope — the assignment sits inside
+  // the constructor's own Function scope, where `typeOfMemberOnClass` never
+  // looks (#2807). Gated on the dedicated marker, never on
+  // `@type-binding.constructor` at large, which also fires for genuine locals.
+  if (decl['@type-binding.dart-field'] !== undefined) {
+    return walkToScope(innermost, tree, 'Class');
   }
 
   // (2) Function/method/constructor names are visible in the enclosing scope.

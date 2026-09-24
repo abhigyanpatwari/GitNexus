@@ -110,7 +110,8 @@
     "references_other": "{{count}} references",
     "lines_one": "{{count}} line",
     "lines_other": "{{count}} lines",
-    "codeNotAvailable": "Code not available in memory for {{path}}"
+    "codeNotAvailable": "Code not available in memory for {{path}}",
+    "sourceUnavailable": "Full source is unavailable for this index."
   },
   "canvas": {
     "viewModes": {

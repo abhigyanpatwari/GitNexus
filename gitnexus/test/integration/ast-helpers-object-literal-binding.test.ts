@@ -7,6 +7,7 @@
  *   - happy path: file-scope export const / const / export var → returns binding
  *   - local-inside-function / arrow / class-constructor → null
  *   - nested object literal → null (safe under-approximation)
+ *   - object literal reached through an array → null
  *   - block-scoped declaration (if / for body) → null
  *   - IIFE-wrapped object literal → null
  *   - assignment without declarator → null (no throw)
@@ -122,6 +123,17 @@ describe('findObjectLiteralBindingInfo — negative: nested literals', () => {
     });
     const [innerNode] = findMethodNodes(tree.rootNode, 'inner');
     expect(findObjectLiteralBindingInfo(innerNode, 'src/s.ts')).toBe(null);
+  });
+});
+
+describe('findObjectLiteralBindingInfo — negative: array elements', () => {
+  it('does not invent an owner member for an object literal inside an array', () => {
+    const tree = parseTs(`export const handlers = [{ run() {} }, { run() {} }];`);
+    const methodNodes = findMethodNodes(tree.rootNode, 'run');
+    expect(methodNodes).toHaveLength(2);
+    for (const methodNode of methodNodes) {
+      expect(findObjectLiteralBindingInfo(methodNode, 'src/handlers.ts')).toBe(null);
+    }
   });
 });
 

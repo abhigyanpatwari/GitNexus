@@ -1,3 +1,5 @@
+import type { TypeRef } from 'gitnexus-shared';
+
 /**
  * Parse top-level generic/template arguments from a type-like string.
  *
@@ -45,6 +47,129 @@ export function extractTemplateArguments(text: string): string[] | undefined {
   return args.length > 0 ? args : undefined;
 }
 
+/**
+ * The type ARGUMENTS a reference applies to its base, read from the reference's
+ * own source spelling: `IValidator<string>` → `['string']`, `Base[User]` →
+ * `['User']`, `Repository` → `undefined`.
+ *
+ * The inverse direction of {@link erasedTypeApplication}, which rebuilds the
+ * `Base<Args>` SPELLING so a lookup can stay grounded; this returns the
+ * ARGUMENTS so a consumer that has already resolved the base can ask which
+ * instantiation it was (#2912).
+ *
+ * Both bracket families count, because both spell type application in a
+ * heritage position — `class C : IValidator<string>` and Go's `struct { Base[int] }`
+ * / Python's `class C(Base[User])`. What is NOT accepted is anything that fails
+ * to be exactly one balanced, non-empty list closing at the very end:
+ *
+ *   - `Base(args)`      — a C# primary-constructor base, not an application.
+ *   - `Foo[]`           — an empty list is an array spelling, not arguments.
+ *   - `(Int) -> Unit`   — a Kotlin function type, whose `>` closes nothing.
+ *
+ * Declining is the safe outcome for all of them: absence reads as "unknown"
+ * and every consumer of this fails open on it.
+ */
+export function typeApplicationArguments(spelling: string): string[] | undefined {
+  const text = spelling.trim();
+  const inner = balancedTailList(text, text.search(OPENING_BRACKET));
+  if (inner === undefined) return undefined;
+  const args = splitTopLevelArguments(inner);
+  return args.length > 0 ? args : undefined;
+}
+
+const OPENING_BRACKET = /[<[]/;
+
+/**
+ * The contents of the ONE balanced bracket list that opens at `start` and closes
+ * on the LAST character of `text` — `Repo<User>` from index 4 yields `User`.
+ *
+ * `undefined` for everything else, which is what both callers need: a list that
+ * closes early (`User[][]`, `Repo<User>?`), one that never closes
+ * (`Map<String, (Int) -> Unit>`), an empty one (`User[]`), one whose brackets
+ * cross families (`Foo<Bar]>`), or no bracket at all (`start === -1`). Shared
+ * because the rule is one rule — `erasedTypeApplication` rebuilds the spelling
+ * from it and `typeApplicationArguments` splits it, and two copies of a scan
+ * this fiddly would be free to disagree about `User[][]`.
+ */
+function balancedTailList(text: string, start: number): string | undefined {
+  const opener = text[start];
+  if (opener !== '<' && opener !== '[') return undefined;
+  // A STACK of expected closers rather than one counter for one family: a
+  // counter scanning `Foo<Bar]>` never sees the `]`, reaches the final `>` at
+  // depth zero and reports `Bar]` as a balanced argument list. Every closer must
+  // now match the opener it actually closes, so a crossed pair declines — which
+  // is what the contract above says and what both callers read as "unknown".
+  const expected: string[] = [];
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<' || ch === '[') {
+      expected.push(ch === '<' ? '>' : ']');
+      continue;
+    }
+    if (ch !== '>' && ch !== ']') continue;
+    if (expected.pop() !== ch) return undefined;
+    if (expected.length === 0) {
+      return i === text.length - 1 && i > start + 1 ? text.slice(start + 1, i) : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Split `string, Map<int, bool>` on the commas that are not inside a nested
+ *  list. Tracks BOTH bracket families so a mixed spelling (`List<Dict[a, b]>`)
+ *  does not split inside the inner one. */
+function splitTopLevelArguments(inner: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let tokenStart = 0;
+  const push = (end: number): void => {
+    const token = inner.slice(tokenStart, end).trim();
+    if (token.length > 0) args.push(token);
+  };
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (ch === '<' || ch === '[') depth++;
+    else if (ch === '>' || ch === ']') depth--;
+    else if (ch === ',' && depth === 0) {
+      push(i);
+      tokenStart = i + 1;
+    }
+  }
+  push(inner.length);
+  return args;
+}
+
+/**
+ * Index of the `(` that matches the trailing `)` of `text`, or -1 when the text
+ * does not end in a balanced call suffix.
+ *
+ * Shared for the same reason as {@link balancedTailList}: this scan is fiddly
+ * enough that two copies would be free to disagree, and it has two unrelated
+ * readers — splitting a receiver chain at its call, and stripping a base's
+ * constructor invocation off a heritage spelling.
+ */
+export function matchingOpenParen(text: string): number {
+  if (!text.endsWith(')')) return -1;
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    const ch = text[i];
+    if (ch === ')') depth++;
+    else if (ch === '(') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Drop a balanced `(...)` that ENDS the text — the argument list of a base's
+ *  constructor invocation, as in `record R : Base<int>(x)` or Kotlin
+ *  `class C : Bar<Int>()`. Anything else is returned unchanged. */
+export function stripTrailingCallSuffix(text: string): string {
+  const open = matchingOpenParen(text);
+  return open === -1 ? text : text.slice(0, open).trimEnd();
+}
+
 export function stripTemplateArguments(text: string): string {
   const start = text.indexOf('<');
   if (start === -1) return text;
@@ -85,4 +210,72 @@ export function constraintsHash(jsonText: string): string {
 export function templateConstraintsIdTag(payload: unknown): string {
   if (payload === undefined || payload === null) return '';
   return `~c:${constraintsHash(JSON.stringify(payload))}`;
+}
+
+/**
+ * The type APPLICATION a type reference was reduced from — `Mapped[User]`,
+ * `Repo<User>` — restored to the `Base<Args>` spelling, or `undefined` when
+ * this reference is not that shape.
+ *
+ * ── WHY A LOOKUP MUST NOT BE HANDED THE REDUCED NAME ─────────────────────────
+ *
+ * `rawName` is post-normalization (see its docstring on `TypeRef`), and several
+ * providers reduce a type application to its BASE NAME at capture time —
+ * `Mapped[User]` → `Mapped`, `Repo<User>` → `Repo`. That erasure is what lets
+ * one declaration answer for every instantiation of it, and it is also the
+ * widest step any lookup in this pipeline takes: reaching a declaration by NAME
+ * ALONE binds whatever the workspace happens to declare under that name. A
+ * third-party `Mapped[User]` beside an unrelated workspace `class Mapped` is
+ * then a confident WRONG edge, which is strictly worse than the missing one it
+ * replaced.
+ *
+ * `resolveClassBindingForName` already owns the rule for this — it admits an
+ * erased base name only on grounds that connect the site to the declaration
+ * (the scope chain binds the name; the declaration is in the same file; the
+ * index proves the name is a template family; the file has no cross-file class
+ * channel to be absent from). But that route is entered on the SPELLING: a name
+ * carrying its arguments takes it, a name already reduced to its base cannot,
+ * because nothing distinguishes it from an ordinary class name. So a provider
+ * that reduces at capture time sends its receivers down the ungrounded route by
+ * construction, whatever the shared lookup does.
+ *
+ * Restoring the application from `declaredSpelling` — which keeps the
+ * annotation exactly as written whenever normalization changed it — puts those
+ * receivers back on the grounded route. Restoring rather than reimplementing
+ * the grounding here is deliberate: the rule is one rule, and a second copy of
+ * it in this file would be free to drift from the one in `scope/walkers.ts`
+ * that every other caller uses. (Its predicate is not exported; the exported
+ * entry point is the spelling.)
+ *
+ * ── WHAT COUNTS AS AN APPLICATION ────────────────────────────────────────────
+ *
+ * `rawName` must be the base the spelling APPLIES arguments to, and the
+ * argument list must be the whole of the rest of the spelling — one list,
+ * balanced, non-empty. Everything else is left exactly as it resolves today,
+ * because a transform that is not certain is a worse failure than no transform:
+ *
+ *   - `User[]` — an array whose ELEMENT the capture layer already reduced to
+ *     `User`. The position is the element, not an application of `User`, and
+ *     the empty list is what says so.
+ *   - `User[][]` — likewise, and it closes its first list before the end.
+ *   - `std::vector<Item>` reduced to `vector<Item>` — the spelling does not
+ *     start with the reduced name, so nothing was erased that this can restore.
+ *   - `Repo<User>?`, `Map<String, (Int) -> Unit>` — trailing decoration and an
+ *     argument list that does not close where it must. Declining leaves the
+ *     pre-existing behaviour, which is what "no transform" has to mean.
+ *
+ * The rebuilt spelling uses ANGLE brackets because that is the spelling
+ * `resolveClassBindingForName`'s contract is written against; the punctuation a
+ * language spells type application with is not otherwise meaningful here, and
+ * nothing downstream reads this string except that lookup.
+ */
+export function erasedTypeApplication(typeRef: TypeRef): string | undefined {
+  const spelling = typeRef.declaredSpelling?.trim();
+  if (spelling === undefined) return undefined;
+  const base = typeRef.rawName.trim();
+  if (base.length === 0 || !spelling.startsWith(base)) return undefined;
+  // The list must open immediately after the base and close on the LAST
+  // character, holding something: `Repo[User]` yes, `User[]` no, `User[][]` no.
+  const inner = balancedTailList(spelling.slice(base.length).trimStart(), 0);
+  return inner === undefined ? undefined : `${base}<${inner}>`;
 }

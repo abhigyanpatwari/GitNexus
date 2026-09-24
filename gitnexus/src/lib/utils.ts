@@ -3,6 +3,75 @@ export const generateId = (label: string, name: string): string => {
 };
 
 /**
+ * Total order on strings by UTF-16 code unit — deliberately NOT `localeCompare`.
+ *
+ * `localeCompare` resolves against the host's default ICU locale, so two machines
+ * can order the same pair differently and a tie-broken cap keeps a different
+ * subset on each (#2787). Code-unit order is host-independent and matches the
+ * binary `ORDER BY` the graph queries use, so a JS re-sort reproduces the DB's
+ * order instead of fighting it.
+ *
+ * Use this for every tiebreak that feeds a `.slice()`, a page boundary, or any
+ * other cut — `Array.prototype.sort` is stable, so a comparator that returns 0
+ * for distinct elements silently falls back to input order.
+ */
+export const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * How many links of an `Error.cause` chain any walker below visits, counting
+ * the head. THE bound — hand-rolled copies had drifted to three different
+ * numbers with three different loop conditions (`depth < 5` in two places,
+ * `depth <= 5` in a third, i.e. six levels).
+ *
+ * The bound exists purely so a cyclic chain (`a.cause = b; b.cause = a`)
+ * cannot loop forever. Real chains are one or two links deep — the ingestion
+ * phase runner wraps a phase failure once as
+ * `new Error("Phase 'X' failed: …", { cause })` — so five leaves ample
+ * headroom for future nesting.
+ */
+export const CAUSE_CHAIN_MAX_DEPTH = 5;
+
+/**
+ * Walk `err` and its `cause` chain, head first, yielding each `Error` link.
+ *
+ * Stops at the first non-`Error` link (a `cause` may legally be any value, and
+ * a non-Error carries no further `cause` worth following) and after
+ * `maxDepth` links. Non-`Error` input yields nothing.
+ *
+ * THE single cause-chain traversal. Consume this (or {@link findInCauseChain})
+ * rather than re-rolling the `for (let depth = 0; …; current = current.cause)`
+ * loop: every hand-rolled copy has to re-decide the bound and the loop
+ * condition, and they did not agree.
+ */
+export function* causeChain(err: unknown, maxDepth = CAUSE_CHAIN_MAX_DEPTH): Generator<Error> {
+  let current: unknown = err;
+  for (let depth = 0; depth < maxDepth && current instanceof Error; depth++) {
+    yield current;
+    current = (current as { cause?: unknown }).cause;
+  }
+}
+
+/**
+ * Find the first link of `err`'s cause chain that `match` accepts.
+ *
+ * Load-bearing for CLI error classification: the ingestion phase runner
+ * rewraps every phase failure as `new Error("Phase 'X' failed: …", { cause })`,
+ * so a bare `instanceof` at the CLI boundary misses the real error entirely
+ * and falls through to a generic stack dump. Classify by TYPE through this
+ * helper (the repo norm from #2385), never by message text.
+ */
+export function findInCauseChain<T>(
+  err: unknown,
+  match: (e: unknown) => e is T,
+  maxDepth: number = CAUSE_CHAIN_MAX_DEPTH,
+): T | undefined {
+  for (const link of causeChain(err, maxDepth)) {
+    if (match(link)) return link;
+  }
+  return undefined;
+}
+
+/**
  * Drop a Windows extended-length (`\\?\`) prefix from a path (#2667).
  *
  * **Comparison domain only.** Never apply this to a string that is about to be
@@ -50,3 +119,82 @@ export const stripWindowsLongPathPrefix = (
   if (/^\\\\\?\\[A-Za-z]:\\/.test(p)) return p.slice(4);
   return p;
 };
+
+/**
+ * Split `items` into consecutive slices of at most `size`.
+ *
+ * Returns an empty array for empty input, and never returns an empty slice, so
+ * `for (const batch of chunk(xs, n))` always has something to work on.
+ *
+ * Callers batching a GRAPH QUERY should take the size from `core/lbug/query-batch.ts`,
+ * which documents why a query built from a caller-sized array needs a ceiling at
+ * all (#2915) and which of the two ceilings applies: `LBUG_QUERY_BATCH_SIZE` when
+ * each item makes the query do more work, `LBUG_ID_PROBE_BATCH_SIZE` when it is a
+ * plain `id IN $ids` probe and round trips dominate. They differ by 10x, in
+ * opposite directions, for that reason.
+ */
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  // `NaN` fails every comparison, so a bare `size < 1` lets it through and
+  // A size is a COUNT, so it has to be a positive integer — `Number.isInteger`
+  // rather than `Number.isFinite`, because a fractional size silently DUPLICATES
+  // items rather than failing: `slice` truncates its indices while `i` does not,
+  // so size 1.5 yields slice(0, 1.5) = items 0-1 and then slice(1.5, 3) = items
+  // 1-2, and item 1 lands in two batches. `NaN` is the other shape this rejects —
+  // it fails every comparison, so a bare `size < 1` lets it through and `i += NaN`
+  // produces exactly one empty slice, which the docstring promises never to
+  // return. `mapConcurrent`'s `Math.max(1, …)` propagates a NaN concurrency the
+  // same way.
+  if (!Number.isInteger(size) || size < 1) {
+    throw new RangeError(`chunk size must be a positive integer, got ${size}`);
+  }
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) batches.push(items.slice(i, i + size));
+  return batches;
+}
+
+/**
+ * Run `run` over each item with at most `concurrency` in flight, returning the
+ * results in input order.
+ *
+ * A failure is reported through `onError` and yields `undefined` for that item,
+ * so one bad item degrades the result (the caller raises its own `partial`
+ * flag) instead of discarding the items that succeeded beside it.
+ *
+ * This SCHEDULES, it does not synchronize: `run` must be safe to execute
+ * concurrently with itself. Both kinds of caller here are — `fs.readFile` per
+ * path in the ingestion walkers, and graph queries, where `executeParameterized`
+ * checks a connection out of the per-repo pool for the duration of the query
+ * (`pool-adapter.ts`) so parallel calls never share one. The default leaves
+ * headroom for other in-flight work.
+ */
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  run: (item: T) => Promise<R>,
+  options: { concurrency?: number; onError?: (error: unknown) => void } = {},
+): Promise<(R | undefined)[]> {
+  const settle = async (item: T): Promise<R | undefined> => {
+    try {
+      return await run(item);
+    } catch (error) {
+      // Reporting a failure must not become a failure. `onError` is caller-supplied
+      // — a logger with a bad format string is enough — and an uncaught throw here
+      // rejects `settle`, which rejects the whole `Promise.all` wave and discards
+      // the neighbouring successes this function exists to preserve.
+      try {
+        options.onError?.(error);
+      } catch {
+        /* empty */
+      }
+      return undefined;
+    }
+  };
+
+  // Wave scheduling rather than a rolling window: measured on the real query
+  // path the two are within noise (538ms vs 532ms on a 1,000-file diff, whose
+  // per-batch times spread only 1.35x), and most inputs produce a single wave.
+  const results: (R | undefined)[] = [];
+  for (const wave of chunk(items, Math.max(1, options.concurrency ?? 4))) {
+    results.push(...(await Promise.all(wave.map(settle))));
+  }
+  return results;
+}

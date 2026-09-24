@@ -13,6 +13,7 @@ import type {
   ScopeTree,
   TypeRef,
 } from 'gitnexus-shared';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 // ─── bindingScopeFor ──────────────────────────────────────────────────────
 
@@ -55,6 +56,28 @@ export function tsBindingScopeFor(
     return walkToScope(innermost, tree, 'Class');
   }
 
+  // `this.p = new Outer()` binds the FIELD, not a method-local, so the binding
+  // belongs on the class the way an annotated field's does — that is the only
+  // place `typeOfMemberOnClass` reads. Left on the innermost scope it would sit
+  // on the method's own Function scope and never be found (#2807). Same shape
+  // as the parameter-property branch above.
+  //
+  // Gated on the marker the `this.<field> = new …` pattern emits, never on
+  // `@type-binding.constructor` at large: that capture also fires for
+  // `const o = new Outer()` inside a method, and hoisting THOSE to the class
+  // would take method locals out of their own scope and mistype them.
+  //
+  // This walk is UNCONDITIONAL by design, and stays correct only because the
+  // marker's producers are bounded: the query nests the pattern under
+  // `class_body → method_definition → statement_block`, and `emitTsScopeCaptures`
+  // drops the static-method case. So `this` here provably IS an instance of the
+  // class this lands on, and a Class ancestor always exists — no `walkToScope`
+  // null-fallback onto some unrelated innermost scope. Anything that widens the
+  // marker's producers has to re-establish both, or restore the guard here.
+  if (decl['@type-binding.this-field'] !== undefined) {
+    return walkToScope(innermost, tree, 'Class');
+  }
+
   // `var` declarations: hoist to nearest enclosing Function or Module.
   const variable = decl['@declaration.variable'];
   if (variable !== undefined && isVarDeclaration(variable.text)) {
@@ -67,31 +90,6 @@ export function tsBindingScopeFor(
   // about placing the binding in a different scope). The scope tree
   // already attaches their name to the enclosing scope. No override
   // needed.
-  return null;
-}
-
-/**
- * Walk up the scope chain to find the first scope whose `kind` matches
- * any of `kinds`. Returns the matching scope's id or `null` when no
- * ancestor matches (e.g., a return type binding emitted outside any
- * Module scope — shouldn't happen in well-formed input).
- *
- * Exported so language-specific hook wrappers (e.g. `jsBindingScopeFor`)
- * can reuse it without duplicating the traversal logic.
- */
-export function walkToScope(
-  from: Scope,
-  tree: ScopeTree,
-  ...kinds: readonly Scope['kind'][]
-): ScopeId | null {
-  let cur: Scope | undefined = from;
-  const kindSet = new Set(kinds);
-  while (cur !== undefined) {
-    if (kindSet.has(cur.kind)) return cur.id;
-    const parentId: ScopeId | null = cur.parent ?? null;
-    if (parentId === null) break;
-    cur = tree.getScope(parentId);
-  }
   return null;
 }
 

@@ -42,7 +42,15 @@ const DART_SCOPE_QUERY = `
 (enum_declaration) @scope.class
 
 ; ── Declarations — types ─────────────────────────────────────────────────────
-(class_definition name: (identifier) @declaration.name) @declaration.class
+; The type-parameter list is matched as an UNNAMED optional child: the Dart
+; grammar hangs \`type_parameters\` off \`class_definition\` without a field name.
+; Recording it is what lets instantiation-aware interface dispatch tell a type
+; VARIABLE (\`class Box<T> implements Validator<T>\`) from a concrete argument
+; (\`class V implements Validator<String>\`) — see #2912; absent parameters are
+; indistinguishable from a language that captures none, and read as unknown.
+(class_definition
+  name: (identifier) @declaration.name
+  (type_parameters)? @declaration.type-parameters) @declaration.class
 (mixin_declaration (identifier) @declaration.name) @declaration.trait
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
@@ -159,6 +167,27 @@ const DART_SCOPE_QUERY = `
       . (identifier) @declaration.name))) @declaration.property
 (declaration
   (nullable_type)
+  (initialized_identifier_list
+    (initialized_identifier
+      . (identifier) @declaration.name))) @declaration.property
+
+; Inference-typed fields — \`var b = Outer();\`, \`final b = Outer();\`,
+; \`late final b = Outer();\`, \`static var b = Outer();\` (#2807). The two
+; patterns above require a written type, so a field whose type comes from its
+; initializer produced NO property declaration at all — no Property node, and
+; nothing for captures.ts to hang a type binding on, so \`b.inner()\` could not
+; resolve its receiver while the annotated twin resolved fine.
+;
+; Dart spells the keyword as \`inferred_type\` for \`var\` and \`final_builtin\`
+; for \`final\` / \`late final\`; both are class fields and both are idiomatic,
+; so covering only one would leave the more common Dart style broken.
+(declaration
+  (inferred_type)
+  (initialized_identifier_list
+    (initialized_identifier
+      . (identifier) @declaration.name))) @declaration.property
+(declaration
+  (final_builtin)
   (initialized_identifier_list
     (initialized_identifier
       . (identifier) @declaration.name))) @declaration.property

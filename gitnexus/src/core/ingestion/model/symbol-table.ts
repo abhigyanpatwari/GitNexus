@@ -56,6 +56,8 @@ import type { NodeLabel, ParameterTypeClass, SymbolDefinition } from 'gitnexus-s
  */
 export const CLASS_TYPES_TUPLE = [
   'Class',
+  'Protocol',
+  'Category',
   'Struct',
   'Interface',
   'Enum',

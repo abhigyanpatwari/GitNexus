@@ -242,7 +242,12 @@ com.duplicate.DuplicateAutoConfiguration
   });
 
   it('uses metadata DECLARES evidence without claiming annotation-based registration', () => {
-    const targetNames = declarations
+    const metadataDeclarations = declarations.filter(
+      (edge) =>
+        edge.reason === 'spring-auto-configuration-import' ||
+        edge.reason === 'spring-auto-configuration-factory',
+    );
+    const targetNames = metadataDeclarations
       .map((edge) => String(result.graph.getNode(edge.targetId)?.properties.name))
       .sort();
     expect(targetNames).toEqual([
@@ -254,13 +259,13 @@ com.duplicate.DuplicateAutoConfiguration
       'StarterAutoConfiguration',
     ]);
     expect(
-      declarations.some(
+      metadataDeclarations.some(
         (edge) =>
           result.graph.getNode(edge.targetId)?.properties.name === 'OrdinaryApplicationConfig',
       ),
     ).toBe(false);
     expect(
-      declarations.every((edge) =>
+      metadataDeclarations.every((edge) =>
         String(result.graph.getNode(edge.sourceId)?.properties.filePath).includes('META-INF'),
       ),
     ).toBe(true);

@@ -4,7 +4,11 @@ import {
   truncateDescription,
   extractDeclarationOnly,
 } from '../../src/core/embeddings/text-generator.js';
-import { isChunkableLabel } from '../../src/core/embeddings/types.js';
+import {
+  CHUNKING_RULES,
+  isChunkableLabel,
+  STRUCTURAL_TEXT_MODE_NONE,
+} from '../../src/core/embeddings/types.js';
 import type { EmbeddableNode } from '../../src/core/embeddings/types.js';
 
 const baseNode: EmbeddableNode = {
@@ -428,6 +432,38 @@ describe('text-generator', () => {
       expect(text).toContain('[preceding context]: ...function parseJSON');
       expect(text).toContain('return JSON.parse(text);');
     });
+
+    it.each([
+      {
+        label: 'Protocol' as const,
+        name: 'Worker',
+        content: ['@protocol Worker', '- (void)run;', '@end'].join('\n'),
+        chunk: '- (void)run;',
+      },
+      {
+        label: 'Category' as const,
+        name: 'Worker (Tracing)',
+        content: ['@interface Worker (Tracing)', '- (void)trace;', '@end'].join('\n'),
+        chunk: '- (void)trace;',
+      },
+    ])(
+      'keeps Objective-C $label embedding text code-oriented',
+      ({ label, name, content, chunk }) => {
+        const node: EmbeddableNode = {
+          ...baseNode,
+          label,
+          name,
+          content,
+        };
+
+        const text = generateEmbeddingText(node, chunk, {}, 1, 'previous declaration');
+
+        expect(CHUNKING_RULES[label]?.structuralTextMode).toBe(STRUCTURAL_TEXT_MODE_NONE);
+        expect(text).toContain(chunk);
+        expect(text).toContain('[preceding context]: ...previous declaration');
+        expect(text).not.toContain('Container:');
+      },
+    );
   });
 
   describe('Constructor label', () => {

@@ -127,4 +127,60 @@ describe('resolveBridgeNeighbors', () => {
     expect(rows).toEqual([]);
     await closeBridgeDb(handle!);
   });
+
+  itLbugReopen(
+    'registry alias as localRepo does not join contracts stamped with the member path',
+    async () => {
+      const consumer = makeContract({
+        repo: 'demo/api',
+        role: 'consumer',
+        symbolUid: 'consumer-uid',
+        symbolRef: { filePath: 'src/api.ts', name: 'fetchUsers' },
+        symbolName: 'fetchUsers',
+        contractId: 'http::GET::/api/users',
+        confidence: 0.5,
+      });
+      const provider = makeContract({
+        repo: 'demo/api',
+        role: 'provider',
+        symbolUid: 'provider-uid',
+        symbolRef: { filePath: 'src/routes.ts', name: 'getUsers' },
+        symbolName: 'getUsers',
+        contractId: 'http::GET::/api/users',
+        confidence: 0.9,
+      });
+      const link: CrossLink = {
+        from: { repo: 'web', symbolUid: 'web-uid', symbolRef: consumer.symbolRef },
+        to: { repo: 'demo/api', symbolUid: 'provider-uid', symbolRef: provider.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/users',
+        matchType: 'manifest',
+        confidence: 0.9,
+      };
+      await writeBridge(tmpDir, {
+        contracts: [{ ...consumer, repo: 'web' }, provider],
+        crossLinks: [link],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+      const handle = await openBridgeDbReadOnly(tmpDir);
+      const aliasMiss = await resolveBridgeNeighbors(handle!, {
+        localRepo: 'demo-api',
+        uids: ['provider-uid'],
+        direction: 'upstream',
+      });
+      expect(aliasMiss).toEqual([]);
+      const pathHit = await resolveBridgeNeighbors(handle!, {
+        localRepo: 'demo/api',
+        uids: ['provider-uid'],
+        direction: 'upstream',
+      });
+      expect(pathHit).toHaveLength(1);
+      expect(pathHit[0]).toMatchObject({
+        neighborRepo: 'web',
+        matchType: 'manifest',
+      });
+      await closeBridgeDb(handle!);
+    },
+  );
 });

@@ -18,6 +18,7 @@ import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
 import {
   parseSpringCollectionType,
   SPRING_DI_INJECTION_SITES_PROPERTY,
+  SPRING_DI_PROVIDER_PROPERTY,
   springDiFieldMatcher,
 } from '../../../src/core/ingestion/di-extractors/spring.js';
 import { generateId } from '../../../src/lib/utils.js';
@@ -97,8 +98,9 @@ function addImplements(
   ifaceName: string,
   ifaceLanguage = 'java',
   ifaceQualifiedName?: string,
+  sourceLabel: NodeLabel = 'Class',
 ): void {
-  const classId = generateId('Class', className);
+  const classId = generateId(sourceLabel, className);
   const ifaceId = generateId('Interface', `${ifaceLanguage}:${ifaceQualifiedName ?? ifaceName}`);
   graph.addRelationship({
     id: generateId('IMPLEMENTS', `${classId}->${ifaceId}`),
@@ -159,6 +161,30 @@ function addProperty(
     reason: '',
   });
   return propId;
+}
+
+function addProviderDeclaration(
+  graph: KnowledgeGraph,
+  name: string,
+  providedTypeName: string,
+  declaredByNodeId?: string,
+): string {
+  const id = generateId('CodeElement', `spring-bean:${name}`);
+  graph.addNode({
+    id,
+    label: 'CodeElement',
+    properties: {
+      name,
+      filePath: 'src/AppConfiguration.java',
+      language: 'java',
+      [SPRING_DI_PROVIDER_PROPERTY]: {
+        names: [name],
+        providedTypeName,
+        ...(declaredByNodeId === undefined ? {} : { declaredByNodeId }),
+      },
+    },
+  });
+  return id;
 }
 
 /** Collect all INJECTS relationships currently in the graph. */
@@ -755,6 +781,93 @@ describe('di phase', () => {
     expect(output).toMatchObject({ injectsEdges: 2, ambiguousInjections: 1 });
   });
 
+  it('matches a named provider whose concrete provided type implements the requested interface', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Gateway');
+    addClass(graph, 'DefaultGateway', 'java');
+    addImplements(graph, 'DefaultGateway', 'Gateway');
+    const providerId = addProviderDeclaration(graph, 'defaultGateway', 'DefaultGateway');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Gateway',
+          cardinality: 'single',
+          namedSelection: {
+            name: 'defaultGateway',
+            reason: 'resource name "defaultGateway"',
+          },
+          reason: 'Spring DI: @Resource gateway: Gateway',
+        },
+      ],
+    });
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: providerId,
+        confidence: 0.95,
+      }),
+    ]);
+    expect(output).toMatchObject({ injectsEdges: 1, ambiguousInjections: 0 });
+  });
+
+  it('excludes the provider declared by a factory method from that method parameter injection', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Gateway');
+    addClass(graph, 'DefaultGateway', 'java');
+    addImplements(graph, 'DefaultGateway', 'Gateway');
+    const configurationId = addClass(graph, 'AppConfiguration', 'java');
+    const factoryMethodId = generateId('Method', 'AppConfiguration.gateway');
+    graph.addNode({
+      id: factoryMethodId,
+      label: 'Method',
+      properties: {
+        name: 'gateway',
+        filePath: 'src/AppConfiguration.java',
+        language: 'java',
+        [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+          {
+            targetTypeName: 'Gateway',
+            cardinality: 'single',
+            edgeSource: 'site',
+            reason: 'Spring DI: @Bean method gateway parameter dependency: Gateway',
+          },
+        ],
+      },
+    });
+    graph.addRelationship({
+      id: generateId('HAS_METHOD', `${configurationId}->${factoryMethodId}`),
+      sourceId: configurationId,
+      targetId: factoryMethodId,
+      type: 'HAS_METHOD',
+      confidence: 1,
+      reason: '',
+    });
+    const selfProviderId = addProviderDeclaration(graph, 'gateway', 'Gateway', factoryMethodId);
+    const siblingProviderId = addProviderDeclaration(
+      graph,
+      'fallbackGateway',
+      'Gateway',
+      generateId('Method', 'AppConfiguration.fallbackGateway'),
+    );
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: factoryMethodId,
+        targetId: siblingProviderId,
+        confidence: 0.9,
+      }),
+    ]);
+    expect(injectsEdges(graph).some((edge) => edge.targetId === selfProviderId)).toBe(false);
+    expect(output).toMatchObject({ injectsEdges: 1, ambiguousInjections: 0 });
+  });
+
   it('fails closed when one injection type name denotes both a class and an interface', async () => {
     const graph = createKnowledgeGraph();
 
@@ -803,6 +916,137 @@ describe('di phase', () => {
     // intentional fail-closed skip rather than a simple-name guess.
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output).toMatchObject({ injectsEdges: 0, ambiguousSkipped: 1 });
+  });
+
+  it('walks interface assignability transitively, ignores intermediate interfaces, and terminates cycles', async () => {
+    const graph = createKnowledgeGraph();
+    const parentId = addInterface(graph, 'Parent');
+    const childId = addInterface(graph, 'Child');
+    const implId = addClass(graph, 'Impl', 'java');
+    addImplements(graph, 'Impl', 'Child');
+    graph.addRelationship({
+      id: generateId('IMPLEMENTS', `${childId}->${parentId}`),
+      sourceId: childId,
+      targetId: parentId,
+      type: 'IMPLEMENTS',
+      confidence: 1,
+      reason: '',
+    });
+    graph.addRelationship({
+      id: generateId('IMPLEMENTS', `${parentId}->${childId}`),
+      sourceId: parentId,
+      targetId: childId,
+      type: 'IMPLEMENTS',
+      confidence: 1,
+      reason: 'malformed-cycle regression guard',
+    });
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Parent',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: ctx.getBeans(Parent)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: implId,
+        type: 'INJECTS',
+        confidence: 0.8,
+      }),
+    ]);
+  });
+
+  it('keeps records and enums as concrete interface implementers', async () => {
+    const graph = createKnowledgeGraph();
+    addInterface(graph, 'Parent');
+    const recordId = addClass(graph, 'RecordImpl', 'java', 'Record');
+    const enumId = addClass(graph, 'EnumImpl', 'java', 'Enum');
+    addImplements(graph, 'RecordImpl', 'Parent', 'java', undefined, 'Record');
+    addImplements(graph, 'EnumImpl', 'Parent', 'java', undefined, 'Enum');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Parent',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: ctx.getBeans(Parent)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceId: consumerId, targetId: recordId }),
+        expect.objectContaining({ sourceId: consumerId, targetId: enumId }),
+      ]),
+    );
+    expect(injectsEdges(graph)).toHaveLength(2);
+  });
+
+  it('walks class inheritance and prefers concrete Spring bean candidates', async () => {
+    const graph = createKnowledgeGraph();
+    const baseId = addClass(graph, 'Base', 'java');
+    const concreteId = addClass(graph, 'Concrete', 'java', 'Class', {
+      [SPRING_DI_PROVIDER_PROPERTY]: { names: ['concrete'] },
+    });
+    graph.addRelationship({
+      id: generateId('EXTENDS', `${concreteId}->${baseId}`),
+      sourceId: concreteId,
+      targetId: baseId,
+      type: 'EXTENDS',
+      confidence: 1,
+      reason: '',
+    });
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Base',
+          cardinality: 'collection',
+          reason: 'Spring dynamic lookup: applicationContext.getBeansOfType(Base)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: concreteId,
+        confidence: 0.8,
+      }),
+    ]);
+  });
+
+  it('resolves a directly requested concrete class', async () => {
+    const graph = createKnowledgeGraph();
+    const concreteId = addClass(graph, 'Concrete', 'java');
+    const consumerId = addClass(graph, 'Consumer', 'java', 'Class', {
+      [SPRING_DI_INJECTION_SITES_PROPERTY]: [
+        {
+          targetTypeName: 'Concrete',
+          cardinality: 'single',
+          reason: 'Spring dynamic lookup: ctx.getBean(Concrete)',
+        },
+      ],
+    });
+
+    await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toEqual([
+      expect.objectContaining({
+        sourceId: consumerId,
+        targetId: concreteId,
+        confidence: 0.9,
+      }),
+    ]);
   });
 });
 

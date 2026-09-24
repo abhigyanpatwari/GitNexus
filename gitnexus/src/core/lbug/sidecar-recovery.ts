@@ -1,5 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { loadMeta } from '../../storage/repo-meta.js';
+import { shouldRefuseFtsCrashWal } from '../search/fts-crash-marker.js';
 import {
   HANDLE_RELEASE_PROBE_ATTEMPTS,
   HANDLE_RELEASE_PROBE_DELAY_MS,
@@ -20,6 +22,71 @@ export interface SidecarRecoveryLogger {
 }
 
 export const TINY_ORPHAN_WAL_BYTES = 4 * 1024;
+
+/**
+ * Analyze-writer crash evidence for WAL quarantine latitude (KTD5).
+ * `mode` is a warning label only and must not carry this. Omit on serve
+ * and the MCP pool — those keep today's large-WAL refusal.
+ */
+export type WalCrashEvidence = {
+  readonly kind: 'fts-inplace-checkpointed';
+};
+
+export const CLEAN_LBUG_SIDECARS_COMMAND = 'gitnexus clean --lbug-sidecars';
+
+export const FTS_READER_REPAIR_COMMAND = 'gitnexus analyze --repair-fts';
+
+export const ftsReaderRefuseMessage = (dbPath: string): string =>
+  `Cannot open ${path.basename(dbPath)} read-only after an in-place FTS abort. ` +
+  `The leftover WAL would replay and kill this process. ` +
+  `Run \`${FTS_READER_REPAIR_COMMAND}\` after stopping any GitNexus MCP or serve process.`;
+
+export class FtsReaderUnrepairableError extends Error {
+  readonly code = 'FTS_READER_UNREPAIRABLE' as const;
+  constructor(dbPath: string) {
+    super(ftsReaderRefuseMessage(dbPath));
+    this.name = 'FtsReaderUnrepairableError';
+  }
+}
+
+const sidecarHasLiveWal = (state: LbugSidecarState): boolean =>
+  state.kind === 'orphan-wal' ||
+  state.kind === 'tiny-orphan-wal' ||
+  state.kind === 'wal-with-shadow';
+
+/**
+ * Advisory reader gate (KTD10 / R9b). When meta names an in-place FTS
+ * abort (live dirty flag, or a persisted in-place `native-abort`) and a
+ * WAL is still live, refuse before the native open. Does not write,
+ * rename, or repair. Parking still requires the conjunctive
+ * `allowsFtsCrashWalPark` warrant. Missing or unreadable meta falls
+ * through to today's open path.
+ */
+export const assertReadOnlyFtsCrashSafe = async (dbPath: string): Promise<void> => {
+  let meta;
+  try {
+    meta = await loadMeta(path.dirname(dbPath));
+  } catch {
+    return;
+  }
+  if (!meta || !shouldRefuseFtsCrashWal(meta.incrementalInProgress, meta.capabilities?.fts)) {
+    return;
+  }
+  const state = await inspectLbugSidecars(dbPath);
+  if (!sidecarHasLiveWal(state)) return;
+  throw new FtsReaderUnrepairableError(dbPath);
+};
+
+export const ftsCrashParkFailureMessage = (failedPath: string, err?: unknown): string => {
+  const detail = err instanceof Error ? err.message : err != null ? String(err) : '';
+  return (
+    `Cannot park ${path.basename(failedPath)} after an in-place FTS abort` +
+    (detail ? ` (${detail})` : '') +
+    `. The database was not opened. Run \`${CLEAN_LBUG_SIDECARS_COMMAND}\` ` +
+    'after stopping any GitNexus MCP or serve process, then retry ' +
+    '`gitnexus analyze` or `gitnexus analyze --repair-fts`.'
+  );
+};
 
 /**
  * Counter-based warn anti-spam (PR #1747 review, Finding 6).
@@ -166,6 +233,61 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   return /replay shadow pages under read-only mode/i.test(msg);
 };
 
+// LADYBUGDB-CONTRACT: native error text. When bumping LadybugDB, re-validate
+// this regex against the new error format — `git grep "LADYBUGDB-CONTRACT"`
+// enumerates every version-coupled spot.
+// Version honesty (review finding on the interrupted-checkpoint PR): this
+// string is FIRST OBSERVED on @ladybugdb/core 0.19.1 — live-reproduced by
+// SIGKILLing a writer mid-CHECKPOINT (homelab 2026-09-19, GitNexus image
+// 1.6.10-20260917, built on 0.19.x). The 0.18.3 binary does NOT contain it
+// (checked via `strings`), and 0.18.3 tolerates the same on-disk state, so on
+// 0.18.x this classifier simply never fires. If the engine pin ever moves
+// back to ^0.19, the read-path self-heal is already in place.
+export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);
+};
+
+/** Prefix of the interrupted-checkpoint wrap — must not rematch the native classifier. */
+export const INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX =
+  'LadybugDB could not finish an interrupted checkpoint';
+
+/** Prefix of the pending-shadow-replay wrap — must not rematch the native classifier. */
+export const PENDING_SHADOW_REPLAY_RECOVERY_PREFIX =
+  'LadybugDB could not finish a pending shadow replay';
+
+const READ_ONLY_RECOVERY_REMOUNT =
+  'Mount the workspace read-write or re-run `gitnexus analyze` to complete recovery.';
+
+/** True when `err` is already a classifier-aware recovery wrap (not a native refusal). */
+export const isReadOnlyRecoveryFailure = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX) ||
+    msg.startsWith(PENDING_SHADOW_REPLAY_RECOVERY_PREFIX)
+  );
+};
+
+/**
+ * Operator-facing wrap for a failed read-only self-heal. Checkpoint-in-progress
+ * and pending-shadow-replay must not reuse `shadowSidecarRecoveryMessage` —
+ * that copy claims the sidecar is missing and appends the native text, which
+ * rematches the classifiers and can re-enter writable CHECKPOINT.
+ */
+export const readOnlyRecoveryFailureMessage = (dbPath: string, err: unknown): string => {
+  if (isReadOnlyCheckpointInProgressError(err)) {
+    return (
+      `${INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX} for ${dbPath}. ` +
+      `${READ_ONLY_RECOVERY_REMOUNT} ` +
+      'Retry later if another writer is still checkpointing.'
+    );
+  }
+  if (isReadOnlyShadowReplayError(err)) {
+    return `${PENDING_SHADOW_REPLAY_RECOVERY_PREFIX} for ${dbPath}. ${READ_ONLY_RECOVERY_REMOUNT}`;
+  }
+  return shadowSidecarRecoveryMessage(dbPath, err);
+};
+
 export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): string => {
   const msg = err instanceof Error ? err.message : String(err);
   return (
@@ -297,6 +419,7 @@ export const guardWalQuarantine = async (
   mode: string,
   triggeringErr: unknown,
   logger: SidecarRecoveryLogger,
+  crashEvidence?: WalCrashEvidence,
 ): Promise<void> => {
   const state = await inspectLbugSidecars(dbPath);
   if (state.kind === 'wal-with-shadow') {
@@ -310,6 +433,15 @@ export const guardWalQuarantine = async (
     throw new Error(presentShadowUnreachableMessage(dbPath, triggeringErr));
   }
   if (state.kind === 'orphan-wal') {
+    if (crashEvidence?.kind === 'fts-inplace-checkpointed') {
+      const { failed } = await quarantineSidecarsForDirtyRecovery(dbPath, (message) =>
+        logger.warn(message),
+      );
+      if (failed.length > 0) {
+        throw new Error(ftsCrashParkFailureMessage(failed[0]!));
+      }
+      return;
+    }
     warnOnce(
       logger,
       `${dbPath}:large-wal-refuse:${mode}`,
@@ -550,6 +682,12 @@ const dirtyRecoveryParkedNames = (dbPath: string): string[] =>
  * remains adjacent to the DB — every entry is in `moved` or `removed`, so
  * every subsequent open this run performs is replay-free — or the entry is
  * in `failed` and the caller MUST abort before any DB open.
+ *
+ * Retention: these parks are not reclaimed on the next writable open
+ * (unlike missing-shadow quarantines). FTS-phase parks stay until
+ * `gitnexus clean --lbug-sidecars` or the next park overwrites the same
+ * fixed `.dirty-recovery` name. That is intentional — the parked bytes
+ * are the only forensic copy of a proven in-place abort.
  *
  * @returns `moved` — destination paths now holding the parked bytes;
  * `removed` — source sidecars whose bytes are GONE (forensics lost, replay

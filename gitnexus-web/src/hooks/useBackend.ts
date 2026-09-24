@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { probeBackend, setBackendUrl as setServiceUrl } from '../services/backend-client';
+import { probeBackendStatus, setBackendUrl as setServiceUrl } from '../services/backend-client';
 import { DEFAULT_BACKEND_URL } from '../config/ui-constants';
 
 // ── localStorage keys ────────────────────────────────────────────────────────
@@ -13,6 +13,12 @@ export interface UseBackendResult {
   isConnected: boolean;
   /** Currently checking connection */
   isProbing: boolean;
+  /**
+   * The last probe got a 401 from the public edge's token gate. The deploy is
+   * reachable; it just needs an access token. Use it to prompt for one instead
+   * of telling the user to start a server that is already running.
+   */
+  isUnauthorized: boolean;
   /** Current backend URL */
   backendUrl: string;
   /** Start polling for server availability (setTimeout chain, visibility-aware) */
@@ -36,6 +42,7 @@ export function useBackend(): UseBackendResult {
 
   const [isConnected, setIsConnected] = useState(false);
   const [isProbing, setIsProbing] = useState(false);
+  const [isUnauthorized, setIsUnauthorized] = useState(false);
 
   // Race-condition guard: monotonically increasing probe ID
   const probeIdRef = useRef(0);
@@ -47,13 +54,15 @@ export function useBackend(): UseBackendResult {
     setIsProbing(true);
 
     try {
-      const ok = await probeBackend();
+      const status = await probeBackendStatus();
       if (id !== probeIdRef.current) return false;
-      setIsConnected(ok);
-      return ok;
+      setIsConnected(status === 'ok');
+      setIsUnauthorized(status === 'unauthorized');
+      return status === 'ok';
     } catch {
       if (id === probeIdRef.current) {
         setIsConnected(false);
+        setIsUnauthorized(false);
       }
       return false;
     } finally {
@@ -147,6 +156,7 @@ export function useBackend(): UseBackendResult {
   return {
     isConnected,
     isProbing,
+    isUnauthorized,
     backendUrl,
     startPolling,
     stopPolling,

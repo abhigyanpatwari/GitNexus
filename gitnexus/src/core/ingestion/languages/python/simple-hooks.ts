@@ -17,6 +17,7 @@ import type {
 } from 'gitnexus-shared';
 import type { SyntaxNode } from 'tree-sitter';
 import { findAncestorBeforeBoundary, FUNCTION_NODE_TYPES } from '../../utils/ast-helpers.js';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
 
 const PYTHON_METHOD_CONTAINER_TYPES: ReadonlySet<string> = new Set(['class_definition']);
 
@@ -46,12 +47,7 @@ export function pythonBindingScopeFor(
   tree: ScopeTree,
 ): ScopeId | null {
   if (decl['@type-binding.instance-field'] !== undefined) {
-    let current: Scope | undefined = innermost;
-    while (current !== undefined) {
-      if (current.kind === 'Class') return current.id;
-      if (current.parent === null) break;
-      current = tree.getScope(current.parent);
-    }
+    return walkToScope(innermost, tree, 'Class');
   }
   return null;
 }

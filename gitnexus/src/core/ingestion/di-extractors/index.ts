@@ -15,43 +15,17 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { GraphNode } from 'gitnexus-shared';
+import type { DiResolver } from './types.js';
 import { springDiResolver } from './spring.js';
 
-/** A successful injection-site match, produced by a per-language resolver. */
-export interface DiInjectionMatch {
-  /** The requested dependency type name. */
-  targetTypeName: string;
-  /** A collection receives every matching provider; a single site may need
-   *  framework-specific named/preferred-provider disambiguation. */
-  cardinality: 'single' | 'collection';
-  /** Statically known provider name requested at the injection site. The
-   *  resolver owns the human-readable explanation of that selection. */
-  namedSelection?: {
-    name: string;
-    reason: string;
-  };
-  /** Human-readable edge reason. Framework specifics (names, idioms,
-   *  collection wrapper, gating annotation) live in this payload so the
-   *  shared `di` phase stays framework-neutral. */
-  reason: string;
-}
-
-/** Provider metadata used by the shared resolver without naming a framework. */
-export interface DiProviderMatch {
-  /** Provider names and aliases that can satisfy a named injection. */
-  names: readonly string[];
-  /** Present when the framework marks this as its preferred candidate. The
-   *  value is appended to the emitted edge reason when it disambiguates. */
-  preferenceReason?: string;
-}
-
-/** Per-language DI behavior. Matchers receive whole nodes so the shared phase
- * remains ignorant of language/framework-specific property shapes. */
-export interface DiResolver {
-  matchInjectionSites(node: GraphNode): readonly DiInjectionMatch[];
-  matchProvider(node: GraphNode): DiProviderMatch | null;
-}
+/** The resolver contract lives in the leaf `./types.js` so an implementation
+ *  can depend on it without depending on this registry (which imports every
+ *  implementation). The two match shapes are re-exported here because consumers
+ *  of the registry read them off its results — `pipeline-phases/di.ts` and the
+ *  Spring metadata modules import them from this module alongside
+ *  `DI_RESOLVERS`. `DiResolver` itself is NOT re-exported: only implementations
+ *  need it, and they import it from `./types.js` directly. */
+export type { DiInjectionMatch, DiProviderMatch } from './types.js';
 
 /** All `SupportedLanguages` string values, for narrowing raw graph strings. */
 const SUPPORTED_LANGUAGE_VALUES: ReadonlySet<string> = new Set(Object.values(SupportedLanguages));

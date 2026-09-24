@@ -71,6 +71,7 @@ withTestLbugDB(
           'HAS_METHOD',
           'METHOD_OVERRIDES',
           'ACCESSES',
+          'ADVISED_BY',
         ];
         const invalidTypes = ['CONTAINS', 'STEP_IN_PROCESS', 'MEMBER_OF', 'DROP_TABLE'];
 

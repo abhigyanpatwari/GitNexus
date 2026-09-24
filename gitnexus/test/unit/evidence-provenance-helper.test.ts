@@ -94,7 +94,6 @@ type EvidenceHelper = {
         replace: boolean;
       }): void;
       afterPublication?(committed: { fd: number; finalPath: string }): void;
-      afterRename?(committed: { fd: number; finalPath: string }): void;
       afterFinalOpen?(committed: { fd: number; finalPath: string }): void;
     };
   }): {
@@ -205,10 +204,13 @@ function createFixture(): string {
   return repo;
 }
 
+// Cached, not cache-busted. The query-string bust existed for `let
+// atomicMoverPath`, the memoized python3 descriptor, which is gone: the helper
+// now has no module-level `let`/`var` at all and its module-level consts are
+// immutable lookup tables. Platform selection reads process.platform per call,
+// so a spoofed-platform fixture and a native one can share one instance.
 async function importHelper(file: string): Promise<EvidenceHelper> {
-  return (await import(
-    `${pathToFileURL(file).href}?test=${Date.now()}-${Math.random()}`
-  )) as EvidenceHelper;
+  return (await import(pathToFileURL(file).href)) as EvidenceHelper;
 }
 
 const REAL_GIT_FIXTURES = process.platform === 'win32' ? describe.skip : describe;
@@ -667,7 +669,46 @@ REAL_GIT_FIXTURES('evidence provenance v2 helper', () => {
   });
 });
 
-const SAFE_WRITE_FIXTURES = process.platform === 'linux' ? describe : describe.skip;
+// The safe writer runs on the two platforms that can tie a name to an inode:
+// Linux anchors through /proc/self/fd, macOS verifies against pinned descriptors.
+// Everything else is refused, which the "neither backend" fixture below asserts
+// from any host.
+const SUPPORTED_WRITE_PLATFORMS = new Set(['linux', 'darwin']);
+const SAFE_WRITE_FIXTURES = SUPPORTED_WRITE_PLATFORMS.has(process.platform)
+  ? describe
+  : describe.skip;
+
+function inodeIdentity(stat: fs.BigIntStats): string {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+function inodeIdentityOf(target: string): string {
+  return inodeIdentity(fs.statSync(target, { bigint: true }));
+}
+
+// Both open-flag fixtures want the same thing: record something about every
+// fs.openSync the helper issues, then delegate.
+function recordOpens<T>(collect: (target: fs.PathLike, flags: number) => T, into: T[]) {
+  const realOpen = fs.openSync.bind(fs) as typeof fs.openSync;
+  return vi.spyOn(fs, 'openSync').mockImplementation(((
+    target: fs.PathLike,
+    flags: number,
+    mode?: fs.Mode,
+  ) => {
+    into.push(collect(target, flags));
+    return realOpen(target, flags, mode);
+  }) as typeof fs.openSync);
+}
+
+// Both platforms expose the process's own descriptors as a readable directory;
+// only the path differs. Chosen from the real platform, never a spoofed one.
+const OPEN_DESCRIPTOR_DIRECTORY = process.platform === 'darwin' ? '/dev/fd' : '/proc/self/fd';
+
+// O_CLOEXEC is POSIX-only and absent from the Node typings, so the helper reads
+// it as `?? 0`; the fixtures below have to compose the same value the same way.
+const O_CLOEXEC = (fs.constants as typeof fs.constants & { O_CLOEXEC?: number }).O_CLOEXEC ?? 0;
+const VERIFIED_DIRECTORY_FLAGS =
+  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW | O_CLOEXEC;
 
 SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
   it('reads an exact descriptor-anchored plan receipt through both API and CLI', async () => {
@@ -1392,8 +1433,11 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
     const realFsync = fs.fsyncSync.bind(fs);
     const spy = vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
       try {
-        const resolved = fs.realpathSync(`/proc/self/fd/${fd}`);
-        if (fs.fstatSync(fd).isDirectory()) fsyncedDirectories.push(resolved);
+        // A descriptor cannot be turned back into a path on macOS — /proc/self/fd
+        // has no equivalent and F_GETPATH is unreachable from Node — so a synced
+        // directory is identified by the inode it refers to, on both platforms.
+        const stat = fs.fstatSync(fd, { bigint: true });
+        fsyncedDirectories.push(...(stat.isDirectory() ? [inodeIdentity(stat)] : []));
       } catch {
         // The production call below owns any real fsync error.
       }
@@ -1422,16 +1466,16 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
         gitDirectory,
         path.join(gitDirectory, 'gitnexus-plan-backups'),
       ]) {
-        expect(fsyncedDirectories).toContain(fs.realpathSync(durableDirectory));
+        expect(fsyncedDirectories).toContain(inodeIdentityOf(durableDirectory));
       }
       expect(
         fsyncedDirectories.filter(
-          (entry) => entry === fs.realpathSync(path.join(repo, 'docs/plans')),
+          (entry) => entry === inodeIdentityOf(path.join(repo, 'docs/plans')),
         ).length,
       ).toBeGreaterThanOrEqual(2);
       expect(
         fsyncedDirectories.filter(
-          (entry) => entry === fs.realpathSync(path.join(gitDirectory, 'gitnexus-plan-backups')),
+          (entry) => entry === inodeIdentityOf(path.join(gitDirectory, 'gitnexus-plan-backups')),
         ).length,
       ).toBeGreaterThanOrEqual(2);
     } finally {
@@ -1440,44 +1484,340 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
     }
   });
 
-  it('uses a validated absolute python3 candidate from a nonstandard PATH directory', async () => {
-    const repo = createBaseRepo('gitnexus-plan-python-path-');
-    const toolsDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-safe-tools-'));
-    const marker = path.join(toolsDirectory, 'python-used');
-    const originalPath = process.env.PATH;
-    const originalMarker = process.env.GITNEXUS_TEST_PYTHON_MARKER;
+  it('refuses a filesystem without hard links instead of replacing the destination', async () => {
+    const repo = createBaseRepo('gitnexus-plan-nolinks-');
     try {
-      fs.chmodSync(toolsDirectory, 0o700);
-      const pythonLookup = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' });
-      const gitLookup = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' });
-      expect(pythonLookup.status).toBe(0);
-      expect(gitLookup.status).toBe(0);
-      const python = fs.realpathSync(pythonLookup.stdout.trim());
-      const gitExecutable = fs.realpathSync(gitLookup.stdout.trim());
-      const wrapper = path.join(toolsDirectory, 'python3');
-      fs.writeFileSync(
-        wrapper,
-        `#!/bin/sh\n: > "$GITNEXUS_TEST_PYTHON_MARKER"\nexec "${python}" "$@"\n`,
-        { mode: 0o700 },
-      );
-      fs.symlinkSync(gitExecutable, path.join(toolsDirectory, 'git'));
-      process.env.PATH = toolsDirectory;
-      process.env.GITNEXUS_TEST_PYTHON_MARKER = marker;
-
       const planner = await importHelper(PLAN_HELPER);
+      const spy = vi.spyOn(fs, 'linkSync').mockImplementation(() => {
+        throw Object.assign(new Error('EPERM: operation not permitted, link'), { code: 'EPERM' });
+      });
+      let message = '';
+      try {
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          contents: '# intended\n',
+        });
+      } catch (error) {
+        message = (error as Error).message;
+      } finally {
+        spy.mockRestore();
+      }
+      expect(message).toMatch(
+        /requires hard links, which this filesystem refused \(EPERM\); refusing to fall back to a replacing rename/,
+      );
+      // Nothing was published, and the intended bytes are still recoverable.
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(artifactContents(repo, message, 'intended-plan')).toBe('# intended\n');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('publishes by link: same inode, refusing a taken or symlinked destination', async () => {
+    const repo = createBaseRepo('gitnexus-plan-publish-');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-publish-outside-'));
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      // The published plan is the very inode whose bytes were fsynced, which is
+      // what lets validateCommittedPlan compare against the temporary file.
+      let temporaryIdentity = '';
       planner.writePlanSafely({
         repo,
         generatedPlanPath: SAFE_PLAN_PATH,
-        contents: '# nonstandard python\n',
+        contents: '# published\n',
+        testHooks: {
+          beforePublication({ tempPath }) {
+            temporaryIdentity = inodeIdentity(fs.statSync(tempPath, { bigint: true }));
+          },
+        },
       });
-      expect(fs.existsSync(marker)).toBe(true);
+      const publishedStat = fs.statSync(path.join(repo, SAFE_PLAN_PATH), { bigint: true });
+      expect(inodeIdentity(publishedStat)).toBe(temporaryIdentity);
+      // link() plus unlink() leaves exactly one name for that inode.
+      expect(Number(publishedStat.nlink)).toBe(1);
+      expect(
+        fs.readdirSync(path.join(repo, 'docs/plans')).filter((entry) => entry.endsWith('.tmp')),
+      ).toEqual([]);
+
+      // A destination that is a symlink is refused without following it, so the
+      // symlink's target is never clobbered.
+      write(outside, 'victim.md', '# victim\n');
+      fs.symlinkSync(path.join(outside, 'victim.md'), path.join(repo, ALTERNATE_SAFE_PLAN_PATH));
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: ALTERNATE_SAFE_PLAN_PATH,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(/regular file, never a symlink|already exists/);
+      expect(fs.readFileSync(path.join(outside, 'victim.md'), 'utf8')).toBe('# victim\n');
     } finally {
-      if (originalPath === undefined) delete process.env.PATH;
-      else process.env.PATH = originalPath;
-      if (originalMarker === undefined) delete process.env.GITNEXUS_TEST_PYTHON_MARKER;
-      else process.env.GITNEXUS_TEST_PYTHON_MARKER = originalMarker;
       fs.rmSync(repo, { recursive: true, force: true });
-      fs.rmSync(toolsDirectory, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+// The capability gate is the one part of the safe writer that must be observable
+// from every platform, including the ones it refuses, so it is asserted outside
+// the descriptor-anchored suite rather than skipped along with it.
+describe('generated-plan anchoring capability gate', () => {
+  // The gate reads process.platform at call time, so each of these fixtures runs
+  // the real helper against a spoofed platform and always puts the descriptor back.
+  function withPlatform(name: string, run: () => void): void {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform') as PropertyDescriptor;
+    Object.defineProperty(process, 'platform', { value: name, configurable: true });
+    try {
+      run();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  }
+
+  it('refuses every platform that has neither backend', async () => {
+    const repo = createBaseRepo('gitnexus-plan-platform-gate-');
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      withPlatform('win32', () => {
+        expect(() => planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toThrow(
+          /Linux \/proc\/self\/fd or macOS O_DIRECTORY\/O_NOFOLLOW; win32 offers neither, so refusing an unanchored write/,
+        );
+        expect(() =>
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# blocked\n',
+          }),
+        ).toThrow(/win32 offers neither, so refusing an unanchored write/);
+      });
+      expect(fs.existsSync(path.join(repo, SAFE_PLAN_PATH))).toBe(false);
+      expect(fs.existsSync(path.join(repo, 'docs'))).toBe(false);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Spoofing process.platform does not spoof fs.constants, and Windows Node
+  // defines no O_DIRECTORY — so a darwin-spoofed run there refuses at the flag
+  // check and can never reach the backend these fixtures cover. The test above
+  // still asserts the Windows refusal on Windows.
+  const DARWIN_BACKEND = process.platform === 'win32' ? it.skip : it;
+
+  // The Darwin backend needs no interpreter and no /proc, so it is entirely
+  // portable: spoofing the platform exercises the real macOS code path on this
+  // host rather than leaving it unrun until a macOS runner picks it up.
+  DARWIN_BACKEND('admits macOS on the directory flags alone, naming no interpreter', async () => {
+    const repo = createBaseRepo('gitnexus-plan-darwin-gate-');
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      const observedPaths: string[] = [];
+      withPlatform('darwin', () => {
+        expect(
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# verified\n',
+            testHooks: {
+              beforePublication({ finalPath, tempPath }) {
+                observedPaths.push(finalPath, tempPath);
+              },
+            },
+          }),
+        ).toEqual({ generated_plan_path: SAFE_PLAN_PATH, bytes_written: 11 });
+        // Proof that the Darwin backend was actually selected rather than the
+        // Linux one quietly succeeding: Linux resolves children through
+        // /proc/self/fd/<fd>/<name>, Darwin resolves them lexically.
+        expect(observedPaths).toHaveLength(2);
+        // Deliberately prefix-independent: assertRepository realpaths the repo,
+        // so on macOS expectedPath is /private/var/... while the fixture holds
+        // the /var/... form it passed in. What distinguishes the backends is the
+        // shape, not the prefix — a lexical resolution keeps the docs/plans
+        // segments, and /proc/self/fd/<fd>/<name> has neither.
+        expect(observedPaths.filter((entry) => entry.startsWith('/proc/'))).toEqual([]);
+        expect(
+          observedPaths.filter(
+            (entry) => !entry.includes(`${path.sep}docs${path.sep}plans${path.sep}`),
+          ),
+        ).toEqual([]);
+        expect(planner.readPlanSafely({ repo, generatedPlanPath: SAFE_PLAN_PATH })).toMatchObject({
+          plan_bytes_base64: Buffer.from('# verified\n').toString('base64'),
+        });
+      });
+      expect(fs.readFileSync(path.join(repo, SAFE_PLAN_PATH), 'utf8')).toBe('# verified\n');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  DARWIN_BACKEND('detects a macOS parent swap through the pinned chain', async () => {
+    const repo = createBaseRepo('gitnexus-plan-darwin-swap-');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-darwin-outside-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'docs/plans'), { recursive: true });
+      const planner = await importHelper(PLAN_HELPER);
+      withPlatform('darwin', () => {
+        expect(() =>
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# blocked\n',
+            testHooks: {
+              afterParentOpen() {
+                fs.renameSync(path.join(repo, 'docs/plans'), path.join(repo, 'docs/plans-moved'));
+                fs.symlinkSync(outside, path.join(repo, 'docs/plans'));
+              },
+            },
+          }),
+        ).toThrow(/moved or was replaced|no longer matches/);
+      });
+      expect(fs.existsSync(path.join(outside, path.posix.basename(SAFE_PLAN_PATH)))).toBe(false);
+      expect(
+        fs.existsSync(path.join(repo, 'docs/plans-moved', path.posix.basename(SAFE_PLAN_PATH))),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  // The pins stop a freed inode number from being recycled by a replacement
+  // directory that would otherwise reproduce a recorded identity exactly. That
+  // attack is unchanged by dropping the interpreter, so the coverage stays.
+  DARWIN_BACKEND('pins every directory of an absence chain and releases them all', async () => {
+    const repo = createBaseRepo('gitnexus-plan-darwin-pins-');
+    try {
+      write(repo, '.gitignore', 'a/\n');
+      git(repo, ['add', '.gitignore']);
+      git(repo, ['commit', '--quiet', '-m', 'ignore']);
+      fs.mkdirSync(path.join(repo, 'a', 'b', 'c'), { recursive: true });
+      const chain = [repo, path.join(repo, 'a'), path.join(repo, 'a/b'), path.join(repo, 'a/b/c')];
+      const openDirectoryInodes = (): Set<string> =>
+        new Set(
+          fs
+            .readdirSync(OPEN_DESCRIPTOR_DIRECTORY)
+            .map((entry) => {
+              try {
+                const stat = fs.fstatSync(Number(entry), { bigint: true });
+                return stat.isDirectory() ? inodeIdentity(stat) : null;
+              } catch {
+                // descriptor closed while enumerating
+                return null;
+              }
+            })
+            .filter((identity): identity is string => identity !== null),
+        );
+
+      const planner = await importHelper(PLAN_HELPER);
+      const baseline = openDirectoryInodes();
+      let pinned = new Set<string>();
+      withPlatform('darwin', () => {
+        planner.snapshotEvidence({
+          repo,
+          generatedPlanPath: SAFE_PLAN_PATH,
+          citedPaths: ['a/b/c/one.txt', 'a/b/c/two.txt'],
+          testHooks: {
+            afterFirstGuardPass() {
+              pinned = openDirectoryInodes();
+            },
+          },
+        });
+      });
+      expect(chain.filter((directory) => !pinned.has(inodeIdentityOf(directory)))).toEqual([]);
+      const released = openDirectoryInodes();
+      expect(
+        chain.filter(
+          (directory) =>
+            released.has(inodeIdentityOf(directory)) && !baseline.has(inodeIdentityOf(directory)),
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // macOS rejected O_NOFOLLOW_ANY combined with O_DIRECTORY outright (EINVAL),
+  // which took out every directory open on Darwin. The flags are pinned here so
+  // the next "this bit is probably harmless" idea fails on Linux first.
+  DARWIN_BACKEND('opens directories with exactly the four verified flags', async () => {
+    const repo = createBaseRepo('gitnexus-plan-flags-');
+    const openFlags: number[] = [];
+    try {
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = recordOpens((_target, flags) => flags, openFlags);
+      try {
+        withPlatform('darwin', () => {
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# flags\n',
+          });
+        });
+      } finally {
+        spy.mockRestore();
+      }
+
+      const directoryOpens = openFlags.filter(
+        (flags) => (flags & fs.constants.O_DIRECTORY) === fs.constants.O_DIRECTORY,
+      );
+      expect(directoryOpens).not.toHaveLength(0);
+      expect(directoryOpens.filter((flags) => flags !== VERIFIED_DIRECTORY_FLAGS)).toEqual([]);
+      // O_NOFOLLOW_ANY must not reappear on any open, directory or file.
+      expect(openFlags.filter((flags) => (flags & 0x20000000) !== 0)).toEqual([]);
+      // Every no-follow open keeps O_NOFOLLOW; nothing silently drops it.
+      expect(openFlags.filter((flags) => (flags & fs.constants.O_NOFOLLOW) === 0)).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // CVE-2026-39822 / golang/go#79005: open(path, O_NOFOLLOW) follows a symlink
+  // when path ends in "/", which is how os.Root escaped its own root.
+  DARWIN_BACKEND('never resolves a component carrying a trailing separator', async () => {
+    const repo = createBaseRepo('gitnexus-plan-slash-');
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-plan-slash-outside-'));
+    const openedPaths: string[] = [];
+    try {
+      fs.writeFileSync(path.join(outside, 'loot.md'), 'loot\n');
+      const decoy = path.join(repo, 'decoy');
+      fs.symlinkSync(outside, decoy);
+      // The trap is real on this host: the same open is refused without the
+      // slash and follows straight into the attacker's directory with it.
+      expect(() => fs.closeSync(fs.openSync(decoy, VERIFIED_DIRECTORY_FLAGS))).toThrow();
+      const followed = fs.openSync(`${decoy}/`, VERIFIED_DIRECTORY_FLAGS);
+      try {
+        expect(fs.readdirSync(`${decoy}/`)).toContain('loot.md');
+      } finally {
+        fs.closeSync(followed);
+      }
+
+      const planner = await importHelper(PLAN_HELPER);
+      const spy = recordOpens((target) => String(target), openedPaths);
+      try {
+        withPlatform('darwin', () => {
+          planner.writePlanSafely({
+            repo,
+            generatedPlanPath: SAFE_PLAN_PATH,
+            contents: '# no trailing slash\n',
+          });
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(openedPaths).not.toHaveLength(0);
+      expect(openedPaths.filter((entry) => entry !== '/' && entry.endsWith('/'))).toEqual([]);
+
+      // And a plan path that smuggles one in is refused before any open.
+      expect(() =>
+        planner.writePlanSafely({
+          repo,
+          generatedPlanPath: `${SAFE_PLAN_PATH}/`,
+          contents: '# blocked\n',
+        }),
+      ).toThrow(/normalized repo-relative path|restricted to docs\/plans/);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

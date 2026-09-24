@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRegisteredRepoEntry } from '../../src/server/api.js';
+import {
+  parseAwaitAnalysisQuery,
+  resolveOmittedRepoSelection,
+  resolveRegisteredRepoEntry,
+  storageRequirementToHttp,
+} from '../../src/server/api.js';
 import type { RegistryEntry } from '../../src/storage/repo-manager.js';
+import {
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+  type StorageInspection,
+} from '../../src/storage/storage-resolver.js';
 
 const entry = (overrides: Partial<RegistryEntry>): RegistryEntry => ({
   name: 'repo',
@@ -123,5 +133,78 @@ describe('resolveRegisteredRepoEntry', () => {
     });
 
     expect(resolveRegisteredRepoEntry([reels], 'REELS')).toBe(reels);
+  });
+});
+
+describe('resolveOmittedRepoSelection', () => {
+  it('400s when more than one repo is registered and ?repo= is omitted', () => {
+    const first = entry({ name: 'alpha', path: '/tmp/alpha', storagePath: '/tmp/alpha/.gitnexus' });
+    const second = entry({ name: 'beta', path: '/tmp/beta', storagePath: '/tmp/beta/.gitnexus' });
+    const result = resolveOmittedRepoSelection([first, second]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.status).toBe(400);
+    expect(result.error).toMatch(/Multiple repositories indexed/);
+    expect(result.error).toContain('alpha');
+    expect(result.error).toContain('beta');
+  });
+
+  it('allows the sole registered repo when ?repo= is omitted', () => {
+    const only = entry({ name: 'solo' });
+    expect(resolveOmittedRepoSelection([only])).toEqual({ ok: true, entry: only });
+  });
+});
+
+describe('storageRequirementToHttp — GET /api/repo', () => {
+  const inspection = (state: StorageInspection['state']): StorageInspection => ({
+    repoPath: '/tmp/repo',
+    storagePath: '/tmp/repo/.gitnexus',
+    state,
+    hasCodeIndexDB: false,
+  });
+
+  it('maps a missing index slot to 404 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('missing'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err)).toEqual({
+      status: 404,
+      body: {
+        error: err.message,
+        code: 'index-unavailable',
+        state: 'missing',
+      },
+    });
+  });
+
+  it('maps an empty index slot to 404 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('empty'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err).status).toBe(404);
+    expect(storageRequirementToHttp(err).body.code).toBe('index-unavailable');
+  });
+
+  it('maps an owned slot without a code index to 503 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('owned'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err)).toMatchObject({
+      status: 503,
+      body: { code: 'index-unavailable', state: 'owned' },
+    });
+  });
+
+  it('maps a foreign storage path to 503 index-unavailable', () => {
+    const err = new StorageRequirementError(inspection('foreign'), STATUS_STORAGE_REQUIREMENTS);
+    expect(storageRequirementToHttp(err).status).toBe(503);
+    expect(storageRequirementToHttp(err).body.code).toBe('index-unavailable');
+  });
+});
+
+describe('parseAwaitAnalysisQuery', () => {
+  it('defaults to waiting when the flag is omitted', () => {
+    expect(parseAwaitAnalysisQuery(undefined)).toBe(true);
+    expect(parseAwaitAnalysisQuery('true')).toBe(true);
+  });
+
+  it('opts out of the hold-queue for false/0', () => {
+    expect(parseAwaitAnalysisQuery('false')).toBe(false);
+    expect(parseAwaitAnalysisQuery('0')).toBe(false);
+    expect(parseAwaitAnalysisQuery(['false'])).toBe(false);
   });
 });

@@ -185,11 +185,14 @@ describe('loadGraphToLbug overlap error paths (#2226 F2)', () => {
       [],
     );
 
-    // Node COPY targets a MISSING csv → COPY fails at bind time ("No file
-    // found …"), which IGNORE_ERRORS does NOT suppress (it only skips row-level
-    // errors), so copyNodeCSVs throws. Emit otherwise "succeeds" (returns an
-    // empty result), so the only failure is the node COPY captured in
-    // nodeCopyError and rethrown at the FK barrier.
+    // Node COPY targets a MISSING csv. This is now caught by the staging-CSV
+    // preflight BEFORE the engine sees it, so the message is the actionable
+    // "Staging CSV for File is missing …" rather than LadybugDB's bind-time
+    // "No file found …" (which IGNORE_ERRORS does not suppress either). What
+    // this test pins is unchanged and is the point: whatever the node COPY
+    // fails with, it is captured in nodeCopyError and RETHROWN AT THE FK
+    // BARRIER rather than being swallowed. Emit otherwise "succeeds"
+    // (returns an empty result), so the node COPY is the only failure.
     emitMock.mockImplementation(
       async (
         _g: unknown,
@@ -205,7 +208,7 @@ describe('loadGraphToLbug overlap error paths (#2226 F2)', () => {
     );
 
     await expect(adapter.loadGraphToLbug(graph, tmpBase, storagePath)).rejects.toThrow(
-      /COPY failed for File/,
+      /Staging CSV for File is missing/,
     );
   });
 });

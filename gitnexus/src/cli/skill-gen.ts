@@ -14,6 +14,7 @@ import { CommunityNode, CommunityMembership } from '../core/ingestion/community-
 import { ProcessNode } from '../core/ingestion/process-processor.js';
 import { KnowledgeGraph } from '../core/graph/types.js';
 import { shouldMirrorSkillsToAgents } from './ai-context.js';
+import type { GeneratedSkillInfo } from './generated-skill.js';
 
 const GENERATED_SKILL_PREFIX = 'gitnexus-area-';
 const MAX_SKILL_NAME_LENGTH = 64;
@@ -22,13 +23,6 @@ const MAX_COMMUNITY_NAME_LENGTH = MAX_SKILL_NAME_LENGTH - GENERATED_SKILL_PREFIX
 // ============================================================================
 // TYPES
 // ============================================================================
-
-export interface GeneratedSkillInfo {
-  name: string;
-  label: string;
-  symbolCount: number;
-  fileCount: number;
-}
 
 interface AggregatedCommunity {
   label: string;

@@ -1,0 +1,44 @@
+mod a;
+mod facade;
+mod private_facade;
+mod tools;
+
+// Case 1: inline module — rustc resolves `inner::dispatch` via the module tree.
+// There is no `inner.rs` on disk.
+mod inner {
+    pub fn dispatch() -> usize {
+        1
+    }
+}
+
+fn dispatch() -> usize {
+    inner::dispatch()
+}
+
+// Case 2: nested path a::b::dispatch()
+fn nested() -> usize {
+    a::b::dispatch()
+}
+
+// Case 3: through a `pub use` re-export facade
+fn via_reexport() -> usize {
+    facade::dispatch()
+}
+
+fn via_private() -> usize {
+    private_facade::helper()
+}
+
+// A leading `::` names an EXTERN CRATE, not this crate's `tools` module.
+// Must not resolve to the local module of the same name (#2741 review).
+fn via_extern() -> usize {
+    ::tools::dispatch()
+}
+
+fn main() {
+    dispatch();
+    nested();
+    via_reexport();
+    via_private();
+    via_extern();
+}

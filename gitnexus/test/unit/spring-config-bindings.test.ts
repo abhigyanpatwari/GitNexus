@@ -274,6 +274,220 @@ describe('Java Spring configuration consumers', () => {
   });
 });
 
+describe('Kotlin Spring configuration consumers', () => {
+  it('resolves official imports and ignores shadowed annotation names', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.Value
+      import org.springframework.boot.context.properties.ConfigurationProperties
+
+      @ConfigurationProperties(prefix = "service")
+      class ServiceProperties {
+        @Value("\\\${service.timeout:30}")
+        var timeout: Int = 0
+      }
+    `);
+    expect(consumers).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+      expect.objectContaining({
+        kind: 'configuration-properties',
+        className: 'ServiceProperties',
+        prefix: 'service',
+      }),
+    ]);
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        annotation class Value(val value: String)
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('limits nested annotation shadows to their lexical owner', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.*
+
+      class ShadowOwner {
+        annotation class Value(val value: String)
+
+        @Value("\\\${ignored.local}")
+        var local: String = ""
+      }
+
+      class SpringConsumer {
+        @Value("\\\${service.timeout}")
+        var timeout: Int = 0
+      }
+    `);
+
+    expect(consumers).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+    ]);
+  });
+
+  it('rejects non-literal ConfigurationProperties prefixes', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.boot.context.properties.ConfigurationProperties
+
+        const val SERVICE_PREFIX = "service"
+
+        @ConfigurationProperties(prefix = SERVICE_PREFIX)
+        class ConstantPrefix
+
+        @ConfigurationProperties(ignoreUnknownFields = true)
+        class BooleanFirstArgument
+      `),
+    ).toEqual([]);
+  });
+
+  it('binds constructor properties, setters, and import aliases, not getters or unbound params', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.Value as Bound
+      import org.springframework.boot.context.properties.ConfigurationProperties
+
+      @ConfigurationProperties("service")
+      class BoundProps(
+        @param:Bound("\\\${service.timeout}")
+        val timeout: Int,
+        @Bound("\\\${ignored.plain}")
+        timeoutPlain: Int,
+      ) {
+        @get:Bound("\\\${ignored.getter}")
+        @set:Bound("\\\${service.endpoint}")
+        var endpoint: String = ""
+
+        @field:Bound("\\\${service.retry.max-attempts}")
+        var attempts: Int = 0
+      }
+    `);
+
+    expect(consumers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+        expect.objectContaining({
+          kind: 'value',
+          fieldName: 'endpoint',
+          keys: ['service.endpoint'],
+        }),
+        expect.objectContaining({
+          kind: 'value',
+          fieldName: 'attempts',
+          keys: ['service.retry.max-attempts'],
+        }),
+        expect.objectContaining({
+          kind: 'configuration-properties',
+          className: 'BoundProps',
+          prefix: 'service',
+        }),
+      ]),
+    );
+    expect(
+      consumers.some(
+        (consumer) => consumer.kind === 'value' && consumer.keys.includes('ignored.getter'),
+      ),
+    ).toBe(false);
+    expect(
+      consumers.some(
+        (consumer) => consumer.kind === 'value' && consumer.keys.includes('ignored.plain'),
+      ),
+    ).toBe(false);
+  });
+
+  it('fails closed on Kotlin string interpolation and decodes escaped placeholders', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.beans.factory.annotation.Value
+        class Interpolated {
+          val prefix = "service"
+          @Value("\${prefix}.timeout")
+          var timeout: Int = 0
+        }
+      `),
+    ).toEqual([]);
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.beans.factory.annotation.Value
+        class Escaped {
+          @Value("\\\${payment.timeout}")
+          var timeout: Int = 0
+        }
+      `),
+    ).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['payment.timeout'] }),
+    ]);
+  });
+
+  it('does not treat similarly named third-party imports as Spring annotations', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import com.example.Value
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([]);
+
+    // The explicit import still wins when Spring's package is star-imported
+    // alongside it, so only the unshadowed annotation resolves.
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import com.example.Value
+        import org.springframework.beans.factory.annotation.*
+        import org.springframework.boot.context.properties.ConfigurationProperties
+
+        @ConfigurationProperties("service")
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'configuration-properties',
+        className: 'Local',
+        prefix: 'service',
+      }),
+    ]);
+  });
+
+  it('does not decode escapes inside Kotlin raw string prefixes', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.boot.context.properties.ConfigurationProperties
+        @ConfigurationProperties("""service\\u002eendpoint""")
+        class RawProps
+      `),
+    ).toEqual([]);
+  });
+});
+
 describe('Spring configuration graph binding', () => {
   it('indexes the graph once for all consumer files and skips empty work', () => {
     const graph = createKnowledgeGraph();

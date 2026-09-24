@@ -59,7 +59,8 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
-import { loadTsconfigPaths } from '../../language-config.js';
+import { loadTsconfigIndex } from '../typescript/tsconfig.js';
+import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
 import { extractVueTemplateEdgeData } from '../../vue-sfc-extractor.js';
@@ -87,7 +88,8 @@ const vueScopeResolver: ScopeResolver = {
   // Vue projects universally use TypeScript — load tsconfig so path
   // aliases (`@/`, `~/`, `#/`) resolve through the standard branch.
   loadResolutionConfig: async (repoPath: string) => ({
-    tsconfigPaths: await loadTsconfigPaths(repoPath),
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
   }),
 
   // TypeScript LEGB semantics apply inside `<script>` / `<script setup>`.
@@ -115,6 +117,9 @@ const vueScopeResolver: ScopeResolver = {
   // Vue uses explicit imports for all external symbols; no global free-
   // call fallback needed (would produce spurious edges for built-ins).
   allowGlobalFreeCallFallback: false,
+  // Vue SFC scripts are TypeScript/JavaScript: a named import binds a module-level
+  // declaration, never a class member (see the TS resolver).
+  namedImportsBindTopLevelOnly: true,
 
   /**
    * Expand the scope-resolution file universe for Vue by performing a

@@ -13,7 +13,56 @@
  * `targetRaw` arrives already quote-stripped from `interpretDartImport`.
  */
 
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
+
+/**
+ * Basename → files carrying it, in `allFilePaths` iteration order, memoized on
+ * the Set's identity (#2879).
+ *
+ * Both resolution legs answered `fp === candidate || fp.endsWith('/' + candidate)`
+ * with a full workspace scan, and the `package:` leg ran one scan PER candidate
+ * — for an external package both candidates miss, so both scans always ran to
+ * completion. The orchestrator passes the same Set to every import in a pass,
+ * so the index is built once per run.
+ *
+ * Bucketing by basename is exact rather than a heuristic: a path satisfying
+ * either arm of the match ends with `candidate`, so its last `/`-delimited
+ * segment is `candidate`'s. Paths are indexed RAW, without slash normalization,
+ * because the scans this replaces compared raw paths too — normalizing here
+ * would start resolving backslash paths that previously returned null.
+ */
+interface DartFileIndex {
+  readonly byBasename: Map<string, string[]>;
+}
+
+const getDartFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): DartFileIndex => {
+  const byBasename = new Map<string, string[]>();
+  for (const fp of allFilePaths) {
+    const base = fp.slice(fp.lastIndexOf('/') + 1);
+    let bucket = byBasename.get(base);
+    if (bucket === undefined) {
+      bucket = [];
+      byBasename.set(base, bucket);
+    }
+    bucket.push(fp);
+  }
+  return { byBasename };
+});
+
+/** First file (in Set-iteration order) that IS `candidate` or ends with
+ *  `/<candidate>` — the exact predicate of the scans this replaces. */
+function findByPathSuffix(allFilePaths: ReadonlySet<string>, candidate: string): string | null {
+  const bucket = getDartFileIndex(allFilePaths).byBasename.get(
+    candidate.slice(candidate.lastIndexOf('/') + 1),
+  );
+  if (bucket === undefined) return null;
+  const suffix = '/' + candidate;
+  for (const fp of bucket) {
+    if (fp === candidate || fp.endsWith(suffix)) return fp;
+  }
+  return null;
+}
 
 /** Resolve a relative path against the importer's directory, normalizing
  *  `.`/`..` segments, then confirm it exists in the workspace file set. */
@@ -33,10 +82,7 @@ function resolveRelative(
   const target = parts.join('/');
   if (allFilePaths.has(target)) return target;
   // Suffix fallback for absolute/rooted workspace paths.
-  for (const fp of allFilePaths) {
-    if (fp === target || fp.endsWith('/' + target)) return fp;
-  }
-  return null;
+  return findByPathSuffix(allFilePaths, target);
 }
 
 export function resolveDartImportTarget(
@@ -56,10 +102,10 @@ export function resolveDartImportTarget(
     const slash = targetRaw.indexOf('/');
     if (slash === -1) return null;
     const relPath = targetRaw.slice(slash + 1);
+    // Candidate priority is load-bearing: `lib/<rel>` before bare `<rel>`.
     for (const candidate of [`lib/${relPath}`, relPath]) {
-      for (const fp of allFilePaths) {
-        if (fp === candidate || fp.endsWith('/' + candidate)) return fp;
-      }
+      const hit = findByPathSuffix(allFilePaths, candidate);
+      if (hit !== null) return hit;
     }
     return null; // external package
   }

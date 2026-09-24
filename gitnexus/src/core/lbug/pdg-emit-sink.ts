@@ -24,8 +24,8 @@
  * `storage/parsedfile-store.ts`.
  *
  * Byte-identity (issue acceptance): the sink reuses the SAME shared row
- * builders (`buildBasicBlockRow`, `buildRelRow`) and label derivation
- * (`getNodeLabel`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
+ * builders (`buildBasicBlockRow`, `buildRelRow`) and pair classification
+ * (`relPairKeyFor`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
  * identical to the whole-graph emit's, and the bulk COPY loads the same rows →
  * the persisted graph is SET-identical and DB-identical. The guarantee is
  * set-level, not byte-level on the CSV file: the sink streams rows in emit
@@ -49,13 +49,19 @@ import type { GraphNode, GraphRelationship, RelationshipType } from 'gitnexus-sh
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
   BASICBLOCK_CSV_HEADER,
+  DECLARED_RELATION_PAIRS,
   REL_CSV_HEADER,
   buildBasicBlockRow,
   buildRelRow,
 } from './csv-generator.js';
-import { getNodeLabel } from './rel-pair-routing.js';
+import {
+  VALID_NODE_TABLES,
+  assertDeclaredPair,
+  relPairKeyFor,
+  splitRelPairKey,
+} from './rel-pair-routing.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
-import { NODE_TABLES, type NodeTableName } from './schema.js';
+import { type NodeTableName } from './schema.js';
 
 /**
  * PDG edge types streamed per-file (all intra-block BasicBlock→BasicBlock).
@@ -64,7 +70,7 @@ import { NODE_TABLES, type NodeTableName } from './schema.js';
  * complete CALLS graph, and stays in the in-memory graph (it is small and is
  * persisted by the normal whole-graph emit).
  */
-const PDG_EDGE_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>([
+export const PDG_EDGE_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>([
   'CFG',
   'REACHING_DEF',
   'CDG',
@@ -97,7 +103,6 @@ export interface PdgEmitManifest {
  * `--pdg` emit, then {@link finalize} once after the last language.
  */
 export class PdgEmitSink implements KnowledgeGraph {
-  private readonly validTables: Set<string>;
   private bbWriter: SyncCsvWriter | undefined;
   /** pairKey (`From|To`) → writer. PDG edges are all `BasicBlock|BasicBlock`,
    *  but the map keeps the sink general and the manifest pair-keyed. */
@@ -128,7 +133,6 @@ export class PdgEmitSink implements KnowledgeGraph {
     private readonly pdgCsvDir: string,
     private readonly chunkRows: number = DEFAULT_PDG_EMIT_CHUNK_ROWS,
   ) {
-    this.validTables = new Set<string>(NODE_TABLES as readonly string[]);
     // Clear any streamed CSVs left by a previous (possibly crashed) run so a
     // later COPY never picks up stale rows.
     fs.rmSync(pdgCsvDir, { recursive: true, force: true });
@@ -159,14 +163,27 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addRelationship(relationship: GraphRelationship): void {
     if (PDG_EDGE_TYPES.has(relationship.type)) {
-      const fromLabel = getNodeLabel(relationship.sourceId);
-      const toLabel = getNodeLabel(relationship.targetId);
-      // Skip edges whose endpoint labels are not valid node tables — mirrors
-      // `RelPairRouter` exactly so the streamed set matches the whole-graph set.
-      if (!this.validTables.has(fromLabel) || !this.validTables.has(toLabel)) return;
-      const pairKey = `${fromLabel}|${toLabel}`;
+      // Classify + skip via the SHARED `relPairKeyFor`, not a local copy of its
+      // three lines, so the streamed set cannot drift from the whole-graph set
+      // `RelPairRouter` produces. `undefined` = an endpoint label is not a node
+      // table, so the edge is dropped exactly as the router drops it.
+      const pairKey = relPairKeyFor(
+        relationship.sourceId,
+        relationship.targetId,
+        VALID_NODE_TABLES,
+      );
+      if (pairKey === undefined) return;
+      assertDeclaredPair(
+        pairKey,
+        DECLARED_RELATION_PAIRS,
+        relationship.type,
+        relationship.sourceId,
+        relationship.targetId,
+      );
       let writer = this.relWriters.get(pairKey);
       if (writer === undefined) {
+        // Cold: once per pair, so decoding the key back into labels is free.
+        const [fromLabel, toLabel] = splitRelPairKey(pairKey);
         try {
           writer = new SyncCsvWriter(
             path.join(this.pdgCsvDir, `rel_${fromLabel}_${toLabel}.csv`),
@@ -282,7 +299,13 @@ export class PdgEmitSink implements KnowledgeGraph {
     this.real.forEachRelationship(fn);
   }
   forEachRelationshipFields(
-    fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+    fn: (
+      sourceId: string,
+      targetId: string,
+      type: RelationshipType,
+      confidence: number,
+      reason: string,
+    ) => void,
   ): void {
     this.real.forEachRelationshipFields(fn);
   }

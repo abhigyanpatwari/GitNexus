@@ -60,7 +60,9 @@ export type RecoveryHint =
   | 'module-not-found'
   | 'gitnexusrc-invalid'
   | 'default-branch-invalid'
-  | 'index-lock-timeout';
+  | 'index-lock-timeout'
+  | 'index-lock-guard-recovery'
+  | 'undeclared-relation-pair';
 
 /**
  * Common shape for the optional structured-field bag passed to

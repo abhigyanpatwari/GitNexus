@@ -63,6 +63,41 @@ func main() {
     expect(tags).toContain('@reference.write');
   });
 
+  // #2782: a selector in CALLEE position is MARKED, not dropped. The capture
+  // layer cannot tell `h.dep.Work()` dispatching through a method from the same
+  // syntax dispatching through a `Work func() error` struct field — only the
+  // resolved tail's kind can, so the position is recorded and edge emission
+  // decides. Dropping the site here deleted the func-typed field's only read.
+  it('marks a member call callee as callee-position instead of dropping the read', () => {
+    const src = `
+package main
+
+type Dep struct{ Work func() error }
+type Host struct{ dep *Dep }
+
+func (h *Host) Run() error {
+	f := h.dep.Work
+	_ = f
+	return h.dep.Work()
+}
+`;
+    const reads = emitGoScopeCaptures(src, 'main.go')
+      .filter((m) => m['@reference.read'] !== undefined)
+      .map((m) => ({
+        text: m['@reference.read']!.text,
+        calleePosition: m['@reference.callee-position'] !== undefined,
+      }));
+    // Four reads, in source order: the method VALUE's inner `h.dep` and outer
+    // `h.dep.Work` (neither in callee position), then the CALL's inner `h.dep`
+    // and its outer `h.dep.Work` — the only one in callee position.
+    expect(reads).toEqual([
+      { text: 'h.dep', calleePosition: false },
+      { text: 'h.dep.Work', calleePosition: false },
+      { text: 'h.dep', calleePosition: false },
+      { text: 'h.dep.Work', calleePosition: true },
+    ]);
+  });
+
   it('emits every name from multi-name const, var, and field declarations', () => {
     const src = `
 package main
@@ -180,6 +215,36 @@ func main() { fmt.Println() }
       .filter((m) => m['@import.source'] !== undefined)
       .map((m) => m['@import.source']!.text);
     expect(sources).toEqual(['fmt']);
+  });
+
+  it('does not mark a bare generic constructor as package-qualified', () => {
+    const src = `
+package main
+
+type Box[T any] struct{}
+
+func main() { _ = Box[int]{} }
+`;
+    const refs = emitGoScopeCaptures(src, 'main.go').filter(
+      (m) => m['@reference.call.constructor'] !== undefined,
+    );
+    expect(refs.some((m) => m['@reference.name']?.text === 'Box')).toBe(true);
+    expect(refs.some((m) => m['@reference.qualified-name'] !== undefined)).toBe(false);
+  });
+
+  it('keeps the written spelling for a package-qualified generic constructor', () => {
+    const src = `
+package main
+
+import "example.com/models"
+
+func main() { _ = models.Box[int]{} }
+`;
+    const box = emitGoScopeCaptures(src, 'main.go').find(
+      (m) => m['@reference.call.constructor'] !== undefined && m['@reference.name']?.text === 'Box',
+    );
+    expect(box).toBeDefined();
+    expect(box!['@reference.qualified-name']?.text).toBe('models.Box[int]');
   });
 
   it('captures a generic function declaration', () => {

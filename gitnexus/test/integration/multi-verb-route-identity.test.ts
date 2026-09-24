@@ -12,6 +12,8 @@
  * Fixture: `test/fixtures/multi-verb-route-app/`
  *   - ItemController.java: GET /api/items, POST /api/items, GET /api/widgets
  *   - app/api/widgets/route.ts: Next.js filesystem route → /api/widgets
+ *   - api/widgetsController.ts: NestJS `@All` → method-agnostic /api/widgets,
+ *     plus `@Get('gadgets')` → GET /api/gadgets (the non-colliding witness)
  *   - web/itemsClient.ts: verb-less fetch() consumers of both URLs
  */
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -79,6 +81,56 @@ describe('Multi-verb Route node identity (#2289)', () => {
     // Distinct ids — no collision, no first-writer-wins eviction across keys.
     expect(fsNode!.id).not.toBe(decoratorNode!.id);
     expect(decoratorNode!.properties.method).toBe('GET');
+  });
+
+  it("never stamps a losing route's handler onto a filesystem node (#3049)", () => {
+    // The NestJS `@All('widgets')` route keys by URL alone (routeNodeKey drops
+    // '*'), so it collides with the filesystem route, claims the key unopposed
+    // in claim(), and is then dropped here by first-writer-wins. Its handler
+    // must not survive that loss: a Next.js Route node carrying a NestJS
+    // controller method is a fabricated fact, not a missing one, and
+    // api_impact is documented to be run BEFORE editing a route handler.
+    const fsNode = routeNode(generateId('Route', '/api/widgets'));
+
+    expect(fsNode, 'filesystem Route node /api/widgets should exist').toBeTruthy();
+    expect(fsNode!.properties.handlerSymbolId).toBeUndefined();
+  });
+
+  it('extracts a NON-colliding NestJS route (the witness that #3049 suppressed a REAL claim)', () => {
+    // Load-bearing for the assertion above it, which cannot stand alone:
+    // `handlerSymbolId === undefined` passes identically whether the guard
+    // correctly dropped a real NestJS `@All` claim or whether NestJS
+    // extraction produced nothing at all. Disproved by experiment — commenting
+    // out `...extractNestRoutes(...args)` in `languages/typescript.ts` and
+    // rebuilding `dist/` left the whole suite green.
+    //
+    // Asserting that the `WidgetsController` class and its `handleEveryVerb`
+    // method exist does NOT repair that, and is the first thing the next
+    // reader will try: those nodes come from the definitions phase, which runs
+    // regardless, while `extractNestRoutes` is wired only as the
+    // `decoratorRoutes` hook and contributes no class or method node.
+    // `@All('widgets')` also cannot witness its own extraction — it collides
+    // on `routeNodeKey`, is dropped as a duplicate, and leaves no graph trace.
+    // A second route at a URL nothing else claims is the only evidence the
+    // graph can carry, so this node existing IS the proof the `@All` claim the
+    // guard suppressed was real.
+    const gadgets = routeNode(routeId('GET', '/api/gadgets'));
+
+    expect(gadgets, 'NestJS GET /api/gadgets Route node should exist').toBeTruthy();
+
+    const handler = result.graph.getNode(String(gadgets!.properties.handlerSymbolId));
+    expect(String(handler?.properties.name)).toBe('listGadgets');
+  });
+
+  it('still resolves a same-URL route that did NOT lose its key', () => {
+    // The guard above is scoped to pre-seeded sources, so the Java
+    // `GET /api/widgets` node — a different key, resolved for itself — keeps
+    // its handler. Without this, the fix reads as "filesystem collisions are
+    // handler-less" when the real rule is "a route that lost donates nothing".
+    const decoratorNode = routeNode(routeId('GET', '/api/widgets'));
+    const handler = result.graph.getNode(String(decoratorNode!.properties.handlerSymbolId));
+
+    expect(String(handler?.properties.name)).toBe('getWidgets');
   });
 
   it('connects a verb-less fetch() consumer to every Route node at the URL', () => {

@@ -14,6 +14,8 @@ export function formatBackendError(error: unknown, t: TFunction): string {
         return t('errors:backend.rateLimited', { seconds, defaultValue: fallback });
       case 'not_found':
         return t('errors:backend.notFound', { defaultValue: fallback });
+      case 'unauthorized':
+        return t('errors:backend.unauthorized', { defaultValue: fallback });
       case 'origin_blocked':
         return t('errors:backend.originBlocked', { defaultValue: fallback });
       case 'client':

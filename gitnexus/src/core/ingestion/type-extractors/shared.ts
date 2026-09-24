@@ -1,3 +1,4 @@
+import type { ElementAccessRoute } from '../scope-resolution/contract/scope-resolver.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 
 /** Which type argument to extract from a multi-arg generic container.
@@ -697,6 +698,27 @@ export function extractElementTypeFromString(
 
   return undefined;
 }
+
+/**
+ * `elementTypeOf` for a language with no property-style collection view:
+ * answer the subscript route from the written spelling, decline the accessor
+ * route.
+ *
+ * Languages whose collection views are spelled as method calls (`.values()`,
+ * `.iter()`) never reach the accessor route — the compound resolver's
+ * call-expression branch handles those — so the whole hook is this one
+ * decision. Declining (returning `undefined`) is the answer "this spelling is
+ * not a container", which is what stops an index-overloading class from
+ * folding `x[k].m()` onto its own members.
+ *
+ * Languages that DO expose a collection view as a property (C#'s `.Values`)
+ * need a bespoke body instead.
+ */
+export const indexOnlyElementType = (
+  containerType: string,
+  via: ElementAccessRoute,
+): string | undefined =>
+  via.kind === 'index' ? extractElementTypeFromString(containerType) : undefined;
 
 // ── Return type text helpers ─────────────────────────────────────────────
 // extractReturnTypeName works on raw return-type text already stored in

@@ -5,19 +5,19 @@ import path from 'node:path';
 import {
   getDurableParsedFileDir,
   persistDurableParsedFileShardSync,
-  restoreDurableParsedFileShard,
+  durableChunkHasShards,
   loadParsedFilesForPaths,
 } from '../../../src/storage/parsedfile-store.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 
 // #2082 M2 U5 — the warm/mixed cache seam for statement facts. On a warm (or
-// mixed) run the unchanged chunk's ParsedFiles are BYTE-COPIED from the
-// durable store instead of re-parsed (#2038); if that copy (or the store's
-// interning reviver) dropped or aliased the new `bindings`/`statements`
+// mixed) run the unchanged chunk's ParsedFiles are loaded from the
+// durable store instead of re-parsed (#2038); if that load (or intern)
+// dropped or aliased the new `bindings`/`statements`
 // fields, reaching-defs would silently degrade to `no-facts` for every cached
 // file — exactly the field-loss class the #2038 mergeChunkResults lesson
-// warns about. This pins the persist → restore → load round-trip at the exact
+// warns about. This pins the persist → load round-trip at the exact
 // seam scope-resolution consumes.
 
 const factCfg: FunctionCfg = {
@@ -68,7 +68,7 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('persist → restore → loadParsedFilesForPaths preserves bindings + statements deep-equal', async () => {
+  it('persist → loadParsedFilesForPaths preserves bindings + statements deep-equal', async () => {
     const durableDir = getDurableParsedFileDir(tempDir);
     const chunkHash = 'c'.repeat(64);
     const files = ['src/a.ts', 'src/b.ts'];
@@ -76,10 +76,9 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
     // What a worker writes at flush on a cache MISS (the cold half of a
     // mixed-mode run)…
     persistDurableParsedFileShardSync(durableDir, chunkHash, 7, 0, files.map(mkParsedFile));
-    // …and what a warm HIT byte-copies into the run-scoped store.
-    await restoreDurableParsedFileShard(durableDir, tempDir, chunkHash);
-
-    const loaded = await loadParsedFilesForPaths(tempDir, new Set(files));
+    const wanted = new Set(files);
+    expect(await durableChunkHasShards(tempDir, chunkHash, wanted)).toBe(true);
+    const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     expect(loaded.size).toBe(2);
     for (const filePath of files) {
       const pf = loaded.get(filePath);
@@ -106,11 +105,9 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
       mkParsedFile('src/same1.ts'),
       mkParsedFile('src/same2.ts'),
     ]);
-    await restoreDurableParsedFileShard(durableDir, tempDir, chunkHash);
-    const loaded = await loadParsedFilesForPaths(
-      tempDir,
-      new Set(['src/same1.ts', 'src/same2.ts']),
-    );
+    const wanted = new Set(['src/same1.ts', 'src/same2.ts']);
+    expect(await durableChunkHasShards(tempDir, chunkHash, wanted)).toBe(true);
+    const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     const c1 = (loaded.get('src/same1.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;
     const c2 = (loaded.get('src/same2.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;
     expect(c1?.[0].bindings).toEqual(factCfg.bindings);

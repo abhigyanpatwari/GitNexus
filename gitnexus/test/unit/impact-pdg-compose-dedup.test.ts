@@ -36,7 +36,7 @@ const local = (
   impactedCount: number,
 ): PdgImpactSuccessResult => ({
   mode: 'pdg',
-  pdgResultVersion: 2,
+  pdgResultVersion: 3,
   target: { id: 'T', name: 'criterion', type: 'Function', filePath: 'src/a.ts' },
   direction: 'downstream',
   risk: 'UNKNOWN',

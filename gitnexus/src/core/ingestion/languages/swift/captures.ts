@@ -43,13 +43,56 @@ import {
 import { splitSwiftImport } from './import-decomposer.js';
 import { swiftQualifiedBaseTail } from './base-type.js';
 import { computeSwiftArityMetadata } from './arity-metadata.js';
-import { synthesizeSwiftReceiverBinding } from './receiver-binding.js';
+import {
+  findEnclosingTypeDeclaration,
+  synthesizeSwiftReceiverBinding,
+} from './receiver-binding.js';
 import { synthesizeSwiftSignatureBindings } from './signature-bindings.js';
+import { swiftMethodConfig } from '../../method-extractors/configs/swift.js';
 import { getSwiftParser, getSwiftScopeQuery } from './query.js';
+import { preprocessSwiftConditionalDirectives } from './conditional-directive-preprocess.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+
+/**
+ * Name of the type that lexically owns `node` — the nearest enclosing
+ * `class_declaration` (which in tree-sitter-swift is also how `struct` and
+ * `extension` parse) or `protocol_declaration`.
+ *
+ * Qualifies a method def as `<Type>.<method>` (#2807 follow-up). Swift's
+ * structure phase already keys the graph node that way (`A.run#1`), but the
+ * resolver-side def carried only `run`, and the bridge's every label-scoped key
+ * is built from the def's name — so two classes in one file each declaring
+ * `func run` fell through to the label-agnostic simple key, which is
+ * first-write-wins. The result: EVERY call in both bodies was attributed to
+ * whichever `run` registered first, which collected duplicate edges while its
+ * twin collected none. Renaming one method, or moving it to another file, made
+ * both resolve — which is what identified the collision as name-keyed and
+ * per-file rather than positional.
+ *
+ * An `extension Foo` wraps the extended type in a `user_type`, which may be
+ * qualified (`extension Outer.Inner`) or carry generic arguments
+ * (`extension Set<Int>`), so the trailing `type_identifier` is taken — the
+ * spelling has to match the owner the structure phase used to build the node id.
+ *
+ * Both halves delegate rather than re-derive: `findEnclosingTypeDeclaration`
+ * (receiver-binding.ts) decides what the enclosing type IS, so a method's owner
+ * qualifier and its `self` binding cannot disagree, and `swiftBaseTypeIdentifier`
+ * reads the name STRUCTURALLY. An earlier version split the node text on `<` and
+ * `.`, which only approximates the tree: generic arguments live in a sibling
+ * `type_arguments` node that the walk skips outright.
+ */
+function swiftEnclosingTypeName(node: SyntaxNode): string | null {
+  const typeNode = findEnclosingTypeDeclaration(node);
+  if (typeNode === null) return null;
+  const nameNode = typeNode.childForFieldName('name');
+  if (nameNode === null) return null;
+  const tail = swiftBaseTypeIdentifier(nameNode)?.text.trim() ?? '';
+  return tail.length > 0 ? tail : null;
+}
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -88,10 +131,16 @@ export function emitSwiftScopeCaptures(
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   // Reuse the parse phase's cached Tree when available; otherwise parse.
+  // `extractParsedFile` already applies `preprocessSource` on this path, but
+  // this emitter is also called directly (benchmarks, capture goldens, the
+  // scope-capture tripwire), and those callers must see the same program the
+  // pipeline does. The transform is idempotent, so applying it twice is a
+  // no-op; it is length-preserving, so offsets still index `sourceText`.
   let tree = cachedTree as ReturnType<ReturnType<typeof getSwiftParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = parseSourceSafe(getSwiftParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    const parseText = preprocessSwiftConditionalDirectives(sourceText);
+    tree = parseSourceSafe(getSwiftParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   } else {
@@ -129,6 +178,12 @@ export function emitSwiftScopeCaptures(
           continue;
         }
       }
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped); // defensive fallback
       continue;
     }
@@ -141,6 +196,26 @@ export function emitSwiftScopeCaptures(
       if (stmtNode !== null) {
         for (const synth of synthesizeOptionalBindings(stmtNode)) out.push(synth);
       }
+      continue;
+    }
+
+    // The query deliberately recognizes the compact `lhs = call()` shape;
+    // enforce "untyped lhs" here because tree-sitter queries cannot express
+    // absence of Swift's sibling type_annotation robustly. A typed declaration
+    // remains authoritative and must never enter return-type replay.
+    if (grouped['@call-result-assignment.call'] !== undefined) {
+      const callNode = nodeIfType(nodeMap['@call-result-assignment.call'], 'call_expression');
+      let property = callNode?.parent;
+      while (property?.type === 'await_expression' || property?.type === 'try_expression') {
+        property = property.parent;
+      }
+      if (
+        property?.type !== 'property_declaration' ||
+        property.namedChildren.some((child) => child.type === 'type_annotation')
+      ) {
+        continue;
+      }
+      out.push(grouped);
       continue;
     }
 
@@ -174,6 +249,12 @@ export function emitSwiftScopeCaptures(
       const span = `${navNode.startIndex}-${navNode.endIndex}`;
       if (seenReadSpans.has(span)) continue;
       seenReadSpans.add(span);
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
       continue;
     }
@@ -227,6 +308,25 @@ export function emitSwiftScopeCaptures(
       }
     }
 
+    // ── Qualify a method/constructor def with its owning type (#2807). ──
+    // Emitted before the `@scope.function` branch below, which pushes and
+    // `continue`s; a Swift `function_declaration` matches both patterns.
+    if (grouped['@declaration.qualified_name'] === undefined) {
+      const ownerTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
+      const declaredName = grouped['@declaration.name']?.text;
+      const declNode = ownerTag === undefined ? null : nodeMap[ownerTag];
+      if (ownerTag !== undefined && declaredName !== undefined && declNode != null) {
+        const owner = swiftEnclosingTypeName(declNode);
+        if (owner !== null) {
+          grouped['@declaration.qualified_name'] = syntheticCapture(
+            '@declaration.qualified_name',
+            declNode,
+            `${owner}.${declaredName}`,
+          );
+        }
+      }
+    }
+
     // ── @scope.function: arity + receiver + signature bindings. ──────
     if (grouped['@scope.function'] !== undefined) {
       const fnNodeForArity = nodeIfType(
@@ -235,7 +335,23 @@ export function emitSwiftScopeCaptures(
           nodeMap['@declaration.constructor'],
         ...FUNCTION_NODE_TYPES,
       );
-      if (fnNodeForArity !== null) attachArityMetadata(grouped, fnNodeForArity);
+      if (fnNodeForArity !== null) {
+        attachArityMetadata(grouped, fnNodeForArity);
+        const returnType = swiftMethodConfig.extractReturnType?.(fnNodeForArity);
+        if (returnType !== undefined && returnType !== '') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNodeForArity,
+            returnType,
+          );
+        }
+      }
+      // Structural receiver chain for a call whose receiver is itself an
+      // expression, so resolution can type it by folding over structure
+      // instead of re-parsing the receiver's source text. Self-gating: a
+      // non-call match, an absent receiver, or a chain with no nameable base
+      // all leave `grouped` untouched.
+      synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
       out.push(grouped);
 
       const recvNode = nodeIfType(nodeMap['@scope.function'], ...RECEIVER_NODE_TYPES);
@@ -253,7 +369,17 @@ export function emitSwiftScopeCaptures(
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
       const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
-      if (fnNode !== null) attachArityMetadata(grouped, fnNode);
+      if (fnNode !== null) {
+        attachArityMetadata(grouped, fnNode);
+        const returnType = swiftMethodConfig.extractReturnType?.(fnNode);
+        if (returnType !== undefined && returnType !== '') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            returnType,
+          );
+        }
+      }
     }
 
     // ── Constructor calls: Swift has no `new`, so `Foo()` is a free call
@@ -296,6 +422,12 @@ export function emitSwiftScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 

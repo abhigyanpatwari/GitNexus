@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { escapeCypherString } from '../../src/core/lbug/cypher-escape.js';
 import {
   ExtensionManager,
   getExtensionInstallChildProcessArgs,
@@ -6,6 +10,14 @@ import {
   getExtensionInstallTimeoutMs,
   type ExtensionInstallResult,
 } from '../../src/core/lbug/extension-loader.js';
+import { diagnoseExtensionLoad } from '../../src/core/lbug/extension-load-error.js';
+
+const emptyVendor = mkdtempSync(path.join(tmpdir(), 'gn-fts-empty-vendor-'));
+const noVendored = { vendorRoot: emptyVendor };
+
+afterAll(() => {
+  rmSync(emptyVendor, { recursive: true, force: true });
+});
 
 const okInstall: ExtensionInstallResult = {
   success: true,
@@ -31,7 +43,7 @@ describe('ExtensionManager — LOAD-first behavior', () => {
     const manager = new ExtensionManager({ policy: 'auto', installExtension });
     const query = vi.fn().mockResolvedValue({});
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(true);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(true);
 
     expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION fts']);
     expect(installExtension).not.toHaveBeenCalled();
@@ -43,7 +55,7 @@ describe('ExtensionManager — LOAD-first behavior', () => {
     const manager = new ExtensionManager({ policy: 'auto', installExtension });
     const query = vi.fn().mockRejectedValue(new Error('Extension fts is already loaded'));
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(true);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(true);
     expect(installExtension).not.toHaveBeenCalled();
   });
 });
@@ -57,9 +69,9 @@ describe('ExtensionManager — install policies', () => {
       .mockRejectedValueOnce(new Error('Extension "fts" not found'))
       .mockResolvedValueOnce({});
 
-    await expect(manager.ensure(query, 'fts', 'FTS', { installTimeoutMs: 1234 })).resolves.toBe(
-      true,
-    );
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { ...noVendored, installTimeoutMs: 1234 }),
+    ).resolves.toBe(true);
 
     // The LOAD failure reason is threaded to the installer so it can pick
     // INSTALL vs FORCE INSTALL from the error class (#2374, PR #2375).
@@ -77,7 +89,7 @@ describe('ExtensionManager — install policies', () => {
     const manager = new ExtensionManager({ policy: 'load-only', installExtension, warn });
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(false);
 
     expect(installExtension).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuing without FTS features'));
@@ -146,7 +158,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
         ),
       );
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(false);
 
     expect(manager.getCapabilities()).toMatchObject([
       {
@@ -165,7 +177,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
     const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(false);
 
     expect(manager.getCapabilities()).toMatchObject([
       {
@@ -183,7 +195,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
       .fn()
       .mockRejectedValue(new Error('version mismatch: extension built for 0.17.0'));
 
-    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+    await expect(manager.ensure(query, 'fts', 'FTS', noVendored)).resolves.toBe(false);
 
     expect(manager.getCapabilities()).toMatchObject([
       {
@@ -221,13 +233,13 @@ describe('ExtensionManager — caching', () => {
     });
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
 
-    await manager.ensure(query, 'fts', 'FTS');
+    await manager.ensure(query, 'fts', 'FTS', noVendored);
     expect(manager.getCapabilities()).toHaveLength(1);
 
     manager.reset();
     expect(manager.getCapabilities()).toEqual([]);
 
-    await manager.ensure(query, 'fts', 'FTS');
+    await manager.ensure(query, 'fts', 'FTS', noVendored);
     expect(installExtension).toHaveBeenCalledTimes(2);
   });
 });
@@ -238,7 +250,7 @@ describe('ExtensionManager — observability', () => {
     const okQuery = vi.fn().mockResolvedValue({});
     const failQuery = vi.fn().mockRejectedValue(new Error('Extension "vector" not found'));
 
-    await manager.ensure(okQuery, 'fts', 'FTS');
+    await manager.ensure(okQuery, 'fts', 'FTS', noVendored);
     await manager.ensure(failQuery, 'vector', 'VECTOR');
 
     expect(manager.getCapabilities()).toMatchObject([
@@ -253,8 +265,8 @@ describe('ExtensionManager — observability', () => {
     const manager = new ExtensionManager({ policy: 'load-only', installExtension, warn });
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
 
-    await manager.ensure(query, 'fts', 'FTS');
-    await manager.ensure(query, 'fts', 'FTS');
+    await manager.ensure(query, 'fts', 'FTS', noVendored);
+    await manager.ensure(query, 'fts', 'FTS', noVendored);
 
     expect(warn).toHaveBeenCalledTimes(1);
   });
@@ -273,11 +285,13 @@ describe('ExtensionManager — observability', () => {
       .mockResolvedValueOnce({});
 
     await expect(
-      manager.ensure(query, 'fts', 'FTS', { policy: 'load-only', quiet: true }),
+      manager.ensure(query, 'fts', 'FTS', { ...noVendored, policy: 'load-only', quiet: true }),
     ).resolves.toBe(false);
     expect(warn).not.toHaveBeenCalled();
 
-    await expect(manager.ensure(query, 'fts', 'FTS', { policy: 'auto' })).resolves.toBe(true);
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { ...noVendored, policy: 'auto' }),
+    ).resolves.toBe(true);
     expect(warn).not.toHaveBeenCalled();
     expect(manager.getCapabilities()).toEqual([{ name: 'fts', loaded: true }]);
   });
@@ -287,8 +301,8 @@ describe('ExtensionManager — observability', () => {
     const manager = new ExtensionManager({ policy: 'load-only', warn });
     const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
 
-    await manager.ensure(query, 'fts', 'FTS', { quiet: true });
-    await manager.ensure(query, 'fts', 'FTS');
+    await manager.ensure(query, 'fts', 'FTS', { ...noVendored, quiet: true });
+    await manager.ensure(query, 'fts', 'FTS', noVendored);
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuing without FTS features'));
@@ -411,5 +425,266 @@ describe('getExtensionInstallTimeoutMs', () => {
         process.env.GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS = original;
       }
     }
+  });
+});
+
+const buildHostValidBinary = (): Buffer => {
+  const arm = process.arch === 'arm64';
+  if (process.platform === 'win32') {
+    const peOff = 0x80;
+    const b = Buffer.alloc(peOff + 8);
+    b[0] = 0x4d;
+    b[1] = 0x5a;
+    b.writeUInt32LE(peOff, 0x3c);
+    b[peOff] = 0x50;
+    b[peOff + 1] = 0x45;
+    b.writeUInt16LE(arm ? 0xaa64 : 0x8664, peOff + 4);
+    return b;
+  }
+  if (process.platform === 'darwin') {
+    const b = Buffer.alloc(32);
+    b.writeUInt32LE(0xfeedfacf, 0);
+    b.writeUInt32LE(arm ? 0x0100000c : 0x01000007, 4);
+    return b;
+  }
+  const b = Buffer.alloc(64);
+  b[0] = 0x7f;
+  b[1] = 0x45;
+  b[2] = 0x4c;
+  b[3] = 0x46;
+  b[4] = 2;
+  b[5] = 1;
+  b.writeUInt16LE(arm ? 0xb7 : 0x3e, 18);
+  return b;
+};
+
+const writeVendorArtifact = (
+  root: string,
+  tuple: string,
+  filename = 'libfts.lbug_extension',
+): string => {
+  const dir = path.join(root, 'lbug-fts', 'prebuilds', tuple);
+  mkdirSync(dir, { recursive: true });
+  const artifact = path.join(dir, filename);
+  writeFileSync(artifact, 'placeholder');
+  writeFileSync(
+    path.join(root, 'lbug-fts', 'manifest.json'),
+    JSON.stringify({
+      filename,
+      unsupportedTuples: [{ tuple: 'win32-arm64', reason: 'none' }],
+    }),
+  );
+  return artifact;
+};
+
+describe('ExtensionManager — vendored-first FTS (U2)', () => {
+  const tmpRoots: string[] = [];
+  const makeRoot = (): string => {
+    const root = mkdtempSync(path.join(tmpdir(), 'gn-fts-vendor-'));
+    tmpRoots.push(root);
+    return root;
+  };
+
+  afterAll(() => {
+    for (const root of tmpRoots) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('loads a present artifact without spawning an installer child', async () => {
+    const vendorRoot = makeRoot();
+    const artifact = writeVendorArtifact(vendorRoot, 'linux-x64');
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'auto', installExtension });
+    const query = vi.fn().mockResolvedValue({});
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(true);
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls[0][0]).toBe(
+      `LOAD EXTENSION '${escapeCypherString(realpathSync(artifact))}'`,
+    );
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(JSON.stringify(manager.getCapabilities())).not.toContain(vendorRoot);
+  });
+
+  it('still loads under load-only when the artifact is present', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'load-only', installExtension });
+    const query = vi.fn().mockResolvedValue({});
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(true);
+    expect(installExtension).not.toHaveBeenCalled();
+  });
+
+  it('attempts nothing under never, even with a packaged artifact', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn();
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'never', installExtension, warn: noopWarn });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(false);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(manager.getCapabilities()[0]?.reason).toContain('never');
+  });
+
+  it('fails closed on an unsupported tuple without named LOAD or INSTALL', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({
+      policy: 'load-only',
+      installExtension,
+      warn: noopWarn,
+    });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'win32-arm64' }),
+    ).resolves.toBe(false);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(manager.getCapabilities()[0]?.reason).toContain('win32-arm64');
+    expect(manager.getCapabilities()[0]?.reason).toContain('no packaged FTS artifact');
+    expect(manager.getCapabilities()[0]?.reason).not.toContain(vendorRoot);
+  });
+
+  it('does not INSTALL on an unsupported tuple under auto policy', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn();
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'win32-arm64' }),
+    ).resolves.toBe(false);
+    expect(query).not.toHaveBeenCalled();
+    expect(installExtension).not.toHaveBeenCalled();
+    expect(manager.getCapabilities()[0]?.reason).toContain('win32-arm64');
+    expect(manager.getCapabilities()[0]?.reason).toContain('no packaged FTS artifact');
+    expect(manager.getCapabilities()[0]?.reason).not.toContain(vendorRoot);
+  });
+
+  it('keeps the vendored inspect path when named LOAD has no .lbug_extension path', async () => {
+    const vendorRoot = makeRoot();
+    const artifact = writeVendorArtifact(vendorRoot, 'linux-x64');
+    writeFileSync(artifact, buildHostValidBinary());
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          `Failed to load library: ${artifact} which is needed by extension: fts. Error: 126 The specified module could not be found.`,
+        ),
+      )
+      .mockRejectedValueOnce(new Error('Extension "fts" has not been installed.'));
+    const installExtension = vi.fn();
+    const manager = new ExtensionManager({
+      policy: 'load-only',
+      installExtension,
+      warn: noopWarn,
+    });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(false);
+
+    expect(installExtension).not.toHaveBeenCalled();
+    const cap = manager.getCapabilities()[0];
+    expect(cap?.diagnosis?.kind).toBe('missing_dependency');
+    expect(cap?.diagnosis?.remedy).toMatch(/OpenSSL|VC\+\+|runtime/i);
+  });
+
+  it('diagnoses a truncated home copy as corrupt, not missing_dependency (KTD7)', async () => {
+    const vendorRoot = makeRoot();
+    const artifact = writeVendorArtifact(vendorRoot, 'linux-x64');
+    const homeCopy = path.join(makeRoot(), 'truncated.lbug_extension');
+    writeFileSync(homeCopy, 'short');
+    const query = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(`Failed to load library: ${artifact} which is needed by extension: fts`),
+      )
+      .mockRejectedValueOnce(
+        new Error(
+          `Failed to load library: ${homeCopy} which is needed by extension: fts. file too short`,
+        ),
+      );
+    const manager = new ExtensionManager({
+      policy: 'auto',
+      installExtension: vi.fn().mockResolvedValue(failedInstall),
+      warn: noopWarn,
+    });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(false);
+
+    const cap = manager.getCapabilities()[0];
+    expect(cap?.reason).not.toContain(artifact);
+    expect(cap?.diagnosis?.kind).toBe('corrupt_file');
+    expect(diagnoseExtensionLoad(cap?.reason, 'FTS', homeCopy).kind).toBe('corrupt_file');
+  });
+
+  it('escapes a vendored path that contains a quote', async () => {
+    const vendorRoot = mkdtempSync(path.join(tmpdir(), "gn-fts-it's-"));
+    tmpRoots.push(vendorRoot);
+    const artifact = writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn().mockResolvedValue({});
+    const manager = new ExtensionManager({ policy: 'load-only', warn: noopWarn });
+
+    await expect(
+      manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(true);
+    expect(query.mock.calls[0][0]).toBe(
+      `LOAD EXTENSION '${escapeCypherString(realpathSync(artifact))}'`,
+    );
+  });
+
+  it('rejects a sibling directory that only shares the vendor prefix', async () => {
+    const parent = makeRoot();
+    const vendorRoot = path.join(parent, 'vendor');
+    const evil = path.join(parent, 'vendor-evil', 'lbug-fts', 'prebuilds', 'linux-x64');
+    mkdirSync(path.join(vendorRoot, 'lbug-fts'), { recursive: true });
+    mkdirSync(evil, { recursive: true });
+    writeFileSync(path.join(evil, 'libfts.lbug_extension'), 'evil');
+    writeFileSync(
+      path.join(vendorRoot, 'lbug-fts', 'manifest.json'),
+      JSON.stringify({ filename: 'libfts.lbug_extension' }),
+    );
+    mkdirSync(path.join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64'), { recursive: true });
+    // Candidate must exist so resolveVendoredFtsPath reaches realpath containment
+    // (a prefix-only leak would follow this symlink into vendor-evil).
+    symlinkSync(
+      path.join(evil, 'libfts.lbug_extension'),
+      path.join(vendorRoot, 'lbug-fts', 'prebuilds', 'linux-x64', 'libfts.lbug_extension'),
+    );
+
+    const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
+    const manager = new ExtensionManager({ policy: 'load-only', warn: noopWarn });
+    await manager.ensure(query, 'fts', 'FTS', { vendorRoot, platformTuple: 'linux-x64' });
+    expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION fts']);
+    expect(String(query.mock.calls[0][0])).not.toContain('vendor-evil');
+  });
+
+  it('does not try a vendored path for VECTOR and records no tuple', async () => {
+    const vendorRoot = makeRoot();
+    writeVendorArtifact(vendorRoot, 'linux-x64');
+    const query = vi.fn().mockResolvedValue({});
+    const manager = new ExtensionManager({ policy: 'auto' });
+
+    await expect(
+      manager.ensure(query, 'vector', 'VECTOR', { vendorRoot, platformTuple: 'linux-x64' }),
+    ).resolves.toBe(true);
+    expect(query.mock.calls.map(([sql]) => sql)).toEqual(['LOAD EXTENSION vector']);
+    expect(manager.getCapabilities()[0]?.attempts).toBeUndefined();
   });
 });

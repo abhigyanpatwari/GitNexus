@@ -89,6 +89,13 @@ updates:
       # tree-sitter-cli follows the runtime's version cadence. Bump when
       # regenerating vendor/tree-sitter-proto/src/parser.c, not on a schedule.
       - dependency-name: tree-sitter-cli
+      # Pin @ladybugdb/core so a daily bump cannot ship a skewed FTS artifact.
+      # The extension version is a separate upstream constant, not derivable
+      # from the core version (see vendor/lbug-fts/manifest.json).
+      - dependency-name: '@ladybugdb/core'
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # gitnexus-web (thin frontend client).
   - package-ecosystem: npm
@@ -107,6 +114,10 @@ updates:
     labels:
       - dependencies
       - frontend
+    ignore:
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major
 
   # Shared types package.
   - package-ecosystem: npm
@@ -124,3 +135,9 @@ updates:
       include: scope
     labels:
       - dependencies
+    ignore:
+      # Keep shared on the same TypeScript major as CLI/web. A shared-only
+      # major bump reintroduces a compiler split this repo unified.
+      - dependency-name: typescript
+        update-types:
+          - version-update:semver-major

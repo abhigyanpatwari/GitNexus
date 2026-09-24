@@ -1,5 +1,6 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
+  findChild,
   nodeIfType,
   nodeToCapture,
   syntheticCapture,
@@ -13,6 +14,7 @@ import { synthesizeRustReceiverBinding } from './receiver-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 
 const RUST_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_item', 'closure_expression']),
@@ -197,6 +199,12 @@ export function emitRustScopeCaptures(
       }
     }
 
+    // Structural receiver chain for a call whose receiver is itself an
+    // expression, so resolution can type it by folding over structure
+    // instead of re-parsing the receiver's source text. Self-gating: a
+    // non-call match, an absent receiver, or a chain with no nameable base
+    // all leave `grouped` untouched.
+    synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
 
@@ -245,10 +253,22 @@ function synthesizeRustInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
     const traitName = bareTypeIdentifier(traitField);
     const structName = bareTypeIdentifier(typeField);
     if (traitName === null || structName === null) return;
+    // The trait's generic ARGUMENTS (`impl Validator<String> for V`), so
+    // interface dispatch can tell one instantiation of a trait from another
+    // (#2912). Emitted as a sub-tag rather than by widening the anchor: the
+    // anchor is the bare `type_identifier` inside the `generic_type`, and its
+    // range is part of the inheritance edge's id.
+    const traitArguments =
+      traitField.type === 'generic_type' ? findChild(traitField, 'type_arguments') : null;
     out.push({
       '@reference.inherits': nodeToCapture('@reference.inherits', traitName),
       '@reference.name': nodeToCapture('@reference.name', traitName),
       '@reference.receiver': syntheticCapture('@reference.receiver', structName, structName.text),
+      ...(traitArguments === null
+        ? {}
+        : {
+            '@reference.type-arguments': nodeToCapture('@reference.type-arguments', traitArguments),
+          }),
     });
   });
   return out;

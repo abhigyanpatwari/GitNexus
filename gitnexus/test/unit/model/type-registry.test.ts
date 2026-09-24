@@ -144,3 +144,22 @@ describe('TypeRegistry — clear()', () => {
     expect(reg.lookupClassByName('User')[0].nodeId).toBe('class:second');
   });
 });
+
+describe('TypeRegistry — nested owner EMPTY vs class miss', () => {
+  it('lookupAllByOwner miss returns the same frozen EMPTY', () => {
+    const reg = createTypeRegistry();
+    expect(reg.lookupAllByOwner('class:Outer', 'Inner')).toBe(
+      reg.lookupAllByOwner('class:Outer', 'Other'),
+    );
+    expect(Object.isFrozen(reg.lookupAllByOwner('class:Outer', 'Inner'))).toBe(true);
+  });
+
+  it('class/impl miss returns a fresh empty array, not frozen EMPTY', () => {
+    const reg = createTypeRegistry();
+    const a = reg.lookupClassByName('Nope');
+    const b = reg.lookupClassByName('Nope');
+    expect(a).toEqual([]);
+    expect(a).not.toBe(b);
+    expect(Object.isFrozen(a)).toBe(false);
+  });
+});

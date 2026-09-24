@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'node:module';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { escapeCypherString } from './cypher-escape.js';
+import { resolveVendoredFtsPath } from './vendored-extension-path.js';
 
 /** Cap the out-of-process native load probe so a hung filesystem cannot wedge a
  *  CLI startup gate (same bounding rationale as the extension probe below). */
@@ -9,12 +11,17 @@ const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
 /**
  * Why the native check failed. A failed check is NOT necessarily a missing
- * binary — the package may be absent, the binary may be absent, or a binary that
- * is right there may fail to load (host glibc too old, truncated download).
+ * binary — the package may be absent, the binary may be absent, a binary that is
+ * right there may fail to load (host glibc too old, truncated download), or the
+ * prebuilt may be present and merely unwritable into place.
  * Callers that render a status line must tell those apart: reporting all of them
  * as "missing" sends users to reinstall a file they already have (#2672).
  */
-export type NativeCheckFailureKind = 'package_missing' | 'binary_missing' | 'load_failed';
+export type NativeCheckFailureKind =
+  | 'package_missing'
+  | 'binary_missing'
+  | 'binary_unwritable'
+  | 'load_failed';
 
 export interface NativeCheckResult {
   ok: boolean;
@@ -22,6 +29,177 @@ export interface NativeCheckResult {
   message?: string;
   /** Set only when `ok` is false. */
   kind?: NativeCheckFailureKind;
+}
+
+/**
+ * Outcome of the prebuilt-binary restore below. Not a boolean, because the two
+ * failure modes need OPPOSITE remedies: `no-prebuilt` means nothing was there to
+ * copy (a genuinely skipped/absent install — the lifecycle-script advice
+ * applies), while `copy-failed` means the binary IS on disk and only writing it
+ * into place failed, which is a filesystem permission problem that allowing
+ * build scripts cannot fix. Collapsing them sent read-only-`node_modules` users
+ * (a baked container layer mounted read-only, a common CI pattern) around the
+ * `trustedDependencies` / `--allow-build` loop forever.
+ */
+type RestoreOutcome = 'restored' | 'no-prebuilt' | 'copy-failed';
+
+/**
+ * Packages whose install lifecycle script must run for gitnexus to work. Every
+ * repair line below renders from this one list rather than spelling it out, so a
+ * fourth native package cannot land in `package.json` while the advice keeps
+ * naming three — a partial list leaves that package unbuilt and the "repair"
+ * only half works. `lbug-native-check.test.ts` pins the list to
+ * gitnexus/package.json's own `trustedDependencies`, which is the same set.
+ * (Deliberately a local const, not an import of the hook cjs's
+ * PNPM_ALLOW_BUILD_BASE: this module is the dependency-light startup gate.)
+ */
+const NATIVE_BUILD_PACKAGES = ['@ladybugdb/core', 'gitnexus', 'tree-sitter'] as const;
+const ALLOW_BUILD_FLAGS = NATIVE_BUILD_PACKAGES.map((p) => `--allow-build=${p}`).join(' ');
+
+/**
+ * bun repair advice, shared by both failure messages so they cannot drift.
+ *
+ * `trustedDependencies` in a package.json is NOT what makes `bunx gitnexus@latest`
+ * work — see the note on restorePrebuiltNativeBinary — so a one-shot user, who
+ * has no package.json to edit, gets an actionable alternative instead of advice
+ * they cannot follow.
+ */
+const BUN_REPAIR_LINES = [
+  '  - bun: inside a project, add to package.json and reinstall:',
+  `      "trustedDependencies": [${NATIVE_BUILD_PACKAGES.map((p) => `"${p}"`).join(', ')}]`,
+  '    A one-shot `bunx gitnexus@latest …` has no package.json to put that in —',
+  '    install once instead:  bun install -g gitnexus',
+];
+
+/**
+ * Re-do the copy `@ladybugdb/core`'s install script performs, when a package
+ * manager skipped that script but still downloaded the prebuilt binary.
+ *
+ * The binary is published in a per-platform optional sub-package
+ * (`@ladybugdb/core-<platform>-<arch>`) and the install script only copies it up
+ * into the main package. Every "install lifecycle script was skipped" case
+ * therefore has the file sitting on disk one directory over, and this restores
+ * it without a network fetch or a source build.
+ *
+ * Load-bearing for `bunx gitnexus@latest …`: bun skips lifecycle scripts for a
+ * `bunx` fetch and has no per-invocation opt-in (its `--trust` flag writes
+ * trustedDependencies into a project package.json, which a one-shot has none
+ * of), AND bun re-extracts the package on every `bunx` run — so a manual repair
+ * is wiped before the next invocation and in-process recovery is the only thing
+ * that can work. Also covers `pnpm dlx` without `--allow-build` and
+ * `npm --ignore-scripts`.
+ *
+ * This — not the `trustedDependencies` field in gitnexus/package.json — is what
+ * makes the bunx lane work. That field only takes effect for someone running
+ * `bun install` / `pnpm install` INSIDE this repo: a `bunx gitnexus@latest`
+ * one-shot never reads it, and neither does `bun add gitnexus` in a consumer
+ * project (trust is read from the consumer's own root manifest, not from a
+ * dependency's). Do not delete this function as redundant with that field.
+ *
+ * Best-effort by construction: any failure (read-only node_modules, absent
+ * sub-package, unsupported platform) returns a non-`'restored'` outcome and the
+ * caller falls through to the existing diagnostics unchanged.
+ */
+function restorePrebuiltNativeBinary(pkgDir: string, binaryPath: string): RestoreOutcome {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf-8')) as {
+      name?: unknown;
+    };
+    if (typeof manifest.name !== 'string' || manifest.name.length === 0) return 'no-prebuilt';
+
+    const candidates: string[] = [];
+    try {
+      // require.resolve finds the sub-package regardless of hoisting depth,
+      // matching how the install script locates it.
+      const subPkg = createRequire(import.meta.url).resolve(
+        `${manifest.name}-${process.platform}-${process.arch}/package.json`,
+        { paths: [pkgDir] },
+      );
+      candidates.push(path.join(path.dirname(subPkg), 'lbugjs.node'));
+    } catch {
+      // Sub-package not installed (unsupported platform or missing optionalDep).
+    }
+    // Legacy prebuilt/ layout, for tarballs published before the per-platform
+    // sub-package migration — the same fallback order the install script uses.
+    candidates.push(
+      path.join(pkgDir, 'prebuilt', `lbugjs-${process.platform}-${process.arch}.node`),
+    );
+
+    const prebuilt = candidates.find((candidate) => fs.existsSync(candidate));
+    if (prebuilt === undefined) return 'no-prebuilt';
+
+    // The copy gets its own catch: an EACCES/EROFS here is the one failure that
+    // proves the binary exists and only the write was refused, and the outer
+    // catch would flatten that back into "nothing to restore".
+    try {
+      fs.copyFileSync(prebuilt, binaryPath);
+    } catch {
+      return 'copy-failed';
+    }
+    return fs.existsSync(binaryPath) ? 'restored' : 'copy-failed';
+  } catch {
+    return 'no-prebuilt';
+  }
+}
+
+/**
+ * Render the failure for a binary that is absent and could not be restored.
+ *
+ * Split by outcome because the two need OPPOSITE remedies, and the split is
+ * `Exclude`-typed so adding a RestoreOutcome forces a decision here rather than
+ * silently inheriting the lifecycle-script advice. `copy-failed` also gets its
+ * own `kind`: the message says the binary IS present, and doctor's status line
+ * switches on `kind` — leaving it `binary_missing` would print "✗ lbugjs.node
+ * missing" directly above text saying the opposite, which is exactly the
+ * contradiction #2672 removed.
+ */
+function unrestorableBinaryFailure(
+  outcome: Exclude<RestoreOutcome, 'restored'>,
+  pkgDir: string,
+  binaryPath: string,
+): NativeCheckResult {
+  const lines =
+    outcome === 'copy-failed'
+      ? [
+          'LadybugDB native binary (lbugjs.node) could not be put into place.',
+          '',
+          'The prebuilt binary IS present in the platform sub-package — only copying it into',
+          `  ${pkgDir}`,
+          'was refused, which is a filesystem permission problem (read-only or non-writable',
+          'node_modules), not a skipped install script.',
+          '',
+          'To repair, make that directory writable, or reinstall gitnexus somewhere writable:',
+          '  npm i -g gitnexus@latest   # or: bun install -g gitnexus',
+          '',
+          'Allowing build scripts (trustedDependencies, --allow-build, ignore-scripts) will',
+          'NOT help here — the install script fails on the same write.',
+        ]
+      : [
+          'LadybugDB native binary (lbugjs.node) is missing.',
+          '',
+          'This usually happens when the install lifecycle script was skipped.',
+          '',
+          'To repair:',
+          `  node ${path.join(pkgDir, 'install.js')}`,
+          '',
+          'Common causes:',
+          '  - pnpm dlx / pnpx skip build scripts by default (security model). Options:',
+          '      # Keep pnpm dlx — explicitly allow the required builds:',
+          `      pnpm ${ALLOW_BUILD_FLAGS} \\`,
+          '        dlx gitnexus@latest serve',
+          '      # Or install globally with build scripts allowed (pnpm 10.2+):',
+          `      pnpm add -g ${ALLOW_BUILD_FLAGS} gitnexus`,
+          '      # Or npm i -g gitnexus@latest (bare npx on npm 11 may crash before gitnexus runs).',
+          ...BUN_REPAIR_LINES,
+          '  - npm configured with ignore-scripts=true',
+          '    (in .npmrc or via --ignore-scripts).',
+        ];
+  return {
+    ok: false,
+    binaryPath,
+    kind: outcome === 'copy-failed' ? 'binary_unwritable' : 'binary_missing',
+    message: lines.join('\n'),
+  };
 }
 
 export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
@@ -48,34 +226,14 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
   }
 
   const binaryPath = path.join(pkgDir, 'lbugjs.node');
-  if (!fs.existsSync(binaryPath)) {
-    return {
-      ok: false,
-      binaryPath,
-      kind: 'binary_missing',
-      message: [
-        'LadybugDB native binary (lbugjs.node) is missing.',
-        '',
-        'This usually happens when the install lifecycle script was skipped.',
-        '',
-        'To repair:',
-        `  node ${path.join(pkgDir, 'install.js')}`,
-        '',
-        'Common causes:',
-        '  - pnpm dlx / pnpx skip build scripts by default (security model). Options:',
-        '      # Keep pnpm dlx — explicitly allow the required builds:',
-        '      pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
-        '        dlx gitnexus@latest serve',
-        '      # Or install globally with build scripts allowed (pnpm 10.2+):',
-        '      pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
-        '      # Or npm i -g gitnexus@latest (bare npx on npm 11 may crash before gitnexus runs).',
-        '  - bun: add to package.json and reinstall:',
-        '      "trustedDependencies": ["@ladybugdb/core"]',
-        '  - npm configured with ignore-scripts=true',
-        '    (in .npmrc or via --ignore-scripts).',
-      ].join('\n'),
-    };
-  }
+  // A missing binary is recoverable whenever the prebuilt sub-package is present
+  // — the install script's copy is all that was skipped. Try that before
+  // reporting failure, so runners that cannot opt into lifecycle scripts (bunx)
+  // work instead of dead-ending on instructions they have no way to follow.
+  const restore = fs.existsSync(binaryPath)
+    ? 'restored'
+    : restorePrebuiltNativeBinary(pkgDir, binaryPath);
+  if (restore !== 'restored') return unrestorableBinaryFailure(restore, pkgDir, binaryPath);
 
   // Validate loadability in a THROWAWAY CHILD PROCESS, not in-process. A merely
   // truncated or corrupted .node (valid header, missing pages) does not throw a
@@ -136,12 +294,10 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
       `  node ${path.join(pkgDir, 'install.js')}`,
       '',
       'If install scripts were skipped (pnpm dlx / pnpx / ignore-scripts):',
-      '  pnpm --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter \\',
+      `  pnpm ${ALLOW_BUILD_FLAGS} \\`,
       '    dlx gitnexus@latest serve',
-      '  pnpm add -g --allow-build=@ladybugdb/core --allow-build=gitnexus --allow-build=tree-sitter gitnexus',
-      '',
-      'If using bun, add to package.json and reinstall:',
-      '  "trustedDependencies": ["@ladybugdb/core"]',
+      `  pnpm add -g ${ALLOW_BUILD_FLAGS} gitnexus`,
+      ...BUN_REPAIR_LINES,
     ].join('\n'),
   };
 }
@@ -245,7 +401,17 @@ export interface FtsProbeResult {
   loaded: boolean;
   /** Collapsed LadybugDB error when `loaded` is false. */
   reason?: string;
+  /** Policy `never` refused the probe — not a load failure. */
+  suppressed?: boolean;
 }
+
+export type FtsAvailabilityLabel = 'available' | 'unavailable' | 'suppressed';
+
+export const ftsAvailabilityLabel = (probe: FtsProbeResult): FtsAvailabilityLabel => {
+  if (probe.loaded) return 'available';
+  if (probe.suppressed) return 'suppressed';
+  return 'unavailable';
+};
 
 /** Same shape for every optional extension; `FtsProbeResult` is the legacy name. */
 export type ExtensionProbeResult = FtsProbeResult;
@@ -287,10 +453,38 @@ const closeProbeResults = (result: unknown): void => {
  * cannot cancel an in-flight native call, so a future thread-blocking case
  * would need an out-of-process probe.
  */
+/** Local copy of the env policy parse — must not import extension-loader
+ *  (that module statically pulls lbug-config, which would break doctor when
+ *  the native addon is missing). */
+type ProbeInstallPolicy = 'auto' | 'load-only' | 'never';
+
+const resolveProbeInstallPolicy = (): ProbeInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'load-only';
+};
+
+export interface FtsProbeOptions {
+  policy?: ProbeInstallPolicy;
+  /** Injected vendored path. `null` skips path-LOAD; omit to resolve from disk. */
+  vendoredPath?: string | null;
+}
+
 export async function probeFtsExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
+  opts?: FtsProbeOptions,
 ): Promise<FtsProbeResult> {
-  return await probeExtensionLoad('fts', timeoutMs);
+  const policy = opts?.policy ?? resolveProbeInstallPolicy();
+  if (policy === 'never') {
+    return {
+      loaded: false,
+      suppressed: true,
+      reason: 'suppressed by policy GITNEXUS_LBUG_EXTENSION_INSTALL=never',
+    };
+  }
+  const vendoredPath =
+    opts?.vendoredPath !== undefined ? opts.vendoredPath : resolveVendoredFtsPath();
+  return await probeExtensionLoad('fts', timeoutMs, vendoredPath);
 }
 
 /**
@@ -320,6 +514,7 @@ export async function probeVectorExtensionLoad(
 async function probeExtensionLoad(
   extension: 'fts' | 'vector',
   timeoutMs: number,
+  vendoredPath?: string | null,
 ): Promise<ExtensionProbeResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ExtensionProbeResult>((resolve) => {
@@ -333,6 +528,12 @@ async function probeExtensionLoad(
     );
   });
 
+  const statements: string[] = [];
+  if (extension === 'fts' && vendoredPath) {
+    statements.push(`LOAD EXTENSION '${escapeCypherString(path.resolve(vendoredPath))}'`);
+  }
+  statements.push(`LOAD EXTENSION ${extension}`);
+
   const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
@@ -341,9 +542,18 @@ async function probeExtensionLoad(
       try {
         const conn = new lbug.Connection(db);
         try {
-          const result = await conn.query(`LOAD EXTENSION ${extension}`);
-          closeProbeResults(result);
-          return { loaded: true };
+          let lastReason: string | undefined;
+          for (const sql of statements) {
+            try {
+              const result = await conn.query(sql);
+              closeProbeResults(result);
+              return { loaded: true };
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              lastReason = message.replace(/\s+/g, ' ').trim();
+            }
+          }
+          return { loaded: false, reason: lastReason };
         } finally {
           await conn.close().catch(() => {});
         }

@@ -3,7 +3,7 @@
  *
  * The unit tests (api-analyze-token.test.ts) cover validateAnalyzeToken in
  * isolation; this proves the REAL production route actually wires it in —
- * express.json body parsing, the requireLocalhostOrigin guard, the route
+ * express.json body parsing, the requireTrustedOrigin guard, the route
  * handler invoking the validator, and the 400 status/error shape on the wire.
  * Closes the gap the PR #2223 tri-review noted: "the route validation is
  * otherwise only reachable by booting the server."
@@ -193,5 +193,14 @@ describeBlock('POST /api/analyze token validation (real server)', () => {
     const { status, body } = await postAnalyze(port, {});
     expect(status).toBe(400);
     expect(JSON.parse(body).error).toContain('Provide');
+  });
+
+  it('rejects an empty Spring Actuator snapshot path', async () => {
+    const { status, body } = await postAnalyze(port, {
+      path: '/tmp/gitnexus-nonexistent-abs-path',
+      springActuatorPath: '   ',
+    });
+    expect(status).toBe(400);
+    expect(JSON.parse(body).error).toContain('"springActuatorPath" must be a non-empty string');
   });
 });

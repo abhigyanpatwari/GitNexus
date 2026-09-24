@@ -107,6 +107,23 @@ const SWIFT_SCOPE_QUERY = `
   (type_annotation
     (user_type (type_identifier) @type-binding.type))) @type-binding.annotation
 
+;; Optional property annotations: \`var owner: Owner?\` (#2807). The pattern
+;; above requires the \`user_type\` to be a DIRECT child of the annotation;
+;; an optional inserts an \`optional_type\` level between them, so an optional
+;; field was never typed at all and \`self.owner!.method()\` could not resolve
+;; its receiver. Declaring a field optional and assigning it later is the
+;; idiomatic Swift way to express a field that has no value at init time, so
+;; this is the common shape, not an edge case.
+;;
+;; The INNER \`type_identifier\` is captured, so the binding is \`Owner\` with no
+;; reliance on \`stripOptional\` reducing a \`Owner?\` spelling.
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @type-binding.name)
+  (type_annotation
+    (optional_type
+      (user_type (type_identifier) @type-binding.type)))) @type-binding.annotation
+
 ;; ── Type bindings — stored / local-var constructor inference:
 ;; \`let p = Product(...)\` (constructor) and \`let u = getUser()\`
 ;; (free-call result; chain-follow resolves getUser → its return type).
@@ -170,6 +187,32 @@ const SWIFT_SCOPE_QUERY = `
 ;; ── References — free calls: \`foo(...)\` ─────────────────────────────
 (call_expression
   (simple_identifier) @reference.name) @reference.call.free
+
+;; Exact identity for \`let lhs = callee()\`. The call-expression anchor is
+;; byte-identical to @reference.call.free / member for downstream position join.
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (call_expression) @call-result-assignment.call)
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (await_expression
+    (call_expression) @call-result-assignment.call))
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (try_expression
+    (call_expression) @call-result-assignment.call))
+
+(property_declaration
+  name: (pattern
+    bound_identifier: (simple_identifier) @call-result-assignment.lhs)
+  value: (try_expression
+    (await_expression
+      (call_expression) @call-result-assignment.call)))
 
 ;; ── References — member / method calls: \`obj.method(...)\` ───────────
 ;; navigation_expression carries the receiver (target:) and the member

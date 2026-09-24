@@ -95,6 +95,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -167,6 +170,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -232,6 +238,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -300,6 +309,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -359,6 +371,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -431,6 +446,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -506,6 +524,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -565,6 +586,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -617,6 +641,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -680,6 +707,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -758,6 +788,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {
@@ -836,6 +869,9 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
       isDbBusyError: vi.fn((err: unknown) => String(err).toLowerCase().includes('lock')),
       isOpenRetryExhausted: vi.fn(() => false),
       waitForWindowsHandleRelease: vi.fn(async () => true),
+      isStorageVersionMismatchError: vi.fn(() => false),
+      throwIfStorageVersionMismatch: vi.fn(),
+      STORAGE_VERSION_MISMATCH_SUGGESTION: '',
     }));
     vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
       extensionManager: {

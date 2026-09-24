@@ -58,11 +58,14 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   appendAll(target.constructorBindings, src.constructorBindings);
   appendAll(target.fileScopeBindings, src.fileScopeBindings);
   appendAll(target.parsedFiles, src.parsedFiles);
+  if (src.scopeExtractionFailures && src.scopeExtractionFailures.length > 0) {
+    appendAll((target.scopeExtractionFailures ??= []), src.scopeExtractionFailures);
+  }
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
   }
   if (src.skippedPaths && src.skippedPaths.length > 0) {
-    (target.skippedPaths ??= []).push(...src.skippedPaths);
+    appendAll((target.skippedPaths ??= []), src.skippedPaths);
   }
   target.fileCount += src.fileCount;
 };

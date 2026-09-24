@@ -14,6 +14,7 @@
     "timeout": "服务器响应超时，请稍后重试。",
     "rateLimited": "请求过于频繁，请在 {{seconds}} 秒后重试。",
     "notFound": "未找到请求的仓库或资源。",
+    "unauthorized": "GitNexus 部署需要访问令牌。请在 Render 控制台的 gitnexus-web 服务的 GITNEXUS_SERVE_AUTH_TOKEN 环境变量中查看，然后粘贴到「设置」中。",
     "originBlocked": "此操作无法从托管界面执行。请通过服务器自身地址（例如 http://localhost:4747）打开 GitNexus 后再继续。",
     "client": "请求失败：{{message}}",
     "server": "服务器错误：{{message}}"

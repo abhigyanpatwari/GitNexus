@@ -14,7 +14,8 @@
  *     re-keys an `extension Foo { … }` to a `class_declaration`-style def
  *     named `Foo`, so its members land on `Foo`'s scope and the shared
  *     `populateClassOwnedMembers` stamps them with `Foo`'s ownerId — the
- *     same mechanism C# uses for `partial class`. No separate hoist pass.
+ *     same mechanism C# uses for `partial class`. Cross-file extensions
+ *     that mint no type def are reconciled by `populateWorkspaceOwners`.
  *   - **Labeled arguments** narrow by ARITY only (count-primary, labels
  *     soft) — see `arity.ts`. Label-precise dispatch is deferred to the
  *     type-binding layer.
@@ -36,17 +37,18 @@
  *      Array where Element: Equatable`) are not narrowed — the `Self`
  *      type of a protocol method resolves to the protocol, not the
  *      conforming type.
- *   2. **Cross-module `import` resolution** is still directory-segment
- *      based (`import Foo` → files under a `Foo/` dir); explicit imports do
- *      not yet consult the SPM target map (follow-up, tracked under #1935).
- *      Same-target visibility (the common case) IS SPM-target-subtree
- *      accurate — handled by sibling augmentation grouped via
- *      `groupSwiftFilesBySpmTarget`, not by explicit imports.
+ *   2. **Cross-module `import` resolution** uses a Package.swift
+ *      declaration map when one is present, otherwise the directory-segment
+ *      index minus well-known SDK module names (#2964). Same-target
+ *      visibility (the common case) is SPM-target-subtree grouping via
+ *      `groupSwiftFilesBySpmTarget`, not explicit imports.
  *   3. **Operator / subscript overloads** dispatch by name only.
- *   4. **`@_exported import` re-exports** are treated as plain imports.
+ *   4. **`@_exported import`** is `ParsedImport` `kind: 'reexport'` and
+ *      in-repo modules are closed transitively at resolve time. `public
+ *      import` is not a re-export.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { loadSwiftPackageConfig } from '../../language-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
@@ -66,6 +68,9 @@ import {
   mirrorSwiftSiblingTypeBindings,
   type SwiftResolveContext,
 } from './index.js';
+import { stripSwiftTypePreservingDecoration } from './interpret.js';
+import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
@@ -83,12 +88,18 @@ const swiftScopeResolver: ScopeResolver = {
   // `goScopeResolver`'s `loadGoModulePath`.
   loadResolutionConfig: (repoPath: string) => loadSwiftPackageConfig(repoPath),
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: SwiftResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    const ws: SwiftResolveContext = {
+      fromFile,
+      allFilePaths,
+      resolutionConfig,
+      parsedFiles: context?.parsedFiles,
+    };
     return resolveSwiftImportTarget(
-      interpretSwiftImport({
-        '@import.source': { name: '@import.source', text: targetRaw, range: ZERO_RANGE },
-      }) ?? { kind: 'namespace', localName: targetRaw, importedName: targetRaw, targetRaw },
+      context?.parsedImport ??
+        interpretSwiftImport({
+          '@import.source': { name: '@import.source', text: targetRaw, range: ZERO_RANGE },
+        }) ?? { kind: 'namespace', localName: targetRaw, importedName: targetRaw, targetRaw },
       ws,
     );
   },
@@ -100,12 +111,21 @@ const swiftScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => swiftArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildSwiftMro(graph, parsedFiles, nodeLookup),
+  implicitThisWalksMro: true,
+  stripTypePreservingDecoration: stripSwiftTypePreservingDecoration,
 
   // Methods/properties/init are owned by their enclosing class/struct/
   // extension(→extended type)/protocol. Extension members hoist for free
   // because captures.ts re-keys the extension to a Class def named after
   // the extended type.
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+
+  // An extension has its own Class scope but deliberately does not mint a
+  // second type def. Its members therefore leave the per-file owner walk with
+  // a qualified name (`ExtendedType.member`) but no ownerId. Reconcile those
+  // members after all files are available so extensions declared in sibling
+  // files work as well as extensions beside the original type.
+  populateWorkspaceOwners: populateSwiftExtensionOwners,
 
   // `super.method()` dispatches through the superclass chain.
   isSuperReceiver: (text) => text.trim() === 'super',
@@ -136,6 +156,7 @@ const swiftScopeResolver: ScopeResolver = {
   // global free-call fallback (as Python/Go/Ruby/COBOL do for the same
   // no-`new` constructor + cross-file free-call shape).
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: swiftIsGlobalNameFallbackPlausible,
 
   // Swift's call graph models `Type(...)` as a reference to the type
   // itself, not its `init` — both the legacy DAG and this test suite link
@@ -205,6 +226,91 @@ function buildSwiftMro(
   }
 
   return mro;
+}
+
+function populateSwiftExtensionOwners(
+  parsedFiles: readonly ParsedFile[],
+  ctx?: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
+): void {
+  const filesByTarget = groupSwiftFilesBySpmTarget(
+    parsedFiles,
+    (parsed) => parsed.filePath,
+    coerceSwiftTargets(ctx?.resolutionConfig),
+  );
+  for (const files of filesByTarget.values()) {
+    stampSwiftExtensionOwnersInTarget(files);
+  }
+}
+
+function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): void {
+  const ownersByName = new Map<string, SymbolDefinition[]>();
+  for (const parsed of parsedFiles) {
+    for (const def of parsed.localDefs) {
+      if (!isClassLike(def.type) || def.qualifiedName === undefined) continue;
+      const bucket = ownersByName.get(def.qualifiedName);
+      if (bucket === undefined) ownersByName.set(def.qualifiedName, [def]);
+      else bucket.push(def);
+    }
+  }
+
+  // Extension members are Function-owned defs whose parent Class minted no
+  // type def. Nested locals are Function-owned defs whose parent is another
+  // Function — leave those ownerless so they cannot enter implicit-self CALLS.
+  for (const parsed of parsedFiles) {
+    const byId = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Function') continue;
+      const parent = scope.parent === null ? undefined : byId.get(scope.parent);
+      if (parent?.kind !== 'Class') continue;
+      // A type-decl Class owns the type that opened it (same start line).
+      // Nested types inside an `extension` are also class-like and live on
+      // that Class scope — they are not the extended type, so they must
+      // not suppress stamping `func added` onto `Foo`.
+      if (parent.ownedDefs.some((d) => isClassLike(d.type) && defDeclaresThisClassScope(parent, d)))
+        continue;
+      for (const def of scope.ownedDefs) {
+        if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
+        const dot = def.qualifiedName.lastIndexOf('.');
+        if (dot <= 0) continue;
+        const owner = uniqueOwnerForExtensionPrefix(ownersByName, def.qualifiedName.slice(0, dot));
+        if (owner !== undefined) {
+          (def as { ownerId?: string }).ownerId = owner.nodeId;
+        }
+      }
+    }
+  }
+}
+
+function defDeclaresThisClassScope(
+  parent: { readonly range: { readonly startLine: number } },
+  def: SymbolDefinition,
+): boolean {
+  const line = /#(\d+):/.exec(def.nodeId);
+  if (line === null) return true;
+  return Number(line[1]) === parent.range.startLine;
+}
+
+function uniqueOwnerForExtensionPrefix(
+  ownersByName: ReadonlyMap<string, readonly SymbolDefinition[]>,
+  prefix: string,
+): SymbolDefinition | undefined {
+  const seen = new Set<string>();
+  const matches: SymbolDefinition[] = [];
+  const consider = (defs: readonly SymbolDefinition[] | undefined): void => {
+    if (defs === undefined) return;
+    for (const def of defs) {
+      if (seen.has(def.nodeId)) continue;
+      seen.add(def.nodeId);
+      matches.push(def);
+    }
+  };
+  consider(ownersByName.get(prefix));
+  if (!prefix.includes('.')) {
+    for (const [qn, defs] of ownersByName) {
+      if (qn !== prefix && qn.endsWith('.' + prefix)) consider(defs);
+    }
+  }
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function closeProtocols(

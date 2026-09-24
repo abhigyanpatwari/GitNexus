@@ -13,18 +13,22 @@
  * every strategy invocation, per `import-processor`'s build-once
  * context). Lookup per import is then O(1).
  *
- * Behavior is preserved bit-for-bit: a file is attributed to a target
- * iff its **forward-slash (backslash-normalized), case-sensitive** path
- * starts with `<targetDir>/`, matching the old
- * `normalizedFileList[i].startsWith(targetDir + '/')` comparison
- * (`normalizedFileList` is only backslash→forward-slash normalized — NOT
- * lowercased — so the match is case-sensitive); the returned paths are
- * the original-case `allFileList` entries; and the per-target file ORDER
- * follows `allFileList`, so the emitted `{ kind: 'files', files }` set and
- * ordering are identical to the old scan.
+ * A file is attributed to a target iff its **forward-slash
+ * (backslash-normalized), case-sensitive** path matches at a
+ * **segment boundary**: it starts with `<targetDir>/` or contains
+ * `/<targetDir>/`. `normalizedFileList` is
+ * only backslash→forward-slash normalized — NOT lowercased — so the
+ * match is case-sensitive. The returned paths are the original-case
+ * `allFileList` entries, and the per-target file ORDER follows
+ * `allFileList`.
+ *
+ * Import-config fans a file to every matching declared target. Grouping
+ * (`groupSwiftFilesBySpmTarget`) is first-target-wins. That divergence
+ * is intentional.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { coerceDeclaredSwiftTargets, swiftDeclaredTargetPrefix } from '../../language-config.js';
 import type { ImportResolutionConfig, ImportResolverStrategy, ResolveCtx } from '../types.js';
 
 interface SwiftTargetIndex {
@@ -39,6 +43,19 @@ interface SwiftTargetIndex {
  * stable reference and the index is built once — not once per import. A
  * fresh run produces a fresh array → a fresh index, so cross-run staleness
  * is impossible.
+ *
+ * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep): this is
+ * a TWO-input memo keyed on ONE of them. The index is a function of both
+ * `ctx` (`allFileList` + the index-aligned `normalizedFileList`) and `targets`,
+ * but the key is only `ctx.allFileList`, and `perFileSet`'s `build: (key) => T`
+ * hands the builder nothing but the key. It is sound here only because of an
+ * invariant OUTSIDE the memo — `targets` is `ctx.configs.swiftPackageConfig
+ * .targets`, so it shares `ctx`'s lifetime and cannot vary while
+ * `ctx.allFileList` is fixed — and `perFileSet` has no way to express "and this
+ * other input is pinned by the same lifetime". Re-keying on `ctx` to make
+ * `targets` derivable from the key would change what the cache is keyed on and
+ * force an unreachable null-config arm into the builder, so it is a behaviour
+ * change rather than a consolidation. Leave it hand-rolled.
  */
 const SWIFT_TARGET_INDEX_CACHE = new WeakMap<object, SwiftTargetIndex>();
 
@@ -53,10 +70,10 @@ function getSwiftTargetIndex(
   // Pre-compute each target's directory prefix once (original case, to
   // match the legacy comparison against the forward-slash-normalized,
   // case-sensitive file list — see module docstring).
-  const targetPrefixes: { name: string; prefix: string }[] = [];
+  const targetDirs: { name: string; prefix: string }[] = [];
   const byTarget = new Map<string, string[]>();
   for (const [name, dir] of targets) {
-    targetPrefixes.push({ name, prefix: dir + '/' });
+    targetDirs.push({ name, prefix: swiftDeclaredTargetPrefix(dir) });
     byTarget.set(name, []);
   }
 
@@ -69,10 +86,10 @@ function getSwiftTargetIndex(
   for (let i = 0; i < ctx.allFileList.length; i++) {
     const norm = ctx.normalizedFileList[i];
     if (!norm.endsWith('.swift')) continue;
-    for (const { name, prefix } of targetPrefixes) {
-      if (norm.startsWith(prefix)) {
-        byTarget.get(name)!.push(ctx.allFileList[i]);
-      }
+    for (const { name, prefix } of targetDirs) {
+      if (!norm.startsWith(prefix) && !norm.includes(`/${prefix}`)) continue;
+      const bucket = byTarget.get(name);
+      if (bucket !== undefined) bucket.push(ctx.allFileList[i]);
     }
   }
 
@@ -84,19 +101,19 @@ function getSwiftTargetIndex(
 /** Swift Package.swift target map resolution strategy. */
 export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
-  if (swiftPackageConfig) {
-    // Only the targets map is needed; build the index lazily so repos
-    // without a Package.swift config pay nothing.
-    if (swiftPackageConfig.targets.has(rawImportPath)) {
-      const index = getSwiftTargetIndex(ctx, swiftPackageConfig.targets);
-      const files = index.byTarget.get(rawImportPath);
-      if (files !== undefined && files.length > 0) {
-        // Copy so callers can't mutate the cached index bucket.
-        return { kind: 'files', files: [...files] };
-      }
-    }
+  if (swiftPackageConfig == null) return null;
+  const declared = coerceDeclaredSwiftTargets(swiftPackageConfig);
+  if (declared == null) return null;
+  const moduleName = rawImportPath.split('.')[0];
+  if (moduleName === '' || !declared.has(moduleName)) {
+    return null;
   }
-  return null; // External framework (Foundation, UIKit, etc.)
+  const index = getSwiftTargetIndex(ctx, declared);
+  const files = index.byTarget.get(moduleName);
+  if (files !== undefined && files.length > 0) {
+    return { kind: 'files', files: [...files] };
+  }
+  return null;
 };
 
 export const swiftImportConfig: ImportResolutionConfig = {

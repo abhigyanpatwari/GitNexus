@@ -107,6 +107,15 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 (field_definition
   property: (property_identifier) @declaration.name) @declaration.property
 
+;; Object-literal keys of a NAMED object (A1/A5) — the scope-resolution half of
+;; the same rule in TYPESCRIPT/JAVASCRIPT_QUERIES. The parse query mints the
+;; Property NODE; this mints the DEF the resolver can point a read/write at.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @declaration.name) @declaration.property))
+
 ;; Declarations — free functions
 (function_declaration
   name: (identifier) @declaration.name) @declaration.function
@@ -231,6 +240,200 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 (pair
   key: (string (string_fragment) @declaration.name)
   value: (function_expression) @declaration.function)
+
+;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
+;; tRPC, Express route definitions, and similar frameworks use this pattern where
+;; an object property's value is a call_expression (like .mutation()/.query()) that
+;; wraps an arrow_function or function_expression as a callback argument.
+;; Without these patterns, tRPC procedures are invisible — the arrow registers as
+;; anonymous and all calls inside fall back to file-level attribution.
+;;
+;; AST shape:
+;;   pair
+;;     key: property_identifier "create"
+;;     value: call_expression
+;;       function: identifier | member_expression
+;;       arguments: arguments
+;;         arrow_function | function_expression
+;;
+;; Anchor discipline: same as direct pairs — on the inner arrow/function, not
+;; the outer call_expression. The arrow's range matches its @scope.function range,
+;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a value holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+;; Quoted object keys are identical shapes to the identifier-key pairs above —
+;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
+;; otherwise leave its procedures anonymous and file-level attributed.
+;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
+;; string-key rules, not the identifier-key block above; member-expression
+;; callees keep the array-method exclusion.
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+;; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+;; pair's call_expression. They miss mutation's argument being another
+;; call_expression (withAuth(...)). Object-pair only — do NOT add a
+;; variable-level nested-HOC rule (\`const X = memo(forwardRef(...))\` must
+;; stay a Variable; see typescript-hoc-wrapped.test.ts).
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped variable declarations: const X = HOC((args) => { ... }).
 ;; Covers React.forwardRef, memo, useCallback, useMemo, observer,
@@ -430,6 +633,34 @@ export const JAVASCRIPT_SCOPE_QUERY = `
   value: (new_expression
     constructor: (member_expression) @type-binding.type)) @type-binding.constructor
 
+;; Class field initializer: \`class C { p = new Outer(); }\` (#2807).
+;; JavaScript has no field annotations at all, so a class field's type can only
+;; ever come from its initializer — without this pattern \`this.p.inner()\` had
+;; nothing to type the receiver with and the receiver fold declined the whole
+;; chain. \`synthesizeConstructorFieldBindings\` in captures.ts already covers the
+;; sibling shape (\`this.p = new Outer()\`), but only inside a \`constructor\`
+;; body, so a field initialized at its declaration matched nothing.
+;;
+;; Anchored on \`field_definition\` so the binding lands in the class body scope,
+;; where \`typeOfMemberOnClass\` reads it — the same anchoring TypeScript uses for
+;; \`public_field_definition\`. Note the JS grammar names the field \`property:\`,
+;; not \`name:\`.
+(field_definition
+  property: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+(field_definition
+  property: (property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (member_expression) @type-binding.type)) @type-binding.constructor
+
+;; Private-name field: \`#p = new Outer()\`.
+(field_definition
+  property: (private_property_identifier) @type-binding.name
+  value: (new_expression
+    constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
 ;; Call-result alias: const u = getUser()
 (variable_declarator
   name: (identifier) @type-binding.name
@@ -561,6 +792,99 @@ export const JAVASCRIPT_SCOPE_QUERY = `
 
 (object
   (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
+
+;; Bare-identifier reads (A2). VALUE POSITIONS ONLY — a blanket
+;; \`(identifier)\` rule would mint a site for every token in the file.
+(arguments
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment_pattern
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+;; \`const next = LIMIT\` and \`n > LIMIT\` — both plainly value reads, and both
+;; named in review as gaps between what A2 claimed and what it matched.
+(variable_declarator
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(binary_expression
+  right: (identifier) @reference.name @reference.read.identifier)
+
+;; Destructured PARAMETER keys (R2-1c). \`function exit({ exitMinAtrMult = 0 })\`
+;; reads that property off whatever the caller passes, exactly as
+;; \`cfg.exitMinAtrMult\` would — the field just never appears in a
+;; member_expression, so the read had no site at all and the function that
+;; implements the behaviour was missing from "who reads this setting?".
+;;
+;; A distinct anchor rather than @reference.read.member: that tag is filtered
+;; emit-side to matches with a member_expression ancestor (calls and writes
+;; share its shape), and a destructuring pattern has none, so it would be
+;; dropped. The \`read.\` head is what maps this to a read kind, so the new tag
+;; needs no mapping change.
+;;
+;; The object_pattern is the receiver. It is anonymous — there is no name to
+;; type — which is precisely the untyped-receiver case the name-narrowing pass
+;; exists to serve.
+;;
+;; Scoped to formal_parameters deliberately. A destructuring binding elsewhere
+;; (\`const { x } = require('m')\`) is often an import rather than a field read,
+;; and minting a property read for it would attribute module bindings to
+;; unrelated same-named keys.
+(formal_parameters
+  (object_pattern
+    (shorthand_property_identifier_pattern) @reference.name
+      @reference.read.destructured) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (object_assignment_pattern
+      left: (shorthand_property_identifier_pattern) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
+(formal_parameters
+  (object_pattern
+    (pair_pattern
+      key: (property_identifier) @reference.name
+        @reference.read.destructured)) @reference.receiver)
+
+;; Object-literal keys in RECORD CONSTRUCTION position (R2-1b). Building
+;; \`{ exitContract: { exitMinAtrMult: settings.x } }\` SETS that field, so this
+;; is the write counterpart to the destructured read above — without it
+;; "who reads this setting?" answers well and "who SETS it?" misses the code
+;; that stamps the value.
+;;
+;; A WRITE REFERENCE, deliberately not a definition. The round-1 rule already
+;; mints Property nodes for literals bound to a variable; minting more for
+;; anonymous records would add same-named competitors to the very name-narrowing
+;; that makes these reads resolvable — measured at 26 competing definitions for
+;; one field on the reporting repo. A construction site is a USE of a field, not
+;; another declaration of it.
+;;
+;; Two positions only: nested under a key, and returned. Both are records with a
+;; name attached (the key, or the function). An inline call argument
+;; (\`doThing({ id: 1 })\`) stays excluded for the same reason round 1 excluded
+;; it from definitions — it is call-site data, not a named surface.
+;;
+;; The enclosing literal is the receiver, and it is anonymous, which routes
+;; these through the same narrowing and the same refusal-to-guess as every other
+;; untyped receiver.
+(pair
+  value: (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.nested) @reference.receiver)
+
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @reference.name
+        @reference.write.property-key) @_r2b.returned) @reference.receiver)
+
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */

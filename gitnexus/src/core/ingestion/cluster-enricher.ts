@@ -7,6 +7,7 @@
 
 import { CommunityNode } from './community-processor.js';
 
+import { chunk } from '../../lib/utils.js';
 import { logger } from '../logger.js';
 // ============================================================================
 // TYPES
@@ -160,11 +161,13 @@ export const enrichClustersBatch = async (
   let tokensUsed = 0;
 
   // Process in batches
-  for (let i = 0; i < communities.length; i += batchSize) {
-    // Report progress
-    onProgress?.(Math.min(i + batchSize, communities.length), communities.length);
-
-    const batch = communities.slice(i, i + batchSize);
+  let reported = 0;
+  for (const batch of chunk(communities, batchSize)) {
+    // Report progress. `reported` after each whole batch equals the old
+    // `Math.min(i + batchSize, communities.length)` — the last batch is short
+    // exactly when that clamp used to bite.
+    reported += batch.length;
+    onProgress?.(reported, communities.length);
 
     const batchPrompt = batch
       .map((community, idx) => {

@@ -22,6 +22,7 @@ interface PythonArityMetadata {
   readonly parameterCount: number | undefined;
   readonly requiredParameterCount: number | undefined;
   readonly parameterTypes: readonly string[] | undefined;
+  readonly parameterNames: readonly string[];
 }
 
 export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetadata {
@@ -50,5 +51,6 @@ export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetad
     parameterCount,
     requiredParameterCount,
     parameterTypes: types.length > 0 ? types : undefined,
+    parameterNames: params.map((parameter) => parameter.name),
   };
 }

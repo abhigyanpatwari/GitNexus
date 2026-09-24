@@ -171,6 +171,26 @@ export function formatDirectoryTree(filePaths: string[]): string {
 }
 
 /**
+ * Call edges kept on a page. Declared here because this is where the
+ * requirement is: a limit exists at all only because `formatCallEdges` renders
+ * these lists into a prompt, and every such list reaches the LLM through it.
+ *
+ * The call-edge queries in `graph-queries.ts` import this value for their
+ * Cypher `LIMIT`s rather than restate it. That is the same cut moved earlier —
+ * fetching rows the slice below would discard is pure waste, and at module
+ * scale it is most of the query (#2787) — so fetch and display must agree, and
+ * a second number could only ever drift from this one.
+ *
+ * The import runs that way and not the other because this module has no
+ * imports of its own. `graph-queries.ts` may read this; sending it back the
+ * other way would give a pure template module a transitive dependency on the
+ * LadybugDB pool adapter, and would make the cap vanish under the tests that
+ * `vi.mock` `graph-queries.js` — a mock factory omitting the constant leaves
+ * `slice(0, undefined)`, which keeps every edge.
+ */
+export const CALL_EDGE_LIMIT = 30;
+
+/**
  * Format call edges as readable text.
  */
 export function formatCallEdges(
@@ -178,7 +198,7 @@ export function formatCallEdges(
 ): string {
   if (edges.length === 0) return 'None';
   return edges
-    .slice(0, 30)
+    .slice(0, CALL_EDGE_LIMIT)
     .map((e) => `${e.fromName} (${shortPath(e.fromFile)}) → ${e.toName} (${shortPath(e.toFile)})`)
     .join('\n');
 }

@@ -61,6 +61,14 @@ function groupProviders(src: string): Set<string> {
   );
 }
 
+function groupConsumers(src: string): Set<string> {
+  return new Set(
+    JAVA_HTTP_PLUGIN.scan(parse(src))
+      .filter((d) => d.role === 'consumer' && d.framework === 'openfeign')
+      .map((d) => canon(d.method, d.path)),
+  );
+}
+
 describe('Spring route extractor parity — ingestion spring.ts vs group java.ts', () => {
   it('agree on bare, named-arg, and array-form method routes under a class prefix', () => {
     const src = `package com.example;
@@ -124,6 +132,109 @@ public class NamedArrayController {
     expect(ingestionProviders(src)).toEqual(group);
   });
 
+  it('agree on method-level @RequestMapping verbs and wildcard mappings', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class LegacyController {
+  @RequestMapping("/bare") public Object bare() { return null; }
+  @RequestMapping(value = "/named") public Object named() { return null; }
+  @RequestMapping(value = "/save", method = RequestMethod.POST)
+  public Object save() { return null; }
+  @RequestMapping(path = "/multi", method = {RequestMethod.GET, RequestMethod.HEAD})
+  public Object multi() { return null; }
+  @RequestMapping(path = {"/one", "/two"}, method = {RequestMethod.GET, RequestMethod.POST})
+  public Object crossProduct() { return null; }
+  @RequestMapping(path = "/empty", method = {})
+  public Object empty() { return null; }
+  @RequestMapping(path = "/spaced", method = RequestMethod . PUT)
+  public Object spaced() { return null; }
+  @RequestMapping(path = "/commented", method = {
+    RequestMethod.GET, // read
+    /* write */ RequestMethod.POST,
+  })
+  public Object commented() { return null; }
+  @org.springframework.web.bind.annotation.RequestMapping(
+    path = "/fqn",
+    method = org.springframework.web.bind.annotation.RequestMethod.DELETE
+  )
+  public Object fqn() { return null; }
+}
+`;
+    const expected = new Set([
+      '* /api/bare',
+      '* /api/named',
+      'POST /api/save',
+      'GET /api/multi',
+      'HEAD /api/multi',
+      'GET /api/one',
+      'POST /api/one',
+      'GET /api/two',
+      'POST /api/two',
+      '* /api/empty',
+      'PUT /api/spaced',
+      'GET /api/commented',
+      'POST /api/commented',
+      'DELETE /api/fqn',
+    ]);
+
+    expect(groupProviders(src)).toEqual(expected);
+    expect(ingestionProviders(src)).toEqual(expected);
+  });
+
+  it('intersects class verbs and emits pathless method mappings at the class prefix', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(path = "/api", method = RequestMethod.GET)
+public class ConstrainedController {
+  @RequestMapping("/wild") public Object wildcard() { return null; }
+  @RequestMapping(method = RequestMethod.GET) public Object root() { return null; }
+  @GetMapping public Object shortcut() { return null; }
+  @PostMapping("/blocked") public Object blocked() { return null; }
+}
+`;
+
+    const expected = new Set(['GET /api/wild', 'GET /api']);
+    expect(groupProviders(src)).toEqual(expected);
+    expect(ingestionProviders(src)).toEqual(expected);
+  });
+
+  it('uses GET for verb-less Feign RequestMapping and rejects multi-method contracts', () => {
+    const src = `package com.example;
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.*;
+
+@FeignClient(name = "orders")
+@RequestMapping("/api")
+public interface OrdersClient {
+  @RequestMapping("/default") Object defaultCall();
+  @RequestMapping(path = "/multi", method = {RequestMethod.GET, RequestMethod.POST})
+  Object ambiguous();
+}
+`;
+
+    expect(groupConsumers(src)).toEqual(new Set(['GET /api/default']));
+  });
+  it('fails closed when @RequestMapping method is not statically resolvable', () => {
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class DynamicController {
+  private static final RequestMethod VERB = RequestMethod.POST;
+  @RequestMapping(path = "/dynamic", method = VERB)
+  public Object dynamic() { return null; }
+}
+`;
+
+    expect(groupProviders(src)).toEqual(new Set());
+    expect(ingestionProviders(src)).toEqual(new Set());
+  });
+
   it('do not leak non-route arrays (consumes/produces) as routes — array analogue', () => {
     // The scalar `produces` anti-regression already exists in the route tests;
     // this is its array form. `consumes`/`produces` arrays must never surface as
@@ -141,13 +252,12 @@ public class ContentTypeController {
 `;
     const ingestion = ingestionProviders(src);
     const group = groupProviders(src);
-    // Only the explicit path leaks through; the consumes/produces arrays do not,
-    // and the path-less @PostMapping contributes nothing.
-    expect(group).toEqual(new Set(['GET /v']));
+    // Non-route arrays never become paths; the pathless POST binds to root.
+    expect(group).toEqual(new Set(['GET /v', 'POST /']));
     expect(ingestion).toEqual(group);
 
-    // Pure-consumes controller (no path anywhere) → EMPTY provider set on both
-    // sides: a consumes/produces array must never be misread as a route path.
+    // Pure consumes/produces members still describe pathless root mappings;
+    // their media-type values must never be misread as route paths.
     const consumesOnly = `package com.example;
 import org.springframework.web.bind.annotation.*;
 
@@ -159,8 +269,8 @@ public class ConsumesOnlyController {
   public Object b() { return null; }
 }
 `;
-    expect(groupProviders(consumesOnly)).toEqual(new Set());
-    expect(ingestionProviders(consumesOnly)).toEqual(new Set());
+    expect(groupProviders(consumesOnly)).toEqual(new Set(['POST /', 'PUT /']));
+    expect(ingestionProviders(consumesOnly)).toEqual(new Set(['POST /', 'PUT /']));
   });
 
   it('pins the deliberate class-array divergence: ingestion suppresses, group emits cross-product (#2280)', () => {

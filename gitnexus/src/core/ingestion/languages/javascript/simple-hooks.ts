@@ -18,7 +18,8 @@
  */
 
 import type { CaptureMatch, Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
-import { tsBindingScopeFor, walkToScope } from '../typescript/simple-hooks.js';
+import { walkToScope } from '../../utils/scope-tree-walk.js';
+import { tsBindingScopeFor } from '../typescript/simple-hooks.js';
 
 export {
   tsImportOwningScope as jsImportOwningScope,

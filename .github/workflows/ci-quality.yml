@@ -9,7 +9,9 @@ permissions:
 jobs:
   format:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Same root npm ci as lint. A cold install already took 4m19s here and
+    # canceled prettier at the 5-minute job cap; lint needed 7m41s the same run.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -19,7 +21,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx prettier --check .
 
   lint:
@@ -34,7 +36,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx eslint .
 
   typecheck:
@@ -44,13 +46,20 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      # tsc --noEmit reads source + gitnexus-shared/dist. Skip prepare/postinstall
+      # so a cold shared install cannot eat the 10-minute budget on a second tsc.
       - uses: ./.github/actions/setup-gitnexus
+        with:
+          lifecycle-scripts: 'false'
       - run: npx tsc --noEmit
         working-directory: gitnexus
 
   typecheck-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Cold gitnexus-web npm ci is several minutes (mermaid/langchain/playwright).
+    # A 10-minute cancel prevents setup-node from saving the cache, so the next
+    # run is cold again.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

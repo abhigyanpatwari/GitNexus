@@ -1,7 +1,7 @@
 /**
  * npm 11.x npx-install-crash nudge for the `analyze` command (#1939).
  *
- * The gitnexus/pnpm/npx selection itself lives in the canonical hook helper
+ * The gitnexus/pnpm/bun/npx selection itself lives in the canonical hook helper
  * (hooks/claude/resolve-analyze-cmd.cjs) — self-contained CJS because the copied
  * hook runtime cannot import from the package. We reuse it here via createRequire
  * instead of re-implementing it, so there is one source of truth for the
@@ -14,7 +14,7 @@
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
-type InvocationMode = 'gitnexus' | 'pnpm' | 'npx';
+type InvocationMode = 'gitnexus' | 'pnpm' | 'npx' | 'bun';
 
 interface InvocationResolver {
   // `probe` is injectable in the cjs (defaults to the real PATH probe) so the
@@ -83,8 +83,12 @@ export function getNpmMajorVersion(): number | null {
 
 /**
  * One-line stderr nudge when an npm 11+ user is on the npx install path (#1939).
- * Skipped when a global `gitnexus` or `pnpm` is already preferred, so it never
- * nags users who are not exposed to the npx/arborist crash.
+ * Skipped when a global `gitnexus`, `pnpm` or `bunx` is already preferred, so it
+ * never nags users who are not exposed to the npx/arborist crash. "Preferred"
+ * means usable, not merely on PATH: a `bunx` shim that no longer runs fails the
+ * cjs liveness probe, resolves back to `npx`, and so still gets warned here —
+ * without that, a broken bunx would suppress the warning AND emit a command that
+ * cannot run.
  */
 export function warnIfNpm11NpxRisk(): void {
   if (resolveInvocationMode() !== 'npx') return;

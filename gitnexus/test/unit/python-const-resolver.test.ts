@@ -23,6 +23,8 @@ import {
   type ImportBinding,
   type RepoConstants,
 } from '../../src/core/ingestion/route-extractors/python-const-resolver.js';
+import { pythonProvider } from '../../src/core/ingestion/languages/python.js';
+import { shouldHarvestModuleConstants } from '../../src/core/ingestion/language-provider.js';
 
 const lit = (value: string): Operand => ({ kind: 'literal', value });
 const ref = (name: string): Operand => ({ kind: 'ref', name });
@@ -375,5 +377,48 @@ describe('extractPythonModuleConstants — source-order snapshot (#2393)', () =>
   it('still folds a normal same-file reference chain (snapshot inlines bound refs)', () => {
     const r = repoFrom({ 'm.py': 'A = "/a"\nB = A + "/b"\nC = B + "/c"\n' });
     expect(resolveConstant('m.py', 'C', r)).toBe('/a/b/c');
+  });
+});
+
+describe('the Python provider harvests unconditionally (#2980 review P2)', () => {
+  // A cheap content gate was added on the provider here and removed on review.
+  // It required NAME immediately followed by `=`, so it silently dropped the
+  // idiomatic typed-FastAPI shapes and every composed constant whose RHS starts
+  // with an identifier — i.e. it REGRESSED routes that already resolve on main.
+  // The parse worker treats a missing heuristic as "harvest"; pin that here so
+  // the gate cannot come back without a decision.
+  it('declares no moduleConstantHeuristic', () => {
+    expect(pythonProvider.moduleConstantHeuristic).toBeUndefined();
+  });
+
+  it.each([
+    ['plain', 'API = "/api/v1"\nUSERS = API + "/users"\n'],
+    ['PEP 526 annotated', 'API: str = "/api/v1"\nUSERS: str = API + "/users"\n'],
+    [
+      'Final-annotated',
+      'from typing import Final\nAPI: Final[str] = "/api/v1"\nUSERS: Final[str] = API + "/users"\n',
+    ],
+    ['composed, identifier RHS', 'API = _base()\nUSERS = API + "/users"\n'],
+  ])('the worker GATE admits the %s shape, and the extractor harvests it', (_name, src) => {
+    // Drive the gate the worker actually evaluates, not just the extractor
+    // behind it. Asserting only on `extract(src)` would stay green if the worker
+    // went back to `provider.moduleConstantHeuristic?.(content)` — undefined read
+    // as "skip" — which is precisely the regression this pins.
+    expect(shouldHarvestModuleConstants(pythonProvider, src)).toBe(true);
+    const mc = extract(src);
+    expect(mc.literals.size + mc.exprs.size + mc.imports.size).toBeGreaterThan(0);
+  });
+
+  it('a provider with no extractModuleConstants is never harvested', () => {
+    expect(shouldHarvestModuleConstants({}, 'API = "/api"')).toBe(false);
+  });
+
+  it('a declared heuristic still gates the harvest', () => {
+    const provider = {
+      extractModuleConstants: pythonProvider.extractModuleConstants,
+      moduleConstantHeuristic: (content: string) => content.includes('ROUTES'),
+    };
+    expect(shouldHarvestModuleConstants(provider, 'ROUTES = "/a"')).toBe(true);
+    expect(shouldHarvestModuleConstants(provider, 'OTHER = "/a"')).toBe(false);
   });
 });

@@ -58,17 +58,23 @@ const JAVA_SCOPE_QUERY = `
 (compact_constructor_declaration) @scope.function
 
 ;; Declarations — types
+;; Optional-quantifier capture rather than a second pattern: a separate rule
+;; would make every GENERIC declaration match twice under one def id, leaving
+;; match order to decide which twin kept the parameters.
 (class_declaration
-  name: (identifier) @declaration.name) @declaration.class
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 
 (interface_declaration
-  name: (identifier) @declaration.name) @declaration.interface
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.interface
 
 (enum_declaration
   name: (identifier) @declaration.name) @declaration.enum
 
 (record_declaration
-  name: (identifier) @declaration.name) @declaration.record
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.record
 
 (annotation_type_declaration
   name: (identifier) @declaration.name) @declaration.class
@@ -83,7 +89,13 @@ const JAVA_SCOPE_QUERY = `
     ])) @class-annotation.class
 
 ;; Declarations — methods / constructors
+;;
+;; A generic METHOD's parameters are read for the same reason a generic type's
+;; are (#2912 review): \`<T> boolean runAny(Validator<T> v)\` writes a receiver
+;; whose argument is a type VARIABLE, and a pass that cannot tell that from a
+;; concrete type prunes every implementor from the call's dispatch fan-out.
 (method_declaration
+  type_parameters: (type_parameters)? @declaration.type-parameters
   name: (identifier) @declaration.name) @declaration.method
 
 (constructor_declaration

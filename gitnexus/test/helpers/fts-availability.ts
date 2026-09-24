@@ -1,5 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { resolveVendoredFtsPath } from '../../src/core/lbug/vendored-extension-path.js';
 
 /** A valid `libfts.lbug_extension` is ~2.2MB; anything smaller is truncated/corrupt. */
 const MIN_VALID_FTS_EXTENSION_BYTES = 1024 * 1024;
@@ -40,6 +42,19 @@ export const findInstalledFtsExtension = (extensionRoot: string): string | null 
     return null;
   }
 };
+
+/**
+ * Resolve the FTS extension the same way doctor/analyze will after vendoring:
+ * packaged artifact first, then a `~/.lbdb` install. File-path CI gates must
+ * accept the vendored file so they stay green when ensure-fts no longer
+ * populates the home cache.
+ */
+export const resolveFtsExtension = (opts?: {
+  vendorRoot?: string;
+  homeExtensionRoot?: string;
+}): string | null =>
+  resolveVendoredFtsPath({ vendorRoot: opts?.vendorRoot }) ??
+  findInstalledFtsExtension(opts?.homeExtensionRoot ?? join(homedir(), '.lbdb', 'extension'));
 
 export const FTS_UNAVAILABLE_NOTE =
   'FTS extension unavailable (load-only policy; LOAD failed on this machine)';
@@ -83,12 +98,12 @@ export const skipUnlessFtsAvailable = async (ctx: {
 };
 
 /**
- * Skip a structural FTS test when a required on-disk artifact (the installed
- * extension file, the native addon) is not resolvable — but HARD-FAIL under
- * GITNEXUS_REQUIRE_FTS=1 (#2299, #2383 F6d) so it never silently vanishes from a
- * green CI run. Used by tests that inspect the extension *file* directly and so
- * need its path rather than a loaded connection (skipUnlessFtsAvailable needs an
- * initialized LadybugDB, which those tests do not set up).
+ * Skip a structural FTS test when a required on-disk artifact (the vendored
+ * extension, a home install, or the native addon) is not resolvable — but
+ * HARD-FAIL under GITNEXUS_REQUIRE_FTS=1 (#2299, #2383 F6d) so it never
+ * silently vanishes from a green CI run. Used by tests that inspect the
+ * extension *file* directly and so need its path rather than a loaded
+ * connection (skipUnlessFtsAvailable needs an initialized LadybugDB).
  */
 export const requireFtsResourceOrSkip = (
   ctx: { skip: (note?: string) => void },

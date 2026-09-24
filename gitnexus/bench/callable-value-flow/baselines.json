@@ -1,6 +1,6 @@
 {
-  "_comment": "Baselines for bench/callable-value-flow/measure.mjs --check (#2693). `fingerprint` is an order-independent sha256 over every (defNodeId -> graphId) pair buildGraphTargetIndex resolves on the synthetic corpus; it is a CORRECTNESS gate, so drift means the callable-value target set moved and must be explained, never re-baselined to make CI green. The two budgets are timing gates and carry deliberate headroom for shared CI runners.",
-  "fingerprint": "70bebf6a26ff6fc9f231a0933678274b44c4883ddab5e719a61a9c77d6223e51",
+  "_comment": "Baselines for bench/callable-value-flow/measure.mjs --check (#2693). `fingerprint` is an order-independent sha256 over every (defNodeId -> graphId) pair buildGraphTargetIndex resolves on the synthetic corpus; it is a CORRECTNESS gate, so drift means the callable-value target set moved and must be explained, never re-baselined to make CI green. The fingerprint changed when the synthetic corpus adopted production-shaped def ids; target cardinality remains 4000 (3200 callable-only plus 800 value bindings). The two budgets are timing gates and carry deliberate headroom for shared CI runners.",
+  "fingerprint": "6599dda7d0ee5942e1995a1dcfb137c312eb8e4690bc82a8bbff429f08bd839d",
   "scaling_budget": 1.6,
   "_scaling_note": "(t_large/t_small)/(800/250). ~1.0 is linear; measured 1.14-1.16. The index build is one pass over defs plus map lookups, so a jump toward 3.x means someone made the per-def work depend on corpus size (e.g. a scan inside the loop).",
   "widening_overhead_budget": 1.9,

@@ -22,27 +22,43 @@ const RUST_SCOPE_QUERY = `
 
 ;; Declarations — struct
 (struct_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
 
 ;; Declarations — trait
 (trait_item
-  name: (type_identifier) @declaration.name) @declaration.trait
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.trait
 
 ;; Declarations — enum
 (enum_item
-  name: (type_identifier) @declaration.name) @declaration.enum
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.enum
 
 ;; Declarations — union
-;; Deliberately tagged @declaration.struct (→ Struct label), NOT a
-;; @declaration.union: every registry-primary resolution gate —
-;; isLinkableLabel (node-lookup.ts), CALLABLE_OR_TYPE_LIKE
-;; (finalize-algorithm.ts), ClassLikeNodeLabel (class-types.ts) — includes
-;; Struct but EXCLUDES Union, so a Union-labeled node would be an
-;; unresolvable orphan. A Rust union is a type whose literal is a real
-;; constructor, so Struct is both the resolvable and the semantically
-;; honest label here. #1934 F71.
+;; Tagged @declaration.struct (→ Struct label), NOT @declaration.union.
+;; Historically forced: the registry-primary gates (isLinkableLabel,
+;; CALLABLE_OR_TYPE_LIKE, ClassLikeNodeLabel) excluded Union, so a
+;; Union-labeled node was an unresolvable orphan (#1934 F71). Zig support
+;; widened all three for its union(enum) containers, so the label is now
+;; resolvable — Struct is kept here on the semantic argument alone (a Rust
+;; union is a type whose literal is a real constructor) and to leave the
+;; graph node ids of existing Rust indexes unchanged.
 (union_item
-  name: (type_identifier) @declaration.name) @declaration.struct
+  name: (type_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.struct
+
+;; Declarations — module (mod foo { ... } / mod foo;)
+;; A Rust mod is an ITEM, not just a lexical region: rustc resolves the first
+;; segment of a path (inner::dispatch) against the module tree in the TYPE
+;; namespace, which is why a same-named fn can never shadow it. Capturing the
+;; module as a named DEF (not only the @scope.namespace region above) is what
+;; makes that tree addressable — it feeds the shared tagNamespacePrefixes pass
+;; so members carry inner / a.b as their namespacePrefix, which qualified
+;; call resolution then matches against the written path (#2730). Mirrors the
+;; C++ namespace_definition capture.
+(mod_item
+  name: (identifier) @declaration.name) @declaration.namespace
 
 ;; Declarations — macro (macro_rules! foo { ... })
 ;; Captured as @declaration.macro → Macro label. A macro invocation
@@ -150,10 +166,14 @@ const RUST_SCOPE_QUERY = `
     value: (_) @reference.receiver
     field: (field_identifier) @reference.name)) @reference.call.member
 
-;; References — scoped calls (Foo::bar())
+;; References — scoped calls (Foo::bar(), tools::dispatch())
+;; The call stays a FREE call (resolution is the lexical scope chain), but the
+;; written path is carried along as @reference.qualified-name so a module-
+;; qualified call can be resolved against the module the qualifier names before
+;; the scope-chain walk binds it to a same-named local shadow (#2730).
 (call_expression
   function: (scoped_identifier
-    name: (identifier) @reference.name)) @reference.call.free
+    name: (identifier) @reference.name) @reference.qualified-name) @reference.call.free
 
 ;; References — constructor calls (struct literal)
 ;; tree-sitter-rust gives struct_expression.name one of three node types

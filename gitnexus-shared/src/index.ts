@@ -25,12 +25,27 @@ export {
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 
+// Impact risk scoring
+export { scoreImpactRisk, unusedAxesForImpactWalk } from './impact-risk.js';
+export type {
+  ImpactRisk,
+  ImpactRiskAxis,
+  ImpactRiskInput,
+  ImpactRiskResult,
+  UnusedImpactRiskAxis,
+  UnusedImpactRiskReason,
+} from './impact-risk.js';
+
 // Pipeline progress
 export type { PipelinePhase, PipelineProgress } from './pipeline.js';
 
 // ─── Scope-based resolution — RFC #909 (Ring 1 #910) ────────────────────────
 // Data model (RFC §2)
-export type { ParameterTypeClass, SymbolDefinition } from './scope-resolution/symbol-definition.js';
+export type {
+  ParameterTypeClass,
+  SymbolDefinition,
+  TypeParameter,
+} from './scope-resolution/symbol-definition.js';
 export type {
   ScopeId,
   DefId,
@@ -83,7 +98,13 @@ export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.
 
 // ScopeExtractor output contracts (RFC §3.2 Phase 1; Ring 2 PKG #919)
 export type { ParsedFile } from './scope-resolution/parsed-file.js';
-export type { ReferenceSite, ReferenceKind, CallForm } from './scope-resolution/reference-site.js';
+export type { CallResultAssignmentSite } from './scope-resolution/call-result-assignment-site.js';
+export type {
+  ReferenceSite,
+  ReferenceKind,
+  CallForm,
+  MixedChainStep,
+} from './scope-resolution/reference-site.js';
 export type {
   CallableFlowOperand,
   CallableFlowExpectedSignature,
@@ -117,6 +138,7 @@ export type {
   FinalizeOutput,
   FinalizedScc,
   FinalizeStats,
+  AmbiguousWildcardExport,
 } from './scope-resolution/finalize-algorithm.js';
 
 // Scope-aware registries + 7-step lookup (RFC §4; Ring 2 SHARED #917)
@@ -185,6 +207,7 @@ export {
   ResilientFetchExhaustedError,
   RETRY_AFTER_CAP_MS,
   parseRetryAfter,
+  isTerminalNetworkError,
 } from './integrations/resilient-fetch.js';
 export type { ResilientFetchOptions } from './integrations/resilient-fetch.js';
 

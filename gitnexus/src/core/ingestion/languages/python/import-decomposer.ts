@@ -13,6 +13,7 @@
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
+  findAncestorBeforeBoundary,
   findChild,
   nodeToCapture,
   syntheticCapture,
@@ -23,12 +24,30 @@ import {
  *  `interpretPythonImport`. */
 type ImportKind = 'plain' | 'aliased' | 'from' | 'from-alias' | 'wildcard' | 'dynamic';
 
+/**
+ * The only two constructs that stop a module-level `from m import x` from
+ * publishing `x` as `<module>.x`. Python has no block scope, so an import
+ * under `if` / `try` / `for` / `with` still publishes when its branch runs —
+ * verified against CPython 3.11; only `def` and `class` bodies suppress it.
+ */
+const PUBLICATION_SUPPRESSING_ANCESTORS: ReadonlySet<string> = new Set([
+  'function_definition',
+  'class_definition',
+]);
+const NO_BOUNDARY: ReadonlySet<string> = new Set();
+
 interface ImportSpec {
   readonly kind: ImportKind;
   readonly source: string;
   readonly name: string;
   readonly alias?: string;
   readonly atNode: SyntaxNode;
+  /**
+   * Statement sits at module level, so the bound name joins the module
+   * namespace and is importable from this module. Read by
+   * `interpretPythonImport` to set `ParsedImport.reexportsName`.
+   */
+  readonly publishesToModule?: boolean;
 }
 
 export function splitImportStatement(stmtNode: SyntaxNode): CaptureMatch[] {
@@ -76,6 +95,9 @@ function splitImportFromStmt(stmtNode: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   const moduleField = stmtNode.childForFieldName('module_name');
   const moduleText = moduleField?.text ?? '';
+  // Once per statement, not once per name.
+  const publishesToModule =
+    findAncestorBeforeBoundary(stmtNode, PUBLICATION_SUPPRESSING_ANCESTORS, NO_BOUNDARY) === null;
 
   // Wildcard? tree-sitter-python represents `*` as a `wildcard_import`
   // child and emits no name children.
@@ -105,6 +127,7 @@ function splitImportFromStmt(stmtNode: SyntaxNode): CaptureMatch[] {
           source: moduleText,
           name: child.text,
           atNode: child,
+          publishesToModule,
         }),
       );
     } else if (child.type === 'aliased_import') {
@@ -118,6 +141,7 @@ function splitImportFromStmt(stmtNode: SyntaxNode): CaptureMatch[] {
             name: dotted.text,
             alias: alias.text,
             atNode: child,
+            publishesToModule,
           }),
         );
       }
@@ -136,6 +160,12 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: ImportSpec): CaptureMatch 
   };
   if (spec.alias !== undefined) {
     m['@import.alias'] = syntheticCapture('@import.alias', spec.atNode, spec.alias);
+  }
+  // Anchored at `spec.atNode`, never `stmtNode`: `anchorCaptureFor` picks the
+  // broadest span with a strict `>`, so a statement-wide span here would tie
+  // with `@import.statement` and let key order decide the anchor.
+  if (spec.publishesToModule === true) {
+    m['@import.publishes'] = syntheticCapture('@import.publishes', spec.atNode, 'module');
   }
   return m;
 }

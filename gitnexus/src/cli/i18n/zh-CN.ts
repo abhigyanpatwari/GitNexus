@@ -11,6 +11,13 @@ export const zhCN = {
   'common.storage': '存储',
   'common.deleted': '已删除：{{target}}',
   'common.error': '错误：{{message}}',
+  'update.available': 'GitNexus {{latestVersion}} 已发布（当前运行 {{installedVersion}}）。',
+  'update.current': 'GitNexus {{installedVersion}} 已是最新稳定版或不低于该版本。',
+  'update.installing': '正在执行 {{command}}…',
+  'update.installed': '已安装 gitnexus@{{version}}。请重启仍在运行的 mcp/serve 进程。',
+  'update.installFailed': 'npm 安装失败。可重试：{{command}}',
+  'update.installError': '无法运行 npm：{{message}}',
+  'update.checkFailed': '无法检查更新（离线、私有仓库，或检查失败）。',
   'list.title': '已索引仓库（{{count}}）',
   'list.indexed': '索引时间',
   'list.commit': '提交',
@@ -37,13 +44,43 @@ export const zhCN = {
   'status.workspaceIndexLabel':
     "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
+  'status.indexContentCurrent': '索引内容：与覆盖的全部 {{count}} 个文件一致',
+  'status.indexContentDrifted':
+    '索引内容：{{changed}} 个已修改，{{added}} 个新增，{{deleted}} 个已删除',
+  'status.indexContentMore': '  ……另有 {{count}} 个 {{label}}',
+  'status.indexContentUnmeasurable': '索引内容：无法比对（{{reason}}），已回退到工作区检查',
+  'status.indexContentScanFailed': '索引内容：覆盖扫描失败，按过期处理',
+  'status.driftChanged': '已修改',
+  'status.driftAdded': '新增',
+  'status.driftDeleted': '已删除',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
-  'clean.branchNotIndexed': '该仓库没有名为 “{{branch}}” 的已索引分支。',
+  'clean.branchNotIndexed':
+    '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',
+  'clean.stale.none': '没有可回收的残留分支索引。',
+  'clean.stale.preview': '将删除 {{count}} 个残留分支索引：',
+  'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.registryOnlyPath': '（仅注册表）',
+  'clean.stale.headsUnavailable':
+    '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.remainingSkipped':
+    '无法列出本地分支，因此已跳过其余残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.listingFailed':
+    '无法读取残留分支索引目录，因此未删除残留索引。请检查 branches/ 目录权限后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.probeFailed': '无法检查残留分支索引路径，因此未删除这些槽位。',
+  'clean.stale.deleted': '已删除残留分支索引：{{branch}}',
+  'clean.stale.failed': '无法删除残留分支索引 “{{branch}}”。',
+  'clean.stale.skippedLive': '已跳过残留分支索引 “{{branch}}” — 它再次成为本地分支。',
+  'clean.stale.reason.refMissing': '不是本地分支',
+  'clean.stale.reason.diskOnly': '残留目录（无注册表记录）',
+  'clean.stale.reason.registryOnly': '注册表记录（目录已不存在）',
+  'clean.stale.reason.headsUnavailable': '无法列出本地分支',
+  'clean.stale.reason.probeFailed': '无法检查槽位路径',
+  'clean.stale.reason.listingFailed': '无法列出残留目录',
   'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
   'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',
@@ -69,6 +106,14 @@ export const zhCN = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
+  'tool.detectChanges.noOverlappingSymbols':
+    'diff 触及 {{files}} 个文件，但没有索引符号与这些 hunk 重叠 — 并非干净工作区。',
+  'tool.detectChanges.partial':
+    '结果不完整：图查询失败，可能遗漏已变更符号。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.truncated':
+    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
+  'tool.detectChanges.truncatedDegraded':
+    '列表已截断：已变更符号列表被截断。本次运行同时不完整，因此计数为下限而非总数。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
@@ -88,6 +133,9 @@ export const zhCN = {
   'doctor.runtime': '运行时',
   'doctor.capabilities': '能力',
   'doctor.embeddings': '嵌入',
+  'doctor.orphanedBranches': '残留分支索引',
+  'doctor.orphanedBranches.total': '合计：{{size}}',
+  'doctor.orphanedBranches.reclaim': '回收命令：gitnexus clean --stale',
   'doctor.labels.os': '系统：',
   'doctor.labels.node': 'Node：',
   'doctor.labels.gitnexus': 'GitNexus：',
@@ -95,8 +143,10 @@ export const zhCN = {
   'doctor.labels.onnx': 'ONNX：',
   'doctor.labels.graphStore': '图存储：',
   'doctor.labels.fullTextSearch': '全文搜索：',
-  'doctor.labels.vectorIndex': '向量索引：',
-  'doctor.labels.semanticMode': '语义模式：',
+  'doctor.labels.vectorIndex': 'VECTOR 扩展：',
+  'doctor.labels.semanticMode': '语义支持：',
+  'doctor.vectorCapability.indexUnverified': '支持向量索引（未检查仓库索引）',
+  'doctor.vectorCapability.exactScanOnly': '仅精确扫描（VECTOR 扩展不可用）',
   'doctor.labels.exactScanLimit': '精确扫描上限：',
   'doctor.labels.note': '说明：',
   'doctor.labels.backend': '后端：',
@@ -127,7 +177,19 @@ export const zhCN = {
     '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
+  'help.command.autoSync.description':
+    '控制基于 GITNEXUS_HOME/watch_config.yml 的定时 clone/pull 和分析',
+  'help.autoSync.details':
+    '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：仅允许 github.com、gitlab.com 和 gitee.com 上的 SSH 地址。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
+  'help.command.watch.description':
+    '含义不明确：本地文件请用 `analyze --watch`，定时远程同步请用 `auto-sync`',
+  'help.watch.details':
+    '\n`gitnexus watch` 不会启动监视器。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
+  'error.watch.ambiguous':
+    '`gitnexus watch` 含义不明确。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
   'help.command.analyze.description': '索引仓库（完整分析）',
+  'help.command.embeddings.sync.description':
+    '向现有索引添加缺失的嵌入，并定期保存检查点以安全续跑',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
   'help.command.mcp.description':
@@ -135,9 +197,11 @@ export const zhCN = {
   'help.command.list.description': '列出所有已索引仓库',
   'help.command.status.description': '显示当前仓库的索引状态',
   'help.command.doctor.description': '显示运行平台能力和嵌入配置',
+  'help.command.update.description':
+    '通过 npm 全局安装最新发布的 GitNexus（`npm i -g gitnexus@<x.y.z>`）。',
   'help.command.embeddings.description': '管理按需安装的本地嵌入运行时',
   'help.command.embeddings.install.description':
-    '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。修复 npm 跳过可选包的安装（例如在 HTTP 代理后，#2370）。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',
+    '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。默认 npm 安装不包含该组件。CPU 安装仅从你配置的 npm registry 下载 — 镜像和代理均生效。`--cuda` 还会运行 onnxruntime-node 的 postinstall，从 NuGet 获取 CUDA 二进制（代理后需设置 GLOBAL_AGENT_HTTPS_PROXY）。',
   'help.command.clean.description': '删除当前仓库的 GitNexus 索引',
   'help.command.remove.description':
     '删除已注册仓库的 GitNexus 索引（按别名、名称或绝对路径）。与 `clean` 不同，不要求位于仓库内；未知目标会幂等处理。',
@@ -165,7 +229,8 @@ export const zhCN = {
   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
   'help.command.group.contracts.description': '查看 Contract Registry',
   'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
-  'help.option.analyze.force': '即使已是最新也强制完整重建索引',
+  'help.option.analyze.force': '强制重建图和 FTS；未更改的解析器输出可能被复用',
+  'help.option.analyze.noParseCache': '重新解析每个源文件，不重放缓存的解析器输出',
   'help.option.analyze.repairFts': '修复/重建搜索 FTS 索引，不执行完整重新分析',
   'help.option.analyze.embeddings':
     '启用语义搜索的嵌入生成（默认关闭）。可选 [limit] 覆盖 50,000 节点安全上限；传 0 可完全禁用上限。',
@@ -173,7 +238,8 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
-  'help.option.analyze.skipAgentsMd': '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块',
+  'help.option.analyze.skipAgentsMd':
+    '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
   'help.option.analyze.selfCommit':
     '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
@@ -193,10 +259,18 @@ export const zhCN = {
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
   'help.option.analyze.workers':
     '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
+  'help.option.analyze.maxProcesses':
+    '流程检测的流程数量上限（正整数）。覆盖动态的 max(20, round(symbols/10)) 公式。默认：动态。',
+  'help.option.analyze.maxProcessBranching': '流程检测的单节点分支上限（正整数）。默认：4。',
+  'help.option.analyze.maxProcessTraceDepth': '流程检测的 DFS 深度上限（正整数）。默认：10。',
+  'help.option.analyze.maxEntryPointCandidates':
+    '排序后的入口点候选池（正整数）。默认：200。仅在警告点名该上限时提高；那时通常先翻倍。',
   'help.option.analyze.embeddingThreads': '限制本地 ONNX 嵌入 CPU 线程数',
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
   'help.option.analyze.embeddingDevice': '嵌入设备：auto、cpu、dml、cuda 或 wasm',
+  'help.option.analyze.watch': '监视本地源文件变更并串行执行增量刷新',
+  'help.option.analyze.debounce': '刷新前的静默等待时间（毫秒）',
   'help.option.index.force': '即使缺少索引元数据也注册（统计为空）',
   'help.option.index.allowNonGit': '允许注册非 Git 仓库文件夹',
   'help.option.port': '端口号',
@@ -205,24 +279,24 @@ export const zhCN = {
   'help.option.mcp.host':
     'HTTP 绑定地址（仅与 --http 搭配使用）。默认：127.0.0.1（回环）。使用 0.0.0.0 向所有接口开放。',
   'help.option.mcp.authToken':
-    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
+    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置，该变量同时为 gitnexus serve 的 /api/mcp 路由启用 MCP Bearer 认证。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
   'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
+  'help.option.clean.stale': '回收已不是本地 head 的残留分支索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
-    'LLM 提供商：openai、openrouter、azure、custom、cursor、claude、codex 或 opencode（默认：openai）',
-  'help.option.wiki.model': 'LLM 模型或 Azure deployment 名称（默认：minimax/minimax-m2.5）',
+    'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
+  'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key 或 Azure api-key（保存到 ~/.gitnexus/config.json）',
   'help.option.wiki.apiVersion': 'Azure api-version 查询参数，例如 2024-10-21（仅旧版 Azure API）',
-  'help.option.wiki.reasoningModel':
-    '标记 deployment 为 reasoning model（o1/o3/o4-mini）— 去除 temperature，使用 max_completion_tokens',
-  'help.option.wiki.noReasoningModel': '禁用 reasoning model 模式（覆盖已保存配置）',
+  'help.option.wiki.reasoningModel': '启用 reasoning 模式；MiniMax-M3 使用自适应 thinking',
+  'help.option.wiki.noReasoningModel': '禁用 reasoning 模式；MiniMax-M3 关闭 thinking',
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
@@ -268,10 +342,9 @@ export const zhCN = {
     '同时下载 CUDA GPU 二进制文件（运行 onnxruntime-node 的 NuGet postinstall；代理后请设置 GLOBAL_AGENT_HTTPS_PROXY）',
   'help.option.embeddings.install.force': '即使嵌入组件已可解析，也强制安装到运行时目录',
   'help.option.group.create.force': '覆盖现有仓库组',
-  'help.option.group.sync.skipEmbeddings': '仅使用 exact + BM25（不使用嵌入回退）',
-  'help.option.group.sync.exactOnly': '仅精确匹配',
-  'help.option.group.sync.allowStale': '跳过过期索引警告',
-  'help.option.group.sync.verbose': '显示每条跨仓库链接详情',
+  'help.option.group.sync.exactOnly':
+    '跳过通配符服务匹配，仅按契约 ID 精确匹配建立跨仓链接（清单声明的链接仍然生效）',
+  'help.option.group.sync.verbose': '显示额外的同步诊断信息',
   'help.option.status.json': '输出机器可读的索引和分析器来源信息',
   'help.option.json': 'JSON 输出',
   'help.option.group.impact.target': '要分析的符号或文件名',
@@ -289,5 +362,5 @@ export const zhCN = {
   'help.identityCache.environment':
     '\n分析器身份缓存：\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    由操作员明确信任的持久缓存，用于跨进程快速查询状态。目录必须预先存在、位于 GitNexus 包/构建根目录之外，且路径中不得包含符号链接或 junction。缺少 POSIX 所有权 API 的平台默认保持故障关闭。',
   'help.analyze.environment':
-    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。MCP 默认 0.6，其他路径默认 0.5。\n\n当参数和对应环境变量同时提供时，参数优先。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
+    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_STORAGE_PATH=/absolute/index  完整外部索引目录。保留既有配置语义；与 GITNEXUS_STORAGE_ROOT 同时设置时优先使用。\n  GITNEXUS_STORAGE_ROOT=/absolute/root  外部索引根目录；每个仓库使用独立的 <仓库名>-<规范路径哈希>/ 子目录。\n  GITNEXUS_CONTENT_RETENTION=full  源码文本保留策略：full、symbol 或 none。默认 full。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  将单次 HTTP 嵌入超时纳入 GITNEXUS_EMBEDDING_MAX_ATTEMPTS 重试（默认关闭，超时仍为终止错误）。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。MCP 默认 0.6，其他路径默认 0.5。\n  GITNEXUS_MAX_PROCESSES=N  流程检测的流程数量上限（正整数）。覆盖动态的 max(20, round(symbols/10)) 公式。与查询时的 IMPACT_MAX_CHUNKS 无关。\n  GITNEXUS_MAX_PROCESS_BRANCHING=N  流程检测的单节点分支上限。默认 4。\n  GITNEXUS_MAX_PROCESS_TRACE_DEPTH=N  流程检测的 DFS 深度上限。默认 10。\n  GITNEXUS_MAX_ENTRY_POINT_CANDIDATES=N  排序后的入口点候选池。默认 200。仅在警告点名该上限时提高；那时通常先翻倍。\n\nCLI 参数优先于 `.gitnexusrc`，后者优先于环境变量，环境变量优先于内置默认值。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
 } satisfies EnglishMessages;

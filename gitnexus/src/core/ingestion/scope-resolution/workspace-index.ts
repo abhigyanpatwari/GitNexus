@@ -39,31 +39,22 @@
  * Build cost is O(totalScopes). Read-only after construction.
  */
 
-import type { ParsedFile, Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  Scope,
+  ScopeId,
+  ScopeTree,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
+import type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 import { isClassLike } from './scope/walkers.js';
 
-export interface WorkspaceResolutionIndex {
-  /** Class def `nodeId` → that class's `Scope`. */
-  readonly classScopeByDefId: ReadonlyMap<string, Scope>;
-
-  /** Inverse of `classScopeByDefId`: class `Scope.id` → class def `nodeId`.
-   *  Built in the same pass; used by the implicit-`this` overload picker
-   *  in `free-call-fallback.ts` to skip an O(C) reverse scan. */
-  readonly classScopeIdToDefId: ReadonlyMap<ScopeId, string>;
-
-  /** Module scope by file path. */
-  readonly moduleScopeByFile: ReadonlyMap<string, Scope>;
-
-  /** Precomputed `simpleName → first module-local callable def` (the
-   *  workspace-wide fallback of `findExportedDefByName`). Materialized here
-   *  ONCE from the resident module scopes so that fallback is an O(1) lookup
-   *  instead of an O(files) scan over every module scope's bindings on each
-   *  unresolved free call — which, under the disk-backed scopeTree, would
-   *  otherwise fault every module scope in from disk per call (the throughput
-   *  killer). "First module-local callable in `moduleScopeByFile` order" is the
-   *  exact semantics the old scan returned, so it is byte-identical. */
-  readonly exportedCallableByName: ReadonlyMap<string, SymbolDefinition>;
-}
+/** The index *shape* lives in the leaf `./workspace-index-types.js` so
+ *  `scope/walkers.ts` — which this builder calls into — can type against it
+ *  without importing this module back. Re-exported here so consumers keep
+ *  importing the type and the builder from one place. */
+export type { WorkspaceResolutionIndex } from './workspace-index-types.js';
 
 /**
  * A `ReadonlyMap<K, Scope>` view backed by a `K → ScopeId` map plus a
@@ -123,11 +114,15 @@ class ScopeByKeyView<K> implements ReadonlyMap<K, Scope> {
 export function buildWorkspaceResolutionIndex(
   parsedFiles: readonly ParsedFile[],
   scopeTree?: ScopeTree,
+  options?: {
+    readonly stripTypePreservingDecoration?: (typeName: string) => string | undefined;
+  },
 ): WorkspaceResolutionIndex {
   const classScopeIdByDefId = new Map<string, ScopeId>();
   const classScopeIdToDefId = new Map<ScopeId, string>();
   const moduleScopeIdByFile = new Map<string, ScopeId>();
   const exportedCallableByName = new Map<string, SymbolDefinition>();
+  const declaredReturnTypeByCallableId = new Map<string, TypeRef>();
   // Back-compat (no scopeTree): keep the direct Scope-object maps.
   const classScopeByDefIdDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
   const moduleScopeByFileDirect = scopeTree === undefined ? new Map<string, Scope>() : undefined;
@@ -154,6 +149,24 @@ export function buildWorkspaceResolutionIndex(
     }
 
     for (const scope of parsed.scopes) {
+      if (scope.kind === 'Function' && scope.parent !== null) {
+        for (const def of scope.ownedDefs) {
+          if (def.type !== 'Function' && def.type !== 'Method' && def.type !== 'Constructor') {
+            continue;
+          }
+          if (def.returnType !== undefined) {
+            const stripped = options?.stripTypePreservingDecoration?.(def.returnType);
+            const rawName = stripped ?? def.returnType;
+            declaredReturnTypeByCallableId.set(def.nodeId, {
+              rawName,
+              ...(rawName !== def.returnType ? { declaredSpelling: def.returnType } : {}),
+              declaredAtScope: scope.id,
+              source: 'return-annotation',
+            });
+            continue;
+          }
+        }
+      }
       if (scope.kind !== 'Class') continue;
       const cd = scope.ownedDefs.find((d) => isClassLike(d.type));
       if (cd !== undefined) {
@@ -173,5 +186,11 @@ export function buildWorkspaceResolutionIndex(
       ? moduleScopeByFileDirect!
       : new ScopeByKeyView(moduleScopeIdByFile, scopeTree);
 
-  return { classScopeByDefId, classScopeIdToDefId, moduleScopeByFile, exportedCallableByName };
+  return {
+    classScopeByDefId,
+    classScopeIdToDefId,
+    moduleScopeByFile,
+    exportedCallableByName,
+    declaredReturnTypeByCallableId,
+  };
 }

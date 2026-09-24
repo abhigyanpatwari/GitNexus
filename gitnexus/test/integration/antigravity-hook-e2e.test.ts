@@ -23,7 +23,7 @@ import path from 'path';
 import { cleanupTempDir, cleanupTempDirSync } from '../helpers/test-db.js';
 import os from 'os';
 import {
-  runHook,
+  runHook as spawnHook,
   parseHookOutput,
   createGitNexusPathEntry,
   createHookToolDir,
@@ -31,11 +31,13 @@ import {
   envWithPath,
 } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 let tempHome: string;
 let installedHook: string;
 let tmpDir: string;
 let gitNexusDir: string;
+let registryHome: string;
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 
@@ -75,6 +77,7 @@ beforeAll(async () => {
     'hook-db-lock-probe.cjs',
     'win-rm-list-json.ps1',
     'resolve-analyze-cmd.cjs',
+    'registry-query.cjs',
   ]) {
     const helperPath = path.join(path.dirname(installedHook), helper);
     if (!fs.existsSync(helperPath)) {
@@ -86,12 +89,22 @@ beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antigravity-hook-e2e-repo-'));
   gitNexusDir = path.join(tmpDir, '.gitnexus');
   fs.mkdirSync(gitNexusDir, { recursive: true });
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  initGitRepo(tmpDir, { name: 'Test', email: 'test@test.com' });
   fs.writeFileSync(path.join(tmpDir, 'hello.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: tmpDir, stdio: 'pipe' });
+  commitAll(tmpDir, 'init');
+
+  registryHome = path.join(tempHome, 'gitnexus-home');
+  fs.mkdirSync(registryHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(registryHome, 'registry.json'),
+    JSON.stringify([
+      {
+        name: 'antigravity-e2e',
+        path: tmpDir,
+        storagePath: gitNexusDir,
+      },
+    ]),
+  );
 });
 
 afterAll(async () => {
@@ -100,6 +113,18 @@ afterAll(async () => {
   if (tempHome) await cleanupTempDir(tempHome);
   if (tmpDir) cleanupTempDirSync(tmpDir);
 });
+
+function runHook(
+  hookPath: string,
+  input: Record<string, any>,
+  cwd?: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+) {
+  return spawnHook(hookPath, input, cwd, {
+    ...options,
+    env: { ...(options.env ?? process.env), GITNEXUS_HOME: registryHome },
+  });
+}
 
 describe('antigravity hook adapter e2e', () => {
   describe('AfterTool — stale-index hint after git mutations', () => {
@@ -186,7 +211,7 @@ describe('antigravity hook adapter e2e', () => {
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
-        expect(output!.additionalContext).toContain('Run `gitnexus analyze`');
+        expect(output!.additionalContext).toContain('Run `gitnexus analyze --index-only`');
         expect(output!.additionalContext).not.toContain('npx gitnexus');
       } finally {
         gn.cleanup();
@@ -240,7 +265,9 @@ describe('antigravity hook adapter e2e', () => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
+      expect(output!.additionalContext).toContain(
+        'npx gitnexus@latest analyze --index-only --embeddings',
+      );
     });
 
     it('prefers gitnexus.json over meta.json when both are present (dual-write steady state)', () => {

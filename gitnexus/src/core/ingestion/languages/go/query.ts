@@ -4,9 +4,33 @@ import Go from 'tree-sitter-go';
 const GO_SCOPE_QUERY = `
 ;; Scopes
 (source_file) @scope.module
+;; One Class scope per DECLARED TYPE, not per declaration (#2837).
+;;
+;; Capturing the type_declaration made a grouped declaration
+;;   type (
+;;     Decoy       struct { ... }
+;;     PickService struct { ... }
+;;   )
+;; a SINGLE Class scope owning every struct in the block. Downstream that scope
+;; can name only one owner -- buildWorkspaceResolutionIndex keeps the first
+;; class-like def it finds -- so the block's structs lost their field type
+;; bindings, typeOfMemberOnClass found no scope, the compound-receiver fold
+;; declined, and every s.field.Method() site in the file emitted nothing at
+;; all. Silent, per-file, and independent of file size: exactly the split
+;; reported in #2837 that #2829's global fixes could not explain. Measured on
+;; the go-grouped-type-decl fixture: EVERY struct in a grouped block lost its
+;; edges, the first one included, and grouped interface blocks produced no
+;; IMPLEMENTS edges at all.
+;;
+;; type_spec is the node Go's own grammar gives one declared type, so one
+;; capture per type_spec is the granularity the rest of the pipeline already
+;; assumes. A plain single-type declaration is unaffected in count -- only its
+;; scope range narrows, from the type keyword to the name.
+;;
+;; NOTE: this string is a JS template literal. Backticks are a syntax error.
 (type_declaration
   (type_spec
-    type: [(struct_type) (interface_type)])) @scope.class
+    type: [(struct_type) (interface_type)]) @scope.class)
 (function_declaration) @scope.function
 (method_declaration) @scope.function
 (func_literal) @scope.function
@@ -22,14 +46,24 @@ const GO_SCOPE_QUERY = `
 (communication_case) @scope.block
 
 ;; Declarations — struct
+;;
+;; Anchored on the type_spec, in lockstep with @scope.class above (#2837). Both
+;; captures MUST name the same node: the def node and the class-scope node are
+;; paired by range, so anchoring the def on the enclosing type_declaration while
+;; the scope sits on the type_spec leaves the def strictly larger than its own
+;; scope and NOTHING is owned -- measured as every Go field-receiver edge in the
+;; fixture disappearing, plain declarations included. Keeping both on
+;; type_declaration is the original bug: a grouped block gave both structs the
+;; same capture node, so one silently displaced the other.
 (type_declaration
   (type_spec name: (type_identifier) @declaration.name
-    type: (struct_type))) @declaration.struct
+    type: (struct_type)) @declaration.struct)
 
 ;; Declarations — interface
+;; Same lockstep requirement as @declaration.struct above (#2837).
 (type_declaration
   (type_spec name: (type_identifier) @declaration.name
-    type: (interface_type))) @declaration.interface
+    type: (interface_type)) @declaration.interface)
 
 ;; Declarations — function
 (function_declaration

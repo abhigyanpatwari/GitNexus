@@ -189,17 +189,17 @@ describe('getGitRoot', () => {
 
 // ─── getRemoteUrl ─────────────────────────────────────────────────────────
 
-describe('getRemoteUrl', () => {
-  const setupRepoWithRemote = (remoteUrl: string): string => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-remote-'));
-    // Use real fs paths and shellouts — the helper itself shells out to
-    // `git config`, so we need a real git repo for the assertion to be
-    // meaningful.
-    execSync('git init -q', { cwd: tmpDir });
-    execSync(`git remote add origin ${remoteUrl}`, { cwd: tmpDir });
-    return tmpDir;
-  };
+const setupRepoWithRemote = (remoteUrl: string): string => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-remote-'));
+  // Use real fs paths and shellouts — the helper itself shells out to
+  // `git config`, so we need a real git repo for the assertion to be
+  // meaningful.
+  execSync('git init -q', { cwd: tmpDir });
+  execSync(`git remote add origin ${remoteUrl}`, { cwd: tmpDir });
+  return tmpDir;
+};
 
+describe('getRemoteUrl', () => {
   it('returns undefined for a non-git directory', async () => {
     const { getRemoteUrl } = await import('../../src/storage/git.js');
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
@@ -251,6 +251,80 @@ describe('getRemoteUrl', () => {
     } finally {
       fs.rmSync(a, { recursive: true, force: true });
       fs.rmSync(b, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── credentials in remote URLs (#2914) ──────────────────────────────────
+//
+// `git config remote.origin.url` hands back whatever CI or a credential
+// helper configured, including `https://x-access-token:<token>@host/…`.
+// That value is persisted (registry.json, the per-repo meta) and echoed by
+// MCP `list_repos`, so it must lose its userinfo at capture time. Every
+// credential below is an obviously fake constant.
+
+describe('remote URL credentials (#2914)', () => {
+  const FAKE_TOKEN = 'ExAmPle-FAKE-SECRET';
+
+  it('strips userinfo from an HTTPS remote before it can be persisted', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote(
+      `https://x-access-token:${FAKE_TOKEN}@github.com/example/project.git`,
+    );
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('https://github.com/example/project');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('strips a username-only HTTPS remote (the PAT-as-username form)', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const tmpDir = setupRepoWithRemote(`https://${FAKE_TOKEN}@github.com/example/project.git`);
+    try {
+      expect(getRemoteUrl(tmpDir)).toBe('https://github.com/example/project');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves plain HTTPS, SSH-URL and SCP-like remotes untouched', async () => {
+    const { stripUrlCredentials } = await import('../../src/storage/git.js');
+    // The SSH forms carry a user NAME, not a secret, and are part of the
+    // remote's identity — rewriting them would repoint the #2054 fingerprint.
+    expect(stripUrlCredentials('https://github.com/example/project.git')).toBe(
+      'https://github.com/example/project.git',
+    );
+    expect(stripUrlCredentials('ssh://git@github.com/example/project.git')).toBe(
+      'ssh://git@github.com/example/project.git',
+    );
+    expect(stripUrlCredentials('git@github.com:example/project.git')).toBe(
+      'git@github.com:example/project.git',
+    );
+    // An `@` in the PATH is not userinfo — the authority ends at the first `/`.
+    expect(stripUrlCredentials('https://github.com/example/pro@ject')).toBe(
+      'https://github.com/example/pro@ject',
+    );
+  });
+
+  it('removes a password containing @ whole, leaving no tail behind', async () => {
+    const { stripUrlCredentials } = await import('../../src/storage/git.js');
+    expect(stripUrlCredentials(`https://user:pa@ss-${FAKE_TOKEN}@host.example/o/r`)).toBe(
+      'https://host.example/o/r',
+    );
+  });
+
+  it('keeps the same fingerprint for credentialed and clean clones of one repo', async () => {
+    const { getRemoteUrl } = await import('../../src/storage/git.js');
+    const withCreds = setupRepoWithRemote(
+      `https://x-access-token:${FAKE_TOKEN}@example.com/foo/bar.git`,
+    );
+    const clean = setupRepoWithRemote('https://example.com/foo/bar');
+    try {
+      expect(getRemoteUrl(withCreds)).toBe(getRemoteUrl(clean));
+    } finally {
+      fs.rmSync(withCreds, { recursive: true, force: true });
+      fs.rmSync(clean, { recursive: true, force: true });
     }
   });
 });
@@ -853,4 +927,211 @@ describe('isWorkingTreeDirty', () => {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+});
+
+describe('listWorkingTreeDirtyPaths', () => {
+  it('returns an empty list for a clean repository', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+      execFileSync(gitExecutable, ['add', '--', 'README.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('returns dirty source paths and omits GitNexus-managed writes', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+      execSync('git add -A && git commit -q -m init', { cwd: repo, stdio: 'ignore' });
+      fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'src', 'foo.ts'), 'export const x = 1;');
+      fs.mkdirSync(path.join(repo, '.gitnexus'), { recursive: true });
+      fs.writeFileSync(path.join(repo, '.gitnexus', 'meta.json'), '{}');
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'x');
+
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual(['src/foo.ts']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('still reports nested lookalikes that are not GitNexus-managed', async () => {
+    const { isWorkingTreeDirty, listWorkingTreeDirtyPaths } =
+      await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'docs', 'AGENTS.md'), 'project notes');
+      execFileSync(gitExecutable, ['add', '--', 'docs/AGENTS.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      fs.writeFileSync(path.join(repo, 'docs', 'AGENTS.md'), 'edited notes');
+
+      expect(isWorkingTreeDirty(repo)).toBe(true);
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual(['docs/AGENTS.md']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null (not an empty list) outside a git repository', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const dir = makeIsolatedTempDir('gn-nongit-paths-');
+    try {
+      expect(listWorkingTreeDirtyPaths(dir)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves non-ASCII, newline, and arrow-shaped filenames exactly', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    const names = ['src/ä.ts'];
+    if (process.platform !== 'win32') {
+      names.push('src/a -> b.ts', 'src/line\nbreak.ts', 'src/tab\tname.ts', 'src/back\\slash.ts');
+    }
+    try {
+      for (const name of names) {
+        fs.mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
+        fs.writeFileSync(path.join(repo, name), 'before');
+      }
+      execFileSync(gitExecutable, ['add', '--', ...names], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+      for (const name of names) fs.writeFileSync(path.join(repo, name), 'after');
+
+      expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([...names].sort());
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'returns both paths for a rename without parsing filename text',
+    async () => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      const before = 'src/before -> literal.ts';
+      const after = 'src/after -> literal.ts';
+      try {
+        fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(repo, before), 'content');
+        execFileSync(gitExecutable, ['add', '--', before], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['mv', '--', before, after], { cwd: repo, stdio: 'ignore' });
+
+        expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([after, before].sort());
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'includes paths hidden by git update-index %s',
+    async (flag) => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      try {
+        fs.writeFileSync(path.join(repo, 'hidden.ts'), 'before');
+        execFileSync(gitExecutable, ['add', '--', 'hidden.ts'], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', flag, '--', 'hidden.ts'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        fs.writeFileSync(path.join(repo, 'hidden.ts'), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)).toContain('hidden.ts');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'omits GitNexus-managed paths hidden by git update-index %s',
+    async (flag) => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      try {
+        fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+        fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'before');
+        execFileSync(gitExecutable, ['add', '--', 'README.md', 'AGENTS.md'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', flag, '--', 'AGENTS.md'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)).toEqual([]);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'preserves exact unusual names hidden by index bits, including both bits',
+    async () => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      const names = ['ä.ts', 'a -> b.ts', 'tab\tname.ts', 'line\nbreak.ts'];
+      try {
+        for (const name of names) fs.writeFileSync(path.join(repo, name), 'before');
+        execFileSync(gitExecutable, ['add', '--', ...names], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--assume-unchanged', '--', names[0]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[1]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--assume-unchanged', '--', names[2]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[2]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[3]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        for (const name of names) fs.writeFileSync(path.join(repo, name), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([...names].sort());
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 });

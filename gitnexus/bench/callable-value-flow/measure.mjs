@@ -89,7 +89,7 @@ function buildCorpus(fileCount) {
     return id;
   };
   const addDef = (type, filePath, qualifiedName, line) => {
-    const nodeId = `${filePath}#${line}:0:${qualifiedName}`;
+    const nodeId = `def:${filePath}#${line}:0:${type}:${qualifiedName}`;
     defs.set(nodeId, { nodeId, type, filePath, qualifiedName });
   };
 

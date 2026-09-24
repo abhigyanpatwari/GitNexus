@@ -5,15 +5,15 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from workflow_bench.proposer_sandbox import VITE_TEMP_DIR, SandboxError
 from workflow_bench.oracle_assets import TaskOracleSnapshot
 from workflow_bench.runner_tasks import resolve_task_bindings
-from workflow_bench.task_assets import TaskAssetCache, stage_task_assets
-from workflow_bench import task_assets
+from workflow_bench.task_assets import TaskAssetCache, _is_harness_sandbox_copy, stage_task_assets
+from workflow_bench import runtime_mounts, task_assets
 
 
 SHA = "a" * 40
@@ -443,3 +443,53 @@ def test_non_node_modules_dependency_snapshot_has_no_vite_temp(tmp_path: Path) -
         snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
         captured = {entry.path.as_posix() for entry in snapshot.dependencies[0].entries}
         assert not any(path.endswith(VITE_TEMP_DIR) for path in captured)
+
+
+def test_review_case_sandbox_copy_is_read_from_the_harness_not_the_task_repo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "task-repo"
+    repo.mkdir()
+    (repo / "eval" / "workflow_bench").mkdir(parents=True)
+    harness = tmp_path / "harness"
+    patch = harness / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
+    patch.parent.mkdir(parents=True)
+    patch.write_bytes(b"diff --git a/a b/a\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", harness)
+
+    task = {
+        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"],
+        "sandbox_dependencies": [],
+    }
+    with TaskAssetCache(tmp_path / "cache") as cache:
+        snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
+        copied = snapshot.root / "sandbox-copy" / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
+        assert copied.read_bytes() == b"diff --git a/a b/a\n"
+
+
+def test_review_case_sandbox_copy_does_not_fall_back_to_the_task_repo(
+    monkeypatch, tmp_path: Path
+) -> None:
+    repo = tmp_path / "task-repo"
+    planted = repo / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
+    planted.parent.mkdir(parents=True)
+    planted.write_bytes(b"from-task-repo")
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", harness)
+
+    task = {
+        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"],
+        "sandbox_dependencies": [],
+    }
+    with TaskAssetCache(tmp_path / "cache") as cache:
+        with pytest.raises(SandboxError, match="unavailable"):
+            cache.prepare(task, repo=repo, resolved_sha=SHA)
+
+
+def test_harness_sandbox_copy_does_not_treat_parent_escapes_as_corpus() -> None:
+    assert _is_harness_sandbox_copy(PurePosixPath("eval/workflow_bench/review_cases/pr.patch"))
+    assert not _is_harness_sandbox_copy(
+        PurePosixPath("eval/workflow_bench/review_cases/../oracles/hidden.json")
+    )
+    assert not _is_harness_sandbox_copy(PurePosixPath("eval/workflow_bench/oracles"))

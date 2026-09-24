@@ -1,5 +1,5 @@
 import type { NodeLabel } from 'gitnexus-shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
@@ -9,13 +9,18 @@ import {
   qualifiedKey,
   simpleKey,
 } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
+import { resolveDefGraphId } from '../../../src/core/ingestion/scope-resolution/graph-bridge/ids.js';
 import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/parse-worker.js';
 
 const FILE = 'src/service.ts';
 
 interface Candidate {
   id: string;
+  label?: NodeLabel;
+  name?: string;
+  qualifiedName?: string;
   startLine?: number;
+  startColumn?: number;
 }
 
 function buildLookup(candidates: readonly Candidate[]) {
@@ -24,12 +29,13 @@ function buildLookup(candidates: readonly Candidate[]) {
     (candidate) =>
       ({
         id: candidate.id,
-        label: 'Method' as NodeLabel,
+        label: candidate.label ?? ('Method' as NodeLabel),
         properties: {
-          name: 'save',
-          qualifiedName: 'Service.save',
+          name: candidate.name ?? 'save',
+          qualifiedName: candidate.qualifiedName ?? 'Service.save',
           filePath: FILE,
           ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
+          ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
         },
       }) satisfies ParseWorkerResult['nodes'][number],
   );
@@ -90,5 +96,189 @@ describe('parse-result graph insertion determinism', () => {
     const lookup = buildLookup([second, first]);
 
     expect(lookup.get(simpleKey(FILE, 'save'))).toBe(first.id);
+  });
+
+  it('uses exact columns to distinguish same-line owner-qualified callables', () => {
+    const first = {
+      id: `Function:${FILE}:first.handler`,
+      label: 'Function' as const,
+      name: 'handler',
+      qualifiedName: 'first.handler',
+      startLine: 4,
+      startColumn: 24,
+    };
+    const second = {
+      id: `Function:${FILE}:second.handler`,
+      label: 'Function' as const,
+      name: 'handler',
+      qualifiedName: 'second.handler',
+      startLine: 4,
+      startColumn: 73,
+    };
+    const lookup = buildLookup([second, first]);
+
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#5:24:Function:handler`,
+          type: 'Function',
+          qualifiedName: 'handler',
+        },
+        lookup,
+      ),
+    ).toBe(first.id);
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#5:73:Function:handler`,
+          type: 'Function',
+          qualifiedName: 'handler',
+        },
+        lookup,
+      ),
+    ).toBe(second.id);
+  });
+
+  it('uses exact position before parsing dotted member names as qualifiers', () => {
+    const dotted = {
+      id: `Function:${FILE}:service.q.r`,
+      label: 'Function' as const,
+      name: 'q.r',
+      qualifiedName: 'service.q.r',
+      startLine: 8,
+      startColumn: 31,
+    };
+    const lookup = buildLookup([dotted]);
+
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#9:31:Function:q.r`,
+          type: 'Function',
+          qualifiedName: 'q.r',
+        },
+        lookup,
+      ),
+    ).toBe(dotted.id);
+  });
+
+  it('resolves a Record definition to its Record node instead of a same-named fallback', () => {
+    const record = {
+      id: `Record:${FILE}:Person`,
+      label: 'Record' as const,
+      name: 'Person',
+      qualifiedName: 'Person',
+      startLine: 10,
+    };
+    const sameNamedMethod = {
+      id: `Method:${FILE}:Factory.Person#0`,
+      label: 'Method' as const,
+      name: 'Person',
+      qualifiedName: 'Factory.Person',
+      startLine: 20,
+    };
+
+    const lookup = buildLookup([sameNamedMethod, record]);
+
+    expect(lookup.get(qualifiedKey(FILE, 'Record', 'Person'))).toBe(record.id);
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          type: 'Record',
+          qualifiedName: 'Person',
+        },
+        lookup,
+      ),
+    ).toBe(record.id);
+  });
+});
+
+function countingLookup(inner: ReturnType<typeof buildLookup>): {
+  lookup: ReturnType<typeof buildLookup>;
+  gets: () => number;
+} {
+  let n = 0;
+  const lookup = new Proxy(inner, {
+    get(target, prop, receiver) {
+      if (prop === 'get') {
+        return (key: string) => {
+          n += 1;
+          return target.get(key);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      return typeof value === 'function'
+        ? (value as (...args: never[]) => unknown).bind(target)
+        : value;
+    },
+  });
+  return { lookup, gets: () => n };
+}
+
+describe('resolveDefGraphId memo', () => {
+  const MEMO_ENV = 'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO';
+  let previousMemoEnv: string | undefined;
+
+  beforeEach(() => {
+    previousMemoEnv = process.env[MEMO_ENV];
+    delete process.env[MEMO_ENV];
+  });
+
+  afterEach(() => {
+    if (previousMemoEnv === undefined) delete process.env[MEMO_ENV];
+    else process.env[MEMO_ENV] = previousMemoEnv;
+  });
+
+  it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const countedA = countingLookup(buildLookup([method]));
+    const countedB = countingLookup(buildLookup([method]));
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    const first = resolveDefGraphId(FILE, def, countedA.lookup);
+    const getsAfterFirst = countedA.gets();
+    const second = resolveDefGraphId(FILE, def, countedA.lookup);
+    expect(first).toBe(method.id);
+    expect(second).toBe(first);
+    expect(getsAfterFirst).toBeGreaterThan(0);
+    expect(countedA.gets()).toBe(getsAfterFirst);
+    const otherLookup = resolveDefGraphId(FILE, def, countedB.lookup);
+    expect(otherLookup).toBe(method.id);
+    expect(countedB.gets()).toBeGreaterThan(0);
+    expect(countedA.lookup).not.toBe(countedB.lookup);
+  });
+
+  it('walks the lookup again when the memo env opt-out is set', () => {
+    process.env[MEMO_ENV] = '0';
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const counted = countingLookup(buildLookup([method]));
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    const getsAfterFirst = counted.gets();
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    expect(counted.gets()).toBeGreaterThan(getsAfterFirst);
   });
 });

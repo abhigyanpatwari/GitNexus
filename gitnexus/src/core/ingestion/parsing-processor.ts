@@ -1,12 +1,13 @@
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { getLanguageForFileContent } from './languages/index.js';
 
 import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './call-processor.js';
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
+import type { DispatchGroup } from './workers/worker-pool.js';
 import type { SkippedPath } from './workers/clone-safety.js';
 import type { CfgSkipCounts } from './cfg/collect.js';
 import { logger } from '../logger.js';
@@ -56,6 +57,8 @@ export interface WorkerExtractedData {
    * finalize-orchestrator.
    */
   parsedFiles: ParsedFile[];
+  /** Scope-extraction omissions represented by this worker/cache result. */
+  scopeExtractionFailures: string[];
 }
 
 type ParsedGraphNode = ParseWorkerResult['nodes'][number];
@@ -126,6 +129,7 @@ export const mergeChunkResults = (
   const allORMQueries: ExtractedORMQuery[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
   const allParsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailures: string[] = [];
 
   for (const result of chunkResults) {
     // Worker jobs and input files are already merged in stable start-index/path
@@ -178,6 +182,9 @@ export const mergeChunkResults = (
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
     if (result.parsedFiles) for (const item of result.parsedFiles) allParsedFiles.push(item);
+    for (const filePath of result.scopeExtractionFailures ?? []) {
+      scopeExtractionFailures.push(filePath);
+    }
   }
 
   return {
@@ -195,16 +202,17 @@ export const mergeChunkResults = (
     springTypes: allSpringTypes,
     fileScopeBindings: fileScopeBindingsByFile,
     parsedFiles: allParsedFiles,
+    scopeExtractionFailures,
   };
 };
 
 /**
- * Dispatch a chunk's files to the worker pool and return the RAW per-worker
- * results, WITHOUT merging them into the graph. Split out from
- * {@link processParsing} so the parse loop can overlap one chunk's
- * merge (main-thread, via {@link mergeChunkResults}) with the NEXT chunk's
- * worker parse — the merge is the only remaining serial main-thread step once
- * ParsedFile serialization moved into the workers (#worker-idle pipelining).
+ * Dispatch ONE chunk's files to the worker pool and return the RAW per-worker
+ * results, WITHOUT merging them into the graph. A thin single-group wrapper
+ * over {@link dispatchChunkParseRound}, used by {@link processParsing}'s
+ * one-shot path. The chunk-to-chunk overlap this once described now lives in
+ * `parse-impl.ts` at ROUND granularity (`startRound` / `drainRound` /
+ * `closeRound`), which batches several chunks into one dispatch.
  * Returns `[]` for an all-unparseable chunk (the caller merges `[]` → empty).
  */
 export const dispatchChunkParse = async (
@@ -220,26 +228,53 @@ export const dispatchChunkParse = async (
    */
   chunkHash?: string,
 ): Promise<ParseWorkerResult[]> => {
-  const parseableFiles: ParseWorkerInput[] = [];
-  for (const file of files) {
-    const lang = getLanguageFromFilename(file.path);
-    if (lang) parseableFiles.push({ path: file.path, content: file.content });
-  }
-  if (parseableFiles.length === 0) return [];
-
-  const total = files.length;
-  const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-    parseableFiles,
-    (filesProcessed) => {
-      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
-    },
-    chunkHash,
+  const [chunkResults = []] = await dispatchChunkParseRound(
+    [{ items: files, chunkHash }],
+    workerPool,
+    onFileProgress,
   );
 
   // Capture raw results for the incremental parse cache before merging.
   if (outRawResults) {
     for (const r of chunkResults) outRawResults.push(r);
   }
+  return chunkResults;
+};
+
+/**
+ * Dispatch SEVERAL parse-cache chunks as one pool round and return their raw
+ * results, one array per input group in input order.
+ *
+ * `WorkerPool.dispatch` is a barrier, so one round-trip per chunk leaves most
+ * slots idle whenever a chunk is smaller than the pool — which stable
+ * `(language, hash(path) % 128)` packs usually are. Batching chunks into one
+ * `dispatchGroups` call removes those barriers; jobs are still cut at chunk
+ * boundaries, so every result stays attributable to the chunk whose cache key
+ * owns it.
+ */
+export const dispatchChunkParseRound = async (
+  groups: ReadonlyArray<DispatchGroup<{ path: string; content: string }>>,
+  workerPool: WorkerPool,
+  onFileProgress?: FileProgressCallback,
+): Promise<ParseWorkerResult[][]> => {
+  const dispatchGroups: DispatchGroup<ParseWorkerInput>[] = groups.map((group) => {
+    const items: ParseWorkerInput[] = [];
+    for (const file of group.items) {
+      const lang = getLanguageForFileContent(file.path, file.content);
+      if (lang) items.push({ path: file.path, content: file.content });
+    }
+    return { items, chunkHash: group.chunkHash };
+  });
+  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+  if (dispatchGroups.every((group) => group.items.length === 0)) return groups.map(() => []);
+
+  const perGroup = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
+    dispatchGroups,
+    (filesProcessed) => {
+      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+    },
+  );
+  const chunkResults = perGroup.flat();
 
   // Skipped-language telemetry (worker output, independent of the merge).
   const skippedLanguages = new Map<string, number>();
@@ -304,7 +339,7 @@ export const dispatchChunkParse = async (
   }
 
   onFileProgress?.(total, total, 'done');
-  return chunkResults;
+  return perGroup;
 };
 
 // ============================================================================

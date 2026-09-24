@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
+import { classifyFtsQueryError } from '../../src/core/lbug/lbug-adapter.js';
+import { extensionManager, resetExtensionState } from '../../src/core/lbug/extension-loader.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
@@ -312,6 +314,183 @@ describe('BM25 search', () => {
       expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual(
         FTS_INDEXES.map((i) => i.table),
       );
+    });
+  });
+
+  describe('classifyFtsQueryError (#2767)', () => {
+    it('classifies the real "doesn\'t have an index" message (confirmed against a live QUERY_FTS_INDEX call) as missing-index', () => {
+      expect(
+        classifyFtsQueryError(
+          "Prepare failed: Binder exception: Table File doesn't have an index with name file_fts.",
+        ),
+      ).toBe('missing-index');
+    });
+
+    it('classifies the real "table does not exist" message (confirmed against a live QUERY_FTS_INDEX call on a nonexistent table) as missing-table, distinct from missing-index (tri-review NEW-6)', () => {
+      // Empirically confirmed: the table-missing message uses "does not
+      // exist", NOT "doesn't have an index with name" — a genuinely different
+      // phrasing from missing-index, not the same condition under two names.
+      // Conflating them was the exact bug: a corrupted/partial DB (table
+      // itself gone) would have been silently treated as the ordinary
+      // "index not built yet" case.
+      expect(
+        classifyFtsQueryError(
+          'Prepare failed: Binder exception: Table TotallyNonexistentTable does not exist.',
+        ),
+      ).toBe('missing-table');
+    });
+
+    it('classifies a Catalog-exception "does not exist" message as missing-table too (both exception classes covered)', () => {
+      expect(classifyFtsQueryError('Catalog exception: Table SomeTable does not exist.')).toBe(
+        'missing-table',
+      );
+    });
+
+    it('classifies the extension-unavailable Catalog exception as other, not benign (mirrors the confirmed DROP_FTS_INDEX shape for QUERY_FTS_INDEX)', () => {
+      // Message shape confirmed for DROP_FTS_INDEX in
+      // drop-fts-index-error-classification.test.ts; QUERY_FTS_INDEX would
+      // fail identically when the extension isn't loaded (same catalog).
+      expect(
+        classifyFtsQueryError(
+          "Catalog exception: function QUERY_FTS_INDEX is not defined. This function exists in the FTS extension. You can install and load the extension by running 'INSTALL FTS; LOAD EXTENSION FTS;'.",
+        ),
+      ).toBe('other');
+    });
+
+    it('does not misclassify a real, differently-classed error that echoes the benign phrase in its body', () => {
+      // Adversarial case: a Runtime exception (not Binder/Catalog) that
+      // happens to echo the user's own search text — which could itself
+      // contain "does not exist" — must not be anchored away as benign.
+      expect(
+        classifyFtsQueryError(
+          'Runtime exception: FTS query syntax error near "the config file does not exist here"',
+        ),
+      ).toBe('other');
+    });
+
+    it('does not misclassify a real Binder-class error unrelated to a missing FTS index', () => {
+      expect(classifyFtsQueryError('Binder exception: column X does not match expected type')).toBe(
+        'other',
+      );
+    });
+
+    it('classifies any other message as other', () => {
+      expect(classifyFtsQueryError('Query execution timed out after 30000ms')).toBe('other');
+      expect(classifyFtsQueryError('Connection pool exhausted')).toBe('other');
+    });
+  });
+
+  describe('MCP pool path — real vs benign FTS query errors (#2767)', () => {
+    const REPO = 'test-repo-error-classification';
+
+    beforeEach(() => {
+      mockExecuteParameterized.mockReset();
+    });
+
+    it('a benign missing-index error on every table leaves nonBenignErrors unset (unchanged behavior)', async () => {
+      mockExecuteParameterized.mockRejectedValue(
+        new Error("Binder exception: Table Function doesn't have an index with name function_fts."),
+      );
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeUndefined();
+    });
+
+    it('a missing-table error (table itself gone, not just its FTS index) surfaces as non-benign — schema drift is not the ordinary degraded state (tri-review NEW-6)', async () => {
+      mockExecuteParameterized.mockRejectedValue(
+        new Error('Binder exception: Table Function does not exist.'),
+      );
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors!.length).toBeGreaterThan(0);
+    });
+
+    it('a real error on every table surfaces it in nonBenignErrors, redacted', async () => {
+      mockExecuteParameterized.mockRejectedValue(
+        new Error(
+          'Query execution failed: connection reset at /home/alice/.gitnexus/lbug/main.lbug',
+        ),
+      );
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeDefined();
+      expect(response.nonBenignErrors!.length).toBeGreaterThan(0);
+      expect(response.nonBenignErrors![0]).toContain('connection reset');
+      expect(response.nonBenignErrors![0]).not.toMatch(/\/home\/alice/);
+    });
+
+    it('a real error on one table while another succeeds is still reported (partial-failure gap closed)', async () => {
+      let call = 0;
+      mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
+        call++;
+        if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+          throw new Error('Query execution timed out after 30000ms');
+        }
+        if (cypher.includes("QUERY_FTS_INDEX('File'")) {
+          return [{ node: { filePath: 'src/index.ts', id: 'file:index' }, score: 3 }];
+        }
+        return [];
+      });
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      // At least one table succeeded, so the client-visible availability
+      // signal and result set are unaffected (regression guard).
+      expect(response.ftsAvailable).toBe(true);
+      expect(response.results.length).toBeGreaterThan(0);
+      // But the real error on the OTHER table is not silently dropped.
+      expect(response.nonBenignErrors).toBeDefined();
+      expect(response.nonBenignErrors![0]).toContain('timed out');
+      expect(call).toBe(FTS_INDEXES.length);
+    });
+  });
+
+  describe('short-circuits when the FTS extension is unavailable (tri-review NEW-4)', () => {
+    const REPO = 'test-repo-extension-unavailable';
+
+    afterEach(() => {
+      resetExtensionState();
+    });
+
+    it('MCP pool path: skips per-table QUERY_FTS_INDEX calls and reports no nonBenignErrors when the extension failed to load', async () => {
+      await extensionManager.ensure(
+        vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
+        'fts',
+        'FTS',
+        { policy: 'load-only' },
+      );
+      mockExecuteParameterized.mockReset();
+
+      const response = await searchFTSFromLbug('login', 5, REPO);
+
+      // The expected degraded-capability state — not per-table query errors.
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeUndefined();
+      // No redundant round-trips to a pool that can't have FTS loaded.
+      expect(mockExecuteParameterized).not.toHaveBeenCalled();
+    });
+
+    it('CLI/pipeline path (no repoId): also skips per-table calls and reports no nonBenignErrors — same expected state, same silence (fixes the pool-only guard a /simplify altitude pass caught)', async () => {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      await extensionManager.ensure(
+        vi.fn().mockRejectedValue(new Error('invalid ELF header.')),
+        'fts',
+        'FTS',
+        { policy: 'load-only' },
+      );
+      vi.mocked(queryFTS).mockClear();
+
+      const response = await searchFTSFromLbug('login', 5); // no repoId → CLI/pipeline branch
+
+      expect(response.ftsAvailable).toBe(false);
+      expect(response.nonBenignErrors).toBeUndefined();
+      expect(vi.mocked(queryFTS)).not.toHaveBeenCalled();
     });
   });
 

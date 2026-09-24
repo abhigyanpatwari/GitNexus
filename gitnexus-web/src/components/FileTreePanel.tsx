@@ -186,6 +186,10 @@ const getNodeTypeIcon = (label: NodeLabel) => {
       return FileCode;
     case 'Class':
       return Box;
+    case 'Protocol':
+      return Hash;
+    case 'Category':
+      return Box;
     case 'Function':
       return Braces;
     case 'Method':

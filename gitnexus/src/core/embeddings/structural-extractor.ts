@@ -5,7 +5,7 @@
  * to extract method and field names for embedding text generation.
  */
 
-import { getProviderForFile } from '../ingestion/languages/index.js';
+import { getProviderForFileContent } from '../ingestion/languages/index.js';
 import type { MethodExtractorContext, ExtractedMethods } from '../ingestion/method-types.js';
 import type { FieldExtractorContext, ExtractedFields } from '../ingestion/field-types.js';
 import type { LanguageProvider } from '../ingestion/language-provider.js';
@@ -32,7 +32,7 @@ export const extractStructuralNames = async (
   content: string,
   filePath: string,
 ): Promise<StructuralNames> => {
-  const provider = getProviderForFile(filePath);
+  const provider = getProviderForFileContent(filePath, content);
   if (!provider) return { methodNames: [], fieldNames: [] };
 
   const tree = await ensureAndParse(content, filePath);

@@ -16,6 +16,7 @@ For any task involving code understanding, debugging, impact analysis, or refact
 3. **Follow the skill's workflow and checklist**
 
 > If step 1 warns the index is stale, run `node .gitnexus/run.cjs analyze` in the terminal first.
+> On `query` / `context` / `impact` / `cypher`, read `staleness.status` and `staleness.branch`/`lastCommit` before using the answer. Re-analyze only for `behind` or `diverged`.
 
 ## Skills
 
@@ -83,15 +84,51 @@ Notes: `offset` ≥ `total` returns an empty page (with `total` still reported).
 
 ### Inline staleness signal (`query` / `context` / `impact` / `cypher`)
 
-These four hot read tools attach a non-blocking `staleness` field to their response when the index is behind the checkout's current HEAD — the same `{ commitsBehind, hint }` shape `list_repos` already reports — so a direct tool call surfaces a behind-HEAD index without a separate `list_repos` call:
+These four hot read tools attach a non-blocking `staleness` field to every response, in the shape `{ status, branch?, lastCommit, indexedAt, measuredAgainst, commitsBehind?, hint? }`. It answers two different questions at once: **which index answered** and **how fresh it is**. The identity half is why the field is present even when nothing is wrong — an answer computed from a branch-pinned index is otherwise indistinguishable from one computed from the default branch (#3291):
 
 ```jsonc
 { /* …the tool's normal result… */
-  "staleness": { "commitsBehind": 3, "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update." }
+  "staleness": {
+    "status": "current",
+    "branch": "feature/checkout-v2",
+    "lastCommit": "4f2a1c9e8b7d6a5c4e3f2a1b0c9d8e7f6a5b4c3d",
+    "indexedAt": "2026-09-15T07:12:00.000Z",
+    "measuredAgainst": "HEAD"
+  }
 }
 ```
 
-The field is **absent when the index is current** (or when the freshness check can't run), so its presence is the signal. It is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). When you see it, the graph may be behind the working tree — re-run `analyze` before trusting blast-radius or dependence answers.
+`status: "current"` here means *this index is at the HEAD of the clone it was built from* — not that it is current with the default branch. `measuredAgainst` names what `commitsBehind` is counted against: the checked-out HEAD of that clone, never the remote. `branch` is the branch the index represents; it is absent for a detached HEAD, a non-git folder, or a legacy index that never recorded one, so read `lastCommit` when you need an identifier that is always present.
+
+When the index is behind that HEAD, the count and hint ride along:
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": {
+    "status": "behind", "commitsBehind": 3, "branch": "main",
+    "lastCommit": "a0c945022d06b8815f93ffd8838df9ed5c08cbc0",
+    "indexedAt": "2026-09-04T20:45:47.481Z", "measuredAgainst": "HEAD",
+    "hint": "⚠️ Index is 3 commits behind HEAD. Run analyze tool to update."
+  }
+}
+```
+
+`commitsBehind` is present only when git counted the gap. When git could not count it but HEAD still resolves to a commit other than the indexed one — usually because the indexed commit is no longer in the clone's history — the index is provably not at HEAD with no countable gap, so no number is reported:
+
+```jsonc
+{ /* …the tool's normal result… */
+  "staleness": {
+    "status": "diverged", "branch": "main",
+    "lastCommit": "a0c945022d06b8815f93ffd8838df9ed5c08cbc0",
+    "indexedAt": "2026-09-04T20:45:47.481Z", "measuredAgainst": "HEAD",
+    "hint": "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update."
+  }
+}
+```
+
+So: **read `status` before using `commitsBehind`**, and read `branch`/`lastCommit` before assuming which ref the answer describes. `status: "unknown"` means the freshness check could not run at all (a `--skip-git` folder has no history to measure) — the ref is still reported, because which index answered is knowable even when its freshness is not. The field is only ever added to object results — raw-array `cypher` output and error envelopes are returned unchanged. `@group`-targeted calls do not carry it (multi-repo staleness is ill-defined). Re-run `analyze` only for `behind` or `diverged` — those mean the index is not at this clone's HEAD. `unknown` is unmeasurable, not stale; analyze cannot make it `current` unless git history exists.
+
+`list_repos` and the HTTP repo routes are unchanged: they omit `staleness` entirely for a current index and report the ref through their own top-level `branch` / `lastCommit` / `indexedAt` fields.
 
 ### Taint findings (`explain`)
 

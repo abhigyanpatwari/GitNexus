@@ -11,7 +11,10 @@
  * `@reference.inherits` captures in each language's `languages/<lang>/captures.ts`.
  */
 
-import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from './ts-js-hoc-utils.js';
 
 // TypeScript queries - works with tree-sitter-typescript
 export const TYPESCRIPT_QUERIES = `
@@ -23,6 +26,43 @@ export const TYPESCRIPT_QUERIES = `
 
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
+
+; Type aliases (A4). TypeScript was the only language whose aliases minted no
+; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
+; and Dart all emit @definition.type. The alias was declared for scope
+; resolution but never became a graph symbol, so a context() lookup on an
+; exported API-contract type answered "Symbol not found".
+(type_alias_declaration
+  name: (type_identifier) @name) @definition.type
+
+; Members of a declared SHAPE — interface bodies and object-type aliases both
+; spell them as property_signature, so one pattern covers both. A TS frontend
+; models its API contracts this way, and without these there is no graph path
+; from a contract field to the code that reads it.
+; ANCHORED to declared shapes. Unanchored, property_signature matches every
+; object_type in the grammar — an inline parameter type, an inline return
+; type, a nested object type — and the enclosing-container walk then hangs the
+; node off the nearest class/interface/alias. class Svc { retries = 1;
+; run(opts: { retries: number }) {} } minted Property:a.ts:Svc.retries twice,
+; and graph.addNode is first-write-wins, so two distinct symbols merged into
+; one and every context()/impact()/rename() answer about that field described
+; the merge. It also emitted the outright false Svc HAS_PROPERTY retries for a
+; field belonging to an anonymous parameter type.
+;
+; The sibling JS object-literal rule in this same PR is anchored for exactly
+; this reason; this is the TypeScript half of the same fix.
+;
+; (A (B)) matches DIRECT children, so a nested object type
+; (type Config = { host: string; db: { host: string } }) is excluded here as
+; well — its members are not direct children of the alias's own object_type.
+(interface_body
+  (property_signature
+    name: (property_identifier) @name) @definition.property)
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @name) @definition.property))
 
 (function_declaration
   name: (identifier) @name) @definition.function
@@ -149,6 +189,183 @@ export const TYPESCRIPT_QUERIES = `
 (pair
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
+
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/typescript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/typescript/query.ts so both
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/typescript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; Mirrors the registry-primary patterns in \`languages/typescript/query.ts\`
@@ -359,6 +576,11 @@ export const TYPESCRIPT_QUERIES = `
       property: (property_identifier) @call.name))
   (type_arguments)) @call
 
+; NOTE: Curried applications f(x)(y) are deliberately not anchored — the inner
+; f(x) is captured by the plain call pattern above, and anchoring the outer
+; application would mis-attribute its arguments to f (wrong arity/argument
+; types for overload resolution).
+
 ; Constructor calls: new Foo()
 (new_expression
   constructor: (identifier) @call.name) @call
@@ -366,6 +588,76 @@ export const TYPESCRIPT_QUERIES = `
 ; Class properties — public_field_definition covers most TS class fields
 (public_field_definition
   name: (property_identifier) @name) @definition.property
+
+; Object-literal keys of a NAMED object, and the same shape behind an
+; identity-preserving wrapper. Both rules existed only in JAVASCRIPT_QUERIES, so
+; a .ts file writing the single most common config idiom in the language —
+; const CONFIG = { retries: 3 } — minted no node for any key: context() answered
+; "Symbol not found" and a precise read through the holding variable had nothing
+; to resolve to.
+;
+; TypeScript sets fieldFallbackOnMethodLookup:false, so these do NOT gain
+; name-based inference; they gain the PRECISE path, which is the one TypeScript
+; is supposed to use. A read through an untyped receiver stays unresolved, and
+; is now reported as such rather than answering an empty set.
+;
+; Scoped exactly as the JavaScript rules are: bound to a variable, and for the
+; wrapper only the three functions that return the argument they were given.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
+; shape in idiomatic JS: 437 sites in one backend directory of the reporting
+; repo, including the ~25-field payload of its whole signal pipeline, none of
+; which could be named because the literal binds to nothing.
+;
+; The enclosing function is the owner -- the literal is that function's return
+; shape, a contract its callers consume -- so the key qualifies as
+; <function>.<key> and two functions returning the same key stay distinct.
+;
+; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
+; difference is deliberate: there a definition already existed elsewhere and a
+; construction site was a USE of it, while here nothing else names the field at
+; all. To keep that from regressing R2-1b's case, narrowing ranks declared
+; anchors ABOVE return shapes, so a name that already resolves keeps resolving
+; to what it resolved to before.
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
+; the commonest spelling of all -- the reporting repo's own alert payload is
+; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
+; shorthand_property_identifier, where the key IS the value. Found by dumping
+; the golden fixture and noticing that a literal returning
+; { level, message, timestamp: Date.now() } had indexed only timestamp.
+(return_statement
+  (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Shorthand keys of a named object literal -- same gap, same reason as the
+; return-position rule above.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (shorthand_property_identifier) @name @definition.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
 
 ; Private class fields: #address: Address
 (public_field_definition
@@ -455,11 +747,18 @@ export const TYPESCRIPT_QUERIES = `
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
 ; fetch() — global function
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -662,6 +961,183 @@ export const JAVASCRIPT_QUERIES = `
   key: (string (string_fragment) @name)
   value: (function_expression)) @definition.function
 
+; HOC-wrapped pair values: procedure.mutation(async ({ input }) => { ... }).
+; tRPC, Express route definitions, and similar frameworks use this pattern where
+; an object property's value is a call_expression wrapping an arrow/function callback.
+; Mirrors the registry-primary patterns in languages/javascript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a Const holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+; Mirrors the string-key rules in languages/javascript/query.ts so both
+; pipelines attribute quoted-key procedures identically. Quoted-key identifier
+; callees ({ 'handler': wrap(() => {}) }) match these string-key rules, not
+; the identifier-key block above.
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+; pair's call_expression. Object-pair only — do NOT add a variable-level
+; nested-HOC rule (memo(forwardRef(...)) must stay a Variable).
+; Mirrors languages/javascript/query.ts.
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (property_identifier) @name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+((pair
+  key: (string (string_fragment) @name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression))))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
 ; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
 ; See TYPESCRIPT_QUERIES section above for the full rationale (issue #1166
 ; follow-up — covers forwardRef / memo / useCallback / useMemo / observer
@@ -769,9 +1245,9 @@ export const JAVASCRIPT_QUERIES = `
     value: (call_expression
       function: (member_expression
         property: (property_identifier) @callee)
-      arguments: (arguments
+        arguments: (arguments
         (arrow_function))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 (variable_declaration
   (variable_declarator
@@ -781,7 +1257,7 @@ export const JAVASCRIPT_QUERIES = `
         property: (property_identifier) @callee)
       arguments: (arguments
         (function_expression))))
-  (#not-any-of? @callee "map" "filter" "reduce" "forEach" "find" "findIndex" "some" "every" "flatMap" "sort" "splice" "slice" "concat" "fill" "copyWithin" "join" "flat" "at" "entries" "keys" "values" "indexOf" "lastIndexOf" "includes" "pop" "push" "shift" "unshift" "reverse" "reduceRight" "toSorted" "toReversed" "toSpliced" "with")) @definition.function
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
 
 ; HOC-wrapped default exports (JS parity with TS patterns above).
  (export_statement
@@ -848,6 +1324,84 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Object-literal keys of a NAMED object (A1/A5). Idiomatic JS models config as
+; an object literal, not a class, so without these the fields of an options bag
+; have no node and "who reads/writes this setting?" answers a confident zero.
+;
+; Deliberately scoped to a literal BOUND TO A VARIABLE. An unbound literal is
+; usually an inline call argument or a JSX prop bag, whose keys are call-site
+; data rather than a named surface other code references — minting a node per
+; key there would add volume without adding an answerable question.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
+; shape in idiomatic JS: 437 sites in one backend directory of the reporting
+; repo, including the ~25-field payload of its whole signal pipeline, none of
+; which could be named because the literal binds to nothing.
+;
+; The enclosing function is the owner -- the literal is that function's return
+; shape, a contract its callers consume -- so the key qualifies as
+; <function>.<key> and two functions returning the same key stay distinct.
+;
+; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
+; difference is deliberate: there a definition already existed elsewhere and a
+; construction site was a USE of it, while here nothing else names the field at
+; all. To keep that from regressing R2-1b's case, narrowing ranks declared
+; anchors ABOVE return shapes, so a name that already resolves keeps resolving
+; to what it resolved to before.
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
+; the commonest spelling of all -- the reporting repo's own alert payload is
+; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
+; shorthand_property_identifier, where the key IS the value. Found by dumping
+; the golden fixture and noticing that a literal returning
+; { level, message, timestamp: Date.now() } had indexed only timestamp.
+(return_statement
+  (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Shorthand keys of a named object literal -- same gap, same reason as the
+; return-position rule above.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Same named shape, behind an IDENTITY-PRESERVING wrapper (R2-1a):
+;
+;   export const INERT_EXIT_CONTRACT = Object.freeze({ exitModel: 'bracket', ... });
+;
+; Freezing a config object is the idiomatic way to publish an immutable
+; contract, so the fields most worth querying are exactly the ones a bare
+; "value: (object)" pattern cannot see — one call expression sits between the
+; declarator and the literal.
+;
+; The allowlist is deliberately three functions rather than "any call". Only
+; these RETURN THE ARGUMENT THEY WERE GIVEN, which is what makes the literal's
+; keys members of the bound name. For an arbitrary "const x = compute({a: 1})"
+; the literal is an argument and x is compute's return value, so attributing
+; "a" to x would be a fabrication.
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_identity.obj
+      property: (property_identifier) @_identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_identity.obj "Object")
+  (#match? @_identity.fn "^(freeze|seal|preventExtensions)$"))
+
 ; Closure-valued class fields (#2693) — see the TypeScript block for why these
 ; are Method rather than Property.
 (field_definition
@@ -873,11 +1427,18 @@ export const JAVASCRIPT_QUERIES = `
   right: (_)) @assignment
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -1006,6 +1567,17 @@ export const JAVA_QUERIES = `
 (record_declaration name: (identifier) @name) @definition.record
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
 
+; Canonical record-component accessors are implicit public zero-argument methods.
+(record_declaration
+  parameters: (formal_parameters
+    (formal_parameter
+      name: (identifier) @name) @definition.method))
+(record_declaration
+  parameters: (formal_parameters
+    (spread_parameter
+      (variable_declarator
+        name: (identifier) @name)) @definition.method))
+
 ; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
 ; class extractor synthesizes the javac-style Worker$N name (#2550)
 (object_creation_expression (class_body)) @definition.class
@@ -1121,8 +1693,15 @@ export const GO_QUERIES = `
 (method_elem name: (field_identifier) @name) @definition.method
 
 ; Types
-(type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct
-(type_declaration (type_spec name: (type_identifier) @name type: (interface_type))) @definition.interface
+;
+; Anchored on the type_spec, NOT the enclosing type_declaration (#2837) — a
+; grouped type ( A struct{}; B struct{} ) block otherwise gave every match the
+; same capture node, and goClassConfig.extractName resolved all of them to the
+; FIRST spec's name, collapsing the block to one node. Must stay in lockstep
+; with @scope.class / @declaration.struct in languages/go/query.ts, which
+; carries the full rationale. (No backticks here: this is a template literal.)
+(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)
+(type_declaration (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface)
 
 ; Imports
 (import_declaration (import_spec path: (interpreted_string_literal) @import.source)) @import
@@ -2026,18 +2605,26 @@ export const DART_QUERIES = `
     (identifier) @name . (formal_parameter_list))) @definition.constructor
 
 ; ── Field declarations (String name = '', Address address = Address()) ──────
+; @name is ANCHORED to the first named child. An initialized_identifier whose
+; value is a constructor call parses the callee as a SECOND (identifier) sibling
+; of the name — \`final TextEditingController _t = TextEditingController();\` is
+; initialized_identifier[identifier "_t", identifier "TextEditingController",
+; selector]. Unanchored, \`(identifier) @name\` matched both and minted a phantom
+; Property named after the TYPE alongside the real field. The same shape applies
+; to static_final_declaration (class static and top-level final/const), so every
+; rule below anchors. languages/dart/query.ts already anchors its mirror rules.
 (declaration
   (type_identifier)
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── Nullable field declarations (String? name) ──────────────────────────────
 (declaration
   (nullable_type)
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── static const / static final / const class fields ────────────────────────
 ; A "static const a = 1;" / "static final String b = ..., c = ...;" field parses
@@ -2050,7 +2637,7 @@ export const DART_QUERIES = `
 (declaration
   (static_final_declaration_list
     (static_final_declaration
-      (identifier) @name))) @definition.property
+      . (identifier) @name))) @definition.property
 
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
@@ -2073,7 +2660,7 @@ export const DART_QUERIES = `
 (program
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name)) @definition.variable)
+      . (identifier) @name)) @definition.variable)
 ; Closure bindings: \`var f = (x) => x;\` binds a CALLABLE, so it emits Function
 ; rather than Variable, matching TS/JS. Overlap with the pattern above is
 ; collapsed by the parse-worker dedup (#2687). Since #2693 this node is also
@@ -2119,7 +2706,7 @@ export const DART_QUERIES = `
 (program
   (static_final_declaration_list
     (static_final_declaration
-      (identifier) @name)) @definition.variable)
+      . (identifier) @name)) @definition.variable)
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export
@@ -2230,7 +2817,170 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
+// ── Zig ──────────────────────────────────────────────────────────────────────
+// Verified against @tree-sitter-grammars/tree-sitter-zig 1.1.2.
+// Container declarations (struct/enum/union) are anonymous in the grammar; the
+// binding name lives on the parent variable_declaration's first identifier
+// child. Heritage queries are intentionally absent — Zig has no inheritance.
+export const ZIG_QUERIES = `
+; Functions (top-level + methods inside struct/enum/union containers)
+(function_declaration
+  name: (identifier) @name) @definition.function
+
+; Struct: const Foo = struct { ... }
+(variable_declaration
+  (identifier) @name
+  (struct_declaration)) @definition.struct
+
+; Enum: const Foo = enum { ... }
+(variable_declaration
+  (identifier) @name
+  (enum_declaration)) @definition.enum
+
+; Union: const Foo = union { ... } (and tagged-union union(enum) { ... })
+(variable_declaration
+  (identifier) @name
+  (union_declaration)) @definition.union
+
+; File-struct: a file whose top level declares a container field IS a struct
+; named after the file (\`Page.zig\` declares \`Page\`; \`@typeName\` agrees).
+; The anchor is the whole file; the name comes from the class extractor
+; (\`zigContainerName(source_file, filePath)\` — the file stem), not from a
+; capture, since no node spells it. One match per top-level field — the
+; definition phase dedupes by (node, name). Namespace-only files (no fields)
+; never match and keep their Function ids.
+((source_file (container_field name: (identifier) @_field)) @definition.struct
+  (#not-eq? @_field ""))
+; A FIELDLESS file-struct — \`Empty.zig\`: no field, but a top-level fn whose
+; first parameter is typed as the file's own type (\`self: *@This()\`, or
+; \`self: *Self\` beside \`const Self = @This();\`). Zero-sized types are still
+; constructed (\`Empty{}\`) and dispatched on, and keyed on fields alone the
+; file lost its Struct node and every \`e.ping()\` edge (PR #1432 review,
+; 8.12). The two rules over-match on purpose — any \`@This\` in a first
+; parameter, any top-level \`@This()\` alias — and the provider's
+; \`shouldSkipDefinitionCapture\` keeps only what \`isZigFileStruct\` (the
+; single predicate the owner walk and the scope side use) admits.
+((source_file (function_declaration (parameters . (parameter type: (_) @_recv))))
+  @definition.struct
+  (#match? @_recv "@This"))
+((source_file (variable_declaration (identifier) (builtin_function (builtin_identifier) @_this)))
+  @definition.struct
+  (#eq? @_this "@This"))
+
+; Opaque: const Handle = opaque { ... } — the FFI handle type. It is a
+; container (it may declare methods, never fields), so it is labelled Struct:
+; the owner of a HAS_METHOD edge must be class-like, and there is no closer
+; label. It is NOT a TypeAlias — an opaque type is a distinct nominal type,
+; deliberately incompatible with whatever it wraps.
+(variable_declaration
+  (identifier) @name
+  (opaque_declaration)) @definition.struct
+
+; Generic type constructors: \`pub fn List(comptime T: type) type { return
+; struct { … }; }\` — Zig's only spelling of a generic type. The returned
+; container is anonymous in the grammar; the definition anchor is the
+; container node and its name is the enclosing function's (\`List\`), which
+; is what every caller writes (\`List(u8)\`). Only the direct \`return
+; <container>\` of a fn whose return type is \`type\` qualifies (see
+; \`zigTypeConstructorOf\`). The Function node \`List\` coexists: \`List\` is
+; both a callable and a type.
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (struct_declaration) @definition.struct))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (union_declaration) @definition.union))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (enum_declaration) @definition.enum))))
+  (#eq? @_ret "type"))
+
+; Function-local and anonymous containers (F8): \`fn string() { const R =
+; struct { fn get … }; }\` (Lightpanda's reflection.zig declares one \`R\` per
+; builder fn), \`std.sort.pdq(T, items, {}, struct { fn lessThan … }.lessThan)\`,
+; \`const cmp = struct { fn lt … }.lt;\`, a field typed \`?struct { min: u32 }\`.
+; No name child spells their identity, so these rules match EVERY container
+; and the class extractor names the node from \`zigContainerName\` (\`string$R\`,
+; \`build$1\`) — the same function the owner walk uses for their fns, which
+; were ownerless, colliding Methods before. The bound shapes above match too;
+; the provider's \`shouldSkipDefinitionCapture\` keeps exactly one rule per
+; container (\`zigContainerAnchor\`).
+(struct_declaration) @definition.struct
+(enum_declaration) @definition.enum
+(union_declaration) @definition.union
+(opaque_declaration) @definition.struct
+
+; Container fields (struct fields, enum variants, union variants) — all are
+; \`container_field\` in the grammar and all become Property (C labels its
+; enumerators Const; Rust captures no variants; Zig's own vocabulary is
+; "field" for all three, so one label keeps the query honest).
+; #not-eq? guard: tree-sitter-zig 1.1.2 recovers an EMPTY container body
+; (\`struct {}\`, \`opaque {}\`) as a container_field whose identifier is a
+; zero-width MISSING placeholder — a parser artefact, not a field, and
+; without the guard it minted a Property with an empty name.
+((container_field
+  name: (identifier) @name) @definition.property
+  (#not-eq? @name ""))
+
+; Named tests: test "description" { ... }. The name is the string node WITH
+; its quotes, so \`test "add"\` next to \`fn add\` (the idiomatic layout) does
+; not collide on Function:<file>:add. Anonymous \`test {}\` and decl-tests
+; \`test add {}\` have no name of their own and are not graph nodes; their
+; bodies' calls attribute to the File.
+(test_declaration
+  (string) @name) @definition.function
+
+; const / var bindings that are neither a container nor an @import (those two
+; are skipped by the provider's \`shouldSkipDefinitionCapture\` so the Struct /
+; import binding is the only node for that name). The literal keyword is
+; load-bearing: tree-sitter-zig 1.1.2 parses statement assignments (\`x = 5;\`,
+; \`x += 1;\`, \`_ = expr;\`) as \`variable_declaration\` WITHOUT a keyword
+; child, and a keyword-less rule would mint a Const per assignment and a
+; Variable named \`_\` per discard.
+(variable_declaration
+  "const" . (identifier) @name) @definition.const
+(variable_declaration
+  "var" . (identifier) @name) @definition.variable
+
+; @import("path") — capture the string argument as @import.source, in
+; EVERY position: the value of a const/var (\`const std = @import("std")\`),
+; a member chain (\`const X = @import("x.zig").X\`), \`pub usingnamespace
+; @import("path")\`, a tuple element (\`pub const Interfaces = .{
+; @import("a.zig"), @import("b.zig") }\`), a call argument, a comparison
+; operand, the receiver of a member call (\`try @import("dump.zig").root(...)\`).
+; Zig has no import statement — the builtin IS the import, wherever it sits,
+; and every occurrence is a file dependency. The #eq? predicate keeps the
+; other builtins (@sizeOf, @TypeOf, @as, …) out. One rule, one match per
+; builtin: the structure phase only skips import matches (IMPORTS edges come
+; from the scope phase — \`emitZigScopeCaptures\`, whose \`@import.inline\`
+; rule is this rule's twin, decides which occurrences bind a name).
+((builtin_function
+  (builtin_identifier) @builtin
+  (arguments
+    (string) @import.source))
+  (#eq? @builtin "@import")) @import
+
+; Free calls: foo(...)
+(call_expression
+  function: (identifier) @call.name) @call
+
+; Member calls: obj.method(...) and namespace.fn(...) (e.g. std.debug.print).
+(call_expression
+  function: (field_expression
+    member: (identifier) @call.name)) @call
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
+
+const OBJECTIVE_C_QUERIES = `((translation_unit) @objc.root)`;
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.TypeScript]: TYPESCRIPT_QUERIES,
@@ -2238,6 +2988,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Python]: PYTHON_QUERIES,
   [SupportedLanguages.Java]: JAVA_QUERIES,
   [SupportedLanguages.C]: C_QUERIES,
+  [SupportedLanguages.ObjectiveC]: OBJECTIVE_C_QUERIES,
   [SupportedLanguages.Go]: GO_QUERIES,
   [SupportedLanguages.CPlusPlus]: CPP_QUERIES,
   [SupportedLanguages.CSharp]: CSHARP_QUERIES,
@@ -2249,4 +3000,5 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
+  [SupportedLanguages.Zig]: ZIG_QUERIES,
 };

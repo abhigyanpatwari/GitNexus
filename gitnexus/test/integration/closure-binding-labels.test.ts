@@ -596,6 +596,21 @@ describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () =>
     expect(targets).toEqual(['rel:CALLS:Function:A.kt:handler->Function:A.kt:target']);
   });
 
+  it('Kotlin: a call at block level is not attributed to a nested named function (#2736)', async () => {
+    // A Block-kind scope may own a nested function without being that
+    // function's body. The start-position alignment check is what keeps the
+    // block-level call attributed to `outer`, rather than swallowing it into
+    // the uncalled `nested`.
+    const targets = await callEdgeIdsFor(
+      'Block.kt',
+      'fun target(): Int = 1\n\nfun outer(): Int {\n' +
+        '  if (true) {\n    fun nested(): Int = 0\n    return target()\n  }\n' +
+        '  return 0\n}\n',
+    );
+
+    expect(targets).toEqual(['rel:CALLS:Function:Block.kt:outer->Function:Block.kt:target']);
+  });
+
   it('PHP: a call inside the closure IS attributed to the binding (#2699 S1)', async () => {
     // FLIPPED by #2699 S1. php/query.ts now carries the closure-binding
     // declaration rule with javascript/query.ts's anchor discipline

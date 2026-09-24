@@ -1,0 +1,4 @@
+{
+  "_comment": "ratio_461_budget — operational ceiling on what production's 461-pair set may cost on untyped-endpoint anchored queries, relative to the 332-pair hand-list it replaced. #2801 measured 1.20-1.42x across three comparable Windows runs (typed floor 1.05-1.12x), so 1.5x leaves explicit host headroom. All six raw runs are published in README.md; two meet the pre-registered typed_ratio > ratio noise rule, while one additional 2.705x run is not silently discarded and would fail this gate. Raise the budget only with a published measured range, never a single run.",
+  "ratio_461_budget": 1.5
+}

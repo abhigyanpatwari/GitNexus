@@ -1,0 +1,9 @@
+{
+  "_comment": "Declared-package Kotlin import benchmark. The fingerprint pins external-decoy rejection, path/package disagreement, top-level declarations and overload sets, member and wildcard imports, root packages, malformed package facts, and imported-binding exclusion. Timing budgets guard one parsed-workspace index build per pass.",
+  "fingerprint": "76ee74bf860c54ef6dc0850f6bec2d0f7267ba3010f552ee89b84dfdbbecd0e2",
+  "cases": 24,
+  "non_null": 16,
+  "scaling_budget": 1.6,
+  "depth_budget": 1.5,
+  "small_ms_ceiling": 40
+}

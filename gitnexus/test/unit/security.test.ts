@@ -42,6 +42,14 @@ describe('VALID_RELATION_TYPES', () => {
     // Conditional activation and metadata declaration/discovery (#2415)
     'CONDITIONAL_ON',
     'DECLARES',
+    // Spring proxy/advice evidence (#2416)
+    'ADVISED_BY',
+    // Spring async messaging: a callable publishes to / consumes from a broker
+    // Destination. Allow-listed so a cypher query may name them; both are
+    // deliberately absent from impact()'s DEFAULT relTypes, exactly as
+    // HANDLES_ROUTE is, so the default blast radius is unchanged.
+    'PUBLISHES_TO',
+    'CONSUMES_FROM',
   ] as const;
 
   it('contains all expected relation types', () => {

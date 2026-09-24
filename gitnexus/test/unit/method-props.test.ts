@@ -30,6 +30,7 @@ function makeMethodInfo(
     annotations: [],
     sourceFile: 'test.java',
     line: 1,
+    column: 0,
     ...overrides,
   };
 }

@@ -216,7 +216,10 @@ Work through plan §7 step by step, in order. For each step:
    `detect_changes` → commit as one unbroken sequence from the repository
    root — interleaving other work between the gate and the commit is how
    the gate gets skipped. Unexpected
-   affected flows → investigate before committing, not after.
+   affected flows → investigate before committing, not after. A result
+   flagged `partial` (a graph query failed) or `truncated` (the symbol
+   listing was capped) blocks the commit the same way: the gate did not
+   see every changed symbol, so re-run it rather than read it as clean.
 
 A relationship-affecting implementation edit or commit invalidates the
 procedure's prior proof. The next step must perform the required inter-step

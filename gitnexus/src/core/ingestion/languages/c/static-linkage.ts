@@ -1,4 +1,5 @@
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 /**
  * Per-file set of function names declared with `static` storage class.
@@ -59,27 +60,23 @@ export function clearStaticNames(): void {
  * thousands of resolved includes) that is ~10^10+ comparisons on a single
  * thread — the dominant term in the scope-resolution finalize grind.
  *
- * Building the lookup once collapses it to O(R_include + F). `WeakMap`-keyed
- * on the array so the index is reclaimed with the pass — no cross-pass
+ * Building the lookup once collapses it to O(R_include + F). `perFileSet` keys
+ * on the array identity so the index is reclaimed with the pass — no cross-pass
  * staleness (mirrors the {@link clearStaticNames} discipline for server-mode
  * / multi-repo reuse), and a fresh array transparently rebuilds.
  */
-const moduleScopeIndexByPass = new WeakMap<readonly ParsedFile[], Map<ScopeId, ParsedFile>>();
-
-function moduleScopeIndex(parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> {
-  let index = moduleScopeIndexByPass.get(parsedFiles);
-  if (index === undefined) {
-    index = new Map<ScopeId, ParsedFile>();
+const moduleScopeIndex = perFileSet(
+  (parsedFiles: readonly ParsedFile[]): Map<ScopeId, ParsedFile> => {
+    const index = new Map<ScopeId, ParsedFile>();
     // First-wins to preserve `Array.find` semantics (returns the first match).
     // `moduleScope` is unique per file in practice, so collisions are absent;
     // the guard only formalises identical behaviour to the prior `.find`.
     for (const p of parsedFiles) {
       if (!index.has(p.moduleScope)) index.set(p.moduleScope, p);
     }
-    moduleScopeIndexByPass.set(parsedFiles, index);
-  }
-  return index;
-}
+    return index;
+  },
+);
 
 /**
  * Return the names visible through a C wildcard import (`#include`).

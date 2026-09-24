@@ -160,6 +160,34 @@ describe('finalizeScopeModel: cross-file imports', () => {
     expect(appImports[0]!.targetDefId).toBe('def:User');
   });
 
+  it('finalizes a provider-classified module symbol as a namespace edge', () => {
+    const modelsFile = mkFile('pkg/models.py', {
+      localDefs: [mkDef('def:User', 'pkg/models.py', 'pkg.models.User')],
+    });
+    const appFile = mkFile('pkg/app.py', {
+      parsedImports: [
+        {
+          kind: 'named',
+          localName: 'models',
+          importedName: 'models',
+          targetRaw: 'pkg',
+        },
+      ],
+    });
+
+    const out = finalizeScopeModel([appFile, modelsFile], {
+      hooks: {
+        resolveImportTarget: () => 'pkg/models.py',
+        isNamespaceImport: () => true,
+      },
+    });
+
+    const edge = out.imports.get(appFile.moduleScope)?.[0];
+    expect(edge?.kind).toBe('namespace');
+    expect(edge?.linkStatus).toBeUndefined();
+    expect(edge?.targetModuleScope).toBe(modelsFile.moduleScope);
+    expect(out.stats.unresolvedEdges).toBe(0);
+  });
   it('leaves imports unresolved when no resolveImportTarget is supplied (default hook)', () => {
     // Default `resolveImportTarget: () => null` — every import ends up
     // with `linkStatus: 'unresolved'`. This is the zero-provider case

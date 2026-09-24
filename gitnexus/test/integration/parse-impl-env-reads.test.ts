@@ -28,6 +28,7 @@ import path from 'node:path';
 
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { PARSE_CACHE_VERSION, parseCacheBucketId } from '../../src/storage/parse-cache.js';
 
 const ORIGINAL_BUDGET = process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
 
@@ -49,11 +50,13 @@ function scanned(repo: string, files: string[]) {
 }
 
 /**
- * Capture every per-chunk progress message emitted during a run.
- * parse-impl emits one per chunk in the "Parsing chunk X/Y" form, so
- * counting unique chunk indices in the captured stream is a stable
- * proxy for the number of chunks the loop actually produced. Avoids
- * exposing internal counter state from parse-impl.
+ * Read the chunk count out of the progress stream. parse-impl reports progress
+ * as "Parsing chunk X/Y" for a single chunk and "Parsing chunks X-Z/Y" when a
+ * dispatch round batches several — so the DENOMINATOR, not the number of
+ * distinct messages, is the count of packs the loop produced. Reading `Y`
+ * keeps this independent of how chunks are grouped into rounds while still
+ * exercising the real budget-resolution path inside
+ * `runChunkedParseAndResolve`, rather than re-deriving packs in the test.
  */
 async function countChunksFromProgress(
   repoPath: string,
@@ -62,7 +65,7 @@ async function countChunksFromProgress(
 ): Promise<number> {
   const scan = scanned(repoPath, files);
   const graph = createKnowledgeGraph();
-  const chunkIndices = new Set<string>();
+  const totals = new Set<number>();
   await runChunkedParseAndResolve(
     graph,
     scan,
@@ -72,8 +75,8 @@ async function countChunksFromProgress(
     Date.now(),
     (p) => {
       if (typeof p.message !== 'string') return;
-      const m = /Parsing chunk (\d+)\/(\d+)/.exec(p.message);
-      if (m !== null) chunkIndices.add(`${m[1]}/${m[2]}`);
+      const m = /Parsing chunks? \d+(?:-\d+)?\/(\d+)/.exec(p.message);
+      if (m !== null) totals.add(Number(m[1]));
     },
     // Chunk count is byte-budget-driven and emitted before the pool runs, so it
     // is independent of worker vs sequential. Sequential parsing was removed, so
@@ -81,7 +84,10 @@ async function countChunksFromProgress(
     // integration tier.
     { ...options },
   );
-  return chunkIndices.size;
+  // Every message in a run carries the same denominator; more than one value
+  // would mean the loop changed its chunk count mid-run.
+  expect(totals.size).toBeLessThanOrEqual(1);
+  return totals.values().next().value ?? 0;
 }
 
 describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
@@ -123,12 +129,12 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
     expect(chunks).toBe(3);
   });
 
-  it('default-fallback: large built-in budget keeps the fixture in a single chunk', async () => {
-    // Both option and env unset → falls through to DEFAULT_CHUNK_BYTE_BUDGET
-    // (2 MB). The fixture totals well under that, so exactly one chunk.
+  it('default-fallback: 2 MB budget packs by bucket, not one sequential mega-chunk', async () => {
     delete process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
-    const chunks = await countChunksFromProgress(repoPath, ['a.ts', 'b.ts', 'c.ts']);
-    expect(chunks).toBe(1);
+    const files = ['a.ts', 'b.ts', 'c.ts'];
+    const expectedBuckets = new Set(files.map((f) => `typescript\0${parseCacheBucketId(f)}`));
+    const chunks = await countChunksFromProgress(repoPath, files);
+    expect(chunks).toBe(expectedBuckets.size);
   });
 
   it('per-call: two back-to-back runs with different option values observe their own values, not the previous call', async () => {
@@ -146,6 +152,32 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
       chunkByteBudget: 10 * 1024 * 1024,
     });
     expect(small).toBe(3);
-    expect(large).toBe(1);
+    const expectedBuckets = new Set(files.map((f) => `typescript\0${parseCacheBucketId(f)}`));
+    expect(large).toBe(expectedBuckets.size);
+  });
+
+  it('workerPoolSize 1 vs 2 produce the same cache keys when budget is unset (#3088)', async () => {
+    delete process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
+    const files = ['a.ts', 'b.ts', 'c.ts'];
+    const keysForPool = async (workerPoolSize: number): Promise<string[]> => {
+      const parseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set<string>(),
+      };
+      const graph = createKnowledgeGraph();
+      await runChunkedParseAndResolve(
+        graph,
+        scanned(repoPath, files),
+        files,
+        files.length,
+        repoPath,
+        Date.now(),
+        () => {},
+        { workerPoolSize, parseCache },
+      );
+      return [...parseCache.usedKeys].sort();
+    };
+    expect(await keysForPool(1)).toEqual(await keysForPool(2));
   });
 });
