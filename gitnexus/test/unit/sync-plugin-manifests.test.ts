@@ -227,6 +227,6 @@ describe('syncPluginManifests (#2445)', () => {
 
     // `--check` reads the working tree, so a surface synced but not staged
     // passes CI while the v<version> tag's tree keeps the previous version.
-    expect(staged).toEqual(expect.arrayContaining([...SURFACES, FACTORY_MCP]));
+    expect(staged).toEqual(expect.arrayContaining([...SURFACES, ...EXECUTABLE_MCP_FILES]));
   });
 });

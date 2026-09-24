@@ -14,7 +14,7 @@
  * by hooks.test.ts and hook-db-lock-probe.test.ts. Here we assert the Factory
  * hook WIRES them and behaves correctly on the Factory-specific paths.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
@@ -230,7 +230,15 @@ describe('Factory hook source regressions', () => {
   it('prefers GITNEXUS_HOOK_CLI_PATH via process.execPath', () => {
     expect(source).toContain('GITNEXUS_HOOK_CLI_PATH');
     expect(source).toMatch(/spawnAugment\(\s*process\.execPath/);
-    expect(source).toContain('spawnSync(cmd, argv, spawnOpts)');
+    expect(source).toContain('spawnSync(file, fileArgs, spawnOpts)');
+  });
+
+  // #2163: the augment child runs under the bundled probe's timeout guard,
+  // TERM-first for direct children, group SIGKILL for the npx grandchild.
+  it('wraps the augment child in the resolved Unix timeout guard', () => {
+    expect(source).toContain('resolveUnixGuardTimeout()');
+    expect(source).toMatch(/groupKill \? \['-s', 'KILL'\] : \[\]/);
+    expect(source).toMatch(/`gitnexus@\$\{PINNED_VERSION\}`, \.\.\.args\],\s*true,/);
   });
 
   it('passes the pattern after the -- end-of-options marker', () => {
@@ -551,7 +559,9 @@ describe.skipIf(process.platform === 'win32')('Factory hook behavior — PATH au
     return dir;
   }
 
-  function runGrepHook(binDir: string) {
+  // Default: the guard disabled, so the host's coreutils cannot change which arm
+  // runs; the guarded arm is pinned explicitly below with a logging fake guard.
+  function runGrepHook(binDir: string, timeoutPath = 'disabled') {
     return runHook(
       HOOK,
       {
@@ -561,29 +571,97 @@ describe.skipIf(process.platform === 'win32')('Factory hook behavior — PATH au
         cwd: repoDir,
       },
       undefined,
-      { env: { ...isolatedEnv(binDir, home), PATH: binDir, GITNEXUS_HOOK_CLI_PATH: '' } },
+      {
+        env: {
+          ...isolatedEnv(binDir, home),
+          PATH: binDir,
+          GITNEXUS_HOOK_CLI_PATH: '',
+          GITNEXUS_HOOK_TIMEOUT_PATH: timeoutPath,
+        },
+      },
     );
   }
 
-  it('does not re-run augment via npx when the PATH binary finds no match', () => {
-    const marker = path.join(toolsDir, 'npx-called');
-    const binDir = makeBinDir('no-match', {
-      gitnexus: 'exit 0',
-      npx: `: > '${marker}'\nprintf '[GitNexus] from npx' >&2`,
+  /**
+   * A coreutils-shaped `timeout` stand-in: appends its argv to `log`, drops the
+   * `-s SIG` / `-k N` options and the duration, then execs the command, so it
+   * passes the probe's `-k 1 1 /bin/sh -c 'exit 42'` self-test.
+   */
+  function writeLoggingGuard(name: string): { guard: string; log: string } {
+    const log = path.join(toolsDir, `${name}.log`);
+    const guard = path.join(toolsDir, `${name}-guard`);
+    fs.writeFileSync(
+      guard,
+      `#!/bin/sh\necho "$*" >> '${log}'\n` +
+        `while [ "$1" = -s ] || [ "$1" = -k ]; do shift 2; done\nshift\nexec "$@"\n`,
+      { mode: 0o755 },
+    );
+    return { guard, log };
+  }
+
+  function augmentGuardCalls(log: string): string[] {
+    return fs
+      .readFileSync(log, 'utf-8')
+      .split('\n')
+      .filter((line) => line.includes('augment'));
+  }
+
+  for (const guarded of [false, true]) {
+    const arm = guarded ? 'guarded' : 'unguarded';
+
+    it(`${arm}: does not re-run augment via npx when the PATH binary finds no match`, () => {
+      const marker = path.join(toolsDir, `npx-called-${arm}`);
+      const binDir = makeBinDir(`no-match-${arm}`, {
+        gitnexus: 'exit 0',
+        npx: `: > '${marker}'\nprintf '[GitNexus] from npx' >&2`,
+      });
+      const r = runGrepHook(
+        binDir,
+        guarded ? writeLoggingGuard(`no-match-${arm}`).guard : 'disabled',
+      );
+      expect(r.status).toBe(0);
+      expect(r.stdout.trim()).toBe('');
+      expect(fs.existsSync(marker)).toBe(false);
     });
-    const r = runGrepHook(binDir);
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(fs.existsSync(marker)).toBe(false);
+
+    it(`${arm}: falls through to npx when no gitnexus launcher is on PATH`, () => {
+      const binDir = makeBinDir(`npx-only-${arm}`, {
+        npx: "printf '[GitNexus] graph context via npx' >&2",
+      });
+      const r = runGrepHook(
+        binDir,
+        guarded ? writeLoggingGuard(`npx-only-${arm}`).guard : 'disabled',
+      );
+      expect(r.status).toBe(0);
+      expect(parseHookOutput(r.stdout)?.additionalContext).toContain('graph context via npx');
+    });
+  }
+
+  // #2163: direct children get TERM-first `-k 1`; the budget is ceil(8000/1000)+1.
+  it('runs the PATH binary under the timeout guard (TERM-first)', () => {
+    const binDir = makeBinDir('guarded-path', {
+      gitnexus: "printf '[GitNexus] graph context via guarded PATH' >&2",
+    });
+    const { guard, log } = writeLoggingGuard('guarded-path');
+    const r = runGrepHook(binDir, guard);
+    expect(parseHookOutput(r.stdout)?.additionalContext).toContain('via guarded PATH');
+    expect(augmentGuardCalls(log)).toEqual([
+      `-k 1 9 ${path.join(binDir, 'gitnexus')} augment -- validateUser`,
+    ]);
   });
 
-  it('falls through to npx when no gitnexus launcher is on PATH', () => {
-    const binDir = makeBinDir('npx-only', {
-      npx: "printf '[GitNexus] graph context via npx' >&2",
+  // The CLI is npx's child (the guard's grandchild), so npx needs `-s KILL`.
+  it('runs the npx fallback under the group-SIGKILL timeout guard', () => {
+    const binDir = makeBinDir('guarded-npx', {
+      npx: "printf '[GitNexus] graph context via guarded npx' >&2",
     });
-    const r = runGrepHook(binDir);
-    expect(r.status).toBe(0);
-    expect(parseHookOutput(r.stdout)?.additionalContext).toContain('graph context via npx');
+    const { guard, log } = writeLoggingGuard('guarded-npx');
+    const { version } = JSON.parse(fs.readFileSync(PLUGIN_JSON, 'utf-8')) as { version: string };
+    const r = runGrepHook(binDir, guard);
+    expect(parseHookOutput(r.stdout)?.additionalContext).toContain('via guarded npx');
+    expect(augmentGuardCalls(log)).toEqual([
+      `-s KILL -k 1 9 npx -y gitnexus@${version} augment -- validateUser`,
+    ]);
   });
 
   it('drops launcher noise ahead of the [GitNexus] block', () => {
@@ -608,3 +686,124 @@ describe.skipIf(process.platform === 'win32')('Factory hook behavior — PATH au
     expect(r.stdout.trim()).toBe('');
   });
 });
+
+// ─── Behavior: a SIGKILLed hook cannot strand the augment CLI (#2163) ──
+//
+// Real coreutils `timeout` (the path under test): the fake CLI is SIGTERM-immune
+// and sleeps 30s, so only the guard can end it once the hook is gone. Direct
+// tier: TERM at 9s (= ceil(8000/1000)+1) is ignored, the `-k 1` KILL lands at
+// 10s. npx tier: `-s KILL` group-kills the npx → CLI chain at 9s. With the guard
+// wrap reverted nothing reaps the CLI and the poll times out.
+
+const factoryProbe = require_(path.join(PLUGIN_DIR, 'hooks', 'hook-db-lock-probe.cjs')) as {
+  resolveUnixGuardTimeout: () => string | null;
+};
+
+describe.skipIf(process.platform !== 'linux')(
+  'Factory hook behavior — orphaned augment CLI is reaped by the timeout guard (#2163)',
+  () => {
+    let repoDir: string;
+    let home: string;
+
+    beforeAll(() => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-reaprepo-'));
+      fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+      fs.writeFileSync(path.join(repoDir, '.gitnexus', 'gitnexus.json'), '{}');
+      home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-factory-reaphome-'));
+    });
+    afterAll(() => {
+      for (const d of [repoDir, home]) fs.rmSync(d, { recursive: true, force: true });
+    });
+
+    const isAlive = (pid: number, binDir: string): boolean => {
+      try {
+        process.kill(pid, 0);
+        // PID-reuse guard: alive only while the cmdline is still our fake CLI.
+        return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8').includes(binDir);
+      } catch {
+        return false;
+      }
+    };
+
+    async function killHookMidAugment(tier: 'direct' | 'npx'): Promise<boolean> {
+      const { spawn } = await import('child_process');
+      const pidFile = path.join(os.tmpdir(), `gn-factory-clipid-${process.pid}-${tier}`);
+      fs.rmSync(pidFile, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusPidFile: pidFile,
+        gitnexusSleepMs: 30000,
+        gitnexusIgnoreSigterm: true,
+      });
+      // npx tier: no gitnexus on PATH and no CLI-path override; the fake npx is
+      // a shell that waits on the CLI, so the CLI is the guard's grandchild.
+      fs.rmSync(path.join(binDir, 'gitnexus'));
+      fs.writeFileSync(
+        path.join(binDir, 'npx'),
+        `#!/bin/sh\n'${process.execPath}' '${path.join(binDir, 'gitnexus-cli.js')}'\n`,
+        { mode: 0o755 },
+      );
+      const tierEnv =
+        tier === 'npx' ? { PATH: binDir, GITNEXUS_HOOK_CLI_PATH: '' } : { PATH: binDir };
+      let cliPid = 0;
+      const hook = spawn(process.execPath, [HOOK], {
+        stdio: ['pipe', 'ignore', 'ignore'],
+        env: { ...isolatedEnv(binDir, home), GITNEXUS_HOOK_TIMEOUT_PATH: '', ...tierEnv },
+      });
+      try {
+        hook.stdin?.end(
+          JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: repoDir,
+          }),
+        );
+        const spawnDeadline = Date.now() + 8000;
+        while (cliPid === 0 && Date.now() < spawnDeadline) {
+          cliPid =
+            Number.parseInt(fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf-8') : '', 10) ||
+            0;
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(cliPid).toBeGreaterThan(0);
+        hook.kill('SIGKILL');
+
+        const reapDeadline = Date.now() + 14000;
+        let alive = isAlive(cliPid, binDir);
+        while (alive && Date.now() < reapDeadline) {
+          await new Promise((r) => setTimeout(r, 100));
+          alive = isAlive(cliPid, binDir);
+        }
+        return alive;
+      } finally {
+        hook.kill('SIGKILL');
+        for (const pid of [cliPid].filter((p) => p > 0 && isAlive(p, binDir))) {
+          process.kill(pid, 'SIGKILL');
+        }
+        fs.rmSync(path.join(repoDir, '.gitnexus', '.hook-locks'), { recursive: true, force: true });
+        fs.rmSync(pidFile, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    }
+
+    it('host exposes a self-testing timeout guard (precondition)', () => {
+      vi.stubEnv('GITNEXUS_HOOK_TIMEOUT_PATH', '');
+      try {
+        expect(
+          factoryProbe.resolveUnixGuardTimeout(),
+          'install coreutils `timeout`',
+        ).not.toBeNull();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('direct tier: SIGKILLed hook leaves no SIGTERM-immune CLI child', async () => {
+      expect(await killHookMidAugment('direct')).toBe(false);
+    }, 30000);
+
+    it('npx tier: SIGKILLed hook leaves no SIGTERM-immune CLI grandchild', async () => {
+      expect(await killHookMidAugment('npx')).toBe(false);
+    }, 30000);
+  },
+);

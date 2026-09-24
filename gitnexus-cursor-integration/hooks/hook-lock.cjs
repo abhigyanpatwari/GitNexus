@@ -5,6 +5,49 @@ const HOOK_LOCK_SUBDIR = '.hook-locks';
 const HOOK_LOCK_MAX_INFLIGHT = 3;
 const HOOK_LOCK_STALE_MS = 30000;
 
+// Same file iff inode identity AND content metadata match. dev+ino alone is
+// not enough: filesystems reuse a freed inode number immediately (ext4), so a
+// slot recreated after an unlink can carry the stale file's ino. bigint stats
+// keep Windows' 64-bit file ids exact.
+function sameSlotFile(a, b) {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs;
+}
+
+// Evict a slot judged stale from the `inspected` stat. Never unlink `slotPath`
+// directly: another contender may have removed and recreated it since the
+// inspection, and a path-based unlink would delete that fresh lock. Instead,
+// atomically move whatever is at the path aside to a private tombstone,
+// re-check it is the file we inspected, and only then delete it. A mismatch
+// means we displaced a live owner's fresh lock: put it back with linkSync,
+// which fails (EEXIST) rather than overwrite if a third contender claimed the
+// empty path in the meantime.
+function evictStaleSlot(slotPath, inspected) {
+  const tombstone = `${slotPath}.evict-${process.pid}-${Date.now()}`;
+  try {
+    fs.renameSync(slotPath, tombstone);
+  } catch {
+    return; // Already evicted by another hook — the retry will hit EEXIST.
+  }
+  let isStale = false;
+  try {
+    isStale = sameSlotFile(fs.lstatSync(tombstone, { bigint: true }), inspected);
+  } catch {
+    /* tombstone unreadable — treat as not ours and try to restore it */
+  }
+  if (!isStale) {
+    try {
+      fs.linkSync(tombstone, slotPath);
+    } catch {
+      /* a third contender claimed the path first — its lock stands */
+    }
+  }
+  try {
+    fs.unlinkSync(tombstone);
+  } catch {
+    /* already gone */
+  }
+}
+
 function acquireHookSlot(gitNexusDir) {
   const lockDir = path.join(gitNexusDir, HOOK_LOCK_SUBDIR);
   try {
@@ -52,8 +95,10 @@ function acquireHookSlot(gitNexusDir) {
         }
         let isLive = false;
         let mtimeMs = Date.now();
+        let inspected = null;
         try {
-          mtimeMs = fs.fstatSync(fd).mtimeMs;
+          inspected = fs.fstatSync(fd, { bigint: true });
+          mtimeMs = Number(inspected.mtimeMs);
           const buf = Buffer.alloc(32);
           const n = fs.readSync(fd, buf, 0, 32, 0);
           const ownerStr = buf.slice(0, n).toString('utf-8').trim();
@@ -98,11 +143,9 @@ function acquireHookSlot(gitNexusDir) {
           isLive = false;
         }
         if (isLive) break; // Try the next slot.
-        try {
-          fs.unlinkSync(slotPath);
-        } catch {
-          /* another hook beat us to it — retry will hit EEXIST */
-        }
+        // No stat means we cannot prove which file we judged stale; leave it
+        // (the retry re-inspects it) rather than risk deleting a fresh lock.
+        if (inspected) evictStaleSlot(slotPath, inspected);
         // Loop and retry this slot.
       }
     }

@@ -10,17 +10,19 @@
  * probe skips the CLI augment when an MCP/serve process already holds the
  * single-writer lock (#2396). The repo and its index storage are resolved via
  * the same bundled registry lookup (registry-query.cjs), so external and
- * branch-slot indexes work (#3060).
- *
- * The augment child is not wrapped in the coreutils `timeout` orphan guard the
- * full Claude adapter uses (#2163) — same scope as the Cursor integration.
+ * branch-slot indexes work (#3060). On Unix the augment child runs under the
+ * probe's self-tested coreutils `timeout` guard, as in the Claude adapter
+ * (#2163), so a hook the runner kills cannot strand the CLI (see runAugment).
  */
 
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
-const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const {
+  hasGitNexusDbLockedByGitNexusServer,
+  resolveUnixGuardTimeout,
+} = require('./hook-db-lock-probe.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
 
 // Pin the CLI instead of tracking `latest`: npm versions are immutable, so only
@@ -336,6 +338,25 @@ function extractAugmentContext(stderr) {
 }
 
 /**
+ * Absolute path of a runnable (regular file, X_OK) `command` on PATH, or null.
+ * POSIX-only: used where the timeout guard would otherwise mask a missing
+ * launcher as the guard's own exit 127 instead of a spawn ENOENT.
+ */
+function findOnPath(command) {
+  for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(dir, command);
+    try {
+      if (!fs.statSync(candidate).isFile()) continue;
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      /* not a runnable file here */
+    }
+  }
+  return null;
+}
+
+/**
  * Run `gitnexus augment` for `pattern` and return its `[GitNexus]` block — the
  * augment CLI writes results to stderr because LadybugDB's native module
  * captures stdout at the OS fd level. Launcher noise is filtered out by
@@ -348,6 +369,22 @@ function extractAugmentContext(stderr) {
  * (exit 0, empty stderr) or a timeout never spends a second 8s budget on npx
  * past the 10s hook timeout in hooks.json.
  *
+ * Orphan guard (#2163, ported from the Claude adapter's runGitNexusCli): on
+ * Unix every tier runs under the probe's self-tested coreutils `timeout`, so a
+ * hook killed by the runner cannot strand the CLI. The direct tiers (the CLI is
+ * the guard's child) use `-k 1` TERM-first; npx (guard → npx → CLI grandchild)
+ * uses `-s KILL`, which group-kills at budget — TERM-first would only kill the
+ * obedient npx parent and let `timeout` exit before its `-k` escalation, leaving
+ * a SIGTERM-immune CLI running. Residual gaps are the Claude adapter's: a
+ * busybox guard signals only its direct child, and when the hook itself is
+ * alive the inner spawnSync timeout SIGTERMs the guard, which forwards TERM, not
+ * KILL, to the npx group. Because the guard reports a missing command as its
+ * own exit 127 rather than ENOENT, the guarded PATH tier decides presence with
+ * findOnPath first. Windows (no coreutils; the self-test spawns /bin/sh) and an
+ * unresolved guard (e.g. macOS without Homebrew coreutils, or
+ * GITNEXUS_HOOK_TIMEOUT_PATH=disabled) keep the plain spawn and the ENOENT
+ * fallthrough.
+ *
  * SECURITY: `pattern` follows the `--` end-of-options marker and never reaches a
  * shell (the Windows fallback invokes `npx.cmd` directly rather than
  * `shell: true`), so `-rf` or `$(...)` is inert.
@@ -355,17 +392,31 @@ function extractAugmentContext(stderr) {
 function runAugment(pattern, cwd) {
   const isWin = process.platform === 'win32';
   const args = ['augment', '--', pattern];
+  const timeoutMs = 8000;
   const spawnOpts = {
     encoding: 'utf-8',
-    timeout: 8000,
+    timeout: timeoutMs,
     cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
   };
+  // An older bundled probe without the export degrades to the unwrapped spawn.
+  const guard =
+    isWin || typeof resolveUnixGuardTimeout !== 'function' ? null : resolveUnixGuardTimeout();
+  if (!isWin && !guard && isDebugEnabled()) {
+    process.stderr.write(
+      '[GitNexus hook] no usable timeout/gtimeout guard; augment CLI child runs unguarded\n',
+    );
+  }
+  const guardSecs = String(Math.ceil(timeoutMs / 1000) + 1);
   // Only a clean exit 0 yields context; a spawn error, throw or non-zero exit is ''.
-  const spawnAugment = (cmd, argv) => {
+  // `groupKill` selects the npx arm's `-s KILL` (see the docblock).
+  const spawnAugment = (cmd, argv, groupKill = false) => {
+    const [file, fileArgs] = guard
+      ? [guard, [...(groupKill ? ['-s', 'KILL'] : []), '-k', '1', guardSecs, cmd, ...argv]]
+      : [cmd, argv];
     try {
-      const child = spawnSync(cmd, argv, spawnOpts);
+      const child = spawnSync(file, fileArgs, spawnOpts);
       if (!child.error && child.status === 0) return extractAugmentContext(child.stderr);
     } catch {
       /* graceful failure */
@@ -378,18 +429,28 @@ function runAugment(pattern, cwd) {
     return spawnAugment(process.execPath, [String(hookCli), ...args]);
   }
 
-  // Only ENOENT (no launcher on PATH) falls through to npx. Windows EINVAL for
-  // `gitnexus.cmd` does not: `npx.cmd` would fail the same way without a shell.
-  try {
-    const child = spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, spawnOpts);
-    if (!child.error || child.error.code !== 'ENOENT') {
-      return !child.error && child.status === 0 ? extractAugmentContext(child.stderr) : '';
+  if (guard) {
+    // Guarded (Unix): only a missing launcher falls through to npx.
+    const launcher = findOnPath('gitnexus');
+    if (launcher) return spawnAugment(launcher, args);
+  } else {
+    // Only ENOENT (no launcher on PATH) falls through to npx. Windows EINVAL for
+    // `gitnexus.cmd` does not: `npx.cmd` would fail the same way without a shell.
+    try {
+      const child = spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, spawnOpts);
+      if (!child.error || child.error.code !== 'ENOENT') {
+        return !child.error && child.status === 0 ? extractAugmentContext(child.stderr) : '';
+      }
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') return '';
     }
-  } catch (err) {
-    if (!err || err.code !== 'ENOENT') return '';
   }
 
-  return spawnAugment(isWin ? 'npx.cmd' : 'npx', ['-y', `gitnexus@${PINNED_VERSION}`, ...args]);
+  return spawnAugment(
+    isWin ? 'npx.cmd' : 'npx',
+    ['-y', `gitnexus@${PINNED_VERSION}`, ...args],
+    true,
+  );
 }
 
 function main() {

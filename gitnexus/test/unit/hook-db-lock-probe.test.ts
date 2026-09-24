@@ -27,6 +27,8 @@ type Probe = {
   linuxProcScanFindGitNexusServer?: (dbPathAbs: string, myPid: number) => string;
   getCmdlineMaxBytes?: () => number;
   resolveLinuxProcBudgetMs?: () => number;
+  resolveHookBinary?: (tool: 'lsof' | 'ps') => string;
+  hasMissingHookBinaryOverride?: (tool: 'lsof' | 'ps') => boolean;
 };
 const probe = createRequire(import.meta.url)(PROBE_PATH) as Probe;
 
@@ -44,6 +46,8 @@ const ENV_KEYS = [
   'GITNEXUS_HOOK_PROC_ROOT',
   'GITNEXUS_HOOK_LINUX_PROC_BUDGET_MS',
   'GITNEXUS_HOOK_PROC_CMDLINE_MAX',
+  'GITNEXUS_HOOK_LSOF_PATH',
+  'GITNEXUS_HOOK_PS_PATH',
 ] as const;
 const savedEnv: Record<string, string | undefined> = {};
 function setEnv(overrides: Record<string, string | undefined>) {
@@ -93,6 +97,49 @@ function runScan(
 }
 
 const GITNEXUS_MCP_ARGV = (script: string) => ['node', script, 'mcp'];
+
+// ── Hook binary override: check and lookup agree on trimming (#2543 review) ──
+//
+// unixLsofPsFindGitNexusServer calls hasMissingHookBinaryOverride (trims) and
+// then resolveHookBinary. If the lookup did NOT trim, a padded-but-valid
+// override such as " /tmp/lsof " passed the missing-check yet fell through to
+// the built-in/PATH binary. Both helpers must see the same trimmed path.
+describe('hook binary override trimming (white-box, #2543 review)', () => {
+  const resolveBin = probe.resolveHookBinary as (tool: 'lsof' | 'ps') => string;
+  const missing = probe.hasMissingHookBinaryOverride as (tool: 'lsof' | 'ps') => boolean;
+
+  function makeFakeBinary(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hookbin-'));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const bin = path.join(dir, 'fake-tool');
+    fs.writeFileSync(bin, '');
+    return bin;
+  }
+
+  it.each(['lsof', 'ps'] as const)(
+    '%s: whitespace-padded override to an existing file resolves to the trimmed path',
+    (tool) => {
+      const bin = makeFakeBinary();
+      const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
+      setEnv({ [envKey]: `  ${bin}\t ` });
+      expect(missing(tool)).toBe(false);
+      expect(resolveBin(tool)).toBe(bin);
+    },
+  );
+
+  it.each(['', '   '])('empty/whitespace override %j is ignored by both helpers', (value) => {
+    setEnv({ GITNEXUS_HOOK_LSOF_PATH: value });
+    expect(missing('lsof')).toBe(false);
+    expect(resolveBin('lsof').trim()).not.toBe('');
+  });
+
+  it('missing-path override is reported missing and never returned by the lookup', () => {
+    const absent = path.join(os.tmpdir(), 'gitnexus-hookbin-does-not-exist', 'lsof');
+    setEnv({ GITNEXUS_HOOK_LSOF_PATH: `  ${absent}  ` });
+    expect(missing('lsof')).toBe(true);
+    expect(resolveBin('lsof')).not.toBe(absent);
+  });
+});
 
 // ── Numeric env parsing (white-box, #2183 review) ──────────────────────
 //

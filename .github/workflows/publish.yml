@@ -695,7 +695,17 @@ jobs:
             ../.agents/plugins/marketplace.json \
             ../gitnexus-factory-plugin/.factory-plugin/plugin.json \
             ../gitnexus-factory-plugin/mcp.json \
-            ../.factory-plugin/marketplace.json
+            ../.factory-plugin/marketplace.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-plan/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-work/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-review/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-lfg/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-guide/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-cli/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-debugging/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-exploring/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-impact-analysis/mcp.json \
+            ../gitnexus-claude-plugin/skills/gitnexus-refactoring/mcp.json
           git commit -m "release: ${VTAG}" --allow-empty
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "Detached release commit: $RELEASE_SHA"

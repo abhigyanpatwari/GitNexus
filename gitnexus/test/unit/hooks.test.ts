@@ -17,7 +17,7 @@
  * Since the hooks are CJS scripts that call main() on load, we test them
  * by spawning them as child processes with controlled stdin JSON.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -796,6 +796,108 @@ describe('PreToolUse concurrency guard', () => {
       );
       expect(mkdirCatch).toContain('return null');
       expect(mkdirCatch).not.toMatch(/return\s*\(\s*\)\s*=>\s*\{\s*\}/);
+    });
+  }
+});
+
+// ─── Unit: stale-slot eviction never deletes a recreated slot ──────
+//
+// A contender that judged slot-0 stale must not delete it if another hook
+// removed and recreated the path between the inspection and the eviction.
+// The race is driven deterministically: the first renameSync (the eviction
+// step) is wrapped so the concurrent recreate happens exactly inside the
+// window, before the real rename runs.
+
+type AcquireHookSlot = (gitNexusDir: string) => (() => void) | null;
+type RenameArgs = Parameters<typeof fs.renameSync>;
+
+describe('acquireHookSlot stale-slot eviction', () => {
+  const DEAD_PID = '2147483640';
+
+  for (const [label, lockPath] of [
+    ['CJS', CJS_HOOK_LOCK],
+    ['Plugin', PLUGIN_HOOK_LOCK],
+  ] as const) {
+    const loadAcquire = (): AcquireHookSlot =>
+      (createRequire(import.meta.url)(lockPath) as { acquireHookSlot: AcquireHookSlot })
+        .acquireHookSlot;
+
+    const makeLockDir = (): { dir: string; lockDir: string; slot0: string } => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-evict-'));
+      const lockDir = path.join(dir, '.hook-locks');
+      fs.mkdirSync(lockDir);
+      const slot0 = path.join(lockDir, 'slot-0.lock');
+      fs.writeFileSync(slot0, DEAD_PID);
+      return { dir, lockDir, slot0 };
+    };
+
+    it(`${label}: evicts a dead-pid slot and leaves no tombstone behind`, () => {
+      const { dir, lockDir, slot0 } = makeLockDir();
+      const release = loadAcquire()(dir);
+      try {
+        expect(release).not.toBeNull();
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(String(process.pid));
+        expect(fs.readdirSync(lockDir)).toEqual(['slot-0.lock']);
+        release?.();
+        expect(fs.readdirSync(lockDir)).toEqual([]);
+      } finally {
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: does not delete a slot recreated between inspection and eviction`, () => {
+      const { dir, lockDir, slot0 } = makeLockDir();
+      // A live owner (our parent) whose fresh lock replaces the stale one.
+      // Different byte length from DEAD_PID so identity cannot collide even
+      // if the filesystem hands the new file the freed inode number.
+      const freshOwner = String(process.ppid);
+      const realRename = fs.renameSync;
+      const spy = vi.spyOn(fs, 'renameSync').mockImplementationOnce((...args: RenameArgs) => {
+        fs.unlinkSync(slot0);
+        fs.writeFileSync(slot0, freshOwner, { flag: 'wx' });
+        realRename(...args);
+      });
+      const release = loadAcquire()(dir);
+      try {
+        expect(spy).toHaveBeenCalledTimes(1);
+        // The fresh lock survived with its owner intact…
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(freshOwner);
+        // …so this contender respected it and took the next slot instead.
+        expect(release).not.toBeNull();
+        expect(fs.readFileSync(path.join(lockDir, 'slot-1.lock'), 'utf-8')).toBe(
+          String(process.pid),
+        );
+        expect(fs.readdirSync(lockDir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+      } finally {
+        spy.mockRestore();
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: restoring a displaced lock never overwrites a newer claimant`, () => {
+      const { dir, lockDir, slot0 } = makeLockDir();
+      const displacedOwner = String(process.ppid);
+      const newerClaimant = `${process.pid}`;
+      const realRename = fs.renameSync;
+      const spy = vi.spyOn(fs, 'renameSync').mockImplementationOnce((...args: RenameArgs) => {
+        fs.unlinkSync(slot0);
+        fs.writeFileSync(slot0, displacedOwner, { flag: 'wx' });
+        realRename(...args);
+        // A third hook claims the now-empty path before the restore runs.
+        fs.writeFileSync(slot0, newerClaimant, { flag: 'wx' });
+      });
+      const release = loadAcquire()(dir);
+      try {
+        expect(fs.readFileSync(slot0, 'utf-8')).toBe(newerClaimant);
+        expect(release).not.toBeNull();
+        expect(fs.readdirSync(lockDir).sort()).toEqual(['slot-0.lock', 'slot-1.lock']);
+      } finally {
+        spy.mockRestore();
+        release?.();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   }
 });
@@ -3784,6 +3886,105 @@ describe('Hook registry resolver compatibility', () => {
         expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
           path: repoDir,
           storagePath: path.resolve(overrideStorage),
+        });
+      });
+    } finally {
+      if (previousPath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
+      else process.env.GITNEXUS_STORAGE_PATH = previousPath;
+      if (previousRoot === undefined) delete process.env.GITNEXUS_STORAGE_ROOT;
+      else process.env.GITNEXUS_STORAGE_ROOT = previousRoot;
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  // The CLI rejects a set-but-invalid override (storage-resolver.ts
+  // validateConfiguredStoragePath / storagePathFromRoot), so the hook must
+  // resolve no repo instead of augmenting from the registry row's storagePath.
+  // (No NUL row: Node truncates process.env values at NUL, so it cannot be set.)
+  it.each([
+    ['GITNEXUS_STORAGE_PATH', 'relative', 'relative/indexes'],
+    ['GITNEXUS_STORAGE_PATH', 'filesystem-root', path.parse(os.tmpdir()).root],
+    ['GITNEXUS_STORAGE_ROOT', 'relative', 'relative/indexes'],
+  ] as const)(
+    'resolves no repo when %s is set to a %s value, ignoring the registry storagePath',
+    (envName, _kind, value) => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+      const repoDir = path.join(homeDir, 'repo');
+      const registeredStorage = path.join(homeDir, 'indexes', 'registered');
+      const previousPath = process.env.GITNEXUS_STORAGE_PATH;
+      const previousRoot = process.env.GITNEXUS_STORAGE_ROOT;
+      try {
+        fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+        fs.mkdirSync(registeredStorage, { recursive: true });
+        initRepoWithCommit(repoDir);
+        fs.writeFileSync(
+          path.join(registeredStorage, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: repoDir,
+            storagePath: registeredStorage,
+            lastCommit: 'registered',
+            stats: {},
+          }),
+        );
+        fs.writeFileSync(
+          path.join(repoDir, '.gitnexus', 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: repoDir,
+            storagePath: path.join(repoDir, '.gitnexus'),
+            lastCommit: 'leftover',
+            stats: {},
+          }),
+        );
+        writeHookRegistry(homeDir, [
+          { name: 'repo', path: repoDir, storagePath: registeredStorage },
+        ]);
+        delete process.env.GITNEXUS_STORAGE_PATH;
+        delete process.env.GITNEXUS_STORAGE_ROOT;
+        process.env[envName] = value;
+
+        withRegistryHome(homeDir, () => {
+          expect(loadRegistryQuery().resolveHookRepo(repoDir)).toBeNull();
+        });
+      } finally {
+        if (previousPath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
+        else process.env.GITNEXUS_STORAGE_PATH = previousPath;
+        if (previousRoot === undefined) delete process.env.GITNEXUS_STORAGE_ROOT;
+        else process.env.GITNEXUS_STORAGE_ROOT = previousRoot;
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('resolveHookRepo prefers a valid absolute GITNEXUS_STORAGE_PATH over the registry storagePath', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'repo');
+    const registeredStorage = path.join(homeDir, 'indexes', 'registered');
+    const overrideStorage = path.join(homeDir, 'indexes', 'override');
+    const previousPath = process.env.GITNEXUS_STORAGE_PATH;
+    const previousRoot = process.env.GITNEXUS_STORAGE_ROOT;
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(registeredStorage, { recursive: true });
+      fs.mkdirSync(overrideStorage, { recursive: true });
+      initRepoWithCommit(repoDir);
+      for (const [storage, lastCommit] of [
+        [registeredStorage, 'registered'],
+        [overrideStorage, 'override'],
+      ] as const) {
+        fs.writeFileSync(
+          path.join(storage, 'gitnexus.json'),
+          JSON.stringify({ repoPath: repoDir, storagePath: storage, lastCommit, stats: {} }),
+        );
+      }
+      writeHookRegistry(homeDir, [{ name: 'repo', path: repoDir, storagePath: registeredStorage }]);
+      delete process.env.GITNEXUS_STORAGE_ROOT;
+      process.env.GITNEXUS_STORAGE_PATH = overrideStorage;
+
+      withRegistryHome(homeDir, () => {
+        expect(loadRegistryQuery().resolveHookRepo(repoDir)).toMatchObject({
+          path: repoDir,
+          storagePath: path.resolve(overrideStorage),
+          metadata: expect.objectContaining({ lastCommit: 'override' }),
         });
       });
     } finally {

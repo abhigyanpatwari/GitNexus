@@ -80,9 +80,11 @@ function debugLog(msg) {
 
 function resolveHookBinary(tool) {
   const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
-  const fromEnv = process.env[envKey];
-  if (fromEnv && String(fromEnv).trim() && fs.existsSync(String(fromEnv))) {
-    return String(fromEnv);
+  // Trim once, exactly as hasMissingHookBinaryOverride does, so a padded but
+  // valid override (" /tmp/lsof ") is both accepted there and used here.
+  const fromEnv = process.env[envKey] ? String(process.env[envKey]).trim() : '';
+  if (fromEnv && fs.existsSync(fromEnv)) {
+    return fromEnv;
   }
   const candidates =
     tool === 'lsof'
@@ -725,4 +727,8 @@ module.exports = {
   // otherwise only observable indirectly through scan timing/escalation.
   getCmdlineMaxBytes,
   resolveLinuxProcBudgetMs,
+  // Exported for white-box tests pinning that the override check and the
+  // override lookup agree on whitespace-padded GITNEXUS_HOOK_{LSOF,PS}_PATH.
+  resolveHookBinary,
+  hasMissingHookBinaryOverride,
 };
