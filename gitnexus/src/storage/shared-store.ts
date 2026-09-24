@@ -50,6 +50,7 @@ const slotName = (p: string): string => {
 const DISABLED_VALUES = new Set(['off', '0', 'false', 'no']);
 const COMMIT_RE = /^[0-9a-f]{7,64}$/;
 const FEATURE_KEY_RE = /^[0-9a-f]{8,64}$/;
+const COMMIT_GRAPH_DIR_RE = /^[0-9a-f]{7,64}-[0-9a-f]{8,64}$/;
 
 export interface SharedStoreLayout {
   /** Store key: readable basename plus a hash of the canonical git common dir. */
@@ -267,8 +268,11 @@ export const resolveGraphPath = (storagePath: string): string => {
   if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
   const graph = path.resolve(recorded);
   const commitDir = path.dirname(graph);
+  // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
   const valid =
-    path.basename(graph) === LBUG_DIRECTORY && isDirectChild(path.join(root, 'commits'), commitDir);
+    path.basename(graph) === LBUG_DIRECTORY &&
+    isDirectChild(path.join(root, 'commits'), commitDir) &&
+    COMMIT_GRAPH_DIR_RE.test(path.basename(commitDir));
   return valid ? graph : own;
 };
 

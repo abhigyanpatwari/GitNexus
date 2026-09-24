@@ -168,7 +168,12 @@ const reportReclaim = (result: ReclaimResult | null): void => {
 /** `clean --gc`: collect every shared store under GITNEXUS_HOME (#3352). */
 const collectSharedStores = async (force: boolean): Promise<void> => {
   const storesDir = path.join(getGlobalDir(), STORES_DIR);
-  const names = await fs.readdir(storesDir).catch(() => [] as string[]);
+  // Only a missing stores root means "nothing to collect"; an unreadable one
+  // must fail loudly rather than report success.
+  const names = await fs.readdir(storesDir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return [] as string[];
+    throw err;
+  });
   if (names.length === 0) {
     console.log(t('clean.gc.none'));
     return;

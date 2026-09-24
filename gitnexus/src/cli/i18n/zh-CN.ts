@@ -267,7 +267,8 @@ export const zhCN = {
     '即使已有其他路径使用相同 --name 别名，也注册该仓库。会使两个路径的 `-r <name>` 产生歧义；请用 -r <path> 消除歧义。',
   'help.option.analyze.shareWith':
     '加入同一仓库已注册工作树的共享索引存储（名称或路径）；远程 URL 必须一致。之后的运行会记住此选择。',
-  'help.option.analyze.noShare': '离开共享索引存储，重新索引到 <repo>/.gitnexus',
+  'help.option.analyze.noShare':
+    '仅限已加入的克隆：离开共享索引存储，重新索引到 <repo>/.gitnexus（链接工作树始终共享；请改用 GITNEXUS_SHARED_STORE=off）',
   'help.option.verbose': '启用详细输出',
   'help.option.analyze.maxFileSize':
     '跳过大于该值的文件（KB）。默认：512。硬上限：32768（tree-sitter 限制）。',

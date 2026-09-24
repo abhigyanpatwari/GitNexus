@@ -150,7 +150,11 @@ program
     'Join the shared index store of a registered worktree of the same repository ' +
       '(name or path); the remote URL must match. Remembered for later runs.',
   )
-  .option('--no-share', 'Leave the shared index store and index into <repo>/.gitnexus again')
+  .option(
+    '--no-share',
+    'Opted-in clones only: leave the shared index store and index into <repo>/.gitnexus again ' +
+      '(linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
+  )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(
     '--max-file-size <kb>',

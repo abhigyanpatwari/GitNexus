@@ -12,7 +12,7 @@
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { acquireIndexLock, requireExclusiveIndexLock } from './index-lock.js';
+import { acquireIndexLock, requireExclusiveIndexLock, type IndexLockHandle } from './index-lock.js';
 import {
   canonicalizePath,
   findRegistryEntryByRepoPath,
@@ -94,9 +94,12 @@ const orphanMembers = async (slots: string[]): Promise<Set<string>> => {
  * (KTD7), and slot pointers written under the same lock are always counted.
  */
 export const reclaimSharedStoreLocked = async (
-  storeRoot: string,
+  storeRootInput: string,
   opts: { gc?: boolean; dryRun?: boolean } = {},
 ): Promise<ReclaimResult> => {
+  // Absolute, so commit dirs compare equal to the resolved graphPath parents
+  // even when GITNEXUS_HOME is relative.
+  const storeRoot = path.resolve(storeRootInput);
   const result: ReclaimResult = { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
   const checkoutsDir = path.join(storeRoot, 'checkouts');
   const commitsDir = path.join(storeRoot, 'commits');
@@ -104,9 +107,31 @@ export const reclaimSharedStoreLocked = async (
   let slots = (await listDir(checkoutsDir)).map((name) => path.join(checkoutsDir, name));
   if (opts.gc) {
     const orphans = await orphanMembers(slots);
-    for (const slot of orphans) {
-      if (!opts.dryRun) await fs.rm(slot, { recursive: true, force: true });
-      result.droppedMembers.push(slot);
+    for (const slot of [...orphans]) {
+      if (opts.dryRun) {
+        result.droppedMembers.push(slot);
+        continue;
+      }
+      // An analyze holds its slot's index lock until it has registered the
+      // checkout, so a slot that is seeded but not yet registered is busy,
+      // not orphaned. Judge and delete only a slot whose lock is free.
+      let lock: IndexLockHandle;
+      try {
+        lock = await acquireIndexLock(slot, { timeoutMs: 1 });
+      } catch {
+        orphans.delete(slot);
+        continue;
+      }
+      try {
+        if (lock.lockFree || !(await orphanMembers([slot])).has(slot)) {
+          orphans.delete(slot);
+          continue;
+        }
+        await fs.rm(slot, { recursive: true, force: true });
+        result.droppedMembers.push(slot);
+      } finally {
+        lock.release();
+      }
     }
     slots = slots.filter((slot) => !orphans.has(slot));
   }

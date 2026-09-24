@@ -240,6 +240,30 @@ describe('reclaimSharedStore', () => {
     expect(existsSync(outside)).toBe(true);
   });
 
+  it('clean --gc keeps a slot whose index lock is held (analyze in progress)', async () => {
+    const slot = await member('busy-000000000000', { repoPath: '/nonexistent/checkout' });
+    const { acquireIndexLock } = await import('../../src/storage/index-lock.js');
+    const lock = await acquireIndexLock(slot);
+    try {
+      const result = await reclaimSharedStore(layout().root, { gc: true });
+      expect(result.droppedMembers).toEqual([]);
+      expect(existsSync(slot)).toBe(true);
+    } finally {
+      lock.release();
+    }
+    const after = await reclaimSharedStore(layout().root, { gc: true });
+    expect(after.droppedMembers).toEqual([slot]);
+  });
+
+  it('counts references correctly when GITNEXUS_HOME is relative', async () => {
+    const referenced = await commitGraph('ddddddd-4444444444444444');
+    await member('wt-000000000000', { graphPath: path.join(referenced, 'lbug') });
+    const relativeRoot = path.relative(process.cwd(), layout().root);
+    const result = await reclaimSharedStore(relativeRoot);
+    expect(result.removed).toEqual([]);
+    expect(existsSync(referenced)).toBe(true);
+  });
+
   it('reports a graph it cannot delete instead of failing', async () => {
     const orphan = await commitGraph('ccccccc-3333333333333333');
     await member('wt-000000000000', {});

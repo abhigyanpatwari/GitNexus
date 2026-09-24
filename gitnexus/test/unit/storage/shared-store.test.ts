@@ -250,6 +250,10 @@ describe('resolveGraphPath', () => {
     ['a relative path', () => 'commits/abc1234-deadbeef/lbug'],
     ['a traversal', (l: SharedStoreLayout) => path.join(l.commitsDir, '..', '..', 'x', 'lbug')],
     [
+      'in-progress publish staging',
+      (l: SharedStoreLayout) => path.join(l.commitsDir, '.publish-0f3c', 'lbug'),
+    ],
+    [
       'a non-lbug file',
       (l: SharedStoreLayout) => path.join(l.commitsDir, 'abc1234-deadbeef', 'gitnexus.json'),
     ],

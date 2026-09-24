@@ -321,9 +321,11 @@ function resolveGraphPath(storagePath, metadata) {
   const recorded = metadata && metadata.graphPath;
   if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
   const graph = path.resolve(recorded);
+  // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
   const valid =
     path.basename(graph) === LBUG_DIRECTORY &&
-    isDirectChild(path.join(root, 'commits'), path.dirname(graph));
+    isDirectChild(path.join(root, 'commits'), path.dirname(graph)) &&
+    /^[0-9a-f]{7,64}-[0-9a-f]{8,64}$/.test(path.basename(path.dirname(graph)));
   return valid ? graph : own;
 }
 
