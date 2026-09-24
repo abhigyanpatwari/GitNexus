@@ -405,12 +405,15 @@ const CMDLINE_TIMEOUT = Symbol('gitnexus.cmdline.timeout');
 // first path component while the `mcp`/`serve` mode token is the LAST argv, so
 // a naive 4 KB read could clip the mode token off a server launched with a very
 // long interpreter path and silently miss a real owner. We mitigate two ways:
-// (a) the default cap (16 KiB) already clears realistic lines; (b) if the first
-// read fills the cap AND already contains the `gitnexus` token but no mode
-// token yet, we keep reading in bounded chunks (up to a hard ceiling) until the
-// mode token appears or the file ends — so a genuine server is never missed for
-// want of a few more bytes, while non-candidates still pay only the initial
-// bounded read.
+// (a) the default cap (16 KiB) already clears realistic lines, so almost every
+// process is decided by the first read hitting EOF; (b) a read that fills the
+// cap stops early ONLY once it holds BOTH tokens (decided owner). Holding one
+// token, or neither, decides nothing: interpreter flags can put a mode-looking
+// word first (`node --require mcp .../gitnexus/... serve`) or push the gitnexus
+// path past the first chunk. So we keep reading in cap-sized chunks until both
+// tokens appear, the file ends, or the hard ceiling is reached. Only processes
+// that passed the Phase 0 comm prefilter AND have a cmdline longer than the cap
+// ever escalate, and each escalation step is budget-gated (below).
 //
 // Budget (F3): the escalation loop above is the one place a SINGLE pathological
 // candidate could read up to HARD_CEIL (256 KiB) before the next scan-level
@@ -442,16 +445,12 @@ function readLinuxCmdline(procRoot, pidStr, cap, outOfBudget) {
       collected = Buffer.concat([collected, buf.subarray(0, bytes)]);
       offset += bytes;
       const text = collected.toString('utf8').replace(/\0+/g, ' ');
-      // Stop early when we can already decide "owner": has both the gitnexus
-      // token and a mode token. Keep going only when gitnexus is present but
-      // the mode token might be just past the boundary.
-      const hasGitNexus =
-        /(?:^|[/\\\s])gitnexus(?:\.cmd)?(?:\s|$)/.test(text) ||
-        /node_modules[/\\]gitnexus[/\\]/.test(text);
-      const hasMode = /(?:^|\s)(mcp|serve)(?:\s|$)/.test(text);
-      if (hasMode) break; // decided (positive); isGitNexusServerCommand re-checks below
+      // Stop early only when the partial read is DECIDED: both the gitnexus
+      // token and a mode token are present (isGitNexusServerCommand is exactly
+      // that conjunction). A partial read missing either token is undecided —
+      // the missing one may lie past the chunk boundary — so it keeps reading.
+      if (isGitNexusServerCommand(text)) break; // decided (positive)
       if (bytes < chunkCap) break; // EOF: full cmdline read, definitive
-      if (!hasGitNexus) break; // not a candidate; do not escalate the read
       if (offset >= HARD_CEIL) break; // bounded escalation only
       // Budget gate the escalation: a single huge-argv candidate must not burn
       // the whole scan deadline before we re-check. Return the timeout sentinel

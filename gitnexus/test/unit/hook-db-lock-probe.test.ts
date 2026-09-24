@@ -361,7 +361,7 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
   //
   // The cmdline shape here is deliberate (Codex): the `gitnexus` token sits in
   // the SECOND argv (a SHORT node_modules/gitnexus path, well inside the first
-  // 4 KB chunk) so `if (!hasGitNexus) break` does NOT abort the read; a ~9 KB
+  // 4 KB chunk); a ~9 KB
   // pad argv then pushes the trailing `mcp` mode token PAST 4096, so the first
   // 4 KB chunk has gitnexus-but-no-mode and the loop MUST escalate to a second
   // read to find `mcp`. Setting GITNEXUS_HOOK_PROC_CMDLINE_MAX=4096 makes the
@@ -411,6 +411,62 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
           pid: 10002,
           comm: 'MainThread',
           cmdline: ['node', GITNEXUS_SHORT, padPastCeil, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(false);
+  });
+
+  // ── D3c: a partial read stops early only when DECIDED (#2543 review) ──
+  //
+  // The escalation loop used to stop as soon as the chunk held a mode word, or
+  // as soon as it lacked the gitnexus token. Neither decides ownership: a Node
+  // preload flag can put `mcp` in the first chunk while the gitnexus CLI path
+  // lies past it, and a long interpreter prefix can push BOTH tokens past it.
+  // Either way the old loop returned an incomplete cmdline, Phase 1 rejected it,
+  // and Phase 2 never compared the holder's fd (a fail-OPEN owner miss, #1492).
+  // Now only "both tokens present", EOF, the ceiling, or the budget stop it.
+
+  it('owned: a mode word in the first chunk (`--require mcp`) with the gitnexus path past it', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10050,
+          comm: 'MainThread',
+          // node | --require mcp | 9KB pad | gitnexus path (>4096) | serve
+          cmdline: ['node', '--require', 'mcp', PAD_PAST_4K, GITNEXUS_SHORT, 'serve'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(true);
+  });
+
+  it('owned: neither token in the first chunk, both past it (long interpreter prefix)', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10051,
+          comm: 'MainThread',
+          cmdline: ['node', PAD_PAST_4K, GITNEXUS_SHORT, 'mcp'],
+          fdTargets: [lbug],
+        },
+      ],
+      { GITNEXUS_HOOK_PROC_CMDLINE_MAX: '4096' },
+    );
+    expect(owned).toBe(true);
+  });
+
+  it('not-owned: a mode word early but no gitnexus token anywhere is read to EOF and rejected', () => {
+    const { owned } = runScan(
+      (lbug) => [
+        {
+          pid: 10052,
+          comm: 'node',
+          cmdline: ['node', '--require', 'mcp', PAD_PAST_4K, '/app/other-server.js', 'serve'],
           fdTargets: [lbug],
         },
       ],

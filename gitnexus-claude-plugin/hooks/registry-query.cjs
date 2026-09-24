@@ -254,9 +254,12 @@ function envOverridesStorage() {
   return process.env[STORAGE_PATH_ENV] !== undefined || process.env[STORAGE_ROOT_ENV] !== undefined;
 }
 
-// A set-but-invalid override (empty, relative, NUL, root) makes storage
-// unresolvable (the CLI's storage-resolver.ts throws); never fall back to the
-// registry row.
+// A set-but-invalid override (empty, relative, or containing NUL) makes
+// storage unresolvable (the CLI's storage-resolver.ts throws); never fall
+// back to the registry row. A filesystem root is invalid only for
+// GITNEXUS_STORAGE_PATH (validateConfiguredStoragePath rejects it);
+// GITNEXUS_STORAGE_ROOT accepts a filesystem root — storagePathFromRoot
+// resolves the slot directly under it.
 function resolveEntryStoragePath(entry) {
   const envPath = process.env[STORAGE_PATH_ENV];
   if (envPath !== undefined) {
