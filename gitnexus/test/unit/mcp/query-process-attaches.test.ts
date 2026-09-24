@@ -120,6 +120,76 @@ describe('shapeQueryProcessAttaches', () => {
     expect(process_symbols[1]).not.toHaveProperty('content');
   });
 
+  it('strips content from a later entry-point row while flagging it', () => {
+    const { process_symbols } = shapeQueryProcessAttaches(
+      [
+        ranked('proc:login-flow', [
+          attach('func:validate', 'proc:login-flow', { content: 'function validate() {}' }),
+        ]),
+        ranked(
+          'proc:beta-flow',
+          [attach('func:validate', 'proc:beta-flow', { content: 'function validate() {}' })],
+          { entryPointId: 'func:validate' },
+        ),
+      ],
+      { maxSymbolsPerProcess: 25 },
+    );
+
+    expect(process_symbols.map((s) => s.process_id)).toEqual(['proc:login-flow', 'proc:beta-flow']);
+    expect(process_symbols[0]?.content).toBe('function validate() {}');
+    expect(process_symbols[0]).not.toHaveProperty('is_entry_point');
+    expect(process_symbols[1]?.is_entry_point).toBe(true);
+    expect(process_symbols[1]).not.toHaveProperty('content');
+  });
+
+  it('keeps content only on the first of three rows for a hub id', () => {
+    const { processes, process_symbols } = shapeQueryProcessAttaches(
+      [
+        ranked('proc:login-flow', [
+          attach('func:validate', 'proc:login-flow', { content: 'function validate() {}' }),
+        ]),
+        ranked('proc:beta-flow', [
+          attach('func:validate', 'proc:beta-flow', { content: 'function validate() {}' }),
+        ]),
+        ranked('proc:gamma-flow', [
+          attach('func:validate', 'proc:gamma-flow', { content: 'function validate() {}' }),
+        ]),
+      ],
+      { maxSymbolsPerProcess: 25 },
+    );
+
+    expect(process_symbols.map((s) => s.process_id)).toEqual([
+      'proc:login-flow',
+      'proc:beta-flow',
+      'proc:gamma-flow',
+    ]);
+    expect(process_symbols.map((s) => Object.hasOwn(s, 'content'))).toEqual([true, false, false]);
+    expect(process_symbols[0]?.content).toBe('function validate() {}');
+    expect(processes.map((p) => [p.id, p.symbol_count])).toEqual([
+      ['proc:login-flow', 1],
+      ['proc:beta-flow', 1],
+      ['proc:gamma-flow', 1],
+    ]);
+  });
+
+  it('does not mutate the input attach objects', () => {
+    const first = attach('func:validate', 'proc:login-flow', { content: 'function validate() {}' });
+    const second = attach('func:validate', 'proc:beta-flow', { content: 'function validate() {}' });
+    const before = structuredClone([first, second]);
+
+    shapeQueryProcessAttaches(
+      [
+        ranked('proc:login-flow', [first]),
+        ranked('proc:beta-flow', [second], { entryPointId: 'func:validate' }),
+      ],
+      { maxSymbolsPerProcess: 25 },
+    );
+
+    expect([first, second]).toEqual(before);
+    expect(second.content).toBe('function validate() {}');
+    expect(second).not.toHaveProperty('is_entry_point');
+  });
+
   it('marks the entry-point hit and preserves process card extras', () => {
     const chain = [{ direction: 'downstream' }];
     const { processes, process_symbols } = shapeQueryProcessAttaches(

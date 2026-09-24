@@ -207,6 +207,19 @@ withTestLbugDB(
         // leaked some other node's community onto it. It must have none.
         expect(validate.module).toBeUndefined();
         expect(validate.content).toBe('function validate() {}');
+        // validate is a step in two processes, so it has two process_symbols
+        // rows; content is emitted once per symbol id — only the first row
+        // carries it, the sibling row omits the key entirely.
+        const validateRows = (validateRes.process_symbols ?? []).filter(
+          (s: { id: string }) => s.id === 'func:validate',
+        );
+        expect(validateRows).toHaveLength(2);
+        const withContent = validateRows.filter(
+          (s: { content?: string }) => s.content === 'function validate() {}',
+        );
+        expect(withContent).toHaveLength(1);
+        const withoutContent = validateRows.filter((s: object) => !('content' in s));
+        expect(withoutContent).toHaveLength(1);
       });
 
       it('reports content capability for the default full profile', async () => {

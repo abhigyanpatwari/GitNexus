@@ -137,7 +137,12 @@ describe('GITNEXUS_TOOLS', () => {
     );
     expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
     expect(queryTool.description).toContain(
-      'content appears only on the first row for each symbol id',
+      'content appears only on the first row for each symbol id across the whole process_symbols array, not per process',
+    );
+    expect(queryTool.description).toContain('even under a different process_id');
+    expect(queryTool.description).toContain('context({uid: id, include_content: true})');
+    expect(queryTool.description).toContain(
+      "With include_content, context() also returns that symbol's source.",
     );
   });
 
