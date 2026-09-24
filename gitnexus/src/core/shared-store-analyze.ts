@@ -261,18 +261,25 @@ export const seedSharedSlot = async (
 
 /**
  * Turn a pointer slot into a private one before analyze opens or writes the
- * graph. Returns false when the pointed-at shared graph cannot be copied
+ * graph. With `copy: false` the slot just stops pointing and the caller builds
+ * its own graph from scratch. Returns false when the pointed-at shared graph cannot be copied
  * (garbage-collected or unreadable): the slot's file hashes then describe a
  * graph that is not there, and the caller must do a full build. Caller holds
  * the slot's index lock.
  */
-export const ensurePrivateSharedGraph = async (slot: string, log: Log): Promise<boolean> => {
+export const ensurePrivateSharedGraph = async (
+  slot: string,
+  log: Log,
+  opts: { copy?: boolean } = {},
+): Promise<boolean> => {
   const own = path.join(slot, LBUG_DIRECTORY);
   const pointed = resolveGraphPath(slot);
   if (pointed === own) return true;
   const meta = await loadMeta(slot);
   if (!meta) return true;
-  if (!(await exists(own))) {
+  // `copy: false` — the caller rebuilds from scratch and reads nothing from
+  // the old graph, so only the pointer is dropped.
+  if (opts.copy !== false && !(await exists(own))) {
     const started = Date.now();
     try {
       await cloneGraphFile(pointed, own);

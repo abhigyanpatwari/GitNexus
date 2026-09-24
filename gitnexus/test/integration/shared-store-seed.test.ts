@@ -176,6 +176,26 @@ describe('shared store seeding (#3352)', () => {
     expect(await queryNames(graphOf(orphan))).toEqual(['zeta']);
   }, 240_000);
 
+  it('a forced rebuild of a pointer slot builds without copying the shared graph', async () => {
+    const wt = addWorktree('wt-a');
+    await analyze(main);
+    await analyze(wt);
+    const shared = graphOf(wt);
+    expect(path.dirname(path.dirname(shared))).toBe(layoutOf(wt).commitsDir);
+
+    const logs: string[] = [];
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    await runFullAnalysis(
+      wt,
+      { force: true },
+      { onProgress: () => {}, onLog: (m) => logs.push(m) },
+    );
+
+    expect(logs.some((m) => m.startsWith('Shared store: copied the shared graph'))).toBe(false);
+    expect(await queryNames(graphOf(wt))).toEqual(['alpha', 'beta']);
+    expect(existsSync(shared)).toBe(true);
+  }, 240_000);
+
   it('matches a from-scratch build after seeding and updating (R9)', async () => {
     const wt = addWorktree('wt-a');
     await analyze(main);
@@ -239,6 +259,14 @@ describe('ensurePrivateSharedGraph', () => {
     expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
     expect(logs.join('\n')).toMatch(/shared graph unavailable \(ENOENT\)/);
     expect((await fs.readdir(slot)).filter((n) => n.startsWith('lbug'))).toEqual([]);
+  });
+
+  it('with copy: false drops the pointer without copying', async () => {
+    const { slot, graph } = await pointerSlot();
+    await fs.writeFile(graph, 'shared graph bytes');
+    expect(await ensurePrivateSharedGraph(slot, () => {}, { copy: false })).toBe(true);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+    expect((await loadMeta(slot))?.graphPath).toBeUndefined();
   });
 
   it('is a no-op for a slot that already owns its graph', async () => {

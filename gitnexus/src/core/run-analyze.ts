@@ -1400,9 +1400,11 @@ async function runFullAnalysisInner(
   // Shared-store pointer slots (#3352) get a private graph just before the
   // first graph open: here for the paths that open it before the up-to-date
   // check, and below once that check falls through.
-  const ensurePrivateGraph = async (): Promise<void> => {
+  const ensurePrivateGraph = async (copy = true): Promise<void> => {
     if (!writeTarget.sharedStore || placement.branch) return;
-    if (!(await ensurePrivateSharedGraph(metaDir, log))) options = { ...options, force: true };
+    if (!(await ensurePrivateSharedGraph(metaDir, log, { copy }))) {
+      options = { ...options, force: true };
+    }
     // Later dirty-flag writes spread the in-memory metadata; keep them from
     // re-recording the pointer this slot just left.
     delete loadedMeta?.graphPath;
@@ -2362,7 +2364,12 @@ async function runFullAnalysisInner(
   }
 
   await ensureWritableStorage();
-  await ensurePrivateGraph();
+  // A forced rebuild reads the old graph only to carry embeddings over; with
+  // none to carry, copying the shared graph would be thrown away unread.
+  const forcedRebuildReadsOldGraph =
+    resumeEmbeddingCheckpoint ||
+    _deriveEmbeddingMode(options, existingMeta?.stats?.embeddings ?? 0).shouldLoadCache;
+  await ensurePrivateGraph(!options.force || forcedRebuildReadsOldGraph);
   delete existingMeta?.graphPath;
 
   // ── Cache embeddings from existing index before rebuild ────────────

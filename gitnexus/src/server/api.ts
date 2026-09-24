@@ -8,6 +8,7 @@
  * CORS is restricted to localhost, private/LAN networks, and the deployed site.
  */
 
+import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
 import { resolveGraphPath } from '../storage/shared-store.js';
 import { reclaimAfterSlotRemoval } from '../storage/shared-store-lifecycle.js';
@@ -2132,8 +2133,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           try {
             // Writes go to the slot's own graph; a shared-store checkout
             // reading an immutable commit graph (#3352) takes a private copy.
-            if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
-              throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
+            // The in-memory repo lock only serializes this server; a CLI
+            // analyze in another process guards the slot with the index lock.
+            const slotLock = await acquireIndexLock(storagePath);
+            try {
+              requireExclusiveIndexLock(
+                slotLock,
+                `Cannot acquire the index lock at ${storagePath}; refusing to copy the shared graph.`,
+              );
+              if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
+                throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
+              }
+            } finally {
+              slotLock.release();
             }
             const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
             const ftsSession = await loadFtsSession(storagePath);
