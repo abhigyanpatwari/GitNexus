@@ -340,3 +340,37 @@ describe('slot naming edge cases (#3352 review)', () => {
     expect(resolveGraphPath(layout.checkoutSlot)).toBe(graph);
   });
 });
+
+describe('bare repositories (#3352 review)', () => {
+  it('shares worktrees of a bare repository, keyed by the bare dir, with no main checkout', async () => {
+    const parent = await makeTempDir('gn-shared-bare-');
+    const src = path.join(parent, 'src');
+    await fs.mkdir(src);
+    git(src, 'init', '-q', '-b', 'main');
+    git(
+      src,
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    );
+    const bare = path.join(parent, 'repo.git');
+    git(parent, 'clone', '-q', '--bare', src, bare);
+    const wtA = path.join(parent, 'wt-a');
+    const wtB = path.join(parent, 'wt-b');
+    git(bare, 'worktree', 'add', '-q', '-b', 'a', wtA);
+    git(bare, 'worktree', 'add', '-q', '-b', 'b', wtB);
+
+    const a = layoutOf(wtA);
+    expect(layoutOf(wtB).root).toBe(a.root);
+    expect(a.key).toMatch(/^repo\.git-[0-9a-f]{12}$/);
+    expect(a.canonicalCheckout).toBeNull();
+    // The bare dir itself has no working tree to analyze.
+    expect(resolveSharedStoreKey(bare, cleanEnv())).toBeNull();
+  });
+});
