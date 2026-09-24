@@ -29,7 +29,8 @@ export const en = {
   'list.processes': 'Processes',
   'list.unknown': 'unknown',
   'status.sharedStoreShared': 'Shared index: store {{key}}, shared graph for commit {{commit}}',
-  'status.sharedStorePrivate': 'Shared index: store {{key}}, private graph (local changes)',
+  'status.sharedStorePrivate':
+    'Shared index: store {{key}}, private graph (local changes or a pinned branch index)',
   'status.legacyLocalIndex':
     'Leftover local index: {{path}} ({{size}}); remove it with `gitnexus clean --local-index --force`',
   'status.notGitRepo': 'Not a git repository.',
@@ -292,7 +293,7 @@ export const en = {
   'help.option.analyze.shareWith':
     'Join the shared index store of a registered worktree of the same repository (name or path); the remote URL must match. Remembered for later runs.',
   'help.option.analyze.noShare':
-    'Leave the shared index store and index into <repo>/.gitnexus again',
+    'Opted-in clones only: leave the shared index store and index into <repo>/.gitnexus again (linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
   'help.option.verbose': 'Enable verbose output',
   'help.option.analyze.maxFileSize':
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
