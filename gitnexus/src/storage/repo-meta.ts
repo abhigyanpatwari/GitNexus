@@ -102,6 +102,12 @@ export interface RepoMeta {
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;
+  /**
+   * Shared-store checkouts only (#3352): the graph this slot reads when it is
+   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
+   * and validated by `resolveGraphPath`.
+   */
+  graphPath?: string;
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */

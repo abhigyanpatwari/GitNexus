@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { getGlobalDir } from './global-dir.js';
+import { INDEX_METADATA_FILE, LBUG_DIRECTORY } from './storage-constants.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
 export const SHARED_STORE_ENV = 'GITNEXUS_SHARED_STORE';
@@ -161,4 +162,54 @@ export const commitGraphDir = (
     throw new Error(`Invalid feature key for shared store: ${featureKey}`);
   }
   return path.join(layout.commitsDir, `${commit}-${featureKey}`);
+};
+
+const isDirectChild = (parent: string, child: string): boolean => {
+  const rel = path.relative(parent, child);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(path.sep);
+};
+
+/**
+ * Store root for a checkout slot (`<stores>/<key>/checkouts/<slot>`), or null
+ * when `storagePath` is not a checkout slot. Pure path check — no I/O.
+ */
+export const storeRootOfCheckoutSlot = (storagePath: string): string | null => {
+  const storesRoot = path.resolve(getGlobalDir(), STORES_DIR);
+  const slot = path.resolve(storagePath);
+  const checkoutsDir = path.dirname(slot);
+  const root = path.dirname(checkoutsDir);
+  if (path.basename(checkoutsDir) !== 'checkouts') return null;
+  if (!isDirectChild(checkoutsDir, slot) || !isDirectChild(storesRoot, root)) return null;
+  return root;
+};
+
+/**
+ * The graph a flat storage slot reads.
+ *
+ * Non-shared storage is always `<storagePath>/lbug`, with no I/O. A shared
+ * checkout slot may record `graphPath` in its metadata, naming a commit graph
+ * in the same store; any other recorded value (outside the store, a sibling's
+ * private slot, unreadable metadata) falls back to the slot's own graph so a
+ * hand-edited file cannot redirect reads.
+ */
+export const resolveGraphPath = (storagePath: string): string => {
+  const own = path.join(storagePath, LBUG_DIRECTORY);
+  const root = storeRootOfCheckoutSlot(storagePath);
+  if (!root) return own;
+  let recorded: unknown;
+  try {
+    recorded = (
+      JSON.parse(fs.readFileSync(path.join(storagePath, INDEX_METADATA_FILE), 'utf-8')) as {
+        graphPath?: unknown;
+      }
+    ).graphPath;
+  } catch {
+    return own;
+  }
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
+  const graph = path.resolve(recorded);
+  const commitDir = path.dirname(graph);
+  const valid =
+    path.basename(graph) === LBUG_DIRECTORY && isDirectChild(path.join(root, 'commits'), commitDir);
+  return valid ? graph : own;
 };

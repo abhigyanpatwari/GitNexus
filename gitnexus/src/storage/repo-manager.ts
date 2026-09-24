@@ -51,6 +51,7 @@ import {
   type RepoMeta,
 } from './repo-meta.js';
 import { LBUG_DIRECTORY } from './storage-constants.js';
+import { resolveGraphPath } from './shared-store.js';
 import {
   defaultStoragePath,
   ensureStoragePathWritable,
@@ -234,7 +235,9 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(baseDir, LBUG_DIRECTORY),
+    // Branch slots are always private; a flat shared-store slot may read a
+    // commit graph (#3352).
+    lbugPath: branch ? path.join(baseDir, LBUG_DIRECTORY) : resolveGraphPath(storagePath),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };

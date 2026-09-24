@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   commitGraphDir,
   isSharedStoreDisabled,
+  resolveGraphPath,
   resolveSharedStore,
   resolveSharedStoreKey,
   SHARED_STORE_ENV,
@@ -15,8 +16,10 @@ import {
 import {
   STORAGE_PATH_ENV,
   STORAGE_ROOT_ENV,
+  resolveStoragePath,
   storageSlotName,
 } from '../../../src/storage/storage-resolver.js';
+import { getStoragePaths } from '../../../src/storage/repo-manager.js';
 
 const temporaryPaths: string[] = [];
 const savedHome = process.env.GITNEXUS_HOME;
@@ -194,5 +197,119 @@ describe('commitGraphDir', () => {
     ['abc1234', 'short'],
   ])('rejects commit %s / feature key %s', (commit, featureKey) => {
     expect(() => commitGraphDir(layout, commit, featureKey)).toThrow(/Invalid/);
+  });
+});
+
+describe('resolveGraphPath', () => {
+  const writeSlotMeta = async (slot: string, meta: Record<string, unknown>): Promise<void> => {
+    await fs.mkdir(slot, { recursive: true });
+    await fs.writeFile(path.join(slot, 'gitnexus.json'), JSON.stringify(meta));
+  };
+
+  it('returns <storagePath>/lbug for non-shared storage without reading metadata', async () => {
+    const dir = await makeTempDir('gn-shared-local-');
+    const storagePath = path.join(dir, '.gitnexus');
+    await writeSlotMeta(storagePath, { graphPath: path.join(dir, 'elsewhere', 'lbug') });
+    expect(resolveGraphPath(storagePath)).toBe(path.join(storagePath, 'lbug'));
+  });
+
+  it('returns the recorded commit graph for a shared checkout slot', async () => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/checkout-a');
+    const graph = path.join(commitGraphDir(layout, 'abc1234', 'deadbeef'), 'lbug');
+    await writeSlotMeta(layout.checkoutSlot, { graphPath: graph });
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(graph);
+  });
+
+  it('returns the slot graph when no graphPath is recorded', async () => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/checkout-a');
+    await writeSlotMeta(layout.checkoutSlot, { repoPath: '/tmp/checkout-a' });
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(path.join(layout.checkoutSlot, 'lbug'));
+  });
+
+  it('returns the slot graph when metadata is missing or unparseable', async () => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/checkout-a');
+    const own = path.join(layout.checkoutSlot, 'lbug');
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(own);
+    await fs.mkdir(layout.checkoutSlot, { recursive: true });
+    await fs.writeFile(path.join(layout.checkoutSlot, 'gitnexus.json'), '{not json');
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(own);
+  });
+
+  it.each([
+    [
+      'another store',
+      () => path.join(home, 'stores', 'other-000000000000', 'commits', 'abc1234-deadbeef', 'lbug'),
+    ],
+    [
+      'a sibling private slot',
+      (l: SharedStoreLayout) => path.join(l.checkoutsDir, 'sibling-000000000000', 'lbug'),
+    ],
+    ['outside GITNEXUS_HOME', () => '/etc/lbug'],
+    ['a relative path', () => 'commits/abc1234-deadbeef/lbug'],
+    ['a traversal', (l: SharedStoreLayout) => path.join(l.commitsDir, '..', '..', 'x', 'lbug')],
+    [
+      'a non-lbug file',
+      (l: SharedStoreLayout) => path.join(l.commitsDir, 'abc1234-deadbeef', 'gitnexus.json'),
+    ],
+  ])('ignores a recorded graphPath in %s', async (_label, graphPathFor) => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/checkout-a');
+    await writeSlotMeta(layout.checkoutSlot, { graphPath: graphPathFor(layout) });
+    expect(resolveGraphPath(layout.checkoutSlot)).toBe(path.join(layout.checkoutSlot, 'lbug'));
+  });
+
+  it('flows through getStoragePaths for the flat slot but not branch slots', async () => {
+    const layout = sharedStoreLayout('repo-0123456789ab', '/tmp/checkout-a');
+    const graph = path.join(commitGraphDir(layout, 'abc1234', 'deadbeef'), 'lbug');
+    await writeSlotMeta(layout.checkoutSlot, { graphPath: graph });
+    expect(getStoragePaths('/tmp/checkout-a', undefined, layout.checkoutSlot).lbugPath).toBe(graph);
+    expect(
+      path.dirname(getStoragePaths('/tmp/checkout-a', 'feature', layout.checkoutSlot).lbugPath),
+    ).toMatch(/branches/);
+  });
+});
+
+describe('resolveStoragePath store tier', () => {
+  const savedPath = process.env[STORAGE_PATH_ENV];
+  const savedRoot = process.env[STORAGE_ROOT_ENV];
+  const savedSwitch = process.env[SHARED_STORE_ENV];
+
+  beforeEach(() => {
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
+    delete process.env[SHARED_STORE_ENV];
+  });
+
+  afterEach(() => {
+    for (const [key, value] of [
+      [STORAGE_PATH_ENV, savedPath],
+      [STORAGE_ROOT_ENV, savedRoot],
+      [SHARED_STORE_ENV, savedSwitch],
+    ] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  it('keeps an unregistered worktree on local storage while its slot does not exist', async () => {
+    const { wts } = await makeRepo(['wt']);
+    expect(resolveStoragePath(wts[0])).toBe(path.join(wts[0], '.gitnexus'));
+  });
+
+  it('resolves an unregistered worktree to its existing store slot', async () => {
+    const { wts } = await makeRepo(['wt']);
+    const slot = layoutOf(wts[0]).checkoutSlot;
+    await fs.mkdir(slot, { recursive: true });
+    expect(resolveStoragePath(wts[0])).toBe(slot);
+  });
+
+  it('prefers a registered storage path over an existing store slot', async () => {
+    const { wts } = await makeRepo(['wt']);
+    await fs.mkdir(layoutOf(wts[0]).checkoutSlot, { recursive: true });
+    const registered = path.join(await makeTempDir('gn-shared-registered-'), 'index');
+    await fs.writeFile(
+      path.join(home, 'registry.json'),
+      JSON.stringify([{ name: 'wt', path: wts[0], storagePath: registered }]),
+    );
+    expect(resolveStoragePath(wts[0])).toBe(registered);
   });
 });

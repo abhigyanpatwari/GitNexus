@@ -9,6 +9,7 @@ import {
   LEGACY_METADATA_FILE,
   LBUG_DIRECTORY,
 } from './storage-constants.js';
+import { resolveSharedStore } from './shared-store.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
 
 export { STORAGE_PATH_ENV, STORAGE_ROOT_ENV };
@@ -307,6 +308,12 @@ export const resolveStoragePath = (repoPath: string): string => {
 
   const registered = registeredStoragePath(resolvedRepoPath);
   if (registered) return registered;
+
+  // Shared sibling store (#3352): an unregistered checkout whose slot already
+  // exists (for example after the registry was reset). Checkouts only move INTO
+  // the store at analyze time; a read never switches to an empty slot.
+  const shared = resolveSharedStore(resolvedRepoPath);
+  if (shared && fs.existsSync(shared.checkoutSlot)) return shared.checkoutSlot;
 
   return defaultStoragePath(resolvedRepoPath);
 };
