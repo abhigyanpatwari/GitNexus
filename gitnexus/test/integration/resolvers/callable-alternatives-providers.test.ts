@@ -8,7 +8,7 @@
  * hook; without it only the LAST operand flowed and `impact` under-reported
  * callers while still claiming `epistemic: "exact"`. Ruby's statement-bodied
  * `if` shares the ternary's field names but its branches are statement lists,
- * so its hook only expands single-statement branches.
+ * so its hook only expands single-statement branches and skips the rest.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
@@ -124,5 +124,16 @@ describe('Ruby statement-bodied `if` as a callable source', () => {
 
   it('an identifier read inside a multi-statement branch does not flow into the binding', () => {
     expect(callsOf(result)).not.toContain('statement_if → run_other');
+  });
+
+  it('a multi-statement branch is skipped while its sibling branch still flows', () => {
+    expect(callsOf(result)).toContain('statement_if → run_sweep');
+  });
+
+  it('a multi-statement `elsif` does not hide the branches around it', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['elsif_chain → run_a', 'elsif_chain → run_b']),
+    );
+    expect(callsOf(result)).not.toContain('elsif_chain → run_inner');
   });
 });

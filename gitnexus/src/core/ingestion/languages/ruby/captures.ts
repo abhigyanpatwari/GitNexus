@@ -72,26 +72,30 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
  * branches are `then` / `else` STATEMENT LISTS, so the shared ternary rule
  * would dig an identifier out of whichever statement it found (`g = h; 0`
  * flowed `h`, although the branch evaluates to `0`). A branch holding one
- * statement is that statement's value; anything longer keeps the whole
- * conditional one opaque source. The `c ? a : b` ternary (`conditional`) is
- * left to the shared rule.
+ * statement is that statement's value. A longer branch is skipped: it adds
+ * no alternative, while the other branches still flow. Every alternative
+ * emitted is a value the conditional really evaluates to, so skipping cannot
+ * add an edge. It only drops the skipped branch's own value. The `elsif`
+ * chain is walked here, so one multi-statement `elsif` no longer hides the
+ * branches after it. When no branch is a single statement, the whole
+ * conditional stays one opaque source. The `c ? a : b` ternary
+ * (`conditional`) is left to the shared rule.
  */
 function rubyValueAlternatives(node: SyntaxNode): readonly SyntaxNode[] | undefined {
   if (node.type !== 'if' && node.type !== 'unless' && node.type !== 'elsif') return undefined;
   const branches: SyntaxNode[] = [];
-  for (const field of ['consequence', 'alternative'] as const) {
-    const branch = node.childForFieldName(field);
-    if (branch === null) continue;
-    if (branch.type === 'elsif') {
-      branches.push(branch);
-      continue;
+  for (let link: SyntaxNode | null = node; link !== null; ) {
+    const consequence: SyntaxNode | null = link.childForFieldName('consequence');
+    const alternative: SyntaxNode | null = link.childForFieldName('alternative');
+    link = alternative?.type === 'elsif' ? alternative : null;
+    for (const branch of [consequence, link === null ? alternative : null]) {
+      if (branch === null) continue;
+      const statements = branch.namedChildren.filter(
+        (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+      );
+      const [statement] = statements;
+      if (statements.length === 1 && statement !== undefined) branches.push(statement);
     }
-    const statements = branch.namedChildren.filter(
-      (child): child is SyntaxNode => child !== null && child.type !== 'comment',
-    );
-    const [statement] = statements;
-    if (statements.length !== 1 || statement === undefined) return [node];
-    branches.push(statement);
   }
   return branches.length > 0 ? branches : [node];
 }
