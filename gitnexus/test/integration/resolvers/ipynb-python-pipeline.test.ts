@@ -12,6 +12,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
 } from './helpers.js';
+import { extractNotebookPython } from '../../../src/core/ingestion/ipynb-extractor.js';
 
 function pythonNotebook(cells: Array<{ source: string | string[]; language?: string }>): string {
   return JSON.stringify(
@@ -62,7 +63,10 @@ describe('Jupyter notebook Python pipeline', () => {
       expect(functions).toContain('helper');
       const train = getNodesByLabelFull(result, 'Function').find((n) => n.name === 'train');
       expect(train?.properties.filePath.replace(/\\/g, '/')).toMatch(/analysis\.ipynb$/);
-      expect(train?.properties.startLine).toBeGreaterThan(0);
+      const extracted = extractNotebookPython(
+        fs.readFileSync(path.join(root, 'analysis.ipynb'), 'utf8'),
+      )!;
+      expect(train?.properties.startLine).toBe(extracted.segments[1].jsonStartLine);
       const imports = getRelationships(result, 'IMPORTS');
       expect(
         imports.some(

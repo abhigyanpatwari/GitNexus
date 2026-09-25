@@ -24,8 +24,9 @@ import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 import {
-  notebookPythonSnippetFromExtract,
   extractNotebookPythonCached,
+  isNotebookPath,
+  notebookPythonSnippetFromExtract,
 } from '../ingestion/ipynb-extractor.js';
 
 /** Computed once — `RELATION_SCHEMA` is a static template literal. Exported so
@@ -329,10 +330,8 @@ const extractContent = async (
   const endLine = node.properties.endLine;
   if (startLine === undefined || endLine === undefined) return '';
 
-  const notebookPath = String(filePath ?? '')
-    .replace(/\\/g, '/')
-    .toLowerCase();
-  if (notebookPath.endsWith('.ipynb')) {
+  const notebookPath = String(filePath ?? '');
+  if (isNotebookPath(notebookPath)) {
     const extracted = extractNotebookPythonCached(notebookPath, content);
     const reconstructed = extracted
       ? notebookPythonSnippetFromExtract(extracted, startLine, endLine)

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { emitPythonScopeCaptures } from '../../src/core/ingestion/languages/python/captures.js';
 import { pythonProvider } from '../../src/core/ingestion/languages/python.js';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
+import { extractNotebookPython, mapExtractLine } from '../../src/core/ingestion/ipynb-extractor.js';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { getProviderForFile } from '../../src/core/ingestion/languages/index.js';
 
@@ -39,7 +40,9 @@ describe('Python notebook scope captures', () => {
   it('extractParsedFile yields a Function for train', () => {
     const captured = emitPythonScopeCaptures(notebook, 'analysis.ipynb');
     const fnCapture = captured.find((m) => m['@scope.function'] !== undefined);
-    expect(fnCapture?.['@scope.function']?.range.startLine).toBeGreaterThan(1);
+    const extracted = extractNotebookPython(notebook)!;
+    const expectedJson = mapExtractLine(extracted.segments[0].extractStartLine, extracted.segments);
+    expect(fnCapture?.['@scope.function']?.range.startLine).toBe(expectedJson + 1);
     const parsed = extractParsedFile(pythonProvider, notebook, 'analysis.ipynb');
     expect(parsed).toBeDefined();
     expect(parsed!.localDefs.some((d) => d.qualifiedName === 'train' || d.name === 'train')).toBe(

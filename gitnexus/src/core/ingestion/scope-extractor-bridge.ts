@@ -45,6 +45,12 @@ export function extractParsedFile(
   onWarn?: ScopeBridgeWarn,
   cachedTree?: unknown,
   sourceKind: ScopeCaptureSourceKind = 'full-file',
+  notebookSegments?: readonly {
+    readonly extractStartLine: number;
+    readonly extractEndLine: number;
+    readonly jsonStartLine: number;
+    readonly jsonEndLine: number;
+  }[],
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   if (sourceText.trim().length === 0) return undefined;
@@ -58,7 +64,10 @@ export function extractParsedFile(
       cachedTree === undefined
         ? (provider.preprocessSource?.(sourceText, filePath) ?? sourceText)
         : sourceText;
-    const captures = provider.emitScopeCaptures(parseText, filePath, cachedTree, { sourceKind });
+    const captures = provider.emitScopeCaptures(parseText, filePath, cachedTree, {
+      sourceKind,
+      ...(notebookSegments ? { notebookSegments } : {}),
+    });
     return extractScope(captures, filePath, provider);
   } catch (err) {
     const message = `scope extraction failed for ${filePath}: ${

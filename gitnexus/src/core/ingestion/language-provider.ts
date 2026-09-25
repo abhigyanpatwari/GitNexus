@@ -828,6 +828,13 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      /** Python `.ipynb` only: JSON line segments for the pre-extracted buffer. */
+      readonly notebookSegments?: readonly {
+        readonly extractStartLine: number;
+        readonly extractEndLine: number;
+        readonly jsonStartLine: number;
+        readonly jsonEndLine: number;
+      }[];
     },
   ) => readonly CaptureMatch[];
 

@@ -137,6 +137,7 @@ import {
 } from '../vue-sfc-extractor.js';
 import {
   extractNotebookPython,
+  isNotebookPath,
   mapExtractLine,
   type NotebookLineSegment,
 } from '../ipynb-extractor.js';
@@ -1612,10 +1613,7 @@ const processFileGroup = (
       scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
       isVueSetup = extracted.isSetup;
-    } else if (
-      language === SupportedLanguages.Python &&
-      file.path.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')
-    ) {
+    } else if (language === SupportedLanguages.Python && isNotebookPath(file.path)) {
       const extracted = extractNotebookPython(file.content);
       if (!extracted) continue;
       parseContent = extracted.pythonSource;
@@ -1685,14 +1683,15 @@ const processFileGroup = (
     let scopeExtractionFailed = false;
     const parsedFile = extractParsedFile(
       provider,
-      notebookSegments ? file.content : parseContent,
+      parseContent,
       file.path,
       (message) => {
         scopeExtractionFailed = true;
         reportWarning(message);
       },
       tree,
-      notebookSegments ? 'full-file' : scopeSourceKind,
+      scopeSourceKind,
+      notebookSegments,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
@@ -1931,7 +1930,7 @@ const processFileGroup = (
             filePath: file.path,
             httpMethod,
             decoratorName,
-            lineNumber: decoratorNode.startPosition.row + lineOffset,
+            lineNumber: mapRow(decoratorNode.startPosition.row),
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
             ...(handlerName ? { handlerName } : {}),
           };

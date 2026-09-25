@@ -11,7 +11,7 @@ import {
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
-import { extractNotebookPython } from '../ingestion/ipynb-extractor.js';
+import { extractNotebookPython, isNotebookPath } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
 
@@ -42,13 +42,12 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // offsets still index `content` except for `.ipynb`, which is replaced by
   // concatenated code-cell Python (same as the parse worker).
   let parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
-  if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) {
+  if (isNotebookPath(filePath)) {
     const extracted = extractNotebookPython(content);
-    if (extracted) {
-      parseContent =
-        getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
-        extracted.pythonSource;
-    }
+    if (!extracted) return null;
+    parseContent =
+      getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
+      extracted.pythonSource;
   }
 
   return parseSourceSafe(parserInstance, parseContent);

@@ -26,6 +26,7 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
 import {
   extractNotebookPython,
+  isNotebookPath,
   mapExtractLine,
   type NotebookLineSegment,
 } from '../../ipynb-extractor.js';
@@ -64,20 +65,27 @@ export function emitPythonScopeCaptures(
   sourceText: string,
   filePath: string,
   cachedTree?: unknown,
-  sourceMeta?: { sourceKind?: 'full-file' | 'pre-extracted-script' },
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
 ): readonly CaptureMatch[] {
   let parseText = sourceText;
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   let notebookSegments: readonly NotebookLineSegment[] | undefined;
-  if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) {
-    const extracted = extractNotebookPython(sourceText);
-    if (extracted === null) {
-      if (sourceMeta?.sourceKind !== 'pre-extracted-script') return [];
+  if (isNotebookPath(filePath)) {
+    if (sourceMeta?.notebookSegments) {
+      notebookSegments = sourceMeta.notebookSegments;
     } else {
-      parseText = extracted.pythonSource;
-      notebookSegments = extracted.segments;
-      if (sourceMeta?.sourceKind !== 'pre-extracted-script') {
-        tree = undefined;
+      const extracted = extractNotebookPython(sourceText);
+      if (extracted === null) {
+        if (sourceMeta?.sourceKind !== 'pre-extracted-script') return [];
+      } else {
+        parseText = extracted.pythonSource;
+        notebookSegments = extracted.segments;
+        if (sourceMeta?.sourceKind !== 'pre-extracted-script') {
+          tree = undefined;
+        }
       }
     }
   }

@@ -75,6 +75,8 @@ describe('extractNotebookPython', () => {
     expect(result).not.toBeNull();
     expect(result!.pythonSource).toContain('def train():');
     expect(result!.segments).toHaveLength(1);
+    const defJsonLine = content.split('\n').findIndex((l) => l.includes('def train'));
+    expect(result!.segments[0].jsonStartLine).toBe(defJsonLine);
   });
 
   it('keeps two code cells in order with two segments', () => {
@@ -235,5 +237,54 @@ describe('notebookPythonSnippet', () => {
     );
     expect(snippet).toContain('def train');
     expect(snippet).not.toContain('cell_type');
+  });
+});
+
+describe('extractNotebookPython edge cases', () => {
+  it('skips a code cell without source and keeps later Python', () => {
+    const content = notebook({
+      language: 'python',
+      cells: [
+        { cell_type: 'code', metadata: {}, source: ['def ok():\n', '    pass\n'], outputs: [] },
+        { cell_type: 'code', metadata: {}, outputs: [] },
+        { cell_type: 'code', metadata: {}, source: ['def train():\n', '    pass\n'], outputs: [] },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('def ok');
+    expect(result!.pythonSource).toContain('def train');
+  });
+
+  it('returns null when language_info is julia without kernelspec', () => {
+    const content = notebook({
+      languageInfo: 'julia',
+      cells: [{ cell_type: 'code', metadata: {}, source: ['1 + 1\n'], outputs: [] }],
+    });
+    expect(extractNotebookPython(content)).toBeNull();
+  });
+
+  it('maps coordinates to the last cells array when the key is duplicated', () => {
+    const decoy = JSON.stringify(
+      [{ cell_type: 'code', metadata: {}, source: ['def decoy():\n', '    pass\n'], outputs: [] }],
+      null,
+      2,
+    );
+    const real = JSON.stringify(
+      [{ cell_type: 'code', metadata: {}, source: ['def real():\n', '    pass\n'], outputs: [] }],
+      null,
+      2,
+    );
+    const content = `{
+  "nbformat": 4,
+  "nbformat_minor": 5,
+  "metadata": { "kernelspec": { "language": "python", "name": "python3", "display_name": "Python" } },
+  "cells": ${decoy},
+  "cells": ${real}
+}`;
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('def real');
+    expect(result!.pythonSource).not.toContain('decoy');
+    const realLine = content.split('\n').findIndex((l) => l.includes('def real'));
+    expect(result!.segments[0].jsonStartLine).toBe(realLine);
   });
 });
