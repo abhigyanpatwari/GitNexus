@@ -218,11 +218,11 @@ function branchSlug(rawRef) {
   return `${safe}-${hash}`;
 }
 
-// Mirror gitnexus/src/storage/storage-resolver.ts storageSlotName exactly
+// Mirror gitnexus/src/storage/storage-slot.ts slotNameForCanonicalPath exactly
 // (sanitize + sha256 of the canonical repo path, 12-hex suffix).
 function sanitizeSlotBasename(value) {
   // Cap first, then walk the tail once — same order as
-  // gitnexus/src/storage/storage-resolver.ts (avoids /[. ]+$/ ReDoS).
+  // gitnexus/src/storage/storage-slot.ts (avoids /[. ]+$/ ReDoS).
   const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
   let end = sanitized.length;
   while (end > 0) {
@@ -231,9 +231,13 @@ function sanitizeSlotBasename(value) {
     end--;
   }
   const candidate = sanitized.slice(0, end) || 'repository';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
-    ? `repository-${candidate}`
-    : candidate;
+  // Windows also reserves device names with an extension (`CON.txt`); same
+  // platform branch as gitnexus/src/storage/storage-slot.ts.
+  const reserved =
+    process.platform === 'win32'
+      ? /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+      : /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  return reserved.test(candidate) ? `repository-${candidate}` : candidate;
 }
 
 function storageSlotName(repoPath) {
