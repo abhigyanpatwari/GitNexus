@@ -218,11 +218,11 @@ function branchSlug(rawRef) {
   return `${safe}-${hash}`;
 }
 
-// Mirror gitnexus/src/storage/storage-resolver.ts storageSlotName exactly
+// Mirror gitnexus/src/storage/storage-slot.ts slotNameForCanonicalPath exactly
 // (sanitize + sha256 of the canonical repo path, 12-hex suffix).
 function sanitizeSlotBasename(value) {
   // Cap first, then walk the tail once — same order as
-  // gitnexus/src/storage/storage-resolver.ts (avoids /[. ]+$/ ReDoS).
+  // gitnexus/src/storage/storage-slot.ts (avoids /[. ]+$/ ReDoS).
   const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
   let end = sanitized.length;
   while (end > 0) {
@@ -231,9 +231,13 @@ function sanitizeSlotBasename(value) {
     end--;
   }
   const candidate = sanitized.slice(0, end) || 'repository';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
-    ? `repository-${candidate}`
-    : candidate;
+  // Windows also reserves device names with an extension (`CON.txt`); same
+  // platform branch as gitnexus/src/storage/storage-slot.ts.
+  const reserved =
+    process.platform === 'win32'
+      ? /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+      : /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  return reserved.test(candidate) ? `repository-${candidate}` : candidate;
 }
 
 function storageSlotName(repoPath) {
@@ -291,6 +295,37 @@ function resolveEntryStoragePath(entry) {
     return path.resolve(entry.storagePath);
   }
   return path.resolve(path.join(entry.path, GITNEXUS_DIR));
+}
+
+// A single path segment: `..repo-<hash>` is a legal slot name, `..` is not.
+function isDirectChild(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel !== '' && rel !== '..' && !path.isAbsolute(rel) && !rel.includes(path.sep);
+}
+
+// Mirror gitnexus/src/storage/shared-store.ts resolveGraphPath (#3352): a
+// shared-store checkout slot may read a commit graph in the same store
+// instead of owning <slot>/lbug. Any other recorded value is ignored.
+function resolveGraphPath(storagePath, metadata) {
+  const own = path.join(storagePath, LBUG_DIRECTORY);
+  const storesRoot = path.resolve(
+    process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'),
+    'stores',
+  );
+  const slot = path.resolve(storagePath);
+  const checkoutsDir = path.dirname(slot);
+  const root = path.dirname(checkoutsDir);
+  if (path.basename(checkoutsDir) !== 'checkouts') return own;
+  if (!isDirectChild(checkoutsDir, slot) || !isDirectChild(storesRoot, root)) return own;
+  const recorded = metadata && metadata.graphPath;
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
+  const graph = path.resolve(recorded);
+  // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
+  const valid =
+    path.basename(graph) === LBUG_DIRECTORY &&
+    isDirectChild(path.join(root, 'commits'), path.dirname(graph)) &&
+    /^[0-9a-f]{7,64}-[0-9a-f]{8,64}$/.test(path.basename(path.dirname(graph)));
+  return valid ? graph : own;
 }
 
 function hasLocalIndexSignal(storagePath) {
@@ -382,7 +417,9 @@ function findRegisteredRepo(cwd) {
       best = {
         path: entry.path,
         storagePath,
-        lbugPath: path.join(indexDir, LBUG_DIRECTORY),
+        lbugPath: branchIsIndexed
+          ? path.join(indexDir, LBUG_DIRECTORY)
+          : resolveGraphPath(storagePath, ownershipMetadata),
         metadata: branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata,
       };
     }

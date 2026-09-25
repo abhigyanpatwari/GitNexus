@@ -33,7 +33,7 @@ import {
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
@@ -146,6 +146,7 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  setShareOptOut,
   adoptFlatBranchLabel,
   isReadOnlyFilesystemError,
   isRepoRegistered,
@@ -162,8 +163,30 @@ import {
 import {
   ANALYZE_FORCE_STORAGE_REQUIREMENTS,
   ANALYZE_STORAGE_REQUIREMENTS,
+  defaultStoragePath,
+  requireRegisteredStoragePath,
   requireStoragePath,
+  resolveStoragePath,
 } from '../storage/storage-resolver.js';
+import {
+  isSharedStoreDisabled,
+  resolveGraphPath,
+  resolveSharedStore,
+  storeRootOfCheckoutSlot,
+  type SharedStoreLayout,
+} from '../storage/shared-store.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
+import {
+  ensurePrivateSharedGraph,
+  listStoreMetaRoots,
+  leaveSharedStore,
+  optedInSlotToLeave,
+  registerLeftStore,
+  publishSharedGraph,
+  resolveOptedInStore,
+  seedSharedSlot,
+} from './shared-store-analyze.js';
+import { withStoreLock } from '../storage/shared-store-lifecycle.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -528,6 +551,13 @@ export interface AnalyzeOptions {
    * of a pipeline re-index.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Join the shared store of this registered worktree (name or path), after
+   * checking the remote URL matches (#3352). Persisted through the registry.
+   */
+  shareWith?: string;
+  /** Leave the shared store and index into `<repo>/.gitnexus` (#3352). */
+  noShare?: boolean;
   /**
    * Worker pool size override, threaded from the CLI `--workers` flag.
    * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
@@ -1085,6 +1115,8 @@ interface WriteTarget {
   lbugPath: string;
   metaPath: string;
   metaDir: string;
+  /** Set when this checkout writes into a shared sibling store (#3352). */
+  sharedStore?: SharedStoreLayout;
 }
 
 /**
@@ -1101,10 +1133,35 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   // a cached path string must not skip ownership (STORAGE_PATH can move to a
   // foreign slot while the lock is waited out). `--force` may adopt a
   // repository-local foreign slot; the non-force set stays ANALYZE_STORAGE.
-  const storagePath = await requireStoragePath(
-    repoPath,
-    options.force ? ANALYZE_FORCE_STORAGE_REQUIREMENTS : ANALYZE_STORAGE_REQUIREMENTS,
-  );
+  // A linked-worktree checkout writes its own slot in the shared store
+  // (#3352); that slot replaces any repository-local `.gitnexus`, which is left
+  // untouched.
+  const storageRequirements = options.force
+    ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
+    : ANALYZE_STORAGE_REQUIREMENTS;
+  if (options.noShare && resolveSharedStore(repoPath)) {
+    // Fail before any lock or indexing; only an opted-in clone can leave.
+    throw new Error(
+      '--no-share: linked worktrees always use the shared index store. ' +
+        'Set GITNEXUS_SHARED_STORE=off to index every checkout into its own .gitnexus.',
+    );
+  }
+  const sharingOff = options.noShare || isSharedStoreDisabled();
+  const sharedStore = sharingOff
+    ? undefined
+    : (resolveSharedStore(repoPath) ?? (await resolveOptedInStore(repoPath, options.shareWith)));
+  // A checkout still registered in a store after sharing was turned off
+  // indexes into its own `.gitnexus` again; its slot is left for `clean --gc`.
+  const leavingStore =
+    !sharedStore && storeRootOfCheckoutSlot(resolveStoragePath(repoPath)) !== null;
+  const explicitStorage =
+    sharedStore?.checkoutSlot ?? (leavingStore ? defaultStoragePath(repoPath) : undefined);
+  const storagePath = explicitStorage
+    ? await requireRegisteredStoragePath(
+        { path: repoPath, storagePath: explicitStorage },
+        storageRequirements,
+      )
+    : await requireStoragePath(repoPath, storageRequirements);
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   // Normalize the auto-detected branch the same way an explicit `--branch` is
@@ -1131,7 +1188,13 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   const placement = options.branch
     ? await resolveBranchPlacement(repoPath, branchLabel, storagePath)
     : {};
-  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch, storagePath);
+  const paths = getStoragePaths(repoPath, placement.branch, storagePath);
+  const { metaPath } = paths;
+  // Analyze always writes a store slot's own graph; a recorded `graphPath`
+  // (an immutable commit graph) only redirects readers.
+  const lbugPath = storeRootOfCheckoutSlot(storagePath)
+    ? path.join(path.dirname(metaPath), LBUG_DIRECTORY)
+    : paths.lbugPath;
   return {
     storagePath,
     repoHasGit,
@@ -1143,6 +1206,7 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     lbugPath,
     metaPath,
     metaDir: path.dirname(metaPath),
+    sharedStore,
   };
 }
 
@@ -1253,7 +1317,10 @@ export async function runFullAnalysis(
           `Warning: checkout "${formatRejectedBranchForLog(writeTarget.rejectedDetectedBranch)}" is not a usable index label; continuing.`,
         );
       }
-      return await runFullAnalysisInner(
+      const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
+      if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
+      const result = await runFullAnalysisInner(
         repoPath,
         options,
         callbacks,
@@ -1261,6 +1328,24 @@ export async function runFullAnalysis(
         contentRetention,
         runnerIdentityAtBootstrap,
       );
+      if (flatShared) {
+        await publishSharedGraph(flatShared, repoPath, writeTarget.currentCommit, log);
+      } else if (!writeTarget.sharedStore) {
+        // Also for a `--branch` run routed to a local branch sub-slot: the
+        // checkout still leaves the store.
+        // Leaving a store (`--no-share`, or sharing turned off): the up-to-date
+        // path does not re-register, so point the registry at the new storage
+        // before the old slot goes away.
+        if (slotToLeave) {
+          await leaveSharedStore(repoPath, slotToLeave, writeTarget.storagePath, log);
+        } else {
+          await registerLeftStore(repoPath, writeTarget.storagePath);
+        }
+      }
+      // A clone that left stays out of sibling stores until `--share-with`.
+      if (options.noShare) await setShareOptOut(repoPath, true);
+      else if (options.shareWith) await setShareOptOut(repoPath, false);
+      return result;
     } finally {
       discardScopedEmbeddingSpills();
       lock.release();
@@ -1294,6 +1379,9 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  // Content-addressed caches live once per shared store (#3352), else in the
+  // flat slot shared by its branch slots (#2106 KTD7).
+  const cacheRoot = writeTarget.sharedStore?.cachesDir ?? storagePath;
   let storageWritable: Promise<void> | undefined;
   const ensureWritableStorage = (): Promise<void> => {
     storageWritable ??= ensureStoragePathWritable(storagePath);
@@ -1326,7 +1414,20 @@ async function runFullAnalysisInner(
     log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
   }
 
+  // Shared-store pointer slots (#3352) get a private graph just before the
+  // first graph open: here for the paths that open it before the up-to-date
+  // check, and below once that check falls through.
+  const ensurePrivateGraph = async (copy = true): Promise<void> => {
+    if (!writeTarget.sharedStore || placement.branch) return;
+    if (!(await ensurePrivateSharedGraph(metaDir, log, { copy }))) {
+      options = { ...options, force: true };
+    }
+    // Later dirty-flag writes spread the in-memory metadata; keep them from
+    // re-recording the pointer this slot just left.
+    delete loadedMeta?.graphPath;
+  };
   const loadedMeta = await loadMeta(metaDir);
+  if (loadedMeta?.incrementalInProgress || options.repairFts) await ensurePrivateGraph();
   if (options.preserveExistingPdg && options.pdg === undefined) {
     if (loadedMeta) {
       options = { ...options, pdg: loadedMeta.pdg !== undefined };
@@ -2109,6 +2210,20 @@ async function runFullAnalysisInner(
     processDetectionBudget,
   );
 
+  // A shared-store slot (#3352) can record HEAD with no graph behind it: a
+  // publish interrupted between its renames, or a commit graph reclaimed from
+  // under the pointer. Neither the fast path nor an incremental diff (which
+  // writes only changed files into a fresh, empty database) would restore it,
+  // so rebuild. Scoped to store slots: private `.gitnexus` indexes only lose
+  // their graph by hand, and their metadata-only fixtures rely on this path.
+  if (existingMeta && !options.force && storeRootOfCheckoutSlot(storagePath)) {
+    const graph = placement.branch ? lbugPath : resolveGraphPath(storagePath);
+    if (!existsSync(graph)) {
+      log('Shared store: this checkout has no graph; doing a full build.');
+      options = { ...options, force: true };
+    }
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -2280,6 +2395,13 @@ async function runFullAnalysisInner(
   }
 
   await ensureWritableStorage();
+  // A forced rebuild reads the old graph only to carry embeddings over; with
+  // none to carry, copying the shared graph would be thrown away unread.
+  const forcedRebuildReadsOldGraph =
+    resumeEmbeddingCheckpoint ||
+    _deriveEmbeddingMode(options, existingMeta?.stats?.embeddings ?? 0).shouldLoadCache;
+  await ensurePrivateGraph(!options.force || forcedRebuildReadsOldGraph);
+  delete existingMeta?.graphPath;
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
@@ -2382,13 +2504,13 @@ async function runFullAnalysisInner(
   // after success. Unique because index locks are per branch slot while this
   // cache root is shared across branches.
   if (options.useParseCache === false) {
-    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
+    coldParseRebuildDir = await createColdParseRebuildDir(cacheRoot);
     forgetCreatedParseCacheDir(coldParseRebuildDir);
   }
   const parseCache =
     options.useParseCache === false
       ? emptyParseCache(coldParseRebuildDir)
-      : await loadParseCache(storagePath);
+      : await loadParseCache(cacheRoot);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -4796,15 +4918,27 @@ async function runFullAnalysisInner(
     // so the cache file size stays bounded across runs (chunks whose
     // composition no longer matches anything in the current scan are dead
     // weight; the parse phase populates `usedKeys` as it processes chunks).
-    try {
+    const saveCaches = async (): Promise<void> => {
       // #2106 R6: the parse cache + durable store are shared across branches.
       // Before pruning to this run's keys, fold in the OTHER branches' recorded
       // chunk keys so a branch switch doesn't evict their still-live shards.
       // Adding to usedKeys makes them survive pruneCache AND land in the saved
       // index (saveParseCache builds the index from usedKeys). Excludes this
       // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today.
-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      // set byte-identical to today. A shared store (#3352) folds in every
+      // member checkout and commit graph the same way.
+      // An unlistable store directory starts the fold incomplete, so the
+      // retention branch below keeps other slots' chunks.
+      const listing = writeTarget.sharedStore
+        ? await listStoreMetaRoots(writeTarget.sharedStore)
+        : { roots: [storagePath], complete: true };
+      const siblingKeys = new Set<string>();
+      let complete = listing.complete;
+      for (const root of listing.roots) {
+        const folded = await collectBranchCacheKeys(root, metaDir);
+        for (const k of folded.keys) siblingKeys.add(k);
+        if (!folded.complete) complete = false;
+      }
       if (complete) {
         for (const k of siblingKeys) parseCache.usedKeys.add(k);
       } else {
@@ -4817,7 +4951,7 @@ async function runFullAnalysisInner(
       if (pruned > 0) {
         log(`Parse cache: pruned ${pruned} stale chunk entries`);
       }
-      const savedKeys = await saveParseCache(storagePath, parseCache);
+      const savedKeys = await saveParseCache(cacheRoot, parseCache);
       // Prune the durable ParsedFile store to EXACTLY the parse cache's
       // surviving keys (#2038 warm-cache coverage), so the two content-addressed
       // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
@@ -4828,11 +4962,16 @@ async function runFullAnalysisInner(
       // durable-store write must never
       // break an otherwise successful run (next run treats it as a miss).
       await mergeStagedDurableParsedFileStore(
-        storagePath,
-        parseCache.storagePath ?? storagePath,
+        cacheRoot,
+        parseCache.storagePath ?? cacheRoot,
         PARSE_CACHE_VERSION,
         new Set(savedKeys),
       );
+    };
+    try {
+      await (writeTarget.sharedStore
+        ? withStoreLock(writeTarget.sharedStore, 'cache', saveCaches)
+        : saveCaches());
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }

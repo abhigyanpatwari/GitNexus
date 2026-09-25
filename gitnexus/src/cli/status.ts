@@ -4,6 +4,13 @@
  * Shows the indexing status of the current repository.
  */
 
+import { resolveGraphPath, storeRootOfCheckoutSlot } from '../storage/shared-store.js';
+import {
+  describeSharedGraph,
+  findLegacyLocalIndex,
+  readGraphCloneKind,
+} from '../storage/shared-store-lifecycle.js';
+import { formatSlotSize } from './stale-branch-format.js';
 import path from 'path';
 import {
   getStoragePaths,
@@ -349,6 +356,28 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       !isWorkingTreeDirty(repo.repoPath));
 
   const isUpToDate = metadataIsCurrent && contentIsCurrent;
+  // Shared sibling store (#3352): which graph this checkout reads, and any
+  // pre-adoption index still sitting in <repo>/.gitnexus.
+  const storeRoot = storeRootOfCheckoutSlot(repo.storagePath);
+  const sharedStore = storeRoot
+    ? {
+        key: path.basename(storeRoot),
+        // A pinned branch index (`branches/<slug>/lbug`) is always private;
+        // only the flat slot can point at a shared commit graph.
+        graph:
+          activeMeta === repo.meta
+            ? describeSharedGraph(resolveGraphPath(repo.storagePath), repo.storagePath)
+            : ('private' as const),
+        commit: activeMeta.lastCommit,
+      }
+    : null;
+  // A private flat graph copied from a shared one: say whether the filesystem
+  // shared its unchanged pages (copy-on-write) or it is a full copy.
+  const privateClone =
+    sharedStore?.graph === 'private' && activeMeta === repo.meta
+      ? await readGraphCloneKind(repo.storagePath)
+      : null;
+  const legacyLocalIndex = await findLegacyLocalIndex(repo.repoPath, repo.storagePath);
   if (options.json) {
     console.log(
       JSON.stringify({
@@ -369,6 +398,10 @@ export const statusCommand = async (options: StatusOptions = {}) => {
           runnerIdentity: currentRunnerIdentity,
         },
         contentDrift: describeContentDrift(contentDrift),
+        sharedStore: sharedStore ? { ...sharedStore, privateClone } : null,
+        legacyLocalIndex: legacyLocalIndex
+          ? { path: legacyLocalIndex.dir, bytes: legacyLocalIndex.bytes }
+          : null,
         status: isUpToDate ? 'up-to-date' : 'stale',
       }),
     );
@@ -382,6 +415,33 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     console.log(t('status.workspaceIndexLabel', { primary: repo.meta.branch ?? '' }));
   }
 
+  if (sharedStore) {
+    console.log(
+      sharedStore.graph === 'shared'
+        ? t('status.sharedStoreShared', {
+            key: sharedStore.key,
+            commit: sharedStore.commit.slice(0, 7),
+          })
+        : t('status.sharedStorePrivate', { key: sharedStore.key }),
+    );
+    if (privateClone) {
+      console.log(
+        t(
+          privateClone === 'copy-on-write'
+            ? 'status.sharedStoreCloneCow'
+            : 'status.sharedStoreCloneCopy',
+        ),
+      );
+    }
+  }
+  if (legacyLocalIndex) {
+    console.log(
+      t('status.legacyLocalIndex', {
+        path: legacyLocalIndex.dir,
+        size: formatSlotSize(legacyLocalIndex.bytes),
+      }),
+    );
+  }
   console.log(`${t('status.indexed')}: ${new Date(activeMeta.indexedAt).toLocaleString()}`);
   console.log(`${t('status.indexedCommit')}: ${activeMeta.lastCommit?.slice(0, 7)}`);
   console.log(`${t('status.currentCommit')}: ${currentCommit?.slice(0, 7)}`);
