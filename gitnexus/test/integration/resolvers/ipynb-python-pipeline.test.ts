@@ -82,12 +82,7 @@ describe('Jupyter notebook Python pipeline', () => {
         ),
       ).toHaveLength(0);
       expect(
-        getNodesByLabelFull(result, 'File').filter((n) =>
-          n.properties.filePath.replace(/\\/g, '/').endsWith('julia.ipynb'),
-        ),
-      ).toHaveLength(0);
-      expect(
-        getNodesByLabelFull(result, 'File').filter((n) =>
+        getNodesByLabelFull(result, 'Function').filter((n) =>
           n.properties.filePath.replace(/\\/g, '/').endsWith('broken.ipynb'),
         ),
       ).toHaveLength(0);

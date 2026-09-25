@@ -647,7 +647,11 @@ export function extractNotebookPythonCached(
   content: string,
 ): NotebookPythonExtraction | null {
   const hit = extractCache.get(filePath);
-  if (hit && hit.content === content) return hit.result;
+  if (hit && hit.content === content) {
+    extractCache.delete(filePath);
+    extractCache.set(filePath, hit);
+    return hit.result;
+  }
   const result = extractNotebookPython(content);
   if (extractCache.size >= EXTRACT_CACHE_LIMIT && !extractCache.has(filePath)) {
     const oldest = extractCache.keys().next().value;

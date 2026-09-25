@@ -12,7 +12,7 @@
  *      binding, and `__init__` assignments from annotated parameters emit
  *      class-scoped instance-field bindings (see `receiver-binding.ts`).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * No I/O. A `.ipynb` path also depends on `filePath` and `sourceMeta`, not only the source text.
  */
 
 import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
