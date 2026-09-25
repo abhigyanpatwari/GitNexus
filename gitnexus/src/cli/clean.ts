@@ -176,7 +176,9 @@ const collectSharedStores = async (force: boolean): Promise<void> => {
   });
   // Stray files (`.DS_Store`) are not stores, and a symlink is not followed:
   // reclaim deletes under the root it is given. A store another collector
-  // removed meanwhile is simply gone.
+  // removed meanwhile is simply gone. The lstat skips a stray link; it is not
+  // a race guard, since stores/ belongs to the user running clean and anyone
+  // able to swap an entry there can already delete the store itself.
   const roots: string[] = [];
   for (const name of names) {
     const root = path.join(storesDir, name);
@@ -388,6 +390,9 @@ export const cleanCommand = async (options?: {
     for (const entry of entries) {
       try {
         const storagePath = await requireDeletableStoragePath(entry);
+        // A shared slot is unregistered before it is deleted: its lock file
+        // lives inside it, so it must go last. A failed delete throws with the
+        // `clean --gc --force` recovery (shared-store-clean.test.ts).
         await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
         reportReclaim(await reclaimAfterSlotRemoval(storagePath));

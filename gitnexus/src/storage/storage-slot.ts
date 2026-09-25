@@ -31,7 +31,8 @@ export const sanitizeSlotBasename = (
   const candidate = sanitized.slice(0, end) || 'repository';
   // Exact device names were always prefixed. Windows also reserves them with
   // an extension (`CON.txt`); apply that only there, so existing POSIX slot
-  // names stay stable.
+  // names stay stable. All four registry-query.cjs hook copies mirror this;
+  // hooks-shared-store.test.ts checks hook-vs-TS parity on both platforms.
   const reserved =
     platform === 'win32'
       ? /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i

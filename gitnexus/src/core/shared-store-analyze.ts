@@ -391,6 +391,8 @@ export const publishSharedGraph = async (
     // commit graph never changes, so a shared copy would stay short for good.
     !meta.embeddingCheckpoint &&
     // A sparse or partial checkout builds a graph missing the files it hides.
+    // Every sparse mode marks those entries skip-worktree, which this rejects
+    // (git-utils.test.ts covers no-cone, cone and sparse-index checkouts).
     isWorkingTreePristine(repoPath);
   // Every pointer change and the reclaim that follows run under one publish
   // lock, so a concurrent reclaim never sees a half-recorded reference.

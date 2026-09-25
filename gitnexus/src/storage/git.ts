@@ -129,6 +129,8 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
  * git failure.
  */
 export const isWorkingTreePristine = (repoPath: string): boolean => {
+  // Includes every skip-worktree and assume-unchanged path (listHiddenIndexPaths,
+  // `git ls-files -v`), so the `--stage` pass below only has to find gitlinks.
   if (listWorkingTreeDirtyPaths(repoPath)?.length !== 0) return false;
   try {
     const out = execFileSync('git', ['ls-files', '--stage', '-z', '--'], {
