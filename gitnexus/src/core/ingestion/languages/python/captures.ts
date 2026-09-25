@@ -74,20 +74,11 @@ export function emitPythonScopeCaptures(
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   let notebookSegments: readonly NotebookLineSegment[] | undefined;
   if (isNotebookPath(filePath)) {
-    if (sourceMeta?.notebookSegments) {
-      notebookSegments = sourceMeta.notebookSegments;
-    } else {
-      const extracted = extractNotebookPython(sourceText);
-      if (extracted === null) {
-        if (sourceMeta?.sourceKind !== 'pre-extracted-script') return [];
-      } else {
-        parseText = extracted.pythonSource;
-        notebookSegments = extracted.segments;
-        if (sourceMeta?.sourceKind !== 'pre-extracted-script') {
-          tree = undefined;
-        }
-      }
-    }
+    const resolved = resolveNotebookCaptureSource(sourceText, tree, sourceMeta);
+    if (resolved === null) return [];
+    parseText = resolved.parseText;
+    tree = resolved.tree;
+    notebookSegments = resolved.notebookSegments;
   }
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
@@ -258,6 +249,39 @@ export function emitPythonScopeCaptures(
     return out.map((match) => remapCaptureMatch(match, notebookSegments));
   }
   return out;
+}
+
+function resolveNotebookCaptureSource(
+  sourceText: string,
+  cachedTree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined,
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
+): {
+  parseText: string;
+  tree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  notebookSegments?: readonly NotebookLineSegment[];
+} | null {
+  if (sourceMeta?.notebookSegments) {
+    return {
+      parseText: sourceText,
+      tree: cachedTree,
+      notebookSegments: sourceMeta.notebookSegments,
+    };
+  }
+  const extracted = extractNotebookPython(sourceText);
+  if (extracted === null) {
+    if (sourceMeta?.sourceKind === 'pre-extracted-script') {
+      return { parseText: sourceText, tree: cachedTree };
+    }
+    return null;
+  }
+  return {
+    parseText: extracted.pythonSource,
+    tree: sourceMeta?.sourceKind === 'pre-extracted-script' ? cachedTree : undefined,
+    notebookSegments: extracted.segments,
+  };
 }
 
 function remapRange(range: Range, segments: readonly NotebookLineSegment[]): Range {

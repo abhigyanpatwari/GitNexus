@@ -27,6 +27,7 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import { extract as extractScope } from './scope-extractor.js';
 import type { LanguageProvider } from './language-provider.js';
+import type { NotebookLineSegment } from './ipynb-extractor.js';
 
 import { logger } from '../logger.js';
 /** Callback used to report scope-extraction warnings to the host (worker or direct). */
@@ -45,12 +46,7 @@ export function extractParsedFile(
   onWarn?: ScopeBridgeWarn,
   cachedTree?: unknown,
   sourceKind: ScopeCaptureSourceKind = 'full-file',
-  notebookSegments?: readonly {
-    readonly extractStartLine: number;
-    readonly extractEndLine: number;
-    readonly jsonStartLine: number;
-    readonly jsonEndLine: number;
-  }[],
+  notebookSegments?: readonly NotebookLineSegment[],
 ): ParsedFile | undefined {
   if (provider.emitScopeCaptures === undefined) return undefined;
   if (sourceText.trim().length === 0) return undefined;

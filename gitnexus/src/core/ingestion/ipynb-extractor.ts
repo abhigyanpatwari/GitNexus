@@ -9,6 +9,9 @@
  * buffer lines map through {@link mapExtractLine}.
  */
 
+import { isNotebookFilename } from 'gitnexus-shared';
+import { buildLineIndex, lineFromOffset } from '../embeddings/line-index.js';
+
 export interface NotebookLineSegment {
   readonly extractStartLine: number;
   readonly extractEndLine: number;
@@ -21,42 +24,60 @@ export interface NotebookPythonExtraction {
   readonly segments: readonly NotebookLineSegment[];
 }
 
-const PYTHON_FAMILY = new Set(['python', 'python2', 'python3', 'ipython']);
+const PYTHON_FAMILY = new Set([
+  'python',
+  'python2',
+  'python3',
+  'ipython',
+  'sage',
+  'sagemath',
+  'micropython',
+  'pyodide',
+  'pypy',
+  'pyspark',
+]);
 
 export function isNotebookPath(filePath: string): boolean {
-  return filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb');
+  return isNotebookFilename(filePath);
 }
 
 export function isPythonFamilyLanguage(name: string | undefined | null): boolean {
   if (name === undefined || name === null) return false;
   const n = name.trim().toLowerCase();
   if (PYTHON_FAMILY.has(n)) return true;
-  return /^python\d/.test(n);
+  if (n.startsWith('ipython')) return true;
+  return /^python(?:\d|\b)/.test(n);
 }
 
-function buildLineStarts(content: string): number[] {
-  const starts = [0];
-  for (let i = 0; i < content.length; i++) {
-    if (content.charCodeAt(i) === 10) starts.push(i + 1);
-  }
-  return starts;
+/** Kernel spec names that are a language id, not a conda env label. */
+const NON_PYTHON_KERNEL =
+  /^(?:julia|ir|r|scala|rust|ruby|javascript|nodejs|node|bash|sh|sql|csharp|fsharp|go|java|kotlin|swift|php|perl|lua|octave|matlab|sas|stata|haskell|clojure|elixir|groovy|powershell|sos|cpp|cxx|dart|typescript|wolfram|scheme|racket|ocaml|fortran|gnuplot|sqlite|mysql|postgresql|tsql)(?:[-_][\w.-]+|\d[\w.-]*)?$/i;
+
+function kernelNameLanguage(name: string): string | undefined {
+  if (isPythonFamilyLanguage(name) || NON_PYTHON_KERNEL.test(name.trim())) return name;
+  return undefined;
 }
 
-function indexToLine(lineStarts: readonly number[], index: number): number {
-  if (index <= 0) return 0;
-  let lo = 0;
-  let hi = lineStarts.length - 1;
-  let ans = 0;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (lineStarts[mid] <= index) {
-      ans = mid;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
+function extensionLanguage(ext: string): string | undefined {
+  const e = ext.trim().toLowerCase();
+  if (e === '.py' || e === '.pyi' || e === '.ipy') return 'python';
+  if (
+    e === '.r' ||
+    e === '.jl' ||
+    e === '.scala' ||
+    e === '.js' ||
+    e === '.java' ||
+    e === '.go' ||
+    e === '.rs' ||
+    e === '.rb' ||
+    e === '.php' ||
+    e === '.kt' ||
+    e === '.swift' ||
+    e === '.cs'
+  ) {
+    return ext;
   }
-  return ans;
+  return undefined;
 }
 
 function skipWs(content: string, i: number): number {
@@ -138,34 +159,13 @@ function jsonBraceSpan(
   return { start: i, end: j };
 }
 
-function findDepth1Key(content: string, objStart: number, objEnd: number, key: string): number {
-  let depth = 0;
-  let inStr = false;
-  let j = objStart;
-  while (j < objEnd) {
-    const ch = content[j];
-    if (inStr) {
-      if (ch === '\\') j += 2;
-      else {
-        if (ch === '"') inStr = false;
-        j++;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      if (depth === 1 && content.startsWith(key, j)) return j;
-      inStr = true;
-      j++;
-      continue;
-    }
-    if (ch === '{' || ch === '[') depth++;
-    else if (ch === '}' || ch === ']') depth--;
-    j++;
-  }
-  return -1;
-}
-
-function findLastDepth1Key(content: string, objStart: number, objEnd: number, key: string): number {
+function findDepth1Key(
+  content: string,
+  objStart: number,
+  objEnd: number,
+  key: string,
+  match: 'first' | 'last' = 'first',
+): number {
   let depth = 0;
   let inStr = false;
   let j = objStart;
@@ -181,7 +181,10 @@ function findLastDepth1Key(content: string, objStart: number, objEnd: number, ke
       continue;
     }
     if (ch === '"') {
-      if (depth === 1 && content.startsWith(key, j)) found = j;
+      if (depth === 1 && content.startsWith(key, j)) {
+        if (match === 'first') return j;
+        found = j;
+      }
       inStr = true;
       j++;
       continue;
@@ -193,14 +196,61 @@ function findLastDepth1Key(content: string, objStart: number, objEnd: number, ke
   return found;
 }
 
-function findCellsArraySpan(content: string): { start: number; end: number } | null {
-  const root = jsonBraceSpan(content, 0, '{', '}');
-  if (!root) return null;
-  const cellsKey = findLastDepth1Key(content, root.start, root.end, '"cells"');
-  if (cellsKey < 0) return null;
-  const colon = content.indexOf(':', cellsKey + 7);
-  if (colon < 0 || colon >= root.end) return null;
+function arraySpanAfterKey(
+  content: string,
+  objStart: number,
+  objEnd: number,
+  key: '"cells"' | '"worksheets"',
+  match: 'first' | 'last',
+): { start: number; end: number } | null {
+  const keyAt = findDepth1Key(content, objStart, objEnd, key, match);
+  if (keyAt < 0) return null;
+  const colon = content.indexOf(':', keyAt + key.length);
+  if (colon < 0 || colon >= objEnd) return null;
   return jsonBraceSpan(content, colon + 1, '[', ']');
+}
+
+function codeCellArraySpans(content: string, origin: number): { start: number; end: number }[] {
+  const root = jsonBraceSpan(content, origin, '{', '}');
+  if (!root) return [];
+  const cells = arraySpanAfterKey(content, root.start, root.end, '"cells"', 'last');
+  if (cells) return [cells];
+  const worksheets = arraySpanAfterKey(content, root.start, root.end, '"worksheets"', 'last');
+  if (!worksheets) return [];
+  const spans: { start: number; end: number }[] = [];
+  let search = worksheets.start + 1;
+  while (search < worksheets.end) {
+    const brace = nextUnquotedChar(content, search, worksheets.end, '{');
+    if (brace < 0) break;
+    const obj = jsonBraceSpan(content, brace, '{', '}');
+    if (!obj || obj.end > worksheets.end) {
+      search = brace + 1;
+      continue;
+    }
+    const nested = arraySpanAfterKey(content, obj.start, obj.end, '"cells"', 'first');
+    if (nested) spans.push(nested);
+    search = obj.end;
+  }
+  return spans;
+}
+
+function readJsonString(content: string, start: number): string | null {
+  const i = skipWs(content, start);
+  if (content[i] !== '"') return null;
+  let j = i + 1;
+  let out = '';
+  while (j < content.length) {
+    const ch = content[j];
+    if (ch === '\\') {
+      out += content[j + 1] ?? '';
+      j += 2;
+      continue;
+    }
+    if (ch === '"') return out;
+    out += ch;
+    j++;
+  }
+  return null;
 }
 
 function nextUnquotedChar(content: string, from: number, until: number, needle: '{' | '"'): number {
@@ -263,15 +313,21 @@ function findNextCodeCellSourceSpan(
       continue;
     }
     const valueStart = skipWs(content, colon + 1);
-    if (content.slice(valueStart, valueStart + 6) !== '"code"') {
+    const cellType = readJsonString(content, valueStart);
+    if (cellType === null || cellType.toLowerCase() !== 'code') {
       search = obj.end;
       continue;
     }
-    const sourceKey = findDepth1Key(content, obj.start, obj.end, '"source"');
+    let sourceKey = findDepth1Key(content, obj.start, obj.end, '"source"');
+    let keyLen = 8;
+    if (sourceKey < 0) {
+      sourceKey = findDepth1Key(content, obj.start, obj.end, '"input"');
+      keyLen = 7;
+    }
     if (sourceKey < 0) {
       return { span: null, nextFrom: obj.end };
     }
-    const srcColon = content.indexOf(':', sourceKey + 8);
+    const srcColon = content.indexOf(':', sourceKey + keyLen);
     if (srcColon < 0 || srcColon >= obj.end) {
       return { span: null, nextFrom: obj.end };
     }
@@ -293,6 +349,7 @@ function flattenSource(source: unknown): string {
 }
 
 function cellLanguage(cell: Record<string, unknown>): string | undefined {
+  if (typeof cell.language === 'string') return cell.language;
   const meta = cell.metadata;
   if (!meta || typeof meta !== 'object') return undefined;
   const m = meta as Record<string, unknown>;
@@ -316,12 +373,16 @@ function notebookLanguageFields(nb: Record<string, unknown>): {
   const li = md.language_info;
   return {
     kernelspec:
-      ks && typeof ks === 'object' && typeof (ks as Record<string, unknown>).language === 'string'
-        ? String((ks as Record<string, unknown>).language)
+      ks && typeof ks === 'object'
+        ? typeof (ks as Record<string, unknown>).language === 'string'
+          ? String((ks as Record<string, unknown>).language)
+          : kernelNameLanguage(String((ks as Record<string, unknown>).name ?? ''))
         : undefined,
     languageInfo:
-      li && typeof li === 'object' && typeof (li as Record<string, unknown>).name === 'string'
-        ? String((li as Record<string, unknown>).name)
+      li && typeof li === 'object'
+        ? typeof (li as Record<string, unknown>).name === 'string'
+          ? String((li as Record<string, unknown>).name)
+          : extensionLanguage(String((li as Record<string, unknown>).file_extension ?? ''))
         : undefined,
   };
 }
@@ -330,57 +391,191 @@ function kernelShouldSkip(nb: Record<string, unknown>): boolean {
   const { kernelspec, languageInfo } = notebookLanguageFields(nb);
   const fields = [kernelspec, languageInfo].filter((x): x is string => x !== undefined);
   if (fields.length === 0) return false;
-  if (fields.some((f) => !isPythonFamilyLanguage(f))) return true;
-  if (fields.length === 2 && fields[0].toLowerCase() !== fields[1].toLowerCase()) {
-    const a = isPythonFamilyLanguage(fields[0]);
-    const b = isPythonFamilyLanguage(fields[1]);
-    if (a !== b) return true;
+  return fields.some((f) => !isPythonFamilyLanguage(f));
+}
+
+/** Cell magics whose body is still Python. Foreign %% cells are skipped. */
+const PYTHON_CELL_MAGICS = new Set([
+  'time',
+  'timeit',
+  'capture',
+  'prun',
+  'lprun',
+  'mprun',
+  'debug',
+  'px',
+  'python',
+  'python2',
+  'python3',
+  'ipython',
+  'pypy',
+]);
+
+function cellMagicName(line: string): string {
+  const token = line.trimStart().slice(2).trim().split(/\s+/)[0] ?? '';
+  return token.toLowerCase();
+}
+
+function isIpythonHelpLine(line: string): boolean {
+  const t = line.trim();
+  if (t.length === 0 || t.startsWith('#')) return false;
+  return /^\?\??\S/.test(t) || /^[A-Za-z_][\w.]*(?:\?\?|\?)\s*$/.test(t);
+}
+
+function moduleSpecFromRunPath(raw: string): string | null {
+  let path = raw
+    .trim()
+    .replace(/^['"]|['"]$/g, '')
+    .replace(/\\/g, '/');
+  if (path.startsWith('http://') || path.startsWith('https://') || path.endsWith('.ipynb')) {
+    return null;
   }
-  return false;
+  path = path.replace(/^\.\//, '');
+  if (path.endsWith('.py')) path = path.slice(0, -3);
+  const parts = path.split('/').filter((part) => part.length > 0);
+  if (parts.length === 0 || parts.some((part) => part === '..' || !/^[A-Za-z_]\w*$/.test(part))) {
+    return null;
+  }
+  return parts.join('.');
+}
+
+function rewriteRunOrLoad(line: string): string | null {
+  const trimmed = line.trimStart();
+  const indent = line.slice(0, line.length - trimmed.length);
+  const match = trimmed.match(/^%(?:run|load|loadpy)\s+(\S+)/);
+  if (!match) return null;
+  const spec = moduleSpecFromRunPath(match[1]);
+  if (!spec) return null;
+  return `${indent}import ${spec}  # ${trimmed}`;
+}
+
+function isBalancedPython(source: string): boolean {
+  let quote: "'" | '"' | null = null;
+  let triple = false;
+  let paren = 0;
+  let bracket = 0;
+  let brace = 0;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (quote) {
+      if (ch === '\\' && !triple) {
+        i++;
+        continue;
+      }
+      if (triple && source.startsWith(quote.repeat(3), i)) {
+        quote = null;
+        triple = false;
+        i += 2;
+        continue;
+      }
+      if (!triple && ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '#') {
+      const nl = source.indexOf('\n', i);
+      if (nl < 0) break;
+      i = nl;
+      continue;
+    }
+    if ((ch === '"' || ch === "'") && source.startsWith(ch.repeat(3), i)) {
+      quote = ch;
+      triple = true;
+      i += 2;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') paren++;
+    else if (ch === ')') paren--;
+    else if (ch === '[') bracket++;
+    else if (ch === ']') bracket--;
+    else if (ch === '{') brace++;
+    else if (ch === '}') brace--;
+    if (paren < 0 || bracket < 0 || brace < 0) return false;
+  }
+  return quote === null && paren === 0 && bracket === 0 && brace === 0;
 }
 
 function processCellLines(raw: string): { skipCell: boolean; lines: string[] } {
-  const lines = raw.split('\n');
+  const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
   const firstNonEmpty = lines.find((l) => l.trim().length > 0);
-  if (firstNonEmpty !== undefined && firstNonEmpty.trimStart().startsWith('%%')) {
+  const magic =
+    firstNonEmpty !== undefined && firstNonEmpty.trimStart().startsWith('%%')
+      ? cellMagicName(firstNonEmpty)
+      : undefined;
+  if (magic !== undefined && !PYTHON_CELL_MAGICS.has(magic) && !isPythonFamilyLanguage(magic)) {
     return { skipCell: true, lines: [''] };
   }
-  const out = lines.map((line) => {
+  const rewritten = lines.map((line) => {
     const t = line.trimStart();
-    if (t.startsWith('%') || t.startsWith('!')) {
-      return `# ${line}`;
-    }
+    if (isIpythonHelpLine(line) || t.startsWith('!')) return `# ${line}`;
+    const runImport = rewriteRunOrLoad(line);
+    if (runImport) return runImport;
+    if (t.startsWith('%')) return `# ${line}`;
     return line;
   });
-  return { skipCell: false, lines: out };
+  if (isBalancedPython(rewritten.join('\n'))) {
+    return { skipCell: false, lines: rewritten };
+  }
+  return {
+    skipCell: false,
+    lines: rewritten.map((line) => (line.trim().length === 0 ? line : `# ${line}`)),
+  };
+}
+
+function notebookCodeCells(nb: Record<string, unknown>): unknown[] | null {
+  if (Array.isArray(nb.cells)) return nb.cells;
+  if (!Array.isArray(nb.worksheets)) return null;
+  const cells: unknown[] = [];
+  for (const worksheet of nb.worksheets) {
+    if (!worksheet || typeof worksheet !== 'object') continue;
+    const nested = (worksheet as Record<string, unknown>).cells;
+    if (Array.isArray(nested)) cells.push(...nested);
+  }
+  return cells.length > 0 ? cells : null;
+}
+
+function cellSource(cell: Record<string, unknown>): unknown {
+  return cell.source !== undefined ? cell.source : cell.input;
 }
 
 export function extractNotebookPython(content: string): NotebookPythonExtraction | null {
+  const origin = content.charCodeAt(0) === 0xfeff ? 1 : 0;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(content);
+    parsed = JSON.parse(origin === 0 ? content : content.slice(origin));
   } catch {
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const nb = parsed as Record<string, unknown>;
-  if (!Array.isArray(nb.cells)) return null;
+  const codeCells = notebookCodeCells(nb);
+  if (!codeCells) return null;
   if (kernelShouldSkip(nb)) return null;
 
-  const cells = findCellsArraySpan(content);
-  if (!cells) return null;
+  const spans = codeCellArraySpans(content, origin);
+  if (spans.length === 0) return null;
 
-  const lineStarts = buildLineStarts(content);
+  const lineStarts = buildLineIndex(content);
   const chunks: string[] = [];
   const segments: NotebookLineSegment[] = [];
+  let spanIndex = 0;
   let searchFrom = 0;
 
-  for (const rawCell of nb.cells) {
+  for (const rawCell of codeCells) {
     if (!rawCell || typeof rawCell !== 'object') continue;
     const cell = rawCell as Record<string, unknown>;
-    if (cell.cell_type !== 'code') continue;
+    if (String(cell.cell_type).toLowerCase() !== 'code') continue;
 
-    const located = findNextCodeCellSourceSpan(content, searchFrom, cells);
+    let located: { span: { start: number; end: number } | null; nextFrom: number } | null = null;
+    while (spanIndex < spans.length) {
+      located = findNextCodeCellSourceSpan(content, searchFrom, spans[spanIndex]);
+      if (located) break;
+      spanIndex++;
+      searchFrom = 0;
+    }
     if (!located) return null;
     searchFrom = located.nextFrom;
     if (!located.span) continue;
@@ -390,16 +585,17 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
       continue;
     }
 
-    const { skipCell, lines } = processCellLines(flattenSource(cell.source));
-    const jsonStartLine = indexToLine(lineStarts, firstQuoteInValue(content, located.span));
-    const jsonEndLine = Math.max(jsonStartLine, indexToLine(lineStarts, located.span.end - 1));
+    const { skipCell, lines } = processCellLines(flattenSource(cellSource(cell)));
+    const jsonStartLine = lineFromOffset(lineStarts, firstQuoteInValue(content, located.span));
+    const jsonEndLine = Math.max(jsonStartLine, lineFromOffset(lineStarts, located.span.end - 1));
 
     if (skipCell) {
       continue;
     }
 
     let text = lines.join('\n');
-    if (text.endsWith('\n')) text = text.slice(0, -1);
+    const hadTrailingNewline = text.endsWith('\n');
+    if (hadTrailingNewline) text = text.slice(0, -1);
     if (text.trim().length === 0) {
       continue;
     }
@@ -407,7 +603,7 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
     if (chunks.length > 0) {
       chunks.push('\n\n');
     }
-    const lineCount = text.split('\n').length;
+    const lineCount = hadTrailingNewline ? Math.max(1, lines.length - 1) : lines.length;
     const extractStartLine =
       segments.length === 0 ? 0 : segments[segments.length - 1].extractEndLine + 2;
     chunks.push(text);
@@ -472,7 +668,8 @@ export function notebookPythonSnippetFromExtract(
   for (const seg of extracted.segments) {
     if (seg.jsonEndLine < startLine || seg.jsonStartLine > endLine) continue;
     for (let extract = seg.extractStartLine; extract <= seg.extractEndLine; extract++) {
-      const jsonLine = mapExtractLine(extract, extracted.segments);
+      const jsonSpan = seg.jsonEndLine - seg.jsonStartLine;
+      const jsonLine = seg.jsonStartLine + Math.min(extract - seg.extractStartLine, jsonSpan);
       if (jsonLine >= startLine && jsonLine <= endLine) {
         out.push(pyLines[extract] ?? '');
       }

@@ -287,4 +287,142 @@ describe('extractNotebookPython edge cases', () => {
     const realLine = content.split('\n').findIndex((l) => l.includes('def real'));
     expect(result!.segments[0].jsonStartLine).toBe(realLine);
   });
+
+  it('keeps Python under %%time and skips %%bash', () => {
+    const content = notebook({
+      language: 'python',
+      cells: [
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['%%time\n', 'def train():\n', '    pass\n'],
+          outputs: [],
+        },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('def train');
+    expect(result!.pythonSource).toContain('# %%time');
+  });
+
+  it('comments IPython help lines', () => {
+    const content = notebook({
+      language: 'python',
+      cells: [
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['train?\n', 'def train():\n', '    pass\n'],
+          outputs: [],
+        },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource.split('\n').filter((l) => l.length > 0)[0]).toBe('# train?');
+    expect(result!.pythonSource).toContain('def train');
+  });
+
+  it('parses a UTF-8 BOM notebook', () => {
+    const content =
+      '\uFEFF' +
+      notebook({
+        language: 'python',
+        cells: [
+          {
+            cell_type: 'code',
+            metadata: {},
+            source: ['def train():\n', '    pass\n'],
+            outputs: [],
+          },
+        ],
+      });
+    expect(extractNotebookPython(content)?.pythonSource).toContain('def train');
+  });
+
+  it('treats python and python3 metadata as the same family', () => {
+    const content = notebook({
+      language: 'python',
+      languageInfo: 'python3',
+      cells: [{ cell_type: 'code', metadata: {}, source: ['a = 1\n'], outputs: [] }],
+    });
+    expect(extractNotebookPython(content)?.pythonSource).toContain('a = 1');
+  });
+
+  it('skips a notebook whose kernelspec name is R and has no language field', () => {
+    const content = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: { kernelspec: { name: 'ir', display_name: 'R' } },
+      cells: [{ cell_type: 'code', metadata: {}, source: ['x <- 1\n'], outputs: [] }],
+    });
+    expect(extractNotebookPython(content)).toBeNull();
+  });
+
+  it('extracts nbformat v3 worksheets via input', () => {
+    const content = JSON.stringify(
+      {
+        nbformat: 3,
+        nbformat_minor: 0,
+        metadata: { name: 'legacy' },
+        worksheets: [
+          {
+            cells: [
+              {
+                cell_type: 'code',
+                language: 'python',
+                input: ['def train():\n', '    pass\n'],
+                outputs: [],
+              },
+            ],
+          },
+        ],
+      },
+      null,
+      2,
+    );
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('def train');
+    const line = content.split('\n').findIndex((l) => l.includes('def train'));
+    expect(result!.segments[0].jsonStartLine).toBe(line);
+  });
+
+  it('keeps later cells when an earlier cell has an unclosed string', () => {
+    const content = notebook({
+      language: 'python',
+      cells: [
+        { cell_type: 'code', metadata: {}, source: ['text = """unterminated\n'], outputs: [] },
+        { cell_type: 'code', metadata: {}, source: ['def train():\n', '    pass\n'], outputs: [] },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('def train');
+    expect(result!.pythonSource).not.toMatch(/^text = """/m);
+  });
+
+  it('turns %run of a local module into an import', () => {
+    const content = notebook({
+      language: 'python',
+      cells: [
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['%run ./lib.py\n', 'def train():\n', '    pass\n'],
+          outputs: [],
+        },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result!.pythonSource).toContain('import lib  # %run ./lib.py');
+    expect(result!.pythonSource).toContain('def train');
+  });
+
+  it('indexes a Sage kernel as Python', () => {
+    const content = notebook({
+      language: 'sage',
+      cells: [
+        { cell_type: 'code', metadata: {}, source: ['def train():\n', '    pass\n'], outputs: [] },
+      ],
+    });
+    expect(extractNotebookPython(content)?.pythonSource).toContain('def train');
+  });
 });

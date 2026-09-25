@@ -41,15 +41,16 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // parser always come from the same provider. Length-preserving, so node
   // offsets still index `content` except for `.ipynb`, which is replaced by
   // concatenated code-cell Python (same as the parse worker).
-  let parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
+  const provider = getProvider(language);
   if (isNotebookPath(filePath)) {
     const extracted = extractNotebookPython(content);
     if (!extracted) return null;
-    parseContent =
-      getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
-      extracted.pythonSource;
+    const parseContent =
+      provider.preprocessSource?.(extracted.pythonSource, filePath) ?? extracted.pythonSource;
+    return parseSourceSafe(parserInstance, parseContent);
   }
 
+  const parseContent = provider.preprocessSource?.(content, filePath) ?? content;
   return parseSourceSafe(parserInstance, parseContent);
 };
 

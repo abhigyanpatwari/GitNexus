@@ -288,9 +288,6 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 103 -> 104 for #3339 review: pair-HOC queries name
   // `mutation(withAuth(arrow))` object-pair handlers. Warm caches replay
   // anonymous arrows, so both stores re-extract.
-  // Moved 103 -> 104 for #3339 review: pair-HOC queries name
-  // `mutation(withAuth(arrow))` object-pair handlers. Warm caches replay
-  // anonymous arrows, so both stores re-extract.
   // Moved 104 -> 105 for #3371: notebook code-cell extraction before Python parse.
   it('pins SCHEMA_BUMP to 105 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3371)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(105);
