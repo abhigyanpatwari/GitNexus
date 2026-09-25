@@ -36,7 +36,7 @@ import {
   saveMeta,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
-import { loadMeta, type RepoMeta } from '../storage/repo-meta.js';
+import { isMissingFilesystemError, loadMeta, type RepoMeta } from '../storage/repo-meta.js';
 import {
   cloneStoreKey,
   commitGraphDir,
@@ -337,17 +337,29 @@ export const ensurePrivateSharedGraph = async (
 /**
  * Every directory in the store whose metadata may record parse-cache keys:
  * each checkout slot (its branch slots are read by the caller's per-root
- * fold) and each commit graph.
+ * fold) and each commit graph. `complete` is false when a store directory
+ * exists but could not be listed: the caller must then keep every cached
+ * chunk instead of pruning to a partial key set. A missing directory just
+ * has no members, so the listing stays complete.
  */
-export const listStoreMetaRoots = async (layout: SharedStoreLayout): Promise<string[]> => {
+export const listStoreMetaRoots = async (
+  layout: SharedStoreLayout,
+): Promise<{ roots: string[]; complete: boolean }> => {
   const roots: string[] = [];
+  let complete = true;
   for (const dir of [layout.checkoutsDir, layout.commitsDir]) {
-    const names = await fs.readdir(dir).catch(() => [] as string[]);
+    let names: string[];
+    try {
+      names = await fs.readdir(dir);
+    } catch (err) {
+      if (!isMissingFilesystemError(err)) complete = false;
+      continue;
+    }
     for (const name of names) {
       if (!name.startsWith('.')) roots.push(path.join(dir, name));
     }
   }
-  return roots;
+  return { roots, complete };
 };
 
 /**

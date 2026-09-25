@@ -1142,7 +1142,7 @@ describe('listWorkingTreeDirtyPaths', () => {
 // that hides committed content (sparse checkout, index bits, an uninitialized
 // submodule) must never become the commit graph other checkouts reuse.
 
-/** A repo with one committed file, `a.ts`. */
+/** A repo with two committed files, `a.ts` and `lib/b.ts`. */
 function makeCommittedRepo(): string {
   const repo = makeIsolatedGitRepo();
   fs.writeFileSync(path.join(repo, 'a.ts'), 'export const a = 1;');

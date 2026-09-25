@@ -71,7 +71,7 @@ export const en = {
   'clean.shared.reclaimed':
     'Shared store: removed {{count}} commit graph(s) no checkout references.',
   'clean.shared.kept':
-    'Shared store: kept {{count}} unreferenced commit graph(s) that are still open; run `gitnexus clean --gc` later.',
+    'Shared store: kept {{count}} unreferenced commit graph(s) that could not be removed (in use or not writable); run `gitnexus clean --gc` later.',
   'clean.shared.storeRemoved': 'Shared store: removed {{path}} (no checkouts remain).',
   'clean.gc.none': 'No shared stores to collect.',
   'clean.gc.keptMembers':

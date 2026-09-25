@@ -11,6 +11,7 @@ import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   ensurePrivateSharedGraph,
   featureKeyOf,
+  listStoreMetaRoots,
   publishSharedGraph,
   seedSharedSlot,
 } from '../../src/core/shared-store-analyze.js';
@@ -182,11 +183,15 @@ describe('shared sibling store analyze (#3352)', () => {
     const graph = getStoragePaths(wtB, undefined, layoutOf(wtB).checkoutSlot).lbugPath;
     const db = new lbug.Database(graph, 0, true, true);
     const conn = new lbug.Connection(db);
-    const rows = (await (
-      await conn.query('MATCH (f:File) RETURN f.filePath AS p ORDER BY p')
-    ).getAll()) as { p: string }[];
-    await conn.close();
-    await db.close();
+    let rows: { p: string }[];
+    try {
+      rows = (await (
+        await conn.query('MATCH (f:File) RETURN f.filePath AS p ORDER BY p')
+      ).getAll()) as { p: string }[];
+    } finally {
+      await conn.close();
+      await db.close();
+    }
     expect(rows.map((r) => r.p)).toEqual(['a.ts']);
   }, 180_000);
 
@@ -583,4 +588,58 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
     expect(result.alreadyUpToDate).not.toBe(true);
     expect(existsSync(resolveGraphPath(slot))).toBe(true);
   }, 120_000);
+});
+
+describe('listStoreMetaRoots', () => {
+  let tmp: Awaited<ReturnType<typeof createTempDir>>;
+  let layout: SharedStoreLayout;
+
+  beforeEach(async () => {
+    tmp = await createTempDir('gitnexus-test-store-roots-');
+    const root = path.join(tmp.dbPath, 'store');
+    layout = {
+      key: 'repo-0000',
+      root,
+      cachesDir: path.join(root, 'caches'),
+      commitsDir: path.join(root, 'commits'),
+      checkoutsDir: path.join(root, 'checkouts'),
+      checkoutSlot: path.join(root, 'checkouts', 'slot-a'),
+      canonicalCheckout: null,
+    };
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmp.cleanup();
+  });
+
+  it('stays complete when the store directories do not exist yet', async () => {
+    expect(await listStoreMetaRoots(layout)).toEqual({ roots: [], complete: true });
+  });
+
+  it('lists checkout slots and commit graphs, skipping dot entries', async () => {
+    await fs.mkdir(path.join(layout.checkoutsDir, 'slot-a'), { recursive: true });
+    await fs.mkdir(path.join(layout.checkoutsDir, '.lock'), { recursive: true });
+    await fs.mkdir(path.join(layout.commitsDir, 'abc'), { recursive: true });
+    expect(await listStoreMetaRoots(layout)).toEqual({
+      roots: [path.join(layout.checkoutsDir, 'slot-a'), path.join(layout.commitsDir, 'abc')],
+      complete: true,
+    });
+  });
+
+  it('reports an incomplete listing when a store directory cannot be read', async () => {
+    await fs.mkdir(path.join(layout.commitsDir, 'abc'), { recursive: true });
+    await fs.mkdir(layout.checkoutsDir, { recursive: true });
+    const realReaddir = fs.readdir;
+    vi.spyOn(fs, 'readdir').mockImplementation((async (dir: string) => {
+      if (dir === layout.checkoutsDir) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return realReaddir(dir);
+    }) as unknown as typeof fs.readdir);
+    expect(await listStoreMetaRoots(layout)).toEqual({
+      roots: [path.join(layout.commitsDir, 'abc')],
+      complete: false,
+    });
+  });
 });

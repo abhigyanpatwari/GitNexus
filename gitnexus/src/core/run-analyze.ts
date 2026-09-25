@@ -4927,12 +4927,14 @@ async function runFullAnalysisInner(
       // run's own meta dir, so a single-branch repo folds in nothing → prune
       // set byte-identical to today. A shared store (#3352) folds in every
       // member checkout and commit graph the same way.
-      const keyRoots = writeTarget.sharedStore
+      // An unlistable store directory starts the fold incomplete, so the
+      // retention branch below keeps other slots' chunks.
+      const listing = writeTarget.sharedStore
         ? await listStoreMetaRoots(writeTarget.sharedStore)
-        : [storagePath];
+        : { roots: [storagePath], complete: true };
       const siblingKeys = new Set<string>();
-      let complete = true;
-      for (const root of keyRoots) {
+      let complete = listing.complete;
+      for (const root of listing.roots) {
         const folded = await collectBranchCacheKeys(root, metaDir);
         for (const k of folded.keys) siblingKeys.add(k);
         if (!folded.complete) complete = false;

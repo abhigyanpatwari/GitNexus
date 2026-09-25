@@ -3,7 +3,14 @@ import { constants as fsConstants, existsSync, readFileSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  readRegistry,
+  registerRepo,
+  saveMeta,
+  unregisterRepo,
+} from '../../src/storage/repo-manager.js';
 import {
   resolveSharedStore,
   sharedStoreLayout,
@@ -14,6 +21,7 @@ import {
   reclaimAfterSlotRemoval,
   readGraphCloneKind,
   reclaimSharedStore,
+  removeCheckoutStorage,
   removeLegacyLocalIndex,
   removeSharedStorePointer,
   writeSharedStorePointer,
@@ -350,6 +358,48 @@ describe('reclaimSharedStore', () => {
     const after = await reclaimSharedStore(layout().root, { gc: true, dryRun: true });
     expect(after.droppedMembers).toEqual([slot]);
     expect(existsSync(slot)).toBe(true);
+  });
+
+  it("clean --gc preview leaves an orphan slot's staging files in place", async () => {
+    const slot = await member('gone-000000000000', { repoPath: '/nonexistent/checkout' });
+    const staging = path.join(slot, 'lbug.staging.x');
+    await fs.writeFile(staging, 'partial');
+    const preview = await reclaimSharedStore(layout().root, { gc: true, dryRun: true });
+    expect(preview.droppedMembers).toEqual([slot]);
+    expect(existsSync(staging)).toBe(true);
+  });
+
+  it('names the leftover slot and clean --gc when the final slot deletion fails', async () => {
+    const checkout = path.join(tmpHome.dbPath, 'checkout');
+    await fs.mkdir(checkout);
+    const slot = await member('wt-000000000000', { repoPath: checkout });
+    await registerRepo(
+      checkout,
+      { repoPath: checkout, storagePath: slot, lastCommit: '', indexedAt: '' },
+      { storagePath: slot },
+    );
+    const realRm = fs.rm;
+    const rm = vi.spyOn(fs, 'rm').mockImplementation((async (
+      target: string,
+      ...rest: unknown[]
+    ) => {
+      if (String(target) === slot) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+      return (realRm as (...a: unknown[]) => Promise<unknown>)(target, ...rest);
+    }) as typeof fs.rm);
+    try {
+      await expect(
+        removeCheckoutStorage(slot, () => unregisterRepo(checkout), checkout),
+      ).rejects.toThrow(/was unregistered.*gitnexus clean --gc --force/s);
+    } finally {
+      rm.mockRestore();
+    }
+    expect(await readRegistry()).toEqual([]);
+    expect(existsSync(slot)).toBe(true);
+
+    // The leftover is now an orphan member, which `clean --gc` collects.
+    const result = await reclaimSharedStore(layout().root, { gc: true });
+    expect(result.droppedMembers).toEqual([slot]);
+    expect(existsSync(slot)).toBe(false);
   });
 
   it('counts references correctly when GITNEXUS_HOME is relative', async () => {

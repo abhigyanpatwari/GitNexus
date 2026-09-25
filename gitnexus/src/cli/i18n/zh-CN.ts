@@ -67,7 +67,7 @@ export const zhCN = {
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
   'clean.shared.reclaimed': '共享存储：已删除 {{count}} 个不再被任何检出引用的提交图。',
   'clean.shared.kept':
-    '共享存储：保留了 {{count}} 个仍处于打开状态的未引用提交图；请稍后运行 `gitnexus clean --gc`。',
+    '共享存储：保留了 {{count}} 个无法删除的未引用提交图（正在使用或不可写）；请稍后运行 `gitnexus clean --gc`。',
   'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
   'clean.gc.none': '没有可回收的共享存储。',
   'clean.gc.keptMembers':

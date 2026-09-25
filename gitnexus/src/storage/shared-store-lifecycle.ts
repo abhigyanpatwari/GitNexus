@@ -168,7 +168,8 @@ export const reclaimSharedStoreLocked = async (
       // whose lock is free, so the preview matches what --force would do.
       let lock: IndexLockHandle;
       try {
-        lock = await acquireIndexLock(slot, { timeoutMs: 1 });
+        // A preview deletes nothing, not even the staging files the lock sweeps.
+        lock = await acquireIndexLock(slot, { timeoutMs: 1, sweep: !opts.dryRun });
       } catch {
         orphans.delete(slot);
         continue;
@@ -439,7 +440,18 @@ export const removeCheckoutStorage = async (
     requireExclusiveIndexLock(lock, `Cannot acquire the index lock at ${storagePath}.`);
     await unregister();
     if (checkoutPath) await removeSharedStorePointer(checkoutPath);
-    await fs.rm(storagePath, { recursive: true, force: true });
+    try {
+      await fs.rm(storagePath, { recursive: true, force: true });
+    } catch (err) {
+      // The checkout is already unregistered, so a plain `clean` can no longer
+      // find this slot. It is now an orphan member, which `clean --gc` removes.
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `The checkout was unregistered, but its index storage at ${storagePath} could not be deleted (${reason}). ` +
+          'Run `gitnexus clean --gc --force` to remove it.',
+        { cause: err },
+      );
+    }
   } finally {
     lock.release();
   }
