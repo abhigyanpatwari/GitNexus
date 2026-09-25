@@ -442,4 +442,19 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
     // covered by the whole-`hooks` COPY — coverage-check, not existence-check.
     expect(isCovered('hooks/antigravity/hook-lock.cjs', copied)).toBe(true);
   });
+
+  it('installs openssh-client in the runtime apt-get line (#3372)', () => {
+    const runtimeStart = dockerfile.split('\n').findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/i.test(l));
+    const runtimeBody: string[] = [];
+    for (const line of dockerfile.split('\n').slice(runtimeStart + 1)) {
+      if (/^FROM\b/.test(line)) break;
+      runtimeBody.push(line);
+    }
+    const install = runtimeBody.find((l) => /apt-get install/.test(l));
+    expect(install, 'runtime stage must apt-get install packages').toBeDefined();
+    for (const pkg of ['curl', 'git', 'procps', 'ca-certificates', 'openssh-client']) {
+      expect(install).toContain(pkg);
+    }
+    expect(install).not.toMatch(/\bapt-get install\b[\s\S]*\bpython3\b/);
+  });
 });
