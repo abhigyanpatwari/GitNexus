@@ -87,28 +87,119 @@ function jsonValueSpan(content: string, start: number): { start: number; end: nu
   return null;
 }
 
+function jsonBraceSpan(
+  content: string,
+  start: number,
+  open: '{' | '[',
+  close: '}' | ']',
+): { start: number; end: number } | null {
+  const i = skipWs(content, start);
+  if (i >= content.length || content[i] !== open) return null;
+  let depth = 1;
+  let j = i + 1;
+  let inStr = false;
+  while (j < content.length && depth > 0) {
+    const ch = content[j];
+    if (inStr) {
+      if (ch === '\\') j += 2;
+      else {
+        if (ch === '"') inStr = false;
+        j++;
+      }
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === open) depth++;
+    else if (ch === close) depth--;
+    j++;
+  }
+  if (depth !== 0) return null;
+  return { start: i, end: j };
+}
+
+function findDepth1Key(content: string, objStart: number, objEnd: number, key: string): number {
+  let depth = 0;
+  let inStr = false;
+  let j = objStart;
+  while (j < objEnd) {
+    const ch = content[j];
+    if (inStr) {
+      if (ch === '\\') j += 2;
+      else {
+        if (ch === '"') inStr = false;
+        j++;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      if (depth === 1 && content.startsWith(key, j)) return j;
+      inStr = true;
+      j++;
+      continue;
+    }
+    if (ch === '{' || ch === '[') depth++;
+    else if (ch === '}' || ch === ']') depth--;
+    j++;
+  }
+  return -1;
+}
+
+function findCellsArraySpan(content: string): { start: number; end: number } | null {
+  const root = jsonBraceSpan(content, 0, '{', '}');
+  if (!root) return null;
+  const cellsKey = findDepth1Key(content, root.start, root.end, '"cells"');
+  if (cellsKey < 0) return null;
+  const colon = content.indexOf(':', cellsKey + 7);
+  if (colon < 0 || colon >= root.end) return null;
+  return jsonBraceSpan(content, colon + 1, '[', ']');
+}
+
 function findNextCodeCellSourceSpan(
   content: string,
   from: number,
 ): { span: { start: number; end: number }; nextFrom: number } | null {
-  let search = from;
-  while (search < content.length) {
-    const typeKey = content.indexOf('"cell_type"', search);
-    if (typeKey < 0) return null;
-    const colon = content.indexOf(':', typeKey + 11);
-    if (colon < 0) return null;
-    const valueStart = skipWs(content, colon + 1);
-    if (content.slice(valueStart, valueStart + 6) !== '"code"') {
-      search = typeKey + 11;
+  const cells = findCellsArraySpan(content);
+  if (!cells) return null;
+  let search = Math.max(from, cells.start + 1);
+  while (search < cells.end) {
+    const brace = content.indexOf('{', search);
+    if (brace < 0 || brace >= cells.end) return null;
+    const obj = jsonBraceSpan(content, brace, '{', '}');
+    if (!obj || obj.end > cells.end) {
+      search = brace + 1;
       continue;
     }
-    const sourceKey = content.indexOf('"source"', valueStart);
-    if (sourceKey < 0) return null;
+    const typeKey = findDepth1Key(content, obj.start, obj.end, '"cell_type"');
+    if (typeKey < 0) {
+      search = obj.end;
+      continue;
+    }
+    const colon = content.indexOf(':', typeKey + 11);
+    if (colon < 0 || colon >= obj.end) {
+      search = obj.end;
+      continue;
+    }
+    const valueStart = skipWs(content, colon + 1);
+    if (content.slice(valueStart, valueStart + 6) !== '"code"') {
+      search = obj.end;
+      continue;
+    }
+    const sourceKey = findDepth1Key(content, obj.start, obj.end, '"source"');
+    if (sourceKey < 0) {
+      search = obj.end;
+      continue;
+    }
     const srcColon = content.indexOf(':', sourceKey + 8);
-    if (srcColon < 0) return null;
+    if (srcColon < 0 || srcColon >= obj.end) {
+      search = obj.end;
+      continue;
+    }
     const span = jsonValueSpan(content, srcColon + 1);
-    if (!span) return null;
-    return { span, nextFrom: span.end };
+    if (!span) {
+      search = obj.end;
+      continue;
+    }
+    return { span, nextFrom: obj.end };
   }
   return null;
 }
@@ -231,13 +322,13 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
     if (chunks.length > 0) {
       chunks.push('\n\n');
     }
+    const lineCount = text.split('\n').length;
+    const extractStartLine =
+      segments.length === 0 ? 0 : segments[segments.length - 1].extractEndLine + 2;
     chunks.push(text);
-    const assembled = chunks.join('');
-    const extractStartLine = indexToLine(assembled, assembled.length - text.length);
-    const extractEndLine = indexToLine(assembled, assembled.length - 1);
     segments.push({
       extractStartLine,
-      extractEndLine,
+      extractEndLine: extractStartLine + lineCount - 1,
       jsonStartLine,
       jsonEndLine,
     });
@@ -268,6 +359,8 @@ const extractCache = new Map<
 >();
 
 /** Memoize extraction for FTS/CSV (same file, many symbols). */
+const EXTRACT_CACHE_LIMIT = 32;
+
 export function extractNotebookPythonCached(
   filePath: string,
   content: string,
@@ -275,6 +368,10 @@ export function extractNotebookPythonCached(
   const hit = extractCache.get(filePath);
   if (hit && hit.content === content) return hit.result;
   const result = extractNotebookPython(content);
+  if (extractCache.size >= EXTRACT_CACHE_LIMIT && !extractCache.has(filePath)) {
+    const oldest = extractCache.keys().next().value;
+    if (oldest !== undefined) extractCache.delete(oldest);
+  }
   extractCache.set(filePath, { content, result });
   return result;
 }

@@ -1896,7 +1896,7 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
-            line: captureMap['assignment'].startPosition.row + 1,
+            line: mapRow(captureMap['assignment'].startPosition.row) + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }

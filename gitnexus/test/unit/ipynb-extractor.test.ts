@@ -40,6 +40,25 @@ describe('isPythonFamilyLanguage', () => {
 });
 
 describe('extractNotebookPython', () => {
+  it('maps source that is serialized before cell_type', () => {
+    const content = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: { kernelspec: { language: 'python', name: 'python3', display_name: 'Python' } },
+      cells: [
+        {
+          source: ['def train():\n', '    pass\n'],
+          cell_type: 'code',
+          metadata: {},
+          outputs: [],
+        },
+      ],
+    });
+    const result = extractNotebookPython(content);
+    expect(result?.pythonSource).toContain('def train');
+    expect(result?.segments).toHaveLength(1);
+  });
+
   it('extracts def train from a Python v4 notebook', () => {
     const content = notebook({
       language: 'python',
