@@ -45,7 +45,7 @@ export const rubyFactoryBindingName = (node: SyntaxNode): string | undefined => 
 
 export const rubyClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.Ruby,
-  typeDeclarationNodes: ['class', 'do_block'],
+  typeDeclarationNodes: ['class', 'do_block', 'block'],
   ancestorScopeNodeTypes: ['module', 'class'],
   // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
   // same-tail classes nested under different modules stay distinct.
