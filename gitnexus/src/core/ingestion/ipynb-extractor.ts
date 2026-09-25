@@ -200,7 +200,6 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
   const segments: NotebookLineSegment[] = [];
   let extractLine = 0;
   let searchFrom = 0;
-  let codeCellIndex = 0;
 
   for (const rawCell of nb.cells) {
     if (!rawCell || typeof rawCell !== 'object') continue;
@@ -210,7 +209,6 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
     const located = findNextCodeCellSourceSpan(content, searchFrom);
     if (!located) return null;
     searchFrom = located.nextFrom;
-    codeCellIndex++;
 
     const lang = cellLanguage(cell);
     if (lang !== undefined && !isPythonFamilyLanguage(lang)) {
@@ -255,7 +253,6 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
     });
   }
 
-  void codeCellIndex;
   const pythonSource = chunks.join('');
   if (pythonSource.trim().length === 0) return null;
   return { pythonSource, segments };
