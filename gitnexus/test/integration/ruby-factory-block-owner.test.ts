@@ -33,8 +33,20 @@ class Outer
     def module_method = 1
   end
 
-  BraceType = Class.new {
-    def brace_method = 1
+  BraceStructType = Struct.new(:value) {
+    def brace_struct_method = value
+  }
+
+  BraceDataType = Data.define(:value) {
+    def brace_data_method = value
+  }
+
+  BraceClassType = Class.new {
+    def brace_class_method = 1
+  }
+
+  BraceModuleType = Module.new {
+    def brace_module_method = 1
   }
 
   ArbitraryType = Builder.make do
@@ -73,7 +85,10 @@ end
     ['DataType', 'Class', 'data_method', 'Outer.DataType'],
     ['ClassType', 'Class', 'class_method', 'Outer.ClassType'],
     ['ModuleType', 'Trait', 'module_method', 'Outer.ModuleType'],
-    ['BraceType', 'Class', 'brace_method', 'Outer.BraceType'],
+    ['BraceStructType', 'Struct', 'brace_struct_method', 'Outer.BraceStructType'],
+    ['BraceDataType', 'Class', 'brace_data_method', 'Outer.BraceDataType'],
+    ['BraceClassType', 'Class', 'brace_class_method', 'Outer.BraceClassType'],
+    ['BraceModuleType', 'Trait', 'brace_module_method', 'Outer.BraceModuleType'],
   ])(
     'materializes %s as a %s and attributes its factory-block method',
     (owner, ownerLabel, method, qualifiedOwner) => {
