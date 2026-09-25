@@ -2,7 +2,11 @@ import { execFileSync } from 'child_process';
 import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { pathToFileURL } from 'url';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   ensurePrivateSharedGraph,
   featureKeyOf,
@@ -18,6 +22,7 @@ import {
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
 import {
   commitGraphDir,
+  resolveGraphPath,
   resolveSharedStore,
   type SharedStoreLayout,
 } from '../../src/storage/shared-store.js';
@@ -351,6 +356,59 @@ describe('publishSharedGraph race (#3352)', () => {
     expect(existsSync(path.join(layoutOf(main).checkoutSlot, 'lbug'))).toBe(true);
   });
 
+  /** Fail every rename onto one of `blocked`; others run for real. */
+  const blockRenamesOnto = (blocked: ReadonlySet<string>) => {
+    const realRename = fs.rename.bind(fs);
+    return vi
+      .spyOn(fs, 'rename')
+      .mockImplementation((from, to) =>
+        blocked.has(String(to))
+          ? Promise.reject(Object.assign(new Error('rename blocked'), { code: 'EIO' }))
+          : realRename(from, to),
+      );
+  };
+
+  // #3374: the staging dir holds the checkout's only graph once putting it
+  // back fails; deleting it would leave metadata at HEAD with no graph.
+  it('keeps the staged graph when putting it back fails', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const layout = layoutOf(main);
+    const slot = layout.checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    const target = commitGraphDir(layout, head, featureKeyOf(meta));
+    const spy = blockRenamesOnto(new Set([target, path.join(slot, 'lbug')]));
+    try {
+      await publishSharedGraph(layout, main, head, () => {});
+    } finally {
+      spy.mockRestore();
+    }
+    const staging = (await fs.readdir(layout.commitsDir)).filter((n) => n.startsWith('.publish-'));
+    expect(staging).toHaveLength(1);
+    expect(await fs.readFile(path.join(layout.commitsDir, staging[0], 'lbug'), 'utf-8')).toBe(
+      `graph from ${main}`,
+    );
+    expect(await listCommitDirs(layout)).toEqual([]);
+    expect((await loadMeta(slot))?.graphPath).toBeUndefined();
+  });
+
+  it('drops the staging dir when the graph never left the slot', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const layout = layoutOf(main);
+    const slot = layout.checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    const target = commitGraphDir(layout, head, featureKeyOf(meta));
+    const spy = blockRenamesOnto(new Set([target]));
+    try {
+      await publishSharedGraph(layout, main, head, () => {});
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await fs.readdir(layout.commitsDir)).toEqual([]);
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe(`graph from ${main}`);
+  });
+
   const seedFreshSlot = async (checkout: string): Promise<RepoMeta | null> => {
     const layout = layoutOf(checkout);
     await fs.rm(layout.checkoutSlot, { recursive: true, force: true });
@@ -449,4 +507,79 @@ describe('publishSharedGraph race (#3352)', () => {
     // The published graph is immutable: other checkouts may point at it.
     expect(await fs.readFile(path.join(target, 'lbug'), 'utf-8')).toBe('older published graph');
   });
+});
+
+// #3374: a publish interrupted between its renames (or a reclaimed commit
+// graph) leaves slot metadata at HEAD with no graph behind it.
+describe('up-to-date fast path over a missing shared graph (#3374)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedHome: string | undefined;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-test-shared-missing-home-');
+    tmpRepo = await createTempDir('gitnexus-test-shared-missing-repo-');
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await tmpRepo.cleanup();
+    await tmpHome.cleanup();
+  });
+
+  it('rebuilds a slot whose metadata is at HEAD but whose graph is gone', async () => {
+    const root = await fs.realpath(tmpRepo.dbPath);
+    const main = path.join(root, 'main');
+    await fs.mkdir(main);
+    git(main, 'init', '-q', '-b', 'main');
+    git(
+      main,
+      '-c',
+      'user.name=t',
+      '-c',
+      'user.email=t@t',
+      'commit',
+      '-q',
+      '--allow-empty',
+      '-m',
+      'init',
+    );
+    const wt = path.join(root, 'wt');
+    git(main, 'worktree', 'add', '-q', '-b', 'wt', wt);
+    const slot = layoutOf(wt).checkoutSlot;
+    await fs.mkdir(slot, { recursive: true });
+    await saveMeta(slot, {
+      repoPath: wt,
+      storagePath: slot,
+      lastCommit: git(wt, 'rev-parse', 'HEAD'),
+      indexedAt: new Date().toISOString(),
+      schemaFingerprint: SCHEMA_FINGERPRINT,
+      analysisFeatures: {
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      },
+      runnerIdentity: resolveAnalyzerRunnerIdentity(
+        pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
+      ),
+      // Same FTS mode as the run below, so only the missing graph can
+      // decide against the fast path.
+      capabilities: {
+        graph: { provider: 'ladybugdb', status: 'available' },
+        fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'disabled-by-flag' },
+        vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
+      },
+    });
+
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    const result = await runFullAnalysis(
+      wt,
+      { skipAgentsMd: true, skipSkills: true, skipFts: true },
+      { onProgress: () => {} },
+    );
+
+    expect(result.alreadyUpToDate).not.toBe(true);
+    expect(existsSync(resolveGraphPath(slot))).toBe(true);
+  }, 120_000);
 });

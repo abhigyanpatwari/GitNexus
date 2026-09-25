@@ -33,7 +33,7 @@ import {
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
@@ -170,6 +170,7 @@ import {
 } from '../storage/storage-resolver.js';
 import {
   isSharedStoreDisabled,
+  resolveGraphPath,
   resolveSharedStore,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
@@ -2208,6 +2209,20 @@ async function runFullAnalysisInner(
     existingMeta?.processDetection,
     processDetectionBudget,
   );
+
+  // A shared-store slot (#3352) can record HEAD with no graph behind it: a
+  // publish interrupted between its renames, or a commit graph reclaimed from
+  // under the pointer. Neither the fast path nor an incremental diff (which
+  // writes only changed files into a fresh, empty database) would restore it,
+  // so rebuild. Scoped to store slots: private `.gitnexus` indexes only lose
+  // their graph by hand, and their metadata-only fixtures rely on this path.
+  if (existingMeta && !options.force && storeRootOfCheckoutSlot(storagePath)) {
+    const graph = placement.branch ? lbugPath : resolveGraphPath(storagePath);
+    if (!existsSync(graph)) {
+      log('Shared store: this checkout has no graph; doing a full build.');
+      options = { ...options, force: true };
+    }
+  }
 
   // ── Early-return: already up to date ──────────────────────────────
   if (

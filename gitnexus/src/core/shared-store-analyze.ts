@@ -378,6 +378,7 @@ export const publishSharedGraph = async (
   // Every pointer change and the reclaim that follows run under one publish
   // lock, so a concurrent reclaim never sees a half-recorded reference.
   await withStoreLock(layout, 'publish', async () => {
+    let keptStaging = false;
     if (shareable) {
       const target = commitGraphDir(layout, currentCommit, featureKeyOf(meta));
       const targetGraph = path.join(target, LBUG_DIRECTORY);
@@ -423,11 +424,27 @@ export const publishSharedGraph = async (
           log(`Shared store: published commit graph ${currentCommit.slice(0, 12)}.`);
         } catch (err) {
           // Put the graph back so the slot stays usable as a private index.
-          await fs.rename(path.join(staging, LBUG_DIRECTORY), own).catch(() => {});
-          await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
-          log(
-            `Shared store: could not publish (${(err as Error).message}); keeping a private graph.`,
+          const staged = path.join(staging, LBUG_DIRECTORY);
+          const restored = await fs.rename(staged, own).then(
+            () => true,
+            () => false,
           );
+          if (restored || !(await exists(staged))) {
+            await fs.rm(staging, { recursive: true, force: true }).catch(() => {});
+            log(
+              `Shared store: could not publish (${(err as Error).message}); keeping a private graph.`,
+            );
+          } else {
+            // The staging dir now holds this checkout's only graph. Keep it,
+            // and skip this run's reclaim (which deletes unreferenced staging),
+            // so it can be moved back by hand; the next analyze of this
+            // checkout finds no graph and rebuilds.
+            keptStaging = true;
+            log(
+              `Shared store: could not publish (${(err as Error).message}) or restore the graph; ` +
+                `it is at ${staged}.`,
+            );
+          }
         }
       }
       if (published) {
@@ -438,6 +455,7 @@ export const publishSharedGraph = async (
       delete meta.graphPath;
       await saveMeta(slot, meta);
     }
+    if (keptStaging) return;
     // Best effort: an unreadable store must not fail a finished analysis.
     try {
       const reclaimed = await reclaimSharedStoreLocked(layout.root);
