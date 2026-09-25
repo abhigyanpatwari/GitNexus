@@ -7,6 +7,13 @@ func nilCoalescing(override: (() -> Void)?) {
   run()
 }
 
+func runLeft() {}
+
+func callableLeft(fallback: @escaping () -> Void) {
+  let run = runLeft ?? fallback
+  run()
+}
+
 func ternary(fast: Bool) {
   let run = fast ? runThen : runElse
   run()

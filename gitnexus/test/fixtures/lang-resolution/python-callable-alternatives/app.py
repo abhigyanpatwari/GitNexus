@@ -18,6 +18,15 @@ def run_or_else():
     pass
 
 
+def run_left():
+    pass
+
+
+def callable_left(fallback):
+    run = run_left or fallback
+    run()
+
+
 def logical_or(override):
     run = override or run_sweep
     run()

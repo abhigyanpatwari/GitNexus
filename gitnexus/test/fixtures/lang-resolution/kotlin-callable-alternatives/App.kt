@@ -7,6 +7,13 @@ fun elvis(override: (() -> Unit)?) {
     run()
 }
 
+fun runLeft() {}
+
+fun callableLeft(fallback: () -> Unit) {
+    val run = ::runLeft ?: fallback
+    run()
+}
+
 fun ifExpression(fast: Boolean) {
     val run = if (fast) ::runThen else ::runElse
     run()

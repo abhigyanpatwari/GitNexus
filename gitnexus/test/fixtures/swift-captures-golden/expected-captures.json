@@ -24,8 +24,8 @@
     "digest": "f192ae885ea3de848f3b93acf7672d91b0118800cb0c6513628a6c09c26fadbf"
   },
   "swift-callable-alternatives/App.swift": {
-    "captureGroups": 25,
-    "digest": "0d76e7d11637a41550666de93a390861d15a0a26edf9c49af19fbd625a3ba1f3"
+    "captureGroups": 36,
+    "digest": "3720e42c769ba4f6fa2becfe55f10109e170e8ac274ce24e69b04b7b23a25a8a"
   },
   "swift-child-extends-parent/Sources/App.swift": {
     "captureGroups": 11,

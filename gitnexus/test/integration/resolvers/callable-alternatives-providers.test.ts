@@ -40,6 +40,12 @@ describe('Python callable chosen by `or` / `and` / `x if c else y`', () => {
     expect(callsOf(result)).toContain('logical_or → run_sweep');
   });
 
+  // The `override or fn` case above resolves only its RIGHT operand, so it
+  // would still pass if the fan-out kept just the last branch.
+  it('`fn or fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callable_left → run_left');
+  });
+
   it('`f if c else g` reaches both branches', () => {
     expect(callsOf(result)).toEqual(
       expect.arrayContaining(['ternary → run_then', 'ternary → run_else']),
@@ -75,6 +81,10 @@ describe('Kotlin callable chosen by `?:` / `if` expression', () => {
     expect(callsOf(result)).toContain('elvis → runSweep');
   });
 
+  it('`::fn ?: fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
+  });
+
   it('`if (c) ::f else ::g` reaches both branches', () => {
     expect(callsOf(result)).toEqual(
       expect.arrayContaining(['ifExpression → runThen', 'ifExpression → runElse']),
@@ -104,6 +114,10 @@ describe('Swift callable chosen by `??` / `?:`', () => {
     expect(callsOf(result)).toContain('nilCoalescing → runSweep');
   });
 
+  it('`fn ?? fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
+  });
+
   it('`c ? f : g` reaches both branches', () => {
     expect(callsOf(result)).toEqual(
       expect.arrayContaining(['ternary → runThen', 'ternary → runElse']),
@@ -119,6 +133,10 @@ describe('Dart callable chosen by `??` / `?:`', () => {
 
   it('`override ?? fn` reaches fn', () => {
     expect(callsOf(result)).toContain('ifNull → runSweep');
+  });
+
+  it('`fn ?? fallback` reaches fn through the LEFT operand', () => {
+    expect(callsOf(result)).toContain('callableLeft → runLeft');
   });
 
   it('`c ? f : g` reaches both branches', () => {

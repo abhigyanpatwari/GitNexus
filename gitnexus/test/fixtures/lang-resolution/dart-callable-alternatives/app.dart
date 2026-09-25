@@ -7,6 +7,13 @@ void ifNull(void Function()? override) {
   run();
 }
 
+void runLeft() {}
+
+void callableLeft(void Function() fallback) {
+  final run = runLeft ?? fallback;
+  run();
+}
+
 void conditional(bool fast) {
   final run = fast ? runThen : runElse;
   run();
