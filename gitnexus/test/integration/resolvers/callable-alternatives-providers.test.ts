@@ -30,7 +30,7 @@ const callsOf = (result: PipelineResult): string[] =>
     getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'callable-value-flow'),
   );
 
-describe('Python callable chosen by `or` / `x if c else y`', () => {
+describe('Python callable chosen by `or` / `and` / `x if c else y`', () => {
   let result: PipelineResult;
   beforeAll(async () => {
     result = await runFixture('python-callable-alternatives');
@@ -44,6 +44,13 @@ describe('Python callable chosen by `or` / `x if c else y`', () => {
     expect(callsOf(result)).toEqual(
       expect.arrayContaining(['ternary → run_then', 'ternary → run_else']),
     );
+  });
+
+  it('`x and f or g` reaches f and g, never x', () => {
+    expect(callsOf(result).filter((edge) => edge.startsWith('and_or → '))).toEqual([
+      'and_or → run_and',
+      'and_or → run_or_else',
+    ]);
   });
 });
 

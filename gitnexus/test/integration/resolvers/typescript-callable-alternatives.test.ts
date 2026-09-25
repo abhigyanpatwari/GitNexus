@@ -8,6 +8,7 @@
  * of `runSweep`, and `impact` answered with one caller fewer while still
  * claiming `epistemic: "exact"`. Each branch of `??`, `||`, and `?:` can be
  * the value that is later invoked, so each branch is a flow into the binding.
+ * `a && b` can only yield a callable through `b`, so only `b` flows.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
@@ -19,15 +20,7 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
-/**
- * `&&` is not value-selecting for a callable, so #3354 leaves it on the single-
- * source path: whatever the pre-#3354 capture (one seed for the last operand,
- * qualified by the whole expression, byte-identical before and after this
- * change) resolved to must stay exactly that: no edge at all.
- */
-const PRE_3354_LOGICAL_AND_EDGES: string[] = [];
-
-describe('TypeScript callable chosen by ?? / || / ?:', () => {
+describe('TypeScript callable chosen by ?? / || / ?: / &&', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -71,8 +64,8 @@ describe('TypeScript callable chosen by ?? / || / ?:', () => {
     expect(calls()).toContain('callableLeft → runLeft');
   });
 
-  it('`&&` is not expanded: its left operand gains no edge', () => {
+  it('`a && fn` reaches fn and never the left operand', () => {
     const fromLogicalAnd = calls().filter((edge) => edge.startsWith('logicalAnd → '));
-    expect(fromLogicalAnd).toEqual(PRE_3354_LOGICAL_AND_EDGES);
+    expect(fromLogicalAnd).toEqual(['logicalAnd → runAndRight']);
   });
 });

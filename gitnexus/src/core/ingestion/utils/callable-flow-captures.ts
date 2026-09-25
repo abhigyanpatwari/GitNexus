@@ -696,10 +696,21 @@ function assignmentParts(
 const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or']);
 
 /**
+ * Operators that yield their left operand when it is falsy and their right
+ * operand otherwise. A falsy value is never a callable, so only the RIGHT
+ * operand can be the callable that is later invoked. Where `&&` / `and`
+ * yields a boolean instead (Java, C#, Go, Rust, C, C++, PHP, Zig), the
+ * destination is not callable, so the flow never meets an invoke.
+ */
+const RIGHT_SELECTING_OPERATORS = new Set(['&&', 'and']);
+
+/**
  * The operands a value-selecting expression can evaluate to (#3354):
  * `a ?? b`, `a || b`, `a or b`, and `c ? a : b` each yield one of their
- * branches, so each branch flows into the destination. Anything else is its
- * own single alternative, which leaves every other source shape untouched.
+ * branches, so each branch flows into the destination. `a && b` / `a and b`
+ * can only yield a callable through `b`, so `x and f or g` reaches `f` and `g`.
+ * Anything else is its own single alternative, which leaves every other
+ * source shape untouched.
  * `options.valueAlternatives` is consulted first for grammars whose shape the
  * field-based rule below cannot see.
  */
@@ -751,9 +762,9 @@ function valueBranches(
   const left = inner.childForFieldName('left');
   const right = inner.childForFieldName('right');
   const operator = inner.childForFieldName('operator')?.type;
-  if (left !== null && right !== null && operator && VALUE_SELECTING_OPERATORS.has(operator)) {
-    return [left, right];
-  }
+  if (left === null || right === null || !operator) return undefined;
+  if (VALUE_SELECTING_OPERATORS.has(operator)) return [left, right];
+  if (RIGHT_SELECTING_OPERATORS.has(operator)) return [right];
   return undefined;
 }
 

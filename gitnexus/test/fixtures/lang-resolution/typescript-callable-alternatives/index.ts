@@ -48,8 +48,8 @@ export async function callableLeft(env: { fallback: Handler }) {
   await run(env);
 }
 
-// `&&` is not expanded into branches: a callable left operand is truthy, so
-// it is never the value. The assignment keeps its pre-#3354 single source.
+// `a && b` yields `a` when it is falsy and `b` otherwise. A falsy value is
+// never a callable, so only the right operand can be the one invoked.
 export async function logicalAnd(env: unknown) {
   const run = runAndLeft && runAndRight;
   await run(env);
