@@ -10,6 +10,7 @@
 
 import {
   acquireIndexLock,
+  IndexLockTimeoutError,
   requireExclusiveIndexLock,
   type IndexLockHandle,
 } from '../storage/index-lock.js';
@@ -1327,8 +1328,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await closeLbug();
         } catch {}
 
-        // 1. Delete the .gitnexus index/storage directory
-        await removeCheckoutStorage(storagePath).catch(() => {});
+        // 1. Delete the index storage and unregister, as `gitnexus remove`
+        // does: for a shared-store slot the unregister and the checkout's
+        // pointer removal run under the slot's index lock. An analyze holding
+        // that lock is a conflict; any other failure propagates as a 500 with
+        // the entry left registered, so the delete can be retried.
+        const { unregisterRepo } = await import('../storage/repo-manager.js');
+        try {
+          await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
+        } catch (err) {
+          if (!(err instanceof IndexLockTimeoutError)) throw err;
+          res.status(409).json({
+            error: `Repository "${entry.name}" is being analyzed; retry the delete when it finishes. ${err.message}`,
+          });
+          return;
+        }
         await reclaimAfterSlotRemoval(storagePath);
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
@@ -1367,11 +1381,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await fs.rm(resolvedEntry, { recursive: true, force: true }).catch(() => {});
         }
 
-        // 3. Unregister from the global registry
-        const { unregisterRepo } = await import('../storage/repo-manager.js');
-        await unregisterRepo(entry.path);
-
-        // 4. Reinitialize backend to reflect the removal
+        // 3. Reinitialize backend to reflect the removal
         await backend.init().catch(() => {});
 
         res.json({ deleted: entry.name });
