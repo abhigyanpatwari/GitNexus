@@ -778,9 +778,16 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
 // `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
 // capture set (anonymous arrows, no Function name), so both stores re-extract.
-// v105 (#3371): `.ipynb` code cells are extracted to Python before parse.
+// v112 (#3354): callable-value flow now follows each branch of `a ?? f`,
+// `a || f`, and `c ? f : g`. Warm caches replay the pre-fix flow facts, which
+// have no flow for those assignments, so both stores re-extract. 105-111 are
+// claimed by open PR #3326 (Elixir).
+// Same v112: the `valueAlternatives` provider hook extends it to Kotlin
+// `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
+// Ruby multi-statement `if` one opaque source.
+// v113 (#3371): `.ipynb` code cells are extracted to Python before parse.
 // Warm caches keyed on raw JSON would replay empty/failed Python parses.
-const SCHEMA_BUMP = 105;
+const SCHEMA_BUMP = 113;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

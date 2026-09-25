@@ -303,6 +303,15 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   return undefined;
 }
 
+/**
+ * A `*_uid` param as a lookup key: trimmed, or `undefined` when it is blank or
+ * not a string (#3354). Strict adapters send `" "`/`""` for an omitted optional
+ * string, and the MCP envelope is not type-validated.
+ */
+function nonBlankUid(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
+
 interface StringAliasDefinition {
   canonical: string;
   aliases: readonly string[];
@@ -1634,6 +1643,7 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+  private warnedNoEmbeddingVectors = false;
 
   /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
@@ -3881,6 +3891,18 @@ export class LocalBackend {
   }
 
   /**
+   * Keyword-only indexes are the default. Do not put this on `query.warning`
+   * (that field is reserved for FTS/stack degradation). Log once per backend.
+   */
+  private logKeywordOnlyEmbeddings(): void {
+    if (this.warnedNoEmbeddingVectors) return;
+    this.warnedNoEmbeddingVectors = true;
+    logger.warn(
+      'GitNexus [query:vector]: This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.',
+    );
+  }
+
+  /**
    * Semantic vector search helper
    */
   private async semanticSearch(
@@ -3902,10 +3924,8 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        // No vectors to search: nothing is embedded below, so drop any width a
-        // previous call recorded rather than let query() warn about a lane that
-        // did not run this time (#2798).
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        this.logKeywordOnlyEmbeddings();
         return [];
       }
 
@@ -4067,6 +4087,8 @@ export class LocalBackend {
         isLocalEmbeddingSidecarAbortMessage(message);
       if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
+      } else if (isBenignMissingTableError(err)) {
+        this.logKeywordOnlyEmbeddings();
       }
       if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
@@ -4450,7 +4472,11 @@ export class LocalBackend {
       }
     | { kind: 'not_found' }
   > {
-    const { uid, name, include_content } = query;
+    const { name, include_content } = query;
+    // A blank or non-string uid is omitted, not a lookup key — fall through to
+    // the name instead of `not_found`, matching normalizeToolParams' impact
+    // target_uid check.
+    const uid = nonBlankUid(query.uid);
     const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
 
     // Direct UID — zero-ambiguity path.
@@ -6806,7 +6832,7 @@ export class LocalBackend {
     if (fromOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        error: `Source symbol '${nonBlankUid(params.from_uid) ?? params.from}' not found.`,
         suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
       };
     }
@@ -6833,7 +6859,7 @@ export class LocalBackend {
     if (toOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        error: `Target symbol '${nonBlankUid(params.to_uid) ?? params.to}' not found.`,
         suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
       };
     }
@@ -7213,7 +7239,7 @@ export class LocalBackend {
     );
 
     if (outcome.kind === 'not_found') {
-      const missing = params.target_uid ?? target;
+      const missing = nonBlankUid(params.target_uid) ?? target;
       // not_found = no resolved symbol, so the envelope keeps the partial-but-
       // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
       const notFoundTarget: PdgImpactTarget = { name: target };
@@ -8036,6 +8062,14 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+    // #3354: a walk with no anchor id cannot say anything about THIS symbol,
+    // yet it still ships a normal-looking `exact` result with the target's
+    // name echoed back. Throw so every caller's catch reports UNKNOWN instead.
+    if (!symId) {
+      throw new Error(
+        `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
+      );
+    }
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no

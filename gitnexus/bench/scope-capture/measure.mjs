@@ -310,6 +310,21 @@ const LANGS = [
       `  setName(v: string): void { this.name = v; }\n}\n\n`,
   },
   {
+    // One `a || b || …` chain whose operand count is the entity count (#3354
+    // review): each operand is one more nesting level, so this guards the
+    // callable-flow value-alternative expansion against per-leaf work that
+    // grows with chain depth (ratio ~8 before the fix, and 8000 operands
+    // overflowed the stack). No fixture corpus — the fingerprint is the synthetic
+    // source alone; `typescript` above already covers the TS fixtures.
+    name: 'typescript-deep-chain',
+    emit: emitTsScopeCaptures,
+    exts: ['.ts'],
+    file: 'bench-chain.ts',
+    header: 'function handler() {}\n\nexport function isKw(w: string) {\n  const f = handler',
+    unit: (n) => ` || w === "k${n}"`,
+    footer: ';\n  return f;\n}\n',
+  },
+  {
     name: 'javascript',
     emit: emitJsScopeCaptures,
     fixturePrefix: 'javascript',
@@ -371,7 +386,9 @@ function measureLang(lang) {
   // Correctness fingerprint over the fixture corpus + a fixed 20-entity source.
   const perFixture = [];
   let groups = 0;
-  for (const { key, absPath } of collectFixtures(lang.fixturePrefix, lang.exts)) {
+  const fixtures =
+    lang.fixturePrefix === undefined ? [] : collectFixtures(lang.fixturePrefix, lang.exts);
+  for (const { key, absPath } of fixtures) {
     const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), absPath);
     groups += matches.length;
     perFixture.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
