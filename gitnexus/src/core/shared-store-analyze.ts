@@ -20,7 +20,7 @@ import { existsSync, constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
-import { commitDistanceToHead, getRemoteUrl, isWorkingTreeDirty } from '../storage/git.js';
+import { commitDistanceToHead, getRemoteUrl, isWorkingTreePristine } from '../storage/git.js';
 import {
   canonicalizePath,
   findRegistryEntryByRepoPath,
@@ -168,7 +168,10 @@ const listCommitGraphs = async (layout: SharedStoreLayout): Promise<CommitGraph[
  * ponytail: one `git` call pair per commit graph; fine for tens of graphs,
  * batch through `git rev-list` if stores grow to hundreds.
  */
-const pickSeed = (repoPath: string, graphs: CommitGraph[]): CommitGraph | null => {
+const pickSeed = (
+  repoPath: string,
+  graphs: CommitGraph[],
+): { graph: CommitGraph; distance: number } | null => {
   let best: { graph: CommitGraph; distance: number } | null = null;
   for (const graph of graphs) {
     const distance = commitDistanceToHead(repoPath, graph.commit);
@@ -179,7 +182,7 @@ const pickSeed = (repoPath: string, graphs: CommitGraph[]): CommitGraph | null =
       (distance === best.distance && graph.meta.indexedAt > best.graph.meta.indexedAt);
     if (better) best = { graph, distance };
   }
-  return best?.graph ?? null;
+  return best;
 };
 
 /**
@@ -251,7 +254,12 @@ export const seedSharedSlot = async (
   log: Log,
 ): Promise<void> => {
   if (await loadMeta(layout.checkoutSlot)) return;
-  const seed = pickSeed(repoPath, await listCommitGraphs(layout));
+  const picked = pickSeed(repoPath, await listCommitGraphs(layout));
+  const seed = picked?.graph;
+  // A commit graph matches its commit exactly, so a checkout showing exactly
+  // that commit is up to date. Any other checkout gets an empty lastCommit,
+  // like seedFromLocalIndex, so its next run hash-diffs.
+  const upToDate = picked?.distance === 0 && isWorkingTreePristine(repoPath);
   // Record the pointer under the publish lock, where reclaim counts
   // references, so the graph cannot be deleted between the pick and the save.
   const pointed =
@@ -265,6 +273,7 @@ export const seedSharedSlot = async (
         repoPath,
         storagePath: layout.checkoutSlot,
         graphPath: graph,
+        lastCommit: upToDate ? seed.meta.lastCommit : '',
       };
       delete meta.incrementalInProgress;
       await saveMeta(layout.checkoutSlot, meta);
@@ -361,7 +370,8 @@ export const publishSharedGraph = async (
     meta.lastCommit === currentCommit &&
     !meta.incrementalInProgress &&
     builtClean &&
-    !isWorkingTreeDirty(repoPath);
+    // A sparse or partial checkout builds a graph missing the files it hides.
+    isWorkingTreePristine(repoPath);
   // Every pointer change and the reclaim that follows run under one publish
   // lock, so a concurrent reclaim never sees a half-recorded reference.
   await withStoreLock(layout, 'publish', async () => {

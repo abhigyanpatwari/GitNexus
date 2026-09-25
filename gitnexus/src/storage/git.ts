@@ -122,6 +122,33 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
 };
 
 /**
+ * True when the working tree shows exactly the committed tree: nothing dirty
+ * or untracked, no path hidden by skip-worktree or assume-unchanged (which is
+ * how a sparse checkout leaves files out), and every gitlink checked out as a
+ * submodule. `git status` stays clean in all three hidden cases. False on any
+ * git failure.
+ */
+export const isWorkingTreePristine = (repoPath: string): boolean => {
+  if (listWorkingTreeDirtyPaths(repoPath)?.length !== 0) return false;
+  try {
+    const out = execFileSync('git', ['ls-files', '--stage', '-z', '--'], {
+      cwd: repoPath,
+      windowsHide: true,
+      ...gitPathListExec,
+    });
+    for (const record of out.split('\0')) {
+      // `<mode> <object> <stage>\t<path>`; mode 160000 is a gitlink.
+      if (!record.startsWith('160000 ')) continue;
+      const rel = record.slice(record.indexOf('\t') + 1);
+      if (!existsSync(path.join(repoPath, rel, '.git'))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Snapshot, per candidate file, whether it is safe for `selfCommitContextFiles`
  * to auto-commit — call this BEFORE `analyze` writes AGENTS.md/CLAUDE.md.
  * A file is safe when it does not exist yet (first-time creation, the normal

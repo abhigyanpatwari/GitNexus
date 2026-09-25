@@ -3,7 +3,12 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { featureKeyOf, publishSharedGraph } from '../../src/core/shared-store-analyze.js';
+import {
+  ensurePrivateSharedGraph,
+  featureKeyOf,
+  publishSharedGraph,
+  seedSharedSlot,
+} from '../../src/core/shared-store-analyze.js';
 import {
   getStoragePaths,
   listRegisteredRepos,
@@ -332,5 +337,57 @@ describe('publishSharedGraph race (#3352)', () => {
     await publishSharedGraph(layoutOf(main), main, head, () => {});
     expect(await listCommitDirs(layoutOf(main))).toEqual([]);
     expect(existsSync(path.join(layoutOf(main).checkoutSlot, 'lbug'))).toBe(true);
+  });
+
+  // #3374: `git status` is clean in a sparse checkout, but the graph lacks the
+  // files the checkout leaves out.
+  it('keeps a checkout that hides committed files private', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    git(main, 'update-index', '--skip-worktree', '--', 'a.ts');
+    await fs.rm(path.join(main, 'a.ts'));
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(layoutOf(main).checkoutSlot, 'lbug'))).toBe(true);
+  });
+
+  const seedFreshSlot = async (checkout: string): Promise<RepoMeta | null> => {
+    const layout = layoutOf(checkout);
+    await fs.rm(layout.checkoutSlot, { recursive: true, force: true });
+    await seedSharedSlot(layout, checkout, () => {});
+    return loadMeta(layout.checkoutSlot);
+  };
+
+  it('seeds a pristine checkout at the graph commit as up to date', async () => {
+    const { checkouts, head } = await setup();
+    const [main, wt] = checkouts;
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    const seeded = await seedFreshSlot(wt);
+    expect(seeded?.graphPath).toBe((await loadMeta(layoutOf(main).checkoutSlot))?.graphPath);
+    expect(seeded?.lastCommit).toBe(head);
+  });
+
+  it('seeds a checkout that hides committed files without a commit, then re-points', async () => {
+    const { checkouts, head } = await setup();
+    const [main, wt] = checkouts;
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    const shared = (await loadMeta(layoutOf(main).checkoutSlot))?.graphPath;
+    git(wt, 'update-index', '--skip-worktree', '--', 'a.ts');
+    const seeded = await seedFreshSlot(wt);
+    expect(seeded?.graphPath).toBe(shared);
+    // An empty lastCommit sends the next analyze through the file-hash diff.
+    expect(seeded?.lastCommit).toBe('');
+
+    // That analyze copies the graph, finds nothing to change, and stamps HEAD;
+    // once the checkout shows every file again, publish drops the copy.
+    const slot = layoutOf(wt).checkoutSlot;
+    expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
+    const copied = await loadMeta(slot);
+    expect(copied).not.toBeNull();
+    await saveMeta(slot, { ...(copied as RepoMeta), lastCommit: head });
+    git(wt, 'update-index', '--no-skip-worktree', '--', 'a.ts');
+    await publishSharedGraph(layoutOf(wt), wt, head, () => {});
+    expect((await loadMeta(slot))?.graphPath).toBe(shared);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
   });
 });
