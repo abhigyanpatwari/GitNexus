@@ -19,6 +19,14 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+
+// Kotlin, Swift and Dart grammars are optional installs; skip their suites
+// when the grammar did not load, as the per-language resolver suites do.
+const kotlinAvailable = isLanguageAvailable(SupportedLanguages.Kotlin);
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
+const dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
 
 const runFixture = (name: string): Promise<PipelineResult> =>
   runPipelineFromRepo(path.join(FIXTURES, name), () => {});
@@ -71,7 +79,7 @@ describe('Python callable chosen by `or` / `and` / `x if c else y`', () => {
   });
 });
 
-describe('Kotlin callable chosen by `?:` / `if` expression', () => {
+describe.skipIf(!kotlinAvailable)('Kotlin callable chosen by `?:` / `if` expression', () => {
   let result: PipelineResult;
   beforeAll(async () => {
     result = await runFixture('kotlin-callable-alternatives');
@@ -104,7 +112,7 @@ describe('Kotlin callable chosen by `?:` / `if` expression', () => {
   });
 });
 
-describe('Swift callable chosen by `??` / `?:`', () => {
+describe.skipIf(!swiftAvailable)('Swift callable chosen by `??` / `?:`', () => {
   let result: PipelineResult;
   beforeAll(async () => {
     result = await runFixture('swift-callable-alternatives');
@@ -125,7 +133,7 @@ describe('Swift callable chosen by `??` / `?:`', () => {
   });
 });
 
-describe('Dart callable chosen by `??` / `?:`', () => {
+describe.skipIf(!dartAvailable)('Dart callable chosen by `??` / `?:`', () => {
   let result: PipelineResult;
   beforeAll(async () => {
     result = await runFixture('dart-callable-alternatives');
