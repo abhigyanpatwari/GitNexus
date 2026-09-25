@@ -710,7 +710,8 @@ const RIGHT_SELECTING_OPERATORS = new Set(['&&', 'and']);
  * branches, so each branch flows into the destination. `a && b` / `a and b`
  * can only yield a callable through `b`, so `x and f or g` reaches `f` and `g`.
  * Anything else is its own single alternative, which leaves every other
- * source shape untouched.
+ * source shape untouched. A branch that is itself an operator expression
+ * (`x.kind === f || g`) yields a computed value, so it contributes nothing.
  * `options.valueAlternatives` is consulted first for grammars whose shape the
  * field-based rule below cannot see.
  */
@@ -726,7 +727,12 @@ function valueAlternatives(
   for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
     const branches = valueBranches(current, options);
     if (branches === undefined) {
-      out.push(current);
+      // An operator branch is opaque, as the whole compound source was before
+      // the fan-out: emitted alone, `x.kind === Handlers.run` becomes a seed
+      // whose qualified text slices to receiver `Handlers`, member `run`.
+      if (current === node || !isBinaryOperatorExpression(unwrapParentheses(current))) {
+        out.push(current);
+      }
       continue;
     }
     // Reverse push keeps the left-to-right branch order on output.
@@ -744,12 +750,7 @@ function valueBranches(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] | undefined {
-  let inner = node;
-  while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
-    const child = inner.namedChild(0);
-    if (child === null) break;
-    inner = child;
-  }
+  const inner = unwrapParentheses(node);
   const provided = options.valueAlternatives?.(inner);
   if (provided !== undefined) {
     return provided.length === 1 && provided[0]?.id === inner.id ? undefined : provided;
@@ -766,6 +767,38 @@ function valueBranches(
   if (VALUE_SELECTING_OPERATORS.has(operator)) return [left, right];
   if (RIGHT_SELECTING_OPERATORS.has(operator)) return [right];
   return undefined;
+}
+
+function unwrapParentheses(node: SyntaxNode): SyntaxNode {
+  let inner = node;
+  while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
+    const child = inner.namedChild(0);
+    if (child === null) break;
+    inner = child;
+  }
+  return inner;
+}
+
+/**
+ * True for an expression that computes a value from two operands (`a === b`,
+ * `a + b`, `a is b`), which designates neither operand. Read from the same
+ * field vocabulary as `valueBranches` rather than grammar type names: a
+ * `left`/`right` pair, or an operator token (`operator`, Python's
+ * `operators`, Swift's `op`) that follows the expression's start. A member
+ * access that fields its `.` / `->` as `operator` (Ruby `call`, C/C++
+ * `field_expression`) also fields its member name, so it stays a designator;
+ * a unary `&f` / `*fp` leads with its operator and stays one too.
+ */
+function isBinaryOperatorExpression(node: SyntaxNode): boolean {
+  if (node.childForFieldName('left') !== null && node.childForFieldName('right') !== null) {
+    return true;
+  }
+  if (memberNameNode(node) !== null) return false;
+  const operator =
+    node.childForFieldName('operator') ??
+    node.childForFieldName('operators') ??
+    node.childForFieldName('op');
+  return operator !== null && operator.startIndex > node.startIndex;
 }
 
 function emitAssignmentFact(
@@ -1202,11 +1235,7 @@ function memberParts(
   // stay unaffected. Without it every `x.f(arg)` in such a grammar collapsed
   // to a DIRECT call named `f` and the flow solver fanned the argument out to
   // every same-named callable.
-  const memberNode =
-    node.childForFieldName('property') ??
-    node.childForFieldName('field') ??
-    node.childForFieldName('method') ??
-    node.childForFieldName('member');
+  const memberNode = memberNameNode(node);
   if (receiverNode === null || memberNode === null) return undefined;
   const receiver = operandSyntax(receiverNode, options);
   const member = operandSyntax(memberNode, options);
@@ -1217,6 +1246,17 @@ function memberParts(
       options.memberPointerOperators?.has(child.text) === true,
   );
   return { receiver, member, ...(operator !== undefined ? { operator: operator.text } : {}) };
+}
+
+/** The member-name child of a member access, under the field names the
+ *  grammars use for it. */
+function memberNameNode(node: SyntaxNode): SyntaxNode | null {
+  return (
+    node.childForFieldName('property') ??
+    node.childForFieldName('field') ??
+    node.childForFieldName('method') ??
+    node.childForFieldName('member')
+  );
 }
 
 function operandSyntax(

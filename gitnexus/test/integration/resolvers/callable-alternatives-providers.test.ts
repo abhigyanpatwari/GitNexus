@@ -52,6 +52,17 @@ describe('Python callable chosen by `or` / `and` / `x if c else y`', () => {
       'and_or → run_or_else',
     ]);
   });
+
+  it('a comparison branch of `or` flows nothing, while its designator sibling still does', () => {
+    expect(
+      callsOf(result).filter(
+        (edge) =>
+          edge.startsWith('comparison_branch → ') ||
+          edge.startsWith('self_comparison → ') ||
+          edge.startsWith('bare_comparison → '),
+      ),
+    ).toEqual(['bare_comparison → fallback', 'self_comparison → fallback']);
+  });
 });
 
 describe('Kotlin callable chosen by `?:` / `if` expression', () => {
