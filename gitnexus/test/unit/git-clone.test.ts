@@ -1408,15 +1408,19 @@ describe('git-clone', () => {
           proc.on('error', reject);
         });
         await runGitForTest(['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], target);
+        const runGitForPull = vi.fn(async (args: string[]) => {
+          if (args[0] === 'pull' || args[0] === 'fetch') throw new Error('offline');
+          return '';
+        });
         await expect(
           cloneOrPull('https://github.com/owner/repo.git', target, undefined, {
             allowedCloneRoot: root,
             expectedRepoName: 'repo',
             allowAutoSyncSsh: true,
             quarantineRoot,
-            timeoutMs: 1500,
+            runGitForTest: runGitForPull,
           }),
-        ).rejects.toThrow();
+        ).rejects.toThrow('offline');
         await expect(serverGetRemoteOriginUrl(target)).resolves.toBe(
           'https://github.com/owner/repo.git',
         );
