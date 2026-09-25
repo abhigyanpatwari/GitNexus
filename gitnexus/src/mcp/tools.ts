@@ -1018,6 +1018,85 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       required: [],
     },
   },
+  {
+    name: 'read_file',
+    description: `Read a source file from the indexed repository, optionally sliced to a line range.
+Returns the exact file bytes (plus totalLines and the 0-indexed slice bounds) — the same content the HTTP GET /api/file endpoint serves, including its ?startLine=&endLine= support.
+
+WHEN TO USE: After query()/cypher()/context() gave you a filePath (or file:line), read the surrounding source: header context (open/variable/import lines), a full declaration, or any line window. Prefer context({name, include_content: true}) when you already have the symbol — it returns the symbol span plus call edges in one call.
+AFTER THIS: Use the read text to ground signatures verbatim; never invent names from memory.
+
+Path traversal is refused (403-style error); missing files return a not-found error. Whole-file reads on very large files may be truncated by maxLines (default 2000, 0 = no cap) — re-issue with startLine/endLine for the window you need.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Repo-relative file path (e.g. "Mathlib/Analysis/SpecificLimits/Basic.lean"). Absolute paths and ".." escapes are refused.',
+        },
+        startLine: {
+          type: 'number',
+          description: 'Optional 0-indexed first line of the slice (inclusive).',
+          minimum: 0,
+        },
+        endLine: {
+          type: 'number',
+          description: 'Optional 0-indexed last line of the slice (inclusive). Requires startLine.',
+          minimum: 0,
+        },
+        maxLines: {
+          type: 'number',
+          description:
+            'Maximum lines returned for a whole-file read (default 2000, 0 = no cap). Ignored when startLine is set.',
+          default: 2000,
+          minimum: 0,
+        },
+        repo: {
+          type: 'string',
+          description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'grep',
+    description: `Regex search across file contents in the indexed repo — the MCP twin of HTTP GET /api/grep.
+Scans indexed files (never loads all files into memory; wall-clock budgeted) and returns file:line hits up to limit.
+
+WHEN TO USE: Only after graph tools came back empty or ambiguous — exact-name pinning, docstring fallback, or literal tokens the index does not model (e.g. tactic names inside proof bodies, notation). Graph first (query/context/cypher); grep is the offline-capable fallback, never the default.
+AFTER THIS: Read the hit window with read_file({path, startLine, endLine}) or pin the symbol with context({name}).
+
+Results carry timedOut: true when the wall-clock budget expired first — re-issue narrower (fileFilter or a tighter pattern).`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Regex pattern (max 200 chars) matched against file content lines.',
+        },
+        fileFilter: {
+          type: 'string',
+          description: 'Optional case-insensitive substring filter on file paths.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum hits returned (default 50, max 200).',
+          default: 50,
+          minimum: 1,
+          maximum: 200,
+        },
+        repo: {
+          type: 'string',
+          description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: ['pattern'],
+    },
+  },
 ];
 
 /**
@@ -1031,6 +1110,8 @@ export const REPO_SCOPED_TOOLS = new Set([
   'query',
   'cypher',
   'context',
+  'read_file',
+  'grep',
   'detect_changes',
   'explain',
   'pdg_query',

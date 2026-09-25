@@ -46,6 +46,11 @@ import {
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import {
+  parseGrepQuery,
+  GREP_TIME_BUDGET_MS,
+} from '../../server/grep-params.js';
+import { runGrepScanInWorker } from '../../server/grep-scan.js';
+import {
   listRegisteredRepos,
   canonicalizePath,
   getStoragePaths,
@@ -2896,6 +2901,10 @@ export class LocalBackend {
         return this.apiImpact(repo, p);
       case 'trace':
         return this.trace(repo, p);
+      case 'read_file':
+        return this.withToolStaleness(repo, await this.readFile(repo, p));
+      case 'grep':
+        return this.withToolStaleness(repo, await this.grep(repo, p));
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -9391,6 +9400,125 @@ export class LocalBackend {
       /* no ENTRY_POINT_OF edges yet */
     }
     return result;
+  }
+
+  /**
+   * MCP read_file — repo-contained source read with optional 0-indexed line
+   * slice. Mirrors the HTTP GET /api/file handler contract (path containment
+   * via the canonical path.relative idiom, realpath re-check, startLine /
+   * endLine slice, 404 on ENOENT) minus the Express req/res shell.
+   */
+  private async readFile(
+    repo: RepoHandle,
+    params: { path?: unknown; startLine?: unknown; endLine?: unknown; maxLines?: unknown },
+  ): Promise<any> {
+    const rawPath = params?.path;
+    if (typeof rawPath !== 'string' || rawPath === '') {
+      return { error: 'Missing required argument "path" (repo-relative file path).' };
+    }
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    if (contentRetentionFromMeta(meta) !== 'full') {
+      return {
+        error:
+          'Source content is not retained by this index (content retention is not "full").',
+      };
+    }
+    const repoRoot = path.resolve(repo.repoPath);
+    const fullPath = path.resolve(repoRoot, rawPath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
+      return { error: 'Path traversal denied.' };
+    }
+    let realRoot: string;
+    let realFull: string;
+    try {
+      [realRoot, realFull] = await Promise.all([fs.realpath(repoRoot), fs.realpath(fullPath)]);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return { error: `File not found: ${rawPath}` };
+      throw err;
+    }
+    const realRel = path.relative(realRoot, realFull);
+    if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+      return { error: 'Path traversal denied.' };
+    }
+    const raw = await fs.readFile(realFull, 'utf-8');
+    const lines = raw.split('\n');
+    const toFiniteNumber = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const startLine = toFiniteNumber(params?.startLine);
+    const endLine = toFiniteNumber(params?.endLine);
+    if (startLine !== undefined) {
+      const start = Math.max(0, startLine);
+      const end =
+        endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
+      return {
+        path: fullRel,
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      };
+    }
+    const maxLines = toFiniteNumber(params?.maxLines) ?? 2000;
+    if (maxLines > 0 && lines.length > maxLines) {
+      return {
+        path: fullRel,
+        content: lines.slice(0, maxLines).join('\n'),
+        startLine: 0,
+        endLine: maxLines - 1,
+        totalLines: lines.length,
+        truncated: true,
+        suggestion: 'Re-issue with startLine/endLine for the window you need.',
+      };
+    }
+    return { path: fullRel, content: raw, totalLines: lines.length };
+  }
+
+  /**
+   * MCP grep — regex scan across indexed file contents. Mirrors the HTTP GET
+   * /api/grep handler contract (parseGrepQuery + lbug File list + worker scan
+   * under GREP_TIME_BUDGET_MS).
+   */
+  private async grep(
+    repo: RepoHandle,
+    params: { pattern?: unknown; fileFilter?: unknown; limit?: unknown },
+  ): Promise<any> {
+    await this.ensureInitialized(repo);
+    let parsed;
+    try {
+      parsed = parseGrepQuery({
+        pattern: params?.pattern,
+        fileFilter: params?.fileFilter,
+        limit: params?.limit,
+      });
+    } catch (err: any) {
+      return { error: err?.message || 'Invalid grep query.' };
+    }
+    const fileRows: Array<{ filePath?: string }> = await executeQuery(
+      repo.lbugPath,
+      `MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`,
+    );
+    const filePaths: string[] = [];
+    for (const row of fileRows) {
+      const filePath: string = row.filePath || '';
+      if (parsed.fileFilter && !filePath.toLowerCase().includes(parsed.fileFilter)) continue;
+      filePaths.push(filePath);
+    }
+    const { results, timedOut } = await runGrepScanInWorker({
+      repoRoot: path.resolve(repo.repoPath),
+      filePaths,
+      pattern: parsed.regex.source,
+      flags: parsed.regex.flags,
+      limit: parsed.limit,
+      deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+    });
+    return {
+      results,
+      ...(timedOut ? { timedOut: true as const } : {}),
+      ...(timedOut
+        ? { suggestion: 'Wall-clock budget expired — re-issue narrower (fileFilter or a tighter pattern).' }
+        : {}),
+    };
   }
 
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {
