@@ -23,6 +23,10 @@
     "captureGroups": 15,
     "digest": "f192ae885ea3de848f3b93acf7672d91b0118800cb0c6513628a6c09c26fadbf"
   },
+  "swift-callable-alternatives/App.swift": {
+    "captureGroups": 36,
+    "digest": "3720e42c769ba4f6fa2becfe55f10109e170e8ac274ce24e69b04b7b23a25a8a"
+  },
   "swift-child-extends-parent/Sources/App.swift": {
     "captureGroups": 11,
     "digest": "4841a7a147f5cac64ed70af845534845bf34701af4bc55a6a9f02fb09ad4b716"
