@@ -28,6 +28,15 @@ export const en = {
   'list.clusters': 'Clusters',
   'list.processes': 'Processes',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': 'Shared index: store {{key}}, shared graph for commit {{commit}}',
+  'status.sharedStorePrivate':
+    'Shared index: store {{key}}, private graph (local changes or a pinned branch index)',
+  'status.sharedStoreCloneCow':
+    '  Copied copy-on-write: unchanged pages are shared with the commit graph on disk',
+  'status.sharedStoreCloneCopy':
+    '  Full copy: this filesystem cannot clone copy-on-write (APFS, btrfs and XFS can)',
+  'status.legacyLocalIndex':
+    'Leftover local index: {{path}} ({{size}}); remove it with `gitnexus clean --local-index --force`',
   'status.notGitRepo': 'Not a git repository.',
   'status.staleKuzu': 'Repository has a stale KuzuDB index from a previous version.',
   'status.rebuildLadybug': 'Run: gitnexus analyze   (rebuilds the index with LadybugDB)',
@@ -59,6 +68,22 @@ export const en = {
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',
   'clean.deletedRepo': 'Deleted: {{name}} ({{storagePath}})',
   'clean.notFoundHere': 'No indexed repository found in this directory.',
+  'clean.shared.reclaimed':
+    'Shared store: removed {{count}} commit graph(s) no checkout references.',
+  'clean.shared.kept':
+    'Shared store: kept {{count}} unreferenced commit graph(s) that could not be removed (in use or not writable); run `gitnexus clean --gc` later.',
+  'clean.shared.storeRemoved': 'Shared store: removed {{path}} (no checkouts remain).',
+  'clean.gc.none': 'No shared stores to collect.',
+  'clean.gc.keptMembers':
+    'Shared store: kept {{count}} checkout(s) it could not delete; run `gitnexus clean --gc --force` later.',
+  'clean.gc.store':
+    'Shared store {{path}}: dropped {{members}} checkout(s), removed {{graphs}} commit graph(s).',
+  'clean.gc.preview':
+    'Shared store {{path}}: would drop {{members}} checkout(s) and remove {{graphs}} commit graph(s).',
+  'clean.localIndex.none': 'No leftover local index in this checkout.',
+  'clean.localIndex.preview':
+    'This will delete the leftover local index at {{path}} ({{size}}). The shared index is not affected.',
+  'clean.localIndex.deleted': 'Deleted the leftover local index at {{path}} ({{size}}).',
   'clean.deleteCurrent': 'This will delete the GitNexus index for: {{repoName}}',
   'clean.branchNotIndexed':
     'No indexed branch named "{{branch}}" for this repository. Use `gitnexus clean --stale` to reclaim leftover branch indexes, or `gitnexus list` to see recorded names.',
@@ -271,6 +296,10 @@ export const en = {
     'Register this repo under a custom name in ~/.gitnexus/registry.json (disambiguates repos whose paths share a basename, e.g. two different .../app folders)',
   'help.option.analyze.allowDuplicateName':
     'Register this repo even if another path already uses the same --name alias. Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
+  'help.option.analyze.shareWith':
+    'Join the shared index store of a registered checkout of the same repository (name or path); the remote URL must match. Clones join a sibling clone’s store automatically; this names one explicitly and clears a --no-share opt-out.',
+  'help.option.analyze.noShare':
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop joining sibling clones automatically until --share-with (linked worktrees always share; set GITNEXUS_SHARED_STORE=off instead)',
   'help.option.verbose': 'Enable verbose output',
   'help.option.analyze.maxFileSize':
     'Skip files larger than this (KB). Default: 512. Hard cap: 32768 (tree-sitter limit).',
@@ -310,6 +339,10 @@ export const en = {
   'help.option.clean.lbugSidecars':
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.clean.stale': 'Reclaim leftover branch indexes that are not a live local head',
+  'help.option.clean.gc':
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  'help.option.clean.localIndex':
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',

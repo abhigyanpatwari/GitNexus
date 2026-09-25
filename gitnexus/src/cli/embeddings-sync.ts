@@ -1,4 +1,6 @@
 import { lstat } from 'node:fs/promises';
+import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
+import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import path from 'node:path';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
@@ -43,14 +45,20 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   const repoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
   if (!repoPath) throw new Error('Not inside a git repository. Pass a repository path.');
 
-  const { lbugPath, metaPath } = getStoragePaths(repoPath);
+  const { metaPath } = getStoragePaths(repoPath);
   const metaDir = path.dirname(metaPath);
+  // Writes go to the slot's own graph. A shared-store checkout that reads an
+  // immutable commit graph (#3352) takes a private copy first.
+  const lbugPath = path.join(metaDir, LBUG_DIRECTORY);
   const lock = await acquireIndexLock(metaDir);
   try {
     requireExclusiveIndexLock(
       lock,
       `Cannot acquire the index lock at ${metaDir}; refusing an unlocked embeddings sync.`,
     );
+    if (!(await ensurePrivateSharedGraph(metaDir, (m) => console.log(`  ${m}`)))) {
+      throw new Error('The shared graph this checkout reads is gone. Run gitnexus analyze first.');
+    }
     const meta = await loadMeta(metaDir);
     if (!meta)
       throw new Error(`No GitNexus index found for ${repoPath}. Run gitnexus analyze first.`);
