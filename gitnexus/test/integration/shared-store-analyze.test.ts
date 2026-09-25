@@ -390,4 +390,63 @@ describe('publishSharedGraph race (#3352)', () => {
     expect((await loadMeta(slot))?.graphPath).toBe(shared);
     expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
   });
+
+  const checkpoint: NonNullable<RepoMeta['embeddingCheckpoint']> = {
+    at: '2026-01-01T00:00:00.000Z',
+    nodesProcessed: 1,
+    totalNodes: 2,
+    chunksProcessed: 1,
+    model: 'm',
+    dimensions: 4,
+    provider: 'local',
+    kind: 'partial',
+    pendingNodeIds: ['n2'],
+  };
+
+  // #3374: a graph with embeddings still owed would become every checkout's
+  // graph, and its checkpoint-free copy would look complete forever.
+  it('keeps a graph with pending embeddings private', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const slot = layoutOf(main).checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    await saveMeta(slot, { ...meta, embeddingCheckpoint: checkpoint });
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(true);
+    expect((await loadMeta(slot))?.embeddingCheckpoint).toEqual(checkpoint);
+  });
+
+  // A commit graph published before that rule may still be the weaker one;
+  // the checkout keeps its own graph rather than trading down to it.
+  it.each<[string, Partial<RepoMeta>]>([
+    ['records pending embeddings', { embeddingCheckpoint: checkpoint, stats: { embeddings: 5 } }],
+    ['has fewer embeddings', { stats: { embeddings: 2 } }],
+  ])('keeps the private graph when the published one %s', async (_label, targetDelta) => {
+    const { checkouts, head } = await setup();
+    const [main, wt] = checkouts;
+    const layout = layoutOf(main);
+    const slot = layout.checkoutSlot;
+    const own: RepoMeta = { ...((await loadMeta(slot)) as RepoMeta), stats: { embeddings: 5 } };
+    await saveMeta(slot, own);
+    const target = commitGraphDir(layout, head, featureKeyOf(own));
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, 'lbug'), 'older published graph');
+    const targetMeta: Partial<RepoMeta> = {
+      lastCommit: head,
+      indexedAt: own.indexedAt,
+      ...targetDelta,
+    };
+    await fs.writeFile(path.join(target, 'gitnexus.json'), JSON.stringify(targetMeta));
+    // Another checkout reads the published graph.
+    const wtSlot = layoutOf(wt).checkoutSlot;
+    await fs.rm(path.join(wtSlot, 'lbug'));
+    const wtMeta = (await loadMeta(wtSlot)) as RepoMeta;
+    await saveMeta(wtSlot, { ...wtMeta, graphPath: path.join(target, 'lbug') });
+    await publishSharedGraph(layout, main, head, () => {});
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe(`graph from ${main}`);
+    expect((await loadMeta(slot))?.graphPath).toBeUndefined();
+    // The published graph is immutable: other checkouts may point at it.
+    expect(await fs.readFile(path.join(target, 'lbug'), 'utf-8')).toBe('older published graph');
+  });
 });

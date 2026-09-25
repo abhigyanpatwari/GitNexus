@@ -370,6 +370,9 @@ export const publishSharedGraph = async (
     meta.lastCommit === currentCommit &&
     !meta.incrementalInProgress &&
     builtClean &&
+    // Embeddings still owed stay with this checkout, which finishes them; a
+    // commit graph never changes, so a shared copy would stay short for good.
+    !meta.embeddingCheckpoint &&
     // A sparse or partial checkout builds a graph missing the files it hides.
     isWorkingTreePristine(repoPath);
   // Every pointer change and the reclaim that follows run under one publish
@@ -379,7 +382,23 @@ export const publishSharedGraph = async (
       const target = commitGraphDir(layout, currentCommit, featureKeyOf(meta));
       const targetGraph = path.join(target, LBUG_DIRECTORY);
       let published = await exists(targetGraph);
-      if (published) {
+      // A commit graph published before embedding checkpoints were kept
+      // private may hold fewer embeddings than this checkout's own graph.
+      // Keep the better private graph; the commit graph stays as it is, since
+      // other checkouts may read it.
+      const targetMeta = published ? await loadMeta(target) : null;
+      const ownIsBetter =
+        published &&
+        (!targetMeta ||
+          !!targetMeta.embeddingCheckpoint ||
+          (targetMeta.stats?.embeddings ?? 0) < (meta.stats?.embeddings ?? 0)) &&
+        (await exists(own));
+      if (ownIsBetter) {
+        published = false;
+        log(
+          `Shared store: commit graph ${currentCommit.slice(0, 12)} is less complete; keeping the private graph.`,
+        );
+      } else if (published) {
         try {
           await wipeLbugDbFiles(own);
         } catch (err) {
