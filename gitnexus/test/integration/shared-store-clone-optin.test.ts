@@ -309,4 +309,26 @@ describe('shared store founder key for concurrent sibling clones (#3374)', () =>
     const joiner = await cloneAndRegister('aaa-joiner');
     expect((await resolveOptedInStore(joiner, undefined))?.key).toBe(existing);
   });
+
+  // #3374 S8 — `getRemoteUrl` answers from any subdirectory, so only the
+  // tree-root gate keeps `analyze --skip-git <clone>/pkg` out of the store.
+  it('a subdirectory of a clone with a registered sibling neither joins nor founds a store', async () => {
+    await cloneAndRegister('member', cloneStoreKey(path.join(root, 'zz-founder')));
+    const clone = await cloneAndRegister('other');
+    const subdir = path.join(clone, 'pkg');
+    await fs.mkdir(subdir);
+
+    expect(await resolveOptedInStore(subdir, undefined)).toBeUndefined();
+    expect(await resolveOptedInStore(clone, undefined)).toBeDefined();
+  });
+
+  it('--share-with refuses a subdirectory of a clone', async () => {
+    const member = await cloneAndRegister('member', cloneStoreKey(path.join(root, 'zz-founder')));
+    const subdir = path.join(await cloneAndRegister('other'), 'pkg');
+    await fs.mkdir(subdir);
+
+    await expect(resolveOptedInStore(subdir, member)).rejects.toThrow(
+      /--share-with: .* is not the root of a git checkout/,
+    );
+  });
 });

@@ -20,7 +20,12 @@ import { existsSync, constants as fsConstants } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
-import { commitDistanceToHead, getRemoteUrl, isWorkingTreePristine } from '../storage/git.js';
+import {
+  commitDistanceToHead,
+  getRemoteUrl,
+  hasGitDir,
+  isWorkingTreePristine,
+} from '../storage/git.js';
 import {
   canonicalizePath,
   findRegistryEntryByRepoPath,
@@ -534,12 +539,21 @@ const siblingCloneStore = (
  * `--share-with`, the one its registry entry already points into, or a
  * sibling clone's store (#3352). `--share-with` requires the normalized remote
  * URL to match the member it names (R3); `analyze --no-share` records an
- * opt-out that stops automatic joining.
+ * opt-out that stops automatic joining. Only tree roots participate, as in
+ * `resolveSharedStore`: `getRemoteUrl` answers from any subdirectory, so
+ * without this gate `analyze --skip-git <clone>/pkg` would join (#3374).
  */
 export const resolveOptedInStore = async (
   repoPath: string,
   shareWith: string | undefined,
 ): Promise<SharedStoreLayout | undefined> => {
+  if (!hasGitDir(repoPath)) {
+    if (!shareWith) return undefined;
+    throw new Error(
+      `--share-with: "${repoPath}" is not the root of a git checkout. ` +
+        'Only a clone root can share an index store.',
+    );
+  }
   const entries = await readRegistry();
   if (shareWith) {
     let target;
