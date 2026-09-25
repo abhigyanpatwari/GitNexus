@@ -1198,11 +1198,17 @@ describe('isWorkingTreePristine', () => {
     },
   );
 
-  it('is false in a sparse checkout that leaves committed files out', async () => {
+  // Every sparse mode marks the left-out entries skip-worktree, which is what
+  // the check reads; a sparse index still expands for `git ls-files -v`.
+  it.each([
+    ['no-cone', ['set', '--no-cone', '/a.ts']],
+    ['cone', ['set', '--cone']],
+    ['cone with a sparse index', ['set', '--cone', '--sparse-index']],
+  ])('is false in a %s sparse checkout that leaves committed files out', async (_mode, args) => {
     const { isWorkingTreePristine } = await import('../../src/storage/git.js');
     const repo = makeCommittedRepo();
     try {
-      gitIn(repo, 'sparse-checkout', 'set', '--no-cone', '/a.ts');
+      gitIn(repo, 'sparse-checkout', ...args);
 
       expect(fs.existsSync(path.join(repo, 'lib', 'b.ts'))).toBe(false);
       expect(isWorkingTreePristine(repo)).toBe(false);
