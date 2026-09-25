@@ -19,7 +19,7 @@ import {
   readRegistryStrictIfPresent,
   registryPathEquals,
 } from './repo-manager.js';
-import { loadMeta } from './repo-meta.js';
+import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
 import {
   SHARED_STORE_POINTER,
   storeRootOfCheckoutSlot,
@@ -250,6 +250,34 @@ export const describeSharedGraph = (
 const POINTER_DIR_KEEP = new Set([SHARED_STORE_POINTER, '.gitignore', 'run.cjs']);
 
 /**
+ * Whether `<checkout>/.gitnexus` is absent, a real directory inside the
+ * checkout, or anything else. A symlink (or junction) there could point
+ * anywhere — `.gitnexus -> ..` would expose the checkout's parent — so
+ * nothing is written, listed, or deleted through it.
+ */
+const probePointerDir = async (
+  checkoutPath: string,
+): Promise<{ status: 'missing' } | { status: 'contained'; dir: string } | { status: 'unsafe' }> => {
+  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  let stat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stat = await fs.lstat(dir);
+  } catch (err) {
+    return isMissingFilesystemError(err) ? { status: 'missing' } : { status: 'unsafe' };
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) return { status: 'unsafe' };
+  try {
+    const real = await fs.realpath(dir);
+    const expected = path.join(await fs.realpath(checkoutPath), GITNEXUS_DIR);
+    return path.relative(real, expected) === ''
+      ? { status: 'contained', dir }
+      : { status: 'unsafe' };
+  } catch {
+    return { status: 'unsafe' };
+  }
+};
+
+/**
  * Point `<checkout>/.gitnexus` at the checkout's store slot (#3352 R16). The
  * directory's other contents — a pre-adoption index — are left untouched.
  */
@@ -257,8 +285,12 @@ export const writeSharedStorePointer = async (
   checkoutPath: string,
   layout: Pick<SharedStoreLayout, 'key' | 'checkoutSlot'>,
 ): Promise<void> => {
-  const dir = path.join(checkoutPath, GITNEXUS_DIR);
-  await fs.mkdir(dir, { recursive: true });
+  if ((await probePointerDir(checkoutPath)).status === 'missing') {
+    await fs.mkdir(path.join(checkoutPath, GITNEXUS_DIR), { recursive: true });
+  }
+  const probe = await probePointerDir(checkoutPath);
+  if (probe.status !== 'contained') return;
+  const { dir } = probe;
   await fs.writeFile(
     path.join(dir, SHARED_STORE_POINTER),
     `${JSON.stringify({ version: 1, storeKey: layout.key, checkoutSlot: layout.checkoutSlot }, null, 2)}\n`,
@@ -271,7 +303,9 @@ export const writeSharedStorePointer = async (
  * if it cannot be listed (its contents are then unknown).
  */
 export const removeSharedStorePointer = async (checkoutPath: string): Promise<void> => {
-  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  const probe = await probePointerDir(checkoutPath);
+  if (probe.status !== 'contained') return;
+  const { dir } = probe;
   await fs.rm(path.join(dir, SHARED_STORE_POINTER), { force: true });
   const rest = await fs
     .readdir(dir)
@@ -306,7 +340,9 @@ export const findLegacyLocalIndex = async (
   storagePath: string,
 ): Promise<LegacyLocalIndex | null> => {
   if (!storeRootOfCheckoutSlot(storagePath)) return null;
-  const dir = path.join(checkoutPath, GITNEXUS_DIR);
+  const probe = await probePointerDir(checkoutPath);
+  if (probe.status !== 'contained') return null;
+  const { dir } = probe;
   const entries = (await listDir(dir)).filter((name) => !POINTER_DIR_KEEP.has(name));
   if (entries.length === 0) return null;
   let bytes = 0;
@@ -321,6 +357,8 @@ export const removeLegacyLocalIndex = async (
 ): Promise<LegacyLocalIndex | null> => {
   const legacy = await findLegacyLocalIndex(checkoutPath, storagePath);
   if (!legacy) return null;
+  // Sizing walked the whole index; re-check the directory was not swapped meanwhile.
+  if ((await probePointerDir(checkoutPath)).status !== 'contained') return null;
   for (const name of legacy.entries) {
     await fs.rm(path.join(legacy.dir, name), { recursive: true, force: true });
   }

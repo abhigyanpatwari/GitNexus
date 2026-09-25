@@ -10,10 +10,13 @@ import {
   type SharedStoreLayout,
 } from '../../src/storage/shared-store.js';
 import {
+  findLegacyLocalIndex,
   reclaimAfterSlotRemoval,
   readGraphCloneKind,
   reclaimSharedStore,
+  removeLegacyLocalIndex,
   removeSharedStorePointer,
+  writeSharedStorePointer,
 } from '../../src/storage/shared-store-lifecycle.js';
 import { getGlobalDir } from '../../src/storage/global-dir.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -406,6 +409,54 @@ describe('reclaimSharedStore', () => {
     }
     expect(existsSync(dir)).toBe(true);
     expect(existsSync(path.join(dir, 'store.json'))).toBe(false);
+  });
+
+  /** `<parent>/repo/.gitnexus -> ..`, beside a file that lives outside the checkout. */
+  const symlinkedPointerDir = async (): Promise<{ checkout: string; victim: string }> => {
+    const parent = path.join(tmpHome.dbPath, 'parent');
+    const checkout = path.join(parent, 'repo');
+    await fs.mkdir(checkout, { recursive: true });
+    const victim = path.join(parent, 'a-victim.txt');
+    await fs.writeFile(victim, 'keep');
+    await fs.symlink('..', path.join(checkout, '.gitnexus'), 'dir');
+    return { checkout, victim };
+  };
+
+  it('writes the pointer into a real checkout .gitnexus and removes only the legacy index', async () => {
+    const checkout = path.join(tmpHome.dbPath, 'checkout');
+    await fs.mkdir(checkout);
+    const slot = await member('wt-000000000000', { repoPath: checkout });
+    await writeSharedStorePointer(checkout, layout());
+    await fs.writeFile(path.join(checkout, '.gitnexus', 'lbug'), 'old graph');
+    expect((await removeLegacyLocalIndex(checkout, slot))?.entries).toEqual(['lbug']);
+    expect(await fs.readdir(path.join(checkout, '.gitnexus'))).toEqual(
+      expect.arrayContaining(['store.json', '.gitignore']),
+    );
+    expect(existsSync(path.join(checkout, '.gitnexus', 'lbug'))).toBe(false);
+  });
+
+  it('ignores a symlinked checkout .gitnexus when finding or removing a legacy index', async () => {
+    const { checkout, victim } = await symlinkedPointerDir();
+    const slot = await member('wt-000000000000', { repoPath: checkout });
+    expect(await findLegacyLocalIndex(checkout, slot)).toBeNull();
+    expect(await removeLegacyLocalIndex(checkout, slot)).toBeNull();
+    expect(readFileSync(victim, 'utf-8')).toBe('keep');
+  });
+
+  it('writes no pointer through a symlinked checkout .gitnexus', async () => {
+    const { checkout } = await symlinkedPointerDir();
+    await writeSharedStorePointer(checkout, layout());
+    expect(existsSync(path.join(path.dirname(checkout), 'store.json'))).toBe(false);
+    expect(existsSync(path.join(path.dirname(checkout), '.gitignore'))).toBe(false);
+  });
+
+  it('removes nothing through a symlinked checkout .gitnexus', async () => {
+    const { checkout, victim } = await symlinkedPointerDir();
+    const outsidePointer = path.join(path.dirname(checkout), 'store.json');
+    await fs.writeFile(outsidePointer, '{}');
+    await removeSharedStorePointer(checkout);
+    expect(existsSync(outsidePointer)).toBe(true);
+    expect(readFileSync(victim, 'utf-8')).toBe('keep');
   });
 
   it('aborts instead of collecting members when the registry cannot be read', async () => {
