@@ -4068,6 +4068,9 @@ export class LocalBackend {
         isLocalEmbeddingSidecarAbortMessage(message);
       if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
+      } else if (degraded && isBenignMissingTableError(err)) {
+        degraded.reason =
+          'This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.';
       }
       if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;

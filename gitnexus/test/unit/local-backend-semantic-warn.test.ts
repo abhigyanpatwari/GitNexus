@@ -106,4 +106,15 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
     expect(degraded.reason).toContain('no embedding vectors');
     expect(embedQueryMock).not.toHaveBeenCalled();
   });
+
+  it('warns when the embedding table is missing (#3372)', async () => {
+    executeQueryMock.mockRejectedValue(
+      new Error('Binder exception: Table CodeEmbedding does not exist.'),
+    );
+    const backend = new LocalBackend();
+    const degraded = { reason: undefined as string | undefined };
+    expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+    expect(degraded.reason).toContain('no embedding vectors');
+    expect(embedQueryMock).not.toHaveBeenCalled();
+  });
 });
