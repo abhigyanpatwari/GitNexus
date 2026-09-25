@@ -490,6 +490,80 @@ describe('reclaimSharedStore', () => {
       rm.mockRestore();
     }
   });
+
+  // A torn or unreadable gitnexus.json must not read as "references nothing":
+  // the graph it names would be deleted while the checkout still uses it.
+  it.each([
+    ['invalid JSON', (file: string) => fs.writeFile(file, '{"graphPath": "/trunc')],
+    ['an unreadable file', (file: string) => fs.mkdir(file)],
+  ])('aborts instead of deleting graphs when a member has %s as metadata', async (_, corrupt) => {
+    const graph = await commitGraph('fffffff-6666666666666666');
+    const slot = path.join(layout().checkoutsDir, 'wt-000000000000');
+    await fs.mkdir(slot, { recursive: true });
+    await corrupt(path.join(slot, 'gitnexus.json'));
+    await member('wt-111111111111', {});
+
+    await expect(reclaimSharedStore(layout().root)).rejects.toThrow(/wt-000000000000/);
+    expect(existsSync(graph)).toBe(true);
+  });
+
+  it('counts a member with no metadata as referencing nothing', async () => {
+    const graph = await commitGraph('fffffff-6666666666666666');
+    const slot = path.join(layout().checkoutsDir, 'wt-000000000000');
+    await fs.mkdir(slot, { recursive: true });
+
+    const result = await reclaimSharedStore(layout().root);
+
+    expect(result.removed).toEqual([graph]);
+    expect(existsSync(graph)).toBe(false);
+  });
+
+  it('clean --gc keeps a member it cannot delete and still collects every store', async () => {
+    const gone = '/nonexistent/checkout';
+    const stuckGraph = await commitGraph('aaaaaaa-1111111111111111');
+    const unreferenced = await commitGraph('bbbbbbb-2222222222222222');
+    const stuck = await member('wt-000000000000', {
+      repoPath: gone,
+      graphPath: path.join(stuckGraph, 'lbug'),
+    });
+    const dropped = await member('wt-111111111111', { repoPath: gone });
+    const other = sharedStoreLayout('repo-fedcba987654', '/tmp/wt');
+    const otherGraph = path.join(other.commitsDir, 'ccccccc-3333333333333333');
+    await fs.mkdir(otherGraph, { recursive: true });
+    const otherSlot = path.join(other.checkoutsDir, 'wt-000000000000');
+    await fs.mkdir(otherSlot, { recursive: true });
+    await saveMeta(otherSlot, { lastCommit: '', indexedAt: '', repoPath: gone });
+
+    const realRm = fs.rm;
+    const rm = vi.spyOn(fs, 'rm').mockImplementation((async (
+      target: string,
+      ...rest: unknown[]
+    ) => {
+      if (String(target) === stuck) throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+      return (realRm as (...a: unknown[]) => Promise<unknown>)(target, ...rest);
+    }) as typeof fs.rm);
+    const { cleanCommand } = await import('../../src/cli/clean.js');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    let lines: string[];
+    try {
+      await cleanCommand({ gc: true, force: true });
+      lines = log.mock.calls.map((c) => String(c[0]));
+    } finally {
+      log.mockRestore();
+      rm.mockRestore();
+    }
+
+    // The stuck member stays a member, so the graph it names stays live.
+    expect(existsSync(stuck)).toBe(true);
+    expect(existsSync(stuckGraph)).toBe(true);
+    expect(existsSync(dropped)).toBe(false);
+    expect(existsSync(unreferenced)).toBe(false);
+    // The store after it was still collected, down to its root.
+    expect(existsSync(other.root)).toBe(false);
+    expect(lines).toEqual(
+      expect.arrayContaining([expect.stringMatching(/kept 1 checkout\(s\) it could not delete/)]),
+    );
+  });
 });
 
 describe('private graph copies (#3352)', () => {

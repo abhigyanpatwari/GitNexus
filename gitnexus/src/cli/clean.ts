@@ -200,6 +200,9 @@ const collectSharedStores = async (force: boolean): Promise<void> => {
         graphs: result.removed.length,
       }),
     );
+    if (result.keptMembers.length > 0) {
+      console.log(t('clean.gc.keptMembers', { count: result.keptMembers.length }));
+    }
     if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
     if (result.storeRemoved) console.log(t('clean.shared.storeRemoved', { path: root }));
   }

@@ -19,13 +19,18 @@ import {
   readRegistryStrictIfPresent,
   registryPathEquals,
 } from './repo-manager.js';
-import { isMissingFilesystemError, loadMeta } from './repo-meta.js';
+import { isMissingFilesystemError, loadMeta, type RepoMeta } from './repo-meta.js';
 import {
   SHARED_STORE_POINTER,
   storeRootOfCheckoutSlot,
   type SharedStoreLayout,
 } from './shared-store.js';
-import { GITNEXUS_DIR, LBUG_DIRECTORY } from './storage-constants.js';
+import {
+  GITNEXUS_DIR,
+  INDEX_METADATA_FILE,
+  LBUG_DIRECTORY,
+  LEGACY_METADATA_FILE,
+} from './storage-constants.js';
 
 type StoreRoot = Pick<SharedStoreLayout, 'root'>;
 
@@ -56,6 +61,8 @@ export interface ReclaimResult {
   kept: string[];
   /** Member slots dropped by garbage collection. */
   droppedMembers: string[];
+  /** Orphaned member slots garbage collection could not delete; still counted as members. */
+  keptMembers: string[];
   /** The store root was deleted because nothing remained. */
   storeRemoved: boolean;
 }
@@ -72,6 +79,31 @@ const listDirStrict = (dir: string): Promise<string[]> =>
     if (err.code === 'ENOENT') return [] as string[];
     throw err;
   });
+
+/**
+ * Slot metadata for reclaim decisions, read like `loadMeta` (the legacy
+ * mirror only when `gitnexus.json` is absent). Only absent metadata means "no
+ * reference"; an unreadable or unparseable file aborts, because `loadMeta`'s
+ * null there would delete the commit graph the slot still points at.
+ */
+const loadMetaStrict = async (slot: string): Promise<RepoMeta | null> => {
+  for (const file of [INDEX_METADATA_FILE, LEGACY_METADATA_FILE]) {
+    const metaPath = path.join(slot, file);
+    let raw: string;
+    try {
+      raw = await fs.readFile(metaPath, 'utf-8');
+    } catch (err) {
+      if (isMissingFilesystemError(err)) continue;
+      throw new Error(`Cannot read ${metaPath}: ${(err as Error).message}`, { cause: err });
+    }
+    try {
+      return JSON.parse(raw) as RepoMeta;
+    } catch (err) {
+      throw new Error(`Cannot parse ${metaPath}: ${(err as Error).message}`, { cause: err });
+    }
+  }
+  return null;
+};
 
 /**
  * Member slots that no registry entry uses any more: the checkout directory is
@@ -116,7 +148,13 @@ export const reclaimSharedStoreLocked = async (
   // Absolute, so commit dirs compare equal to the resolved graphPath parents
   // even when GITNEXUS_HOME is relative.
   const storeRoot = path.resolve(storeRootInput);
-  const result: ReclaimResult = { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
+  const result: ReclaimResult = {
+    removed: [],
+    kept: [],
+    droppedMembers: [],
+    keptMembers: [],
+    storeRemoved: false,
+  };
   const checkoutsDir = path.join(storeRoot, 'checkouts');
   const commitsDir = path.join(storeRoot, 'commits');
   const referenced = new Set<string>();
@@ -140,7 +178,18 @@ export const reclaimSharedStoreLocked = async (
           orphans.delete(slot);
           continue;
         }
-        if (!opts.dryRun) await fs.rm(slot, { recursive: true, force: true });
+        if (!opts.dryRun) {
+          try {
+            await fs.rm(slot, { recursive: true, force: true });
+          } catch {
+            // Like an undeletable graph below: keep it for the next collection
+            // rather than abort every store after this one. It stays a member,
+            // so whatever graph it still names is kept too.
+            orphans.delete(slot);
+            result.keptMembers.push(slot);
+            continue;
+          }
+        }
         result.droppedMembers.push(slot);
       } finally {
         lock.release();
@@ -149,7 +198,7 @@ export const reclaimSharedStoreLocked = async (
     slots = slots.filter((slot) => !orphans.has(slot));
   }
   for (const slot of slots) {
-    const graphPath = (await loadMeta(slot))?.graphPath;
+    const graphPath = (await loadMetaStrict(slot))?.graphPath;
     if (graphPath) referenced.add(path.dirname(path.resolve(graphPath)));
   }
 
@@ -201,7 +250,7 @@ export const reclaimSharedStore = async (
   opts: { gc?: boolean; dryRun?: boolean } = {},
 ): Promise<ReclaimResult> => {
   if (!existsSync(storeRoot)) {
-    return { removed: [], kept: [], droppedMembers: [], storeRemoved: false };
+    return { removed: [], kept: [], droppedMembers: [], keptMembers: [], storeRemoved: false };
   }
   return withStoreLock({ root: storeRoot }, 'publish', () =>
     reclaimSharedStoreLocked(storeRoot, opts),

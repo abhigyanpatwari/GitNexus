@@ -70,6 +70,8 @@ export const zhCN = {
     '共享存储：保留了 {{count}} 个仍处于打开状态的未引用提交图；请稍后运行 `gitnexus clean --gc`。',
   'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
   'clean.gc.none': '没有可回收的共享存储。',
+  'clean.gc.keptMembers':
+    '共享存储：保留了 {{count}} 个无法删除的检出；请稍后运行 `gitnexus clean --gc --force`。',
   'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
   'clean.gc.preview': '共享存储 {{path}}：将移除 {{members}} 个检出并删除 {{graphs}} 个提交图。',
   'clean.localIndex.none': '此检出中没有残留的本地索引。',
