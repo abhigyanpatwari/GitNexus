@@ -215,6 +215,25 @@ interface ValueBindingIndex {
     string,
     ReadonlyMap<number, CallableCaptureSignature>
   >;
+  /**
+   * Every node id a visibility walk can stop at: the region ids of the three
+   * maps above plus the formal owners. Any other ancestor fails every check,
+   * so the walks jump from anchor to anchor instead of visiting it.
+   */
+  readonly anchorIds: ReadonlySet<number>;
+  /**
+   * Nearest anchor at-or-above a node, memoized for the whole file. Each
+   * alternative of a long `a || b || …` chain starts its walk at a leaf as
+   * deep as the chain is long; without the memo every leaf re-walked the same
+   * spine to the root, so the chain cost grew quadratically in its length.
+   */
+  readonly nearestAnchorById: Map<number, SyntaxNode | null>;
+  /**
+   * Parent of every named node, recorded by the one DFS. tree-sitter's
+   * `parent` is not a pointer read: it re-descends from the root, so it costs
+   * the node's depth, and a leaf of a long chain is as deep as the chain.
+   */
+  readonly parentById: ReadonlyMap<number, SyntaxNode>;
 }
 
 /**
@@ -223,16 +242,21 @@ interface ValueBindingIndex {
  * One explicit DFS supplies all phases below. Query-backed emitters may still
  * perform their existing query walk; this helper never reparses and remains
  * linear in AST size (the scope-capture benchmark guards the scaling ratio).
+ * That includes a value-selecting source: `valueAlternatives` expands a
+ * chain iteratively into disjoint leaves, and each leaf's visibility walk
+ * reuses the memoized anchor spine instead of re-walking to the root (the
+ * `typescript-deep-chain` benchmark case guards that one).
  */
 export function synthesizeCallableFlowCaptures(
   root: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly CaptureMatch[] {
-  const nodes = collectNodes(root);
+  const parentById = new Map<number, SyntaxNode>();
+  const nodes = collectNodes(root, parentById);
   const functions = collectFunctions(nodes, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
-  const valueBindings = buildValueBindingIndex(nodes, assignments, functions, options);
+  const valueBindings = buildValueBindingIndex(nodes, parentById, assignments, functions, options);
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
@@ -260,7 +284,9 @@ export function synthesizeCallableFlowCaptures(
   return out;
 }
 
-function collectNodes(root: SyntaxNode): SyntaxNode[] {
+/** Every named node in document order; also records each one's parent into
+ *  `parentById` (see `ValueBindingIndex.parentById`). */
+function collectNodes(root: SyntaxNode, parentById: Map<number, SyntaxNode>): SyntaxNode[] {
   const out: SyntaxNode[] = [];
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
@@ -269,7 +295,9 @@ function collectNodes(root: SyntaxNode): SyntaxNode[] {
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i];
-      if (child !== null) stack.push(child);
+      if (child === null) continue;
+      parentById.set(child.id, node);
+      stack.push(child);
     }
   }
   return out;
@@ -353,6 +381,7 @@ function collectAssignments(
 
 function buildValueBindingIndex(
   nodes: readonly SyntaxNode[],
+  parentById: ReadonlyMap<number, SyntaxNode>,
   assignments: readonly AssignmentParts[],
   functions: readonly FunctionInfo[],
   options: CallableFlowCaptureOptions,
@@ -440,12 +469,54 @@ function buildValueBindingIndex(
       if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
     }
   }
+  const anchorIds = new Set<number>();
+  for (const index of [assignmentRegionIdsByName, memberStoreRegionIdsByName]) {
+    for (const regionIds of index.values()) for (const id of regionIds) anchorIds.add(id);
+  }
+  for (const byRegion of signatureByNameAndRegion.values()) {
+    for (const id of byRegion.keys()) anchorIds.add(id);
+  }
+  for (const owner of formalByOwner.keys()) if (owner !== undefined) anchorIds.add(owner);
   return {
     assignmentRegionIdsByName,
     memberStoreRegionIdsByName,
     formalByOwner,
     signatureByNameAndRegion,
+    anchorIds,
+    parentById,
+    nearestAnchorById: new Map(),
   };
+}
+
+/** A node the DFS did not reach (none in practice) falls back to tree-sitter. */
+function parentOf(node: SyntaxNode, bindings: ValueBindingIndex): SyntaxNode | null {
+  return bindings.parentById.get(node.id) ?? node.parent;
+}
+
+/**
+ * The nearest anchor at-or-above `start` (see `ValueBindingIndex.anchorIds`),
+ * or null when none is. Every node visited on the way is memoized, so across
+ * one file each node's `parent` is taken at most once by these walks.
+ */
+function nearestAnchor(start: SyntaxNode | null, bindings: ValueBindingIndex): SyntaxNode | null {
+  const visited: number[] = [];
+  let node = start;
+  let found: SyntaxNode | null = null;
+  while (node !== null) {
+    const cached = bindings.nearestAnchorById.get(node.id);
+    if (cached !== undefined) {
+      found = cached;
+      break;
+    }
+    visited.push(node.id);
+    if (bindings.anchorIds.has(node.id)) {
+      found = node;
+      break;
+    }
+    node = parentOf(node, bindings);
+  }
+  for (const id of visited) bindings.nearestAnchorById.set(id, found);
+  return found;
 }
 
 /** True when a pointer/parenthesized declarator sits between the declaration
@@ -509,8 +580,11 @@ function isVisibleValueBinding(
   ) {
     return true;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     if (assignmentRegionIds?.has(node.id) === true) return true;
     if (
       options.functionNodeTypes.has(node.type) &&
@@ -518,7 +592,6 @@ function isVisibleValueBinding(
     ) {
       return true;
     }
-    node = node.parent;
   }
   if (bindings.formalByOwner.get(undefined)?.has(name) === true) return true;
   // A declared callable-typed binding (file-scope `void (*fp)(int);`) is a
@@ -548,10 +621,12 @@ function isVisibleMemberStore(
   if (regionIds !== undefined) {
     const providerOwner = options.lexicalFunctionOwner?.(input);
     if (providerOwner !== undefined && regionIds.has(providerOwner.id)) return true;
-    let node: SyntaxNode | null = input;
-    while (node !== null) {
+    for (
+      let node = nearestAnchor(input, bindings);
+      node !== null;
+      node = nearestAnchor(parentOf(node, bindings), bindings)
+    ) {
       if (regionIds.has(node.id)) return true;
-      node = node.parent;
     }
   }
   return visibleCallableSignature(input, name, bindings, options) !== undefined;
@@ -570,11 +645,13 @@ function visibleCallableSignature(
     const signature = byRegion.get(providerOwner.id);
     if (signature !== undefined) return signature;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     const signature = byRegion.get(node.id);
     if (signature !== undefined) return signature;
-    node = node.parent;
   }
   return undefined;
 }
@@ -626,28 +703,58 @@ const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or']);
  * `options.valueAlternatives` is consulted first for grammars whose shape the
  * field-based rule below cannot see.
  */
-function valueAlternatives(node: SyntaxNode, options: CallableFlowCaptureOptions): SyntaxNode[] {
+function valueAlternatives(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] {
+  // Explicit stack, not recursion: `a || b || …` nests one level per operand,
+  // so a generated keyword table thousands of operands long overflowed the
+  // call stack (and re-copied every partial result at each level).
+  const out: SyntaxNode[] = [];
+  const pending: SyntaxNode[] = [node];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    const branches = valueBranches(current, options);
+    if (branches === undefined) {
+      out.push(current);
+      continue;
+    }
+    // Reverse push keeps the left-to-right branch order on output.
+    for (let i = branches.length - 1; i >= 0; i--) {
+      const branch = branches[i];
+      if (branch !== undefined) pending.push(branch);
+    }
+  }
+  return out;
+}
+
+/** One level of `valueAlternatives`: the branches `node` selects between, or
+ *  undefined when it is opaque (its own single alternative). */
+function valueBranches(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] | undefined {
   let inner = node;
   while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
-    inner = inner.namedChild(0)!;
+    const child = inner.namedChild(0);
+    if (child === null) break;
+    inner = child;
   }
   const provided = options.valueAlternatives?.(inner);
   if (provided !== undefined) {
-    if (provided.length === 1 && provided[0]?.id === inner.id) return [node];
-    return provided.flatMap((branch) => valueAlternatives(branch, options));
+    return provided.length === 1 && provided[0]?.id === inner.id ? undefined : provided;
   }
   const consequence = inner.childForFieldName('consequence');
   const alternative = inner.childForFieldName('alternative');
   if (consequence !== null && alternative !== null && inner.childForFieldName('condition')) {
-    return [...valueAlternatives(consequence, options), ...valueAlternatives(alternative, options)];
+    return [consequence, alternative];
   }
   const left = inner.childForFieldName('left');
   const right = inner.childForFieldName('right');
   const operator = inner.childForFieldName('operator')?.type;
   if (left !== null && right !== null && operator && VALUE_SELECTING_OPERATORS.has(operator)) {
-    return [...valueAlternatives(left, options), ...valueAlternatives(right, options)];
+    return [left, right];
   }
-  return [node];
+  return undefined;
 }
 
 function emitAssignmentFact(
