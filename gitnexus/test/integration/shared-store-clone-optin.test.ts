@@ -3,8 +3,19 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { getStoragePaths, listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { resolveSharedStore, type SharedStoreLayout } from '../../src/storage/shared-store.js';
+import { resolveOptedInStore } from '../../src/core/shared-store-analyze.js';
+import { getRemoteUrl } from '../../src/storage/git.js';
+import {
+  getStoragePaths,
+  listRegisteredRepos,
+  registerRepo,
+} from '../../src/storage/repo-manager.js';
+import {
+  cloneStoreKey,
+  resolveSharedStore,
+  sharedStoreLayout,
+  type SharedStoreLayout,
+} from '../../src/storage/shared-store.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 // These suites exercise sharing; an inherited opt-out would silently disable it.
@@ -224,4 +235,78 @@ describe('shared store clone sharing (#3352)', () => {
       before,
     );
   }, 240_000);
+});
+
+/**
+ * #3374 S7 — registered sibling clones that found a store at the same time
+ * must pick the same key, or each keeps its own store forever. Resolves the
+ * store directly (no analyze): only the registry and the clones' remotes matter.
+ */
+describe('shared store founder key for concurrent sibling clones (#3374)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedHome: string | undefined;
+  let root: string;
+
+  /** Clone `source` as `name` and register it at local storage, or at `storeKey`'s slot. */
+  const cloneAndRegister = async (name: string, storeKey?: string): Promise<string> => {
+    const clone = path.join(root, name);
+    git(root, 'clone', '-q', path.join(root, 'source'), clone);
+    git(clone, 'remote', 'set-url', 'origin', REMOTE);
+    const storagePath = storeKey ? sharedStoreLayout(storeKey, clone).checkoutSlot : undefined;
+    await registerRepo(
+      clone,
+      {
+        repoPath: clone,
+        storagePath,
+        lastCommit: git(clone, 'rev-parse', 'HEAD'),
+        indexedAt: new Date(0).toISOString(),
+        remoteUrl: getRemoteUrl(clone),
+      },
+      storagePath ? { storagePath } : undefined,
+    );
+    return clone;
+  };
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-test-founder-home-');
+    tmpRepo = await createTempDir('gitnexus-test-founder-repo-');
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    root = await fs.realpath(tmpRepo.dbPath);
+    const source = path.join(root, 'source');
+    await fs.mkdir(source);
+    git(source, 'init', '-q', '-b', 'main');
+    await fs.writeFile(path.join(source, 'a.ts'), 'export const a = 1;\n');
+    git(source, 'add', '-A');
+    git(source, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await tmpRepo.cleanup();
+    await tmpHome.cleanup();
+  });
+
+  it('two registered local clones resolve the same new store, keyed on the first path', async () => {
+    // Registered in reverse path order so registry order cannot pick the key.
+    const second = await cloneAndRegister('zeta');
+    const first = await cloneAndRegister('alpha');
+
+    const fromFirst = await resolveOptedInStore(first, undefined);
+    const fromSecond = await resolveOptedInStore(second, undefined);
+
+    expect(fromFirst?.key).toBe(cloneStoreKey(first));
+    expect(fromSecond?.key).toBe(cloneStoreKey(first));
+  });
+
+  it('a later clone joins the existing store rather than founding one', async () => {
+    const existing = cloneStoreKey(path.join(root, 'zz-founder'));
+    await cloneAndRegister('member', existing);
+    await cloneAndRegister('other');
+
+    const joiner = await cloneAndRegister('aaa-joiner');
+    expect((await resolveOptedInStore(joiner, undefined))?.key).toBe(existing);
+  });
 });

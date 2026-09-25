@@ -491,10 +491,14 @@ const registeredStore = (
 /**
  * Store for a clone with no store of its own: the store a registered sibling
  * clone (same normalized `origin` URL, checkout still present) already uses,
- * or, when siblings exist but none shares yet, a new store keyed on this
- * clone. Graphs are keyed by commit and feature key, so clones only ever share
- * a graph built from the same commit with the same settings. A lone clone
- * keeps its repository-local index.
+ * or, when siblings exist but none shares yet, a new store keyed on the
+ * canonical path that sorts first among this clone and its siblings. Every
+ * sibling computes that same founder key, so clones founding the store
+ * concurrently still land in one store (#3374); the key is only a name, so the
+ * store keeps working if the founder's checkout is later deleted. Graphs are
+ * keyed by commit and feature key, so clones only ever share a graph built
+ * from the same commit with the same settings. A lone clone keeps its
+ * repository-local index.
  */
 const siblingCloneStore = (
   entries: readonly RegistryEntry[],
@@ -515,7 +519,14 @@ const siblingCloneStore = (
     .filter((root): root is string => root !== null)
     .map((root) => path.basename(root))
     .sort();
-  return sharedStoreLayout(keys[0] ?? cloneStoreKey(repoPath), repoPath);
+  if (keys[0]) return sharedStoreLayout(keys[0], repoPath);
+  // Order the way the registry compares paths: case-folded on Windows, whose
+  // slot names hash the folded form too.
+  const fold = (p: string): string => (registryPathEquals('A', 'a') ? p.toLowerCase() : p);
+  const founder = [self, ...siblings.map((e) => canonicalizePath(e.path))].reduce((a, b) =>
+    fold(b) < fold(a) ? b : a,
+  );
+  return sharedStoreLayout(cloneStoreKey(founder), repoPath);
 };
 
 /**
