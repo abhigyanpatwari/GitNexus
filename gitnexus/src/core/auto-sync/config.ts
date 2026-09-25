@@ -311,6 +311,12 @@ export function parseAutoSyncRemoteIdentity(remoteUrl: string): { host: string; 
   return { host, repoPath };
 }
 
+/** Canonical `host/owner/repo` key. Strips one trailing `.git`. Throws on an invalid remote. */
+export function getAutoSyncRepoIdentity(remoteUrl: string): string {
+  const { host, repoPath } = parseAutoSyncRemoteIdentity(remoteUrl);
+  return `${host}/${repoPath.replace(/\.git$/i, '')}`;
+}
+
 export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
   parseAutoSyncRemoteIdentity(remoteUrl);
 }

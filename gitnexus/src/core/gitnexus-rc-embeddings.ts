@@ -47,7 +47,7 @@ export async function embeddingsFromGitnexusRc(
   }
   if (embeddingsVal === undefined) return {};
   if (typeof embeddingsVal === 'boolean') {
-    return embeddingsVal ? { embeddings: true } : { embeddings: false };
+    return { embeddings: embeddingsVal };
   }
   if (typeof embeddingsVal === 'number') {
     if (!Number.isInteger(embeddingsVal) || embeddingsVal < 0) {

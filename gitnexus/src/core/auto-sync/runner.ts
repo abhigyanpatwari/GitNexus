@@ -12,6 +12,7 @@ import {
   type RepoMeta,
 } from '../../storage/repo-manager.js';
 import { embeddingsFromGitnexusRc } from '../gitnexus-rc-embeddings.js';
+import { getAutoSyncRepoIdentity } from './config.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -26,7 +27,6 @@ import {
   type ProjectCommitInfoEntry,
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
-import { parseAutoSyncRemoteIdentity } from './config.js';
 import {
   AutoSyncAnalysisError,
   runAutoSyncAnalysis,
@@ -513,10 +513,7 @@ export async function addRepoToGroup(
   return true;
 }
 
-export function getAutoSyncRepoIdentity(remoteUrl: string): string {
-  const { host, repoPath } = parseAutoSyncRemoteIdentity(remoteUrl);
-  return `${host}/${repoPath.replace(/\.git$/i, '')}`;
-}
+export { getAutoSyncRepoIdentity } from './config.js';
 
 export async function syncGroupByName(groupName: string): Promise<void> {
   const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);

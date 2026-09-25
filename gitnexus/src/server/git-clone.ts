@@ -19,7 +19,7 @@ import {
   quarantineAutoSyncPartial,
 } from '../core/auto-sync/path-security.js';
 import {
-  parseAutoSyncRemoteIdentity,
+  getAutoSyncRepoIdentity,
   validateAutoSyncRemoteUrl,
 } from '../core/auto-sync/config.js';
 
@@ -323,20 +323,11 @@ export function normalizeGitUrlForCompare(url: string): string {
 
 /** Same allowlisted repo across SSH and HTTPS, ignoring a trailing `.git`. */
 function sameAllowlistedAutoSyncRepo(left: string, right: string): boolean {
-  const key = (remoteUrl: string): string | null => {
-    try {
-      const id = parseAutoSyncRemoteIdentity(remoteUrl);
-      const parts = id.repoPath.split('/');
-      const last = parts[parts.length - 1] ?? '';
-      parts[parts.length - 1] = /\.git$/i.test(last) ? last.slice(0, -4) : last;
-      return `${id.host}/${parts.join('/')}`;
-    } catch {
-      return null;
-    }
-  };
-  const a = key(left);
-  const b = key(right);
-  return a !== null && a === b;
+  try {
+    return getAutoSyncRepoIdentity(left) === getAutoSyncRepoIdentity(right);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -376,8 +367,9 @@ export async function assertRemoteMatchesRequestedUrl(
   targetDir: string,
   requestedUrl: string,
   timeoutMs?: number,
+  knownOriginUrl?: string,
 ): Promise<void> {
-  const remoteUrl = await getRemoteOriginUrl(targetDir, timeoutMs);
+  const remoteUrl = knownOriginUrl ?? (await getRemoteOriginUrl(targetDir, timeoutMs));
   if (remoteUrl === null) {
     throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
   }
@@ -604,21 +596,26 @@ export async function cloneOrPull(
       await assertNoSymlinkPath(cloneRoot, path.join(safeTarget, '.git'), true);
     }
     await assertPostRealpathContainment(cloneRoot, safeTarget);
-    // SSH and HTTPS for the same allowlisted repo share one checkout directory.
-    // Point origin at the requested URL before the strict compare.
+    let originForCompare = originUrl;
     if (
       originUrl &&
-      sameAllowlistedAutoSyncRepo(originUrl, url) &&
-      normalizeGitUrlForCompare(originUrl) !== normalizeGitUrlForCompare(url)
+      normalizeGitUrlForCompare(originUrl) !== normalizeGitUrlForCompare(url) &&
+      sameAllowlistedAutoSyncRepo(originUrl, url)
     ) {
       await runGit(['remote', 'set-url', 'origin', url], safeTarget, {
         timeoutMs: options?.timeoutMs,
       });
+      originForCompare = url;
     }
     // Confirm the existing clone is actually the same repository the caller
     // requested. Without this check, a pull would silently succeed against
     // whatever remote the dir was originally cloned from.
-    await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
+    await assertRemoteMatchesRequestedUrl(
+      safeTarget,
+      url,
+      options?.timeoutMs,
+      originForCompare ?? undefined,
+    );
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
     const gitOpts = {
