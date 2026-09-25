@@ -778,7 +778,12 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
 // `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
 // capture set (anonymous arrows, no Function name), so both stores re-extract.
-const SCHEMA_BUMP = 104;
+// v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
+// `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
+// capture set (anonymous arrows, no Function name), so both stores re-extract.
+// v105 (#3371): `.ipynb` code cells are extracted to Python before parse.
+// Warm caches keyed on raw JSON would replay empty/failed Python parses.
+const SCHEMA_BUMP = 105;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

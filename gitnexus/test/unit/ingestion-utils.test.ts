@@ -50,6 +50,11 @@ describe('getLanguageFromFilename', () => {
     it('detects .py files', () => {
       expect(getLanguageFromFilename('main.py')).toBe(SupportedLanguages.Python);
     });
+
+    it('detects .ipynb files as Python', () => {
+      expect(getLanguageFromFilename('analysis.ipynb')).toBe(SupportedLanguages.Python);
+      expect(getProviderForFile('notebooks/analysis.ipynb')?.id).toBe(SupportedLanguages.Python);
+    });
   });
 
   describe('Java', () => {

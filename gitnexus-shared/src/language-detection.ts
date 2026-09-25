@@ -29,7 +29,7 @@ const RUBY_EXTENSIONLESS_FILES = new Set([
 const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.JavaScript]: ['.js', '.jsx', '.mjs', '.cjs'],
   [SupportedLanguages.TypeScript]: ['.ts', '.tsx', '.mts', '.cts'],
-  [SupportedLanguages.Python]: ['.py'],
+  [SupportedLanguages.Python]: ['.py', '.ipynb'],
   [SupportedLanguages.Java]: ['.java'],
   [SupportedLanguages.C]: ['.c'],
   [SupportedLanguages.ObjectiveC]: ['.m', '.mm'],

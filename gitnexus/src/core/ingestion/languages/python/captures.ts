@@ -24,6 +24,7 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
+import { extractNotebookPython } from '../../ipynb-extractor.js';
 import {
   synthesizeConstructorFieldTypeBindings,
   synthesizeReceiverTypeBinding,
@@ -57,23 +58,34 @@ const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
 
 export function emitPythonScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: { sourceKind?: 'full-file' | 'pre-extracted-script' },
 ): readonly CaptureMatch[] {
+  let parseText = sourceText;
+  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  if (
+    filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb') &&
+    sourceMeta?.sourceKind !== 'pre-extracted-script'
+  ) {
+    const extracted = extractNotebookPython(sourceText);
+    if (extracted === null) return [];
+    parseText = extracted.pythonSource;
+    tree = undefined;
+  }
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
   // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
   // is typed as `unknown` at the
   // contract layer (see `LanguageProvider.emitScopeCaptures`); cast
   // here at the use site.
-  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
     try {
-      tree = parseSourceSafe(getPythonParser(), sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
+      tree = parseSourceSafe(getPythonParser(), parseText, undefined, {
+        bufferSize: getTreeSitterBufferSize(parseText),
       });
     } catch (err) {
-      throw scopeExtractionError('parse', _filePath, err);
+      throw scopeExtractionError('parse', filePath, err);
     }
     recordCacheMiss();
   } else {
@@ -84,7 +96,7 @@ export function emitPythonScopeCaptures(
   try {
     rawMatches = getPythonScopeQuery().matches(tree.rootNode);
   } catch (err) {
-    throw scopeExtractionError('scope query', _filePath, err);
+    throw scopeExtractionError('scope query', filePath, err);
   }
 
   const out: CaptureMatch[] = [];

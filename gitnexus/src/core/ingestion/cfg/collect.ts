@@ -83,12 +83,30 @@ function shiftCfgLines(cfg: FunctionCfg, offset: number): FunctionCfg {
   };
 }
 
+function remapCfgLines(cfg: FunctionCfg, mapLine: (row: number) => number): FunctionCfg {
+  return {
+    ...cfg,
+    functionStartLine: mapLine(cfg.functionStartLine),
+    functionEndLine: mapLine(cfg.functionEndLine),
+    blocks: cfg.blocks.map((b) => ({
+      ...b,
+      startLine: mapLine(b.startLine),
+      endLine: mapLine(b.endLine),
+      statements: b.statements?.map((s) => ({ ...s, line: mapLine(s.line) })),
+    })),
+    bindings: cfg.bindings?.map((bd) =>
+      bd.declLine > 0 ? { ...bd, declLine: mapLine(bd.declLine) } : bd,
+    ),
+  };
+}
+
 export function collectFunctionCfgs(
   root: SyntaxNode,
   visitor: CfgVisitor<SyntaxNode>,
   filePath: string,
   maxFunctionLines = 0,
   lineOffset = 0,
+  mapLine?: (row: number) => number,
 ): CollectedCfgs {
   const cfgs: FunctionCfg[] = [];
   let tooManyLines = 0;
@@ -109,7 +127,9 @@ export function collectFunctionCfgs(
         // and silently drop every remaining function's CFG (#2195).
         try {
           const cfg = visitor.buildFunctionCfg(node, filePath);
-          if (cfg) cfgs.push(shiftCfgLines(cfg, lineOffset));
+          if (cfg) {
+            cfgs.push(mapLine ? remapCfgLines(cfg, mapLine) : shiftCfgLines(cfg, lineOffset));
+          }
         } catch (err) {
           if (err instanceof CfgNestingDepthError) tooDeeplyNested++;
           else buildError++;

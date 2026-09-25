@@ -11,6 +11,7 @@ import {
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
+import { extractNotebookPython } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
 
@@ -39,7 +40,13 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // error-recovered tree. Resolved from `language` so the transform and the
   // parser always come from the same provider. Length-preserving, so node
   // offsets still index `content`.
-  const parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
+  let parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
+  if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) {
+    const extracted = extractNotebookPython(content);
+    if (!extracted) return null;
+    parseContent = getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
+      extracted.pythonSource;
+  }
 
   return parseSourceSafe(parserInstance, parseContent);
 };

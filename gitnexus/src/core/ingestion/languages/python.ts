@@ -107,7 +107,7 @@ function normalizePythonStringLiteral(text: string): string | undefined {
 
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
-  extensions: ['.py'],
+  extensions: ['.py', '.ipynb'],
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [
     {
