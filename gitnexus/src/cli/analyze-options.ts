@@ -103,6 +103,10 @@ export interface AnalyzeOptions {
    * `allowDuplicateName` option end-to-end.
    */
   allowDuplicateName?: boolean;
+  /** `--share-with <repo>`: join that checkout's shared store (#3352). */
+  shareWith?: string;
+  /** `--no-share` sets this to false: leave the shared store (#3352). */
+  share?: boolean;
   /**
    * Override the walker's large-file skip threshold (#991). Value in KB;
    * clamped downstream to the tree-sitter 32 MB ceiling. Sets

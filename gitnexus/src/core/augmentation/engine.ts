@@ -14,6 +14,7 @@
  * - Graceful failure: any error → return empty string
  */
 
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import path from 'path';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
 import {
@@ -84,7 +85,10 @@ async function findRepoForCwd(cwd: string): Promise<{
     return {
       name: bestMatch.name,
       storagePath,
-      lbugPath: path.join(indexDir, LBUG_DIRECTORY),
+      lbugPath:
+        indexDir === storagePath
+          ? resolveGraphPath(storagePath)
+          : path.join(indexDir, LBUG_DIRECTORY),
     };
   } catch {
     return null;
