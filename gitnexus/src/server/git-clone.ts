@@ -18,7 +18,10 @@ import {
   assertDirectoryOwnerAndPermissions,
   quarantineAutoSyncPartial,
 } from '../core/auto-sync/path-security.js';
-import { validateAutoSyncRemoteUrl } from '../core/auto-sync/config.js';
+import {
+  parseAutoSyncRemoteIdentity,
+  validateAutoSyncRemoteUrl,
+} from '../core/auto-sync/config.js';
 
 export { validateGitUrl };
 
@@ -318,21 +321,40 @@ export function normalizeGitUrlForCompare(url: string): string {
   }
 }
 
+/** Same allowlisted repo across SSH and HTTPS, ignoring a trailing `.git`. */
+function sameAllowlistedAutoSyncRepo(left: string, right: string): boolean {
+  const key = (remoteUrl: string): string | null => {
+    try {
+      const id = parseAutoSyncRemoteIdentity(remoteUrl);
+      const parts = id.repoPath.split('/');
+      const last = parts[parts.length - 1] ?? '';
+      parts[parts.length - 1] = /\.git$/i.test(last) ? last.slice(0, -4) : last;
+      return `${id.host}/${parts.join('/')}`;
+    } catch {
+      return null;
+    }
+  };
+  const a = key(left);
+  const b = key(right);
+  return a !== null && a === b;
+}
+
 /**
  * Read `remote.origin.url` from an existing clone using `git config --get`.
  *
- * Returns `null` if the config key is absent, the spawn fails, or the
- * directory isn't a git repository. The caller decides what a missing
- * remote means for its threat model — for cloneOrPull, a missing remote
- * on an existing clone is treated as a refuse-to-pull condition.
+ * Returns `null` only when the key is absent (exit 1) or empty. Timeouts and
+ * every other git failure throw, so a lock or spawn error is not treated as
+ * a missing origin.
  */
 export async function getRemoteOriginUrl(cwd: string, timeoutMs?: number): Promise<string | null> {
   try {
     const stdout = await runGit(['config', '--get', 'remote.origin.url'], cwd, { timeoutMs });
     return stdout.trim() || null;
   } catch (error) {
-    if ((error as Error).message.includes('timed out')) throw error;
-    return null;
+    const message = (error as Error).message ?? '';
+    if (message.includes('timed out')) throw error;
+    if (message.includes('failed (exit code 1)')) return null;
+    throw error;
   }
 }
 
@@ -557,8 +579,9 @@ export async function cloneOrPull(
     () => false,
   );
 
+  let originUrl: string | null = null;
   if (exists && options?.allowAutoSyncSsh) {
-    const originUrl = await getRemoteOriginUrl(safeTarget, options?.timeoutMs);
+    originUrl = await getRemoteOriginUrl(safeTarget, options?.timeoutMs);
     if (!originUrl) {
       if (options.quarantineRoot) {
         await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot);
@@ -581,6 +604,17 @@ export async function cloneOrPull(
       await assertNoSymlinkPath(cloneRoot, path.join(safeTarget, '.git'), true);
     }
     await assertPostRealpathContainment(cloneRoot, safeTarget);
+    // SSH and HTTPS for the same allowlisted repo share one checkout directory.
+    // Point origin at the requested URL before the strict compare.
+    if (
+      originUrl &&
+      sameAllowlistedAutoSyncRepo(originUrl, url) &&
+      normalizeGitUrlForCompare(originUrl) !== normalizeGitUrlForCompare(url)
+    ) {
+      await runGit(['remote', 'set-url', 'origin', url], safeTarget, {
+        timeoutMs: options?.timeoutMs,
+      });
+    }
     // Confirm the existing clone is actually the same repository the caller
     // requested. Without this check, a pull would silently succeed against
     // whatever remote the dir was originally cloned from.

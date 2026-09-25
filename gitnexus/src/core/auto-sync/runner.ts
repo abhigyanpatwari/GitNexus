@@ -244,6 +244,7 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
+            const rcEmbeddings = await embeddingsFromGitnexusRc(targetDir);
             const analysis = await deps.runAnalysis(
               targetDir,
               {
@@ -254,7 +255,7 @@ export async function runAutoSyncOnce(
                   ? { preserveExistingPdg: true }
                   : { pdg: requestedPdg }),
                 atomicIncremental: true,
-                ...embeddingsFromGitnexusRc(targetDir),
+                ...rcEmbeddings,
               },
               config.analyzeTimeoutMs,
               options.signal,

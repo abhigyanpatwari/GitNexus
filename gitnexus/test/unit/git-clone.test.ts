@@ -29,6 +29,7 @@ import {
   isAzureDevOpsUrl,
   warnIfInsecureAzureConfig,
   runGitForTest,
+  getRemoteOriginUrl as serverGetRemoteOriginUrl,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -1360,6 +1361,62 @@ describe('git-clone', () => {
         const entries = await fs.readdir(quarantineRoot);
         expect(entries.some((entry) => entry.includes('repo'))).toBe(true);
         expect(runGitForTest.mock.calls.some((call) => call[0][0] === 'clone')).toBe(true);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('does not quarantine when git config fails for a reason other than a missing origin', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      await fs.mkdir(target);
+      await fs.writeFile(path.join(target, '.git'), 'not-a-git-dir');
+      try {
+        await expect(
+          cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+          }),
+        ).rejects.toThrow(/exit code (?!1\b)/);
+        await expect(fs.readFile(path.join(target, '.git'), 'utf-8')).resolves.toBe(
+          'not-a-git-dir',
+        );
+        await expect(fs.access(quarantineRoot)).rejects.toThrow();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('points an SSH origin at the requested HTTPS URL for the same repo', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      await fs.mkdir(target);
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+        );
+        proc.on('error', reject);
+      });
+      await runGitForTest(['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], target);
+      try {
+        await expect(
+          cloneOrPull('https://github.com/owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+            timeoutMs: 1500,
+          }),
+        ).rejects.toThrow();
+        await expect(serverGetRemoteOriginUrl(target)).resolves.toBe(
+          'https://github.com/owner/repo.git',
+        );
+        await expect(fs.access(quarantineRoot)).rejects.toThrow();
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }

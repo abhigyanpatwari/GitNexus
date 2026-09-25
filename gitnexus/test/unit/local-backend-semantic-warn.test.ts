@@ -128,13 +128,15 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
     const degraded = { reason: undefined as string | undefined };
     try {
       expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+      expect(await callSemanticSearch(backend, degraded)).toEqual([]);
       expect(degraded.reason).toBeUndefined();
       expect(embedQueryMock).not.toHaveBeenCalled();
       expect(
         cap
           .records()
-          .some((r) => typeof r.msg === 'string' && r.msg.includes('no embedding vectors')),
-      ).toBe(true);
+          .filter((r) => typeof r.msg === 'string' && r.msg.includes('no embedding vectors'))
+          .length,
+      ).toBe(1);
     } finally {
       cap.restore();
     }

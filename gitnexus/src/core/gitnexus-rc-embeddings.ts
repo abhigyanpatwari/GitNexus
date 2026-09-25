@@ -3,9 +3,8 @@
  * without importing CLI modules (`src/core` must not import `src/cli`).
  * Invalid JSON fails the analyze for that repo the same way CLI analyze fails closed.
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import type { AnalyzeOptions } from './run-analyze.js';
+import { readRepoControlFile } from '../config/repo-control-file.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
 
@@ -16,27 +15,24 @@ export class AutoSyncGitnexusRcError extends Error {
   }
 }
 
-export function embeddingsFromGitnexusRc(
+export async function embeddingsFromGitnexusRc(
   repoRoot: string,
-): Pick<AnalyzeOptions, 'embeddings' | 'embeddingsNodeLimit'> {
-  const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
-  let raw: string;
+): Promise<Pick<AnalyzeOptions, 'embeddings' | 'embeddingsNodeLimit'>> {
+  let raw: string | null;
   try {
-    raw = fs.readFileSync(filePath, 'utf-8');
+    raw = await readRepoControlFile(repoRoot, GITNEXUS_RC_FILENAME);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return {};
     throw new AutoSyncGitnexusRcError(
       `Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`,
     );
   }
+  if (raw === null) return {};
   if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new AutoSyncGitnexusRcError(
-      `${GITNEXUS_RC_FILENAME} is not valid JSON: ${(err as Error).message}`,
-    );
+  } catch {
+    throw new AutoSyncGitnexusRcError(`${GITNEXUS_RC_FILENAME} is not valid JSON`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new AutoSyncGitnexusRcError(`${GITNEXUS_RC_FILENAME} must contain a JSON object.`);

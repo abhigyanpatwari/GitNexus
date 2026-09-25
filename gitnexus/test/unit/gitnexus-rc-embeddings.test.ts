@@ -8,29 +8,37 @@ import {
 } from '../../src/core/gitnexus-rc-embeddings.js';
 
 describe('embeddingsFromGitnexusRc', () => {
-  it('returns empty when no rc file exists', () => {
+  it('returns empty when no rc file exists', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rc-'));
-    expect(embeddingsFromGitnexusRc(dir)).toEqual({});
+    await expect(embeddingsFromGitnexusRc(dir)).resolves.toEqual({});
   });
 
-  it('reads embeddings true from a committed rc', () => {
+  it('reads embeddings true from a committed rc', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rc-'));
     fs.writeFileSync(path.join(dir, '.gitnexusrc'), '{"embeddings": true}');
-    expect(embeddingsFromGitnexusRc(dir)).toEqual({ embeddings: true });
+    await expect(embeddingsFromGitnexusRc(dir)).resolves.toEqual({ embeddings: true });
   });
 
-  it('prefers nested analyze.embeddings', () => {
+  it('prefers nested analyze.embeddings', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rc-'));
     fs.writeFileSync(path.join(dir, '.gitnexusrc'), '{"analyze": {"embeddings": 100}}');
-    expect(embeddingsFromGitnexusRc(dir)).toEqual({
+    await expect(embeddingsFromGitnexusRc(dir)).resolves.toEqual({
       embeddings: true,
       embeddingsNodeLimit: 100,
     });
   });
 
-  it('fails closed on invalid JSON', () => {
+  it('fails closed on invalid JSON', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rc-'));
     fs.writeFileSync(path.join(dir, '.gitnexusrc'), '{');
-    expect(() => embeddingsFromGitnexusRc(dir)).toThrow(AutoSyncGitnexusRcError);
+    await expect(embeddingsFromGitnexusRc(dir)).rejects.toThrow(AutoSyncGitnexusRcError);
+  });
+
+  it('refuses a symlink .gitnexusrc', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rc-'));
+    const outside = path.join(dir, 'outside.json');
+    fs.writeFileSync(outside, '{"embeddings": true}');
+    fs.symlinkSync(outside, path.join(dir, '.gitnexusrc'));
+    await expect(embeddingsFromGitnexusRc(dir)).rejects.toThrow(/symbolic link/);
   });
 });
