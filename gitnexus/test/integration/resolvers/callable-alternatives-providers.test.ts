@@ -62,6 +62,18 @@ describe('Kotlin callable chosen by `?:` / `if` expression', () => {
       expect.arrayContaining(['ifExpression → runThen', 'ifExpression → runElse']),
     );
   });
+
+  // A braced branch nests its value in a `statements` node one level below
+  // the `control_structure_body` wrapper.
+  it('`if (c) { ::f } else { ::g }` reaches both branches', () => {
+    expect(callsOf(result)).toEqual(
+      expect.arrayContaining(['braced → runBracedThen', 'braced → runBracedElse']),
+    );
+  });
+
+  it('a multi-statement branch keeps the whole `if` opaque', () => {
+    expect(callsOf(result).filter((edge) => edge.startsWith('multiStatement →'))).toEqual([]);
+  });
 });
 
 describe('Swift callable chosen by `??` / `?:`', () => {

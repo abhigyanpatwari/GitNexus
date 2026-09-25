@@ -95,19 +95,25 @@ const KOTLIN_CALLABLE_CAPTURE_OPTIONS = {
 const isKotlinComment = (node: SyntaxNode): boolean =>
   node.type === 'line_comment' || node.type === 'multiline_comment';
 
+const namedNonComments = (node: SyntaxNode): SyntaxNode[] =>
+  node.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && !isKotlinComment(child),
+  );
+
 /**
  * Branches of a Kotlin value-selecting expression (#3354). `a ?: b` is a
  * FIELDLESS `elvis_expression` (positional operands), so the shared
  * field-based rule never saw it and only the last operand flowed. An
  * `if_expression` fields its branches as `control_structure_body` wrappers:
- * a wrapper holding one expression is that expression's value, anything
- * else (a multi-statement block) keeps the whole `if` one opaque source.
+ * a bare branch (`if (c) ::f`) holds the expression directly, a braced one
+ * (`if (c) { ::f }`) nests it one level deeper in a `statements` node. A
+ * branch holding exactly one expression is that expression's value; an
+ * empty or multi-statement block, or an `if` without `else`, keeps the
+ * whole `if` one opaque source.
  */
 function kotlinValueAlternatives(node: SyntaxNode): readonly SyntaxNode[] | undefined {
   if (node.type === 'elvis_expression') {
-    const operands = node.namedChildren.filter(
-      (child): child is SyntaxNode => child !== null && !isKotlinComment(child),
-    );
+    const operands = namedNonComments(node);
     return operands.length === 2 ? operands : undefined;
   }
   if (node.type !== 'if_expression') return undefined;
@@ -115,9 +121,9 @@ function kotlinValueAlternatives(node: SyntaxNode): readonly SyntaxNode[] | unde
   for (const field of ['consequence', 'alternative'] as const) {
     const body = node.childForFieldName(field);
     if (body === null) return [node];
-    const values = body.namedChildren.filter(
-      (child): child is SyntaxNode => child !== null && !isKotlinComment(child),
-    );
+    let values = namedNonComments(body);
+    const [block] = values;
+    if (values.length === 1 && block?.type === 'statements') values = namedNonComments(block);
     const [value] = values;
     if (values.length !== 1 || value === undefined) return [node];
     branches.push(value);
