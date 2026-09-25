@@ -98,23 +98,45 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
     }
   });
 
-  it('warns when the index has no embedding rows (#3372)', async () => {
+  it('logs once when the index has no embedding rows (#3372)', async () => {
     executeQueryMock.mockResolvedValue([{ cnt: 0 }]);
     const backend = new LocalBackend();
+    const cap = _captureLogger();
     const degraded = { reason: undefined as string | undefined };
-    expect(await callSemanticSearch(backend, degraded)).toEqual([]);
-    expect(degraded.reason).toContain('no embedding vectors');
-    expect(embedQueryMock).not.toHaveBeenCalled();
+    try {
+      expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+      expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+      expect(degraded.reason).toBeUndefined();
+      expect(embedQueryMock).not.toHaveBeenCalled();
+      expect(
+        cap
+          .records()
+          .filter((r) => typeof r.msg === 'string' && r.msg.includes('no embedding vectors'))
+          .length,
+      ).toBe(1);
+    } finally {
+      cap.restore();
+    }
   });
 
-  it('warns when the embedding table is missing (#3372)', async () => {
+  it('logs once when the embedding table is missing (#3372)', async () => {
     executeQueryMock.mockRejectedValue(
       new Error('Binder exception: Table CodeEmbedding does not exist.'),
     );
     const backend = new LocalBackend();
+    const cap = _captureLogger();
     const degraded = { reason: undefined as string | undefined };
-    expect(await callSemanticSearch(backend, degraded)).toEqual([]);
-    expect(degraded.reason).toContain('no embedding vectors');
-    expect(embedQueryMock).not.toHaveBeenCalled();
+    try {
+      expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+      expect(degraded.reason).toBeUndefined();
+      expect(embedQueryMock).not.toHaveBeenCalled();
+      expect(
+        cap
+          .records()
+          .some((r) => typeof r.msg === 'string' && r.msg.includes('no embedding vectors')),
+      ).toBe(true);
+    } finally {
+      cap.restore();
+    }
   });
 });
