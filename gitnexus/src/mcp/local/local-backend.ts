@@ -303,6 +303,15 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   return undefined;
 }
 
+/**
+ * A `*_uid` param as a lookup key: trimmed, or `undefined` when it is blank or
+ * not a string (#3354). Strict adapters send `" "`/`""` for an omitted optional
+ * string, and the MCP envelope is not type-validated.
+ */
+function nonBlankUid(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
+
 interface StringAliasDefinition {
   canonical: string;
   aliases: readonly string[];
@@ -4451,11 +4460,10 @@ export class LocalBackend {
     | { kind: 'not_found' }
   > {
     const { name, include_content } = query;
-    // A blank uid is an omitted optional field (strict adapters send " "/""),
-    // not a lookup key — fall through to the name instead of `not_found`.
-    // The MCP envelope is not type-validated: a non-string uid is also treated
-    // as omitted, matching normalizeToolParams' impact target_uid check.
-    const uid = typeof query.uid === 'string' ? query.uid.trim() : undefined;
+    // A blank or non-string uid is omitted, not a lookup key — fall through to
+    // the name instead of `not_found`, matching normalizeToolParams' impact
+    // target_uid check.
+    const uid = nonBlankUid(query.uid);
     const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
 
     // Direct UID — zero-ambiguity path.
@@ -6811,11 +6819,7 @@ export class LocalBackend {
     if (fromOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Source symbol '${
-          typeof params.from_uid === 'string' && params.from_uid.trim()
-            ? params.from_uid.trim()
-            : params.from
-        }' not found.`,
+        error: `Source symbol '${nonBlankUid(params.from_uid) ?? params.from}' not found.`,
         suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
       };
     }
@@ -6842,11 +6846,7 @@ export class LocalBackend {
     if (toOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Target symbol '${
-          typeof params.to_uid === 'string' && params.to_uid.trim()
-            ? params.to_uid.trim()
-            : params.to
-        }' not found.`,
+        error: `Target symbol '${nonBlankUid(params.to_uid) ?? params.to}' not found.`,
         suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
       };
     }
@@ -7226,10 +7226,7 @@ export class LocalBackend {
     );
 
     if (outcome.kind === 'not_found') {
-      const missing =
-        typeof params.target_uid === 'string' && params.target_uid.trim()
-          ? params.target_uid.trim()
-          : target;
+      const missing = nonBlankUid(params.target_uid) ?? target;
       // not_found = no resolved symbol, so the envelope keeps the partial-but-
       // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
       const notFoundTarget: PdgImpactTarget = { name: target };

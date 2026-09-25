@@ -638,36 +638,24 @@ describe('LocalBackend.callTool', () => {
     expect(result).not.toHaveProperty('byDepthCounts');
   });
 
-  it('treats a whitespace target_uid as omitted and resolves the name (#3354)', async () => {
-    (executeParameterized as any).mockResolvedValue([]);
+  it.each([[' '], ['']])(
+    'treats a blank target_uid %j as omitted and resolves the name (#3354)',
+    async (targetUid) => {
+      (executeParameterized as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('impact', {
-      target: 'validate',
-      target_uid: ' ',
-      direction: 'upstream',
-    });
+      const result = await backend.callTool('impact', {
+        target: 'validate',
+        target_uid: targetUid,
+        direction: 'upstream',
+      });
 
-    // Name resolution ran (no rows → not found by NAME), not a lookup of uid ' '.
-    expect(result.error).toBe("Target 'validate' not found");
-    const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
-    expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
-    expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
-  });
-
-  it('treats an empty target_uid like a whitespace one and resolves the name (#3354)', async () => {
-    (executeParameterized as any).mockResolvedValue([]);
-
-    const result = await backend.callTool('impact', {
-      target: 'validate',
-      target_uid: '',
-      direction: 'upstream',
-    });
-
-    expect(result.error).toBe("Target 'validate' not found");
-    const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
-    expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
-    expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
-  });
+      // Name resolution ran (no rows → not found by NAME), not a lookup of the blank uid.
+      expect(result.error).toBe("Target 'validate' not found");
+      const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+      expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+      expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
+    },
+  );
 
   it('treats a non-string impact target_uid as omitted instead of throwing (#3354)', async () => {
     (executeParameterized as any).mockResolvedValue([]);
