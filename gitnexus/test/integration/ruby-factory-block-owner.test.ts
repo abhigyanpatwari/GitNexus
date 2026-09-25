@@ -46,6 +46,18 @@ class Outer
       def nested_class_method = 1
     end
   end
+
+  First = Class.new do
+    Item = Class.new do
+      def first_item_method = 1
+    end
+  end
+
+  Second = Class.new do
+    Item = Class.new do
+      def second_item_method = 1
+    end
+  end
 end
 `,
     });
@@ -104,5 +116,25 @@ end
     const nestedOwner = owners.find((node) => node.id.includes('Outer.Nested.ClassType'));
     expect(nestedOwner).toBeDefined();
     expect(ownership.map((edge) => edge.rel.sourceId)).toEqual([nestedOwner?.id]);
+  });
+
+  it('keeps same-tail factories distinct when nested inside factory blocks', () => {
+    const owners = result.graph.nodes.filter(
+      (node) => node.label === 'Class' && node.properties.name === 'Item',
+    );
+    const firstOwner = owners.find((node) => node.id.includes('Outer.First.Item'));
+    const secondOwner = owners.find((node) => node.id.includes('Outer.Second.Item'));
+    const firstOwnership = getRelationships(result, 'HAS_METHOD').filter(
+      (edge) => edge.target === 'first_item_method',
+    );
+    const secondOwnership = getRelationships(result, 'HAS_METHOD').filter(
+      (edge) => edge.target === 'second_item_method',
+    );
+
+    expect(owners).toHaveLength(2);
+    expect(firstOwner).toBeDefined();
+    expect(secondOwner).toBeDefined();
+    expect(firstOwnership.map((edge) => edge.rel.sourceId)).toEqual([firstOwner?.id]);
+    expect(secondOwnership.map((edge) => edge.rel.sourceId)).toEqual([secondOwner?.id]);
   });
 });

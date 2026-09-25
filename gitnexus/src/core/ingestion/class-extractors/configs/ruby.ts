@@ -46,10 +46,14 @@ export const rubyFactoryBindingName = (node: SyntaxNode): string | undefined => 
 export const rubyClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.Ruby,
   typeDeclarationNodes: ['class', 'do_block', 'block'],
-  ancestorScopeNodeTypes: ['module', 'class'],
+  ancestorScopeNodeTypes: ['module', 'class', 'do_block', 'block'],
   // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
   // same-tail classes nested under different modules stay distinct.
   qualifiedNodeId: true,
+  extractScopeSegments: (node) => {
+    const factoryName = rubyFactoryBindingName(node);
+    return factoryName ? [factoryName] : undefined;
+  },
   extractName: (node) => rubyFactoryBindingName(node),
   extractType: (node) => {
     const type = rubyFactoryType(node);

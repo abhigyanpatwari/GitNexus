@@ -146,7 +146,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
  * All other container types are returned as-is.
  */
 const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
-  if (node.type === 'do_block') {
+  if (node.type === 'do_block' || node.type === 'block') {
     return rubyFactoryType(node) === undefined ? null : node;
   }
   if (node.type === 'singleton_class') {
