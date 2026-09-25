@@ -46,7 +46,7 @@ describe('embeddingsFromGitnexusRc', () => {
     await expect(embeddingsFromGitnexusRc(dir)).rejects.toThrow(AutoSyncGitnexusRcError);
   });
 
-  it('refuses a symlink .gitnexusrc', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a symlink .gitnexusrc', async () => {
     const dir = tempDir();
     const outside = path.join(dir, 'outside.json');
     fs.writeFileSync(outside, '{"embeddings": true}');
