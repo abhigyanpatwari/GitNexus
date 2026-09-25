@@ -3902,10 +3902,11 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        // No vectors to search: nothing is embedded below, so drop any width a
-        // previous call recorded rather than let query() warn about a lane that
-        // did not run this time (#2798).
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        if (degraded) {
+          degraded.reason =
+            'This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.';
+        }
         return [];
       }
 

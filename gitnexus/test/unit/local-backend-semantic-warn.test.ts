@@ -97,4 +97,13 @@ describe('LocalBackend.semanticSearch — missing-stack warning (#2372)', () => 
       cap.restore();
     }
   });
+
+  it('warns when the index has no embedding rows (#3372)', async () => {
+    executeQueryMock.mockResolvedValue([{ cnt: 0 }]);
+    const backend = new LocalBackend();
+    const degraded = { reason: undefined as string | undefined };
+    expect(await callSemanticSearch(backend, degraded)).toEqual([]);
+    expect(degraded.reason).toContain('no embedding vectors');
+    expect(embedQueryMock).not.toHaveBeenCalled();
+  });
 });
