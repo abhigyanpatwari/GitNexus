@@ -18,10 +18,7 @@ import {
   assertDirectoryOwnerAndPermissions,
   quarantineAutoSyncPartial,
 } from '../core/auto-sync/path-security.js';
-import {
-  getAutoSyncRepoIdentity,
-  validateAutoSyncRemoteUrl,
-} from '../core/auto-sync/config.js';
+import { getAutoSyncRepoIdentity, validateAutoSyncRemoteUrl } from '../core/auto-sync/config.js';
 
 export { validateGitUrl };
 

@@ -1333,22 +1333,22 @@ describe('git-clone', () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const quarantineRoot = path.join(root, 'quarantine');
       const target = path.join(root, 'repo');
-      await fs.mkdir(target);
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
-        proc.on('close', (code) =>
-          code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
-        );
-        proc.on('error', reject);
-      });
-      const runGitForTest = vi.fn(async (args: string[]) => {
-        if (args[0] === 'clone') {
-          await fs.mkdir(target, { recursive: true });
-          return '';
-        }
-        return '';
-      });
       try {
+        await fs.mkdir(target);
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+          proc.on('close', (code) =>
+            code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+          );
+          proc.on('error', reject);
+        });
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          if (args[0] === 'clone') {
+            await fs.mkdir(target, { recursive: true });
+            return '';
+          }
+          return '';
+        });
         await expect(
           cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
             allowedCloneRoot: root,
@@ -1370,9 +1370,9 @@ describe('git-clone', () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const quarantineRoot = path.join(root, 'quarantine');
       const target = path.join(root, 'repo');
-      await fs.mkdir(target);
-      await fs.writeFile(path.join(target, '.git'), 'not-a-git-dir');
       try {
+        await fs.mkdir(target);
+        await fs.writeFile(path.join(target, '.git'), 'not-a-git-dir');
         await expect(
           cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
             allowedCloneRoot: root,
@@ -1394,16 +1394,16 @@ describe('git-clone', () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const quarantineRoot = path.join(root, 'quarantine');
       const target = path.join(root, 'repo');
-      await fs.mkdir(target);
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
-        proc.on('close', (code) =>
-          code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
-        );
-        proc.on('error', reject);
-      });
-      await runGitForTest(['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], target);
       try {
+        await fs.mkdir(target);
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+          proc.on('close', (code) =>
+            code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+          );
+          proc.on('error', reject);
+        });
+        await runGitForTest(['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], target);
         await expect(
           cloneOrPull('https://github.com/owner/repo.git', target, undefined, {
             allowedCloneRoot: root,
