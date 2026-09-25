@@ -15,7 +15,7 @@
  */
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { CfgNestingDepthError } from './cfg-builder.js';
-import type { CfgVisitor, FunctionCfg } from './types.js';
+import type { CfgVisitor, FunctionCfg, SiteRecord } from './types.js';
 
 /**
  * Default per-function source-line cap used by the worker when the `--pdg` run
@@ -84,18 +84,26 @@ function shiftCfgLines(cfg: FunctionCfg, offset: number): FunctionCfg {
 }
 
 function remapCfgLines(cfg: FunctionCfg, mapLine: (row: number) => number): FunctionCfg {
+  // CFG visitors store 1-based source lines; `mapLine` maps 0-based tree-sitter rows.
+  const map1 = (line: number): number => mapLine(line - 1) + 1;
+  const mapSite = (site: SiteRecord): SiteRecord =>
+    site.at !== undefined ? { ...site, at: [map1(site.at[0]), site.at[1]] } : site;
   return {
     ...cfg,
-    functionStartLine: mapLine(cfg.functionStartLine),
-    functionEndLine: mapLine(cfg.functionEndLine),
+    functionStartLine: map1(cfg.functionStartLine),
+    functionEndLine: map1(cfg.functionEndLine),
     blocks: cfg.blocks.map((b) => ({
       ...b,
-      startLine: mapLine(b.startLine),
-      endLine: mapLine(b.endLine),
-      statements: b.statements?.map((s) => ({ ...s, line: mapLine(s.line) })),
+      startLine: map1(b.startLine),
+      endLine: map1(b.endLine),
+      statements: b.statements?.map((s) => ({
+        ...s,
+        line: map1(s.line),
+        sites: s.sites?.map(mapSite),
+      })),
     })),
     bindings: cfg.bindings?.map((bd) =>
-      bd.declLine > 0 ? { ...bd, declLine: mapLine(bd.declLine) } : bd,
+      bd.declLine > 0 ? { ...bd, declLine: map1(bd.declLine) } : bd,
     ),
   };
 }

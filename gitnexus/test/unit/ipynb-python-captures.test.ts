@@ -37,6 +37,9 @@ describe('Python notebook scope captures', () => {
   });
 
   it('extractParsedFile yields a Function for train', () => {
+    const captured = emitPythonScopeCaptures(notebook, 'analysis.ipynb');
+    const fnCapture = captured.find((m) => m['@scope.function'] !== undefined);
+    expect(fnCapture?.['@scope.function']?.range.startLine).toBeGreaterThan(1);
     const parsed = extractParsedFile(pythonProvider, notebook, 'analysis.ipynb');
     expect(parsed).toBeDefined();
     expect(parsed!.localDefs.some((d) => d.qualifiedName === 'train' || d.name === 'train')).toBe(

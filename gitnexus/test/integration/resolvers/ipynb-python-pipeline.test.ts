@@ -77,6 +77,16 @@ describe('Jupyter notebook Python pipeline', () => {
             n.properties.filePath.replace(/\\/g, '/').endsWith('julia.ipynb') && n.name === 'train',
         ),
       ).toHaveLength(0);
+      expect(
+        getNodesByLabelFull(result, 'File').filter((n) =>
+          n.properties.filePath.replace(/\\/g, '/').endsWith('julia.ipynb'),
+        ),
+      ).toHaveLength(0);
+      expect(
+        getNodesByLabelFull(result, 'File').filter((n) =>
+          n.properties.filePath.replace(/\\/g, '/').endsWith('broken.ipynb'),
+        ),
+      ).toHaveLength(0);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

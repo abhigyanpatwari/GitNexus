@@ -163,6 +163,8 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  */
 export const getSyntaxLanguageFromFilename = (filePath: string): string => {
   if (isBladeTemplateFilename(filePath)) return 'markup';
+  // Notebooks are ingested as Python; the on-disk bytes are JSON.
+  if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) return 'json';
 
   const lang = getLanguageFromFilename(filePath);
   if (lang) return SYNTAX_MAP[lang];

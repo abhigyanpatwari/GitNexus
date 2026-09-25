@@ -54,6 +54,7 @@ describe('getLanguageFromFilename', () => {
     it('detects .ipynb files as Python', () => {
       expect(getLanguageFromFilename('analysis.ipynb')).toBe(SupportedLanguages.Python);
       expect(getProviderForFile('notebooks/analysis.ipynb')?.id).toBe(SupportedLanguages.Python);
+      expect(getSyntaxLanguageFromFilename('analysis.ipynb')).toBe('json');
     });
   });
 

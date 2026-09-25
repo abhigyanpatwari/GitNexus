@@ -15,7 +15,7 @@
  * Pure given the input source text. No I/O, no globals consulted.
  */
 
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
   nodeToCapture,
   syntheticCapture,
@@ -24,7 +24,11 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
-import { extractNotebookPython } from '../../ipynb-extractor.js';
+import {
+  extractNotebookPython,
+  mapExtractLine,
+  type NotebookLineSegment,
+} from '../../ipynb-extractor.js';
 import {
   synthesizeConstructorFieldTypeBindings,
   synthesizeReceiverTypeBinding,
@@ -64,14 +68,18 @@ export function emitPythonScopeCaptures(
 ): readonly CaptureMatch[] {
   let parseText = sourceText;
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
-  if (
-    filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb') &&
-    sourceMeta?.sourceKind !== 'pre-extracted-script'
-  ) {
+  let notebookSegments: readonly NotebookLineSegment[] | undefined;
+  if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) {
     const extracted = extractNotebookPython(sourceText);
-    if (extracted === null) return [];
-    parseText = extracted.pythonSource;
-    tree = undefined;
+    if (extracted === null) {
+      if (sourceMeta?.sourceKind !== 'pre-extracted-script') return [];
+    } else {
+      parseText = extracted.pythonSource;
+      notebookSegments = extracted.segments;
+      if (sourceMeta?.sourceKind !== 'pre-extracted-script') {
+        tree = undefined;
+      }
+    }
   }
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
@@ -238,7 +246,29 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  if (notebookSegments !== undefined) {
+    return out.map((match) => remapCaptureMatch(match, notebookSegments));
+  }
   return out;
+}
+
+function remapRange(range: Range, segments: readonly NotebookLineSegment[]): Range {
+  return {
+    ...range,
+    startLine: mapExtractLine(range.startLine - 1, segments) + 1,
+    endLine: mapExtractLine(range.endLine - 1, segments) + 1,
+  };
+}
+
+function remapCaptureMatch(
+  match: CaptureMatch,
+  segments: readonly NotebookLineSegment[],
+): CaptureMatch {
+  const next: Record<string, Capture> = {};
+  for (const [key, cap] of Object.entries(match)) {
+    next[key] = { ...cap, range: remapRange(cap.range, segments) };
+  }
+  return next;
 }
 
 /**

@@ -198,7 +198,6 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
 
   const chunks: string[] = [];
   const segments: NotebookLineSegment[] = [];
-  let extractLine = 0;
   let searchFrom = 0;
 
   for (const rawCell of nb.cells) {
@@ -223,31 +222,22 @@ export function extractNotebookPython(content: string): NotebookPythonExtraction
       continue;
     }
 
-    const text = lines.join('\n');
+    let text = lines.join('\n');
+    if (text.endsWith('\n')) text = text.slice(0, -1);
     if (text.trim().length === 0) {
-      chunks.push('');
-      const start = extractLine;
-      extractLine += 1;
-      segments.push({
-        extractStartLine: start,
-        extractEndLine: start,
-        jsonStartLine,
-        jsonEndLine,
-      });
       continue;
     }
 
     if (chunks.length > 0) {
-      chunks.push('\n');
-      extractLine += 1;
+      chunks.push('\n\n');
     }
-    const extractStartLine = extractLine;
     chunks.push(text);
-    const addedLines = text.split('\n').length;
-    extractLine += addedLines;
+    const assembled = chunks.join('');
+    const extractStartLine = indexToLine(assembled, assembled.length - text.length);
+    const extractEndLine = indexToLine(assembled, assembled.length - 1);
     segments.push({
       extractStartLine,
-      extractEndLine: extractLine - 1,
+      extractEndLine,
       jsonStartLine,
       jsonEndLine,
     });
@@ -272,14 +262,29 @@ export function mapExtractLine(row: number, segments: readonly NotebookLineSegme
   return last.jsonEndLine;
 }
 
+const extractCache = new Map<
+  string,
+  { content: string; result: NotebookPythonExtraction | null }
+>();
+
+/** Memoize extraction for FTS/CSV (same file, many symbols). */
+export function extractNotebookPythonCached(
+  filePath: string,
+  content: string,
+): NotebookPythonExtraction | null {
+  const hit = extractCache.get(filePath);
+  if (hit && hit.content === content) return hit.result;
+  const result = extractNotebookPython(content);
+  extractCache.set(filePath, { content, result });
+  return result;
+}
+
 /** Python snippet for a graph span stored in JSON file coordinates. */
-export function notebookPythonSnippet(
-  fileContent: string,
+export function notebookPythonSnippetFromExtract(
+  extracted: NotebookPythonExtraction,
   startLine: number,
   endLine: number,
 ): string | null {
-  const extracted = extractNotebookPython(fileContent);
-  if (!extracted) return null;
   const pyLines = extracted.pythonSource.split('\n');
   const out: string[] = [];
   for (const seg of extracted.segments) {
@@ -292,4 +297,17 @@ export function notebookPythonSnippet(
   }
   if (out.length === 0) return null;
   return out.join('\n');
+}
+
+export function notebookPythonSnippet(
+  fileContent: string,
+  startLine: number,
+  endLine: number,
+  filePath?: string,
+): string | null {
+  const extracted = filePath
+    ? extractNotebookPythonCached(filePath, fileContent)
+    : extractNotebookPython(fileContent);
+  if (!extracted) return null;
+  return notebookPythonSnippetFromExtract(extracted, startLine, endLine);
 }

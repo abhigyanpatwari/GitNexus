@@ -1685,14 +1685,14 @@ const processFileGroup = (
     let scopeExtractionFailed = false;
     const parsedFile = extractParsedFile(
       provider,
-      parseContent,
+      notebookSegments ? file.content : parseContent,
       file.path,
       (message) => {
         scopeExtractionFailed = true;
         reportWarning(message);
       },
       tree,
-      scopeSourceKind,
+      notebookSegments ? 'full-file' : scopeSourceKind,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {

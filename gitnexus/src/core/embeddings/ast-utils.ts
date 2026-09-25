@@ -39,13 +39,16 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // C++ UE macros, Dart extension types) would leave embeddings looking at an
   // error-recovered tree. Resolved from `language` so the transform and the
   // parser always come from the same provider. Length-preserving, so node
-  // offsets still index `content`.
+  // offsets still index `content` except for `.ipynb`, which is replaced by
+  // concatenated code-cell Python (same as the parse worker).
   let parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
   if (filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb')) {
     const extracted = extractNotebookPython(content);
-    if (!extracted) return null;
-    parseContent = getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
-      extracted.pythonSource;
+    if (extracted) {
+      parseContent =
+        getProvider(language).preprocessSource?.(extracted.pythonSource, filePath) ??
+        extracted.pythonSource;
+    }
   }
 
   return parseSourceSafe(parserInstance, parseContent);

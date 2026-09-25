@@ -23,7 +23,10 @@ import { VALID_NODE_TABLES, parseRelationSchemaPairs, RelPairRouter } from './re
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
-import { notebookPythonSnippet } from '../ingestion/ipynb-extractor.js';
+import {
+  notebookPythonSnippetFromExtract,
+  extractNotebookPythonCached,
+} from '../ingestion/ipynb-extractor.js';
 
 /** Computed once — `RELATION_SCHEMA` is a static template literal. Exported so
  *  the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) share this parse
@@ -330,7 +333,10 @@ const extractContent = async (
     .replace(/\\/g, '/')
     .toLowerCase();
   if (notebookPath.endsWith('.ipynb')) {
-    const reconstructed = notebookPythonSnippet(content, startLine, endLine);
+    const extracted = extractNotebookPythonCached(notebookPath, content);
+    const reconstructed = extracted
+      ? notebookPythonSnippetFromExtract(extracted, startLine, endLine)
+      : null;
     if (reconstructed) {
       const MAX_SNIPPET = 5000;
       const capped =

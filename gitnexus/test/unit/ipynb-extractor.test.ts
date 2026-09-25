@@ -15,8 +15,7 @@ function notebook(opts: {
     opts.language === undefined
       ? undefined
       : { display_name: 'Python', language: opts.language, name: 'python' };
-  const language_info =
-    opts.languageInfo === undefined ? undefined : { name: opts.languageInfo };
+  const language_info = opts.languageInfo === undefined ? undefined : { name: opts.languageInfo };
   return JSON.stringify(
     {
       nbformat: 4,
@@ -64,15 +63,21 @@ describe('extractNotebookPython', () => {
       language: 'python',
       cells: [
         { cell_type: 'code', metadata: {}, source: ['x = 1\n'], outputs: [] },
-        { cell_type: 'code', metadata: {}, source: ['def train():\n', '    return x\n'], outputs: [] },
+        {
+          cell_type: 'code',
+          metadata: {},
+          source: ['def train():\n', '    return x\n'],
+          outputs: [],
+        },
       ],
     });
     const result = extractNotebookPython(content);
     expect(result).not.toBeNull();
     expect(result!.pythonSource).toMatch(/x = 1\n+def train/);
     expect(result!.segments).toHaveLength(2);
-    expect(result!.segments[1].extractStartLine).toBeGreaterThan(result!.segments[0].extractStartLine);
-    expect(result!.segments[1].jsonStartLine).toBeGreaterThan(result!.segments[0].jsonStartLine);
+    const defRow = result!.pythonSource.split('\n').findIndex((l) => l.startsWith('def train'));
+    expect(defRow).toBe(result!.segments[1].extractStartLine);
+    expect(mapExtractLine(defRow, result!.segments)).toBe(result!.segments[1].jsonStartLine);
   });
 
   it('accepts source as a single string', () => {
@@ -199,7 +204,9 @@ describe('notebookPythonSnippet', () => {
   it('returns Python def train not JSON cell_type', () => {
     const content = notebook({
       language: 'python',
-      cells: [{ cell_type: 'code', metadata: {}, source: ['def train():\n', '    pass\n'], outputs: [] }],
+      cells: [
+        { cell_type: 'code', metadata: {}, source: ['def train():\n', '    pass\n'], outputs: [] },
+      ],
     });
     const extracted = extractNotebookPython(content)!;
     const snippet = notebookPythonSnippet(
