@@ -46,11 +46,12 @@ describe('embeddingsFromGitnexusRc', () => {
     await expect(embeddingsFromGitnexusRc(dir)).rejects.toThrow(AutoSyncGitnexusRcError);
   });
 
-  it.skipIf(process.platform === 'win32')('refuses a symlink .gitnexusrc', async () => {
+  it('refuses a symlink .gitnexusrc', async () => {
     const dir = tempDir();
     const outside = path.join(dir, 'outside.json');
     fs.writeFileSync(outside, '{"embeddings": true}');
-    fs.symlinkSync(outside, path.join(dir, '.gitnexusrc'));
+    // 'file' is required for a file symlink on Windows and ignored on other platforms.
+    fs.symlinkSync(outside, path.join(dir, '.gitnexusrc'), 'file');
     await expect(embeddingsFromGitnexusRc(dir)).rejects.toThrow(/symbolic link/);
   });
 });
