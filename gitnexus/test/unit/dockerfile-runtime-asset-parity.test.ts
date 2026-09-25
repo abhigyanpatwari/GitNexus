@@ -444,7 +444,9 @@ describe('Dockerfile.cli runtime-stage asset parity (#2130)', () => {
   });
 
   it('installs openssh-client in the runtime apt-get line (#3372)', () => {
-    const runtimeStart = dockerfile.split('\n').findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/i.test(l));
+    const runtimeStart = dockerfile
+      .split('\n')
+      .findIndex((l) => /^FROM\s.*\bAS\s+runtime\b/i.test(l));
     const runtimeBody: string[] = [];
     for (const line of dockerfile.split('\n').slice(runtimeStart + 1)) {
       if (/^FROM\b/.test(line)) break;
