@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import type { EmbeddingCheckpoint } from '../../src/core/embedding-checkpoint.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   ensurePrivateSharedGraph,
@@ -449,7 +450,7 @@ describe('publishSharedGraph race (#3352)', () => {
     expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
   });
 
-  const checkpoint: NonNullable<RepoMeta['embeddingCheckpoint']> = {
+  const checkpoint: EmbeddingCheckpoint = {
     at: '2026-01-01T00:00:00.000Z',
     nodesProcessed: 1,
     totalNodes: 2,

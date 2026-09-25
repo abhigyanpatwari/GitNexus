@@ -460,6 +460,7 @@ export const publishSharedGraph = async (
       delete meta.graphPath;
       await saveMeta(slot, meta);
     }
+    // Reclaim would delete the kept staging dir as unreferenced.
     if (keptStaging) return;
     // Best effort: an unreadable store must not fail a finished analysis.
     try {

@@ -238,7 +238,7 @@ describe('shared store clone sharing (#3352)', () => {
 });
 
 /**
- * #3374 S7 — registered sibling clones that found a store at the same time
+ * #3374: registered sibling clones that found a store at the same time
  * must pick the same key, or each keeps its own store forever. Resolves the
  * store directly (no analyze): only the registry and the clones' remotes matter.
  */
@@ -310,7 +310,7 @@ describe('shared store founder key for concurrent sibling clones (#3374)', () =>
     expect((await resolveOptedInStore(joiner, undefined))?.key).toBe(existing);
   });
 
-  // #3374 S8 — `getRemoteUrl` answers from any subdirectory, so only the
+  // #3374: `getRemoteUrl` answers from any subdirectory, so only the
   // tree-root gate keeps `analyze --skip-git <clone>/pkg` out of the store.
   it('a subdirectory of a clone with a registered sibling neither joins nor founds a store', async () => {
     await cloneAndRegister('member', cloneStoreKey(path.join(root, 'zz-founder')));
