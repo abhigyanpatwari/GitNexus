@@ -1230,12 +1230,16 @@ describe('git-clone', () => {
         await runGit(['checkout', '-b', 'main'], source);
         await fs.writeFile(path.join(source, 'branch.txt'), 'main\n');
         await runGit(['commit', '-am', 'main'], source);
-        await runGit(['remote', 'add', 'origin', `file://${remote}`], source);
+        const remotePosix = remote.replace(/\\/g, '/');
+        const remoteFileUrl = remotePosix.startsWith('/')
+          ? `file://${remotePosix}`
+          : `file:///${remotePosix}`;
+        await runGit(['remote', 'add', 'origin', remoteFileUrl], source);
         await runGit(['push', 'origin', 'master', 'main'], source);
 
         await fs.writeFile(
           gitConfig,
-          `[protocol "file"]\n\tallow = always\n[url "file://${remote}"]\n\tinsteadOf = ${remoteUrl}\n`,
+          `[protocol "file"]\n\tallow = always\n[url "${remoteFileUrl}"]\n\tinsteadOf = ${remoteUrl}\n`,
         );
         process.env.GIT_CONFIG_GLOBAL = gitConfig;
         process.env.GIT_CONFIG_NOSYSTEM = '1';
@@ -1448,6 +1452,7 @@ describe('git-clone', () => {
     });
 
     it('rejects controlled clone roots with unsafe permissions inside cloneOrPull', async () => {
+      if (process.platform === 'win32') return;
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       try {
         await fs.chmod(root, 0o777);
