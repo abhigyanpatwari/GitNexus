@@ -51,6 +51,7 @@ import {
   type RepoMeta,
 } from './repo-meta.js';
 import { LBUG_DIRECTORY } from './storage-constants.js';
+import { resolveGraphPath } from './shared-store.js';
 import {
   defaultStoragePath,
   ensureStoragePathWritable,
@@ -190,6 +191,11 @@ export interface RegistryEntry {
    * legacy registry shape.
    */
   branches?: BranchSummary[];
+  /**
+   * The checkout left sharing with `analyze --no-share` (#3352), so it does
+   * not join a sibling clone's store automatically. Cleared by `--share-with`.
+   */
+  shareOptOut?: true;
 }
 
 /** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
@@ -213,9 +219,11 @@ const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
  * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
  * and `metaPath` are scoped under `branches/<slug>/`. For the flat call
  * (no `branch`), `storagePath` and `lbugPath` remain byte-identical to the
- * pre-multi-branch behavior (#2106); `metaPath`'s FILENAME changed from
- * `meta.json` to `gitnexus.json` (PR #2363) — `saveMeta` keeps a `meta.json`
- * mirror in sync for consumers that still read the legacy name.
+ * pre-multi-branch behavior (#2106), except that a shared-store checkout slot
+ * (#3352) returns the commit graph its metadata records (`resolveGraphPath`).
+ * `metaPath`'s FILENAME changed from `meta.json` to `gitnexus.json`
+ * (PR #2363) — `saveMeta` keeps a `meta.json` mirror in sync for consumers
+ * that still read the legacy name.
  *
  * Each branch slot has its own metadata file:
  * - Primary/flat: <repo>/.gitnexus/gitnexus.json
@@ -234,7 +242,9 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(baseDir, LBUG_DIRECTORY),
+    // Branch slots are always private; a flat shared-store slot may read a
+    // commit graph (#3352).
+    lbugPath: branch ? path.join(baseDir, LBUG_DIRECTORY) : resolveGraphPath(storagePath),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };
@@ -887,6 +897,12 @@ export interface RegisterRepoOptions {
    * analysis or index operation has begun.
    */
   storagePath?: string;
+  /**
+   * Drop recorded `branches[]` summaries on a primary run. Set when the entry
+   * moves to a different storage location (a shared-store slot, #3352): the
+   * summaries name `branches/<slug>` sub-indexes the new location does not hold.
+   */
+  dropBranches?: boolean;
 }
 
 /**
@@ -1163,8 +1179,9 @@ const registerRepoUnlocked = async (
     // Primary run: apply our refreshed top-level, but defer to the FRESH
     // branches[] (a concurrent branch upsert or `clean --branch` wins).
     merged = { ...entry };
-    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    if (freshExisting?.branches && !opts?.dropBranches) merged.branches = freshExisting.branches;
     else delete merged.branches;
+    if (freshExisting?.shareOptOut) merged.shareOptOut = true;
   }
   if (freshIdx >= 0) {
     fresh[freshIdx] = merged;
@@ -1222,6 +1239,20 @@ const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
 
 export const unregisterRepo = async (repoPath: string): Promise<void> =>
   withRegistryLock(() => unregisterRepoUnlocked(repoPath));
+
+/**
+ * Record (or clear) a checkout's opt-out from automatic clone sharing
+ * (#3352). A no-op when the checkout is not registered.
+ */
+export const setShareOptOut = async (repoPath: string, optOut: boolean): Promise<void> =>
+  withRegistryLock(async () => {
+    const entries = await readRegistryStrict();
+    const entry = findRegistryEntryByRepoPath(entries, repoPath);
+    if (!entry || !!entry.shareOptOut === optOut) return;
+    if (optOut) entry.shareOptOut = true;
+    else delete entry.shareOptOut;
+    await writeRegistry(entries);
+  });
 
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry

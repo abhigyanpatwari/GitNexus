@@ -29,7 +29,10 @@
  *     here there is no pipeline, so no conflation.)
  */
 
-import fs from 'fs/promises';
+import {
+  reclaimAfterSlotRemoval,
+  removeCheckoutStorage,
+} from '../storage/shared-store-lifecycle.js';
 import { logger } from '../core/logger.js';
 import { cliError } from './cli-message.js';
 import { t } from './i18n/index.js';
@@ -98,8 +101,8 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // orphaned — `listRegisteredRepos({ validate: true })` prunes those on
   // next read, so the failure is self-healing.
   try {
-    await fs.rm(storagePath, { recursive: true, force: true });
-    await unregisterRepo(entry.path);
+    await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
+    await reclaimAfterSlotRemoval(storagePath);
     console.log(t('remove.removed', { name: entry.name }));
     console.log(`   ${t('common.path')}:    ${entry.path}`);
     console.log(`   ${t('common.storage')}: ${entry.storagePath}`);

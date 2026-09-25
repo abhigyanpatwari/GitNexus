@@ -29,6 +29,13 @@ export const zhCN = {
   'list.clusters': '聚类',
   'list.processes': '流程',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': '共享索引：存储 {{key}}，提交 {{commit}} 的共享图',
+  'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改或固定分支索引）',
+  'status.sharedStoreCloneCow': '  写时复制副本：未更改的页面在磁盘上与提交图共享',
+  'status.sharedStoreCloneCopy':
+    '  完整副本：此文件系统不支持写时复制克隆（APFS、btrfs 和 XFS 支持）',
+  'status.legacyLocalIndex':
+    '残留的本地索引：{{path}}（{{size}}）；使用 `gitnexus clean --local-index --force` 删除',
   'status.notGitRepo': '当前目录不是 git 仓库。',
   'status.staleKuzu': '仓库包含旧版本遗留的 KuzuDB 索引。',
   'status.rebuildLadybug': '运行：gitnexus analyze   （使用 LadybugDB 重建索引）',
@@ -58,6 +65,18 @@ export const zhCN = {
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
+  'clean.shared.reclaimed': '共享存储：已删除 {{count}} 个不再被任何检出引用的提交图。',
+  'clean.shared.kept':
+    '共享存储：保留了 {{count}} 个无法删除的未引用提交图（正在使用或不可写）；请稍后运行 `gitnexus clean --gc`。',
+  'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
+  'clean.gc.none': '没有可回收的共享存储。',
+  'clean.gc.keptMembers':
+    '共享存储：保留了 {{count}} 个无法删除的检出；请稍后运行 `gitnexus clean --gc --force`。',
+  'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
+  'clean.gc.preview': '共享存储 {{path}}：将移除 {{members}} 个检出并删除 {{graphs}} 个提交图。',
+  'clean.localIndex.none': '此检出中没有残留的本地索引。',
+  'clean.localIndex.preview': '将删除 {{path}} 处残留的本地索引（{{size}}）。共享索引不受影响。',
+  'clean.localIndex.deleted': '已删除 {{path}} 处残留的本地索引（{{size}}）。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
   'clean.branchNotIndexed':
     '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',
@@ -251,6 +270,10 @@ export const zhCN = {
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',
   'help.option.analyze.allowDuplicateName':
     '即使已有其他路径使用相同 --name 别名，也注册该仓库。会使两个路径的 `-r <name>` 产生歧义；请用 -r <path> 消除歧义。',
+  'help.option.analyze.shareWith':
+    '加入同一仓库已注册检出的共享索引存储（名称或路径）；远程 URL 必须一致。克隆会自动加入同源克隆的存储；此选项显式指定存储，并清除 --no-share 的退出设置。',
+  'help.option.analyze.noShare':
+    '仅限克隆：离开共享索引存储，重新索引到 <repo>/.gitnexus，并在使用 --share-with 之前不再自动加入同源克隆（链接工作树始终共享；请改用 GITNEXUS_SHARED_STORE=off）',
   'help.option.verbose': '启用详细输出',
   'help.option.analyze.maxFileSize':
     '跳过大于该值的文件（KB）。默认：512。硬上限：32768（tree-sitter 限制）。',
@@ -287,6 +310,8 @@ export const zhCN = {
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
   'help.option.clean.stale': '回收已不是本地 head 的残留分支索引',
+  'help.option.clean.gc': '移除注册表不再使用的共享存储检出，并删除无人引用的提交图',
+  'help.option.clean.localIndex': '删除此检出迁入共享存储后遗留在 <repo>/.gitnexus 中的索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',

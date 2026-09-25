@@ -8,6 +8,18 @@
  * CORS is restricted to localhost, private/LAN networks, and the deployed site.
  */
 
+import {
+  acquireIndexLock,
+  IndexLockTimeoutError,
+  requireExclusiveIndexLock,
+  type IndexLockHandle,
+} from '../storage/index-lock.js';
+import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
+import { resolveGraphPath } from '../storage/shared-store.js';
+import {
+  reclaimAfterSlotRemoval,
+  removeCheckoutStorage,
+} from '../storage/shared-store-lifecycle.js';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -917,7 +929,7 @@ export const handleQueryRequest = async (
       return;
     }
     if (respondIfAnalysisPending(entry, res)) return;
-    const lbugPath = path.join(entry.storagePath, 'lbug');
+    const lbugPath = resolveGraphPath(entry.storagePath);
     const { skipFts } = await loadFtsSession(entry.storagePath);
     const result = await withLbugDb(
       lbugPath,
@@ -1316,8 +1328,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await closeLbug();
         } catch {}
 
-        // 1. Delete the .gitnexus index/storage directory
-        await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
+        // 1. Delete the index storage and unregister, as `gitnexus remove`
+        // does: for a shared-store slot the unregister and the checkout's
+        // pointer removal run under the slot's index lock. An analyze holding
+        // that lock is a conflict; any other failure propagates as a 500 with
+        // the entry left registered, so the delete can be retried.
+        const { unregisterRepo } = await import('../storage/repo-manager.js');
+        try {
+          await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
+        } catch (err) {
+          if (!(err instanceof IndexLockTimeoutError)) throw err;
+          res.status(409).json({
+            error: `Repository "${entry.name}" is being analyzed; retry the delete when it finishes. ${err.message}`,
+          });
+          return;
+        }
+        await reclaimAfterSlotRemoval(storagePath);
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
         // getCloneDir now throws on names that are not filesystem-safe (e.g.
@@ -1355,11 +1381,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           await fs.rm(resolvedEntry, { recursive: true, force: true }).catch(() => {});
         }
 
-        // 3. Unregister from the global registry
-        const { unregisterRepo } = await import('../storage/repo-manager.js');
-        await unregisterRepo(entry.path);
-
-        // 4. Reinitialize backend to reflect the removal
+        // 3. Reinitialize backend to reflect the removal
         await backend.init().catch(() => {});
 
         res.json({ deleted: entry.name });
@@ -1380,7 +1402,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       if (respondIfAnalysisPending(entry, res)) return;
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const includeContent = req.query.includeContent === 'true';
       const stream = req.query.stream === 'true';
       const { skipFts } = await loadFtsSession(entry.storagePath);
@@ -1473,7 +1495,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         return;
       }
       if (respondIfAnalysisPending(entry, res)) return;
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const parsedLimit = Number(req.body.limit ?? 10);
       const { ftsDisabledReason, skipFts } = await loadFtsSession(entry.storagePath);
       const limit = Number.isFinite(parsedLimit)
@@ -1680,7 +1702,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const repoRoot = path.resolve(entry.path);
       const { skipFts } = await loadFtsSession(entry.storagePath);
 
-      const lbugPath = path.join(entry.storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(entry.storagePath);
       const fileRows = await withLbugDb(
         lbugPath,
         () =>
@@ -2125,7 +2147,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           // Set inside withLbugDb, read after it closes (#2790).
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
+          // The in-memory repo lock only serializes this server; a CLI analyze
+          // in another process guards the slot with the index lock, so hold it
+          // for the whole embedding write, released in the finally below.
+          let slotLock: IndexLockHandle | undefined;
           try {
+            slotLock = await acquireIndexLock(storagePath);
+            requireExclusiveIndexLock(
+              slotLock,
+              `Cannot acquire the index lock at ${storagePath}; refusing an unlocked embedding run.`,
+            );
+            // Writes go to the slot's own graph; a shared-store checkout
+            // reading an immutable commit graph (#3352) takes a private copy.
+            if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
+              throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
+            }
             const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
             const ftsSession = await loadFtsSession(storagePath);
             let embeddingMeta = ftsSession.meta;
@@ -2359,6 +2395,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               });
             }
           } finally {
+            slotLock?.release();
             clearTimeout(embedTimeout);
             releaseRepoLock(repoLockPath);
           }
