@@ -119,6 +119,23 @@ const DART_CALLABLE_CAPTURE_OPTIONS = {
   extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
   callSiteNode: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
   callableProtocolMethods: new Set(['call']),
+  // tree-sitter-dart spells `a ?? b` as `if_null_expression(first:, second:)`
+  // and `c ? a : b` as a `conditional_expression` with `consequence` /
+  // `alternative` but NO `condition` field, so neither matches the shared
+  // field-based branch rule and only the last operand flowed (#3354).
+  valueAlternatives: (node: SyntaxNode) => {
+    if (node.type === 'if_null_expression') {
+      const first = node.childForFieldName('first');
+      const second = node.childForFieldName('second');
+      return first !== null && second !== null ? [first, second] : undefined;
+    }
+    if (node.type === 'conditional_expression') {
+      const consequence = node.childForFieldName('consequence');
+      const alternative = node.childForFieldName('alternative');
+      return consequence !== null && alternative !== null ? [consequence, alternative] : undefined;
+    }
+    return undefined;
+  },
 } as const;
 
 function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {

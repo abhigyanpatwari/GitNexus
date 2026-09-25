@@ -46,8 +46,8 @@
  *  - reads: `attribute` (fields `object`/`attribute`), `subscript` (fields
  *    `value`/`subscript`), `call` (fields `function`/`arguments`),
  *    `boolean_operator` (fields `left`/`operator`/`right`),
- *    `conditional_expression` (ternary: consequent / condition / alternative in
- *    source order), `parenthesized_expression`.
+ *    `conditional_expression` (ternary, FIELDLESS: consequent, condition,
+ *    alternative as positional children), `parenthesized_expression`.
  *
  * TWO-PHASE, ORDER-INDEPENDENT (load-bearing — mirrors the TS / Go harvesters):
  * the CFG walk is NOT source-order, so resolving names against a scope stack
