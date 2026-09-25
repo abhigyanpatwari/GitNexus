@@ -1328,6 +1328,43 @@ describe('git-clone', () => {
       }
     });
 
+    it('quarantines auto-sync clones that have .git but no remote.origin and reclones', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      await fs.mkdir(target);
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+        proc.on('close', (code) =>
+          code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+        );
+        proc.on('error', reject);
+      });
+      const runGitForTest = vi.fn(async (args: string[]) => {
+        if (args[0] === 'clone') {
+          await fs.mkdir(target, { recursive: true });
+          return '';
+        }
+        return '';
+      });
+      try {
+        await expect(
+          cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+            runGitForTest,
+          }),
+        ).resolves.toBe(target);
+        const entries = await fs.readdir(quarantineRoot);
+        expect(entries.some((entry) => entry.includes('repo'))).toBe(true);
+        expect(runGitForTest.mock.calls.some((call) => call[0][0] === 'clone')).toBe(true);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
     it('does not quarantine an existing non-git directory on clone failure', async () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const quarantineRoot = path.join(root, 'quarantine');

@@ -552,10 +552,24 @@ export async function cloneOrPull(
   await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
   await assertPreRealpathContainment(cloneRoot, safeTarget);
 
-  const exists = await fs.access(path.join(safeTarget, '.git')).then(
+  let exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
+
+  if (exists && options?.allowAutoSyncSsh) {
+    const originUrl = await getRemoteOriginUrl(safeTarget, options?.timeoutMs);
+    if (!originUrl) {
+      if (options.quarantineRoot) {
+        await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot);
+        exists = false;
+      } else {
+        throw new Error(
+          `Existing clone at ${safeTarget} has no remote.origin — remove ${safeTarget} and retry`,
+        );
+      }
+    }
+  }
 
   const targetExists = await fs.access(safeTarget).then(
     () => true,
