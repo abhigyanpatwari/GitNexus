@@ -69,23 +69,26 @@ end
   });
 
   it.each([
-    ['StructType', 'Struct', 'struct_method'],
-    ['DataType', 'Class', 'data_method'],
-    ['ClassType', 'Class', 'class_method'],
-    ['ModuleType', 'Trait', 'module_method'],
-    ['BraceType', 'Class', 'brace_method'],
+    ['StructType', 'Struct', 'struct_method', 'Outer.StructType'],
+    ['DataType', 'Class', 'data_method', 'Outer.DataType'],
+    ['ClassType', 'Class', 'class_method', 'Outer.ClassType'],
+    ['ModuleType', 'Trait', 'module_method', 'Outer.ModuleType'],
+    ['BraceType', 'Class', 'brace_method', 'Outer.BraceType'],
   ])(
     'materializes %s as a %s and attributes its factory-block method',
-    (owner, ownerLabel, method) => {
+    (owner, ownerLabel, method, qualifiedOwner) => {
       const ownerNode = result.graph.nodes.find(
-        (node) => node.label === ownerLabel && node.properties.name === owner,
+        (node) =>
+          node.label === ownerLabel &&
+          node.properties.name === owner &&
+          node.id.includes(qualifiedOwner),
       );
       const ownership = getRelationships(result, 'HAS_METHOD').filter(
         (edge) => edge.target === method,
       );
 
       expect(ownerNode).toBeDefined();
-      expect(ownership.map((edge) => edge.source)).toEqual([owner]);
+      expect(ownership.map((edge) => edge.rel.sourceId)).toEqual([ownerNode?.id]);
     },
   );
 
