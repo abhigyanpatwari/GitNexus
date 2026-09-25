@@ -19,14 +19,28 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  loadParser,
+  loadLanguage,
+} from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
 // Kotlin, Swift and Dart grammars are optional installs; skip their suites
 // when the grammar did not load, as the per-language resolver suites do.
 const kotlinAvailable = isLanguageAvailable(SupportedLanguages.Kotlin);
 const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
-const dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+// A loaded tree-sitter-dart module can still fail on setLanguage, so probe the
+// parser too (same guard as dart.test.ts).
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
 
 const runFixture = (name: string): Promise<PipelineResult> =>
   runPipelineFromRepo(path.join(FIXTURES, name), () => {});
