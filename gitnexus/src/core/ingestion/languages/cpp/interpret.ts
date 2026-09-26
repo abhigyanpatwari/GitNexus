@@ -8,7 +8,8 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
  *   2. using namespace X; → wildcard import (all symbols from namespace X)
  *   3. using X::name;     → named import (single symbol from namespace X)
  *
- * System headers (#include <...>) are not resolved to local files.
+ * Angle `#include <...>` sets `isSystem`. The resolver searches header
+ * paths for that form and does not use the basename index.
  */
 export function interpretCppImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;

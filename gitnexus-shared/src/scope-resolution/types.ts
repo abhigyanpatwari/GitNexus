@@ -380,8 +380,9 @@ type ParsedImportSyntax =
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
       /**
-       * C/C++ specific. Whether the import is a system header `#include <...>` vs `#include "..."`.
-       * Used during resolution to gate suffix-match fallback.
+       * C/C++ `#include <…>` (true) versus `#include "…"`.
+       * Angle includes resolve only on header search paths. Quoted includes
+       * may still use the including file's directory and the basename index.
        */
       readonly isSystem?: boolean;
     }

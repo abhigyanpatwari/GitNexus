@@ -15,7 +15,12 @@ import { cppArityCompatibility } from './arity.js';
 import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
-import { scanCppHeaderFiles } from './header-scan.js';
+import { cIncludeLookupFromConfig } from '../c/import-target.js';
+import {
+  CPP_HEADER_EXTENSIONS,
+  cFamilyImportFiles,
+  loadCFamilyResolutionConfig,
+} from '../c/resolution-config.js';
 import {
   expandCppWildcardNames,
   isFileLocal,
@@ -110,31 +115,26 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppInlineNamespaces();
     clearCppUserDefinedConversions();
     clearCppMemberLookupState();
-    return scanCppHeaderFiles(repoPath);
+    return loadCFamilyResolutionConfig(repoPath, CPP_HEADER_EXTENSIONS);
   },
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
-    // A gate on the angle/quote form alone closes the reported case (#2965).
-    // System headers (#include <x.h>) search only the implementation-defined
-    // system paths and the configured include path. We do not parse CMake/Make
-    // include paths today, so we refuse them rather than guessing across the
-    // whole repo.
-    if (context?.parsedImport?.kind === 'wildcard' && context.parsedImport.isSystem) {
-      return null;
-    }
-
-    // Augment allFilePaths with header files discovered via loadResolutionConfig.
-    // C++ .h/.hpp/.hxx/.hh files may be classified differently by language
-    // detection but are importable from .cpp files via #include.
-    const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
-    if (headerPaths !== undefined && headerPaths.size > 0) {
-      return resolveCppImportTarget(
-        targetRaw,
-        fromFile,
-        augmentedFilePathsFor(allFilePaths)(headerPaths),
-      );
-    }
-    return resolveCppImportTarget(targetRaw, fromFile, allFilePaths);
+    // Same adapter as C, with this file's own augmented-set memo. C++
+    // `#include` then goes through `resolveCppImportTarget`, whose suffix
+    // index is also private to C++.
+    const { files, config } = cFamilyImportFiles(
+      allFilePaths,
+      resolutionConfig,
+      augmentedFilePathsFor(allFilePaths),
+    );
+    const parsed = context?.parsedImport;
+    const isSystem = parsed?.kind === 'wildcard' && parsed.isSystem === true;
+    return resolveCppImportTarget(
+      targetRaw,
+      fromFile,
+      files,
+      cIncludeLookupFromConfig(config, isSystem),
+    );
   },
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>

@@ -785,7 +785,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Same v112: the `valueAlternatives` provider hook extends it to Kotlin
 // `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
 // Ruby multi-statement `if` one opaque source.
-const SCHEMA_BUMP = 112;
+// v113 (#2965): C and C++ angle includes are real wildcard imports with
+// `isSystem`. Warm shards stored those captures as absent, so incremental
+// analyze never asked the resolver to search include paths.
+const SCHEMA_BUMP = 113;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

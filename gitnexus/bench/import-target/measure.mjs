@@ -105,12 +105,14 @@
  *         path components, so the `deep` arm's uniform prefix reaches the
  *         config (see `tsBaseUrlFor`) and its cost is the same keyed lookup the
  *         other arms pay.
- *   - c, cpp: `resolveCppImportTarget` delegates to `resolveCImportTarget`, so
- *     the two share a resolver and differ in extension set and in which adapter
- *     builds the augmented set. Cost is a basename bucket walk with a
- *     depth-then-lexicographic tie-break, so the collide arm (a `mod{n}` header
- *     in every service's `include/`) is where it grows: 2.54 / 2.64 against
- *     1.06 on file count.
+ *   - c, cpp: quoted includes walk a basename bucket (depth, then lexicographic).
+ *     The collide arm — a `mod{n}` header in every service's `include/` — is
+ *     where that walk grows: 2.54 / 2.64 against 1.06 on file count. Each
+ *     language keeps its own bucket memo. Angle includes join the target onto
+ *     header search paths and never take that walk. The timing corpus passes
+ *     a raw header set and no `isSystem` flag, so it stays on the quoted path.
+ *     `--check` also resolves a quoted hit, an angle hit on a declared include
+ *     root, and an angle miss against a same-named `src/` decoy.
  *   - zig: `resolveZigImportInternal` is rust's shape — an `@import("…zig")`
  *     path is walked component by component from the importer's directory and
  *     probed with two `allFiles.has(...)` calls (as written, then `+ '.zig'`),
@@ -627,7 +629,7 @@ const HEAP_BUDGETED = [
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -1918,10 +1920,22 @@ function resolveOne(lang, from, target, pass) {
     return typescriptScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
   }
   if (lang === 'c') {
-    return cScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+    return cScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      pass.includeContext,
+    );
   }
   if (lang === 'cpp') {
-    return cppScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+    return cppScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      pass.includeContext,
+    );
   }
   if (lang === 'objc') {
     return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
@@ -2346,6 +2360,30 @@ const CONTEXT_PROBE = {
       probeFile('Sources/Client/Main.swift', [['Class', 'Client.Main']]),
     ],
   },
+  /**
+   * `#include <stdio.h>` with a repo file `src/stdio.h`. With the fifth
+   * argument the include is an angle include and the decoy is not on a
+   * search path, so the answer is null. Without it the call is the quoted
+   * basename walk and the decoy wins. Same shape for C++ `cstdio.h`.
+   */
+  c: {
+    from: 'src/main.c',
+    target: 'stdio.h',
+    parsedFiles: [
+      probeFile('src/main.c', []),
+      probeFile('src/stdio.h', []),
+      probeFile('include/util.h', []),
+    ],
+  },
+  cpp: {
+    from: 'src/main.cpp',
+    target: 'cstdio.h',
+    parsedFiles: [
+      probeFile('src/main.cpp', []),
+      probeFile('src/cstdio.h', []),
+      probeFile('include/util.hpp', []),
+    ],
+  },
 };
 
 /** Resolve the probe twice through `resolveOne` — once with the pass's parsed
@@ -2357,15 +2395,99 @@ function measureContext(lang) {
   const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
-    return renderResolved(
-      resolveOne(lang, from, target, { allFilePaths, config, parsedFiles: files }),
-    );
+    const pass = { allFilePaths, config, parsedFiles: files };
+    if ((lang === 'c' || lang === 'cpp') && files !== undefined) {
+      pass.includeContext = {
+        parsedFiles: files,
+        parsedImport: { kind: 'wildcard', targetRaw: target, isSystem: true },
+      };
+    }
+    return renderResolved(resolveOne(lang, from, target, pass));
   };
   return {
     target,
     with_context: answer(parsedFiles),
     without_context: answer(undefined),
   };
+}
+
+/**
+ * Quote vs angle for C and C++, on top of the scaling arms. The timing corpus
+ * stays quoted (no `isSystem`) so its fingerprints do not move. This is the
+ * arm that fails if angle includes go back to a repo-wide name hunt, or if a
+ * raw header set stops resolving a quoted include.
+ */
+function checkCIncludeForms(failures) {
+  const arms = [
+    {
+      lang: 'c',
+      resolver: cScopeResolver,
+      from: 'src/main.c',
+      files: ['src/main.c', 'src/stdio.h', 'include/util.h'],
+      quoted: 'util.h',
+      quotedHit: 'include/util.h',
+      angleHit: 'util.h',
+      angleHitFile: 'include/util.h',
+      angleMiss: 'stdio.h',
+    },
+    {
+      lang: 'cpp',
+      resolver: cppScopeResolver,
+      from: 'src/main.cpp',
+      files: ['src/main.cpp', 'src/cstdio.h', 'include/util.hpp'],
+      quoted: 'util.hpp',
+      quotedHit: 'include/util.hpp',
+      angleHit: 'util.hpp',
+      angleHitFile: 'include/util.hpp',
+      angleMiss: 'cstdio.h',
+    },
+  ];
+  for (const arm of arms) {
+    const allFilePaths = new Set(arm.files);
+    const config = {
+      headers: new Set(arm.files.filter((file) => file !== arm.from)),
+      headerSearchPaths: ['include'],
+      userHeaderSearchPaths: [],
+    };
+    const resolve = (target, isSystem) =>
+      arm.resolver.resolveImportTarget(target, arm.from, allFilePaths, config, {
+        parsedFiles: [],
+        parsedImport: { kind: 'wildcard', targetRaw: target, isSystem },
+      });
+    const quotedResult = resolve(arm.quoted, false);
+    const angledResult = resolve(arm.angleHit, true);
+    const missedResult = resolve(arm.angleMiss, true);
+    if (quotedResult !== arm.quotedHit) {
+      failures.push(
+        `${arm.lang}: quoted "${arm.quoted}" resolved to ${JSON.stringify(quotedResult)}, ` +
+          `expected ${arm.quotedHit}`,
+      );
+    }
+    if (angledResult !== arm.angleHitFile) {
+      failures.push(
+        `${arm.lang}: angle <${arm.angleHit}> resolved to ${JSON.stringify(angledResult)}, ` +
+          `expected ${arm.angleHitFile} on the declared include root`,
+      );
+    }
+    if (missedResult !== null) {
+      failures.push(
+        `${arm.lang}: angle <${arm.angleMiss}> resolved to ${JSON.stringify(missedResult)}; ` +
+          `a same-named file outside the include root must miss`,
+      );
+    }
+    const raw = arm.resolver.resolveImportTarget(
+      arm.quoted,
+      arm.from,
+      new Set([arm.from]),
+      new Set(arm.files.filter((file) => file !== arm.from)),
+    );
+    if (raw !== arm.quotedHit) {
+      failures.push(
+        `${arm.lang}: a raw header set resolved quoted "${arm.quoted}" to ${JSON.stringify(raw)}, ` +
+          `expected ${arm.quotedHit}`,
+      );
+    }
+  }
 }
 
 function fingerprint(outcomes) {
@@ -2538,6 +2660,7 @@ if (!CHECK) {
 
 const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
 const failures = [];
+checkCIncludeForms(failures);
 
 /**
  * PRESENCE, for one budget, in the one place that spells the reason.
@@ -3084,10 +3207,12 @@ expectNoOrphanKeys(
 // The SAME reconciliation for `CONTEXT_LANGS`, against the registry rather than
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
-// hook declares, and that is a number the registry can be asked for. Today
-// exactly five answer 5 (php, java, kotlin, python, swift) and the other twelve answer 3 or 4 —
-// which is why thirteen arms can ignore this whole question and their numbers
-// did not move when it was fixed.
+// hook declares, and that is a number the registry can be asked for. php,
+// java, kotlin, python, and swift read the parsed workspace; c and cpp read
+// `parsedImport.isSystem` and nothing else on that object. Their timed passes
+// still return before any parsed-file build (see `newPass`), so the fifth
+// argument shows up here as the include-form probe, not as a cost on the
+// scaling arms.
 //
 // `Function.length` stops at the first defaulted or rest parameter, so a hook
 // written as `(a, b, c, d, context = {})` would read 4 and slip past this arm.

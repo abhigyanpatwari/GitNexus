@@ -1,5 +1,10 @@
 import { dirname, join } from 'path';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import {
+  collapseRepoPath,
+  normalizeRepoPath,
+  type CTranslationUnitPaths,
+} from './resolution-config.js';
 
 /**
  * A workspace file path pre-decomposed for the suffix-match fallback:
@@ -7,64 +12,112 @@ import { perFileSet } from '../../import-resolvers/per-file-set.js';
  * contract); `normalized` and `depth` are precomputed so the hot path does no
  * per-element regex/`split`.
  */
-interface CSuffixCandidate {
+export interface CSuffixCandidate {
   original: string;
   normalized: string;
   depth: number;
 }
 
+export type CIncludeSuffixIndex = (
+  allFilePaths: ReadonlySet<string>,
+) => Map<string, CSuffixCandidate[]>;
+
 /**
- * Per-pass memo: workspace paths bucketed by basename (last path segment),
- * keyed on the `allFilePaths` set identity.
+ * Basename buckets for quoted `#include "…"` suffix fallback.
  *
- * `resolveCImportTarget` is called once per (quoted) C/C++ `#include` with the
- * same `allFilePaths` set per pass (the augmented set is itself memoized in
- * the C resolver). The old suffix-match fallback scanned ALL workspace paths
- * per include — with a per-element `.replace`/`.split` and no early exit
- * (the fewest-path-components tie-break forces a full scan) — i.e.
- * O(R_suffix × (F+H)). A path can satisfy `endsWith('/'+target)` (or equal
- * the target) ONLY IF its basename equals the target's last segment, so we
- * pre-bucket by basename once (O(F+H), `normalized`/`depth` precomputed) and
- * the fallback inspects a single small bucket → O(F+H) build + ~O(1)/include.
- * `WeakMap`-keyed so it is reclaimed with the pass (no cross-pass staleness).
- * Shared by C and C++ (`resolveCppImportTarget` delegates here).
+ * The builder is shared. Each language keeps its own memo: C++ calls
+ * `resolveCFamilyImport` with the index it created here, so a C pass and a
+ * C++ pass never read each other's map even when handed the same set.
  */
-const suffixIndex = perFileSet((allFilePaths: ReadonlySet<string>) => {
-  const index = new Map<string, CSuffixCandidate[]>();
-  for (const original of allFilePaths) {
-    const normalized = original.replace(/\\/g, '/');
-    const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
-    let bucket = index.get(basename);
-    if (bucket === undefined) {
-      bucket = [];
-      index.set(basename, bucket);
+export function createCIncludeSuffixIndex(): CIncludeSuffixIndex {
+  return perFileSet((allFilePaths: ReadonlySet<string>) => {
+    const index = new Map<string, CSuffixCandidate[]>();
+    for (const original of allFilePaths) {
+      const normalized = original.replace(/\\/g, '/');
+      const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
+      let bucket = index.get(basename);
+      if (bucket === undefined) {
+        bucket = [];
+        index.set(basename, bucket);
+      }
+      bucket.push({ original, normalized, depth: normalized.split('/').length });
     }
-    bucket.push({ original, normalized, depth: normalized.split('/').length });
-  }
-  return index;
-});
+    return index;
+  });
+}
+
+const cSuffixIndex = createCIncludeSuffixIndex();
+
+/** Optional search roots. Absent means "quoted include, no declared paths". */
+export interface CIncludeLookup {
+  /** `#include <…>`. Never suffix-matches the workspace. */
+  readonly isSystem?: boolean;
+  /** Fallback `-I` / `-isystem` / `/I` and implicit roots. */
+  readonly headerSearchPaths?: readonly string[];
+  /** Fallback `-iquote`. Quoted includes only. */
+  readonly userHeaderSearchPaths?: readonly string[];
+  /**
+   * Per translation unit. A hit replaces the fallback lists for that file.
+   * The map is the one built at config load — lookup does not copy it.
+   */
+  readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
+}
 
 /**
  * Resolve a C #include path to a file in the workspace.
  *
- * Strategy:
- * 1. Check for a same-directory sibling relative to the including file
- *    (matches C compiler `#include "…"` relative-lookup semantics).
- * 2. Check for an exact match (path as-is in the workspace).
- * 3. Fall back to suffix matching against all workspace file paths.
- *    Tie-breaking: prefer the match with the fewest path components
- *    (closest to root). On equal depth, break ties lexicographically
- *    by normalized path to ensure deterministic resolution regardless
- *    of filesystem iteration order.
+ * Quoted `#include "…"` (the default when `lookup` is omitted, which is
+ * what the import-target bench and the older unit tests call):
+ *   1. Same directory as the including file
+ *   2. User search paths, then header search paths
+ *   3. Exact path, then the basename bucket
+ *
+ * Angle `#include <…>` (`lookup.isSystem`): join the target onto each
+ * header search path and return that file, or null. A same-named header
+ * under `src/` is not a candidate when `src` is not a search path.
  */
+export function cIncludeLookupFromConfig(
+  config:
+    | {
+        readonly headerSearchPaths?: readonly string[];
+        readonly userHeaderSearchPaths?: readonly string[];
+        readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
+      }
+    | undefined,
+  isSystem: boolean,
+): CIncludeLookup {
+  return {
+    isSystem,
+    headerSearchPaths: config?.headerSearchPaths,
+    userHeaderSearchPaths: config?.userHeaderSearchPaths,
+    translationUnits: config?.translationUnits,
+  };
+}
+
 export function resolveCImportTarget(
   targetRaw: string,
   fromFile: string,
   allFilePaths: ReadonlySet<string>,
+  lookup?: CIncludeLookup,
+): string | null {
+  return resolveCFamilyImport(targetRaw, fromFile, allFilePaths, lookup, cSuffixIndex);
+}
+
+export function resolveCFamilyImport(
+  targetRaw: string,
+  fromFile: string,
+  allFilePaths: ReadonlySet<string>,
+  lookup: CIncludeLookup | undefined,
+  suffixIndex: CIncludeSuffixIndex,
 ): string | null {
   if (!targetRaw) return null;
 
   const normalizedTarget = targetRaw.replace(/\\/g, '/');
+  const lists = listsFor(lookup, fromFile);
+
+  if (lookup?.isSystem === true) {
+    return matchSearchPaths(normalizedTarget, lists.header, allFilePaths);
+  }
 
   // Same-directory sibling first: mirrors the C compiler's #include "…"
   // relative-lookup semantics where the directory of the including
@@ -81,6 +134,15 @@ export function resolveCImportTarget(
       if (allFilePaths.has(siblingAltNorm)) return siblingAltNorm;
     }
   }
+
+  const onUserPath =
+    lists.user.length === 0 ? null : matchSearchPaths(normalizedTarget, lists.user, allFilePaths);
+  if (onUserPath !== null) return onUserPath;
+  const onHeaderPath =
+    lists.header.length === 0
+      ? null
+      : matchSearchPaths(normalizedTarget, lists.header, allFilePaths);
+  if (onHeaderPath !== null) return onHeaderPath;
 
   // Exact match (path as-is in the workspace)
   if (allFilePaths.has(normalizedTarget)) return normalizedTarget;
@@ -115,4 +177,41 @@ export function resolveCImportTarget(
   }
 
   return bestMatch;
+}
+
+function listsFor(
+  lookup: CIncludeLookup | undefined,
+  fromFile: string,
+): { readonly header: readonly string[]; readonly user: readonly string[] } {
+  const units = lookup?.translationUnits;
+  if (units !== undefined && units.size > 0) {
+    const unit = units.get(normalizeRepoPath(fromFile));
+    if (unit !== undefined) {
+      return { header: unit.headerSearchPaths, user: unit.userHeaderSearchPaths };
+    }
+  }
+  return {
+    header: lookup?.headerSearchPaths ?? [],
+    user: lookup?.userHeaderSearchPaths ?? [],
+  };
+}
+
+function matchSearchPaths(
+  normalizedTarget: string,
+  roots: readonly string[],
+  allFilePaths: ReadonlySet<string>,
+): string | null {
+  if (roots.length === 0 || normalizedTarget.length === 0) return null;
+  for (const root of roots) {
+    const candidate = joinSearch(root, normalizedTarget);
+    if (candidate !== undefined && candidate.length > 0 && allFilePaths.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function joinSearch(root: string, target: string): string | undefined {
+  if (root.length === 0 || root === '.') return collapseRepoPath(target);
+  return collapseRepoPath(`${root}/${target}`);
 }

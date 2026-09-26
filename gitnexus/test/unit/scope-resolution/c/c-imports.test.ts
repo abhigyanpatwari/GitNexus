@@ -57,16 +57,16 @@ describe('C import interpretation (interpretCImport)', () => {
       '@import.kind': capt('@import.kind', 'wildcard'),
       '@import.source': capt('@import.source', 'header.h'),
     });
-    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'header.h' });
+    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'header.h', isSystem: false });
   });
 
-  it('returns null for system headers', () => {
+  it('keeps the angle-bracket flag for system headers', () => {
     const result = interpretCImport({
       '@import.kind': capt('@import.kind', 'wildcard'),
       '@import.source': capt('@import.source', 'stdio.h'),
       '@import.system': capt('@import.system', 'true'),
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'stdio.h', isSystem: true });
   });
 
   it('returns null when @import.source is missing', () => {
@@ -152,6 +152,30 @@ describe('C import target resolution (resolveCImportTarget)', () => {
   it('falls back to suffix match when no same-directory sibling exists', () => {
     const result = resolveCImportTarget('missing.h', 'src/foo.c', new Set(['lib/missing.h']));
     expect(result).toBe('lib/missing.h');
+  });
+
+  it('resolves an angle include only on a header search path', () => {
+    const files = new Set(['src/stdio.h', 'include/util.h', 'src/main.c']);
+    expect(
+      resolveCImportTarget('util.h', 'src/main.c', files, {
+        isSystem: true,
+        headerSearchPaths: ['include'],
+      }),
+    ).toBe('include/util.h');
+    expect(
+      resolveCImportTarget('stdio.h', 'src/main.c', files, {
+        isSystem: true,
+        headerSearchPaths: ['include'],
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps quoted suffix matching when no search path is declared', () => {
+    const files = new Set(['src/stdio.h', 'include/util.h']);
+    expect(resolveCImportTarget('util.h', 'src/main.c', files, { isSystem: false })).toBe(
+      'include/util.h',
+    );
+    expect(resolveCImportTarget('stdio.h', 'src/main.c', files, { isSystem: true })).toBeNull();
   });
 
   it('same-directory sibling with nested target path', () => {
