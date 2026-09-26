@@ -251,15 +251,6 @@ export interface PipelineOptions {
    */
   workerPoolSize?: number;
   /**
-   * Explicit main-thread heap ceiling in bytes (#3137), threaded from the
-   * CLI `--memory-budget` flag. When set, parse-impl uses this in place of
-   * `v8.getHeapStatistics().heap_size_limit` for the preflight projection
-   * and the mid-loop heap abort (#2649), and degrades the worker pool when
-   * the projected need exceeds it. `undefined` defers to the RAM/cgroup
-   * auto-sizer. Validated upstream (integer MB >= 200).
-   */
-  memoryBudgetBytes?: number;
-  /**
    * Process-detection budget (#3313). Explicit `maxProcesses` replaces the
    * dynamic `symbols / 10` formula; the other three replace compiled defaults.
    * Unset fields keep shipped behavior. `0` is rejected upstream — not unlimited.

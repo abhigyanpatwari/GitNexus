@@ -109,7 +109,7 @@ import {
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
-import { effectiveRamBytes, memoryAutopilotDisabled } from '../utils/effective-ram.js';
+import { heapPressureRemedy, memoryAutopilotDisabled } from '../utils/effective-ram.js';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -175,33 +175,6 @@ export function projectParseHeapNeedBytes(parseableFileCount: number): number {
 export function shouldAbortForHeapPressure(heapUsedBytes: number, heapLimitBytes: number): boolean {
   if (memoryAutopilotDisabled()) return false;
   return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
-}
-
-/**
- * The ONE action a user should take when this repository doesn't fit the
- * current heap (#2649). Users hitting memory limits are already frustrated —
- * a menu of env knobs at that moment is noise. Branch on whether the machine
- * itself has more memory to give: if this process's limit sits well below
- * what the RAM-aware auto-sizer would grant (an inherited NODE_OPTIONS pin or
- * explicit flag), the fix is to drop the pin — gitnexus sizes itself.
- * Otherwise the machine is the ceiling and only scope or hardware helps.
- * Escape hatches (GITNEXUS_MEMORY etc.) stay in the README env table.
- */
-export function heapPressureRemedy(heapLimitBytes: number): string {
-  // Effective RAM honors a real cgroup limit — raw os.totalmem() told users
-  // inside an 8GB-limited container on a 64GB host that "this machine has
-  // more memory available", an advice loop with no exit (#2649 review).
-  const autoCapBytes = effectiveRamBytes() * 0.75;
-  if (heapLimitBytes < autoCapBytes * 0.9) {
-    return (
-      `This machine has more memory available: re-run without the --max-old-space-size ` +
-      `pin (NODE_OPTIONS or node flag) — gitnexus sizes its heap to the machine automatically.`
-    );
-  }
-  return (
-    `This machine is at its memory ceiling: exclude generated or vendored directories ` +
-    `via .gitnexusignore, or analyze on a machine with more memory.`
-  );
 }
 
 /** Max bytes of source content to load per parse cache pack.
@@ -634,37 +607,10 @@ export async function runChunkedParseAndResolve(
   // shrink an incremental re-analyze: `totalParseable` counts every parseable
   // file in the scan, not the changed ones, so a warm run of a large repo still
   // spawns the full requested pool.
-  let effectivePoolSize =
+  const effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0
       ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
-  // Heap ceiling resolution (#3137): an explicit `--memory-budget` degrades
-  // the pool (see the block after the projection below). Placed right after
-  // the pool-size computation so every downstream consumer — the
-  // host-parallelism warning, the sub-batch math, and `createWorkerPool` —
-  // observes the degraded size without a second variable.
-  const memoryBudgetBytes = options?.memoryBudgetBytes;
-  const projectedHeapNeedBytesEarly =
-    memoryBudgetBytes !== undefined ? projectParseHeapNeedBytes(parseableScanned.length) : 0;
-  if (
-    memoryBudgetBytes !== undefined &&
-    projectedHeapNeedBytesEarly > memoryBudgetBytes * PREFLIGHT_WARN_FRACTION
-  ) {
-    const maxFittingWorkers = Math.max(
-      1,
-      Math.floor(
-        (memoryBudgetBytes * PREFLIGHT_WARN_FRACTION) / (projectedHeapNeedBytesEarly / effectivePoolSize),
-      ),
-    );
-    if (maxFittingWorkers < effectivePoolSize) {
-      logger.warn(
-        `Memory budget ${Math.round(memoryBudgetBytes / 1024 / 1024)}MB: projected parse heap need ` +
-          `~${Math.round(projectedHeapNeedBytesEarly / 1024 / 1024)}MB exceeds it at ${effectivePoolSize} workers — ` +
-          `degrading to ${maxFittingWorkers} worker(s) for this run (#3137).`,
-      );
-      effectivePoolSize = maxFittingWorkers;
-    }
-  }
   // Deliberate over-subscription is the operator's call, so this warns rather
   // than caps — silently capping is what the override exists to stop. But an
   // exported `GITNEXUS_WORKER_POOL_SIZE` applies to EVERY analyze in a
@@ -706,12 +652,7 @@ export async function runChunkedParseAndResolve(
   // convert a certain multi-minute GC death spiral into an immediate
   // actionable error (mid-loop guard).
   const projectedHeapNeedBytes = projectParseHeapNeedBytes(parseableScanned.length);
-  // Heap ceiling resolution (#3137): an explicit `--memory-budget` overrides
-  // the auto-sized Node limit for BOTH the preflight projection and the
-  // mid-loop abort probe. Without the flag, behavior is unchanged — the
-  // probe reads `v8.getHeapStatistics()` live, exactly as before.
-  // `memoryBudgetBytes` itself was resolved (and the pool degraded) above.
-  const heapLimitBytes = memoryBudgetBytes ?? v8.getHeapStatistics().heap_size_limit;
+  const heapLimitBytes = v8.getHeapStatistics().heap_size_limit;
   if (projectedHeapNeedBytes > heapLimitBytes * PREFLIGHT_WARN_FRACTION) {
     logger.warn(
       `Large repository: analyzing ${parseableScanned.length} files needs roughly ${Math.round(projectedHeapNeedBytes / 1024 / 1024 / 1024)}GB of memory, ` +

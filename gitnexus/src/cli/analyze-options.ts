@@ -118,10 +118,11 @@ export interface AnalyzeOptions {
   /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
   walCheckpointThreshold?: string;
   /**
-   * `--memory-budget <mb>` (#3137): explicit main-thread heap ceiling in MB
-   * for the parse phase. Overrides the RAM/cgroup auto-sizer; feeds the
-   * existing heap-probe guard (#2649) and drives graceful worker-pool
-   * degradation before the run starts. Positive integer, minimum 200.
+   * `--memory-budget <mb>` (#3137): the main-thread V8 heap limit in MB.
+   * `ensureHeap` applies it through the existing heap respawn, replacing the
+   * RAM-aware auto cap and any `--max-old-space-size` pin, so the #2649
+   * guards read it as the live limit. Parse workers keep their own heap caps.
+   * Integer, minimum 200; CLI-only (not a `.gitnexusrc` key).
    */
   memoryBudget?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */

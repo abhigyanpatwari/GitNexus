@@ -64,8 +64,13 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError, cliWarn } from './cli-message.js';
-import { IntegerOptionError, parseIntegerOption } from './int-option.js';
-import { heapCapMbFor, memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
+import { IntegerOptionError, parseIntegerOption, parseMemoryBudgetMb } from './int-option.js';
+import {
+  HEAP_LIMIT_SOURCE_ENV,
+  heapCapMbFor,
+  memoryAutopilotDisabled,
+  type HeapLimitSource,
+} from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
@@ -553,18 +558,6 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
   return Number.isFinite(mb) && mb > 0 ? mb : null;
 }
 
-/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
- *  if we're currently below that.
- *
- *  Heap-source precedence (#2649):
- *  - an explicit per-invocation `--max-old-space-size` (execArgv) always wins;
- *  - `GITNEXUS_MEMORY=off` declines the memory autopilot entirely;
- *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
- *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
- *    inherited environment default (devcontainers/CI export one for other
- *    tooling), not a deliberate per-run choice: warn and respawn with the
- *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
- *    whatever heap the environment happened to specify. */
 export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
   if (cleanTermination) return 0;
   if (signal === 'SIGINT') return 130;
@@ -572,17 +565,152 @@ export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination
   return 1;
 }
 
+/** Old-space and semi-space flags (MB) that give a child a V8 heap of exactly the budget. */
+export interface BudgetHeapSizing {
+  oldSpaceMb: number;
+  semiSpaceMb: number;
+}
+
+/**
+ * Size the respawn flags so the child's `heap_size_limit` equals the budget
+ * (#3137). V8's limit is old space plus three semi-spaces, and V8 rounds the
+ * semi-space up to a power of two (measured on Node 22.18: semi 10 → 16), so
+ * the semi-space is budget/25 rounded up the same way, capped at the usual
+ * 128MB, and the old space takes the rest: 2000 → 1616 + 3 × 128, 200 → 176 + 3 × 8.
+ */
+export function budgetHeapSizing(budgetMb: number): BudgetHeapSizing {
+  const scaled = Math.max(1, Math.floor(budgetMb / 25));
+  const semiSpaceMb = Math.min(SEMI_SPACE_MB, 2 ** Math.ceil(Math.log2(scaled)));
+  return { oldSpaceMb: budgetMb - 3 * semiSpaceMb, semiSpaceMb };
+}
+
+export interface BudgetHeapInput {
+  budgetMb: number;
+  execArgv: readonly string[];
+  nodeOptions: string;
+  /** The RAM-aware auto cap the budget replaces. */
+  autoCapMb: number;
+  /** `GITNEXUS_MEMORY=off`: names Node's default limit as the one replaced. */
+  autopilotDisabled: boolean;
+  /** Inherited `GITNEXUS_HEAP_LIMIT_SOURCE`; `budget` marks a budget-respawned child. */
+  inheritedSource: string | undefined;
+}
+
+export interface BudgetHeapDecision {
+  respawn: boolean;
+  sizing: BudgetHeapSizing;
+  /** At most one warning line for the operator; absent in a budget-respawned child. */
+  warning?: string;
+}
+
+/**
+ * The `--memory-budget` heap decision (#3137), kept pure so every branch is
+ * testable without a process. The effective requested old space is the last
+ * `--max-old-space-size` in execArgv, else in NODE_OPTIONS (every spelling
+ * `parseMaxOldSpaceMb` accepts). A process whose pin already equals the
+ * budget, or the old space the budget respawn sets, keeps running; anything
+ * else respawns once at the budget. The budget's own flags follow the user's
+ * in the child, so the child always resolves to "at the budget" (AE8).
+ */
+export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
+  const { budgetMb, autoCapMb } = input;
+  const sizing = budgetHeapSizing(budgetMb);
+  const pinnedMb =
+    parseMaxOldSpaceMb(input.execArgv.join(' ')) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const atBudget = pinnedMb === budgetMb || pinnedMb === sizing.oldSpaceMb;
+  // The respawning parent already logged; the child stays quiet.
+  if (atBudget && input.inheritedSource === 'budget') return { respawn: false, sizing };
+  const swapWarning =
+    budgetMb > autoCapMb
+      ? `  --memory-budget ${budgetMb}MB is above the ${autoCapMb}MB this machine's RAM supports — analyze may swap-thrash.\n`
+      : '';
+  if (atBudget) return { respawn: false, sizing, warning: swapWarning || undefined };
+  const replaced =
+    pinnedMb !== null
+      ? `the ${pinnedMb}MB --max-old-space-size heap limit`
+      : input.autopilotDisabled
+        ? `Node's default heap limit`
+        : `the auto-sized ${autoCapMb}MB heap cap`;
+  return {
+    respawn: true,
+    sizing,
+    warning:
+      `  --memory-budget replaces ${replaced}: re-running analyze with a ${budgetMb}MB heap.\n` +
+      swapWarning,
+  };
+}
+
+/** Re-exec the process with the RAM-aware auto heap cap + larger semi-space/stack
+ *  if we're currently below that, or at the `--memory-budget` heap (#3137).
+ *
+ *  Heap-source precedence (#2649, #3137):
+ *  - an explicit `--memory-budget` wins over everything, including
+ *    `GITNEXUS_MEMORY=off` and any `--max-old-space-size` pin;
+ *  - an explicit per-invocation `--max-old-space-size` (execArgv) wins next;
+ *  - `GITNEXUS_MEMORY=off` declines the memory autopilot entirely;
+ *  - an ambient NODE_OPTIONS heap >= the auto cap is honored as-is;
+ *  - an ambient NODE_OPTIONS heap BELOW the auto cap is treated as an
+ *    inherited environment default (devcontainers/CI export one for other
+ *    tooling), not a deliberate per-run choice: warn and respawn with the
+ *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
+ *    whatever heap the environment happened to specify.
+ *
+ *  Every path that decides the limit records it in `GITNEXUS_HEAP_LIMIT_SOURCE`
+ *  (this process when kept, the child env when respawned) so the parse
+ *  phase's remedy text advises by source. */
 export async function ensureHeap(
-  options: { cleanForwardedTermination?: boolean } = {},
+  options: { cleanForwardedTermination?: boolean; memoryBudget?: string } = {},
 ): Promise<boolean> {
+  const nodeOpts = process.env.NODE_OPTIONS || '';
+  // The budget is checked BEFORE the GITNEXUS_MEMORY=off return: an explicit
+  // flag is a deliberate per-run choice, which the opt-out does not cover.
+  if (options.memoryBudget !== undefined) {
+    let budgetMb: number;
+    try {
+      budgetMb = parseMemoryBudgetMb(options.memoryBudget);
+    } catch (error) {
+      // The CLI's preAction hook rejects bad values first; this covers
+      // programmatic callers.
+      if (!(error instanceof IntegerOptionError)) throw error;
+      cliError(`  ${error.message}\n`);
+      process.exitCode = 1;
+      return true;
+    }
+    const decision = resolveBudgetHeap({
+      budgetMb,
+      execArgv: process.execArgv,
+      nodeOptions: nodeOpts,
+      autoCapMb: RESPAWN_HEAP_MB,
+      autopilotDisabled: memoryAutopilotDisabled(),
+      inheritedSource: process.env[HEAP_LIMIT_SOURCE_ENV],
+    });
+    if (decision.warning) cliWarn(decision.warning);
+    if (!decision.respawn) {
+      process.env[HEAP_LIMIT_SOURCE_ENV] = 'budget';
+      return false;
+    }
+    const { oldSpaceMb, semiSpaceMb } = decision.sizing;
+    return respawnWithHeap(
+      `--max-old-space-size=${oldSpaceMb}`,
+      `--max-semi-space-size=${semiSpaceMb}`,
+      'budget',
+      `  Analysis likely ran out of memory (heap limit set to ${budgetMb}MB by --memory-budget).\n` +
+        `  This repository's working set exceeds the budget. Raise it, or omit --memory-budget\n` +
+        `  to use the auto-sized cap (a budget above physical RAM causes swap-thrash — use with care):\n` +
+        `    gitnexus analyze --memory-budget <MB> [your-args]\n` +
+        `  If this persists, it may be a native crash unrelated to heap size.\n`,
+      nodeOpts,
+      options,
+    );
+  }
+
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
   // (test harnesses, scripts, supervisors that track a single PID) rely on
   // a quiet, single-process run.
   if (memoryAutopilotDisabled()) return false;
-  const nodeOpts = process.env.NODE_OPTIONS || '';
-  if (process.execArgv.some((a) => a.startsWith('--max-old-space-size'))) return false;
+  if (parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null) return false;
 
   const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
   if (ambientHeapMb !== null) {
@@ -593,12 +721,39 @@ export async function ensureHeap(
     );
   } else {
     const v8Heap = v8.getHeapStatistics().heap_size_limit;
-    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) return false;
+    if (v8Heap >= HEAP_MB * 1024 * 1024 * 0.9) {
+      process.env[HEAP_LIMIT_SOURCE_ENV] = 'auto';
+      return false;
+    }
   }
 
+  return respawnWithHeap(
+    HEAP_FLAG,
+    SEMI_FLAG,
+    'auto',
+    `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
+      `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
+      `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
+      `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
+      `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
+      `  If this persists, it may be a native crash unrelated to heap size.\n`,
+    nodeOpts,
+    options,
+  );
+}
+
+/** Run the analyze child with the given heap flags and map its exit onto this process. */
+async function respawnWithHeap(
+  heapFlag: string,
+  semiFlag: string,
+  source: HeapLimitSource,
+  oomGuidance: string,
+  nodeOpts: string,
+  options: { cleanForwardedTermination?: boolean },
+): Promise<boolean> {
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
-  const cliFlags = [HEAP_FLAG, SEMI_FLAG];
+  const cliFlags = [heapFlag, semiFlag];
   if (!nodeOpts.includes('--stack-size')) cliFlags.push(STACK_FLAG);
 
   // Preserve the parent's node flags (execArgv) — dropping them breaks any
@@ -612,7 +767,8 @@ export async function ensureHeap(
   const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
   const childEnv = {
     ...process.env,
-    NODE_OPTIONS: `${nodeOpts} ${HEAP_FLAG} ${SEMI_FLAG}`.trim(),
+    NODE_OPTIONS: `${nodeOpts} ${heapFlag} ${semiFlag}`.trim(),
+    [HEAP_LIMIT_SOURCE_ENV]: source,
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
@@ -625,15 +781,7 @@ export async function ensureHeap(
   }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
-      cliError(
-        `  Analysis likely ran out of memory (heap cap auto-sized to ${RESPAWN_HEAP_MB}MB ≈ 0.75x RAM).\n` +
-          `  This repository's working set exceeds available RAM. Use a machine with more RAM,\n` +
-          `  or override the cap (a cap above physical RAM causes swap-thrash — use with care):\n` +
-          `    NODE_OPTIONS="--max-old-space-size=<MB>" gitnexus analyze [your-args]\n` +
-          `    (Windows: set NODE_OPTIONS=--max-old-space-size=<MB> && gitnexus analyze [your-args])\n` +
-          `  If this persists, it may be a native crash unrelated to heap size.\n`,
-        { recoveryHint: 'heap-oom-respawn' },
-      );
+      cliError(oomGuidance, { recoveryHint: 'heap-oom-respawn' });
     } else if (childProcessLikelyNativeAbort(childExit)) {
       cliError(
         `  Analysis aborted in a native worker or native binding path.\n` +
@@ -729,7 +877,7 @@ export const analyzeCommand = async (
   options?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ) => {
-  if (await ensureHeap()) return;
+  if (await ensureHeap({ memoryBudget: options?.memoryBudget })) return;
   forceHeapOOMForTestIfEnabled();
 
   // Install fatal handlers immediately after re-exec resolution so any
@@ -953,28 +1101,6 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-  }
-
-  // `--memory-budget` (#3137): explicit main-thread heap ceiling in MB.
-  // Validated here (fail before bar.start(), matching the --workers pattern)
-  // and threaded into the pipeline as bytes; parse-impl uses it in place of
-  // the RAM/cgroup auto-sized limit and degrades the worker pool under
-  // pressure instead of running into the mid-loop heap abort.
-  const MIN_MEMORY_BUDGET_MB = 200;
-  let memoryBudgetBytes: number | undefined;
-  if (options.memoryBudget !== undefined) {
-    const parsedBudget = Number(options.memoryBudget);
-    if (!Number.isInteger(parsedBudget) || parsedBudget < MIN_MEMORY_BUDGET_MB) {
-      cliError(
-        `  --memory-budget must be an integer >= ${MIN_MEMORY_BUDGET_MB} (MB). ` +
-          `Below ~200 MB even a single parse worker cannot hold the ` +
-          `chunk + graph-write working set. Omit the flag to keep the ` +
-          `RAM/cgroup auto-sizer.\n`,
-      );
-      process.exitCode = 1;
-      return;
-    }
-    memoryBudgetBytes = parsedBudget * 1024 * 1024;
   }
 
   const processDetectionFromFlags = parseProcessDetectionBudgetStrings(
@@ -1430,9 +1556,6 @@ const analyzeCommandImpl = async (
       // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
       // env / auto-formula fallback inside the pipeline.
       workerPoolSize,
-      // Heap ceiling override from --memory-budget (#3137). `undefined`
-      // defers to the RAM/cgroup auto-sizer in the pipeline.
-      memoryBudgetBytes,
       maxProcesses: processDetectionFromFlags.maxProcesses,
       maxProcessBranching: processDetectionFromFlags.maxProcessBranching,
       maxProcessTraceDepth: processDetectionFromFlags.maxProcessTraceDepth,

@@ -9,10 +9,10 @@ vi.mock('os', async () => {
 });
 
 import {
-  heapPressureRemedy,
   projectParseHeapNeedBytes,
   shouldAbortForHeapPressure,
 } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import { heapPressureRemedy } from '../../src/core/ingestion/utils/effective-ram.js';
 
 const GB = 1024 * 1024 * 1024;
 
@@ -27,11 +27,14 @@ const setConstrainedMemory = (value: number): (() => void) => {
 
 describe('#2649 parse-phase heap guardrails', () => {
   let initialGuard: string | undefined;
+  let initialSource: string | undefined;
   let restoreConstrained: (() => void) | undefined;
 
   beforeEach(() => {
     initialGuard = process.env.GITNEXUS_MEMORY;
+    initialSource = process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
     delete process.env.GITNEXUS_MEMORY;
+    delete process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
     // Unconstrained by default so the mocked 32GB totalmem governs.
     restoreConstrained = setConstrainedMemory(0);
   });
@@ -39,6 +42,8 @@ describe('#2649 parse-phase heap guardrails', () => {
   afterEach(() => {
     if (initialGuard === undefined) delete process.env.GITNEXUS_MEMORY;
     else process.env.GITNEXUS_MEMORY = initialGuard;
+    if (initialSource === undefined) delete process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
+    else process.env.GITNEXUS_HEAP_LIMIT_SOURCE = initialSource;
     restoreConstrained?.();
     restoreConstrained = undefined;
   });
@@ -83,5 +88,22 @@ describe('#2649 parse-phase heap guardrails', () => {
     restoreConstrained?.();
     restoreConstrained = setConstrainedMemory(8 * GB);
     expect(heapPressureRemedy(6.5 * GB)).toContain('.gitnexusignore');
+  });
+
+  it('a --memory-budget heap is never told to drop a --max-old-space-size pin (#3137)', () => {
+    // 4GB budget on a 32GB machine: the budget, not a pin, set the limit.
+    process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
+    const remedy = heapPressureRemedy(4 * GB);
+    expect({
+      mentionsPin: remedy.includes('--max-old-space-size'),
+      mentionsBudgetFlag: remedy.includes('--memory-budget'),
+    }).toEqual({ mentionsPin: false, mentionsBudgetFlag: true });
+  });
+
+  it('a --memory-budget heap at the machine ceiling gets the scope-or-hardware advice', () => {
+    process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
+    const budgetRemedy = heapPressureRemedy(23 * GB);
+    delete process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
+    expect(budgetRemedy).toBe(heapPressureRemedy(23 * GB));
   });
 });

@@ -1,137 +1,129 @@
+/**
+ * `--memory-budget` (#3137) at its two real boundaries: the commander entry,
+ * which rejects a bad value before any heap work, and a real child process
+ * launched with the budget's heap flags. The respawn decision itself is
+ * covered through `ensureHeap` in `analyze-heap-respawn.test.ts`.
+ */
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const runFullAnalysisMock = vi.fn();
+const ensureHeapMock = vi.fn(async () => true);
+const analyzeOrWatchMock = vi.fn(async () => undefined);
 
-vi.mock('../../src/core/run-analyze.js', () => ({
-  runFullAnalysis: runFullAnalysisMock,
+vi.mock('../../src/cli/analyze.js', () => ({
+  ensureHeap: ensureHeapMock,
+  analyzeOrWatchCommandWithRunnerIdentity: analyzeOrWatchMock,
 }));
 
-vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
-  closeLbug: vi.fn(async () => undefined),
-  closeLbugBeforeExit: vi.fn(async () => undefined),
-  isLbugReady: vi.fn(() => false),
+vi.mock('../../src/cli/update-notice.js', () => ({
+  runProcessCliUpdateNotice: vi.fn(),
 }));
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
-  getGlobalRegistryPath: vi.fn(() => 'registry.json'),
-  RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
-  AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},
-  assertAnalysisFinalized: vi.fn(async () => undefined),
-}));
+class ExitCalled extends Error {
+  constructor(readonly code: number | string | null | undefined) {
+    super(`process.exit(${String(code)})`);
+  }
+}
 
-vi.mock('../../src/storage/git.js', () => ({
-  getGitRoot: vi.fn(() => '/repo'),
-  hasGitDir: vi.fn(() => true),
-}));
+describe('--memory-budget validation at the CLI entry (AE7)', () => {
+  const initialArgv = process.argv;
+  let stderrChunks: string[];
 
-vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
-  getMaxFileSizeBannerMessage: vi.fn(() => null),
-}));
-
-describe('analyzeCommand --memory-budget (#3137)', () => {
   beforeEach(() => {
     vi.resetModules();
-    runFullAnalysisMock.mockReset();
-    process.exitCode = undefined;
+    ensureHeapMock.mockClear();
+    analyzeOrWatchMock.mockClear();
+    stderrChunks = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process, 'exit').mockImplementation((code?: number | string | null) => {
+      throw new ExitCalled(code);
+    });
   });
 
   afterEach(() => {
-    process.exitCode = undefined;
+    process.argv = initialArgv;
+    vi.restoreAllMocks();
   });
 
-  it.each(['abc', '-5', '1.5', 'Infinity', 'NaN', '0', '199'])(
-    'rejects invalid --memory-budget value %s before analysis starts',
-    async (memoryBudget) => {
-      const { _captureLogger } = await import('../../src/core/logger.js');
-      const cap = _captureLogger();
-      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+  const cases = ['abc', '0', '199', '1.5', '-5'].flatMap((value) => [
+    { label: `analyze ${value}`, argv: ['analyze', '--memory-budget', value] },
+    { label: `analyze --watch ${value}`, argv: ['analyze', '--watch', '--memory-budget', value] },
+  ]);
 
-      await analyzeCommand(undefined, { memoryBudget });
+  it.each(cases)('$label exits 1 naming the flag and its minimum', async ({ argv }) => {
+    process.argv = [process.execPath, 'gitnexus', ...argv];
 
-      expect(process.exitCode).toBe(1);
-      expect(
-        cap
-          .records()
-          .some((r) => String(r.msg ?? '').startsWith('  --memory-budget must be an integer >= 200')),
-      ).toBe(true);
-      expect(runFullAnalysisMock).not.toHaveBeenCalled();
-      cap.restore();
-    },
-  );
+    await expect(import('../../src/cli/index.js')).rejects.toMatchObject({ code: 1 });
 
-  it('threads --memory-budget through runFullAnalysis options as byte-scaled memoryBudgetBytes', async () => {
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    runFullAnalysisMock.mockResolvedValue({
-      repoName: 'repo',
-      repoPath: '/repo',
-      stats: {},
-      alreadyUpToDate: true,
-    });
-
-    await analyzeCommand(undefined, { memoryBudget: '4096' });
-
-    expect(runFullAnalysisMock).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ memoryBudgetBytes: 4096 * 1024 * 1024 }),
-      expect.any(Object),
-    );
-  });
-
-  it('omitting --memory-budget leaves memoryBudgetBytes undefined (auto-sizer path)', async () => {
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    runFullAnalysisMock.mockResolvedValue({
-      repoName: 'repo',
-      repoPath: '/repo',
-      stats: {},
-      alreadyUpToDate: true,
-    });
-
-    await analyzeCommand(undefined, {});
-
-    expect(runFullAnalysisMock).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ memoryBudgetBytes: undefined }),
-      expect.any(Object),
-    );
+    const stderr = stderrChunks.join('');
+    expect({
+      namesFlag: stderr.includes('--memory-budget'),
+      namesMinimum: stderr.includes('200'),
+      ensureHeapCalls: ensureHeapMock.mock.calls.length,
+      actionCalls: analyzeOrWatchMock.mock.calls.length,
+    }).toEqual({ namesFlag: true, namesMinimum: true, ensureHeapCalls: 0, actionCalls: 0 });
   });
 });
 
-describe('parse-impl heap-limit resolution under --memory-budget (#3137)', () => {
-  // projectParseHeapNeedBytes = files × 75 nodes × 1600 B/node — the shipped
-  // projection from #2649. These tests pin the budget's two observable
-  // effects: the preflight warning threshold and the abort probe ceiling.
-  // The vitest config ships GITNEXUS_MEMORY=off globally (respawn tests
-  // delete it in their own setups); the abort probe under test is the
-  // autopilot's enforcement arm, so re-enable it here.
-  const ORIGINAL_MEMORY = process.env.GITNEXUS_MEMORY;
-
-  beforeEach(() => {
-    process.env.GITNEXUS_MEMORY = 'on';
-  });
-
-  afterEach(() => {
-    if (ORIGINAL_MEMORY === undefined) {
-      delete process.env.GITNEXUS_MEMORY;
-    } else {
-      process.env.GITNEXUS_MEMORY = ORIGINAL_MEMORY;
+describe('--memory-budget is CLI-only', () => {
+  it('a .gitnexusrc memoryBudget key is rejected as an unknown key', async () => {
+    const { GitNexusRcError, loadAnalyzeConfig } = await import('../../src/cli/analyze-config.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-budget-rc-'));
+    try {
+      fs.writeFileSync(path.join(dir, '.gitnexusrc'), JSON.stringify({ memoryBudget: 2000 }));
+      let thrown: unknown;
+      try {
+        loadAnalyzeConfig(dir);
+      } catch (error) {
+        thrown = error;
+      }
+      expect({
+        isRcError: thrown instanceof GitNexusRcError,
+        namesKey: String(thrown).includes('memoryBudget'),
+      }).toEqual({ isRcError: true, namesKey: true });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+});
 
-  it('projects heap need at the documented per-file rate', async () => {
-    const { projectParseHeapNeedBytes } = await import(
-      '../../src/core/ingestion/pipeline-phases/parse-impl.js'
+describe('--memory-budget real-child smoke (256MB)', () => {
+  it('a child launched with the budget heap flags reports a 256MB limit and would not respawn again', async () => {
+    // Imported for real: this block needs the production sizing, not the mock.
+    const { budgetHeapSizing, resolveBudgetHeap } = await vi.importActual<
+      typeof import('../../src/cli/analyze.js')
+    >('../../src/cli/analyze.js');
+    const { oldSpaceMb, semiSpaceMb } = budgetHeapSizing(256);
+    const out = execFileSync(
+      process.execPath,
+      [
+        `--max-old-space-size=${oldSpaceMb}`,
+        `--max-semi-space-size=${semiSpaceMb}`,
+        '-e',
+        'process.stdout.write(JSON.stringify({ limit: require("v8").getHeapStatistics().heap_size_limit, execArgv: process.execArgv }))',
+      ],
+      { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } },
     );
-    // 1000 files → 75k nodes → 120 MB projected.
-    expect(projectParseHeapNeedBytes(1000)).toBe(1000 * 75 * 1600);
-  });
+    const child = JSON.parse(out) as { limit: number; execArgv: string[] };
+    const decision = resolveBudgetHeap({
+      budgetMb: 256,
+      execArgv: child.execArgv,
+      nodeOptions: '',
+      autoCapMb: 13107,
+      autopilotDisabled: false,
+      inheritedSource: 'budget',
+    });
 
-  it('abort probe honors the 0.92 fraction against the passed limit', async () => {
-    const { shouldAbortForHeapPressure } = await import(
-      '../../src/core/ingestion/pipeline-phases/parse-impl.js'
-    );
-    const budget = 200 * 1024 * 1024;
-    expect(shouldAbortForHeapPressure(budget * 0.91, budget)).toBe(false);
-    expect(shouldAbortForHeapPressure(budget * 0.93, budget)).toBe(true);
+    expect({ limitMb: child.limit / (1024 * 1024), respawn: decision.respawn }).toEqual({
+      limitMb: 256,
+      respawn: false,
+    });
   });
 });

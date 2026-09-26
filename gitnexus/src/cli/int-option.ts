@@ -51,3 +51,15 @@ export function parseIntegerOption(
   }
   return parsed;
 }
+
+/** Smallest `--memory-budget` (MB): below ~200 MB even one parse worker cannot hold a chunk's working set. */
+export const MEMORY_BUDGET_MIN_MB = 200;
+
+/**
+ * Parse `--memory-budget <mb>` (#3137). Shared by the commander `preAction`
+ * hook, which rejects a bad value before any work, and `ensureHeap`, which
+ * sizes the respawned heap from it.
+ */
+export function parseMemoryBudgetMb(value: string): number {
+  return parseIntegerOption(value, '--memory-budget', { minimum: MEMORY_BUDGET_MIN_MB });
+}
