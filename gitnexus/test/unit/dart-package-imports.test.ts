@@ -395,6 +395,13 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     );
   });
 
+  it('fails closed before one directory listing is unbounded', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app', 'extra.txt': 'x' });
+    await expect(loadDartPackageConfig(root, { directoryEntryLimit: 1 })).rejects.toThrow(
+      'Dart pubspec discovery failed (directory-entries)',
+    );
+  });
+
   it('fails closed before a deep chain holds one descriptor per level', async () => {
     const root = await fixture({ 'a/b/pubspec.yaml': 'name: data' });
     await expect(loadDartPackageConfig(root, { directoryDepthLimit: 2 })).rejects.toThrow(

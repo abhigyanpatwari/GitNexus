@@ -1,5 +1,5 @@
 import type { BigIntStats, Dirent } from 'node:fs';
-import { constants, lstat, open, readdir, type FileHandle } from 'node:fs/promises';
+import { constants, lstat, open, opendir, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
 import { createWatchIgnorePredicate } from '../../../../config/ignore-service.js';
@@ -21,11 +21,19 @@ const DART_PUBSPEC_DIRECTORY_LIMIT = 20_000;
  */
 const DART_PUBSPEC_OPEN_DIRECTORY_LIMIT = 64;
 
+/**
+ * Names read from one directory. `readdir` would retain every entry before the
+ * visit budget can run, so the walk counts names as it reads and stops there.
+ */
+const DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT = 100_000;
+
 export interface DartPackageConfigOptions {
   /** Test seam. Production calls omit it and use the module directory limit. */
   readonly directoryLimit?: number;
   /** Test seam. Production calls omit it and use the open-directory cap. */
   readonly directoryDepthLimit?: number;
+  /** Test seam. Production calls omit it and use the per-directory entry cap. */
+  readonly directoryEntryLimit?: number;
   /**
    * Test seam. Production calls omit it. Invoked after the directory inode
    * is listed and before its entries are opened.
@@ -245,12 +253,28 @@ async function openChildFile(
   throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
 }
 
-async function listOpenedDirectory(handle: FileHandle): Promise<Dirent[]> {
+async function listOpenedDirectory(handle: FileHandle, entryLimit: number): Promise<Dirent[]> {
   const listing = descriptorDirectoryPath(handle.fd);
   if (listing === null) {
     throw Object.assign(new Error('no descriptor listing'), { code: 'ENOTSUP' });
   }
-  return await readdir(listing, { withFileTypes: true });
+  const dir = await opendir(listing);
+  const entries: Dirent[] = [];
+  try {
+    let count = 0;
+    while (true) {
+      const entry = await dir.read();
+      if (entry === null) break;
+      count += 1;
+      if (count > entryLimit) {
+        throw Object.assign(new Error('directory entry limit'), { code: 'E2BIG' });
+      }
+      entries.push(entry);
+    }
+  } finally {
+    await dir.close().catch(() => undefined);
+  }
+  return entries;
 }
 
 /**
@@ -261,7 +285,7 @@ async function listOpenedDirectory(handle: FileHandle): Promise<Dirent[]> {
 export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
   const opened = await openVerifiedDirectory(directory);
   try {
-    return await listOpenedDirectory(opened.handle);
+    return await listOpenedDirectory(opened.handle, DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT);
   } finally {
     await opened.handle.close();
   }
@@ -297,6 +321,7 @@ export async function loadDartPackageConfig(
   const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
   const directoryLimit = options?.directoryLimit ?? DART_PUBSPEC_DIRECTORY_LIMIT;
   const directoryDepthLimit = options?.directoryDepthLimit ?? DART_PUBSPEC_OPEN_DIRECTORY_LIMIT;
+  const directoryEntryLimit = options?.directoryEntryLimit ?? DART_PUBSPEC_DIRECTORY_ENTRY_LIMIT;
   const ambiguous = new Set<string>();
   const stack: WalkFrame[] = [];
   let visited = 0;
@@ -309,9 +334,11 @@ export async function loadDartPackageConfig(
   const fillFrame = async (frame: WalkFrame): Promise<void> => {
     if (++visited > directoryLimit) return incomplete('directory-limit', frame.relative || '.');
     try {
-      frame.entries = await listOpenedDirectory(frame.handle);
-    } catch {
-      return incomplete('read-directory', frame.relative || '.');
+      frame.entries = await listOpenedDirectory(frame.handle, directoryEntryLimit);
+    } catch (error) {
+      const reason =
+        (error as NodeJS.ErrnoException).code === 'E2BIG' ? 'directory-entries' : 'read-directory';
+      return incomplete(reason, frame.relative || '.');
     }
     if (options?.beforeEntryOpen) await options.beforeEntryOpen(frame.relative);
   };
