@@ -31,7 +31,6 @@ import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
-import { DART_PACKAGE_IDENTITY_REASON } from '../../core/ingestion/languages/dart/package-dependencies.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -148,6 +147,7 @@ import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resoluti
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
+  DART_PACKAGE_IDENTITY_REASON,
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
 } from '../../core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';

@@ -1,14 +1,14 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../scope-resolution/graph-bridge/imports-to-edges.js';
 import type { DartPackageConfig } from './package-config.js';
 import { dartPackageImportName } from './package-uri.js';
 
+export { DART_PACKAGE_IDENTITY_REASON };
+
 const MAX_DEPENDENCIES = 100_000;
 const MAX_TRAVERSALS = 1_000_000;
-
-/** Incremental metadata. Not an initialization edge — excluded from cycle checks. */
-export const DART_PACKAGE_IDENTITY_REASON = 'dart-scope: package identity dependency';
 
 /** Package identity is an input dependency, including unresolved/ambiguous imports. */
 export function emitDartPackageDependencies(
