@@ -394,6 +394,20 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     );
   });
 
+  it('fails closed before a deep chain holds one descriptor per level', async () => {
+    const root = await fixture({ 'a/b/pubspec.yaml': 'name: data' });
+    await expect(loadDartPackageConfig(root, { directoryDepthLimit: 2 })).rejects.toThrow(
+      'Dart pubspec discovery failed (directory-depth): a/b',
+    );
+  });
+
+  it('still reads a manifest when the open-directory cap is exactly the nesting', async () => {
+    const root = await fixture({ 'a/pubspec.yaml': 'name: data' });
+    expect((await loadDartPackageConfig(root, { directoryDepthLimit: 2 })).packages).toEqual(
+      new Map([['data', 'a/lib']]),
+    );
+  });
+
   it('fails closed when ignore rules cannot be read', async () => {
     const root = await fixture({ 'pubspec.yaml': 'name: app' });
     await mkdir(path.join(root, '.gitignore'));

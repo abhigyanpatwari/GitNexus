@@ -14,9 +14,18 @@ export interface DartPackageConfig {
 /** An incomplete walk cannot prove package names are unique. */
 const DART_PUBSPEC_DIRECTORY_LIMIT = 20_000;
 
+/**
+ * Directory descriptors one walk may hold at once. The visit budget is far
+ * above a process file-descriptor limit, so a deep chain is refused before
+ * the next open instead of failing later with EMFILE.
+ */
+const DART_PUBSPEC_OPEN_DIRECTORY_LIMIT = 64;
+
 export interface DartPackageConfigOptions {
   /** Test seam. Production calls omit it and use the module directory limit. */
   readonly directoryLimit?: number;
+  /** Test seam. Production calls omit it and use the open-directory cap. */
+  readonly directoryDepthLimit?: number;
   /**
    * Test seam. Production calls omit it. Invoked after the directory inode
    * is listed and before its entries are opened.
@@ -84,10 +93,6 @@ function directoryIdentity(stat: BigIntStats): string {
   return `${stat.dev}:${stat.ino}:${stat.mode}`;
 }
 
-function fileIdentity(stat: BigIntStats): string {
-  return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}`;
-}
-
 /**
  * Path that lists the directory inode already open on `fd`.
  * Linux uses `/proc/self/fd/N` and macOS uses `/dev/fd/N`.
@@ -145,11 +150,7 @@ interface WalkFrame {
   next: number;
 }
 
-/**
- * macOS has no descriptor-relative child lookup. Prove the pinned parent chain
- * still names those inodes, then accept the opened file only when it is the
- * same inode the lexical lstat saw. A swap between the two checks fails the walk.
- */
+/** Re-stat each pinned directory and its path. A replaced inode or a symlink fails the walk. */
 async function assertPinnedChain(frames: readonly WalkFrame[]): Promise<void> {
   for (const frame of frames) {
     const pinned = await frame.handle.stat({ bigint: true });
@@ -172,20 +173,18 @@ async function assertPinnedChain(frames: readonly WalkFrame[]): Promise<void> {
   }
 }
 
+/**
+ * macOS has no descriptor-relative child lookup. Re-check the pinned parents,
+ * open the child with O_NOFOLLOW, then re-check the parents. The opened
+ * descriptor is the only child metadata consulted.
+ */
 async function openLexicalDirectory(
   frames: readonly WalkFrame[],
   lexicalPath: string,
 ): Promise<OpenedDirectory> {
   await assertPinnedChain(frames);
-  const lexical = await lstat(lexicalPath, { bigint: true });
-  if (lexical.isSymbolicLink() || !lexical.isDirectory()) {
-    throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
-  }
   const opened = await openVerifiedDirectory(lexicalPath);
   try {
-    if (opened.identity !== directoryIdentity(lexical)) {
-      throw Object.assign(new Error('opened directory inode changed'), { code: 'ELOOP' });
-    }
     await assertPinnedChain(frames);
     return opened;
   } catch (error) {
@@ -199,15 +198,11 @@ async function openLexicalFile(
   lexicalPath: string,
 ): Promise<FileHandle> {
   await assertPinnedChain(frames);
-  const lexical = await lstat(lexicalPath, { bigint: true });
-  if (lexical.isSymbolicLink() || !lexical.isFile()) {
-    throw Object.assign(new Error('not a file'), { code: 'ELOOP' });
-  }
   const handle = await open(lexicalPath, fileOpenFlags());
   try {
     const opened = await handle.stat({ bigint: true });
-    if (!opened.isFile() || fileIdentity(opened) !== fileIdentity(lexical)) {
-      throw Object.assign(new Error('opened file inode changed'), { code: 'ELOOP' });
+    if (!opened.isFile()) {
+      throw Object.assign(new Error('not a file'), { code: 'ELOOP' });
     }
     await assertPinnedChain(frames);
     return handle;
@@ -292,6 +287,7 @@ export async function loadDartPackageConfig(
   const manifestsByName = new Map<string, string[]>();
   const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
   const directoryLimit = options?.directoryLimit ?? DART_PUBSPEC_DIRECTORY_LIMIT;
+  const directoryDepthLimit = options?.directoryDepthLimit ?? DART_PUBSPEC_OPEN_DIRECTORY_LIMIT;
   const ambiguous = new Set<string>();
   const stack: WalkFrame[] = [];
   let visited = 0;
@@ -346,6 +342,9 @@ export async function loadDartPackageConfig(
       const entryPath = path.join(repoPath, childRelative);
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || isIgnored(entryPath, true)) continue;
+        if (stack.length >= directoryDepthLimit) {
+          return incomplete('directory-depth', childRelative);
+        }
         let childOpened: OpenedDirectory;
         try {
           childOpened = await openChildDirectory(stack, frame.handle.fd, entry.name, entryPath);
