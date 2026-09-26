@@ -318,7 +318,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     {
       files: ['lib/http.dart', 'lib/models.dart', 'lib/main.dart'],
       fromFile: 'lib/main.dart',
-      resolutionConfig: undefined,
+      resolutionConfig: { packages: new Map([['app', 'lib']]) },
       external: 'package:http/http.dart',
       decoy: 'lib/http.dart',
       reachesDecoy: 'package:app/http.dart',
@@ -416,7 +416,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  * TypeScript one, then deleting its line here.
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
-  [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
 ]);

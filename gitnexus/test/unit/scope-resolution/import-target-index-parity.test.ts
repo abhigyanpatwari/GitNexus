@@ -16,8 +16,8 @@
  *   - C#'s `resolveDirectMatch` lets a whole-path match win over a suffix match
  *     found EARLIER in iteration order, while `resolveByProgressiveStripping`
  *     takes whichever comes first;
- *   - Dart tries `lib/<rel>` fully before bare `<rel>`, and compares raw paths
- *     (no backslash normalization) on both legs.
+ *   - Dart's relative suffix fallback compares raw workspace paths. Package
+ *     identity changed in #2963 and is covered by separate boundary tests.
  *
  * So this file keeps copies of the pre-change implementations and asserts the
  * new ones agree with them on a deterministic corpus built to force exactly
@@ -396,10 +396,12 @@ const GO_TARGETS = [
 const DART_TARGETS = [
   '',
   'dart:core',
-  'package:app/models.dart',
-  'package:app/src/models.dart',
-  'package:app',
-  'package:other/lib/util.dart',
+  // Package identity intentionally changed in #2963; legacy parity applies
+  // only to relative imports. Package boundaries have dedicated regressions.
+  '../../lib/models.dart',
+  '../../lib/src/models.dart',
+  '../../models.dart',
+  '../util.dart',
   'models.dart',
   './models.dart',
   '../models.dart',
@@ -621,32 +623,28 @@ describe('import-target index hoist — output parity with the pre-change scans'
     },
     {
       lang: 'dart',
-      why: '`lib/<rel>` beats bare `<rel>` even when the bare hit comes FIRST in Set order',
+      why: 'relative suffix lookup keeps the importer directory prefix',
       files: ['a/models.dart', 'z/lib/models.dart'],
-      target: 'package:app/models.dart',
+      target: 'models.dart',
     },
     {
       lang: 'dart',
-      why: 'bare `<rel>` is reached only after `lib/<rel>` misses entirely',
+      why: 'relative root lookup reaches a nested suffix',
       files: ['a/models.dart'],
-      target: 'package:app/models.dart',
+      target: 'models.dart',
+      fromFile: 'main.dart',
     },
     {
       lang: 'dart',
       why: 'paths are matched RAW — a backslash path is not normalized into a hit',
       files: ['win\\dir\\thing.dart'],
-      target: 'package:app/dir/thing.dart',
+      target: 'dir/thing.dart',
     },
     {
-      // The negative case above pins the guard NEXT DOOR to the one it names:
-      // the basename bucket lookup misses before the raw comparison is ever
-      // consulted, so normalizing only the bucket key, or only the comparison,
-      // still yields null and still matches. This positive twin puts the
-      // backslashes in the TARGET so a hit depends on both halves staying raw.
       lang: 'dart',
-      why: 'a backslash TARGET matches only because neither the bucket key nor the comparison normalizes',
-      files: ['dir\\thing.dart'],
-      target: 'package:app/dir\\thing.dart',
+      why: 'relative targets normalize backslashes before exact membership lookup',
+      files: ['lib/dir/thing.dart'],
+      target: 'dir\\thing.dart',
     },
     {
       lang: 'dart',
@@ -745,7 +743,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
         if (csharp(t, cs) !== null) hits.csharp++;
       }
     }
-    // Measured on this corpus: go 366, dart 75, ruby 259, csharp 220. Ruby and
+    // Historical corpus counts: go 366, dart 75, ruby 259, csharp 220. Ruby and
     // C# gained 40 each from the `win\dir\thing.<ext>` targets — one per repo,
     // which is also the floor those two arms now defend. #2881 moved go 364 ->
     // 366 and csharp 196 -> 220, from the corpus's `pkg/pkg`, `a/pkg/b/pkg` and
@@ -804,7 +802,7 @@ describe('import-target index hoist — built once per file set, not once per im
   it('dart builds one index for many imports (#2879)', () => {
     const files = countingCorpus(2, '.dart');
     for (let i = 0; i < 200; i++) {
-      resolveDartImportTarget(`package:pkg${i}/ghost${i}.dart`, 'lib/main.dart', files);
+      resolveDartImportTarget(`pkg${i}/ghost${i}.dart`, 'lib/main.dart', files);
     }
     expect(files.scans).toBe(1);
   });
