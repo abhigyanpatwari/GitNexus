@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.mapper.OrderDetailMapper">
+
+  <select id="selectWithItems" resultType="map">
+    SELECT o.id, o.status, oi.product_id, oi.quantity
+    FROM order_info o
+    JOIN order_item oi ON o.id = oi.order_id
+    WHERE o.id = #{id}
+  </select>
+
+  <insert id="insertItem">
+    INSERT INTO order_item (order_id, product_id, quantity)
+    VALUES (#{orderId}, #{productId}, #{quantity})
+  </insert>
+
+</mapper>
