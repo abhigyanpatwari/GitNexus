@@ -14,26 +14,29 @@
  */
 
 /** One value per distinct cause; paths testing the same predicate share a key. */
-export type RebuildReasonKey =
-  | 'user-force'
-  | 'skills'
-  | 'parse-cache-bypass'
-  | 'drop-embeddings'
-  | 'interrupted-rebuild'
-  | 'private-graph-unavailable'
-  | 'shared-store-missing-graph'
-  | 'content-retention'
-  | 'pdg-mode'
-  | 'schema-fingerprint'
-  | 'graph-write-collapse'
-  | 'analysis-features'
-  | 'spring-vendor-prefixes'
-  | 'runner-identity'
-  | 'cjk-segmentation'
-  | 'embedding-dims'
-  | 'spring-actuator'
-  | 'asyncapi'
-  | 'escalated-full-write';
+export const REBUILD_REASON_KEYS = [
+  'user-force',
+  'skills',
+  'parse-cache-bypass',
+  'drop-embeddings',
+  'interrupted-rebuild',
+  'private-graph-unavailable',
+  'shared-store-missing-graph',
+  'content-retention',
+  'pdg-mode',
+  'schema-fingerprint',
+  'graph-write-collapse',
+  'analysis-features',
+  'spring-vendor-prefixes',
+  'runner-identity',
+  'cjk-segmentation',
+  'embedding-dims',
+  'spring-actuator',
+  'asyncapi',
+  'escalated-full-write',
+] as const;
+
+export type RebuildReasonKey = (typeof REBUILD_REASON_KEYS)[number];
 
 export interface RebuildReason {
   readonly key: RebuildReasonKey;

@@ -648,6 +648,20 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     ).toEqual(['--max-old-space-size=176', '--max-semi-space-size=8']);
   });
 
+  it('a forged budget marker without the budget semi-space flag still respawns', async () => {
+    mockSpawnExit();
+    process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
+    let respawned: boolean | undefined;
+    await withExecArgv(['--max-old-space-size=1616'], async () => {
+      const { ensureHeap } = await import('../../src/cli/analyze.js');
+      respawned = await ensureHeap({ memoryBudget: '2000' });
+    });
+    expect({ respawned, spawns: spawnMock.mock.calls.length }).toEqual({
+      respawned: true,
+      spawns: 1,
+    });
+  });
+
   it('a budget child whose old-space pin is spelled with underscores and a space skips the respawn', async () => {
     process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
     let respawned: boolean | undefined;

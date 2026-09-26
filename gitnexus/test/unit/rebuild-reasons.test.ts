@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  REBUILD_REASON_KEYS,
   RebuildReasonCollector,
   readStoredRebuildReasons,
   type RebuildReason,
@@ -302,21 +303,14 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'escalated-full-write', file: 'test/unit/incremental-orchestration.test.ts' },
 ] as const satisfies readonly { readonly key: RebuildReasonKey; readonly file: string }[];
 
-type UncoveredRebuildReasonKey = Exclude<
-  RebuildReasonKey,
-  (typeof REBUILD_REASON_COVERAGE)[number]['key']
->;
-/** Compile-time gate: resolves to `true` only when no key is missing above. */
-const everyRebuildReasonCovered: [UncoveredRebuildReasonKey] extends [never]
-  ? true
-  : UncoveredRebuildReasonKey = true;
-
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 describe('rebuild reason coverage table (R15)', () => {
   it('lists every key exactly once', () => {
     const keys: readonly RebuildReasonKey[] = REBUILD_REASON_COVERAGE.map(({ key }) => key);
-    expect(everyRebuildReasonCovered).toBe(true);
+    // Runtime check against the exported key list: CI does not type-check
+    // test files, so a compile-time-only gate would never fire.
+    expect([...keys].sort()).toEqual([...REBUILD_REASON_KEYS].sort());
     expect(new Set(keys).size).toBe(keys.length);
   });
 

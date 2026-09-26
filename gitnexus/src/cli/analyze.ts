@@ -549,10 +549,18 @@ const RECOMMENDED_WAL_CHECKPOINT_THRESHOLD = 64 * 1024 * 1024;
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
 export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  // V8 accepts `-` and `_` interchangeably in flag names, and Node accepts a
-  // space-separated value in NODE_OPTIONS — honor every spelling of the pin
-  // instead of silently overriding it (#2649 review).
-  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g)];
+  return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
+}
+
+/**
+ * Last value (MB) of a V8 `--<name>` size flag in a flag string. V8 accepts
+ * `-` and `_` interchangeably in flag names, and Node accepts a
+ * space-separated value — honor every spelling instead of silently
+ * overriding it (#2649 review).
+ */
+function parseV8SizeFlagMb(flags: string, name: string): number | null {
+  const stem = name.split('-').join('[-_]');
+  const matches = [...flags.matchAll(new RegExp(`--${stem}(?:=|\\s+)(\\d+)`, 'g'))];
   if (matches.length === 0) return null;
   const mb = Number(matches[matches.length - 1][1]);
   return Number.isFinite(mb) && mb > 0 ? mb : null;
@@ -615,14 +623,22 @@ export interface BudgetHeapDecision {
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;
   const sizing = budgetHeapSizing(budgetMb);
-  const pinnedMb =
-    parseMaxOldSpaceMb(input.execArgv.join(' ')) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const execFlags = input.execArgv.join(' ');
+  const pinnedMb = parseMaxOldSpaceMb(execFlags) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const semiSpaceMb =
+    parseV8SizeFlagMb(execFlags, 'max-semi-space-size') ??
+    parseV8SizeFlagMb(input.nodeOptions, 'max-semi-space-size');
   // Only a budget-respawned child carries both the budget's old space and its
   // semi-space, so only it is exactly at the budget. A pin that merely equals
   // the budget leaves V8's young generation on top (a 2000MB pin is a 2048MB
   // heap), so that process respawns once like any other. The respawning
-  // parent already logged; the child stays quiet.
-  if (input.inheritedSource === 'budget' && pinnedMb === sizing.oldSpaceMb) {
+  // parent already logged; the child stays quiet. The env marker alone is not
+  // proof — it is inherited — so both budget flags must be present too.
+  if (
+    input.inheritedSource === 'budget' &&
+    pinnedMb === sizing.oldSpaceMb &&
+    semiSpaceMb === sizing.semiSpaceMb
+  ) {
     return { respawn: false, sizing };
   }
   const swapWarning =
