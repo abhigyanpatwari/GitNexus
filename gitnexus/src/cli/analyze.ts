@@ -1361,7 +1361,7 @@ const analyzeCommandImpl = async (
   // injection, including community skill writes that `--skills` would normally
   // produce. Surface the override explicitly so users don't wonder why a
   // pipeline re-index ran but no skill files appeared. The pipeline still
-  // re-runs (see `force: options.force || options.skills` below); the warning
+  // re-runs (`skills` is passed to runFullAnalysis below); the warning
   // is purely about the dropped post-index write step.
   if (options.indexOnly && options.skills) {
     console.log(
@@ -1515,10 +1515,12 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation needs
-      // a fresh pipelineResult, and with --no-parse-cache because bypassing
-      // parser output is meaningful only when the pipeline runs.
-      force: options.force || options.skills || options.parseCache === false,
+      // The user's own --force only. --skills (skill generation needs a fresh
+      // pipelineResult) and --no-parse-cache (bypassing parser output means
+      // anything only when the pipeline runs) each force the rebuild inside
+      // runFullAnalysis under their own named reason (#3137).
+      force: options.force,
+      skills: options.skills,
       useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
       skipFts: options.skipFts,

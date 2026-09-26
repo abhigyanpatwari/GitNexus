@@ -22,6 +22,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
+import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { RebuildReasonCollector, type RebuildReasonKey } from '../../src/core/rebuild-reasons.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 type PipelineModule = typeof import('../../src/core/ingestion/pipeline.js');
@@ -50,6 +52,7 @@ vi.mock('../../src/core/ingestion/pipeline.js', async (importOriginal) => {
 afterEach(() => {
   captured.options.length = 0;
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe('streamGraphEmit is resolved after the force-mutating freshness guards', () => {
@@ -99,6 +102,139 @@ describe('streamGraphEmit is resolved after the force-mutating freshness guards'
       // The paired CSV dir must be armed with it — the two are resolved from one
       // value precisely so they cannot disagree.
       expect(typeof pipelineOptions.graphEmitCsvDir).toBe('string');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 120_000);
+});
+
+/** What the collector held, and printed, at the pre-pipeline summary. */
+interface SummaryCall {
+  keys: RebuildReasonKey[];
+  summary: string | undefined;
+}
+
+/**
+ * Record every pre-pipeline summary the real collector formats. The pipeline
+ * mock ends the run before `runFullAnalysis` can return its keys, so the
+ * summary checkpoint is the seam: what was collected, and the exact text it
+ * printed, without re-typing any reason.
+ */
+const recordSummaries = (): SummaryCall[] => {
+  const calls: SummaryCall[] = [];
+  const formatSummary = RebuildReasonCollector.prototype.formatSummary;
+  vi.spyOn(RebuildReasonCollector.prototype, 'formatSummary').mockImplementation(function (
+    this: RebuildReasonCollector,
+  ) {
+    const keys = this.keys();
+    const summary = formatSummary.call(this);
+    calls.push({ keys, summary });
+    return summary;
+  });
+  return calls;
+};
+
+/** Run to the (mocked) pipeline and return the log lines. */
+const runToPipeline = async (
+  repoPath: string,
+  options: { useParseCache?: boolean; skills?: boolean; repairFts?: boolean },
+): Promise<string[]> => {
+  const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+  const logs: string[] = [];
+  await expect(
+    runFullAnalysis(
+      repoPath,
+      { skipAgentsMd: true, ...options },
+      { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+    ),
+  ).rejects.toThrow(PIPELINE_REACHED);
+  return logs;
+};
+
+const writeMeta = async (repoPath: string, meta: Omit<RepoMeta, 'repoPath'>): Promise<void> => {
+  const metaDir = path.dirname(getStoragePaths(repoPath).metaPath);
+  await fsp.mkdir(metaDir, { recursive: true });
+  await saveMeta(metaDir, { repoPath, ...meta });
+};
+
+describe('pre-pipeline rebuild reasons (#3137)', () => {
+  it.each([
+    { flag: 'skills', options: { skills: true }, key: 'skills' },
+    { flag: 'useParseCache: false', options: { useParseCache: false }, key: 'parse-cache-bypass' },
+  ] as const)(
+    '$flag alone contributes only its own reason, once',
+    async ({ options, key }) => {
+      vi.stubEnv('GITNEXUS_STREAM_GRAPH_EMIT', '1');
+      const summaries = recordSummaries();
+      const tmpRepo = await createTempDir('gitnexus-rebuild-reason-flag-');
+      try {
+        const logs = await runToPipeline(tmpRepo.dbPath, options);
+
+        expect(summaries.map(({ keys }) => keys)).toEqual([[key]]);
+        const [{ summary }] = summaries;
+        expect(logs.filter((m) => m === summary)).toHaveLength(1);
+        // The flag no longer masquerades as --force: it forces the rebuild itself.
+        expect(captured.options[0]).toMatchObject({ streamGraphEmit: true });
+      } finally {
+        await tmpRepo.cleanup();
+      }
+    },
+    120_000,
+  );
+
+  it('--repair-fts after a retention change yields one content-retention entry', async () => {
+    const summaries = recordSummaries();
+    const tmpRepo = await createTempDir('gitnexus-rebuild-reason-retention-');
+    try {
+      // Built under a different retention than this run's default (`full`):
+      // both the --repair-fts conversion and the retention gate fire.
+      await writeMeta(tmpRepo.dbPath, {
+        lastCommit: '',
+        indexedAt: new Date(0).toISOString(),
+        schemaFingerprint: 'a0b1c2d3e4f5',
+        contentRetention: 'none',
+      });
+
+      await runToPipeline(tmpRepo.dbPath, { repairFts: true });
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].keys.filter((k) => k === 'content-retention')).toHaveLength(1);
+      // The repair was converted into the rebuild instead of returning early.
+      expect(captured.options).toHaveLength(1);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 120_000);
+
+  it('a first-build claim retry names no schema or runner-identity change (KTD8)', async () => {
+    const summaries = recordSummaries();
+    const tmpRepo = await createTempDir('gitnexus-rebuild-reason-claim-');
+    try {
+      // Exactly what the slot claim writes before a first build that then crashed.
+      await writeMeta(tmpRepo.dbPath, {
+        storagePath: path.dirname(getStoragePaths(tmpRepo.dbPath).metaPath),
+        lastCommit: '',
+        indexedAt: new Date(0).toISOString(),
+      });
+
+      await runToPipeline(tmpRepo.dbPath, {});
+
+      expect(summaries).toEqual([{ keys: [], summary: undefined }]);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 120_000);
+
+  it('a first build of a non-git folder rebuilds structurally with no summary', async () => {
+    vi.stubEnv('GITNEXUS_STREAM_GRAPH_EMIT', '1');
+    const summaries = recordSummaries();
+    const tmpRepo = await createTempDir('gitnexus-rebuild-reason-nongit-');
+    try {
+      await runToPipeline(tmpRepo.dbPath, {});
+
+      expect(summaries).toEqual([{ keys: [], summary: undefined }]);
+      // Structural, not collected: the pipeline sees no forced rebuild.
+      expect(captured.options[0]).toMatchObject({ streamGraphEmit: false });
     } finally {
       await tmpRepo.cleanup();
     }

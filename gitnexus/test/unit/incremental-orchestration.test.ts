@@ -42,6 +42,7 @@ import {
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   SPRING_AOP_FEATURE,
@@ -76,6 +77,28 @@ const gitCommitAll = (cwd: string, message: string): void => {
 };
 
 const SPRING_SERVICE = 'org.springframework.stereotype.Service';
+
+/**
+ * The collector's own output shapes, taken from the real formatter rather than
+ * re-typed: a single-reason summary, a numbered summary's header for `count`
+ * reasons, and the post-pipeline follow-up line. A reason with empty text
+ * reduces each to its fixed part.
+ */
+const rebuildLineShapes = (count: number) => {
+  const single = new RebuildReasonCollector();
+  single.add({ key: 'user-force', text: '' });
+  const numbered = new RebuildReasonCollector();
+  const keys = ['user-force', 'skills', 'parse-cache-bypass', 'drop-embeddings'] as const;
+  for (const key of keys.slice(0, count)) numbered.add({ key, text: '' });
+  const late = new RebuildReasonCollector();
+  late.formatSummary();
+  late.add({ key: 'user-force', text: '' });
+  return {
+    singleSummary: single.formatSummary() ?? '',
+    numberedHeader: (numbered.formatSummary() ?? '').split('\n')[0],
+    followUp: late.formatFollowUp() ?? '',
+  };
+};
 
 function withoutAnalysisFeature(meta: RepoMeta, featureId: string): RepoMeta {
   return {
@@ -595,7 +618,10 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(cold.alreadyUpToDate).toBeUndefined();
       expect(cold.pipelineResult?.parseCacheHitFileCount ?? 0).toBe(0);
       expect(cold.pipelineResult?.reparsedFileCount).toBe(7);
-      expect(logs.join('\n')).toContain('Parser cache bypass requested');
+      // Its own reason, not a borrowed --force.
+      expect(cold.rebuildReasons).toEqual(['parse-cache-bypass']);
+      const { singleSummary } = rebuildLineShapes(1);
+      expect(logs.filter((m) => m.startsWith(singleSummary))).toHaveLength(1);
     } finally {
       await repo.cleanup();
     }
@@ -629,6 +655,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {} },
       );
       expect(enabled.alreadyUpToDate).toBeUndefined();
+      expect(enabled.rebuildReasons).toEqual(['spring-actuator']);
 
       const { storagePath } = getStoragePaths(repo.dbPath);
       const enabledMeta = await loadMeta(storagePath);
@@ -667,9 +694,10 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
       );
       expect(disabled.alreadyUpToDate).toBeUndefined();
-      expect(disableLogs.join('\n')).toContain(
-        'Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.',
-      );
+      expect(disabled.rebuildReasons).toEqual(['spring-actuator']);
+      expect(
+        disableLogs.filter((m) => m.startsWith(rebuildLineShapes(1).singleSummary)),
+      ).toHaveLength(1);
       expect((await loadMeta(storagePath))?.springActuator).toEqual({
         enabled: false,
         repoRelativeInputs: [runtimeInput],
@@ -692,6 +720,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         { onProgress: () => {}, onLog: (message) => forceLogs.push(message) },
       );
       expect(forcedSteady.alreadyUpToDate).toBeUndefined();
+      expect(forcedSteady.rebuildReasons).toEqual(['user-force']);
       expect(forceLogs.join('\n')).toContain(
         'Rebuilt the graph and FTS while reusing cached parser output',
       );
@@ -975,13 +1004,19 @@ describe('runFullAnalysis — incremental orchestration', () => {
       gitCommitAll(repo.dbPath, 'add first JVM source file');
 
       const logs: string[] = [];
-      await runFullAnalysis(
+      const result = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true },
         { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
 
-      expect(logs.join('\n')).toContain(`missing:${SPRING_BEAN_INVENTORY_FEATURE.id}`);
+      // Found only after the pipeline: no summary, exactly one follow-up line.
+      expect(result.rebuildReasons).toEqual(['analysis-features']);
+      const { singleSummary, followUp } = rebuildLineShapes(1);
+      const followUps = logs.filter((m) => m.startsWith(followUp));
+      expect(followUps).toHaveLength(1);
+      expect(followUps[0]).toContain(`missing:${SPRING_BEAN_INVENTORY_FEATURE.id}`);
+      expect(logs.filter((m) => m.startsWith(singleSummary))).toEqual([]);
       expect(logs.join('\n')).not.toContain('Incremental:');
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
@@ -1337,6 +1372,16 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // The importer expansion fired AND the valve rerouted the write plan.
       expect(joined).toContain('importer(s) added to writable set');
       expect(joined).toContain('switching to a full DB write');
+      // Announced as the one follow-up line, carrying the escalation's own
+      // text, and non-forcing: the run stayed on the incremental branch
+      // (`incrementalStats` exists only there) and wrote the full plan.
+      expect(incremental.rebuildReasons).toEqual(['escalated-full-write']);
+      const { singleSummary, followUp } = rebuildLineShapes(1);
+      const followUps = logs.filter((m) => m.startsWith(followUp));
+      expect(followUps).toHaveLength(1);
+      expect(followUps[0]).toContain('switching to a full DB write');
+      expect(logs.filter((m) => m.startsWith(singleSummary))).toEqual([]);
+      expect(incremental.incrementalStats?.writeMode).toBe('full');
 
       const { storagePath } = getStoragePaths(repo.dbPath);
       const escalatedMeta = await loadMeta(storagePath);
@@ -1497,12 +1542,102 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // explicitly cannot fire because the dirty-flag check rewrote
       // `options.force` to true.
       expect(recovered.alreadyUpToDate).toBeUndefined();
+      expect(recovered.rebuildReasons).toEqual(['interrupted-rebuild']);
 
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
       expect(logs.join('\n')).toContain(
         'last dirty state: phase=load-graph, toWrite=3, importerExpansion=153, effectiveWrite=167, deleteCount=169',
       );
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  // #2798/#3041: the invariant the INCREMENTAL_SCHEMA_VERSION ladder used to
+  // backstop. It is implicit nowhere else: no other gate observes analyzer code
+  // that emits no DDL, so dropping the runner-identity reason silently re-opens
+  // same-commit top-ups across an analyzer that changed how the graph is
+  // shaped. Pinned on the returned reasons (it used to be a source regex over
+  // run-analyze.ts). The predicate's OWN behaviour — a moved build digest with
+  // unmoved DDL, an absent/null/legacy/malformed receipt, an alternate
+  // diagnostic entrypoint — is asserted in analyzer-identity.test.ts.
+  it('a stamped runner identity that differs forces a full rebuild with the runner-identity reason', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      if (meta?.runnerIdentity === undefined) throw new Error('first run stamped no identity');
+      // Same commit, clean tree, same DDL: only the analyzer build digest moved.
+      const { invokedArtifact } = meta.runnerIdentity;
+      await saveMeta(storagePath, {
+        ...meta,
+        runnerIdentity: {
+          ...meta.runnerIdentity,
+          invokedArtifact: { ...invokedArtifact, digest: '0'.repeat(64) },
+        },
+      });
+
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(reanalyzed.rebuildReasons).toEqual(['runner-identity']);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  // AE4: an upgrade that trips several reasons at once names them in ONE
+  // numbered block and prints no other rebuild line.
+  it('schema, runner identity, and a new Actuator request print one numbered block of three', async () => {
+    const repo = await setupMiniRepo();
+    const runtimeInput = 'runtime-actuator';
+    try {
+      await mkdir(path.join(repo.dbPath, runtimeInput), { recursive: true });
+      await writeFile(
+        path.join(repo.dbPath, runtimeInput, 'env.json'),
+        JSON.stringify({ propertySources: [] }),
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add actuator runtime snapshot');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      if (meta?.runnerIdentity === undefined) throw new Error('first run stamped no identity');
+      const { invokedArtifact } = meta.runnerIdentity;
+      await saveMeta(storagePath, {
+        ...meta,
+        schemaFingerprint: 'b1c2d3e4f5a6',
+        runnerIdentity: {
+          ...meta.runnerIdentity,
+          invokedArtifact: { ...invokedArtifact, digest: '0'.repeat(64) },
+        },
+      });
+
+      const logs: string[] = [];
+      const upgraded = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, springActuatorPath: runtimeInput },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(upgraded.rebuildReasons).toEqual([
+        'schema-fingerprint',
+        'runner-identity',
+        'spring-actuator',
+      ]);
+      const { singleSummary, numberedHeader, followUp } = rebuildLineShapes(3);
+      const blocks = logs.filter((m) => m.startsWith(numberedHeader));
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0].split('\n')).toHaveLength(4);
+      expect(logs.filter((m) => m.startsWith(singleSummary) || m.startsWith(followUp))).toEqual([]);
     } finally {
       await repo.cleanup();
     }
@@ -1540,6 +1675,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // Pipeline actually ran (schemaFingerprint mismatch → force=true), and the
       // notice names the stamp it rejected rather than a generic placeholder.
       expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(reanalyzed.rebuildReasons).toEqual(['schema-fingerprint']);
       expect(logs.join('\n')).toContain('index schema changed (built by b1c2d3e4f5a6,');
       // And the rebuild restamped this build's digest (that path runs saveMeta).
       const restamped = await loadMeta(storagePath);
@@ -1915,9 +2051,10 @@ describe('runFullAnalysis — AsyncAPI document reading', () => {
         { onProgress: () => {}, onLog: (message) => enabledLogs.push(message) },
       );
       expect(enabled.alreadyUpToDate).toBeUndefined();
-      expect(enabledLogs.join('\n')).toContain(
-        'AsyncAPI document reading requested; forcing a full rebuild.',
-      );
+      expect(enabled.rebuildReasons).toEqual(['asyncapi']);
+      expect(
+        enabledLogs.filter((m) => m.startsWith(rebuildLineShapes(1).singleSummary)),
+      ).toHaveLength(1);
       // The forward into PipelineOptions is what puts this node in the graph;
       // without it the flag parses and nothing else happens.
       expect(await readDocumentDestinations(repo.dbPath)).toEqual([
@@ -1946,9 +2083,10 @@ describe('runFullAnalysis — AsyncAPI document reading', () => {
         { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
       );
       expect(disabled.alreadyUpToDate).toBeUndefined();
-      expect(disableLogs.join('\n')).toContain(
-        'AsyncAPI document reading disabled; rebuilding to remove document-derived evidence.',
-      );
+      expect(disabled.rebuildReasons).toEqual(['asyncapi']);
+      expect(
+        disableLogs.filter((m) => m.startsWith(rebuildLineShapes(1).singleSummary)),
+      ).toHaveLength(1);
       expect(await readDocumentDestinations(repo.dbPath)).toEqual([]);
       expect((await loadMeta(storagePath))?.asyncApiSpec).toBeUndefined();
 

@@ -33,6 +33,7 @@ import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/nam
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import type { StoredRebuildReason } from '../core/rebuild-reasons.js';
 import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
@@ -416,22 +417,6 @@ export interface RepoMeta {
     persisted: number;
   };
   /**
-   * Persisted rebuild verdict (#3137): when an analyze run had to force a
-   * full rebuild (any rebuild gate fired, or the run was resumed from a
-   * dirty state), the reasons are recorded here BEFORE the rebuild starts
-   * and cleared when the rebuild completes successfully. A subsequent run
-   * that finds this field set skips the incremental fast-path attempt and
-   * shows the recorded reasons immediately — the operator learns on run
-   * one why the previous run rebuilt, instead of re-deriving it.
-   */
-  needsFullRebuild?: {
-    /** Human-readable reasons the rebuild was required (one per entry). */
-    reasons: readonly string[];
-    /** When the verdict was recorded (epoch ms). */
-    recordedAt: number;
-  };
-
-  /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
    * mutation by BOTH writeback branches (incremental since its introduction;
@@ -475,6 +460,12 @@ export interface RepoMeta {
      *  diagnostics must show whether the write set was already
      *  under-expanded when the run died. */
     droppedImporterChunks?: number;
+    /**
+     * Why this run rebuilds (#3137), so an interrupted rebuild can name its
+     * causes on the next run. Untrusted on read: parse it with
+     * `readStoredRebuildReasons`, since the file is schema-less JSON.
+     */
+    reasons?: StoredRebuildReason[];
   };
   /**
    * Durable embedding-resume marker, written in two distinct situations that
