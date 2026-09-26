@@ -2216,6 +2216,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
   });
 
   it('preserves lastCommit / fileHashes / the dirty flag, and never restates a stale count', async () => {
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
     const STALE_COMMIT = '1111111111111111111111111111111111111111';
     const STALE_HASHES = { 'src/app.ts': 'stale-hash' };
     const LIVE_EMBEDDING_COUNT = 42;
@@ -2307,6 +2308,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
           _existingEmbeddings: unknown,
           pipelineOptions: EmbeddingPipelineOptions,
         ): Promise<EmbeddingPipelineResult> => {
+          snapshots.beforeCheckpoint = await loadMeta(storagePath);
           // Window 1 — fires before ANY embedding row exists.
           await pipelineOptions.onCheckpointWindowStart?.({
             nodesProcessed: 0,
@@ -2354,6 +2356,21 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
 
       expect(runEmbeddingPipeline).toHaveBeenCalledTimes(1);
 
+      // Windows writes in place and advances the dirty marker to FTS; a
+      // staged rebuild retains full-rebuild until publication. Neither marker
+      // may be changed or cleared by an embedding checkpoint.
+      const dirtyBeforeCheckpoint = snapshots.beforeCheckpoint?.incrementalInProgress;
+      expect(dirtyBeforeCheckpoint).toMatchObject({
+        phase: process.platform === 'win32' ? 'fts' : 'full-rebuild',
+      });
+      for (const snapshot of [
+        snapshots.windowStart,
+        snapshots.postWindow,
+        snapshots.secondWindow,
+      ]) {
+        expect(snapshot?.incrementalInProgress).toEqual(dirtyBeforeCheckpoint);
+      }
+
       // ── Window 1: the checkpoint landed… ──────────────────────────────
       expect(snapshots.windowStart).toMatchObject({
         embeddingCheckpoint: {
@@ -2370,7 +2387,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.windowStart).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: { phase: 'full-rebuild' },
+        incrementalInProgress: dirtyBeforeCheckpoint,
         stats: { embeddings: 7 },
       });
       expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
@@ -2379,7 +2396,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       expect(snapshots.postWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
-        incrementalInProgress: { phase: 'full-rebuild' },
+        incrementalInProgress: dirtyBeforeCheckpoint,
         stats: { embeddings: LIVE_EMBEDDING_COUNT },
       });
 

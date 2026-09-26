@@ -2248,6 +2248,19 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
+      // Git can report clean after reverting/removing an indexed dirty file.
+      // Hidden Git flags also persist in dirtyPaths, so compare content rather
+      // than repeatedly reanalyzing unchanged candidates.
+      const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
+      let indexedContentChanged = false;
+      if (!dirty && indexedDirtyPaths.length > 0) {
+        const currentHashes = await computeFileHashes(repoPath, indexedDirtyPaths);
+        indexedContentChanged = indexedDirtyPaths.some(
+          (filePath) =>
+            !currentHashes.has(filePath) ||
+            currentHashes.get(filePath) !== existingMeta.fileHashes?.[filePath],
+        );
+      }
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -2277,7 +2290,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !healUnregistered) {
+      if (!dirty && !indexedContentChanged && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
@@ -3654,6 +3667,18 @@ async function runFullAnalysisInner(
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
         });
+        // PARALLEL=false serializes CSV reading, not native COPY worker state.
+        // On a 32-thread host that scratch allocation exhausts the 256 MiB pool
+        // alongside retained FTS indexes, even for a one-row incremental write.
+        // Bound COPY only; restore the caller's setting before FTS construction.
+        // A failed COPY goes through the outer connection-cleanup handler.
+        const copyThreads = Number(
+          (await executeQuery("CALL current_setting('threads') RETURN *"))[0]?.threads,
+        );
+        if (!Number.isSafeInteger(copyThreads) || copyThreads < 1) {
+          throw new Error('Could not read the LadybugDB execution thread count before COPY');
+        }
+        await executeQuery('CALL threads=1');
         await loadGraphToLbug(
           subgraph,
           pipelineResult.repoPath,
@@ -3667,6 +3692,7 @@ async function runFullAnalysisInner(
           undefined,
           contentRetention,
         );
+        await executeQuery(`CALL threads=${copyThreads}`);
         if (preserveDerivedLayer && derivedSnapshot.length > 0) {
           await restoreDerivedRels(derivedSnapshot);
         }

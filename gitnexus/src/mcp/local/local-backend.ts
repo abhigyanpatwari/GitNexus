@@ -3830,7 +3830,7 @@ export class LocalBackend {
               `
               MATCH (n)
               WHERE n.id IN $nodeIds
-              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              RETURN n.id AS id, n.name AS name, labels(n) AS nodeLabels, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
             `,
               { nodeIds },
@@ -3845,7 +3845,7 @@ export class LocalBackend {
               MATCH (n)
               WHERE n.filePath = $filePath
                 AND NOT n.id STARTS WITH 'BasicBlock:'
-              RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+              RETURN n.id AS id, n.name AS name, labels(n) AS nodeLabels, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
               ORDER BY startLine, id
               LIMIT 3
             `,
@@ -3854,10 +3854,11 @@ export class LocalBackend {
 
         if (symbols.length > 0) {
           for (const sym of symbols) {
+            const nodeLabels = sym.nodeLabels ?? sym[2];
             results.push({
               nodeId: sym.id || sym[0],
               name: sym.name || sym[1],
-              type: sym.type || sym[2],
+              type: Array.isArray(nodeLabels) ? nodeLabels[0] : nodeLabels,
               filePath: sym.filePath || sym[3],
               // Raw 0-based here — `bm25Search` is only called from `query()`,
               // whose aggregation loop applies `toDisplayLine` once (see below).
