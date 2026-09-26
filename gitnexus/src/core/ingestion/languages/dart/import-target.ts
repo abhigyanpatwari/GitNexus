@@ -15,6 +15,7 @@
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { DART_HERITAGE_PREFIX } from './interpret.js';
 import type { DartPackageConfig } from './package-config.js';
+import { DART_PACKAGE_SCHEME, dartPackageImportName } from './package-uri.js';
 
 /**
  * Basename → files carrying it, in `allFilePaths` iteration order, memoized on
@@ -96,14 +97,13 @@ export function resolveDartImportTarget(
   if (targetRaw.startsWith('dart:')) return null;
 
   // A package URI never falls back to another package's same-named file.
-  if (targetRaw.startsWith('package:')) {
-    const slash = targetRaw.indexOf('/');
-    if (slash === -1) return null;
-    const packageName = targetRaw.slice('package:'.length, slash);
+  if (targetRaw.startsWith(DART_PACKAGE_SCHEME)) {
+    const packageName = dartPackageImportName(targetRaw);
+    if (packageName === null) return null;
     const config = resolutionConfig as DartPackageConfig | undefined;
     const lib = config?.packages?.get(packageName);
     if (lib === undefined) return null;
-    const relPath = targetRaw.slice(slash + 1);
+    const relPath = targetRaw.slice(DART_PACKAGE_SCHEME.length + packageName.length + 1);
     if (
       /[\\%?#:]/.test(relPath) ||
       relPath.split('/').some((part) => part === '' || part === '.' || part === '..')

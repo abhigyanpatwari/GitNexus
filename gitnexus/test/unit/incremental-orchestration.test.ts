@@ -49,6 +49,7 @@ import {
   loadLanguage,
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
@@ -1856,16 +1857,29 @@ describe.skipIf(!dartAvailable)('Dart pubspec-only incremental persistence (#296
           ).toHaveLength(resolves ? 1 : 0);
           const meta = await loadMeta(getStoragePaths(repo.dbPath).storagePath);
           expect(Object.hasOwn(meta?.fileHashes ?? {}, file)).toBe(content !== null);
+          const identityToFile = incrementalEdges.filter(
+            (edge) =>
+              edge.type === 'IMPORTS' &&
+              edge.reason === DART_PACKAGE_IDENTITY_REASON &&
+              edge.source === 'File:lib/main.dart' &&
+              edge.target === `File:${file}`,
+          );
           if (content === 'name: app') {
-            expect(incrementalEdges).toContainEqual({
-              source: 'File:lib/main.dart',
-              target: `File:${file}`,
-              type: 'IMPORTS',
-              reason: 'dart-scope: package identity dependency',
-              sourceFile: 'lib/main.dart',
-              targetFile: file,
-              targetName: 'pubspec.yaml',
-            });
+            expect(identityToFile).toEqual([
+              {
+                source: 'File:lib/main.dart',
+                target: `File:${file}`,
+                type: 'IMPORTS',
+                reason: DART_PACKAGE_IDENTITY_REASON,
+                sourceFile: 'lib/main.dart',
+                targetFile: file,
+                targetName: 'pubspec.yaml',
+              },
+            ]);
+          } else {
+            // Rename and deletion must drop the identity edge. A stale edge
+            // would keep rewriting importers after the package name is gone.
+            expect(identityToFile).toEqual([]);
           }
           await runFullAnalysis(repo.dbPath, { ...options, force: true }, progress);
           expect(await readEdges()).toEqual(incrementalEdges);

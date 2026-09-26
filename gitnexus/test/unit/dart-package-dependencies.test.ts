@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { generateId } from '../../src/lib/utils.js';
-import { emitDartPackageDependencies } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
+import {
+  DART_PACKAGE_IDENTITY_REASON,
+  emitDartPackageDependencies,
+} from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 import { computeEffectiveWriteSet } from '../../src/core/incremental/subgraph-extract.js';
 import { GraphEmitSink } from '../../src/core/lbug/graph-emit-sink.js';
 
@@ -96,9 +99,9 @@ describe('Dart package identity dependencies', () => {
         if (type === 'IMPORTS') edges.push(`${source}->${target}:${reason}`);
       });
       expect(edges.sort()).toEqual([
-        'File:a.dart->File:pubspec.yaml:dart-scope: package identity dependency',
+        `File:a.dart->File:pubspec.yaml:${DART_PACKAGE_IDENTITY_REASON}`,
         'File:b.dart->File:a.dart:dart-scope: import',
-        'File:b.dart->File:pubspec.yaml:dart-scope: package identity dependency',
+        `File:b.dart->File:pubspec.yaml:${DART_PACKAGE_IDENTITY_REASON}`,
       ]);
       const manifest = sink.finalize();
       expect(manifest.totalRows).toBe(3);
@@ -123,12 +126,21 @@ describe('Dart package identity dependencies', () => {
     emitDartPackageDependencies(graph, parsed, config);
     emitDartPackageDependencies(graph, parsed, config);
     expect(graph.relationships.map((edge) => [edge.targetId, edge.reason])).toEqual([
-      ['File:pubspec.yaml', 'dart-scope: package identity dependency'],
-      ['File:nested/pubspec.yaml', 'dart-scope: package identity dependency'],
+      ['File:pubspec.yaml', DART_PACKAGE_IDENTITY_REASON],
+      ['File:nested/pubspec.yaml', DART_PACKAGE_IDENTITY_REASON],
     ]);
     expect(computeEffectiveWriteSet(graph, new Set(['nested/pubspec.yaml']))).toEqual(
       new Set(['nested/pubspec.yaml', 'main.dart']),
     );
+  });
+
+  it('ignores a package URI that has no library path', () => {
+    const graph = graphWithFiles(['main.dart', 'pubspec.yaml']);
+    emitDartPackageDependencies(graph, [consumer('main.dart', ['package:app', 'package:'])], {
+      packages: new Map(),
+      manifestsByName: new Map([['app', ['pubspec.yaml']]]),
+    });
+    expect(graph.relationships).toEqual([]);
   });
 
   it('does not connect unrelated packages, relative imports, SDK imports, or files without imports', () => {
@@ -186,7 +198,7 @@ describe('Dart package identity dependencies', () => {
     );
     expect(
       graph.relationships
-        .filter((edge) => edge.reason === 'dart-scope: package identity dependency')
+        .filter((edge) => edge.reason === DART_PACKAGE_IDENTITY_REASON)
         .map((edge) => [edge.sourceId, edge.targetId]),
     ).toEqual([
       ['File:a.dart', 'File:pubspec.yaml'],

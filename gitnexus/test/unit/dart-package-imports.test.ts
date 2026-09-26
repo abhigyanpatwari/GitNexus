@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile, chmod } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.js';
@@ -11,6 +11,12 @@ const files = new Set(['lib/main.dart', 'lib/http.dart', 'lib/models.dart', 'too
 const config = { packages: new Map([['app', 'lib']]) };
 
 describe('Dart package identity (#2963)', () => {
+  it('does not resolve a package URI that has no library path', () => {
+    expect(
+      dartScopeResolver.resolveImportTarget('package:app', 'lib/main.dart', files, config),
+    ).toBeNull();
+  });
+
   it('does not resolve a pub dependency to a same-named local file', () => {
     expect(
       dartScopeResolver.resolveImportTarget(
@@ -336,6 +342,41 @@ describe('Dart pubspec package discovery', () => {
     const root = await fixture({});
     await expect(loadDartPackageConfig(path.join(root, 'missing'))).rejects.toThrow(
       'Dart pubspec discovery failed (read-directory)',
+    );
+  });
+
+  it('fails closed when the directory walk exceeds its budget', async () => {
+    const root = await fixture({
+      'pubspec.yaml': 'name: app',
+      'nested/pubspec.yaml': 'name: data',
+    });
+    await expect(loadDartPackageConfig(root, { directoryLimit: 1 })).rejects.toThrow(
+      'Dart pubspec discovery failed (directory-limit)',
+    );
+  });
+
+  it('fails closed when ignore rules cannot be read', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    await mkdir(path.join(root, '.gitignore'));
+    await expect(loadDartPackageConfig(root)).rejects.toThrow(
+      'Dart pubspec discovery failed (ignore-rules)',
+    );
+  });
+
+  it('fails closed when a pubspec cannot be read', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    await chmod(path.join(root, 'pubspec.yaml'), 0o000);
+    await expect(loadDartPackageConfig(root)).rejects.toThrow(
+      'Dart pubspec discovery failed (read-pubspec)',
+    );
+  });
+
+  it('does not follow a symlinked pubspec into another tree', async () => {
+    const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
+    const root = await fixture({ 'packages/data/pubspec.yaml': 'name: data' });
+    await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
+    expect((await loadDartPackageConfig(root)).packages).toEqual(
+      new Map([['data', 'packages/data/lib']]),
     );
   });
 });

@@ -10,6 +10,7 @@
  *   - `captures.ts`          — `emitDartScopeCaptures` orchestrator
  *   - `interpret.ts`         — capture-match → `ParsedImport` / `ParsedTypeBinding`
  *   - `import-target.ts`     — exact declared-package / relative import targets
+ *   - `package-uri.ts`       — shared `package:name/...` parse
  *   - `package-config.ts`    — bounded, ignore-aware in-repo pubspec discovery
  *   - `package-dependencies.ts` — manifest dependencies for incremental writeback
  *   - `receiver-binding.ts`  — synthesize `this` / `super` type-bindings

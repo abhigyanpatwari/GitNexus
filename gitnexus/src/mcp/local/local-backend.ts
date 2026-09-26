@@ -31,6 +31,7 @@ import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../core/ingestion/languages/dart/package-dependencies.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -2944,20 +2945,25 @@ export class LocalBackend {
     const rows = await executeParameterized(
       repo.lbugPath,
       // A cycle here means "these modules cannot be initialized in any order".
-      // Only edges that force initialization count, so four kinds are excluded:
+      // Only edges that force initialization count, so five kinds are excluded:
       // Swift implicit module visibility and markdown links (never code
-      // dependencies at all); imports reachable only through `import()` or a
+      // dependencies at all); Dart package-identity edges, which point at
+      // pubspec.yaml so a manifest edit invalidates importers and cannot
+      // form an init cycle; imports reachable only through `import()` or a
       // function body, which are deferred by construction — deferring is the
       // standard idiom for BREAKING an init cycle, so counting it reports the
       // fix as the bug; and imports reachable only through TypeScript
       // `import type`, which `tsc` erases outright, so no module load exists
       // to order. `imports-to-edges.ts` tags the last two with
       // DEFERRED_IMPORT_REASON_SUFFIX / TYPE_ONLY_IMPORT_REASON_SUFFIX.
+      // The Dart exclusion has to sit in this filter, before LIMIT, or the
+      // identity edges consume the 100000-row admission cap on a cycle-free graph.
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
        WHERE r.type = 'IMPORTS'
          AND (r.reason IS NULL OR (
            r.reason <> 'swift-scope: implicit module visibility'
            AND r.reason <> 'markdown-link'
+           AND r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'
            AND NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'
            AND NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'
          ))

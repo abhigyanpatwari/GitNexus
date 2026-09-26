@@ -2,9 +2,13 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import type { DartPackageConfig } from './package-config.js';
+import { dartPackageImportName } from './package-uri.js';
 
 const MAX_DEPENDENCIES = 100_000;
 const MAX_TRAVERSALS = 1_000_000;
+
+/** Incremental metadata. Not an initialization edge — excluded from cycle checks. */
+export const DART_PACKAGE_IDENTITY_REASON = 'dart-scope: package identity dependency';
 
 /** Package identity is an input dependency, including unresolved/ambiguous imports. */
 export function emitDartPackageDependencies(
@@ -32,10 +36,10 @@ export function emitDartPackageDependencies(
     if (!graph.getNode(sourceId)) continue;
     for (const imp of parsed.parsedImports) {
       const raw = imp.targetRaw;
-      if (typeof raw !== 'string' || !raw.startsWith('package:')) continue;
-      const slash = raw.indexOf('/');
-      if (slash === -1) continue;
-      for (const manifest of config.manifestsByName.get(raw.slice(8, slash)) ?? []) {
+      if (typeof raw !== 'string') continue;
+      const packageName = dartPackageImportName(raw);
+      if (packageName === null) continue;
+      for (const manifest of config.manifestsByName.get(packageName) ?? []) {
         let consumers = consumersByManifest.get(manifest);
         if (!consumers) consumersByManifest.set(manifest, (consumers = new Set()));
         addConsumer(consumers, sourceId);
@@ -82,7 +86,7 @@ export function emitDartPackageDependencies(
         targetId,
         type: 'IMPORTS',
         confidence: 1,
-        reason: 'dart-scope: package identity dependency',
+        reason: DART_PACKAGE_IDENTITY_REASON,
       });
     }
   }
