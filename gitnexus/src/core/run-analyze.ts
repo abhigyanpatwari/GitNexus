@@ -1414,6 +1414,19 @@ async function runFullAnalysisInner(
       text: 'parser cache bypass requested — unchanged files will be re-parsed.',
     });
   }
+  /**
+   * The collected reasons as the crash-recovery marker's optional `reasons`
+   * field (#3137 R9): spread into every `incrementalInProgress` writer, and
+   * omitted when nothing was collected. Read at write time, so each stamp
+   * carries the reasons known by then.
+   */
+  const storedRebuildReasons = (): Pick<
+    NonNullable<RepoMeta['incrementalInProgress']>,
+    'reasons'
+  > => {
+    const reasons = collector.toStored();
+    return reasons.length > 0 ? { reasons } : {};
+  };
   /** Checkpoint: the collector's verdict becomes the pipeline's `force`. */
   const applyCollectedForce = (): void => {
     options = { ...options, force: collector.forced };
@@ -2916,6 +2929,7 @@ async function runFullAnalysisInner(
           phase: 'pre-write',
           toWriteCount: hashDiff.toWrite.length,
           directWriteCount: hashDiff.toWrite.length,
+          ...storedRebuildReasons(),
         },
       });
     }
@@ -2950,6 +2964,7 @@ async function runFullAnalysisInner(
           updatedAt: now,
           phase: 'full-rebuild',
           toWriteCount: 0,
+          ...storedRebuildReasons(),
         },
       });
     }
@@ -3103,6 +3118,10 @@ async function runFullAnalysisInner(
             toWriteCount: writableFiles.size,
             directWriteCount: directlyChangedCount,
             ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
+            // Rebuilt from the live collector on every call, so the escalation
+            // reason (added just before the 'escalated-full-write' save) rides
+            // on that stamp and every later one (#3137).
+            ...storedRebuildReasons(),
             ...extra,
           },
         });
