@@ -8,10 +8,11 @@ export function interpretCImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
-  // System headers (e.g. <stdio.h>) are not resolved to local files
-  if (captures['@import.system'] !== undefined) return null;
-
-  return { kind: 'wildcard', targetRaw: source };
+  return { 
+    kind: 'wildcard', 
+    targetRaw: source,
+    isSystem: captures['@import.system'] !== undefined 
+  };
 }
 
 /**

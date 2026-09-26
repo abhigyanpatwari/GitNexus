@@ -389,8 +389,8 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
   [
     SupportedLanguages.CPlusPlus,
     {
-      // Same accounting as C: `resolveCppImportTarget` delegates to the C
-      // resolver's basename index, keyed on the same Set.
+      // Same accounting as C. C++ keeps its own basename index, still keyed
+      // on this set, so the traversal count stays a function of the set.
       files: ['include/util.hpp', 'src/helper.hpp', 'src/main.cpp'],
       fromFile: 'src/main.cpp',
       resolutionConfig: undefined,

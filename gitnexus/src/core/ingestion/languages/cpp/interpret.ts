@@ -8,15 +8,14 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
  *   2. using namespace X; → wildcard import (all symbols from namespace X)
  *   3. using X::name;     → named import (single symbol from namespace X)
  *
- * System headers (#include <...>) are not resolved to local files.
+ * Angle `#include <...>` sets `isSystem`. The resolver searches header
+ * paths for that form and does not use the basename index.
  */
 export function interpretCppImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
-  // System headers are not resolved to local files
-  if (captures['@import.system'] !== undefined) return null;
-
+  const isSystem = captures['@import.system'] !== undefined;
   const kind = captures['@import.kind']?.text;
 
   if (kind === 'named') {
@@ -27,7 +26,7 @@ export function interpretCppImport(captures: CaptureMatch): ParsedImport | null 
   }
 
   // #include or using namespace — wildcard import
-  return { kind: 'wildcard', targetRaw: source };
+  return { kind: 'wildcard', targetRaw: source, isSystem };
 }
 
 /**

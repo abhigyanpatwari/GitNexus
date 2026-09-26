@@ -981,6 +981,11 @@
         "depth_ratio": 1.938,
         "scaling_ratio": 1.033,
         "small_ms": 1.649
+      },
+      "context": {
+        "target": "stdio.h",
+        "with_context": "<null>",
+        "without_context": "src/stdio.h"
       }
     },
     "cpp": {
@@ -1032,6 +1037,11 @@
         "depth_ratio": 2.064,
         "scaling_ratio": 1.167,
         "small_ms": 1.626
+      },
+      "context": {
+        "target": "cstdio.h",
+        "with_context": "<null>",
+        "without_context": "src/cstdio.h"
       }
     },
     "objc": {
