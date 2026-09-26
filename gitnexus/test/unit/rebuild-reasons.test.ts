@@ -71,13 +71,9 @@ describe('RebuildReasonCollector summary', () => {
     const collector = new RebuildReasonCollector();
     collector.formatSummary();
     collector.add(escalation);
-    const forcingLead = (() => {
-      const other = new RebuildReasonCollector();
-      other.formatSummary();
-      other.add(schema);
-      return (other.formatFollowUp() ?? '').split(':')[0];
-    })();
-    expect((collector.formatFollowUp() ?? '').startsWith(forcingLead)).toBe(false);
+    const followUp = collector.formatFollowUp() ?? '';
+    expect(followUp).toContain(escalation.text);
+    expect(followUp).not.toMatch(/full rebuild/i);
   });
 
   it('lists a non-forcing reason without reporting forced', () => {
@@ -199,6 +195,13 @@ describe('RebuildReasonCollector interrupted-rebuild recovery', () => {
     const collector = new RebuildReasonCollector();
     collector.recordInterruptedRebuild([schema, { key: 'future-key', text: 'from a newer build' }]);
     expect(collector.reasons()[0].text).toContain(`(1) ${schema.text}; (2) from a newer build`);
+  });
+
+  it('persists the interrupted-rebuild reasons before reasons collected earlier in this run', () => {
+    const collector = new RebuildReasonCollector();
+    collector.add({ key: 'user-force', text: 'forced' });
+    collector.recordInterruptedRebuild([schema]);
+    expect(collector.toStored().map((r) => r.key)).toEqual(['schema-fingerprint', 'user-force']);
   });
 
   it('persists the flattened, merged reasons with no interrupted-rebuild entry', () => {

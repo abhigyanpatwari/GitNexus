@@ -100,6 +100,23 @@ describe('#2649 parse-phase heap guardrails', () => {
     }).toEqual({ mentionsPin: false, mentionsBudgetFlag: true });
   });
 
+  it('GITNEXUS_MEMORY=off without a pin is not told to drop a --max-old-space-size pin', () => {
+    process.env.GITNEXUS_MEMORY = 'off';
+    const remedy = heapPressureRemedy(4 * GB);
+    expect({
+      mentionsPin: remedy.includes('--max-old-space-size'),
+      mentionsMemoryOff: remedy.includes('GITNEXUS_MEMORY=off'),
+    }).toEqual({ mentionsPin: false, mentionsMemoryOff: true });
+  });
+
+  it('measures pressure against the auto-sized cap, not a flat 0.75 × RAM', () => {
+    // 7500MB cgroup: the auto cap is 6000MB (0.80 × RAM), so a 5300MB pin is
+    // below 90% of it and still gets the drop-the-pin advice.
+    restoreConstrained?.();
+    restoreConstrained = setConstrainedMemory(7500 * 1024 * 1024);
+    expect(heapPressureRemedy(5300 * 1024 * 1024)).toContain('--max-old-space-size');
+  });
+
   it('a --memory-budget heap at the machine ceiling gets the scope-or-hardware advice', () => {
     process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
     const budgetRemedy = heapPressureRemedy(23 * GB);

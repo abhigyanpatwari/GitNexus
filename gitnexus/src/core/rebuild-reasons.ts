@@ -165,13 +165,11 @@ export class RebuildReasonCollector {
    * collected reason. Never contains an `interrupted-rebuild` entry.
    */
   toStored(): StoredRebuildReason[] {
-    const stored: StoredRebuildReason[] = [];
+    const stored: StoredRebuildReason[] = [...(this.interrupted?.stored ?? [])].map(
+      ([key, text]) => ({ key, text }),
+    );
     for (const reason of this.entries.values()) {
-      if (reason.key === INTERRUPTED_KEY) {
-        for (const [key, text] of this.interrupted?.stored ?? []) stored.push({ key, text });
-      } else {
-        stored.push({ key: reason.key, text: reason.text });
-      }
+      if (reason.key !== INTERRUPTED_KEY) stored.push({ key: reason.key, text: reason.text });
     }
     return stored;
   }

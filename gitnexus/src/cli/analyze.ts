@@ -659,9 +659,10 @@ export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify.
  *
- *  Every path that decides the limit records it in `GITNEXUS_HEAP_LIMIT_SOURCE`
- *  (this process when kept, the child env when respawned) so the parse
- *  phase's remedy text advises by source. */
+ *  Paths managed by the auto-sizer or `--memory-budget` record the source in
+ *  `GITNEXUS_HEAP_LIMIT_SOURCE` (this process when kept, the child env when
+ *  respawned) so the parse phase's remedy text advises by source. Explicit
+ *  heap pins and `GITNEXUS_MEMORY=off` intentionally leave it unset. */
 export async function ensureHeap(
   options: { cleanForwardedTermination?: boolean; memoryBudget?: string } = {},
 ): Promise<boolean> {

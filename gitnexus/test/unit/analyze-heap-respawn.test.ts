@@ -438,6 +438,7 @@ const constrainTo = (mb: number): void => {
 describe('ensureHeap --memory-budget (#3137)', () => {
   let initialNodeOptions: string | undefined;
   let initialSource: string | undefined;
+  let initialMemory: string | undefined;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
   let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
   let restoreConstrainedMemory: (() => void) | undefined;
@@ -445,6 +446,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
     initialSource = process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
+    initialMemory = process.env.GITNEXUS_MEMORY;
     delete process.env.NODE_OPTIONS;
     delete process.env.GITNEXUS_MEMORY;
     delete process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
@@ -473,7 +475,8 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     else process.env.NODE_OPTIONS = initialNodeOptions;
     if (initialSource === undefined) delete process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
     else process.env.GITNEXUS_HEAP_LIMIT_SOURCE = initialSource;
-    delete process.env.GITNEXUS_MEMORY;
+    if (initialMemory === undefined) delete process.env.GITNEXUS_MEMORY;
+    else process.env.GITNEXUS_MEMORY = initialMemory;
     process.exitCode = undefined;
   });
 

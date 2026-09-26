@@ -95,12 +95,18 @@ export function heapPressureRemedy(
   // Effective RAM honors a real cgroup limit — raw os.totalmem() told users
   // inside an 8GB-limited container on a 64GB host that "this machine has
   // more memory available", an advice loop with no exit (#2649 review).
-  const autoCapBytes = effectiveRamBytes() * 0.75;
+  const autoCapBytes = autoHeapCapMb() * 1024 * 1024;
   if (heapLimitBytes < autoCapBytes * 0.9) {
     if (source === 'budget') {
       return (
         `This machine has more memory available: raise --memory-budget, or omit it ` +
         `so gitnexus sizes its heap to the machine automatically.`
+      );
+    }
+    if (source === undefined && memoryAutopilotDisabled()) {
+      return (
+        `This machine has more memory available: GITNEXUS_MEMORY=off keeps Node's default ` +
+        `heap — unset it, or pass --memory-budget <mb>.`
       );
     }
     return (
