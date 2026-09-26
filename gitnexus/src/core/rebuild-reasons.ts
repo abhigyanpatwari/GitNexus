@@ -60,6 +60,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
 /**
+ * A non-forcing reason (the escalated DB write) changes how a run writes, not
+ * whether it rebuilds, so a block of only non-forcing reasons must not claim a
+ * full rebuild.
+ */
+function leadFor(reasons: readonly RebuildReason[], forcingLead: string): string {
+  return reasons.some((reason) => reason.forcing !== false) ? forcingLead : 'Write plan changed';
+}
+
+/**
  * Validate reasons read back from metadata. Entries with string `key` and
  * `text` are kept (unknown keys included); anything else is dropped, and a
  * non-array value reads as no reasons recorded.
@@ -142,9 +151,10 @@ export class RebuildReasonCollector {
   formatSummary(): string | undefined {
     const reasons = this.takeUnannounced();
     if (reasons.length === 0) return undefined;
-    if (reasons.length === 1) return `Full rebuild required: ${reasons[0].text}`;
+    const lead = leadFor(reasons, 'Full rebuild required');
+    if (reasons.length === 1) return `${lead}: ${reasons[0].text}`;
     const numbered = reasons.map((reason, i) => `  ${i + 1}. ${reason.text}`).join('\n');
-    return `Full rebuild required (${reasons.length} reasons):\n${numbered}`;
+    return `${lead} (${reasons.length} reasons):\n${numbered}`;
   }
 
   /**
@@ -154,11 +164,7 @@ export class RebuildReasonCollector {
   formatFollowUp(): string | undefined {
     const reasons = this.takeUnannounced();
     if (reasons.length === 0) return undefined;
-    // A non-forcing reason (the escalated DB write) changes how this run
-    // writes, not whether it rebuilds, so it must not claim a full rebuild.
-    const lead = reasons.some((reason) => reason.forcing !== false)
-      ? 'Full rebuild also required'
-      : 'Write plan changed';
+    const lead = leadFor(reasons, 'Full rebuild also required');
     return `${lead}: ${reasons.map((reason) => singleLine(reason.text)).join('; ')}`;
   }
 

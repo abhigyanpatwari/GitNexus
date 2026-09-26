@@ -82,7 +82,9 @@ describe('RebuildReasonCollector summary', () => {
     collector.add(escalation);
     expect(collector.forced).toBe(false);
     expect(collector.keys()).toEqual(['escalated-full-write']);
-    expect(collector.formatSummary()).toBe(`Full rebuild required: ${escalation.text}`);
+    const summary = collector.formatSummary() ?? '';
+    expect(summary).toContain(escalation.text);
+    expect(summary).not.toMatch(/full rebuild/i);
   });
 });
 
