@@ -15,6 +15,9 @@ describe('Dart package identity (#2963)', () => {
     expect(
       dartScopeResolver.resolveImportTarget('package:app', 'lib/main.dart', files, config),
     ).toBeNull();
+    expect(
+      dartScopeResolver.resolveImportTarget('package:app/', 'lib/main.dart', files, config),
+    ).toBeNull();
   });
 
   it('does not resolve a pub dependency to a same-named local file', () => {
@@ -363,13 +366,18 @@ describe('Dart pubspec package discovery', () => {
     );
   });
 
-  it('fails closed when a pubspec cannot be read', async () => {
-    const root = await fixture({ 'pubspec.yaml': 'name: app' });
-    await chmod(path.join(root, 'pubspec.yaml'), 0o000);
-    await expect(loadDartPackageConfig(root)).rejects.toThrow(
-      'Dart pubspec discovery failed (read-pubspec)',
-    );
-  });
+  // Windows does not enforce POSIX mode bits, and root bypasses them, so chmod
+  // cannot make this read fail on either.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'fails closed when a pubspec cannot be read',
+    async () => {
+      const root = await fixture({ 'pubspec.yaml': 'name: app' });
+      await chmod(path.join(root, 'pubspec.yaml'), 0o000);
+      await expect(loadDartPackageConfig(root)).rejects.toThrow(
+        'Dart pubspec discovery failed (read-pubspec)',
+      );
+    },
+  );
 
   it('does not follow a symlinked pubspec into another tree', async () => {
     const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });

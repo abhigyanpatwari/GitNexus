@@ -136,10 +136,14 @@ describe('Dart package identity dependencies', () => {
 
   it('ignores a package URI that has no library path', () => {
     const graph = graphWithFiles(['main.dart', 'pubspec.yaml']);
-    emitDartPackageDependencies(graph, [consumer('main.dart', ['package:app', 'package:'])], {
-      packages: new Map(),
-      manifestsByName: new Map([['app', ['pubspec.yaml']]]),
-    });
+    emitDartPackageDependencies(
+      graph,
+      [consumer('main.dart', ['package:app', 'package:', 'package:app/'])],
+      {
+        packages: new Map(),
+        manifestsByName: new Map([['app', ['pubspec.yaml']]]),
+      },
+    );
     expect(graph.relationships).toEqual([]);
   });
 

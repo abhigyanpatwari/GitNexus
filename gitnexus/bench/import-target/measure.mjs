@@ -2143,6 +2143,10 @@ const HEAP_RETAINED = [];
  *     #2903 made lazy. It is the witness that the read pattern IS the
  *     footprint: same corpus and same `getWorkspaceFileIndex` as `csharp`,
  *     three times the retained bytes.
+ *
+ * `dart` is the exception (`./src/thing.dart` below). `uniqueTarget` never
+ * emits a relative path, and no timing arm exercises the relative suffix
+ * fallback, so that probe does.
  */
 const HEAP_PROBE_TARGET = {
   csharp: 'Ghost0.Deep.Missing',
@@ -2161,13 +2165,15 @@ const HEAP_PROBE_TARGET = {
   objc: 'vendor0/missing.m',
   // The entries below cover the BOUNDED tier — see `HEAP_BOUNDED`, which
   // derives to cobol, swift and rust; the rest were promoted. Same rule as the
-  // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
+  // budgeted ones above, except `dart`: a spelling `uniqueTarget` already mints, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
   //   - `go` names a missing package inside GO_MODULE, which reaches the
   //     package-directory lookup and forces `PackageDirIndex`;
-  //   - `dart` uses a relative miss to retain coverage of its basename index;
-  //     package imports now use exact membership and allocate no file index;
+  //   - `dart` is a relative miss (`./src/thing.dart`), not a `uniqueTarget`
+  //     spelling. No timing arm exercises the relative suffix fallback; this
+  //     probe does, so the basename index stays in the heap reading. Package
+  //     imports use exact membership and allocate no file index;
   //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
