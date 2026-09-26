@@ -47,7 +47,9 @@ type ManifestRead =
 
 /**
  * Read at most `maxManifestSize` bytes from a descriptor already opened
- * with `O_NOFOLLOW`. The caller closes nothing; this function owns `handle`.
+ * with `O_NOFOLLOW`. A size check after the read rejects a file that grew
+ * past the captured bytes, including past the cap. The caller closes nothing;
+ * this function owns `handle`.
  */
 async function readManifestBounded(
   handle: FileHandle,
@@ -59,8 +61,17 @@ async function readManifestBounded(
     if (info.size > maxManifestSize) return { ok: false, reason: 'manifest-size' };
     const toRead = Math.min(maxManifestSize + 1, info.size + 1);
     const buffer = Buffer.allocUnsafe(toRead);
-    const { bytesRead } = await handle.read(buffer, 0, toRead, 0);
+    let bytesRead = 0;
+    while (bytesRead < toRead) {
+      const chunk = await handle.read(buffer, bytesRead, toRead - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
     if (bytesRead > maxManifestSize) return { ok: false, reason: 'manifest-size' };
+    const after = await handle.stat();
+    if (!after.isFile()) return { ok: false, reason: 'read-pubspec' };
+    if (after.size > maxManifestSize) return { ok: false, reason: 'manifest-size' };
+    if (after.size !== bytesRead) return { ok: false, reason: 'read-pubspec' };
     return { ok: true, content: buffer.subarray(0, bytesRead).toString('utf8') };
   } catch {
     return { ok: false, reason: 'read-pubspec' };
