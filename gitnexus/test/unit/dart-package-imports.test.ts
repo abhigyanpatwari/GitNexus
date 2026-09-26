@@ -395,14 +395,17 @@ describe('Dart pubspec package discovery', () => {
     },
   );
 
-  it('does not follow a symlinked pubspec into another tree', async () => {
-    const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
-    const root = await fixture({ 'packages/data/pubspec.yaml': 'name: data' });
-    await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
-    expect((await loadDartPackageConfig(root)).packages).toEqual(
-      new Map([['data', 'packages/data/lib']]),
-    );
-  });
+  it.skipIf(process.platform === 'win32')(
+    'does not follow a symlinked pubspec into another tree',
+    async () => {
+      const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
+      const root = await fixture({ 'packages/data/pubspec.yaml': 'name: data' });
+      await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
+      expect((await loadDartPackageConfig(root)).packages).toEqual(
+        new Map([['data', 'packages/data/lib']]),
+      );
+    },
+  );
 
   it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
     if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;

@@ -1,5 +1,5 @@
 import type { Dirent } from 'node:fs';
-import { constants, open, readdir, type FileHandle } from 'node:fs/promises';
+import { constants, lstat, open, readdir, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
 import { createWatchIgnorePredicate } from '../../../../config/ignore-service.js';
@@ -42,6 +42,9 @@ async function readManifestBounded(
       : constants.O_RDONLY;
   let handle;
   try {
+    if (typeof constants.O_NOFOLLOW !== 'number' && (await lstat(entryPath)).isSymbolicLink()) {
+      return { ok: false, reason: 'read-pubspec' };
+    }
     handle = await open(entryPath, flags);
   } catch {
     return { ok: false, reason: 'read-pubspec' };
@@ -98,6 +101,10 @@ function isSingleDirectoryEntry(name: string): boolean {
 }
 
 async function openVerifiedDirectory(directory: string): Promise<FileHandle> {
+  // Windows has no O_NOFOLLOW; reject an existing junction before opening it.
+  if (typeof constants.O_NOFOLLOW !== 'number' && (await lstat(directory)).isSymbolicLink()) {
+    throw Object.assign(new Error('directory symlink'), { code: 'ELOOP' });
+  }
   const handle = await open(directory, directoryOpenFlags());
   try {
     const info = await handle.stat();
