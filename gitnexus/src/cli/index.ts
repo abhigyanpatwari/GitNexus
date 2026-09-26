@@ -174,9 +174,9 @@ program
   )
   .option(
     '--memory-budget <mb>',
-    'Explicit main-thread heap budget in MB for analyze (#3137). ' +
-      'Overrides the RAM/cgroup auto-sizer; drives graceful worker-pool ' +
-      'degradation under pressure. Minimum: 200.',
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with ' +
+      'exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size ' +
+      'pin; parse workers keep their own heap caps.',
   )
   .option(
     '--workers <n>',

@@ -279,6 +279,7 @@ gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot A
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus analyze --memory-budget 3000  # Main-thread V8 heap in MB (>= 200); overrides the auto-sizer and any --max-old-space-size pin
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
 gitnexus auto-sync [init|start|restart|stop|status|reset]  # Scheduled remote clone/pull + analyze from GITNEXUS_HOME/watch_config.yml
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
@@ -753,6 +754,11 @@ If analyze says the repository doesn't fit, do what the message says:
   re-run without the pin — no flags needed.
 - **The machine is the ceiling**: shrink the scope (exclude generated or
   vendored directories, below) or use a machine with more RAM.
+
+To set the main-thread heap yourself on a memory-constrained host, pass
+`--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
+the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
+only; parse workers keep their own caps.
 
 Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
 `GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the

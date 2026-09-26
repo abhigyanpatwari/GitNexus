@@ -73,6 +73,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--max-file-size <kb>': 'help.option.analyze.maxFileSize',
   'analyze|--worker-timeout <seconds>': 'help.option.analyze.workerTimeout',
   'analyze|--wal-checkpoint-threshold <bytes>': 'help.option.analyze.walCheckpointThreshold',
+  'analyze|--memory-budget <mb>': 'help.option.analyze.memoryBudget',
   'analyze|--workers <n>': 'help.option.analyze.workers',
   'analyze|--max-processes <n>': 'help.option.analyze.maxProcesses',
   'analyze|--max-process-branching <n>': 'help.option.analyze.maxProcessBranching',

@@ -307,6 +307,8 @@ export const en = {
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   'help.option.analyze.walCheckpointThreshold':
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze (integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
+  'help.option.analyze.memoryBudget':
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size pin; parse workers keep their own heap caps.',
   'help.option.analyze.workers':
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   'help.option.analyze.maxProcesses':
