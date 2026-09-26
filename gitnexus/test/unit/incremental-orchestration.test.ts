@@ -44,6 +44,13 @@ import {
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
+  isLanguageAvailable,
+  loadParser,
+  loadLanguage,
+} from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
+import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
@@ -1726,6 +1733,166 @@ describe('runFullAnalysis — incremental orchestration', () => {
  * 'exact-scan', which the unit-level wiring pin in
  * run-analyze-fts-repair.test.ts covers platform-independently.
  */
+let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
+if (dartAvailable) {
+  try {
+    await loadParser();
+    await loadLanguage(SupportedLanguages.Dart);
+  } catch {
+    dartAvailable = false;
+  }
+}
+
+describe.skipIf(!dartAvailable)('Dart pubspec-only incremental persistence (#2963)', () => {
+  it.each([
+    {
+      name: 'rename',
+      initial: 'name: app',
+      next: 'name: renamed',
+      file: 'pubspec.yaml',
+      nextResolves: false,
+    },
+    {
+      name: 'addition',
+      initial: null,
+      next: 'name: app',
+      file: 'pubspec.yaml',
+      nextResolves: true,
+    },
+    {
+      name: 'duplicate',
+      initial: 'name: app',
+      next: 'name: app',
+      file: 'nested/pubspec.yaml',
+      nextResolves: false,
+    },
+    {
+      name: 'repair',
+      initial: 'name: [invalid',
+      next: 'name: app',
+      file: 'pubspec.yaml',
+      nextResolves: true,
+    },
+  ])(
+    'persists $name and its reversal with forced-rebuild parity',
+    async ({ initial, next, file, nextResolves }) => {
+      const repo = await createTempDir();
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const options = { skipAgentsMd: true, skipFts: true };
+      const progress = { onProgress: () => {} };
+      const readEdges = async () => {
+        await adapter.initLbug(getStoragePaths(repo.dbPath).lbugPath, { skipFts: true });
+        try {
+          return await adapter.executeQuery(
+            `MATCH (a)-[r:CodeRelation]->(b) WHERE r.type IN ['IMPORTS', 'CALLS'] ` +
+              `RETURN a.id AS source, b.id AS target, r.type AS type, r.reason AS reason, ` +
+              `a.filePath AS sourceFile, b.filePath AS targetFile, b.name AS targetName ` +
+              `ORDER BY source, target, type, reason`,
+          );
+        } finally {
+          await adapter.closeLbug();
+        }
+      };
+      try {
+        await mkdir(path.join(repo.dbPath, 'lib'), { recursive: true });
+        await mkdir(path.join(repo.dbPath, 'nested'), { recursive: true });
+        await writeFile(path.join(repo.dbPath, '.gitignore'), '.gitnexus/\n');
+        await writeFile(
+          path.join(repo.dbPath, 'lib/model.dart'),
+          'class Model { void save() {} }\n',
+        );
+        await writeFile(
+          path.join(repo.dbPath, 'lib/bridge.dart'),
+          "import 'package:app/model.dart';\nModel buildModel() => Model();\n",
+        );
+        await writeFile(
+          path.join(repo.dbPath, 'lib/main.dart'),
+          "import './bridge.dart';\nvoid run() { buildModel().save(); }\n",
+        );
+        await writeFile(
+          path.join(repo.dbPath, 'nested/decoy.dart'),
+          'class Model { void save() {} }\n',
+        );
+        if (initial !== null) await writeFile(path.join(repo.dbPath, 'pubspec.yaml'), initial);
+        execSync('git init -q', { cwd: repo.dbPath, stdio: 'pipe' });
+        gitCommitAll(repo.dbPath, 'Dart package fixture');
+        await runFullAnalysis(repo.dbPath, options, progress);
+        const initialEdges = await readEdges();
+        expect(
+          initialEdges.filter(
+            (edge) =>
+              edge.type === 'IMPORTS' &&
+              edge.source === 'File:lib/bridge.dart' &&
+              edge.target === 'File:lib/model.dart',
+          ),
+        ).toHaveLength(initial === 'name: app' ? 1 : 0);
+
+        for (const [content, resolves] of [
+          [next, nextResolves],
+          [file === 'pubspec.yaml' ? initial : null, initial === 'name: app'],
+        ] as const) {
+          const target = path.join(repo.dbPath, file);
+          if (content === null) await rm(target);
+          else await writeFile(target, content);
+          gitCommitAll(repo.dbPath, 'Update package identity');
+          const incremental = await runFullAnalysis(repo.dbPath, options, progress);
+          expect(incremental.incrementalStats?.writeMode).toBe('incremental');
+          const incrementalEdges = await readEdges();
+          const imports = incrementalEdges.filter(
+            (edge) =>
+              edge.type === 'IMPORTS' &&
+              edge.source === 'File:lib/bridge.dart' &&
+              edge.target === 'File:lib/model.dart',
+          );
+          expect(imports).toHaveLength(resolves ? 1 : 0);
+          expect(
+            incrementalEdges.filter(
+              (edge) =>
+                edge.type === 'CALLS' &&
+                edge.sourceFile === 'lib/main.dart' &&
+                edge.targetFile === 'lib/model.dart' &&
+                edge.targetName === 'save',
+            ),
+          ).toHaveLength(resolves ? 1 : 0);
+          const meta = await loadMeta(getStoragePaths(repo.dbPath).storagePath);
+          expect(Object.hasOwn(meta?.fileHashes ?? {}, file)).toBe(content !== null);
+          const identityToFile = incrementalEdges.filter(
+            (edge) =>
+              edge.type === 'IMPORTS' &&
+              edge.reason === DART_PACKAGE_IDENTITY_REASON &&
+              edge.source === 'File:lib/main.dart' &&
+              edge.target === `File:${file}`,
+          );
+          if (content === 'name: app') {
+            expect(identityToFile).toEqual([
+              {
+                source: 'File:lib/main.dart',
+                target: `File:${file}`,
+                type: 'IMPORTS',
+                reason: DART_PACKAGE_IDENTITY_REASON,
+                sourceFile: 'lib/main.dart',
+                targetFile: file,
+                targetName: 'pubspec.yaml',
+              },
+            ]);
+          } else {
+            // Rename and deletion must drop the identity edge. A stale edge
+            // would keep rewriting importers after the package name is gone.
+            expect(identityToFile).toEqual([]);
+          }
+          await runFullAnalysis(repo.dbPath, { ...options, force: true }, progress);
+          expect(await readEdges()).toEqual(incrementalEdges);
+        }
+      } finally {
+        await adapter.closeLbug();
+        await repo.cleanup();
+      }
+    },
+    300_000,
+  );
+});
+
 describe('runFullAnalysis — escalated wipe recreates the vector index (#2409, tri-review 4669518496 P1)', () => {
   let vectorAvailable = false;
   let skipWarned = false;

@@ -143,6 +143,13 @@ export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
 export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
 
 /**
+ * Dart pubspec identity edges are incremental metadata, not initialization
+ * edges. Kept here so the cycle query can name the reason without importing
+ * a language provider into MCP startup.
+ */
+export const DART_PACKAGE_IDENTITY_REASON = 'dart-scope: package identity dependency';
+
+/**
  * How much of an import survives to run time. Lower is stronger; a pair takes
  * the minimum over every edge that reaches it. See the precedence section in
  * the module header for why the order is this one.

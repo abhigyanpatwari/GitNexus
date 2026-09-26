@@ -123,6 +123,7 @@ import {
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
 } from '../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
+import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -787,6 +788,12 @@ describe('LocalBackend.callTool', () => {
       `NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'`,
     );
     expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
+    // Package-identity edges are IMPORTS metadata for incremental
+    // invalidation. They must be excluded inside this same group, before
+    // LIMIT, or they fill the 100000-row cap on a cycle-free graph.
+    expect(reasonNullAlternativeOf(query)).toContain(
+      `r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'`,
+    );
     expect(query).toContain('LIMIT 100001');
   });
 
