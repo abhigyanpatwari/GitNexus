@@ -1,3 +1,4 @@
+import type { Dirent } from 'node:fs';
 import { constants, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
@@ -56,6 +57,44 @@ async function readManifestBounded(
   }
 }
 
+export function directoryOpenFlags(): number {
+  let flags = constants.O_RDONLY;
+  if (typeof constants.O_DIRECTORY === 'number') flags |= constants.O_DIRECTORY;
+  if (typeof constants.O_NOFOLLOW === 'number') flags |= constants.O_NOFOLLOW;
+  return flags;
+}
+
+/**
+ * Path that lists the directory inode already open on `fd`.
+ * Linux and macOS can readdir that inode. Windows has no such path in Node,
+ * so the caller lists the original path while the no-follow handle is held.
+ */
+export function descriptorDirectoryPath(fd: number): string | null {
+  if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
+  if (process.platform === 'darwin') return `/dev/fd/${fd}`;
+  return null;
+}
+
+/**
+ * Open `directory` without following a final symlink, then list that inode.
+ * A path swapped for a symlink after the parent listing fails this open
+ * (`ENOTDIR` / `ELOOP`) instead of being traversed.
+ */
+export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
+  const handle = await open(directory, directoryOpenFlags());
+  try {
+    const info = await handle.stat();
+    if (!info.isDirectory()) {
+      throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+    }
+    const listing = descriptorDirectoryPath(handle.fd);
+    if (listing !== null) return await readdir(listing, { withFileTypes: true });
+    return await readdir(directory, { withFileTypes: true });
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Discover only in-repository packages; never follow dependency paths or symlinks. */
 export async function loadDartPackageConfig(
   repoPath: string,
@@ -91,7 +130,7 @@ export async function loadDartPackageConfig(
     const directory = path.join(repoPath, relative);
     let entries;
     try {
-      entries = await readdir(directory, { withFileTypes: true });
+      entries = await readDirectoryNoFollow(directory);
     } catch {
       return incomplete('read-directory', relative || '.');
     }

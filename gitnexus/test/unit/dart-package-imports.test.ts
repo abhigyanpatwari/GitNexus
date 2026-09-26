@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, rm, symlink, writeFile, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile, chmod, rename, open, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.js';
-import { loadDartPackageConfig } from '../../src/core/ingestion/languages/dart/package-config.js';
+import { loadDartPackageConfig, readDirectoryNoFollow, directoryOpenFlags, descriptorDirectoryPath } from '../../src/core/ingestion/languages/dart/package-config.js';
 import { CountingSet } from '../helpers/counting-file-set.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
@@ -386,5 +386,34 @@ describe('Dart pubspec package discovery', () => {
     expect((await loadDartPackageConfig(root)).packages).toEqual(
       new Map([['data', 'packages/data/lib']]),
     );
+  });
+
+  it('refuses a directory symlink instead of listing its target', async () => {
+    const outside = await fixture({ 'secret.txt': 'name: foreign' });
+    const root = await fixture({});
+    const link = path.join(root, 'linked');
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(readDirectoryNoFollow(link)).rejects.toThrow();
+  });
+
+  it('lists the opened directory inode after its path becomes a symlink', async () => {
+    const listingRoot = descriptorDirectoryPath(0);
+    if (listingRoot === null) return;
+    const outside = await fixture({ 'outside.txt': 'out' });
+    const root = await fixture({});
+    const real = path.join(root, 'real');
+    await mkdir(real);
+    await writeFile(path.join(real, 'inside.txt'), 'in');
+    const handle = await open(real, directoryOpenFlags());
+    try {
+      const listed = descriptorDirectoryPath(handle.fd);
+      if (listed === null) throw new Error('descriptor listing path missing');
+      await rename(real, path.join(root, 'real-moved'));
+      await symlink(outside, real, process.platform === 'win32' ? 'junction' : 'dir');
+      await expect(readDirectoryNoFollow(real)).rejects.toThrow();
+      expect(await readdir(listed)).toEqual(['inside.txt']);
+    } finally {
+      await handle.close();
+    }
   });
 });
