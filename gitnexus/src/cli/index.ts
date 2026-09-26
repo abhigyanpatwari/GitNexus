@@ -28,7 +28,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex, Factory Droid',
   )
   .option(
     '-c, --coding-agent <agents>',
@@ -144,6 +144,18 @@ program
     '--allow-duplicate-name',
     'Register this repo even if another path already uses the same --name alias. ' +
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
+  )
+  .option(
+    '--share-with <repo>',
+    'Join the shared index store of a registered checkout of the same repository ' +
+      '(name or path); the remote URL must match. Clones join a sibling clone’s store ' +
+      'automatically; this names one explicitly and clears a --no-share opt-out.',
+  )
+  .option(
+    '--no-share',
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop ' +
+      'joining sibling clones automatically until --share-with (linked worktrees always share; ' +
+      'set GITNEXUS_SHARED_STORE=off instead)',
   )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(
@@ -350,6 +362,14 @@ program
   .option('--all', 'Clean all indexed repos')
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
   .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
+  .option(
+    '--gc',
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  )
+  .option(
+    '--local-index',
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
+  )
   .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',

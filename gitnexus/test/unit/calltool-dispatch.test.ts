@@ -622,6 +622,111 @@ describe('LocalBackend.callTool', () => {
     });
   });
 
+  it('reports UNKNOWN instead of a blast radius when the target resolves without a node id (#3354)', async () => {
+    // Every query returns the same id-less row: the resolver picks it as the
+    // single match, and the frontier query would answer for no symbol at all.
+    (executeParameterized as any).mockResolvedValue([{ name: 'runSweep', type: 'Function' }]);
+
+    const result = await backend.callTool('impact', { target: 'runSweep', direction: 'upstream' });
+
+    expect(result).toMatchObject({
+      target: { name: 'runSweep' },
+      impactedCount: null,
+      risk: 'UNKNOWN',
+    });
+    expect(result.error).toMatch(/without a node id/);
+    expect(result).not.toHaveProperty('byDepthCounts');
+  });
+
+  it.each([[' '], ['']])(
+    'treats a blank target_uid %j as omitted and resolves the name (#3354)',
+    async (targetUid) => {
+      (executeParameterized as any).mockResolvedValue([]);
+
+      const result = await backend.callTool('impact', {
+        target: 'validate',
+        target_uid: targetUid,
+        direction: 'upstream',
+      });
+
+      // Name resolution ran (no rows → not found by NAME), not a lookup of the blank uid.
+      expect(result.error).toBe("Target 'validate' not found");
+      const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+      expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+      expect(boundParams).toContainEqual(expect.objectContaining({ symName: 'validate' }));
+    },
+  );
+
+  it('treats a non-string impact target_uid as omitted instead of throwing (#3354)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('impact', {
+      target: 'validate',
+      target_uid: 42,
+      direction: 'upstream',
+    });
+
+    expect(result.error).toBe("Target 'validate' not found");
+    const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+    expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+  });
+
+  it.each([[42], [true], [{ id: 'Function:src/auth.ts:validate' }], [['x']]])(
+    'treats a non-string context uid %j as omitted instead of throwing (#3354)',
+    async (uid) => {
+      (executeParameterized as any).mockResolvedValue([]);
+
+      const result = await backend.callTool('context', { name: 'validate', uid });
+
+      expect(result).toEqual({ error: "Symbol 'validate' not found" });
+      const boundParams = (executeParameterized as any).mock.calls.map((c: unknown[]) => c[2]);
+      expect(boundParams).not.toContainEqual(expect.objectContaining({ uid: expect.anything() }));
+    },
+  );
+
+  it('names the unresolved trace source, not a blank from_uid (#3354)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', {
+      from: 'missingSource',
+      from_uid: ' ',
+      to: 'validate',
+    });
+
+    expect(result).toMatchObject({
+      status: 'not_found',
+      error: "Source symbol 'missingSource' not found.",
+    });
+  });
+
+  it('names the unresolved trace target, not a blank to_uid (#3354)', async () => {
+    const sourceRow = {
+      id: 'Function:src/a.ts:start',
+      name: 'start',
+      type: 'Function',
+      filePath: 'src/a.ts',
+      startLine: 1,
+      endLine: 2,
+    };
+    (executeParameterized as any).mockImplementation(
+      async (_path: string, _query: string, bound: Record<string, unknown> | undefined) =>
+        bound?.uid === sourceRow.id ? [sourceRow] : [],
+    );
+
+    const result = await backend.callTool('trace', {
+      from_uid: sourceRow.id,
+      to: 'missingTarget',
+      to_uid: ' ',
+    });
+    (executeParameterized as any).mockReset();
+    (executeParameterized as any).mockResolvedValue([]);
+
+    expect(result).toMatchObject({
+      status: 'not_found',
+      error: "Target symbol 'missingTarget' not found.",
+    });
+  });
+
   it('normalizes impact aliases before @group forwarding', async () => {
     resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
     const groupImpactSpy = vi

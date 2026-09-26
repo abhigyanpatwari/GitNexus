@@ -549,18 +549,23 @@ describe('auto-sync', () => {
     expect(() => extractRepoNameFromRemoteUrl('git@github.com:team/..')).toThrow('traversal');
   });
 
-  it('allows only github, gitlab, and gitee SSH SCP remote URLs', () => {
+  it('allows github, gitlab, and gitee SSH SCP and HTTPS remote URLs', () => {
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@github.com:im-fan/multica.git')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@gitlab.com:group/subgroup/repo.git')).not.toThrow();
     expect(() =>
       validateAutoSyncRemoteUrl('git@gitee.com:qts-ops/qts-code-engineering.git'),
     ).not.toThrow();
-    expect(() => validateAutoSyncRemoteUrl('https://github.com/owner/repo.git')).toThrow(
-      'must use',
+    expect(() => validateAutoSyncRemoteUrl('https://github.com/owner/repo.git')).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl('https://gitlab.com/group/repo.git')).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl('http://github.com/owner/repo.git')).toThrow(
+      'must use an SSH or HTTPS',
+    );
+    expect(() => validateAutoSyncRemoteUrl('https://user:token@github.com/owner/repo.git')).toThrow(
+      'userinfo',
     );
     expect(() => validateAutoSyncRemoteUrl('ssh://git@github.com/owner/repo.git')).toThrow(
-      'must use',
+      'must use an SSH or HTTPS',
     );
     expect(() => validateAutoSyncRemoteUrl('user@github.com:owner/repo.git')).toThrow('must use');
     expect(() => validateAutoSyncRemoteUrl('git@example.com:owner/repo.git')).toThrow(

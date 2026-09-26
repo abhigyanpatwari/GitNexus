@@ -218,11 +218,11 @@ function branchSlug(rawRef) {
   return `${safe}-${hash}`;
 }
 
-// Mirror gitnexus/src/storage/storage-resolver.ts storageSlotName exactly
+// Mirror gitnexus/src/storage/storage-slot.ts slotNameForCanonicalPath exactly
 // (sanitize + sha256 of the canonical repo path, 12-hex suffix).
 function sanitizeSlotBasename(value) {
   // Cap first, then walk the tail once — same order as
-  // gitnexus/src/storage/storage-resolver.ts (avoids /[. ]+$/ ReDoS).
+  // gitnexus/src/storage/storage-slot.ts (avoids /[. ]+$/ ReDoS).
   const sanitized = value.replace(/[\u0000-\u001f<>:"/\\|?*]/g, '-').slice(0, 80);
   let end = sanitized.length;
   while (end > 0) {
@@ -231,9 +231,13 @@ function sanitizeSlotBasename(value) {
     end--;
   }
   const candidate = sanitized.slice(0, end) || 'repository';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(candidate)
-    ? `repository-${candidate}`
-    : candidate;
+  // Windows also reserves device names with an extension (`CON.txt`); same
+  // platform branch as gitnexus/src/storage/storage-slot.ts.
+  const reserved =
+    process.platform === 'win32'
+      ? /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+      : /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+  return reserved.test(candidate) ? `repository-${candidate}` : candidate;
 }
 
 function storageSlotName(repoPath) {
@@ -248,40 +252,35 @@ function storageSlotName(repoPath) {
   return `${basename}-${digest}`;
 }
 
+// Definedness matches the CLI's storage-resolver.ts: any value other than
+// undefined (including '') counts as configured.
 function envOverridesStorage() {
-  const envPath = process.env[STORAGE_PATH_ENV];
-  const envRoot = process.env[STORAGE_ROOT_ENV];
-  return (
-    (typeof envPath === 'string' && envPath.length > 0) ||
-    (typeof envRoot === 'string' && envRoot.length > 0)
-  );
+  return process.env[STORAGE_PATH_ENV] !== undefined || process.env[STORAGE_ROOT_ENV] !== undefined;
 }
 
+// A set-but-invalid override (empty, relative, or containing NUL) makes
+// storage unresolvable (the CLI's storage-resolver.ts throws); never fall
+// back to the registry row. A filesystem root is invalid only for
+// GITNEXUS_STORAGE_PATH (validateConfiguredStoragePath rejects it);
+// GITNEXUS_STORAGE_ROOT accepts a filesystem root — storagePathFromRoot
+// resolves the slot directly under it.
 function resolveEntryStoragePath(entry) {
   const envPath = process.env[STORAGE_PATH_ENV];
-  if (
-    typeof envPath === 'string' &&
-    envPath.length > 0 &&
-    !envPath.includes('\0') &&
-    path.isAbsolute(envPath)
-  ) {
+  if (envPath !== undefined) {
+    if (!envPath || envPath.includes('\0') || !path.isAbsolute(envPath)) return null;
     const resolved = path.resolve(envPath);
-    if (path.isAbsolute(resolved)) return resolved;
+    // validateConfiguredStoragePath rejects a filesystem root.
+    return path.basename(resolved) ? resolved : null;
   }
 
   const envRoot = process.env[STORAGE_ROOT_ENV];
-  if (
-    typeof envRoot === 'string' &&
-    envRoot.length > 0 &&
-    !envRoot.includes('\0') &&
-    path.isAbsolute(envRoot)
-  ) {
+  if (envRoot !== undefined) {
+    if (!envRoot || envRoot.includes('\0') || !path.isAbsolute(envRoot)) return null;
     const root = path.resolve(envRoot);
     const slot = storageSlotName(entry.path);
-    if (slot) {
-      const storagePath = path.join(root, slot);
-      if (samePath(path.dirname(storagePath), root)) return storagePath;
-    }
+    if (!slot) return null;
+    const storagePath = path.join(root, slot);
+    return samePath(path.dirname(storagePath), root) ? storagePath : null;
   }
 
   if (entry.storagePath !== undefined) {
@@ -296,6 +295,37 @@ function resolveEntryStoragePath(entry) {
     return path.resolve(entry.storagePath);
   }
   return path.resolve(path.join(entry.path, GITNEXUS_DIR));
+}
+
+// A single path segment: `..repo-<hash>` is a legal slot name, `..` is not.
+function isDirectChild(parent, child) {
+  const rel = path.relative(parent, child);
+  return rel !== '' && rel !== '..' && !path.isAbsolute(rel) && !rel.includes(path.sep);
+}
+
+// Mirror gitnexus/src/storage/shared-store.ts resolveGraphPath (#3352): a
+// shared-store checkout slot may read a commit graph in the same store
+// instead of owning <slot>/lbug. Any other recorded value is ignored.
+function resolveGraphPath(storagePath, metadata) {
+  const own = path.join(storagePath, LBUG_DIRECTORY);
+  const storesRoot = path.resolve(
+    process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'),
+    'stores',
+  );
+  const slot = path.resolve(storagePath);
+  const checkoutsDir = path.dirname(slot);
+  const root = path.dirname(checkoutsDir);
+  if (path.basename(checkoutsDir) !== 'checkouts') return own;
+  if (!isDirectChild(checkoutsDir, slot) || !isDirectChild(storesRoot, root)) return own;
+  const recorded = metadata && metadata.graphPath;
+  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
+  const graph = path.resolve(recorded);
+  // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
+  const valid =
+    path.basename(graph) === LBUG_DIRECTORY &&
+    isDirectChild(path.join(root, 'commits'), path.dirname(graph)) &&
+    /^[0-9a-f]{7,64}-[0-9a-f]{8,64}$/.test(path.basename(path.dirname(graph)));
+  return valid ? graph : own;
 }
 
 function hasLocalIndexSignal(storagePath) {
@@ -387,7 +417,9 @@ function findRegisteredRepo(cwd) {
       best = {
         path: entry.path,
         storagePath,
-        lbugPath: path.join(indexDir, LBUG_DIRECTORY),
+        lbugPath: branchIsIndexed
+          ? path.join(indexDir, LBUG_DIRECTORY)
+          : resolveGraphPath(storagePath, ownershipMetadata),
         metadata: branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata,
       };
     }
