@@ -64,6 +64,7 @@ import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './opt
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError, cliWarn } from './cli-message.js';
+import { IntegerOptionError, parseIntegerOption } from './int-option.js';
 import { heapCapMbFor, memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
@@ -940,8 +941,10 @@ const analyzeCommandImpl = async (
   // previous call leaked.
   let workerPoolSize: number | undefined;
   if (options.workers !== undefined) {
-    const parsedWorkers = Number(options.workers);
-    if (!Number.isInteger(parsedWorkers) || parsedWorkers < 1) {
+    try {
+      workerPoolSize = parseIntegerOption(options.workers, '--workers', { minimum: 1 });
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
       cliError(
         '  --workers must be a positive integer (>= 1). ' +
           'GitNexus parses through a worker pool only — there is no sequential ' +
@@ -950,7 +953,6 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-    workerPoolSize = parsedWorkers;
   }
 
   // `--memory-budget` (#3137): explicit main-thread heap ceiling in MB.
@@ -993,8 +995,12 @@ const analyzeCommandImpl = async (
   // process.exit() leaves the progress bar's hidden cursor uncleared).
   let embeddingsNodeLimit: number | undefined;
   if (typeof options.embeddings === 'string') {
-    const parsed = Number(options.embeddings);
-    if (!Number.isInteger(parsed) || parsed < 0) {
+    try {
+      embeddingsNodeLimit = parseIntegerOption(options.embeddings, '--embeddings', {
+        minimum: 0,
+      });
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
       cliError(
         `  --embeddings expects a non-negative integer (got "${options.embeddings}"). ` +
           `Pass 0 to disable the safety cap, or omit the value to keep the default.\n`,
@@ -1002,7 +1008,6 @@ const analyzeCommandImpl = async (
       process.exitCode = 1;
       return;
     }
-    embeddingsNodeLimit = parsed;
   }
   const embeddingsEnabled = !!options.embeddings;
 
@@ -1012,13 +1017,14 @@ const analyzeCommandImpl = async (
     value: string | undefined,
   ): boolean => {
     if (value === undefined) return true;
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-      cliError(`  ${optionName} must be a positive integer.\n`);
+    try {
+      process.env[envName] = String(parseIntegerOption(value, optionName, { minimum: 1 }));
+    } catch (error) {
+      if (!(error instanceof IntegerOptionError)) throw error;
+      cliError(`  ${error.message}.\n`);
       process.exitCode = 1;
       return false;
     }
-    process.env[envName] = String(parsed);
     return true;
   };
 
