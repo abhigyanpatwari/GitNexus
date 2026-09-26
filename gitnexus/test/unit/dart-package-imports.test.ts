@@ -18,6 +18,7 @@ import {
   readDirectoryNoFollow,
   directoryOpenFlags,
   descriptorDirectoryPath,
+  descriptorEntryPath,
 } from '../../src/core/ingestion/languages/dart/package-config.js';
 import { CountingSet } from '../helpers/counting-file-set.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -400,6 +401,32 @@ describe('Dart pubspec package discovery', () => {
     await symlink(path.join(outside, 'pubspec.yaml'), path.join(root, 'pubspec.yaml'));
     expect((await loadDartPackageConfig(root)).packages).toEqual(
       new Map([['data', 'packages/data/lib']]),
+    );
+  });
+
+  it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
+    if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;
+    const outside = await fixture({
+      'pubspec.yaml': 'name: foreign',
+      'nested/pubspec.yaml': 'name: foreign',
+    });
+    const root = await fixture({
+      'pkg/pubspec.yaml': 'name: data',
+      'pkg/nested/pubspec.yaml': 'name: nested_data',
+    });
+    const pkg = path.join(root, 'pkg');
+    const loaded = await loadDartPackageConfig(root, {
+      beforeEntryOpen: async (relative) => {
+        if (relative !== 'pkg') return;
+        await rename(pkg, path.join(root, 'pkg-moved'));
+        await symlink(outside, pkg, 'dir');
+      },
+    });
+    expect(loaded.packages).toEqual(
+      new Map([
+        ['data', 'pkg/lib'],
+        ['nested_data', 'pkg/nested/lib'],
+      ]),
     );
   });
 

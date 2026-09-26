@@ -1,5 +1,5 @@
 import type { Dirent } from 'node:fs';
-import { constants, open, readdir } from 'node:fs/promises';
+import { constants, open, readdir, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
 import { createWatchIgnorePredicate } from '../../../../config/ignore-service.js';
@@ -17,6 +17,11 @@ const DART_PUBSPEC_DIRECTORY_LIMIT = 20_000;
 export interface DartPackageConfigOptions {
   /** Test seam. Production calls omit it and use the module directory limit. */
   readonly directoryLimit?: number;
+  /**
+   * Test seam. Production calls omit it. Invoked after the directory inode
+   * is listed and before its entries are opened.
+   */
+  readonly beforeEntryOpen?: (relativePath: string) => void | Promise<void>;
 }
 
 type ManifestRead =
@@ -76,20 +81,51 @@ export function descriptorDirectoryPath(fd: number): string | null {
 }
 
 /**
- * Open `directory` without following a final symlink, then list that inode.
- * A path swapped for a symlink after the parent listing fails this open
- * (`ENOTDIR` / `ELOOP`) instead of being traversed.
+ * One entry of the directory inode open on `fd`.
+ * Linux looks up `/proc/self/fd/N/<name>` in that inode. This walker has no
+ * child path for macOS or Windows, so those platforms reopen the original path.
  */
-export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
+export function descriptorEntryPath(fd: number, name: string): string | null {
+  if (process.platform !== 'linux') return null;
+  if (!isSingleDirectoryEntry(name)) return null;
+  return `/proc/self/fd/${fd}/${name}`;
+}
+
+function isSingleDirectoryEntry(name: string): boolean {
+  return (
+    name !== '' && name !== '.' && name !== '..' && !name.includes('/') && !name.includes('\0')
+  );
+}
+
+async function openVerifiedDirectory(directory: string): Promise<FileHandle> {
   const handle = await open(directory, directoryOpenFlags());
   try {
     const info = await handle.stat();
     if (!info.isDirectory()) {
       throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
     }
-    const listing = descriptorDirectoryPath(handle.fd);
-    if (listing !== null) return await readdir(listing, { withFileTypes: true });
-    return await readdir(directory, { withFileTypes: true });
+    return handle;
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+async function listOpenedDirectory(handle: FileHandle, directory: string): Promise<Dirent[]> {
+  const listing = descriptorDirectoryPath(handle.fd);
+  if (listing !== null) return await readdir(listing, { withFileTypes: true });
+  return await readdir(directory, { withFileTypes: true });
+}
+
+/**
+ * Open `directory` without following a final symlink, then list that inode.
+ * A path swapped for a symlink after the parent listing fails this open
+ * (`ENOTDIR` / `ELOOP`) instead of being traversed.
+ */
+export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
+  const handle = await openVerifiedDirectory(directory);
+  try {
+    return await listOpenedDirectory(handle, directory);
   } finally {
     await handle.close();
   }
@@ -121,28 +157,78 @@ export async function loadDartPackageConfig(
   const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
   const directoryLimit = options?.directoryLimit ?? DART_PUBSPEC_DIRECTORY_LIMIT;
   const ambiguous = new Set<string>();
-  const pending = [''];
+  type WalkFrame = {
+    relative: string;
+    handle: FileHandle;
+    entries: Dirent[];
+    next: number;
+  };
+  const stack: WalkFrame[] = [];
   let visited = 0;
-  while (pending.length > 0) {
-    if (++visited > directoryLimit) return incomplete('directory-limit');
-    const relative = pending.pop();
-    if (relative === undefined) break;
-    const directory = path.join(repoPath, relative);
-    let entries;
+
+  const closeStack = async (): Promise<void> => {
+    const frames = stack.splice(0);
+    await Promise.all(frames.map((frame) => frame.handle.close().catch(() => undefined)));
+  };
+
+  const fillFrame = async (frame: WalkFrame): Promise<void> => {
+    if (++visited > directoryLimit) return incomplete('directory-limit', frame.relative || '.');
+    const directory = path.join(repoPath, frame.relative);
     try {
-      entries = await readDirectoryNoFollow(directory);
+      frame.entries = await listOpenedDirectory(frame.handle, directory);
     } catch {
-      return incomplete('read-directory', relative || '.');
+      return incomplete('read-directory', frame.relative || '.');
     }
-    for (const entry of entries) {
-      const entryPath = path.join(directory, entry.name);
-      if (entry.isSymbolicLink()) continue;
+    if (options?.beforeEntryOpen) await options.beforeEntryOpen(frame.relative);
+  };
+
+  try {
+    let rootHandle: FileHandle;
+    try {
+      rootHandle = await openVerifiedDirectory(repoPath);
+    } catch {
+      return incomplete('read-directory', '.');
+    }
+    const root: WalkFrame = { relative: '', handle: rootHandle, entries: [], next: 0 };
+    stack.push(root);
+    await fillFrame(root);
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (frame === undefined) break;
+      if (frame.next >= frame.entries.length) {
+        stack.pop();
+        await frame.handle.close().catch(() => undefined);
+        continue;
+      }
+      const entry = frame.entries[frame.next];
+      frame.next += 1;
+      if (entry === undefined || !isSingleDirectoryEntry(entry.name) || entry.isSymbolicLink()) {
+        continue;
+      }
+      const childRelative = frame.relative ? `${frame.relative}/${entry.name}` : entry.name;
+      const entryPath = path.join(repoPath, childRelative);
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || isIgnored(entryPath, true)) continue;
-        pending.push(relative ? `${relative}/${entry.name}` : entry.name);
+        const openedVia = descriptorEntryPath(frame.handle.fd, entry.name);
+        let childHandle: FileHandle;
+        try {
+          childHandle = await openVerifiedDirectory(openedVia ?? entryPath);
+        } catch {
+          return incomplete('read-directory', childRelative);
+        }
+        const child: WalkFrame = {
+          relative: childRelative,
+          handle: childHandle,
+          entries: [],
+          next: 0,
+        };
+        stack.push(child);
+        await fillFrame(child);
       } else if (entry.isFile() && entry.name === 'pubspec.yaml' && !isIgnored(entryPath, false)) {
-        const manifestPath = relative ? `${relative}/pubspec.yaml` : 'pubspec.yaml';
-        const read = await readManifestBounded(entryPath, maxManifestSize);
+        const manifestPath = frame.relative ? `${frame.relative}/pubspec.yaml` : 'pubspec.yaml';
+        const openedVia = descriptorEntryPath(frame.handle.fd, entry.name);
+        const read = await readManifestBounded(openedVia ?? entryPath, maxManifestSize);
         if (read.ok === false) return incomplete(read.reason, manifestPath);
         try {
           const manifest: unknown = load(read.content, {
@@ -163,7 +249,7 @@ export async function loadDartPackageConfig(
             packages.delete(name);
             ambiguous.add(name);
           } else {
-            packages.set(name, relative ? `${relative}/lib` : 'lib');
+            packages.set(name, frame.relative ? `${frame.relative}/lib` : 'lib');
           }
         } catch {
           // Invalid YAML cannot declare a package. Other valid packages remain usable.
@@ -171,6 +257,8 @@ export async function loadDartPackageConfig(
         }
       }
     }
+  } finally {
+    await closeStack();
   }
   return { packages, manifestsByName };
 }
