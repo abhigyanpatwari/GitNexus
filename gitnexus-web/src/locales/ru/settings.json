@@ -1,0 +1,116 @@
+{
+  "title": "Настройки AI",
+  "subtitle": "Настройте провайдера LLM",
+  "localServer": "Локальный сервер",
+  "backendUrl": "URL бэкенда",
+  "connected": "Подключено",
+  "notConnected": "Не подключено",
+  "runServeHint": "Выполните `gitnexus serve`, чтобы подключить веб‑интерфейс к локальному бэкенду.",
+  "accessToken": {
+    "label": "Токен доступа",
+    "placeholder": "Вставьте ваш токен доступа для развёртывания",
+    "hint": "Требуется только для защищённого развёртывания. Найдите его в панели Render в переменной окружения GITNEXUS_SERVE_AUTH_TOKEN сервиса gitnexus-web. Для локального сервера оставьте пустым.",
+    "title": "Это развёртывание требует токен доступа",
+    "promptHint": "Сервер GitNexus запущен, но защищён. Найдите токен в панели Render в переменной окружения GITNEXUS_SERVE_AUTH_TOKEN сервиса gitnexus-web.",
+    "connect": "Подключиться",
+    "reveal": "Показать токен доступа",
+    "hide": "Скрыть токен доступа",
+    "sessionNote": "Хранится только для этой сессии браузера. Вам потребуется ввести его заново в новой вкладке или после закрытия браузера."
+  },
+  "provider": "Провайдер",
+  "apiKey": "API-ключ",
+  "learnMore": "Подробнее",
+  "model": "Модель",
+  "searchModelPlaceholder": "Поиск или ввод ID модели...",
+  "selectModelPlaceholder": "Выберите или введите модель...",
+  "customModelHint": "Введите ID модели или нажмите Enter",
+  "customModelExample": "например, openai/gpt-4o",
+  "pressEnterCustom": "Нажмите Enter, чтобы использовать как пользовательский ID",
+  "baseUrl": "Базовый URL",
+  "optional": "необязательно",
+  "deploymentName": "Имя развёртывания",
+  "apiVersion": "Версия API",
+  "checkConnection": "Проверить подключение",
+  "privacyLabel": "Конфиденциальность:",
+  "privacyText": "Ваши API-ключи хранятся локально в этом браузере.",
+  "providers": {
+    "openai": {
+      "description": "Используйте модели OpenAI для чата и анализа кода.",
+      "apiKeyPlaceholder": "Введите ваш API-ключ OpenAI",
+      "helperText": "Получите API-ключ на",
+      "helperLinkLabel": "платформе OpenAI",
+      "modelPlaceholder": "например, gpt-4o, gpt-4-turbo, gpt-3.5-turbo",
+      "baseUrlPlaceholder": "https://api.openai.com/v1 (по умолчанию)",
+      "baseUrlHint": "Оставьте пустым для использования стандартного API OpenAI. Укажите свой URL для прокси или совместимых API."
+    },
+    "gemini": {
+      "description": "Используйте модели Google Gemini.",
+      "apiKeyPlaceholder": "Введите ваш API-ключ Google AI",
+      "helperText": "Получите API-ключ в",
+      "helperLinkLabel": "Google AI Studio",
+      "modelPlaceholder": "например, gemini-2.0-flash, gemini-1.5-pro"
+    },
+    "anthropic": {
+      "description": "Используйте модели Claude от Anthropic.",
+      "apiKeyPlaceholder": "Введите ваш API-ключ Anthropic",
+      "helperText": "Получите API-ключ в",
+      "helperLinkLabel": "консоли Anthropic",
+      "modelPlaceholder": "например, claude-sonnet-4-20250514, claude-3-opus"
+    },
+    "azure": {
+      "apiKeyPlaceholder": "Введите ваш API-ключ Azure OpenAI",
+      "deploymentNamePlaceholder": "например, gpt-4o-deployment"
+    },
+    "ollama": {
+      "quickStart": "📋 Быстрый старт:",
+      "installFrom": "Установите Ollama с",
+      "thenRun": ", затем выполните:",
+      "modelPlaceholder": "например, llama3.2, mistral, codellama"
+    },
+    "openrouter": {
+      "apiKeyPlaceholder": "Введите ваш API-ключ OpenRouter",
+      "helperText": "Получите API-ключ на",
+      "helperLinkLabel": "странице ключей OpenRouter"
+    },
+    "minimax": {
+      "apiKeyPlaceholder": "Введите ваш API-ключ MiniMax",
+      "helperText": "Получите API-ключ на",
+      "helperLinkLabel": "платформе MiniMax",
+      "modelPlaceholder": "например, MiniMax-M3 или MiniMax-M2.7",
+      "helperModel": "Доступны: MiniMax-M3 (по умолчанию) и MiniMax-M2.7",
+      "endpoint": "Региональный эндпоинт",
+      "endpoints": {
+        "global": "Глобальный (api.minimax.io)",
+        "china": "Китайский (api.minimaxi.com)"
+      },
+      "thinking": "Режим мышления",
+      "thinkingModes": {
+        "adaptive": "Адаптивный",
+        "disabled": "Отключён",
+        "always_on": "Всегда включён"
+      },
+      "capabilities": "Окно контекста {{contextWindow}} | Входные данные: {{modalities}}"
+    },
+    "glm": {
+      "apiKeyPlaceholder": "Введите ваш API-ключ Z.AI"
+    }
+  },
+  "loadingModels": "Загрузка моделей...",
+  "noModelsMatch": "Нет моделей, соответствующих «{{searchTerm}}»",
+  "moreModels": "+ ещё {{count}} • Уточните поиск",
+  "apiKeySession": "API-ключи хранятся в сессионном хранилище и будут удалены при закрытии этой вкладки.",
+  "startLocalServer": "запустите локальный сервер",
+  "settingsSaved": "Настройки сохранены",
+  "failedToSave": "Не удалось сохранить",
+  "saveSettings": "Сохранить настройки",
+  "endpoint": "Эндпоинт",
+  "azurePortal": "Портал Azure",
+  "azureHint": "Настройте службу Azure OpenAI в",
+  "defaultPort": "Порт по умолчанию:",
+  "pullModel": "Загрузите модель с помощью",
+  "browseModels": "Просмотр всех моделей на",
+  "openRouterModels": "Модели OpenRouter",
+  "zaiPlatform": "Платформа Z.AI",
+  "glmCodingApi": "API для кодинга (по умолчанию). Используйте https://api.z.ai/api/paas/v4 для общего API.",
+  "privacyFull": "Ваши API-ключи хранятся только в сессионном хранилище браузера и удаляются при закрытии вкладки. Они отправляются напрямую провайдеру LLM при общении в чате. Ваш код никогда не покидает ваш компьютер."
+}

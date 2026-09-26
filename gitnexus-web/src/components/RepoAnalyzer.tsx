@@ -926,10 +926,12 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             <p className="text-xs text-text-muted" data-testid="upload-summary">
               {uploadSummary.skippedDirs === undefined
                 ? t('onboarding:repoAnalyzer.upload.selected', {
+                    count: uploadSummary.count,
                     fileCount: uploadSummary.count,
                     dropped: uploadSummary.dropped,
                   })
                 : t('onboarding:repoAnalyzer.upload.selectedDrop', {
+                    count: uploadSummary.count,
                     fileCount: uploadSummary.count,
                     dropped: uploadSummary.dropped,
                     skippedDirs: uploadSummary.skippedDirs,
