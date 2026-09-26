@@ -22,6 +22,7 @@ import {
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
+import { parseIntegerOption } from './int-option.js';
 import {
   formatInvalidProcessDetectionOverride,
   parseProcessDetectionBudgetStrings,
@@ -91,9 +92,7 @@ function positiveInteger(
   maximum?: number,
 ): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 1)
-    throw new Error(`${flag} must be a positive integer`);
+  const parsed = parseIntegerOption(value, flag, { minimum: 1 });
   if (maximum !== undefined && parsed > maximum) {
     throw new Error(`${flag} must not exceed ${maximum}`);
   }
@@ -425,7 +424,11 @@ export async function watchCommandWithRunnerIdentity(
   inputPath?: string,
   cliOptions: WatchCliOptions = {},
 ): Promise<void> {
-  if (await ensureHeap({ cleanForwardedTermination: true })) return;
+  if (
+    await ensureHeap({ cleanForwardedTermination: true, memoryBudget: cliOptions.memoryBudget })
+  ) {
+    return;
+  }
 
   const requestedRepoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
   if (requestedRepoPath === null || !hasGitDir(requestedRepoPath)) {

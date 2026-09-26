@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
 import type { EmbeddingCheckpoint } from '../../src/core/embedding-checkpoint.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
@@ -536,7 +537,10 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
     await tmpHome.cleanup();
   });
 
-  it('rebuilds a slot whose metadata is at HEAD but whose graph is gone', async () => {
+  /** A linked-worktree checkout slot whose metadata is current in every stamp. */
+  const currentCheckoutSlot = async (
+    overrides: Partial<RepoMeta> = {},
+  ): Promise<{ wt: string; slot: string }> => {
     const root = await fs.realpath(tmpRepo.dbPath);
     const main = path.join(root, 'main');
     await fs.mkdir(main);
@@ -569,14 +573,20 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
       runnerIdentity: resolveAnalyzerRunnerIdentity(
         pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
       ),
-      // Same FTS mode as the run below, so only the missing graph can
-      // decide against the fast path.
+      // Same FTS mode as the runs below, so only the graph can decide
+      // against the fast path.
       capabilities: {
         graph: { provider: 'ladybugdb', status: 'available' },
         fts: { provider: 'ladybugdb-fts', status: 'unavailable', skipReason: 'disabled-by-flag' },
         vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
       },
+      ...overrides,
     });
+    return { wt, slot };
+  };
+
+  it('rebuilds a slot whose metadata is at HEAD but whose graph is gone', async () => {
+    const { wt, slot } = await currentCheckoutSlot();
 
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     const result = await runFullAnalysis(
@@ -586,7 +596,44 @@ describe('up-to-date fast path over a missing shared graph (#3374)', () => {
     );
 
     expect(result.alreadyUpToDate).not.toBe(true);
+    expect(result.rebuildReasons).toEqual(['shared-store-missing-graph']);
     expect(existsSync(resolveGraphPath(slot))).toBe(true);
+  }, 120_000);
+
+  it('names a failed shared-graph copy in the summary, not in a follow-up (#3137)', async () => {
+    // The slot records an older commit, so the run reaches the copy, and
+    // points at a published commit graph that exists but cannot be copied (a
+    // directory where the graph file belongs).
+    const olderCommit = '0'.repeat(40);
+    const { wt, slot } = await currentCheckoutSlot({ lastCommit: olderCommit });
+    const unreadableGraph = path.join(
+      commitGraphDir(layoutOf(wt), olderCommit, 'deadbeefdeadbeef'),
+      'lbug',
+    );
+    await fs.mkdir(unreadableGraph, { recursive: true });
+    const meta = await loadMeta(slot);
+    if (meta === null) throw new Error('slot metadata missing');
+    await saveMeta(slot, { ...meta, graphPath: unreadableGraph });
+    expect(resolveGraphPath(slot)).toBe(unreadableGraph);
+
+    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    const logs: string[] = [];
+    const result = await runFullAnalysis(
+      wt,
+      { skipAgentsMd: true, skipSkills: true, skipFts: true },
+      { onProgress: () => {}, onLog: (m) => logs.push(m) },
+    );
+
+    expect(result.rebuildReasons).toEqual(['private-graph-unavailable']);
+    const single = new RebuildReasonCollector();
+    single.add({ key: 'private-graph-unavailable', text: '' });
+    const summaryPrefix = single.formatSummary() ?? '';
+    const late = new RebuildReasonCollector();
+    late.formatSummary();
+    late.add({ key: 'private-graph-unavailable', text: '' });
+    const followUpPrefix = late.formatFollowUp() ?? '';
+    expect(logs.filter((m) => m.startsWith(summaryPrefix))).toHaveLength(1);
+    expect(logs.filter((m) => m.startsWith(followUpPrefix))).toEqual([]);
   }, 120_000);
 });
 

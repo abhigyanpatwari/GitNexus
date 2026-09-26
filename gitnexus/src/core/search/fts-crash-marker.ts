@@ -111,5 +111,8 @@ export const buildFtsDirtyStamp = (args: {
     ...(prior?.droppedImporterChunks !== undefined
       ? { droppedImporterChunks: prior.droppedImporterChunks }
       : {}),
+    // Rebuild reasons (#3137) survive the FTS restamp so a crash inside
+    // CREATE_FTS_INDEX still names why the run rebuilt.
+    ...(prior?.reasons !== undefined ? { reasons: prior.reasons } : {}),
   };
 };

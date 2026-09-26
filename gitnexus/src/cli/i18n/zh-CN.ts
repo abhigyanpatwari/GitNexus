@@ -280,6 +280,8 @@ export const zhCN = {
   'help.option.analyze.workerTimeout': 'Worker 子批次空闲超时，超时后重试/回退。默认：30。',
   'help.option.analyze.walCheckpointThreshold':
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
+  'help.option.analyze.memoryBudget':
+    'analyze 主线程 V8 堆大小（MB，整数 >= 200）。以该堆大小重新运行 analyze，覆盖按 RAM/cgroup 自动计算的上限及任何 --max-old-space-size 设置；解析 worker 各自保留独立的堆上限。',
   'help.option.analyze.workers':
     '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
   'help.option.analyze.maxProcesses':

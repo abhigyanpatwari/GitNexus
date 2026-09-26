@@ -212,25 +212,25 @@ Note that the bundled Graphology path is no longer the slow option it once was: 
 
 Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 
-| Tool             | What It Does                                                           |
-| ---------------- | ---------------------------------------------------------------------- |
-| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)       |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF); optional `chain_depth` expands each result's call chain |
+| Tool             | What It Does                                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)                                                                                  |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF); optional `chain_depth` expands each result's call chain                                    |
 | `context`        | 360-degree symbol view — categorized refs, process participation, HTTP routes, `is_entry_point` flag; optional `chain_depth` call-chain expansion |
-| `impact`         | Blast radius analysis with depth grouping and confidence               |
-| `trace`          | Shortest directed path between two symbols (call + class-member edges) |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
-| `check`          | Read-only structural checks against the indexed graph                  |
-| `rename`         | Multi-file coordinated rename with graph + text search                 |
-| `cypher`         | Raw Cypher graph queries                                               |
-| `route_map`      | API route map — which components fetch which endpoints, and handlers   |
-| `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
-| `shape_check`    | Validate API response shapes against consumers' property accesses      |
-| `api_impact`     | Pre-change impact report for an API route handler                      |
-| `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)  |
-| `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)     |
-| `group_list`     | List configured repository groups                                      |
-| `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
+| `impact`         | Blast radius analysis with depth grouping and confidence                                                                                          |
+| `trace`          | Shortest directed path between two symbols (call + class-member edges)                                                                            |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes                                                                                        |
+| `check`          | Read-only structural checks against the indexed graph                                                                                             |
+| `rename`         | Multi-file coordinated rename with graph + text search                                                                                            |
+| `cypher`         | Raw Cypher graph queries                                                                                                                          |
+| `route_map`      | API route map — which components fetch which endpoints, and handlers                                                                              |
+| `tool_map`       | MCP/RPC tool definitions — where they're defined and handled                                                                                      |
+| `shape_check`    | Validate API response shapes against consumers' property accesses                                                                                 |
+| `api_impact`     | Pre-change impact report for an API route handler                                                                                                 |
+| `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)                                                                             |
+| `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)                                                                                |
+| `group_list`     | List configured repository groups                                                                                                                 |
+| `group_sync`     | Rebuild a group's Contract Registry and cross-repo links                                                                                          |
 
 > Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
@@ -279,6 +279,7 @@ gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot A
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
+gitnexus analyze --memory-budget 3000  # Main-thread V8 heap in MB (>= 200); overrides the auto-sizer and any --max-old-space-size pin
 gitnexus analyze --wal-checkpoint-threshold 67108864  # 64 MiB. Control LadybugDB WAL auto-checkpoint threshold (default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
 gitnexus auto-sync [init|start|restart|stop|status|reset]  # Scheduled remote clone/pull + analyze from GITNEXUS_HOME/watch_config.yml
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
@@ -754,6 +755,11 @@ If analyze says the repository doesn't fit, do what the message says:
 - **The machine is the ceiling**: shrink the scope (exclude generated or
   vendored directories, below) or use a machine with more RAM.
 
+To set the main-thread heap yourself on a memory-constrained host, pass
+`--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
+the auto-sizer and any `--max-old-space-size` pin. It sizes the main thread
+only; parse workers keep their own caps.
+
 Escape hatches (`GITNEXUS_MEMORY=off` to decline the autopilot,
 `GITNEXUS_WORKER_HEAP_MB` to size workers yourself) are listed in the
 environment-variable table below —
@@ -839,6 +845,7 @@ Four env vars expose the pool's resilience layers (respawn budget, cumulative-ti
 | `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
 | `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
 | `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                                           |
+| `GITNEXUS_HEAP_LIMIT_SOURCE`                    | unset                              | Set by analyze itself (`budget` or `auto`) to record where the heap limit came from, so out-of-memory advice points at `--memory-budget` rather than a `--max-old-space-size` pin.                                                                        | Never — internal; set `--memory-budget` instead.                                                                                                                                                                                                                                                                                                       |
 | `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`              | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |
 

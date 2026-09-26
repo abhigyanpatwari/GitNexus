@@ -138,7 +138,7 @@ describe('external storage and content retention', () => {
     expect(fullGraph.basicBlockCount).toBeGreaterThan(0);
 
     process.env.GITNEXUS_CONTENT_RETENTION = 'symbol';
-    await runFullAnalysis(
+    const symbolRun = await runFullAnalysis(
       repo,
       { ...options, force: false },
       {
@@ -149,7 +149,8 @@ describe('external storage and content retention', () => {
     const symbolMeta = await loadMeta(storage);
     const symbolGraph = await readGraph(lbugPath);
     const symbolDatabaseSize = await recursiveSize(lbugPath);
-    expect(logs.join('\n')).toContain('forcing a full rebuild');
+    // The retention change is what forced this rebuild (the caller passed no --force).
+    expect(symbolRun.rebuildReasons).toContain('content-retention');
     expect(symbolMeta).toMatchObject({
       contentRetention: 'symbol',
       contentRetentionSchemaVersion: 1,

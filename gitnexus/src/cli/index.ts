@@ -11,6 +11,7 @@ import {
   createLbugLazyAction,
 } from './lazy-action.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
+import { IntegerOptionError, parseMemoryBudgetMb } from './int-option.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -172,6 +173,12 @@ program
       '(integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
   )
   .option(
+    '--memory-budget <mb>',
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with ' +
+      'exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size ' +
+      'pin; parse workers keep their own heap caps.',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
@@ -230,6 +237,18 @@ program
     if (analyzeOpts['debounce'] !== undefined && analyzeOpts['watch'] !== true) {
       process.stderr.write('\n  --debounce requires --watch\n\n');
       process.exit(1);
+    }
+    // Validate --memory-budget here so analyze and --watch both reject a bad
+    // value before ensureHeap sizes (and possibly respawns) the heap (#3137).
+    const budgetOpt = analyzeOpts['memoryBudget'];
+    if (budgetOpt !== undefined) {
+      try {
+        parseMemoryBudgetMb(String(budgetOpt));
+      } catch (error) {
+        if (!(error instanceof IntegerOptionError)) throw error;
+        process.stderr.write(`\n  ${error.message}\n\n`);
+        process.exit(1);
+      }
     }
     // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
     // module-load time during the lazy import('./analyze.js') below (via the
