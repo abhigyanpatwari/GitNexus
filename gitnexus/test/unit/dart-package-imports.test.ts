@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { constants } from 'node:fs';
 import {
@@ -428,6 +429,20 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
       );
     },
   );
+
+  it('does not block when a listed pubspec is replaced by a fifo', async () => {
+    const root = await fixture({ 'pubspec.yaml': 'name: app' });
+    const manifest = path.join(root, 'pubspec.yaml');
+    await expect(
+      loadDartPackageConfig(root, {
+        beforeEntryOpen: async (relative) => {
+          if (relative !== '') return;
+          await rm(manifest);
+          execFileSync('mkfifo', [manifest]);
+        },
+      }),
+    ).rejects.toThrow('Dart pubspec discovery failed (read-pubspec)');
+  }, 3_000);
 
   it.skipIf(process.platform === 'win32')(
     'does not follow a symlinked pubspec into another tree',

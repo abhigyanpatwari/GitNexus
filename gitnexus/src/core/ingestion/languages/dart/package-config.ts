@@ -85,8 +85,17 @@ export function directoryOpenFlags(): number {
   return flags;
 }
 
+/**
+ * Read-only, no-follow, and non-blocking. `O_NONBLOCK` does not change a
+ * regular-file read. Without it, a FIFO blocks inside `open` until a writer
+ * connects, so the later file-type check never runs.
+ */
 function fileOpenFlags(): number {
-  return constants.O_RDONLY | requireNoFollowFlag();
+  const nonBlock = constants.O_NONBLOCK;
+  if (typeof nonBlock !== 'number' || nonBlock === 0) {
+    throw Object.assign(new Error('O_NONBLOCK is unavailable'), { code: 'ENOTSUP' });
+  }
+  return constants.O_RDONLY | requireNoFollowFlag() | nonBlock;
 }
 
 function directoryIdentity(stat: BigIntStats): string {
