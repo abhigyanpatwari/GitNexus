@@ -172,6 +172,12 @@ program
       '(integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
   )
   .option(
+    '--memory-budget <mb>',
+    'Explicit main-thread heap budget in MB for analyze (#3137). ' +
+      'Overrides the RAM/cgroup auto-sizer; drives graceful worker-pool ' +
+      'degradation under pressure. Minimum: 200.',
+  )
+  .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )

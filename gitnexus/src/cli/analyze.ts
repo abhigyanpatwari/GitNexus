@@ -953,6 +953,28 @@ const analyzeCommandImpl = async (
     workerPoolSize = parsedWorkers;
   }
 
+  // `--memory-budget` (#3137): explicit main-thread heap ceiling in MB.
+  // Validated here (fail before bar.start(), matching the --workers pattern)
+  // and threaded into the pipeline as bytes; parse-impl uses it in place of
+  // the RAM/cgroup auto-sized limit and degrades the worker pool under
+  // pressure instead of running into the mid-loop heap abort.
+  const MIN_MEMORY_BUDGET_MB = 200;
+  let memoryBudgetBytes: number | undefined;
+  if (options.memoryBudget !== undefined) {
+    const parsedBudget = Number(options.memoryBudget);
+    if (!Number.isInteger(parsedBudget) || parsedBudget < MIN_MEMORY_BUDGET_MB) {
+      cliError(
+        `  --memory-budget must be an integer >= ${MIN_MEMORY_BUDGET_MB} (MB). ` +
+          `Below ~200 MB even a single parse worker cannot hold the ` +
+          `chunk + graph-write working set. Omit the flag to keep the ` +
+          `RAM/cgroup auto-sizer.\n`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    memoryBudgetBytes = parsedBudget * 1024 * 1024;
+  }
+
   const processDetectionFromFlags = parseProcessDetectionBudgetStrings(
     {
       maxProcesses: options.maxProcesses,
@@ -1402,6 +1424,9 @@ const analyzeCommandImpl = async (
       // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
       // env / auto-formula fallback inside the pipeline.
       workerPoolSize,
+      // Heap ceiling override from --memory-budget (#3137). `undefined`
+      // defers to the RAM/cgroup auto-sizer in the pipeline.
+      memoryBudgetBytes,
       maxProcesses: processDetectionFromFlags.maxProcesses,
       maxProcessBranching: processDetectionFromFlags.maxProcessBranching,
       maxProcessTraceDepth: processDetectionFromFlags.maxProcessTraceDepth,

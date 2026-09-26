@@ -567,6 +567,14 @@ export interface AnalyzeOptions {
    */
   workerPoolSize?: number;
   /**
+   * Explicit main-thread heap ceiling in bytes, threaded from the CLI
+   * `--memory-budget` flag (#3137). Forwarded to `PipelineOptions` so the
+   * parse phase uses it in place of the RAM/cgroup auto-sized limit and
+   * degrades the worker pool under pressure (#2649 heap probes stay active).
+   * `undefined` defers to the auto-sizer.
+   */
+  memoryBudgetBytes?: number;
+  /**
    * Process-detection budget overrides (#3313). Threaded to
    * `PipelineOptions` without mutating `process.env`. Unset fields fall
    * back to `GITNEXUS_*` env, then shipped defaults / the dynamic
@@ -2563,6 +2571,9 @@ async function runFullAnalysisInner(
       {
         parseCache,
         workerPoolSize: options.workerPoolSize,
+        // Heap ceiling override from --memory-budget (#3137); undefined
+        // defers to the RAM/cgroup auto-sizer inside the parse phase.
+        memoryBudgetBytes: options.memoryBudgetBytes,
         maxProcesses: processDetectionBudget.maxProcesses,
         maxProcessBranching: processDetectionBudget.overridden.maxProcessBranching
           ? processDetectionBudget.maxProcessBranching

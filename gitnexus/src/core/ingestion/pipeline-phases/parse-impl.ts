@@ -634,10 +634,37 @@ export async function runChunkedParseAndResolve(
   // shrink an incremental re-analyze: `totalParseable` counts every parseable
   // file in the scan, not the changed ones, so a warm run of a large repo still
   // spawns the full requested pool.
-  const effectivePoolSize =
+  let effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0
       ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
+  // Heap ceiling resolution (#3137): an explicit `--memory-budget` degrades
+  // the pool (see the block after the projection below). Placed right after
+  // the pool-size computation so every downstream consumer — the
+  // host-parallelism warning, the sub-batch math, and `createWorkerPool` —
+  // observes the degraded size without a second variable.
+  const memoryBudgetBytes = options?.memoryBudgetBytes;
+  const projectedHeapNeedBytesEarly =
+    memoryBudgetBytes !== undefined ? projectParseHeapNeedBytes(parseableScanned.length) : 0;
+  if (
+    memoryBudgetBytes !== undefined &&
+    projectedHeapNeedBytesEarly > memoryBudgetBytes * PREFLIGHT_WARN_FRACTION
+  ) {
+    const maxFittingWorkers = Math.max(
+      1,
+      Math.floor(
+        (memoryBudgetBytes * PREFLIGHT_WARN_FRACTION) / (projectedHeapNeedBytesEarly / effectivePoolSize),
+      ),
+    );
+    if (maxFittingWorkers < effectivePoolSize) {
+      logger.warn(
+        `Memory budget ${Math.round(memoryBudgetBytes / 1024 / 1024)}MB: projected parse heap need ` +
+          `~${Math.round(projectedHeapNeedBytesEarly / 1024 / 1024)}MB exceeds it at ${effectivePoolSize} workers — ` +
+          `degrading to ${maxFittingWorkers} worker(s) for this run (#3137).`,
+      );
+      effectivePoolSize = maxFittingWorkers;
+    }
+  }
   // Deliberate over-subscription is the operator's call, so this warns rather
   // than caps — silently capping is what the override exists to stop. But an
   // exported `GITNEXUS_WORKER_POOL_SIZE` applies to EVERY analyze in a
@@ -679,7 +706,12 @@ export async function runChunkedParseAndResolve(
   // convert a certain multi-minute GC death spiral into an immediate
   // actionable error (mid-loop guard).
   const projectedHeapNeedBytes = projectParseHeapNeedBytes(parseableScanned.length);
-  const heapLimitBytes = v8.getHeapStatistics().heap_size_limit;
+  // Heap ceiling resolution (#3137): an explicit `--memory-budget` overrides
+  // the auto-sized Node limit for BOTH the preflight projection and the
+  // mid-loop abort probe. Without the flag, behavior is unchanged — the
+  // probe reads `v8.getHeapStatistics()` live, exactly as before.
+  // `memoryBudgetBytes` itself was resolved (and the pool degraded) above.
+  const heapLimitBytes = memoryBudgetBytes ?? v8.getHeapStatistics().heap_size_limit;
   if (projectedHeapNeedBytes > heapLimitBytes * PREFLIGHT_WARN_FRACTION) {
     logger.warn(
       `Large repository: analyzing ${parseableScanned.length} files needs roughly ${Math.round(projectedHeapNeedBytes / 1024 / 1024 / 1024)}GB of memory, ` +

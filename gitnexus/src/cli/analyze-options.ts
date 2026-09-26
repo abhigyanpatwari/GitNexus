@@ -117,6 +117,13 @@ export interface AnalyzeOptions {
   workerTimeout?: string;
   /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
   walCheckpointThreshold?: string;
+  /**
+   * `--memory-budget <mb>` (#3137): explicit main-thread heap ceiling in MB
+   * for the parse phase. Overrides the RAM/cgroup auto-sizer; feeds the
+   * existing heap-probe guard (#2649) and drives graceful worker-pool
+   * degradation before the run starts. Positive integer, minimum 200.
+   */
+  memoryBudget?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
   /** Process-detection process cap. Positive integer string; `0` is invalid. */
