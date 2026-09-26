@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { constants } from 'node:fs';
 import {
   mkdtemp,
   mkdir,
@@ -19,6 +20,7 @@ import {
   directoryOpenFlags,
   descriptorDirectoryPath,
   descriptorEntryPath,
+  pubspecWalkAnchored,
 } from '../../src/core/ingestion/languages/dart/package-config.js';
 import { CountingSet } from '../helpers/counting-file-set.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -180,7 +182,25 @@ describe('Dart package identity (#2963)', () => {
   });
 });
 
-describe('Dart pubspec package discovery', () => {
+describe('directory no-follow flags', () => {
+  it('does not drop O_NOFOLLOW from directory opens', () => {
+    if (typeof constants.O_NOFOLLOW !== 'number' || constants.O_NOFOLLOW === 0) {
+      expect(() => directoryOpenFlags()).toThrow(/O_NOFOLLOW is unavailable/);
+      return;
+    }
+    expect(directoryOpenFlags() & constants.O_NOFOLLOW).toBe(constants.O_NOFOLLOW);
+  });
+
+  it('anchors pubspec discovery only where a no-follow walk exists', () => {
+    const canAnchor =
+      (process.platform === 'linux' || process.platform === 'darwin') &&
+      typeof constants.O_NOFOLLOW === 'number' &&
+      constants.O_NOFOLLOW !== 0;
+    expect(pubspecWalkAnchored()).toBe(canAnchor);
+  });
+});
+
+describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => {
   const roots: string[] = [];
   afterEach(async () => {
     for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -407,6 +427,28 @@ describe('Dart pubspec package discovery', () => {
     },
   );
 
+  it('does not follow a listed directory replaced by a symlink on macOS', async () => {
+    if (process.platform !== 'darwin') return;
+    const outside = await fixture({
+      'pubspec.yaml': 'name: foreign',
+      'nested/pubspec.yaml': 'name: foreign',
+    });
+    const root = await fixture({
+      'pkg/pubspec.yaml': 'name: data',
+      'pkg/nested/pubspec.yaml': 'name: nested_data',
+    });
+    const pkg = path.join(root, 'pkg');
+    await expect(
+      loadDartPackageConfig(root, {
+        beforeEntryOpen: async (relative) => {
+          if (relative !== 'pkg') return;
+          await rename(pkg, path.join(root, 'pkg-moved'));
+          await symlink(outside, pkg, 'dir');
+        },
+      }),
+    ).rejects.toThrow(/Dart pubspec discovery failed \((read-directory|read-pubspec)\)/);
+  });
+
   it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
     if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;
     const outside = await fixture({
@@ -433,14 +475,6 @@ describe('Dart pubspec package discovery', () => {
     );
   });
 
-  it('refuses a directory symlink instead of listing its target', async () => {
-    const outside = await fixture({ 'secret.txt': 'name: foreign' });
-    const root = await fixture({});
-    const link = path.join(root, 'linked');
-    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    await expect(readDirectoryNoFollow(link)).rejects.toThrow();
-  });
-
   it('lists the opened directory inode after its path becomes a symlink', async () => {
     const listingRoot = descriptorDirectoryPath(0);
     if (listingRoot === null) return;
@@ -461,4 +495,31 @@ describe('Dart pubspec package discovery', () => {
       await handle.close();
     }
   });
+});
+
+describe('directory symlink refusal', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  it('refuses a directory symlink instead of listing its target', async () => {
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
+    const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
+    roots.push(outside, root);
+    await writeFile(path.join(outside, 'secret.txt'), 'name: foreign');
+    const link = path.join(root, 'linked');
+    await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(readDirectoryNoFollow(link)).rejects.toThrow();
+  });
+
+  it.skipIf(pubspecWalkAnchored())(
+    'does not discover packages when the walk cannot honor no-follow',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'gitnexus-dart-pubspec-'));
+      roots.push(root);
+      await writeFile(path.join(root, 'pubspec.yaml'), 'name: app\n');
+      expect((await loadDartPackageConfig(root)).packages.size).toBe(0);
+    },
+  );
 });

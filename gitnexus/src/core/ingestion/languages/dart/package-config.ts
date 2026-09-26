@@ -1,4 +1,4 @@
-import type { Dirent } from 'node:fs';
+import type { BigIntStats, Dirent } from 'node:fs';
 import { constants, lstat, open, readdir, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
@@ -29,26 +29,13 @@ type ManifestRead =
   | { readonly ok: false; readonly reason: 'manifest-size' | 'read-pubspec' };
 
 /**
- * Read at most `maxManifestSize` bytes from the already-opened inode.
- * `O_NOFOLLOW` refuses a symlink swapped in after `readdir` said this was a file.
+ * Read at most `maxManifestSize` bytes from a descriptor already opened
+ * with `O_NOFOLLOW`. The caller closes nothing; this function owns `handle`.
  */
 async function readManifestBounded(
-  entryPath: string,
+  handle: FileHandle,
   maxManifestSize: number,
 ): Promise<ManifestRead> {
-  const flags =
-    typeof constants.O_NOFOLLOW === 'number'
-      ? constants.O_RDONLY | constants.O_NOFOLLOW
-      : constants.O_RDONLY;
-  let handle;
-  try {
-    if (typeof constants.O_NOFOLLOW !== 'number' && (await lstat(entryPath)).isSymbolicLink()) {
-      return { ok: false, reason: 'read-pubspec' };
-    }
-    handle = await open(entryPath, flags);
-  } catch {
-    return { ok: false, reason: 'read-pubspec' };
-  }
   try {
     const info = await handle.stat();
     if (!info.isFile()) return { ok: false, reason: 'read-pubspec' };
@@ -65,17 +52,46 @@ async function readManifestBounded(
   }
 }
 
+function requireNoFollowFlag(): number {
+  const noFollow = constants.O_NOFOLLOW;
+  if (typeof noFollow !== 'number' || noFollow === 0) {
+    throw Object.assign(new Error('O_NOFOLLOW is unavailable'), { code: 'ENOTSUP' });
+  }
+  return noFollow;
+}
+
+/** Linux anchors child opens. macOS verifies them. Every other platform does neither. */
+export function pubspecWalkAnchored(): boolean {
+  const noFollow = constants.O_NOFOLLOW;
+  return (
+    (process.platform === 'linux' || process.platform === 'darwin') &&
+    typeof noFollow === 'number' &&
+    noFollow !== 0
+  );
+}
+
 export function directoryOpenFlags(): number {
-  let flags = constants.O_RDONLY;
+  let flags = constants.O_RDONLY | requireNoFollowFlag();
   if (typeof constants.O_DIRECTORY === 'number') flags |= constants.O_DIRECTORY;
-  if (typeof constants.O_NOFOLLOW === 'number') flags |= constants.O_NOFOLLOW;
   return flags;
+}
+
+function fileOpenFlags(): number {
+  return constants.O_RDONLY | requireNoFollowFlag();
+}
+
+function directoryIdentity(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.mode}`;
+}
+
+function fileIdentity(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}`;
 }
 
 /**
  * Path that lists the directory inode already open on `fd`.
- * Linux and macOS can readdir that inode. Windows has no such path in Node,
- * so the caller lists the original path while the no-follow handle is held.
+ * Linux uses `/proc/self/fd/N` and macOS uses `/dev/fd/N`.
+ * Other platforms have no such path; callers refuse instead of listing by name.
  */
 export function descriptorDirectoryPath(fd: number): string | null {
   if (process.platform === 'linux') return `/proc/self/fd/${fd}`;
@@ -85,8 +101,9 @@ export function descriptorDirectoryPath(fd: number): string | null {
 
 /**
  * One entry of the directory inode open on `fd`.
- * Linux looks up `/proc/self/fd/N/<name>` in that inode. This walker has no
- * child path for macOS or Windows, so those platforms reopen the original path.
+ * Linux looks up `/proc/self/fd/N/<name>` in that inode. macOS `/dev/fd/N/<name>`
+ * does not resolve a child, so this returns null and the walker verifies the
+ * pinned parent chain instead. Every other platform returns null and is not walked.
  */
 export function descriptorEntryPath(fd: number, name: string): string | null {
   if (process.platform !== 'linux') return null;
@@ -100,17 +117,99 @@ function isSingleDirectoryEntry(name: string): boolean {
   );
 }
 
-async function openVerifiedDirectory(directory: string): Promise<FileHandle> {
-  // Windows has no O_NOFOLLOW; reject an existing junction before opening it.
-  if (typeof constants.O_NOFOLLOW !== 'number' && (await lstat(directory)).isSymbolicLink()) {
-    throw Object.assign(new Error('directory symlink'), { code: 'ELOOP' });
-  }
+interface OpenedDirectory {
+  readonly handle: FileHandle;
+  readonly identity: string;
+}
+
+async function openVerifiedDirectory(directory: string): Promise<OpenedDirectory> {
   const handle = await open(directory, directoryOpenFlags());
   try {
-    const info = await handle.stat();
+    const info = await handle.stat({ bigint: true });
     if (!info.isDirectory()) {
       throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
     }
+    return { handle, identity: directoryIdentity(info) };
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+}
+
+interface WalkFrame {
+  relative: string;
+  absolute: string;
+  handle: FileHandle;
+  identity: string;
+  entries: Dirent[];
+  next: number;
+}
+
+/**
+ * macOS has no descriptor-relative child lookup. Prove the pinned parent chain
+ * still names those inodes, then accept the opened file only when it is the
+ * same inode the lexical lstat saw. A swap between the two checks fails the walk.
+ */
+async function assertPinnedChain(frames: readonly WalkFrame[]): Promise<void> {
+  for (const frame of frames) {
+    const pinned = await frame.handle.stat({ bigint: true });
+    if (!pinned.isDirectory() || directoryIdentity(pinned) !== frame.identity) {
+      throw Object.assign(new Error('parent descriptor changed'), { code: 'ELOOP' });
+    }
+    let lexical: BigIntStats;
+    try {
+      lexical = await lstat(frame.absolute, { bigint: true });
+    } catch {
+      throw Object.assign(new Error('parent path changed'), { code: 'ELOOP' });
+    }
+    if (
+      lexical.isSymbolicLink() ||
+      !lexical.isDirectory() ||
+      directoryIdentity(lexical) !== frame.identity
+    ) {
+      throw Object.assign(new Error('parent path changed'), { code: 'ELOOP' });
+    }
+  }
+}
+
+async function openLexicalDirectory(
+  frames: readonly WalkFrame[],
+  lexicalPath: string,
+): Promise<OpenedDirectory> {
+  await assertPinnedChain(frames);
+  const lexical = await lstat(lexicalPath, { bigint: true });
+  if (lexical.isSymbolicLink() || !lexical.isDirectory()) {
+    throw Object.assign(new Error('not a directory'), { code: 'ENOTDIR' });
+  }
+  const opened = await openVerifiedDirectory(lexicalPath);
+  try {
+    if (opened.identity !== directoryIdentity(lexical)) {
+      throw Object.assign(new Error('opened directory inode changed'), { code: 'ELOOP' });
+    }
+    await assertPinnedChain(frames);
+    return opened;
+  } catch (error) {
+    await opened.handle.close();
+    throw error;
+  }
+}
+
+async function openLexicalFile(
+  frames: readonly WalkFrame[],
+  lexicalPath: string,
+): Promise<FileHandle> {
+  await assertPinnedChain(frames);
+  const lexical = await lstat(lexicalPath, { bigint: true });
+  if (lexical.isSymbolicLink() || !lexical.isFile()) {
+    throw Object.assign(new Error('not a file'), { code: 'ELOOP' });
+  }
+  const handle = await open(lexicalPath, fileOpenFlags());
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || fileIdentity(opened) !== fileIdentity(lexical)) {
+      throw Object.assign(new Error('opened file inode changed'), { code: 'ELOOP' });
+    }
+    await assertPinnedChain(frames);
     return handle;
   } catch (error) {
     await handle.close();
@@ -118,10 +217,36 @@ async function openVerifiedDirectory(directory: string): Promise<FileHandle> {
   }
 }
 
-async function listOpenedDirectory(handle: FileHandle, directory: string): Promise<Dirent[]> {
+async function openChildDirectory(
+  frames: readonly WalkFrame[],
+  parentFd: number,
+  name: string,
+  lexicalPath: string,
+): Promise<OpenedDirectory> {
+  const anchored = descriptorEntryPath(parentFd, name);
+  if (anchored !== null) return openVerifiedDirectory(anchored);
+  if (process.platform === 'darwin') return openLexicalDirectory(frames, lexicalPath);
+  throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
+}
+
+async function openChildFile(
+  frames: readonly WalkFrame[],
+  parentFd: number,
+  name: string,
+  lexicalPath: string,
+): Promise<FileHandle> {
+  const anchored = descriptorEntryPath(parentFd, name);
+  if (anchored !== null) return open(anchored, fileOpenFlags());
+  if (process.platform === 'darwin') return openLexicalFile(frames, lexicalPath);
+  throw Object.assign(new Error('no descriptor anchor'), { code: 'ENOTSUP' });
+}
+
+async function listOpenedDirectory(handle: FileHandle): Promise<Dirent[]> {
   const listing = descriptorDirectoryPath(handle.fd);
-  if (listing !== null) return await readdir(listing, { withFileTypes: true });
-  return await readdir(directory, { withFileTypes: true });
+  if (listing === null) {
+    throw Object.assign(new Error('no descriptor listing'), { code: 'ENOTSUP' });
+  }
+  return await readdir(listing, { withFileTypes: true });
 }
 
 /**
@@ -130,11 +255,11 @@ async function listOpenedDirectory(handle: FileHandle, directory: string): Promi
  * (`ENOTDIR` / `ELOOP`) instead of being traversed.
  */
 export async function readDirectoryNoFollow(directory: string): Promise<Dirent[]> {
-  const handle = await openVerifiedDirectory(directory);
+  const opened = await openVerifiedDirectory(directory);
   try {
-    return await listOpenedDirectory(handle, directory);
+    return await listOpenedDirectory(opened.handle);
   } finally {
-    await handle.close();
+    await opened.handle.close();
   }
 }
 
@@ -153,6 +278,10 @@ export async function loadDartPackageConfig(
     warn(reason, relativePath);
     throw new Error(`Dart pubspec discovery failed (${reason}): ${relativePath}`);
   };
+  if (!pubspecWalkAnchored()) {
+    warn('nofollow-anchor');
+    return { packages: new Map(), manifestsByName: new Map() };
+  }
   let isIgnored;
   try {
     isIgnored = await createWatchIgnorePredicate(repoPath);
@@ -164,12 +293,6 @@ export async function loadDartPackageConfig(
   const maxManifestSize = Math.min(1024 * 1024, getMaxFileSizeBytes());
   const directoryLimit = options?.directoryLimit ?? DART_PUBSPEC_DIRECTORY_LIMIT;
   const ambiguous = new Set<string>();
-  type WalkFrame = {
-    relative: string;
-    handle: FileHandle;
-    entries: Dirent[];
-    next: number;
-  };
   const stack: WalkFrame[] = [];
   let visited = 0;
 
@@ -180,9 +303,8 @@ export async function loadDartPackageConfig(
 
   const fillFrame = async (frame: WalkFrame): Promise<void> => {
     if (++visited > directoryLimit) return incomplete('directory-limit', frame.relative || '.');
-    const directory = path.join(repoPath, frame.relative);
     try {
-      frame.entries = await listOpenedDirectory(frame.handle, directory);
+      frame.entries = await listOpenedDirectory(frame.handle);
     } catch {
       return incomplete('read-directory', frame.relative || '.');
     }
@@ -190,13 +312,20 @@ export async function loadDartPackageConfig(
   };
 
   try {
-    let rootHandle: FileHandle;
+    let rootOpened: OpenedDirectory;
     try {
-      rootHandle = await openVerifiedDirectory(repoPath);
+      rootOpened = await openVerifiedDirectory(repoPath);
     } catch {
       return incomplete('read-directory', '.');
     }
-    const root: WalkFrame = { relative: '', handle: rootHandle, entries: [], next: 0 };
+    const root: WalkFrame = {
+      relative: '',
+      absolute: repoPath,
+      handle: rootOpened.handle,
+      identity: rootOpened.identity,
+      entries: [],
+      next: 0,
+    };
     stack.push(root);
     await fillFrame(root);
 
@@ -217,16 +346,17 @@ export async function loadDartPackageConfig(
       const entryPath = path.join(repoPath, childRelative);
       if (entry.isDirectory()) {
         if (entry.name.startsWith('.') || isIgnored(entryPath, true)) continue;
-        const openedVia = descriptorEntryPath(frame.handle.fd, entry.name);
-        let childHandle: FileHandle;
+        let childOpened: OpenedDirectory;
         try {
-          childHandle = await openVerifiedDirectory(openedVia ?? entryPath);
+          childOpened = await openChildDirectory(stack, frame.handle.fd, entry.name, entryPath);
         } catch {
           return incomplete('read-directory', childRelative);
         }
         const child: WalkFrame = {
           relative: childRelative,
-          handle: childHandle,
+          absolute: entryPath,
+          handle: childOpened.handle,
+          identity: childOpened.identity,
           entries: [],
           next: 0,
         };
@@ -234,8 +364,13 @@ export async function loadDartPackageConfig(
         await fillFrame(child);
       } else if (entry.isFile() && entry.name === 'pubspec.yaml' && !isIgnored(entryPath, false)) {
         const manifestPath = frame.relative ? `${frame.relative}/pubspec.yaml` : 'pubspec.yaml';
-        const openedVia = descriptorEntryPath(frame.handle.fd, entry.name);
-        const read = await readManifestBounded(openedVia ?? entryPath, maxManifestSize);
+        let manifestHandle: FileHandle;
+        try {
+          manifestHandle = await openChildFile(stack, frame.handle.fd, entry.name, entryPath);
+        } catch {
+          return incomplete('read-pubspec', manifestPath);
+        }
+        const read = await readManifestBounded(manifestHandle, maxManifestSize);
         if (read.ok === false) return incomplete(read.reason, manifestPath);
         try {
           const manifest: unknown = load(read.content, {
