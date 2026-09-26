@@ -67,6 +67,19 @@ describe('RebuildReasonCollector summary', () => {
     expect(collector.forced).toBe(true);
   });
 
+  it('does not claim a full rebuild in a follow-up that carries only non-forcing reasons', () => {
+    const collector = new RebuildReasonCollector();
+    collector.formatSummary();
+    collector.add(escalation);
+    const forcingLead = (() => {
+      const other = new RebuildReasonCollector();
+      other.formatSummary();
+      other.add(schema);
+      return (other.formatFollowUp() ?? '').split(':')[0];
+    })();
+    expect((collector.formatFollowUp() ?? '').startsWith(forcingLead)).toBe(false);
+  });
+
   it('lists a non-forcing reason without reporting forced', () => {
     const collector = new RebuildReasonCollector();
     collector.add(escalation);

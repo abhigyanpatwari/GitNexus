@@ -93,10 +93,14 @@ const rebuildLineShapes = (count: number) => {
   const late = new RebuildReasonCollector();
   late.formatSummary();
   late.add({ key: 'user-force', text: '' });
+  const lateNonForcing = new RebuildReasonCollector();
+  lateNonForcing.formatSummary();
+  lateNonForcing.add({ key: 'escalated-full-write', text: '', forcing: false });
   return {
     singleSummary: single.formatSummary() ?? '',
     numberedHeader: (numbered.formatSummary() ?? '').split('\n')[0],
     followUp: late.formatFollowUp() ?? '',
+    nonForcingFollowUp: lateNonForcing.formatFollowUp() ?? '',
   };
 };
 
@@ -1377,10 +1381,11 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // text, and non-forcing: the run stayed on the incremental branch
       // (`incrementalStats` exists only there) and wrote the full plan.
       expect(incremental.rebuildReasons).toEqual(['escalated-full-write']);
-      const { singleSummary, followUp } = rebuildLineShapes(1);
-      const followUps = logs.filter((m) => m.startsWith(followUp));
+      const { singleSummary, followUp, nonForcingFollowUp } = rebuildLineShapes(1);
+      const followUps = logs.filter((m) => m.startsWith(nonForcingFollowUp));
       expect(followUps).toHaveLength(1);
       expect(followUps[0]).toContain('switching to a full DB write');
+      expect(logs.filter((m) => m.startsWith(followUp))).toEqual([]);
       expect(logs.filter((m) => m.startsWith(singleSummary))).toEqual([]);
       expect(incremental.incrementalStats?.writeMode).toBe('full');
 

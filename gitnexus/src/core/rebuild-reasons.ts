@@ -151,7 +151,12 @@ export class RebuildReasonCollector {
   formatFollowUp(): string | undefined {
     const reasons = this.takeUnannounced();
     if (reasons.length === 0) return undefined;
-    return `Full rebuild also required: ${reasons.map((reason) => singleLine(reason.text)).join('; ')}`;
+    // A non-forcing reason (the escalated DB write) changes how this run
+    // writes, not whether it rebuilds, so it must not claim a full rebuild.
+    const lead = reasons.some((reason) => reason.forcing !== false)
+      ? 'Full rebuild also required'
+      : 'Write plan changed';
+    return `${lead}: ${reasons.map((reason) => singleLine(reason.text)).join('; ')}`;
   }
 
   /**
