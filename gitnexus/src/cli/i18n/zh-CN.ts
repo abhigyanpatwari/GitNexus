@@ -314,7 +314,7 @@ export const zhCN = {
   'help.option.clean.localIndex': '删除此检出迁入共享存储后遗留在 <repo>/.gitnexus 中的索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
-    'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
+    'LLM 提供商：minimax、openai、openrouter、atlascloud、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
   'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
