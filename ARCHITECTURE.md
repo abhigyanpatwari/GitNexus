@@ -485,13 +485,33 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
   ├── lbug.wal       # Write-ahead log
   ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
+  ├── lbug.wal.checkpoint, lbug.checkpoint.{intent,apply}.lock  # checkpoint-in-flight artifacts; left behind only by an interrupted checkpoint, consumed by the next writable open
   ├── lbug.{wal,shadow}.dirty-recovery  # parked sidecars from a crashed run; safe to delete
   ├── gitnexus.json  # lastCommit, indexedAt, stats (primary metadata file)
   └── meta.json      # legacy mirror of gitnexus.json, kept in sync (see MIGRATION.md)
 
 ~/.gitnexus/
-  └── registry.json  # Global repo registry (MCP discovery)
+  ├── registry.json  # Global repo registry (MCP discovery)
+  └── stores/<key>/  # Shared sibling index store (see below)
+      ├── caches/                         # parse cache + durable ParsedFile store
+      ├── commits/<commit>-<featureKey>/  # one immutable graph per commit + settings
+      └── checkouts/<slot>/               # one checkout's metadata, membership, and
+                                          # private graph when it has local edits
 ```
+
+The flat `<repo>/.gitnexus/` layout applies to a standalone repository and
+whenever `GITNEXUS_STORAGE_PATH` / `GITNEXUS_STORAGE_ROOT` is set. A repository
+with linked worktrees, and clones with the same `origin` URL, share one
+`stores/<key>/` automatically (a clone opts out with `analyze --no-share`;
+`GITNEXUS_SHARED_STORE=off` turns sharing off entirely). Each sharing checkout
+keeps only a `.gitnexus/store.json` pointer to its store. Path resolution lives
+in `shared-store.ts`.
+
+Read-only opens self-heal an interrupted checkpoint: the refusal is
+classified and cleared by one writable open (probe + `CHECKPOINT`) before
+the read-only open is retried — see `sidecar-recovery.ts`
+(`isReadOnlyCheckpointInProgressError`) and the
+`lbug-interrupted-checkpoint-recovery` integration test.
 
 Managed by `repo-manager.ts`.
 

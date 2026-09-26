@@ -6,6 +6,7 @@
  * LadybugDB connections are opened lazily per repo on first query.
  */
 
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -25,6 +26,7 @@ import { querySpringAopMetadata } from './aop-metadata.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
+import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
@@ -123,6 +125,11 @@ import {
   EXPLAIN_MAX_LIMIT,
   PDG_QUERY_DEFAULT_LIMIT,
   PDG_QUERY_MAX_LIMIT,
+  QUERY_DEFAULT_LIMIT,
+  QUERY_DEFAULT_MAX_SYMBOLS,
+  QUERY_MAX_LIMIT,
+  QUERY_MAX_MAX_SYMBOLS,
+  CONTEXT_CHAIN_MAX_DEPTH,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -179,6 +186,14 @@ const VALUE_CANDIDATE_TYPES: ReadonlySet<string> = new Set(['Const', 'Variable',
  * only truncation signal available when the COUNT leg fails.
  */
 const CANDIDATE_WINDOW = 20;
+
+/**
+ * Concurrent BFS walks when `query()` attaches per-process `chain`. Each walk
+ * is already node-capped inside `_computeContextChain`; this bounds how many
+ * of those walks run at once so a page of processes (and each group member
+ * hitting this path) cannot open a full page of concurrent graph queries.
+ */
+const QUERY_CHAIN_BFS_CONCURRENCY = 4;
 
 /**
  * `content` is an index capability rather than a promise that every symbol has
@@ -286,6 +301,15 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
     if (typeof value === 'string' && value.trim()) return value;
   }
   return undefined;
+}
+
+/**
+ * A `*_uid` param as a lookup key: trimmed, or `undefined` when it is blank or
+ * not a string (#3354). Strict adapters send `" "`/`""` for an omitted optional
+ * string, and the MCP envelope is not type-validated.
+ */
+function nonBlankUid(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
 interface StringAliasDefinition {
@@ -1450,6 +1474,57 @@ export function parseListReposPagination(
 }
 
 /**
+ * query() page bounds. Schema min/max is advisory — callTool does not enforce
+ * inputSchema — so the backend rejects out-of-range values the same way
+ * parseListReposPagination / pdg_query do (reject, not clamp).
+ */
+function describeBoundValue(raw: unknown): string {
+  try {
+    return JSON.stringify(raw) ?? String(raw);
+  } catch {
+    return typeof raw === 'bigint' ? `${raw}n` : Object.prototype.toString.call(raw);
+  }
+}
+
+function parseQueryPageBound(
+  value: unknown,
+  field: 'limit' | 'max_symbols',
+  fallback: number,
+  max: number,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: fallback };
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > max) {
+    return {
+      ok: false,
+      error: `Invalid "${field}": expected an integer in [1, ${max}], got ${describeBoundValue(value)}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function parseChainDepth(
+  value: unknown,
+): { ok: true; value: number } | { ok: false; error: string } {
+  if (value === undefined) return { ok: true, value: 0 };
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > CONTEXT_CHAIN_MAX_DEPTH
+  ) {
+    return {
+      ok: false,
+      error: `Invalid "chain_depth": expected an integer in [0, ${CONTEXT_CHAIN_MAX_DEPTH}], got ${describeBoundValue(value)}.`,
+    };
+  }
+  return { ok: true, value };
+}
+
+function routeEnrichmentKey(method: string | undefined, url: string): string {
+  return method ? `${method}:${url}` : url;
+}
+
+/**
  * #2655: a tool result can carry a `staleness` field only if it is a plain
  * object that isn't an error envelope and doesn't already carry one. Raw-array
  * results (non-tabular `cypher` rows) are excluded because the CLI's `--limit`
@@ -1568,6 +1643,7 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+  private warnedNoEmbeddingVectors = false;
 
   /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
@@ -1837,7 +1913,7 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = path.join(storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(storagePath);
 
       const handle: RepoHandle = {
         id,
@@ -2045,7 +2121,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return this.applyBranchScope(result, branch);
+      return this.applyBranchScope(this.followSharedGraph(result), branch);
     }
 
     // Still no match — throw with helpful message
@@ -2100,6 +2176,21 @@ export class LocalBackend {
    *   and restamped labels the cached handle predates resolve on the next
    *   call.
    */
+  /**
+   * A shared-store checkout (#3352) moves between immutable commit graphs and
+   * its private graph as it is re-analyzed, while the cached handle keeps the
+   * graph it resolved first. Re-resolve the flat graph (one stat when the slot
+   * metadata is unchanged) and update the cached handle when it moved, so the
+   * pool opens the graph the checkout reads now.
+   */
+  private followSharedGraph(handle: RepoHandle): RepoHandle {
+    const current = resolveGraphPath(handle.storagePath);
+    if (current === handle.lbugPath) return handle;
+    const moved = { ...handle, lbugPath: current };
+    if (this.repos.get(handle.id) === handle) this.repos.set(handle.id, moved);
+    return moved;
+  }
+
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
     // At most one cache refresh per resolution: enough for the NEXT call to
@@ -2114,7 +2205,10 @@ export class LocalBackend {
     // One small JSON read per scoped call; mid-run meta writes preserve the
     // old label until the end-of-run atomic stamp (run-analyze dirty stamps
     // spread the existing meta), so this read never runs ahead of the DB.
-    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    // The flat slot's own metadata, not the graph's directory: a shared-store
+    // checkout's graph sits in a commit directory whose metadata carries no
+    // branch label (#3352).
+    const flatMeta = await loadMeta(handle.storagePath);
     if (flatMeta?.branch && flatMeta.branch === branch) {
       // The disk meta decides routing, so it also supplies the metadata —
       // the cached handle's label/commit/stats can predate the restamp.
@@ -2954,6 +3048,7 @@ export class LocalBackend {
       limit?: number;
       max_symbols?: number;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<any> {
     // #2175: each consumer resolves the search_query/query alias itself (there is no
@@ -2964,10 +3059,27 @@ export class LocalBackend {
       return { error: 'search_query (or legacy query) parameter is required and cannot be empty.' };
     }
 
-    await this.ensureInitialized(repo);
+    const parsedLimit = parseQueryPageBound(
+      params.limit,
+      'limit',
+      QUERY_DEFAULT_LIMIT,
+      QUERY_MAX_LIMIT,
+    );
+    if (parsedLimit.ok === false) return { error: parsedLimit.error };
+    const parsedMaxSymbols = parseQueryPageBound(
+      params.max_symbols,
+      'max_symbols',
+      QUERY_DEFAULT_MAX_SYMBOLS,
+      QUERY_MAX_MAX_SYMBOLS,
+    );
+    if (parsedMaxSymbols.ok === false) return { error: parsedMaxSymbols.error };
+    const parsedChainDepth = parseChainDepth(params.chain_depth);
+    if (parsedChainDepth.ok === false) return { error: parsedChainDepth.error };
+    const processLimit = parsedLimit.value;
+    const maxSymbolsPerProcess = parsedMaxSymbols.value;
+    const requestedChainDepth = parsedChainDepth.value;
 
-    const processLimit = params.limit || 5;
-    const maxSymbolsPerProcess = params.max_symbols || 10;
+    await this.ensureInitialized(repo);
     const requestedContent = params.include_content ?? false;
     // Do not trust a lingering graph property when the metadata contract says
     // source-derived text is unavailable. A full rebuild normally removes the
@@ -3070,6 +3182,7 @@ export class LocalBackend {
         heuristicLabel: string;
         processType: string;
         stepCount: number;
+        entryPointId: string;
         totalScore: number;
         cohesionBoost: number;
         symbols: any[];
@@ -3105,13 +3218,16 @@ export class LocalBackend {
     for (const ids of chunk(nodeIds, LBUG_QUERY_BATCH_SIZE)) {
       // Processes each symbol participates in. `n.id AS nodeId` is prepended as
       // column 0 so rows from many symbols can be re-associated to their symbol.
+      // also fetch `p.entryPointId` so we can (a) mark the entry
+      // symbol with `is_entry_point: true` in `process_symbols` and (b) look up
+      // the route attached to this process (if any) via ENTRY_POINT_OF.
       try {
         const rows = await executeParameterized(
           repo.lbugPath,
           `
           MATCH (n)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
           WHERE n.id IN $nodeIds
-          RETURN n.id AS nodeId, p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step
+          RETURN n.id AS nodeId, p.id AS pid, p.label AS label, p.heuristicLabel AS heuristicLabel, p.processType AS processType, p.stepCount AS stepCount, r.step AS step, p.entryPointId AS entryPointId
           ORDER BY nodeId, pid, step
         `,
           { nodeIds: ids },
@@ -3229,6 +3345,10 @@ export class LocalBackend {
           const pType = row.processType ?? row[4];
           const stepCount = row.stepCount ?? row[5];
           const step = row.step ?? row[6];
+          // entryPointId is the new column from STEP_IN_PROCESS.
+          // Falls back to '' when the Process node predates the property or
+          // the column is null (older index).
+          const entryPointId = row.entryPointId ?? row[7] ?? '';
 
           if (!processMap.has(pid)) {
             processMap.set(pid, {
@@ -3237,6 +3357,7 @@ export class LocalBackend {
               heuristicLabel: hLabel,
               processType: pType,
               stepCount,
+              entryPointId,
               totalScore: 0,
               cohesionBoost: 0,
               symbols: [],
@@ -3255,43 +3376,210 @@ export class LocalBackend {
       }
     }
 
+    const routeDefinitions = definitions.filter(
+      (def) => def.type === 'Route' && typeof def.id === 'string' && def.id.length > 0,
+    );
+    if (routeDefinitions.length > 0) {
+      const handlersByRoute = new Map<
+        string,
+        Array<{
+          handlerId: string;
+          handlerName?: string;
+          handlerFilePath?: string;
+          url?: string;
+          method?: string;
+        }>
+      >();
+      try {
+        for (const ids of chunk(
+          routeDefinitions.map((def) => def.id as string),
+          LBUG_ID_PROBE_BATCH_SIZE,
+        )) {
+          const rows = await executeParameterized(
+            repo.lbugPath,
+            `
+            MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+            WHERE route.id IN $routeIds
+            RETURN route.id AS routeId, handler.id AS handlerId, handler.name AS handlerName,
+                   handler.filePath AS handlerFilePath, route.name AS url, route.method AS method
+          `,
+            { routeIds: ids },
+          );
+          for (const row of rows) {
+            const routeId = String(row.routeId ?? row[0] ?? '');
+            const handlerId = String(row.handlerId ?? row[1] ?? '');
+            if (!routeId || !handlerId) continue;
+            const list = handlersByRoute.get(routeId) ?? [];
+            list.push({
+              handlerId,
+              handlerName: row.handlerName ?? row[2] ?? undefined,
+              handlerFilePath: row.handlerFilePath ?? row[3] ?? undefined,
+              url: row.url ?? row[4] ?? undefined,
+              method: row.method ?? row[5] ?? undefined,
+            });
+            handlersByRoute.set(routeId, list);
+          }
+        }
+      } catch (e) {
+        logQueryError('query:route-definition-bridge', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+      for (const def of routeDefinitions) {
+        const url = typeof def.name === 'string' && def.name.length > 0 ? def.name : undefined;
+        if (url) {
+          def.follow_up = { tool: 'route_map', route: url };
+        }
+        const handlers = handlersByRoute.get(def.id);
+        const preferred =
+          handlers?.find((h) => h.handlerId.startsWith('Function:')) ?? handlers?.[0];
+        if (preferred) {
+          def.handlerSymbolId = preferred.handlerId;
+          if (preferred.handlerName) def.handlerName = preferred.handlerName;
+          if (preferred.handlerFilePath) def.handlerFilePath = preferred.handlerFilePath;
+        }
+        const routes: Array<{ url: string; method?: string }> = [];
+        const seenRoutes = new Set<string>();
+        for (const handler of handlers ?? []) {
+          const routeUrl = handler.url || url;
+          if (!routeUrl) continue;
+          const methodStr = handler.method ? String(handler.method) : undefined;
+          const key = routeEnrichmentKey(methodStr, routeUrl);
+          if (seenRoutes.has(key)) continue;
+          seenRoutes.add(key);
+          routes.push(methodStr ? { url: routeUrl, method: methodStr } : { url: routeUrl });
+        }
+        if (routes.length === 0 && url) {
+          routes.push({ url });
+        }
+        if (routes.length > 0) def.routes = routes;
+      }
+    }
+
     timer.stop(); // symbol_lookup
 
-    // Step 3: Rank processes by aggregate score + internal cohesion boost
+    // Rank first — route enrichment is unused in the sort and only the
+    // returned page needs it.
     timer.start('ranking');
     const rankedProcesses = Array.from(processMap.values())
       .map((p) => ({
         ...p,
-        priority: p.totalScore + p.cohesionBoost * 0.1, // cohesion as subtle ranking signal
+        routes: undefined as Array<{ url: string; method?: string }> | undefined,
+        priority: p.totalScore + p.cohesionBoost * 0.1,
       }))
       .sort((a, b) => b.priority - a.priority || compareCodeUnits(a.id, b.id))
       .slice(0, processLimit);
     timer.stop(); // ranking
 
+    // Route lookup for the ranked page only. Current indexes emit:
+    //   (1) Route -[ENTRY_POINT_OF]-> Process   (processes.ts)
+    //   (2) Route -[ENTRY_POINT_OF]-> <entryFn> (legacy indexes)
+    //   (3) handler -[HANDLES_ROUTE]-> Route    (routes.ts)
+    // Shape (2) is leftover — call-processor does not emit
+    // Route-[ENTRY_POINT_OF]->Function. HANDLES_ROUTE is what lets an entry
+    // symbol resolve when no Process edge exists.
+    const routesByProcessId = new Map<string, Array<{ url: string; method?: string }>>();
+    if (rankedProcesses.length > 0) {
+      const pidByEntryPoint = new Map<string, string>();
+      for (const p of rankedProcesses) {
+        if (p.entryPointId) pidByEntryPoint.set(p.entryPointId, p.id);
+      }
+      try {
+        const pidList = rankedProcesses.map((p) => p.id);
+        for (const pidChunk of chunk(pidList, LBUG_ID_PROBE_BATCH_SIZE)) {
+          const entryIds = pidChunk
+            .map((pid) => processMap.get(pid)?.entryPointId)
+            .filter((id): id is string => !!id && id.length > 0);
+          const routeRows = await executeParameterized(
+            repo.lbugPath,
+            entryIds.length === 0
+              ? `
+            MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(p:Process)
+            WHERE p.id IN $pids
+            RETURN p.id AS pid, route.name AS url, route.method AS method
+          `
+              : `
+            MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(p:Process)
+            WHERE p.id IN $pids
+            RETURN p.id AS pid, route.name AS url, route.method AS method
+            UNION ALL
+            MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(entryFn)
+            WHERE entryFn.id IN $entryIds
+            RETURN entryFn.id AS pid, route.name AS url, route.method AS method
+            UNION ALL
+            MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+            WHERE handler.id IN $entryIds
+            RETURN handler.id AS pid, route.name AS url, route.method AS method
+          `,
+            {
+              pids: pidChunk,
+              entryIds,
+            },
+          );
+          for (const row of routeRows) {
+            const targetPid = row.pid ?? row[0];
+            const url = row.url ?? row[1];
+            const method = row.method ?? row[2];
+            const owningPid = processMap.has(targetPid)
+              ? targetPid
+              : pidByEntryPoint.get(targetPid);
+            if (!owningPid || !url) continue;
+            const methodStr = method ? String(method) : undefined;
+            const dedupKey = routeEnrichmentKey(methodStr, url);
+            const list = routesByProcessId.get(owningPid) ?? [];
+            if (!list.some((r) => routeEnrichmentKey(r.method, r.url) === dedupKey)) {
+              list.push(methodStr ? { url, method: methodStr } : { url });
+              routesByProcessId.set(owningPid, list);
+            }
+          }
+        }
+      } catch (e) {
+        logQueryError('query:route-lookup', e);
+        if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+      }
+      for (const p of rankedProcesses) {
+        p.routes = routesByProcessId.get(p.id);
+      }
+    }
+
+    // Optional BFS chain enrichment (mirrors context({chain_depth})). Attached
+    // per ranked process, keyed on the process's entry-point symbol so the
+    // chain starts where the flow starts. Bounded: one BFS per process (at
+    // most processLimit), each internally capped by _computeContextChain (50
+    // nodes per direction per depth layer), and at most
+    // QUERY_CHAIN_BFS_CONCURRENCY walks in flight. This is the per-query BFS
+    // cap; GroupService.groupQuery also caps member-query fan-out so a group
+    // of N members cannot run 4×N concurrent BFS walks.
+    // Best-effort — a BFS failure drops that process's chain but never fails
+    // the query.
+    const chainByProcessId = new Map<string, any[]>();
+    if (requestedChainDepth > 0 && rankedProcesses.length > 0) {
+      timer.start('chain_enrichment');
+      await mapConcurrent(
+        rankedProcesses,
+        async (p) => {
+          if (!p.entryPointId) return;
+          try {
+            const chain = await this._computeContextChain(
+              repo,
+              p.entryPointId,
+              requestedChainDepth,
+            );
+            chainByProcessId.set(p.id, chain);
+          } catch (e) {
+            logQueryError('query:chain-bfs', e);
+            if (!isBenignMissingTableError(e)) enrichmentDegraded = true;
+          }
+        },
+        { concurrency: QUERY_CHAIN_BFS_CONCURRENCY },
+      );
+      timer.stop(); // chain_enrichment
+    }
+
     // Step 4: Build response
     timer.start('formatting');
-    const processes = rankedProcesses.map((p) => ({
-      id: p.id,
-      summary: p.heuristicLabel || p.label,
-      priority: Math.round(p.priority * 1000) / 1000,
-      symbol_count: p.symbols.length,
-      process_type: p.processType,
-      step_count: p.stepCount,
-    }));
-
-    const processSymbols = rankedProcesses.flatMap((p) =>
-      p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
-        ...s,
-        // remove internal fields
-      })),
-    );
-
-    // Deduplicate process_symbols by id
-    const seen = new Set<string>();
-    const dedupedSymbols = processSymbols.filter((s) => {
-      if (seen.has(s.id)) return false;
-      seen.add(s.id);
-      return true;
+    const { processes, process_symbols } = shapeQueryProcessAttaches(rankedProcesses, {
+      maxSymbolsPerProcess,
+      chainByProcessId,
     });
     timer.stop(); // formatting
 
@@ -3475,7 +3763,7 @@ export class LocalBackend {
 
     return {
       processes,
-      process_symbols: dedupedSymbols,
+      process_symbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
@@ -3603,6 +3891,18 @@ export class LocalBackend {
   }
 
   /**
+   * Keyword-only indexes are the default. Do not put this on `query.warning`
+   * (that field is reserved for FTS/stack degradation). Log once per backend.
+   */
+  private logKeywordOnlyEmbeddings(): void {
+    if (this.warnedNoEmbeddingVectors) return;
+    this.warnedNoEmbeddingVectors = true;
+    logger.warn(
+      'GitNexus [query:vector]: This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.',
+    );
+  }
+
+  /**
    * Semantic vector search helper
    */
   private async semanticSearch(
@@ -3624,10 +3924,8 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        // No vectors to search: nothing is embedded below, so drop any width a
-        // previous call recorded rather than let query() warn about a lane that
-        // did not run this time (#2798).
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        this.logKeywordOnlyEmbeddings();
         return [];
       }
 
@@ -3789,6 +4087,8 @@ export class LocalBackend {
         isLocalEmbeddingSidecarAbortMessage(message);
       if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
+      } else if (isBenignMissingTableError(err)) {
+        this.logKeywordOnlyEmbeddings();
       }
       if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
@@ -4172,7 +4472,11 @@ export class LocalBackend {
       }
     | { kind: 'not_found' }
   > {
-    const { uid, name, include_content } = query;
+    const { name, include_content } = query;
+    // A blank or non-string uid is omitted, not a lookup key — fall through to
+    // the name instead of `not_found`, matching normalizeToolParams' impact
+    // target_uid check.
+    const uid = nonBlankUid(query.uid);
     const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
 
     // Direct UID — zero-ambiguity path.
@@ -4474,6 +4778,7 @@ export class LocalBackend {
       file_path?: string;
       kind?: string;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<any> {
     try {
@@ -4498,11 +4803,13 @@ export class LocalBackend {
       file_path?: string;
       kind?: string;
       include_content?: boolean;
+      chain_depth?: number;
     },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
     const { name, uid, file_path, kind, include_content } = params;
+    const { chain_depth } = params;
     const requestedContent = include_content ?? false;
     // Content retention matters only to the opt-in content response. Avoid a
     // metadata dependency for the long-standing default context operation.
@@ -4661,7 +4968,7 @@ export class LocalBackend {
             executeParameterized(
               repo.lbugPath,
               `
-            MATCH (p:\`Property\`)
+            MATCH (p:Property)
             WHERE p.declaredType = $name
                OR p.declaredType STARTS WITH $genericPrefix
                OR p.declaredType CONTAINS $genericArg
@@ -4760,13 +5067,59 @@ export class LocalBackend {
         repo.lbugPath,
         `
         MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        RETURN p.id AS pid, p.heuristicLabel AS label, MIN(r.step) AS step, p.stepCount AS stepCount
+        RETURN p.id AS pid, p.heuristicLabel AS label, MIN(r.step) AS step, p.stepCount AS stepCount, p.entryPointId AS entryPointId
         ORDER BY pid
       `,
         { symId },
       );
     } catch (e) {
       logQueryError('context:process-participation', e);
+    }
+
+    // Route lookup — HTTP endpoints this symbol handles, plus entry-point
+    // status. Makes context() self-sufficient: an agent learns the symbol's
+    // route + entry-point status in the same call it already runs before every
+    // edit (AGENTS.md mandates context() pre-edit).
+    // A symbol is the process entry point when entryPointId matches symId.
+    // Process-linked routes come from Route-[ENTRY_POINT_OF]->Process
+    // (processes.ts). Handler routes come from (handler)-[HANDLES_ROUTE]->Route
+    // (routes.ts). A middle-step symbol does not own a process's route.
+    // call-processor does not emit Route-[ENTRY_POINT_OF]->Function.
+    const entryPids = processRows
+      .filter((r: any) => (r.entryPointId ?? r[4]) === symId)
+      .map((r: any) => r.pid || r[0]);
+    const isEntryPoint = entryPids.length > 0;
+    const routes: Array<{ url: string; method?: string }> = [];
+    try {
+      const routeRows = await executeParameterized(
+        repo.lbugPath,
+        `
+        MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(target)
+        WHERE target.id = $symId OR target.id IN $entryPids
+        RETURN route.name AS url, route.method AS method
+        UNION
+        MATCH (handler)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+        WHERE handler.id = $symId
+        RETURN route.name AS url, route.method AS method
+      `,
+        { symId, entryPids: entryPids.length > 0 ? entryPids : ['__none__'] },
+      );
+      // Dedup on method+url: Route identity includes the HTTP method, and a
+      // symbol can legitimately sit behind both variants of the same URL
+      // (GET/POST pair). URL-only dedup would drop the second endpoint.
+      const seenRoutes = new Set<string>();
+      for (const r of routeRows) {
+        const url = r.url ?? r[0];
+        const method = r.method ?? r[1];
+        const dedupKey = routeEnrichmentKey(method ? String(method) : undefined, url);
+        if (url && !seenRoutes.has(dedupKey)) {
+          seenRoutes.add(dedupKey);
+          routes.push(method ? { url, method } : { url });
+        }
+      }
+    } catch (e) {
+      // Best-effort enrichment — never fail the context call.
+      logQueryError('context:route-lookup', e);
     }
 
     // Helper to categorize refs
@@ -4901,6 +5254,18 @@ export class LocalBackend {
       aopMetadataPromise,
     ]);
 
+    let chain: any[] | undefined;
+    const parsedDepth = parseChainDepth(chain_depth);
+    if (parsedDepth.ok === false) return { error: parsedDepth.error };
+    const requestedDepth = parsedDepth.value;
+    if (requestedDepth > 0) {
+      try {
+        chain = await this._computeContextChain(repo, symId, requestedDepth);
+      } catch (e) {
+        logQueryError('context:chain-bfs', e);
+      }
+    }
+
     return {
       status: 'found',
       ...(contentAvailability ? { contentAvailability } : {}),
@@ -4920,6 +5285,7 @@ export class LocalBackend {
       ...crossLanguageAnchor,
       incoming: categorize(incomingRows),
       outgoing: categorize(outgoingRows),
+      ...(chain ? { chain } : {}),
       ...(typedPropertyRows.length > 0
         ? {
             typed_properties: typedPropertyRows.map((r: any) => ({
@@ -4931,6 +5297,8 @@ export class LocalBackend {
             })),
           }
         : {}),
+      ...(isEntryPoint ? { is_entry_point: true } : {}),
+      ...(routes.length > 0 ? { routes } : {}),
       processes: processRows.map((r: any) => ({
         id: r.pid || r[0],
         name: r.label || r[1],
@@ -4938,6 +5306,155 @@ export class LocalBackend {
         step_count: r.stepCount || r[3],
       })),
     };
+  }
+
+  /**
+   * BFS chain expansion for `context({chain_depth: N})`.
+   *
+   * Walks CALLS edges up to `maxDepth` hops from the seed symbol, in BOTH
+   * directions (upstream callers AND downstream callees), and returns the
+   * layered result so an agent can see the full procedure→workflow→sub-workflow
+   * chain in a single call instead of chaining context() invocations.
+   *
+   * Output shape (one entry per depth, 1..maxDepth — layers starts empty and
+   * the loop begins at depth 1, so the seed itself is NOT emitted as its own
+   * entry):
+   *   [
+   *     { depth: 1, upstream: [...callers], downstream: [...callees] },
+   *     { depth: 2, upstream: [...], downstream: [...] },
+   *     ...
+   *   ]
+   *
+   * Test-file nodes are deprioritized (pushed to the end of each list) so real
+   * callers/callees surface first. Cycles are broken via a per-direction `visited`
+   * set (a node visited at depth N in one direction is not re-emitted at
+   * depth N+1 in that same direction even if it has another path back into
+   * the frontier). Upstream and downstream do not share visited, so a
+   * reciprocal CALLS pair (A→B and B→A) still appears on both sides of
+   * layer 1. Hard cap of 50 nodes per direction per depth layer keeps the
+   * response bounded.
+   */
+  private async _computeContextChain(
+    repo: RepoHandle,
+    seedId: string,
+    maxDepth: number,
+  ): Promise<
+    Array<{
+      depth: number;
+      upstream?: any[];
+      downstream?: any[];
+    }>
+  > {
+    // LadybugDB has no regex operator — use CONTAINS clauses. Parameterized
+    // by the returned-node alias: the upstream query returns `caller`, the
+    // downstream query returns `target`, and test-file demotion must rank
+    // the returned node — not the frontier node the edge was reached from.
+    //
+    // `labels(node)`, not `labels(node)[0]`: LadybugDB returns the label as
+    // a scalar string, and subscripting a string is 1-based over characters,
+    // so `[0]` is always '' (see graph-queries.ts and detect_changes).
+    const testOrderExpr = (alias: string) => `
+      CASE
+        WHEN ${alias}.filePath IS NULL THEN 0
+        WHEN ${alias}.filePath CONTAINS '.test.' THEN 1
+        WHEN ${alias}.filePath CONTAINS '.spec.' THEN 1
+        WHEN ${alias}.filePath CONTAINS '__tests__/' THEN 1
+        WHEN ${alias}.filePath CONTAINS '/test/' THEN 1
+        WHEN ${alias}.filePath CONTAINS '/tests/' THEN 1
+        ELSE 0
+      END
+    `;
+
+    const layers: Array<{ depth: number; upstream?: any[]; downstream?: any[] }> = [];
+    const visitedUpstream = new Set<string>([seedId]);
+    const visitedDownstream = new Set<string>([seedId]);
+    let upstreamFrontier = [seedId];
+    let downstreamFrontier = [seedId];
+
+    const walk = async (
+      frontier: string[],
+      cypher: string,
+      logLabel: string,
+      visited: Set<string>,
+    ): Promise<{ nodes?: any[]; nextFrontier: string[] }> => {
+      if (frontier.length === 0) return { nextFrontier: [] };
+      try {
+        const rows = await executeParameterized(repo.lbugPath, cypher, {
+          frontier,
+          visited: Array.from(visited),
+        });
+        if (rows.length === 0) return { nextFrontier: [] };
+        // MATCH is one row per CALLS edge. Cypher `WITH DISTINCT` applies
+        // LIMIT 50 to unique neighbors; this second pass still collapses
+        // twins if a driver/engine ever returns duplicate rows.
+        const seen = new Set<string>();
+        const fresh = rows.filter((r: any) => {
+          const uid = r.uid;
+          if (!uid || visited.has(uid) || seen.has(uid)) return false;
+          seen.add(uid);
+          return true;
+        });
+        const nodes = fresh.map((r: any) => ({
+          uid: r.uid,
+          name: r.name,
+          filePath: r.filePath,
+          kind: r.kind,
+        }));
+        for (const r of fresh) visited.add(r.uid);
+        return { nodes, nextFrontier: fresh.map((r: any) => r.uid) };
+      } catch (e) {
+        logQueryError(logLabel, e);
+        return { nextFrontier: [] };
+      }
+    };
+
+    for (let depth = 1; depth <= maxDepth; depth++) {
+      const layer: { depth: number; upstream?: any[]; downstream?: any[] } = { depth };
+
+      const upstream = await walk(
+        upstreamFrontier,
+        `
+            MATCH (caller)-[r:CodeRelation]->(n)
+            WHERE r.type = 'CALLS' AND n.id IN $frontier
+              AND NOT caller.id IN $visited
+            WITH DISTINCT caller
+            RETURN caller.id AS uid, caller.name AS name,
+                   caller.filePath AS filePath, labels(caller) AS kind,
+                   ${testOrderExpr('caller')} AS isTest
+            ORDER BY isTest ASC, caller.filePath ASC, caller.name ASC
+            LIMIT 50
+          `,
+        'context:chain-bfs:upstream',
+        visitedUpstream,
+      );
+      if (upstream.nodes !== undefined) layer.upstream = upstream.nodes;
+      upstreamFrontier = upstream.nextFrontier;
+
+      const downstream = await walk(
+        downstreamFrontier,
+        `
+            MATCH (n)-[r:CodeRelation]->(target)
+            WHERE r.type = 'CALLS' AND n.id IN $frontier
+              AND NOT target.id IN $visited
+            WITH DISTINCT target
+            RETURN target.id AS uid, target.name AS name,
+                   target.filePath AS filePath, labels(target) AS kind,
+                   ${testOrderExpr('target')} AS isTest
+            ORDER BY isTest ASC, target.filePath ASC, target.name ASC
+            LIMIT 50
+          `,
+        'context:chain-bfs:downstream',
+        visitedDownstream,
+      );
+      if (downstream.nodes !== undefined) layer.downstream = downstream.nodes;
+      downstreamFrontier = downstream.nextFrontier;
+
+      if (!layer.upstream && !layer.downstream) break;
+      layers.push(layer);
+      if (upstreamFrontier.length === 0 && downstreamFrontier.length === 0) break;
+    }
+
+    return layers;
   }
 
   /**
@@ -6315,7 +6832,7 @@ export class LocalBackend {
     if (fromOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        error: `Source symbol '${nonBlankUid(params.from_uid) ?? params.from}' not found.`,
         suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
       };
     }
@@ -6342,7 +6859,7 @@ export class LocalBackend {
     if (toOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        error: `Target symbol '${nonBlankUid(params.to_uid) ?? params.to}' not found.`,
         suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
       };
     }
@@ -6722,7 +7239,7 @@ export class LocalBackend {
     );
 
     if (outcome.kind === 'not_found') {
-      const missing = params.target_uid ?? target;
+      const missing = nonBlankUid(params.target_uid) ?? target;
       // not_found = no resolved symbol, so the envelope keeps the partial-but-
       // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
       const notFoundTarget: PdgImpactTarget = { name: target };
@@ -7545,6 +8062,14 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+    // #3354: a walk with no anchor id cannot say anything about THIS symbol,
+    // yet it still ships a normal-looking `exact` result with the target's
+    // name echoed back. Throw so every caller's catch reports UNKNOWN instead.
+    if (!symId) {
+      throw new Error(
+        `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
+      );
+    }
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no
@@ -8661,6 +9186,7 @@ export class LocalBackend {
       if (typeof params.limit === 'number') queryArgs.limit = params.limit;
       if (typeof params.max_symbols === 'number') queryArgs.max_symbols = params.max_symbols;
       if (params.include_content !== undefined) queryArgs.include_content = params.include_content;
+      if (params.chain_depth !== undefined) queryArgs.chain_depth = params.chain_depth;
       if (params.service !== undefined && params.service !== null)
         queryArgs.service = params.service;
       if (memberRest !== undefined) {
@@ -8684,6 +9210,7 @@ export class LocalBackend {
       if (typeof params.file_path === 'string') contextArgs.file_path = params.file_path;
       if (params.include_content !== undefined)
         contextArgs.include_content = params.include_content;
+      if (params.chain_depth !== undefined) contextArgs.chain_depth = params.chain_depth;
       if (params.service !== undefined && params.service !== null)
         contextArgs.service = params.service;
       if (memberRest !== undefined) {

@@ -29,8 +29,22 @@
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
-import { TYPESCRIPT_QUERIES } from '../../src/core/ingestion/tree-sitter-queries.js';
+import JS from 'tree-sitter-javascript';
+import {
+  JAVASCRIPT_QUERIES,
+  TYPESCRIPT_QUERIES,
+} from '../../src/core/ingestion/tree-sitter-queries.js';
 import { typescriptProvider } from '../../src/core/ingestion/languages/typescript.js';
+import {
+  getJsParser,
+  getJsScopeQuery,
+} from '../../src/core/ingestion/languages/javascript/query.js';
+import {
+  getTsParser,
+  getTsScopeQuery,
+} from '../../src/core/ingestion/languages/typescript/query.js';
+import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescript/captures.js';
+import { emitJsScopeCaptures } from '../../src/core/ingestion/languages/javascript/captures.js';
 import {
   FUNCTION_NODE_TYPES,
   genericFuncName,
@@ -274,6 +288,23 @@ describe('issue #1166 — Bug B: object-property arrows are named by pair.key', 
     const getUser = findCall(sites, 'getUser');
     expect(getUser?.attributedTo).toBe('queryFn');
   });
+
+  it('does not attribute then / setTimeout pair callbacks to the property key', () => {
+    const sites = collectCallAttributions(`
+      const o = {
+        result: promise.then(() => workThen()),
+        timer: setTimeout(() => workTimer(), 1),
+        handler: wrap(() => workWrap()),
+      };
+    `);
+    const workThen = findCall(sites, 'workThen');
+    const workTimer = findCall(sites, 'workTimer');
+    expect(workThen, 'workThen call should be captured').toBeDefined();
+    expect(workTimer, 'workTimer call should be captured').toBeDefined();
+    expect(workThen!.attributedTo).not.toBe('result');
+    expect(workTimer!.attributedTo).not.toBe('timer');
+    expect(findCall(sites, 'workWrap')?.attributedTo).toBe('handler');
+  });
 });
 
 // ─── Definition-phase consistency ───────────────────────────────────────────
@@ -325,6 +356,136 @@ describe('issue #1166 — definition-phase consistency', () => {
       };
     `);
     expect(names).toContain('add-item');
+  });
+
+  it("captures quoted-key identifier HOC pairs (`'handler': wrap(() => ...)`)", () => {
+    const names = definedFunctionNames(`
+      export const store = {
+        'handler': wrap(() => doSomething()),
+      };
+    `);
+    expect(names).toContain('handler');
+  });
+
+  it('captures tRPC pair HOC create: publicProcedure.mutation(...)', () => {
+    const names = definedFunctionNames(`
+      const r = { create: publicProcedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures curried tRPC pair HOC create: publicProcedure.mutation(withAuth(...))', () => {
+    const names = definedFunctionNames(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures quoted-key curried pair HOC create: mutation(withAuth(function () {}))', () => {
+    const names = definedFunctionNames(`
+      const r = { 'create': mutation(withAuth(function () { return null; })) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('does not name value-returning pair callbacks then / setTimeout / Array.from', () => {
+    const names = definedFunctionNames(`
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `);
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('timer');
+    expect(names).not.toContain('visible');
+    expect(names).toContain('handler');
+    expect(names).toContain('create');
+  });
+
+  // The emitters also enforce the built-in blocklists emit-side so the
+  // guarantee holds regardless of query-predicate sharing behavior in
+  // node-tree-sitter 0.21 (implicit-global stringValues across compiled
+  // queries). This pins the emitter-level contract independently of the
+  // query-level gates above.
+  it('does not invent Function declarations for built-in callback registrations (emit-side)', () => {
+    const declaredPairNames = (src: string, filePath: string): (string | undefined)[] => {
+      const matches = filePath.endsWith('.js')
+        ? emitJsScopeCaptures(src, filePath)
+        : emitTsScopeCaptures(src, filePath);
+      return matches
+        .filter((m) => m['@declaration.function'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+    };
+    const src = `
+      export const timers = {
+        timer: setTimeout(() => doSomething(), 100),
+        later: Promise.resolve().then(() => doSomething()),
+        ids: Array.from([1, 2], (n) => doSomething(n)),
+        handler: wrapIt(() => doSomething()),
+      };
+    `;
+    const tsNames = declaredPairNames(src, 'test.ts');
+    expect(tsNames).not.toContain('timer');
+    expect(tsNames).not.toContain('later');
+    expect(tsNames).not.toContain('ids');
+    expect(tsNames).toContain('handler');
+
+    const jsNames = declaredPairNames(src, 'test.js');
+    expect(jsNames).not.toContain('timer');
+    expect(jsNames).not.toContain('later');
+    expect(jsNames).not.toContain('ids');
+    expect(jsNames).toContain('handler');
+  });
+
+  it('TYPESCRIPT_SCOPE_QUERY names curried tRPC pair HOC mutation(withAuth(arrow))', () => {
+    const parser = getTsParser('router.ts');
+    const query = getTsScopeQuery('router.ts');
+    const tree = parser.parse(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    const names: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) names.push(name);
+    }
+    expect(names).toContain('create');
+  });
+
+  it('TYPESCRIPT_SCOPE_QUERY does not name then / setTimeout / Array.from pair values', () => {
+    const parser = getTsParser('router.ts');
+    const query = getTsScopeQuery('router.ts');
+    const tree = parser.parse(`
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `);
+    const names: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) names.push(name);
+    }
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('timer');
+    expect(names).not.toContain('visible');
+    expect(names).toContain('handler');
+    expect(names).toContain('create');
   });
 
   it('does not invent names for computed-key pairs (`[K]: () => ...`)', () => {
@@ -568,5 +729,93 @@ describe('issue #1166 follow-up — HOC-wrapped variable declarations', () => {
     `);
     expect(findCall(sites, 'first')?.attributedTo).toBe('x');
     expect(findCall(sites, 'second')?.attributedTo).toBe('x');
+  });
+});
+
+// ─── JavaScript HOC-wrapped pair values (tRPC / Express-style) ──────────────
+
+describe('issue #1166 — JavaScript HOC-wrapped pair values (tRPC)', () => {
+  const JS_GRAMMAR = JS as Parameters<Parser['setLanguage']>[0];
+
+  function definedJsFunctionNames(code: string): string[] {
+    const parser = new Parser();
+    parser.setLanguage(JS_GRAMMAR);
+    const query = new Parser.Query(JS_GRAMMAR, JAVASCRIPT_QUERIES);
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'definition.function') isFn = true;
+        if (c.name === 'name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  function definedJsScopeFunctionNames(code: string): string[] {
+    const parser = getJsParser('router.js');
+    const query = getJsScopeQuery('router.js');
+    const tree = parser.parse(code);
+    const out: string[] = [];
+    for (const match of query.matches(tree.rootNode)) {
+      let isFn = false;
+      let name: string | undefined;
+      for (const c of match.captures) {
+        if (c.name === 'declaration.function') isFn = true;
+        if (c.name === 'declaration.name') name = c.node.text;
+      }
+      if (isFn && name) out.push(name);
+    }
+    return out;
+  }
+
+  it('captures create: publicProcedure.mutation as @definition.function in JAVASCRIPT_QUERIES', () => {
+    const names = definedJsFunctionNames(`
+      const r = { create: publicProcedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures create: publicProcedure.mutation(withAuth(...)) in JAVASCRIPT_QUERIES', () => {
+    const names = definedJsFunctionNames(`
+      const r = { create: publicProcedure.mutation(withAuth(async () => {})) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures create: procedure.mutation in JAVASCRIPT_SCOPE_QUERY', () => {
+    const names = definedJsScopeFunctionNames(`
+      const r = { create: procedure.mutation(async () => {}) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('captures create: procedure.mutation(withAuth(...)) in JAVASCRIPT_SCOPE_QUERY', () => {
+    const names = definedJsScopeFunctionNames(`
+      const r = { create: procedure.mutation(withAuth(async () => {})) };
+    `);
+    expect(names).toContain('create');
+  });
+
+  it('does not name then / setTimeout / Array.from pair values in JS queries', () => {
+    const src = `
+      const o = {
+        result: promise.then(() => work()),
+        timer: setTimeout(() => work(), 1),
+        visible: Array.from(items, x => x),
+        handler: wrap(() => work()),
+        create: procedure.mutation(async () => work()),
+      };
+    `;
+    for (const names of [definedJsFunctionNames(src), definedJsScopeFunctionNames(src)]) {
+      expect(names).not.toContain('result');
+      expect(names).not.toContain('timer');
+      expect(names).not.toContain('visible');
+      expect(names).toContain('handler');
+      expect(names).toContain('create');
+    }
   });
 });

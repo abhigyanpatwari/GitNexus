@@ -11,6 +11,8 @@ import {
   resolveBranchPlacement,
   type RepoMeta,
 } from '../../storage/repo-manager.js';
+import { embeddingsFromGitnexusRc } from '../gitnexus-rc-embeddings.js';
+import { getAutoSyncRepoIdentity } from './config.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -25,7 +27,6 @@ import {
   type ProjectCommitInfoEntry,
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
-import { validateAutoSyncRemoteUrl } from './config.js';
 import {
   AutoSyncAnalysisError,
   runAutoSyncAnalysis,
@@ -243,6 +244,7 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
+            const rcEmbeddings = await embeddingsFromGitnexusRc(targetDir);
             const analysis = await deps.runAnalysis(
               targetDir,
               {
@@ -253,6 +255,7 @@ export async function runAutoSyncOnce(
                   ? { preserveExistingPdg: true }
                   : { pdg: requestedPdg }),
                 atomicIncremental: true,
+                ...rcEmbeddings,
               },
               config.analyzeTimeoutMs,
               options.signal,
@@ -510,11 +513,7 @@ export async function addRepoToGroup(
   return true;
 }
 
-export function getAutoSyncRepoIdentity(remoteUrl: string): string {
-  validateAutoSyncRemoteUrl(remoteUrl);
-  const [, host, remotePath] = /^git@([^:\s/]+):([^\s]+)$/.exec(remoteUrl.trim())!;
-  return `${host.toLowerCase()}/${remotePath.replace(/\.git$/i, '')}`;
-}
+export { getAutoSyncRepoIdentity } from './config.js';
 
 export async function syncGroupByName(groupName: string): Promise<void> {
   const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);

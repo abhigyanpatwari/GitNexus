@@ -96,7 +96,16 @@ export default defineConfig({
             'test/integration/java-class-impact.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
+            'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
+            // Shared sibling store (#3352): each file runs real analyses and opens
+            // the resulting LadybugDB graphs.
+            'test/integration/shared-store-analyze.test.ts',
+            'test/integration/shared-store-seed.test.ts',
+            'test/integration/shared-store-cache.test.ts',
+            'test/integration/shared-store-clean.test.ts',
+            'test/integration/shared-store-clone-optin.test.ts',
+            'test/integration/shared-store-adoption.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
@@ -176,6 +185,7 @@ export default defineConfig({
             'test/integration/java-class-impact.test.ts',
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
+            'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
@@ -200,6 +210,12 @@ export default defineConfig({
             // Excluded here because it is included by `lbug-db` above; a file
             // in two projects would be collected (and run) twice.
             'test/unit/incremental-index-extension-dml-gate.test.ts',
+            'test/integration/shared-store-analyze.test.ts',
+            'test/integration/shared-store-seed.test.ts',
+            'test/integration/shared-store-cache.test.ts',
+            'test/integration/shared-store-clean.test.ts',
+            'test/integration/shared-store-clone-optin.test.ts',
+            'test/integration/shared-store-adoption.test.ts',
           ],
         },
       },

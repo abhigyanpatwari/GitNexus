@@ -27,6 +27,7 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { getGlobalDir } from './global-dir.js';
 import { logger } from '../core/logger.js';
+import { mapPool } from './map-pool.js';
 import {
   acquireIndexLock,
   IndexLockTimeoutError,
@@ -50,6 +51,7 @@ import {
   type RepoMeta,
 } from './repo-meta.js';
 import { LBUG_DIRECTORY } from './storage-constants.js';
+import { resolveGraphPath } from './shared-store.js';
 import {
   defaultStoragePath,
   ensureStoragePathWritable,
@@ -189,7 +191,21 @@ export interface RegistryEntry {
    * legacy registry shape.
    */
   branches?: BranchSummary[];
+  /**
+   * The checkout left sharing with `analyze --no-share` (#3352), so it does
+   * not join a sibling clone's store automatically. Cleared by `--share-with`.
+   */
+  shareOptOut?: true;
 }
+
+/** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
+export const findRegistryEntryByRepoPath = (
+  entries: readonly RegistryEntry[],
+  repoPath: string,
+): RegistryEntry | undefined => {
+  const repoKey = canonicalizePath(repoPath);
+  return entries.find((entry) => registryPathEquals(canonicalizePath(entry.path), repoKey));
+};
 
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 
@@ -203,9 +219,11 @@ const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
  * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
  * and `metaPath` are scoped under `branches/<slug>/`. For the flat call
  * (no `branch`), `storagePath` and `lbugPath` remain byte-identical to the
- * pre-multi-branch behavior (#2106); `metaPath`'s FILENAME changed from
- * `meta.json` to `gitnexus.json` (PR #2363) — `saveMeta` keeps a `meta.json`
- * mirror in sync for consumers that still read the legacy name.
+ * pre-multi-branch behavior (#2106), except that a shared-store checkout slot
+ * (#3352) returns the commit graph its metadata records (`resolveGraphPath`).
+ * `metaPath`'s FILENAME changed from `meta.json` to `gitnexus.json`
+ * (PR #2363) — `saveMeta` keeps a `meta.json` mirror in sync for consumers
+ * that still read the legacy name.
  *
  * Each branch slot has its own metadata file:
  * - Primary/flat: <repo>/.gitnexus/gitnexus.json
@@ -224,7 +242,9 @@ export const getStoragePaths = (
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(baseDir, LBUG_DIRECTORY),
+    // Branch slots are always private; a flat shared-store slot may read a
+    // commit graph (#3352).
+    lbugPath: branch ? path.join(baseDir, LBUG_DIRECTORY) : resolveGraphPath(storagePath),
     metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };
@@ -877,6 +897,12 @@ export interface RegisterRepoOptions {
    * analysis or index operation has begun.
    */
   storagePath?: string;
+  /**
+   * Drop recorded `branches[]` summaries on a primary run. Set when the entry
+   * moves to a different storage location (a shared-store slot, #3352): the
+   * summaries name `branches/<slug>` sub-indexes the new location does not hold.
+   */
+  dropBranches?: boolean;
 }
 
 /**
@@ -1153,8 +1179,9 @@ const registerRepoUnlocked = async (
     // Primary run: apply our refreshed top-level, but defer to the FRESH
     // branches[] (a concurrent branch upsert or `clean --branch` wins).
     merged = { ...entry };
-    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    if (freshExisting?.branches && !opts?.dropBranches) merged.branches = freshExisting.branches;
     else delete merged.branches;
+    if (freshExisting?.shareOptOut) merged.shareOptOut = true;
   }
   if (freshIdx >= 0) {
     fresh[freshIdx] = merged;
@@ -1197,13 +1224,35 @@ const unregisterRepoUnlocked = async (repoPath: string): Promise<void> => {
   // and vice versa. Matches the semantics of `registerRepo` and
   // `resolveRegistryEntry` post-#1003 review.
   const resolved = canonicalizePath(repoPath);
-  const entries = await readRegistry();
+  // Same rule as `registerRepoUnlocked` (#3094): a mutating write must not
+  // treat an unreadable/truncated registry as empty. The lenient reader
+  // returned `[]` on any read error (EBUSY/EPERM racing another gitnexus
+  // process's atomic rename on Windows, EIO, a half-written file) and this
+  // function then wrote `[]` back — deregistering every repo on the machine
+  // to remove one. A missing file means nothing to remove.
+  const entries = await readRegistryStrictIfPresent();
+  if (entries === undefined) return;
   const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
+  if (filtered.length === entries.length) return;
   await writeRegistry(filtered);
 };
 
 export const unregisterRepo = async (repoPath: string): Promise<void> =>
   withRegistryLock(() => unregisterRepoUnlocked(repoPath));
+
+/**
+ * Record (or clear) a checkout's opt-out from automatic clone sharing
+ * (#3352). A no-op when the checkout is not registered.
+ */
+export const setShareOptOut = async (repoPath: string, optOut: boolean): Promise<void> =>
+  withRegistryLock(async () => {
+    const entries = await readRegistryStrict();
+    const entry = findRegistryEntryByRepoPath(entries, repoPath);
+    if (!entry || !!entry.shareOptOut === optOut) return;
+    if (optOut) entry.shareOptOut = true;
+    else delete entry.shareOptOut;
+    await writeRegistry(entries);
+  });
 
 /**
  * Remove a single non-primary branch's summary from a repo's registry entry
@@ -1680,28 +1729,6 @@ export const findRegistryEntryByName = (
  * I/O storm cannot make the registry disappear; it remains unconfirmed until a
  * later validating read succeeds.
  */
-const mapPool = async <T, R>(
-  items: readonly T[],
-  mapper: (item: T) => Promise<R>,
-  concurrency: number,
-): Promise<R[]> => {
-  if (items.length === 0) return [];
-  const results = new Array<R>(items.length);
-  let next = 0;
-  const workerCount = Math.max(1, Math.min(concurrency, items.length));
-  await Promise.all(
-    Array.from({ length: workerCount }, async () => {
-      while (true) {
-        const index = next;
-        next += 1;
-        if (index >= items.length) return;
-        results[index] = await mapper(items[index] as T);
-      }
-    }),
-  );
-  return results;
-};
-
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
 }): Promise<RegistryEntry[]> => {

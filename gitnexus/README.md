@@ -2,7 +2,7 @@
 
 **Graph-powered code intelligence for AI agents.** Index any codebase into a knowledge graph, then query it via MCP or CLI.
 
-Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
+Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Factory** (Droid), **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
 
 [![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
@@ -44,12 +44,13 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 | **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))    | **Full**     |
 | **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))   | **Full**     |
+| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](../gitnexus-factory-plugin/))                                   | **Full**     |
 | **OpenCode**             | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
 
 ### Community Integrations
 
@@ -87,6 +88,33 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 ```
 
 > **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
+
+### Factory (Droid) (full support — MCP + skills + hooks)
+
+`gitnexus setup -c droid` writes the MCP server to `~/.factory/mcp.json` and installs skills to
+`~/.factory/skills/`. To configure MCP by hand instead, add to `~/.factory/mcp.json`
+([user scope](https://docs.factory.ai/cli/configuration/mcp) — applies to all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+For the PostToolUse search-augment hook, install the bundled
+[`gitnexus-factory-plugin/`](../gitnexus-factory-plugin/) with `droid plugin install gitnexus@<marketplace>`
+from a marketplace that includes this repo, or point Droid at it via `extraKnownMarketplaces` in
+`.factory/settings.json`.
+
+> **Factory notes:** Droid reads [AGENTS.md natively](https://docs.factory.ai/), which already carries the
+> GitNexus context block, so no SessionStart hook is registered. Pick **one** install route
+> (`gitnexus setup -c droid` **or** the plugin) — the plugin ships its own MCP entry, so installing both
+> can register the server twice.
 
 ### Cursor / Windsurf
 
@@ -187,8 +215,8 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
 | `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)       |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)                  |
-| `context`        | 360-degree symbol view — categorized refs, process participation       |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF); optional `chain_depth` expands each result's call chain |
+| `context`        | 360-degree symbol view — categorized refs, process participation, HTTP routes, `is_entry_point` flag; optional `chain_depth` call-chain expansion |
 | `impact`         | Blast radius analysis with depth grouping and confidence               |
 | `trace`          | Shortest directed path between two symbols (call + class-member edges) |
 | `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
@@ -339,7 +367,7 @@ projects:
       - git@gitee.com:owner/repo.git
 ```
 
-`sync_interval_minutes` must be an integer of at least `5`. `local_path` must be an absolute path without traversal; each remote is cloned below it as `host/namespace/repo`, preventing same-basename repositories from colliding. `remote_urls` must use SSH SCP form for github.com, gitlab.com, or gitee.com. `repo_git_timeout` applies to each repo clone/pull and defaults to `10s`; a bare number such as `10` is interpreted as seconds, while `10000ms`, `10s`, and `1m` keep their explicit units. It must not exceed one hour or `sync_interval_minutes`, whichever is smaller — so a bare `600000` is rejected, because it means 600000 seconds rather than milliseconds. `analyze_timeout` applies to each isolated analysis worker and defaults to half of `sync_interval_minutes`, but it is independent of polling and may be longer, up to Node's timer limit (`2147483647ms`). A `5` minute poll with `analyze_timeout: 30m` is valid. A tick that arrives while the previous loop is active never overlaps it: ticks coalesce into one immediate follow-up run, which pulls and analyzes the newest commit. If the parent times out and leaves that worker running, the follow-up is deferred to the next interval so a leftover lock holder is not counted as a hard analyze failure. Timeout and `auto-sync stop` request safe cancellation; a worker already in native work exits after it returns to a JS-visible safe point. While waiting, auto-sync reports `cancelling` or `stopping` and keeps its ownership files so another auto-sync cannot take over. The parent waits up to 5 seconds for the worker to exit; after that it stops waiting, releases its ownership files, and leaves the worker to finish and exit on its own rather than killing it mid-write. `auto-sync stop` uses this same control path on macOS and Windows.
+`sync_interval_minutes` must be an integer of at least `5`. `local_path` must be an absolute path without traversal; each remote is cloned below it as `host/namespace/repo`, preventing same-basename repositories from colliding. `remote_urls` may use SSH SCP form (`git@host:owner/repo.git`) or HTTPS (`https://host/owner/repo.git`) for github.com, gitlab.com, or gitee.com. The published CLI image includes `openssh-client` so SSH remotes can clone; mount keys and `known_hosts` yourself. An invalid `watch_config.yml` skips auto-sync immediately with the validation error. `repo_git_timeout` applies to each repo clone/pull and defaults to `10s`; a bare number such as `10` is interpreted as seconds, while `10000ms`, `10s`, and `1m` keep their explicit units. It must not exceed one hour or `sync_interval_minutes`, whichever is smaller — so a bare `600000` is rejected, because it means 600000 seconds rather than milliseconds. `analyze_timeout` applies to each isolated analysis worker and defaults to half of `sync_interval_minutes`, but it is independent of polling and may be longer, up to Node's timer limit (`2147483647ms`). A `5` minute poll with `analyze_timeout: 30m` is valid. Auto-sync analysis honors the cloned repo's `.gitnexusrc` embeddings settings; the CLI image still needs `GITNEXUS_EMBEDDING_URL` or a bind-mounted embedding stack because npm is stripped. A tick that arrives while the previous loop is active never overlaps it: ticks coalesce into one immediate follow-up run, which pulls and analyzes the newest commit. If the parent times out and leaves that worker running, the follow-up is deferred to the next interval so a leftover lock holder is not counted as a hard analyze failure. Timeout and `auto-sync stop` request safe cancellation; a worker already in native work exits after it returns to a JS-visible safe point. While waiting, auto-sync reports `cancelling` or `stopping` and keeps its ownership files so another auto-sync cannot take over. The parent waits up to 5 seconds for the worker to exit; after that it stops waiting, releases its ownership files, and leaves the worker to finish and exit on its own rather than killing it mid-write. `auto-sync stop` uses this same control path on macOS and Windows.
 
 `pdg` is configured per project. `pdg: true` builds and maintains the full CFG, control-dependence, reaching-definition, and taint layers on both initial and incremental analyses. Auto-sync requests staged atomic incremental publication where the analyzer supports it: the old graph remains available to readers until the replacement succeeds, and analysis errors are recorded while the old graph remains intact. Unsupported paths retain the analyzer's existing in-place behavior. Untouched configs that omit `pdg` preserve the existing index mode and cannot silently strip PDG data. Do not paste `pdg: false` from this example onto an existing watch file unless you intend to drop PDG. An explicit `pdg: false` disables PDG and emits a warning before a successful rebuild removes those layers. `overwrite_local_changes` defaults to `false`; a dirty local clone is skipped with an error log, while `true` allows branch fallback to replace local changes and additionally discards untracked files and directories in the clone after checkout — ignored paths, including GitNexus's own `.gitnexus/` storage, are preserved. `max_concurrency` defaults to `1` and is capped at runtime by `floor(availableMemoryGB / 2)` with a minimum of `1`; the effective value is printed at the start of each loop. Each analysis worker's heap cap is the machine-wide cap divided by the number of repositories analyzed in parallel, so concurrent workers share one memory budget instead of each claiming the whole machine. `analyze_failure_threshold` defaults to `3`, must be at least `2`, and pauses repeated failures only for the same repo branch, commit, and requested PDG mode; a new commit, a PDG mode change, or `gitnexus auto-sync reset` clears the block and allows analysis again. Repositories are registered and added to groups by their full remote identity (`host/namespace/repo`), so repositories with the same basename remain distinct. Use `branches` to try branches in order; legacy `branch` remains supported, but the two fields cannot be set together. If all branches are unavailable or time out, watch logs an error, records the repo status, and skips that repo for the loop. Leave `group_name` empty or omit it to skip group add/sync for that project; otherwise create the group first with `gitnexus group create <name>`. `$GITNEXUS_HOME/watch/project_commit_info.txt` is for inspection only; GitNexus stores machine state separately in `$GITNEXUS_HOME/watch/auto-sync-state.json`.
 

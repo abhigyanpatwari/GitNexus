@@ -95,6 +95,10 @@
     "captureGroups": 9,
     "digest": "9c7f1c54a9b0ba3bfa4410e1843bf5edb570777789ee659a00d7dd6771f3670f"
   },
+  "python-callable-alternatives/app.py": {
+    "captureGroups": 85,
+    "digest": "d5fc223832a33ff701f09b00174bdf1e127063aae9bdead0e5d242e8bd8e12ef"
+  },
   "python-calls/one.py": {
     "captureGroups": 4,
     "digest": "b99c3406b4b8555cc521b27bab98eefed02a121dc2e878dd4f63133088603dc5"

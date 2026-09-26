@@ -10,7 +10,11 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
-import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
+import {
+  rubyClassConfig,
+  rubyFactoryBindingName,
+  rubyFactoryType,
+} from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
@@ -142,6 +146,9 @@ const BUILT_INS: ReadonlySet<string> = new Set([
  * All other container types are returned as-is.
  */
 const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
+  if (node.type === 'do_block' || node.type === 'block') {
+    return rubyFactoryType(node) === undefined ? null : node;
+  }
   if (node.type === 'singleton_class') {
     let ancestor = node.parent;
     while (ancestor) {
@@ -153,6 +160,21 @@ const rubyResolveEnclosingOwner = (node: SyntaxNode): SyntaxNode | null => {
     return null; // no enclosing class/module — skip
   }
   return node; // use as-is for all other container types
+};
+
+const rubyClassExtractor = createClassExtractor(rubyClassConfig);
+
+const rubyResolveContainerTypeOwner = (
+  node: SyntaxNode,
+): { readonly name: string; readonly label: NodeLabel } | null => {
+  const name = rubyFactoryBindingName(node);
+  const label = rubyFactoryType(node);
+  if (name === undefined || label === undefined) return null;
+  const qualifiedName =
+    label === 'Trait'
+      ? rubyClassExtractor.qualifyScopeName?.(node, name)
+      : rubyClassExtractor.extractQualifiedName(node, name);
+  return { name: qualifiedName ?? name, label };
 };
 
 export const rubyProvider = defineLanguage({
@@ -190,13 +212,14 @@ export const rubyProvider = defineLanguage({
   callRouter: routeRubyCall,
   callExtractor: createCallExtractor(rubyCallConfig),
   resolveEnclosingOwner: rubyResolveEnclosingOwner,
+  resolveContainerTypeOwner: rubyResolveContainerTypeOwner,
   fieldExtractor: createFieldExtractor(rubyFieldConfig),
   methodExtractor: createMethodExtractor({
     ...rubyMethodConfig,
     extractFunctionName: rubyExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(rubyVariableConfig),
-  classExtractor: createClassExtractor(rubyClassConfig),
+  classExtractor: rubyClassExtractor,
   // ── Leading `#` comments (RDoc/YARD) → description (issue #2270). Magic
   //    comments and the shebang are not documentation. ──
   descriptionExtractor: createLeadingDocDescriptionExtractor({

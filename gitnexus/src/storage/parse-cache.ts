@@ -771,7 +771,21 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // captured as unrestricted reexports. Re-extract both facts on warm indexes.
 // v102: ParsedFile gained callResultAssignmentSites; old durable shards do
 // not carry the exact assignment identity required by return-type replay.
-const SCHEMA_BUMP = 102;
+// v103 (#3339 review): tRPC route extraction changed — nested-router paths,
+// a tightened entry gate, and controller-less routes now bind handlers via a
+// same-file CALLS edge. Warm caches replay the flat pre-fix capture set
+// verbatim (route rows are parse-time facts), so both stores re-extract.
+// v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
+// `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
+// capture set (anonymous arrows, no Function name), so both stores re-extract.
+// v112 (#3354): callable-value flow now follows each branch of `a ?? f`,
+// `a || f`, and `c ? f : g`. Warm caches replay the pre-fix flow facts, which
+// have no flow for those assignments, so both stores re-extract. 105-111 are
+// claimed by open PR #3326 (Elixir).
+// Same v112: the `valueAlternatives` provider hook extends it to Kotlin
+// `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
+// Ruby multi-statement `if` one opaque source.
+const SCHEMA_BUMP = 112;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

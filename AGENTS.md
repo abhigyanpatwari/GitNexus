@@ -1,7 +1,7 @@
-<!-- version: 1.15.0 -->
-<!-- Last updated: 2026-09-07 -->
+<!-- version: 1.17.0 -->
+<!-- Last updated: 2026-09-24 -->
 
-Last reviewed: 2026-09-07
+Last reviewed: 2026-09-24
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -91,6 +91,8 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-09-24 | 1.17.0 | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352). |
+| 2026-09-24 | 1.16.0 | Documented the shared worktree index store (`<GITNEXUS_HOME>/stores/`, `analyze --share-with`, `GITNEXUS_SHARED_STORE=off`) in the storage notes (#3352). |
 | 2026-09-07 | 1.15.0 | Added the Objective-C provider guide as the required reference before changing Objective-C parsing or resolution. |
 | 2026-07-20 | 1.14.0 | `gitnexus-review` gains a coordinated swarm: six `ci-personas/` lanes the CI review agent dispatches as subagents (via the `Agent` tool), with a bounded critic gate and sidechain-excluded evidence. |
 | 2026-07-16 | 1.13.0 | `gitnexus-plan` asks plan depth up front (quick/standard/deep) in interactive runs; `gitnexus-lfg` gate slimmed to proceed/stop (Deepen stays as the route-back mechanism). |
@@ -198,4 +200,4 @@ npx gitnexus serve                         # HTTP API on port 4747 (from any ind
 - `npm install` in `gitnexus/` triggers `prepare` (builds via `tsc`) and `postinstall` (`build-tree-sitter-grammars.cjs` activates committed prebuilds in place under `vendor/`, and only source-builds when none matches). A C/C++ toolchain (`python3`, `make`, `g++`) is needed only for that source-build fallback.
 - The vendored grammars `tree-sitter-{c,dart,proto,swift,kotlin,zig}` are handled uniformly: c is required; dart/proto/swift/kotlin/zig are optional and skippable via `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1`. Install warnings appear only when no prebuild matches the platform-arch and no toolchain is present, and are non-fatal — only that language's parsing is unavailable.
 - ESLint configured via `eslint.config.mjs` (TS, React Hooks, unused-imports). No `npm run lint` script; use `npx eslint .`. Prettier runs via lint-staged. CI checks both in `ci-quality.yml`.
-- Index storage defaults to `<repo>/.gitnexus/`. `GITNEXUS_STORAGE_PATH` selects one complete external index directory and wins over `GITNEXUS_STORAGE_ROOT`, which creates an isolated `<repo-basename>-<12-hex>/` slot per repository. `GITNEXUS_CONTENT_RETENTION` is `full` (default), `symbol`, or `none`. MCP `list_repos`, `gitnexus://repo/{name}/context`, and HTTP `GET /api/repos` / `GET /api/repo` expose `storagePath`, `contentRetention`, and `sourceAvailable`. HTTP `/api/file` and `/api/grep` return 410 unless retention is `full`; MCP `include_content` may still return symbol spans at `symbol`.
+- Index storage defaults to `<repo>/.gitnexus/`. `GITNEXUS_STORAGE_PATH` selects one complete external index directory and wins over `GITNEXUS_STORAGE_ROOT`, which creates an isolated `<repo-basename>-<12-hex>/` slot per repository. Linked worktrees share one store under `<GITNEXUS_HOME>/stores/<key>/` (one immutable graph per commit, private graphs for checkouts with local changes, shared parse caches); clones with the same `origin` URL join a registered sibling's store automatically (`analyze --share-with` names one, `--no-share` opts out and is remembered), and `GITNEXUS_SHARED_STORE=off` or either storage env var disables sharing (#3352). `GITNEXUS_CONTENT_RETENTION` is `full` (default), `symbol`, or `none`. MCP `list_repos`, `gitnexus://repo/{name}/context`, and HTTP `GET /api/repos` / `GET /api/repo` expose `storagePath`, `contentRetention`, and `sourceAvailable`. HTTP `/api/file` and `/api/grep` return 410 unless retention is `full`; MCP `include_content` may still return symbol spans at `symbol`.

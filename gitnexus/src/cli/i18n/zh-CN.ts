@@ -29,6 +29,13 @@ export const zhCN = {
   'list.clusters': '聚类',
   'list.processes': '流程',
   'list.unknown': 'unknown',
+  'status.sharedStoreShared': '共享索引：存储 {{key}}，提交 {{commit}} 的共享图',
+  'status.sharedStorePrivate': '共享索引：存储 {{key}}，私有图（有本地更改或固定分支索引）',
+  'status.sharedStoreCloneCow': '  写时复制副本：未更改的页面在磁盘上与提交图共享',
+  'status.sharedStoreCloneCopy':
+    '  完整副本：此文件系统不支持写时复制克隆（APFS、btrfs 和 XFS 支持）',
+  'status.legacyLocalIndex':
+    '残留的本地索引：{{path}}（{{size}}）；使用 `gitnexus clean --local-index --force` 删除',
   'status.notGitRepo': '当前目录不是 git 仓库。',
   'status.staleKuzu': '仓库包含旧版本遗留的 KuzuDB 索引。',
   'status.rebuildLadybug': '运行：gitnexus analyze   （使用 LadybugDB 重建索引）',
@@ -58,8 +65,41 @@ export const zhCN = {
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
   'clean.deletedRepo': '已删除：{{name}}（{{storagePath}}）',
   'clean.notFoundHere': '当前目录未找到已索引仓库。',
+  'clean.shared.reclaimed': '共享存储：已删除 {{count}} 个不再被任何检出引用的提交图。',
+  'clean.shared.kept':
+    '共享存储：保留了 {{count}} 个无法删除的未引用提交图（正在使用或不可写）；请稍后运行 `gitnexus clean --gc`。',
+  'clean.shared.storeRemoved': '共享存储：已删除 {{path}}（没有剩余检出）。',
+  'clean.gc.none': '没有可回收的共享存储。',
+  'clean.gc.keptMembers':
+    '共享存储：保留了 {{count}} 个无法删除的检出；请稍后运行 `gitnexus clean --gc --force`。',
+  'clean.gc.store': '共享存储 {{path}}：移除了 {{members}} 个检出，删除了 {{graphs}} 个提交图。',
+  'clean.gc.preview': '共享存储 {{path}}：将移除 {{members}} 个检出并删除 {{graphs}} 个提交图。',
+  'clean.localIndex.none': '此检出中没有残留的本地索引。',
+  'clean.localIndex.preview': '将删除 {{path}} 处残留的本地索引（{{size}}）。共享索引不受影响。',
+  'clean.localIndex.deleted': '已删除 {{path}} 处残留的本地索引（{{size}}）。',
   'clean.deleteCurrent': '将删除该仓库的 GitNexus 索引：{{repoName}}',
-  'clean.branchNotIndexed': '该仓库没有名为 “{{branch}}” 的已索引分支。',
+  'clean.branchNotIndexed':
+    '该仓库没有名为 “{{branch}}” 的已索引分支。使用 `gitnexus clean --stale` 回收残留分支索引，或使用 `gitnexus list` 查看已记录名称。',
+  'clean.stale.none': '没有可回收的残留分支索引。',
+  'clean.stale.preview': '将删除 {{count}} 个残留分支索引：',
+  'clean.stale.item': '{{branch}}  {{reason}}  {{path}}  {{size}}',
+  'clean.stale.registryOnlyPath': '（仅注册表）',
+  'clean.stale.headsUnavailable':
+    '无法列出本地分支，因此未删除残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.remainingSkipped':
+    '无法列出本地分支，因此已跳过其余残留分支索引。请在 git 可用后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.listingFailed':
+    '无法读取残留分支索引目录，因此未删除残留索引。请检查 branches/ 目录权限后重新运行 `gitnexus clean --stale`。',
+  'clean.stale.probeFailed': '无法检查残留分支索引路径，因此未删除这些槽位。',
+  'clean.stale.deleted': '已删除残留分支索引：{{branch}}',
+  'clean.stale.failed': '无法删除残留分支索引 “{{branch}}”。',
+  'clean.stale.skippedLive': '已跳过残留分支索引 “{{branch}}” — 它再次成为本地分支。',
+  'clean.stale.reason.refMissing': '不是本地分支',
+  'clean.stale.reason.diskOnly': '残留目录（无注册表记录）',
+  'clean.stale.reason.registryOnly': '注册表记录（目录已不存在）',
+  'clean.stale.reason.headsUnavailable': '无法列出本地分支',
+  'clean.stale.reason.probeFailed': '无法检查槽位路径',
+  'clean.stale.reason.listingFailed': '无法列出残留目录',
   'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
   'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',
@@ -112,6 +152,9 @@ export const zhCN = {
   'doctor.runtime': '运行时',
   'doctor.capabilities': '能力',
   'doctor.embeddings': '嵌入',
+  'doctor.orphanedBranches': '残留分支索引',
+  'doctor.orphanedBranches.total': '合计：{{size}}',
+  'doctor.orphanedBranches.reclaim': '回收命令：gitnexus clean --stale',
   'doctor.labels.os': '系统：',
   'doctor.labels.node': 'Node：',
   'doctor.labels.gitnexus': 'GitNexus：',
@@ -150,13 +193,13 @@ export const zhCN = {
   'help.option.help': '显示命令帮助',
   'help.option.version': '输出版本号',
   'help.command.setup.description':
-    '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex 配置 MCP',
+    '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex、Factory Droid 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
   'help.command.autoSync.description':
     '控制基于 GITNEXUS_HOME/watch_config.yml 的定时 clone/pull 和分析',
   'help.autoSync.details':
-    '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：仅允许 github.com、gitlab.com 和 gitee.com 上的 SSH 地址。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
+    '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：允许 github.com、gitlab.com 和 gitee.com 上的 SSH 或 HTTPS 地址。无效的 watch_config.yml 会立即跳过 auto-sync。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
   'help.command.watch.description':
     '含义不明确：本地文件请用 `analyze --watch`，定时远程同步请用 `auto-sync`',
   'help.watch.details':
@@ -227,6 +270,10 @@ export const zhCN = {
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',
   'help.option.analyze.allowDuplicateName':
     '即使已有其他路径使用相同 --name 别名，也注册该仓库。会使两个路径的 `-r <name>` 产生歧义；请用 -r <path> 消除歧义。',
+  'help.option.analyze.shareWith':
+    '加入同一仓库已注册检出的共享索引存储（名称或路径）；远程 URL 必须一致。克隆会自动加入同源克隆的存储；此选项显式指定存储，并清除 --no-share 的退出设置。',
+  'help.option.analyze.noShare':
+    '仅限克隆：离开共享索引存储，重新索引到 <repo>/.gitnexus，并在使用 --share-with 之前不再自动加入同源克隆（链接工作树始终共享；请改用 GITNEXUS_SHARED_STORE=off）',
   'help.option.verbose': '启用详细输出',
   'help.option.analyze.maxFileSize':
     '跳过大于该值的文件（KB）。默认：512。硬上限：32768（tree-sitter 限制）。',
@@ -262,6 +309,9 @@ export const zhCN = {
   'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars':
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
+  'help.option.clean.stale': '回收已不是本地 head 的残留分支索引',
+  'help.option.clean.gc': '移除注册表不再使用的共享存储检出，并删除无人引用的提交图',
+  'help.option.clean.localIndex': '删除此检出迁入共享存储后遗留在 <repo>/.gitnexus 中的索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',

@@ -43,30 +43,56 @@ export function runFingerprintParityCheck(report, leftArm, rightArm) {
   );
 }
 
-export function runBaselineCheck(report, baselinePath) {
-  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+function isFiniteNonNegativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function missingBudgetError(field) {
+  return `no numeric ${field} in baselines.json — a missing budget is a DELETED GATE, not a passing arm`;
+}
+
+/** Pure --check errors. Missing/non-numeric budgets must fail closed. */
+export function collectBaselineErrors(report, baseline) {
   const errors = [];
   if (report.fingerprint !== baseline.fingerprint) {
     errors.push(`fingerprint drift: ${report.fingerprint} != ${baseline.fingerprint}`);
   }
-  if (report.scaling_ratio > baseline.scaling_budget) {
+  if (!isFiniteNonNegativeNumber(baseline.scaling_budget)) {
+    errors.push(missingBudgetError('scaling_budget'));
+  } else if (report.scaling_ratio > baseline.scaling_budget) {
     errors.push(`scaling_ratio ${report.scaling_ratio} > ${baseline.scaling_budget}`);
   }
-  if (
-    baseline.absolute_ms_budget !== undefined &&
-    report.absolute_ms > baseline.absolute_ms_budget
-  ) {
-    errors.push(`absolute_ms ${report.absolute_ms} > ${baseline.absolute_ms_budget}`);
+  if (Object.hasOwn(report, 'absolute_ms')) {
+    if (!isFiniteNonNegativeNumber(baseline.absolute_ms_budget)) {
+      errors.push(missingBudgetError('absolute_ms_budget'));
+    } else if (report.absolute_ms > baseline.absolute_ms_budget) {
+      errors.push(`absolute_ms ${report.absolute_ms} > ${baseline.absolute_ms_budget}`);
+    }
   }
-  if (
-    baseline.widening_overhead_budget !== undefined &&
-    report.widening_overhead > baseline.widening_overhead_budget
-  ) {
-    errors.push(
-      `widening_overhead ${report.widening_overhead} > ${baseline.widening_overhead_budget}`,
-    );
+  if (Object.hasOwn(report, 'widening_overhead')) {
+    if (!isFiniteNonNegativeNumber(baseline.widening_overhead_budget)) {
+      errors.push(missingBudgetError('widening_overhead_budget'));
+    } else if (report.widening_overhead > baseline.widening_overhead_budget) {
+      errors.push(
+        `widening_overhead ${report.widening_overhead} > ${baseline.widening_overhead_budget}`,
+      );
+    }
   }
-  failIfNeeded(report, errors);
+  if (Object.hasOwn(report, 'chain_scaling_ratio')) {
+    if (!isFiniteNonNegativeNumber(baseline.chain_scaling_budget)) {
+      errors.push(missingBudgetError('chain_scaling_budget'));
+    } else if (report.chain_scaling_ratio > baseline.chain_scaling_budget) {
+      errors.push(
+        `chain_scaling_ratio ${report.chain_scaling_ratio} > ${baseline.chain_scaling_budget}`,
+      );
+    }
+  }
+  return errors;
+}
+
+export function runBaselineCheck(report, baselinePath) {
+  const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
+  failIfNeeded(report, collectBaselineErrors(report, baseline));
   console.log(JSON.stringify({ ok: true, report }, null, 2));
 }
 
