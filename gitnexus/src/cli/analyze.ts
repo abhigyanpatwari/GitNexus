@@ -607,24 +607,28 @@ export interface BudgetHeapDecision {
  * The `--memory-budget` heap decision (#3137), kept pure so every branch is
  * testable without a process. The effective requested old space is the last
  * `--max-old-space-size` in execArgv, else in NODE_OPTIONS (every spelling
- * `parseMaxOldSpaceMb` accepts). A process whose pin already equals the
- * budget, or the old space the budget respawn sets, keeps running; anything
- * else respawns once at the budget. The budget's own flags follow the user's
- * in the child, so the child always resolves to "at the budget".
+ * `parseMaxOldSpaceMb` accepts). Only the budget-respawned child keeps
+ * running; anything else respawns once at the budget. The budget's own flags
+ * follow the user's in the child, so the child always resolves to "at the
+ * budget".
  */
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;
   const sizing = budgetHeapSizing(budgetMb);
   const pinnedMb =
     parseMaxOldSpaceMb(input.execArgv.join(' ')) ?? parseMaxOldSpaceMb(input.nodeOptions);
-  const atBudget = pinnedMb === budgetMb || pinnedMb === sizing.oldSpaceMb;
-  // The respawning parent already logged; the child stays quiet.
-  if (atBudget && input.inheritedSource === 'budget') return { respawn: false, sizing };
+  // Only a budget-respawned child carries both the budget's old space and its
+  // semi-space, so only it is exactly at the budget. A pin that merely equals
+  // the budget leaves V8's young generation on top (a 2000MB pin is a 2048MB
+  // heap), so that process respawns once like any other. The respawning
+  // parent already logged; the child stays quiet.
+  if (input.inheritedSource === 'budget' && pinnedMb === sizing.oldSpaceMb) {
+    return { respawn: false, sizing };
+  }
   const swapWarning =
     budgetMb > autoCapMb
       ? `  --memory-budget ${budgetMb}MB is above the ${autoCapMb}MB this machine's RAM supports — analyze may swap-thrash.\n`
       : '';
-  if (atBudget) return { respawn: false, sizing, warning: swapWarning || undefined };
   const replaced =
     pinnedMb !== null
       ? `the ${pinnedMb}MB --max-old-space-size heap limit`
@@ -808,6 +812,7 @@ async function respawnWithHeap(
  * for it in the first place.
  */
 const ANALYZE_CLI_ENV_KEYS = [
+  HEAP_LIMIT_SOURCE_ENV,
   'GITNEXUS_VERBOSE',
   'GITNEXUS_PROFILE_DEFERRED',
   'GITNEXUS_PROFILE_DEFERRED_SLOW_MS',
@@ -877,6 +882,9 @@ export const analyzeCommand = async (
   options?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ) => {
+  // Snapshot before ensureHeap: it records GITNEXUS_HEAP_LIMIT_SOURCE on a
+  // kept process, which must not leak into a later programmatic call.
+  const envSnap = snapshotAnalyzeEnv();
   if (await ensureHeap({ memoryBudget: options?.memoryBudget })) return;
   forceHeapOOMForTestIfEnabled();
 
@@ -897,7 +905,6 @@ export const analyzeCommand = async (
   // exiting, restoration is moot. For early-return paths (validation
   // errors) and the alreadyUpToDate fast path the finally restores the
   // pre-call values.
-  const envSnap = snapshotAnalyzeEnv();
   try {
     await analyzeCommandImpl(inputPath, options, runnerIdentityAtBootstrap);
   } finally {

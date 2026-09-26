@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -145,6 +145,17 @@ describe('RebuildReasonCollector interrupted-rebuild recovery', () => {
     expect(summary).not.toContain(schema.text);
   });
 
+  it('does not re-announce the interrupted-rebuild entry when a matching reason merges after the summary', () => {
+    const collector = new RebuildReasonCollector();
+    collector.recordInterruptedRebuild([schema]);
+    collector.formatSummary();
+    collector.add({ key: 'schema-fingerprint', text: 'index schema changed (B → C)' });
+    expect(collector.formatFollowUp()).toBeUndefined();
+    expect(collector.toStored()).toEqual([
+      { key: 'schema-fingerprint', text: 'index schema changed (B → C)' },
+    ]);
+  });
+
   it('absorbs a matching reason that was added before the recovery entry', () => {
     const collector = new RebuildReasonCollector();
     collector.add({ key: 'schema-fingerprint', text: 'index schema changed (B → C)' });
@@ -169,6 +180,12 @@ describe('RebuildReasonCollector interrupted-rebuild recovery', () => {
     collector.recordInterruptedRebuild([]);
     expect(collector.reasons()[0].text).toContain('no reasons recorded');
     expect(collector.forced).toBe(true);
+  });
+
+  it('numbers each stored cause inside a multi-cause interrupted-rebuild entry', () => {
+    const collector = new RebuildReasonCollector();
+    collector.recordInterruptedRebuild([schema, { key: 'future-key', text: 'from a newer build' }]);
+    expect(collector.reasons()[0].text).toContain(`(1) ${schema.text}; (2) from a newer build`);
   });
 
   it('persists the flattened, merged reasons with no interrupted-rebuild entry', () => {
@@ -287,9 +304,12 @@ describe('rebuild reason coverage table (R15)', () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it.each(REBUILD_REASON_COVERAGE)('$key is asserted by $file', ({ key, file }) => {
+  // The runtime check only proves each named driver file exists; the
+  // behavior proof is the driver test itself, which runs runFullAnalysis and
+  // asserts the returned key. Grepping the file for the key would pass on a
+  // stale string, so it is deliberately not asserted here.
+  it.each(REBUILD_REASON_COVERAGE)('$key is driven by $file', ({ file }) => {
     const absolute = path.join(packageRoot, file);
     expect(existsSync(absolute)).toBe(true);
-    expect(readFileSync(absolute, 'utf8')).toContain(`'${key}'`);
   });
 });

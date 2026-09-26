@@ -1152,13 +1152,17 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   // are shared across branches (#2106 KTD7). Always re-run requireStoragePath:
   // a cached path string must not skip ownership (STORAGE_PATH can move to a
   // foreign slot while the lock is waited out). `--force` may adopt a
-  // repository-local foreign slot; the non-force set stays ANALYZE_STORAGE.
-  // A linked-worktree checkout writes its own slot in the shared store
-  // (#3352); that slot replaces any repository-local `.gitnexus`, which is left
-  // untouched.
-  const storageRequirements = options.force
-    ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
-    : ANALYZE_STORAGE_REQUIREMENTS;
+  // repository-local foreign slot; so may `--skills` or a parse-cache bypass —
+  // each forces the rebuild just as `--force` does (#3137), just under its own
+  // named reason instead of being folded into `options.force` itself, so this
+  // check re-derives the same predicate the pre-#3137 folded `force` used. The
+  // non-force set stays ANALYZE_STORAGE. A linked-worktree checkout writes its
+  // own slot in the shared store (#3352); that slot replaces any
+  // repository-local `.gitnexus`, which is left untouched.
+  const storageRequirements =
+    options.force || options.skills || options.useParseCache === false
+      ? ANALYZE_FORCE_STORAGE_REQUIREMENTS
+      : ANALYZE_STORAGE_REQUIREMENTS;
   if (options.noShare && resolveSharedStore(repoPath)) {
     // Fail before any lock or indexing; only an opted-in clone can leave.
     throw new Error(
@@ -1430,6 +1434,11 @@ async function runFullAnalysisInner(
   /** Checkpoint: the collector's verdict becomes the pipeline's `force`. */
   const applyCollectedForce = (): void => {
     options = { ...options, force: collector.forced };
+  };
+  /** Log reasons added after the summary as the run's single follow-up line. */
+  const announceFollowUp = (): void => {
+    const line = collector.formatFollowUp();
+    if (line !== undefined) log(line);
   };
 
   // FTS-config validation and the degraded-parse counter reset happen in the
@@ -2791,8 +2800,7 @@ async function runFullAnalysisInner(
   applyCollectedForce();
   // A forced reason added here rules the escalation out (the run is no longer
   // incremental), so this and the escalation's line never both print.
-  const lateRebuildReason = collector.formatFollowUp();
-  if (lateRebuildReason !== undefined) log(lateRebuildReason);
+  announceFollowUp();
 
   // Decide incremental vs full at THIS point (post-pipeline, pre-DB).
   // All eligibility conditions are checked here against the actual
@@ -3343,7 +3351,7 @@ async function runFullAnalysisInner(
       // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`
       // empty (`deriveEmbeddingMode` returns `shouldLoadCache: false` for it by
       // construction — see the four-mode comment at the cache-load site), and its
-      // `options.force = true` conversion sits INSIDE
+      // `drop-embeddings` rebuild reason is only collected INSIDE
       // `if (existingMeta?.embeddingCheckpoint)`, so a repo without a checkpoint
       // stays incremental and arrives here holding exactly the state the rescue
       // reads as "the index metadata did not account for them" — restoring the N
@@ -3545,8 +3553,7 @@ async function runFullAnalysisInner(
               : ''),
           forcing: false,
         });
-        const escalationFollowUp = collector.formatFollowUp();
-        if (escalationFollowUp !== undefined) log(escalationFollowUp);
+        announceFollowUp();
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
         // the real counters ride along for crash diagnostics.
         await saveIncrementalDirtyState('escalated-full-write', {

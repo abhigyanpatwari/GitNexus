@@ -576,25 +576,62 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     });
   });
 
-  it('a top-level process already at a budget above the auto cap keeps running, records the source, and warns once', async () => {
+  it('a pin equal to the budget is not the exact budget heap, so the process respawns once', async () => {
+    mockSpawnExit();
     constrainTo(7500);
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
     let respawned: boolean | undefined;
-    await withExecArgv(['--max-old-space-size=11616', '--max-semi-space-size=128'], async () => {
+    await withExecArgv(['--max-old-space-size=12000'], async () => {
       const { ensureHeap } = await import('../../src/cli/analyze.js');
       respawned = await ensureHeap({ memoryBudget: '12000' });
     });
     cap.restore();
 
+    const [, args, opts] = spawnMock.mock.calls[0];
     const records = cap.records();
     expect({
       respawned,
-      spawns: spawnMock.mock.calls.length,
-      source: process.env.GITNEXUS_HEAP_LIMIT_SOURCE,
+      flags: args.filter(
+        (a: string) => a.startsWith('--max-old-space') || a.startsWith('--max-semi'),
+      ),
+      source: opts.env.GITNEXUS_HEAP_LIMIT_SOURCE,
       recordCount: records.length,
       warnsSwap: /swap/i.test(records[0]?.msg ?? ''),
-    }).toEqual({ respawned: false, spawns: 0, source: 'budget', recordCount: 1, warnsSwap: true });
+    }).toEqual({
+      respawned: true,
+      flags: [
+        '--max-old-space-size=12000',
+        '--max-old-space-size=11616',
+        '--max-semi-space-size=128',
+      ],
+      source: 'budget',
+      recordCount: 1,
+      warnsSwap: true,
+    });
+  });
+
+  it('a programmatic caller passing an invalid budget exits 1 without respawning', async () => {
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { memoryBudget: '199' });
+    cap.restore();
+
+    expect({
+      exitCode: process.exitCode,
+      spawns: spawnMock.mock.calls.length,
+      namesMinimum: cap.records().some((r) => /--memory-budget.*200/.test(String(r.msg ?? ''))),
+    }).toEqual({ exitCode: 1, spawns: 0, namesMinimum: true });
+  });
+
+  it('a kept process does not leak its heap source into a later analyzeCommand call', async () => {
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 13107 * MB });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    // An invalid --workers returns right after ensureHeap kept the process and
+    // recorded its source, so the env restore runs without a full analyze.
+    await analyzeCommand(undefined, { workers: '0' });
+    expect(process.env.GITNEXUS_HEAP_LIMIT_SOURCE).toBeUndefined();
   });
 
   it('budget 200 scales the semi-space down so old + 3 × semi equals 200', async () => {
@@ -608,9 +645,10 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     ).toEqual(['--max-old-space-size=176', '--max-semi-space-size=8']);
   });
 
-  it('an underscore, space-separated execArgv pin equal to the budget skips the respawn', async () => {
+  it('a budget child whose old-space pin is spelled with underscores and a space skips the respawn', async () => {
+    process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
     let respawned: boolean | undefined;
-    await withExecArgv(['--max_old_space_size', '2000'], async () => {
+    await withExecArgv(['--max_old_space_size', '1616', '--max-semi-space-size=128'], async () => {
       const { ensureHeap } = await import('../../src/cli/analyze.js');
       respawned = await ensureHeap({ memoryBudget: '2000' });
     });
