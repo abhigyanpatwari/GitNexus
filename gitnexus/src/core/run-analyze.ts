@@ -1896,6 +1896,33 @@ async function runFullAnalysisInner(
     }
   }
 
+  // ── rebuild-gate collection (#3137) ────────────────────────────────
+  // The nine meta-mismatch gates below used to log individually the moment
+  // each fired and set `force: true` nine times over. On an upgrade that
+  // trips several gates at once (schema + runner identity + FTS profile is
+  // the common triple), the operator got a scattered wall of near-identical
+  // warnings. Each gate now appends its reason to `rebuildReasons`; the
+  // single summary block after the last gate prints them together, persists
+  // the verdict, and sets `force` once. Semantics are unchanged: every gate
+  // was already evaluated (none early-returns), `force` is idempotent, and
+  // a rebuild happens iff at least one reason fired.
+  //
+  // A verdict recorded by a PREVIOUS run (`needsFullRebuild` in meta) is
+  // surfaced here so an interrupted rebuild announces itself immediately:
+  // the gates may not all re-fire against a half-wiped database, so without
+  // this the next run could quietly attempt an incremental write on top of
+  // an index it has every reason to distrust.
+  if (existingMeta?.needsFullRebuild) {
+    const { reasons, recordedAt } = existingMeta.needsFullRebuild;
+    const ageHours = Math.max(0, Math.round((Date.now() - recordedAt) / 3_600_000));
+    log(
+      `The previous analyze recorded an unfinished full rebuild (${ageHours}h ago):\n` +
+        reasons.map((reason, i) => `  ${i + 1}. ${reason}`).join('\n') +
+        `\nRe-running with --force is recommended if the rebuild did not complete.`,
+    );
+  }
+  const rebuildReasons: string[] = [];
+
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
   // The incremental writeback persists only changed-file nodes, so a pdg
   // config differing from the one the DB rows were built under cannot be
@@ -1911,13 +1938,12 @@ async function runFullAnalysisInner(
     const capsOnly = !!existingMeta.pdg && pdgOn; // both-on can only mismatch via caps
     const was = existingMeta.pdg ? 'with --pdg' : 'without --pdg';
     const now = pdgOn ? 'with --pdg' : 'without --pdg';
-    log(
+    rebuildReasons.push(
       `pdg mode changed (index built ${was}, this run is ${now}` +
-        `${capsOnly ? ', but with different caps' : ''}); forcing a full ` +
-        `rebuild so the CFG layer is ${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
+        `${capsOnly ? ', but with different caps' : ''}) — the CFG layer will be ` +
+        `${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
         `Tip: set \`pdg: ${pdgOn}\` in .gitnexusrc to pin the mode across runs.`,
     );
-    options = { ...options, force: true };
   }
 
   // Retention controls the DB's persisted text and FTS columns. Incremental
@@ -1925,11 +1951,10 @@ async function runFullAnalysisInner(
   // old source text and index pages behind. Rebuild the database instead.
   if (existingMeta && contentRetentionMismatch(existingMeta, contentRetention)) {
     const recorded = existingMeta.contentRetention ?? 'full (legacy)';
-    log(
-      `content retention changed (index built with ${recorded}, this run uses ${contentRetention}); ` +
-        'forcing a full rebuild so stored text and FTS indexes are recreated.',
+    rebuildReasons.push(
+      `content retention changed (index built with ${recorded}, this run uses ${contentRetention}) — ` +
+        'stored text and FTS indexes will be recreated.',
     );
-    options = { ...options, force: true };
   }
 
   // ── schema mismatch forces full rebuild (#2289 P1, #2798) ─────────
@@ -1966,11 +1991,10 @@ async function runFullAnalysisInner(
       stamped === undefined && !repoHasGit
         ? ' Non-git repositories never record a schema fingerprint, so this run rebuilds regardless.'
         : '';
-    log(
-      `index schema changed (built by ${origin}, this build is ${SCHEMA_FINGERPRINT}); forcing a ` +
-        `full re-analyze so the database is recreated from the current schema.${nonGitNote}`,
+    rebuildReasons.push(
+      `index schema changed (built by ${origin}, this build is ${SCHEMA_FINGERPRINT}) — ` +
+        `the database will be recreated from the current schema.${nonGitNote}`,
     );
-    options = { ...options, force: true };
   }
 
   // ── a recorded graph-write collapse forces a full rebuild ────────
@@ -1990,12 +2014,11 @@ async function runFullAnalysisInner(
   // same broken index as fresh.
   if (existingMeta?.graphWriteCollapsed) {
     const { expected, persisted } = existingMeta.graphWriteCollapsed;
-    log(
+    rebuildReasons.push(
       `previous run persisted ${persisted} of ${expected} expected relationships ` +
-        `(recorded as a graph-write collapse); forcing a full re-analyze rather than ` +
+        `(recorded as a graph-write collapse) — a full re-analyze is required rather than ` +
         `reporting an index this build already knows is incomplete.`,
     );
-    options = { ...options, force: true };
   }
 
   // ── independently-versioned analysis capabilities ────────────────
@@ -2020,11 +2043,10 @@ async function runFullAnalysisInner(
     : [];
   let analysisFeatureMismatchLogged = false;
   if (existingMeta && persistedAnalysisFeatureMismatches.length > 0) {
-    log(
-      `analysis capabilities changed (${persistedAnalysisFeatureMismatches.join(', ')}); ` +
-        `forcing a full rebuild so persisted feature evidence is complete.`,
+    rebuildReasons.push(
+      `analysis capabilities changed (${persistedAnalysisFeatureMismatches.join(', ')}) — ` +
+        `persisted feature evidence will be completed by the rebuild.`,
     );
-    options = { ...options, force: true };
     analysisFeatureMismatchLogged = true;
   }
 
@@ -2035,11 +2057,10 @@ async function runFullAnalysisInner(
     persistedRouteBindings === SPRING_ROUTE_BINDINGS_FEATURE.version &&
     existingMeta.springVendorPrefixes !== currentSpringVendorPrefixes
   ) {
-    log(
-      'Spring vendor mapping prefixes changed; forcing a full rebuild so persisted Route ' +
-        'evidence matches the configured aliases.',
+    rebuildReasons.push(
+      'Spring vendor mapping prefixes changed — persisted Route evidence will be rebuilt ' +
+        'to match the configured aliases.',
     );
-    options = { ...options, force: true };
   }
 
   // Analyzer provenance is part of freshness, not merely diagnostics. A
@@ -2050,24 +2071,22 @@ async function runFullAnalysisInner(
     const stampedRunnerSchema = (
       existingMeta.runnerIdentity as { schemaVersion?: unknown } | undefined
     )?.schemaVersion;
-    log(
+    rebuildReasons.push(
       `analyzer runner identity changed (stamped schema ${String(stampedRunnerSchema ?? 'missing')}, ` +
-        `this build uses schema ${runnerIdentity.schemaVersion}); forcing a full rebuild so the ` +
-        'index provenance matches the analyzer and dependency/native runtime that produced it.',
+        `this build uses schema ${runnerIdentity.schemaVersion}) — index provenance will be ` +
+        'rewritten to match the analyzer and dependency/native runtime that produced it.',
     );
-    options = { ...options, force: true };
   }
 
   if (
     existingMeta &&
     cjkSegmentationModeMismatch(existingMeta.cjkSegmentation, getSearchFTSCjkSegmentation())
   ) {
-    log(
+    rebuildReasons.push(
       `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
-        `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
-        `text and query-time segmentation stay in sync.`,
+        `this run resolves '${getSearchFTSCjkSegmentation()}') — indexed text and query-time ` +
+        `segmentation will be rebuilt in sync.`,
     );
-    options = { ...options, force: true };
   }
 
   // ── embedding width mismatch forces full rebuild (#2798) ──────────
@@ -2102,14 +2121,12 @@ async function runFullAnalysisInner(
       typeof recordedDims === 'number' && Number.isInteger(recordedDims) && recordedDims > 0
         ? `FLOAT[${recordedDims}]`
         : 'an unrecognized width';
-    log(
+    rebuildReasons.push(
       `embedding dimensions changed (index built with ${built}, this run embeds at ` +
-        `${EMBEDDING_DIMS}); forcing a full rebuild so the vector column is recreated at the ` +
-        `new width. Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
+        `${EMBEDDING_DIMS}) — the vector column will be recreated at the new width. ` +
+        `Tip: set GITNEXUS_EMBEDDING_DIMS (or --embedding-dims) to pin it across runs.`,
     );
-    options = { ...options, force: true };
   }
-
   // Actuator snapshots are external runtime inputs and are intentionally not
   // hashed or persisted. Rebuild on every enabled run so updated snapshots
   // cannot hit the git freshness fast path; rebuild once when the option is
@@ -2190,6 +2207,44 @@ async function runFullAnalysisInner(
 
   // Programmatic `useParseCache: false` must set force or the up-to-date
   // guard returns before the empty-cache construction below.
+  // ── rebuild-gate summary (#3137) ──────────────────────────────────
+  // All nine meta-mismatch gates above have been evaluated. One reason or
+  // nine, the operator gets a single numbered block instead of nine
+  // near-identical warnings scattered through the log, and `force` is set
+  // exactly once.
+  if (rebuildReasons.length > 0) {
+    if (rebuildReasons.length === 1) {
+      log(`Full rebuild required: ${rebuildReasons[0]}`);
+    } else {
+      const numbered = rebuildReasons.map((reason, i) => `  ${i + 1}. ${reason}`).join('\n');
+      log(`Full rebuild required (${rebuildReasons.length} reasons):\n${numbered}`);
+    }
+    // Persist the verdict (#3137) BEFORE the rebuild starts. If this run is
+    // itself interrupted mid-rebuild, the next run sees `needsFullRebuild`
+    // and knows the index is mid-reconstruction — instead of re-deriving
+    // the reasons (the gates may not all re-fire against a half-wiped DB)
+    // or, worse, trusting an index whose rebuild never completed. Cleared
+    // when a run completes successfully (the end-of-run meta simply does
+    // not carry the field forward).
+    try {
+      const verdictMeta = await loadMeta(storagePath);
+      if (verdictMeta) {
+        await saveMeta(storagePath, {
+          ...verdictMeta,
+          needsFullRebuild: {
+            reasons: rebuildReasons,
+            recordedAt: Date.now(),
+          },
+        });
+      }
+    } catch {
+      // Non-fatal: the rebuild itself will still stamp a fresh meta on
+      // completion; a failed verdict write only loses the next run's
+      // heads-up, not correctness.
+    }
+    options = { ...options, force: true };
+  }
+
   if (options.useParseCache === false && !options.force) {
     log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
     options = { ...options, force: true };

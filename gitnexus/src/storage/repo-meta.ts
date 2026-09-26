@@ -416,6 +416,22 @@ export interface RepoMeta {
     persisted: number;
   };
   /**
+   * Persisted rebuild verdict (#3137): when an analyze run had to force a
+   * full rebuild (any rebuild gate fired, or the run was resumed from a
+   * dirty state), the reasons are recorded here BEFORE the rebuild starts
+   * and cleared when the rebuild completes successfully. A subsequent run
+   * that finds this field set skips the incremental fast-path attempt and
+   * shows the recorded reasons immediately — the operator learns on run
+   * one why the previous run rebuilt, instead of re-deriving it.
+   */
+  needsFullRebuild?: {
+    /** Human-readable reasons the rebuild was required (one per entry). */
+    reasons: readonly string[];
+    /** When the verdict was recorded (epoch ms). */
+    recordedAt: number;
+  };
+
+  /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
    * mutation by BOTH writeback branches (incremental since its introduction;
