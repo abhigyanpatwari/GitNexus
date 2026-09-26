@@ -29,7 +29,7 @@ const RUBY_EXTENSIONLESS_FILES = new Set([
 const EXTENSION_MAP: Record<SupportedLanguages, readonly string[]> = {
   [SupportedLanguages.JavaScript]: ['.js', '.jsx', '.mjs', '.cjs'],
   [SupportedLanguages.TypeScript]: ['.ts', '.tsx', '.mts', '.cts'],
-  [SupportedLanguages.Python]: ['.py'],
+  [SupportedLanguages.Python]: ['.py', '.ipynb'],
   [SupportedLanguages.Java]: ['.java'],
   [SupportedLanguages.C]: ['.c'],
   [SupportedLanguages.ObjectiveC]: ['.m', '.mm'],
@@ -75,6 +75,10 @@ for (const [lang, exts] of Object.entries(EXTENSION_MAP) as [
  */
 export const isBladeTemplateFilename = (filePath: string): boolean =>
   filePath.replace(/\\/g, '/').toLowerCase().endsWith('.blade.php');
+
+/** Jupyter notebooks: ingested as Python; on-disk bytes are JSON. */
+export const isNotebookFilename = (filePath: string): boolean =>
+  filePath.replace(/\\/g, '/').toLowerCase().endsWith('.ipynb');
 
 /**
  * Map file extension to SupportedLanguage enum.
@@ -163,6 +167,7 @@ const AUXILIARY_BASENAME_MAP: Record<string, string> = {
  */
 export const getSyntaxLanguageFromFilename = (filePath: string): string => {
   if (isBladeTemplateFilename(filePath)) return 'markup';
+  if (isNotebookFilename(filePath)) return 'json';
 
   const lang = getLanguageFromFilename(filePath);
   if (lang) return SYNTAX_MAP[lang];

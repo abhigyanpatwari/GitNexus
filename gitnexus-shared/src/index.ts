@@ -22,6 +22,7 @@ export {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isNotebookFilename,
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 

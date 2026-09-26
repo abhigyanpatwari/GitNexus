@@ -23,6 +23,7 @@ import { VALID_NODE_TABLES, parseRelationSchemaPairs, RelPairRouter } from './re
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
+import { isNotebookPath, notebookPythonSnippet } from '../ingestion/ipynb-extractor.js';
 
 /** Computed once — `RELATION_SCHEMA` is a static template literal. Exported so
  *  the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) share this parse
@@ -325,15 +326,24 @@ const extractContent = async (
   const endLine = node.properties.endLine;
   if (startLine === undefined || endLine === undefined) return '';
 
+  const MAX_SNIPPET = 5000;
+  const capSnippet = (text: string): string =>
+    text.length > MAX_SNIPPET ? text.slice(0, MAX_SNIPPET) + '\n... [truncated]' : text;
+
+  const notebookPath = String(filePath ?? '');
+  if (isNotebookPath(notebookPath)) {
+    const reconstructed = notebookPythonSnippet(content, startLine, endLine, notebookPath);
+    if (reconstructed) {
+      return normalizeFtsText(applyCjkSegmentationIfEnabled(capSnippet(reconstructed)));
+    }
+  }
+
   const lines = prepared.lines;
   const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
   const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
   const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
-  const MAX_SNIPPET = 5000;
-  const capped =
-    snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]' : snippet;
-  return normalizeFtsText(applyCjkSegmentationIfEnabled(capped));
+  return normalizeFtsText(applyCjkSegmentationIfEnabled(capSnippet(snippet)));
 };
 
 // ============================================================================

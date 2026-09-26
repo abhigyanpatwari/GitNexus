@@ -12,10 +12,10 @@
  *      binding, and `__init__` assignments from annotated parameters emit
  *      class-scoped instance-field bindings (see `receiver-binding.ts`).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * No I/O. A `.ipynb` path also depends on `filePath` and `sourceMeta`, not only the source text.
  */
 
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
   nodeToCapture,
   syntheticCapture,
@@ -24,6 +24,12 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
+import {
+  extractNotebookPython,
+  isNotebookPath,
+  mapExtractLine,
+  type NotebookLineSegment,
+} from '../../ipynb-extractor.js';
 import {
   synthesizeConstructorFieldTypeBindings,
   synthesizeReceiverTypeBinding,
@@ -71,23 +77,36 @@ const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
 
 export function emitPythonScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
 ): readonly CaptureMatch[] {
+  let parseText = sourceText;
+  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  let notebookSegments: readonly NotebookLineSegment[] | undefined;
+  if (isNotebookPath(filePath)) {
+    const resolved = resolveNotebookCaptureSource(sourceText, tree, sourceMeta);
+    if (resolved === null) return [];
+    parseText = resolved.parseText;
+    tree = resolved.tree;
+    notebookSegments = resolved.notebookSegments;
+  }
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
   // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
   // is typed as `unknown` at the
   // contract layer (see `LanguageProvider.emitScopeCaptures`); cast
   // here at the use site.
-  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
     try {
-      tree = parseSourceSafe(getPythonParser(), sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
+      tree = parseSourceSafe(getPythonParser(), parseText, undefined, {
+        bufferSize: getTreeSitterBufferSize(parseText),
       });
     } catch (err) {
-      throw scopeExtractionError('parse', _filePath, err);
+      throw scopeExtractionError('parse', filePath, err);
     }
     recordCacheMiss();
   } else {
@@ -98,7 +117,7 @@ export function emitPythonScopeCaptures(
   try {
     rawMatches = getPythonScopeQuery().matches(tree.rootNode);
   } catch (err) {
-    throw scopeExtractionError('scope query', _filePath, err);
+    throw scopeExtractionError('scope query', filePath, err);
   }
 
   const out: CaptureMatch[] = [];
@@ -240,7 +259,62 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  if (notebookSegments !== undefined) {
+    return out.map((match) => remapCaptureMatch(match, notebookSegments));
+  }
   return out;
+}
+
+function resolveNotebookCaptureSource(
+  sourceText: string,
+  cachedTree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined,
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
+): {
+  parseText: string;
+  tree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  notebookSegments?: readonly NotebookLineSegment[];
+} | null {
+  if (sourceMeta?.notebookSegments) {
+    return {
+      parseText: sourceText,
+      tree: cachedTree,
+      notebookSegments: sourceMeta.notebookSegments,
+    };
+  }
+  const extracted = extractNotebookPython(sourceText);
+  if (extracted === null) {
+    if (sourceMeta?.sourceKind === 'pre-extracted-script') {
+      return { parseText: sourceText, tree: cachedTree };
+    }
+    return null;
+  }
+  return {
+    parseText: extracted.pythonSource,
+    tree: sourceMeta?.sourceKind === 'pre-extracted-script' ? cachedTree : undefined,
+    notebookSegments: extracted.segments,
+  };
+}
+
+function remapRange(range: Range, segments: readonly NotebookLineSegment[]): Range {
+  return {
+    ...range,
+    startLine: mapExtractLine(range.startLine - 1, segments) + 1,
+    endLine: mapExtractLine(range.endLine - 1, segments) + 1,
+  };
+}
+
+function remapCaptureMatch(
+  match: CaptureMatch,
+  segments: readonly NotebookLineSegment[],
+): CaptureMatch {
+  const next: Record<string, Capture> = {};
+  for (const [key, cap] of Object.entries(match)) {
+    next[key] = { ...cap, range: remapRange(cap.range, segments) };
+  }
+  return next;
 }
 
 /**

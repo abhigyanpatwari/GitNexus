@@ -15,7 +15,7 @@
  */
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { CfgNestingDepthError } from './cfg-builder.js';
-import type { CfgVisitor, FunctionCfg } from './types.js';
+import type { CfgVisitor, FunctionCfg, SiteRecord } from './types.js';
 
 /**
  * Default per-function source-line cap used by the worker when the `--pdg` run
@@ -83,12 +83,38 @@ function shiftCfgLines(cfg: FunctionCfg, offset: number): FunctionCfg {
   };
 }
 
+function remapCfgLines(cfg: FunctionCfg, mapLine: (row: number) => number): FunctionCfg {
+  // CFG visitors store 1-based source lines; `mapLine` maps 0-based tree-sitter rows.
+  const map1 = (line: number): number => mapLine(line - 1) + 1;
+  const mapSite = (site: SiteRecord): SiteRecord =>
+    site.at !== undefined ? { ...site, at: [map1(site.at[0]), site.at[1]] } : site;
+  return {
+    ...cfg,
+    functionStartLine: map1(cfg.functionStartLine),
+    functionEndLine: map1(cfg.functionEndLine),
+    blocks: cfg.blocks.map((b) => ({
+      ...b,
+      startLine: map1(b.startLine),
+      endLine: map1(b.endLine),
+      statements: b.statements?.map((s) => ({
+        ...s,
+        line: map1(s.line),
+        sites: s.sites?.map(mapSite),
+      })),
+    })),
+    bindings: cfg.bindings?.map((bd) =>
+      bd.declLine > 0 ? { ...bd, declLine: map1(bd.declLine) } : bd,
+    ),
+  };
+}
+
 export function collectFunctionCfgs(
   root: SyntaxNode,
   visitor: CfgVisitor<SyntaxNode>,
   filePath: string,
   maxFunctionLines = 0,
   lineOffset = 0,
+  mapLine?: (row: number) => number,
 ): CollectedCfgs {
   const cfgs: FunctionCfg[] = [];
   let tooManyLines = 0;
@@ -109,7 +135,9 @@ export function collectFunctionCfgs(
         // and silently drop every remaining function's CFG (#2195).
         try {
           const cfg = visitor.buildFunctionCfg(node, filePath);
-          if (cfg) cfgs.push(shiftCfgLines(cfg, lineOffset));
+          if (cfg) {
+            cfgs.push(mapLine ? remapCfgLines(cfg, mapLine) : shiftCfgLines(cfg, lineOffset));
+          }
         } catch (err) {
           if (err instanceof CfgNestingDepthError) tooDeeplyNested++;
           else buildError++;
