@@ -487,7 +487,8 @@ function toRepoRelative(rawPath: string, baseDir: string, repoPath: string): str
 
   const absolute = isAbsolute(raw) || /^[A-Za-z]:/.test(raw) ? raw : join(baseDir, raw);
   const rel = normalizeRepoPath(relative(repoPath, resolve(absolute)));
-  if (rel.startsWith('..') || isAbsolute(rel)) return undefined;
+  // `..headers` is a directory inside the repo. Only `..` and `../…` leave it.
+  if (rel === '..' || rel.startsWith('../') || isAbsolute(rel)) return undefined;
   return collapseRepoPath(rel);
 }
 

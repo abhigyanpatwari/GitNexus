@@ -618,16 +618,17 @@ const HEAP_BUDGETED = [
 // were about.
 
 /**
- * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Four of seventeen arms, and the
- * inventory arm at the foot of this file reconciles that claim against
- * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
+ * Arms whose registered hook declares the fifth `context` argument
+ * (`{ parsedFiles, parsedImport }`). The inventory at the foot of this file
+ * reconciles this list against `SCOPE_RESOLVERS` in both directions, so
+ * membership is that check rather than a count written here.
  *
- * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
- * all. Building one for the other thirteen would cost their timed loop an
- * O(files) allocation per pass that no resolver of theirs can even observe —
- * their hooks declare three or four parameters — so their numbers stay exactly
- * where they were.
+ * `newPass` builds a `ParsedFile[]` only for the members that are not header
+ * languages. C and C++ are listed because they read `parsedImport.isSystem`,
+ * but `newPass` returns on `HEADER_EXTENSION` before this list, so a timed
+ * pass does not allocate that array for them. Arms whose hooks declare fewer
+ * parameters cannot observe a context and are not listed, so their timed
+ * numbers stay on the three-argument shape.
  */
 const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp'];
 
@@ -1732,8 +1733,11 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
  * `csharp_csproj` is the precedent and stays where it is: a per-language
  * CONTEXT over a corpus aliased to another language's, rather than a new axis.
  *
- * `parsedFiles` is the third pass-stable object, present for `CONTEXT_LANGS`
- * and undefined for everyone else. It is built BEFORE the path set and the path
+ * `parsedFiles` is the third pass-stable object. `newPass` builds it for the
+ * `CONTEXT_LANGS` members that are not header languages, and leaves it
+ * undefined otherwise — C and C++ are in that list but return on
+ * `HEADER_EXTENSION` first, so a timed pass does not allocate the array.
+ * Where it is built, it is built BEFORE the path set and the path
  * set is derived FROM it, which is not a stylistic choice: `run.ts` does
  * `new Set(parsedFiles.map((f) => f.filePath))`, so two independently built
  * lists would be a shape the pipeline cannot produce. Fresh per pass for

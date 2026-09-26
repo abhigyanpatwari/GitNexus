@@ -204,6 +204,25 @@ describe('C/C++ workspace scan', () => {
     expect(scanned.headerSearchPaths).not.toContain('src');
   });
 
+  it('keeps an in-repo include root named ..headers and still drops a parent escape', () => {
+    touch('..headers/util.h');
+    touch('compile_flags.txt', ['-I..headers', '-I..', '-I../outside'].join('\n'));
+    const scanned = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(scanned.headerSearchPaths).toContain('..headers');
+    expect(scanned.headerSearchPaths).not.toContain('..');
+    expect(scanned.headerSearchPaths.join('\n')).not.toContain('../outside');
+    const workspace = new Set(['src/main.c', '..headers/util.h']);
+    expect(
+      cScopeResolver.resolveImportTarget(
+        'util.h',
+        'src/main.c',
+        workspace,
+        scanned,
+        angle('util.h'),
+      ),
+    ).toBe('..headers/util.h');
+  });
+
   it('reads compile_flags.txt and .ccls as the fallback flag files', () => {
     touch(
       'compile_flags.txt',
