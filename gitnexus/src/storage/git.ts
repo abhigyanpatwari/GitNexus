@@ -122,6 +122,35 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
 };
 
 /**
+ * True when the working tree shows exactly the committed tree: nothing dirty
+ * or untracked, no path hidden by skip-worktree or assume-unchanged (which is
+ * how a sparse checkout leaves files out), and every gitlink checked out as a
+ * submodule. `git status` stays clean in all three hidden cases. False on any
+ * git failure.
+ */
+export const isWorkingTreePristine = (repoPath: string): boolean => {
+  // Includes every skip-worktree and assume-unchanged path (listHiddenIndexPaths,
+  // `git ls-files -v`), so the `--stage` pass below only has to find gitlinks.
+  if (listWorkingTreeDirtyPaths(repoPath)?.length !== 0) return false;
+  try {
+    const out = execFileSync('git', ['ls-files', '--stage', '-z', '--'], {
+      cwd: repoPath,
+      windowsHide: true,
+      ...gitPathListExec,
+    });
+    for (const record of out.split('\0')) {
+      // `<mode> <object> <stage>\t<path>`; mode 160000 is a gitlink.
+      if (!record.startsWith('160000 ')) continue;
+      const rel = record.slice(record.indexOf('\t') + 1);
+      if (!existsSync(path.join(repoPath, rel, '.git'))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Snapshot, per candidate file, whether it is safe for `selfCommitContextFiles`
  * to auto-commit — call this BEFORE `analyze` writes AGENTS.md/CLAUDE.md.
  * A file is safe when it does not exist yet (first-time creation, the normal
@@ -248,6 +277,31 @@ export const isGitRepo = (repoPath: string): boolean => {
     return true;
   } catch {
     return false;
+  }
+};
+
+/**
+ * Number of commits from `ancestor` to HEAD, or null when `ancestor` is not
+ * an ancestor of HEAD (or git fails). 0 means `ancestor` is HEAD.
+ */
+export const commitDistanceToHead = (repoPath: string, ancestor: string): number | null => {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', ancestor, 'HEAD'], {
+      cwd: repoPath,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    const count = Number(
+      execFileSync('git', ['rev-list', '--count', `${ancestor}..HEAD`], {
+        cwd: repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
+        windowsHide: true,
+        encoding: 'utf8',
+      }).trim(),
+    );
+    return Number.isInteger(count) ? count : null;
+  } catch {
+    return null;
   }
 };
 
@@ -674,10 +728,8 @@ export const listLocalHeads = (repoPath: string): string[] | null => {
   try {
     const result = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], {
       cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-      maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
+      ...gitPathListExec,
     });
     if (result.error || result.status !== 0) return null;
     const output = (result.stdout ?? '').toString().trim();

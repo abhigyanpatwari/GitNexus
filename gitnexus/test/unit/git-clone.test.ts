@@ -29,6 +29,7 @@ import {
   isAzureDevOpsUrl,
   warnIfInsecureAzureConfig,
   runGitForTest,
+  getRemoteOriginUrl as serverGetRemoteOriginUrl,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -1229,12 +1230,16 @@ describe('git-clone', () => {
         await runGit(['checkout', '-b', 'main'], source);
         await fs.writeFile(path.join(source, 'branch.txt'), 'main\n');
         await runGit(['commit', '-am', 'main'], source);
-        await runGit(['remote', 'add', 'origin', `file://${remote}`], source);
+        const remotePosix = remote.replace(/\\/g, '/');
+        const remoteFileUrl = remotePosix.startsWith('/')
+          ? `file://${remotePosix}`
+          : `file:///${remotePosix}`;
+        await runGit(['remote', 'add', 'origin', remoteFileUrl], source);
         await runGit(['push', 'origin', 'master', 'main'], source);
 
         await fs.writeFile(
           gitConfig,
-          `[protocol "file"]\n\tallow = always\n[url "file://${remote}"]\n\tinsteadOf = ${remoteUrl}\n`,
+          `[protocol "file"]\n\tallow = always\n[url "${remoteFileUrl}"]\n\tinsteadOf = ${remoteUrl}\n`,
         );
         process.env.GIT_CONFIG_GLOBAL = gitConfig;
         process.env.GIT_CONFIG_NOSYSTEM = '1';
@@ -1328,6 +1333,103 @@ describe('git-clone', () => {
       }
     });
 
+    it('quarantines auto-sync clones that have .git but no remote.origin and reclones', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      try {
+        await fs.mkdir(target);
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+          proc.on('close', (code) =>
+            code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+          );
+          proc.on('error', reject);
+        });
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          if (args[0] === 'clone') {
+            await fs.mkdir(target, { recursive: true });
+            return '';
+          }
+          return '';
+        });
+        await expect(
+          cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+            runGitForTest,
+          }),
+        ).resolves.toBe(target);
+        const entries = await fs.readdir(quarantineRoot);
+        expect(entries.some((entry) => entry.includes('repo'))).toBe(true);
+        expect(runGitForTest.mock.calls.some((call) => call[0][0] === 'clone')).toBe(true);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('does not quarantine when git config fails for a reason other than a missing origin', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      try {
+        await fs.mkdir(target);
+        await fs.writeFile(path.join(target, '.git'), 'not-a-git-dir');
+        await expect(
+          cloneOrPull('git@github.com:owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+          }),
+        ).rejects.toThrow(/exit code (?!1\b)/);
+        await expect(fs.readFile(path.join(target, '.git'), 'utf-8')).resolves.toBe(
+          'not-a-git-dir',
+        );
+        await expect(fs.access(quarantineRoot)).rejects.toThrow();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('points an SSH origin at the requested HTTPS URL for the same repo', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const quarantineRoot = path.join(root, 'quarantine');
+      const target = path.join(root, 'repo');
+      try {
+        await fs.mkdir(target);
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn('git', ['init', '--quiet'], { cwd: target, stdio: 'ignore' });
+          proc.on('close', (code) =>
+            code === 0 ? resolve() : reject(new Error(`git init exit ${code}`)),
+          );
+          proc.on('error', reject);
+        });
+        await runGitForTest(['remote', 'add', 'origin', 'git@github.com:owner/repo.git'], target);
+        const runGitForPull = vi.fn(async (args: string[]) => {
+          if (args[0] === 'pull' || args[0] === 'fetch') throw new Error('offline');
+          return '';
+        });
+        await expect(
+          cloneOrPull('https://github.com/owner/repo.git', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            quarantineRoot,
+            runGitForTest: runGitForPull,
+          }),
+        ).rejects.toThrow('offline');
+        await expect(serverGetRemoteOriginUrl(target)).resolves.toBe(
+          'https://github.com/owner/repo.git',
+        );
+        await expect(fs.access(quarantineRoot)).rejects.toThrow();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
     it('does not quarantine an existing non-git directory on clone failure', async () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const quarantineRoot = path.join(root, 'quarantine');
@@ -1354,6 +1456,7 @@ describe('git-clone', () => {
     });
 
     it('rejects controlled clone roots with unsafe permissions inside cloneOrPull', async () => {
+      if (process.platform === 'win32') return;
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       try {
         await fs.chmod(root, 0o777);

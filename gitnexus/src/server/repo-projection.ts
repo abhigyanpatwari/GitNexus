@@ -16,6 +16,7 @@ import {
 } from '../core/staleness-status.js';
 import type { ContentRetention, RepoMeta } from '../storage/repo-meta.js';
 import type { RegistryEntry } from '../storage/repo-manager.js';
+import { publicRepoId } from './public-repo-id.js';
 
 /** Retention + checkout facts computed by the route (see getSourceAvailability). */
 export interface RepoProjectionSource {
@@ -54,6 +55,8 @@ export const projectRepoListEntry = (
   staleness: StalenessInfo,
   source: RepoProjectionSource,
 ) => ({
+  // Matches `repoId` on analyze job views / SSE terminal frames.
+  id: publicRepoId(entry.path),
   name: entry.name,
   path: entry.path,
   repoPath: entry.path,

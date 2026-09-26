@@ -6,6 +6,7 @@
  * LadybugDB connections are opened lazily per repo on first query.
  */
 
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -25,6 +26,7 @@ import { querySpringAopMetadata } from './aop-metadata.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
+import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
@@ -299,6 +301,15 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
     if (typeof value === 'string' && value.trim()) return value;
   }
   return undefined;
+}
+
+/**
+ * A `*_uid` param as a lookup key: trimmed, or `undefined` when it is blank or
+ * not a string (#3354). Strict adapters send `" "`/`""` for an omitted optional
+ * string, and the MCP envelope is not type-validated.
+ */
+function nonBlankUid(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
 interface StringAliasDefinition {
@@ -1632,6 +1643,7 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+  private warnedNoEmbeddingVectors = false;
 
   /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
@@ -1901,7 +1913,7 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = path.join(storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(storagePath);
 
       const handle: RepoHandle = {
         id,
@@ -2109,7 +2121,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return this.applyBranchScope(result, branch);
+      return this.applyBranchScope(this.followSharedGraph(result), branch);
     }
 
     // Still no match — throw with helpful message
@@ -2164,6 +2176,21 @@ export class LocalBackend {
    *   and restamped labels the cached handle predates resolve on the next
    *   call.
    */
+  /**
+   * A shared-store checkout (#3352) moves between immutable commit graphs and
+   * its private graph as it is re-analyzed, while the cached handle keeps the
+   * graph it resolved first. Re-resolve the flat graph (one stat when the slot
+   * metadata is unchanged) and update the cached handle when it moved, so the
+   * pool opens the graph the checkout reads now.
+   */
+  private followSharedGraph(handle: RepoHandle): RepoHandle {
+    const current = resolveGraphPath(handle.storagePath);
+    if (current === handle.lbugPath) return handle;
+    const moved = { ...handle, lbugPath: current };
+    if (this.repos.get(handle.id) === handle) this.repos.set(handle.id, moved);
+    return moved;
+  }
+
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
     // At most one cache refresh per resolution: enough for the NEXT call to
@@ -2178,7 +2205,10 @@ export class LocalBackend {
     // One small JSON read per scoped call; mid-run meta writes preserve the
     // old label until the end-of-run atomic stamp (run-analyze dirty stamps
     // spread the existing meta), so this read never runs ahead of the DB.
-    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    // The flat slot's own metadata, not the graph's directory: a shared-store
+    // checkout's graph sits in a commit directory whose metadata carries no
+    // branch label (#3352).
+    const flatMeta = await loadMeta(handle.storagePath);
     if (flatMeta?.branch && flatMeta.branch === branch) {
       // The disk meta decides routing, so it also supplies the metadata —
       // the cached handle's label/commit/stats can predate the restamp.
@@ -3547,38 +3577,9 @@ export class LocalBackend {
 
     // Step 4: Build response
     timer.start('formatting');
-    const processes = rankedProcesses.map((p) => ({
-      id: p.id,
-      summary: p.heuristicLabel || p.label,
-      priority: Math.round(p.priority * 1000) / 1000,
-      symbol_count: p.symbols.length,
-      process_type: p.processType,
-      step_count: p.stepCount,
-      ...(p.routes && p.routes.length > 0
-        ? {
-            route: p.routes[0].url,
-            method: p.routes[0].method || undefined,
-            routes: p.routes,
-          }
-        : {}),
-      ...(chainByProcessId.has(p.id) ? { chain: chainByProcessId.get(p.id) } : {}),
-    }));
-
-    const processSymbols = rankedProcesses.flatMap((p) =>
-      p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
-        ...s,
-        // mark the entry-point symbol so an agent reading the
-        // process can tell procedure vs. workflow vs. helper at a glance.
-        ...(p.entryPointId && s.id === p.entryPointId ? { is_entry_point: true } : {}),
-      })),
-    );
-
-    // Deduplicate process_symbols by id
-    const seen = new Set<string>();
-    const dedupedSymbols = processSymbols.filter((s) => {
-      if (seen.has(s.id)) return false;
-      seen.add(s.id);
-      return true;
+    const { processes, process_symbols } = shapeQueryProcessAttaches(rankedProcesses, {
+      maxSymbolsPerProcess,
+      chainByProcessId,
     });
     timer.stop(); // formatting
 
@@ -3762,7 +3763,7 @@ export class LocalBackend {
 
     return {
       processes,
-      process_symbols: dedupedSymbols,
+      process_symbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
@@ -3890,6 +3891,18 @@ export class LocalBackend {
   }
 
   /**
+   * Keyword-only indexes are the default. Do not put this on `query.warning`
+   * (that field is reserved for FTS/stack degradation). Log once per backend.
+   */
+  private logKeywordOnlyEmbeddings(): void {
+    if (this.warnedNoEmbeddingVectors) return;
+    this.warnedNoEmbeddingVectors = true;
+    logger.warn(
+      'GitNexus [query:vector]: This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.',
+    );
+  }
+
+  /**
    * Semantic vector search helper
    */
   private async semanticSearch(
@@ -3911,10 +3924,8 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        // No vectors to search: nothing is embedded below, so drop any width a
-        // previous call recorded rather than let query() warn about a lane that
-        // did not run this time (#2798).
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        this.logKeywordOnlyEmbeddings();
         return [];
       }
 
@@ -4076,6 +4087,8 @@ export class LocalBackend {
         isLocalEmbeddingSidecarAbortMessage(message);
       if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
+      } else if (isBenignMissingTableError(err)) {
+        this.logKeywordOnlyEmbeddings();
       }
       if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
@@ -4459,7 +4472,11 @@ export class LocalBackend {
       }
     | { kind: 'not_found' }
   > {
-    const { uid, name, include_content } = query;
+    const { name, include_content } = query;
+    // A blank or non-string uid is omitted, not a lookup key — fall through to
+    // the name instead of `not_found`, matching normalizeToolParams' impact
+    // target_uid check.
+    const uid = nonBlankUid(query.uid);
     const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
 
     // Direct UID — zero-ambiguity path.
@@ -6815,7 +6832,7 @@ export class LocalBackend {
     if (fromOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        error: `Source symbol '${nonBlankUid(params.from_uid) ?? params.from}' not found.`,
         suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
       };
     }
@@ -6842,7 +6859,7 @@ export class LocalBackend {
     if (toOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        error: `Target symbol '${nonBlankUid(params.to_uid) ?? params.to}' not found.`,
         suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
       };
     }
@@ -7222,7 +7239,7 @@ export class LocalBackend {
     );
 
     if (outcome.kind === 'not_found') {
-      const missing = params.target_uid ?? target;
+      const missing = nonBlankUid(params.target_uid) ?? target;
       // not_found = no resolved symbol, so the envelope keeps the partial-but-
       // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
       const notFoundTarget: PdgImpactTarget = { name: target };
@@ -8045,6 +8062,14 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+    // #3354: a walk with no anchor id cannot say anything about THIS symbol,
+    // yet it still ships a normal-looking `exact` result with the target's
+    // name echoed back. Throw so every caller's catch reports UNKNOWN instead.
+    if (!symId) {
+      throw new Error(
+        `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
+      );
+    }
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no

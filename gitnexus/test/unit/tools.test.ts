@@ -124,6 +124,37 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('query process_symbols description names the (id, process_id) join key (#3351)', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(queryTool.description).toContain('One row per (id, process_id)');
+    expect(queryTool.description).toContain('Join a process to its rows by process_id');
+    expect(queryTool.description).toContain('symbol_count is the number of those rows');
+    expect(queryTool.description).toContain('single-repo envelope');
+    expect(queryTool.description).toContain('does not include process_symbols');
+    expect(queryTool.description).toContain('Join processes[].id to process_symbols[].process_id');
+    expect(queryTool.description).toContain(
+      'when service is set, it counts only attaches under that prefix',
+    );
+    expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
+    expect(queryTool.description).toContain(
+      'content appears only on the first row for each symbol id across the whole process_symbols array, not per process',
+    );
+    expect(queryTool.description).toContain('even under a different process_id');
+    expect(queryTool.description).toContain('context({uid: "<id>", include_content: true})');
+    expect(queryTool.description).toContain(
+      "With include_content, context() also returns that symbol's source.",
+    );
+  });
+
+  it('query include_content property states the once-per-id rule and the context() fallback', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    const description = queryTool.inputSchema.properties.include_content.description;
+    expect(description).toContain('Include source text retained for matching symbols');
+    expect(description).toContain(
+      'Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+    );
+  });
+
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
     expect(queryTool.inputSchema.required).toContain('search_query');

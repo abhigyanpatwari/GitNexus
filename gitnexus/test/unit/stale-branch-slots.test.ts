@@ -25,6 +25,9 @@ async function writeSlotMeta(dir: string, branch: string): Promise<void> {
   );
 }
 
+const linkDir = (target: string, dest: string): Promise<void> =>
+  fs.symlink(target, dest, process.platform === 'win32' ? 'junction' : 'dir');
+
 describe('listStaleBranchSlots (#3331)', () => {
   let fixture: TestDBHandle;
   let repoPath: string;
@@ -62,6 +65,74 @@ describe('listStaleBranchSlots (#3331)', () => {
     ]);
     expect(rows[0]?.sizeBytes).toBeGreaterThan(0);
     expect(isDeleteCandidate(rows[0]!)).toBe(true);
+  });
+
+  it('does not include a sibling-slot junction in leftover size', async () => {
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const sibling = path.join(storagePath, 'branches', branchSlug('main'));
+    await writeSlotMeta(leftover, 'feature/x');
+    await writeSlotMeta(sibling, 'main');
+    const secret = Buffer.alloc(64 * 1024, 7);
+    await fs.writeFile(path.join(sibling, 'payload.bin'), secret);
+    await fs.writeFile(path.join(leftover, 'tiny.bin'), 'x');
+    const inner = path.join(leftover, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    await linkDir(sibling, path.join(inner, 'escape'));
+
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['main'],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sizeBytes).toBeGreaterThan(0);
+    expect(rows[0]?.sizeBytes).toBeLessThan(secret.length);
+  });
+
+  it('reports zero size when the leftover path is a junction to a sibling slot', async () => {
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const sibling = path.join(storagePath, 'branches', branchSlug('main'));
+    await writeSlotMeta(sibling, 'main');
+    await fs.writeFile(path.join(sibling, 'payload.bin'), Buffer.alloc(64 * 1024, 7));
+    await fs.mkdir(path.dirname(leftover), { recursive: true });
+    await linkDir(sibling, leftover);
+
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['main'],
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        branch: 'feature/x',
+        dir: leftover,
+        sizeBytes: 0,
+        reason: 'ref-missing',
+      }),
+    ]);
+  });
+
+  it('does not hang sizing a leftover slot with a directory cycle', async () => {
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(leftover, 'feature/x');
+    await fs.writeFile(path.join(leftover, 'tiny.bin'), 'x');
+    const inner = path.join(leftover, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    await linkDir(inner, path.join(inner, 'loop'));
+
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['main'],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sizeBytes).toBeGreaterThan(0);
   });
 
   it('does not classify a recorded branch that is still a local head', async () => {
@@ -155,6 +226,7 @@ describe('listStaleBranchSlots (#3331)', () => {
 
   it('returns listing-failed when branches/ readdir fails with a non-missing error', async () => {
     const branchesRoot = path.join(storagePath, 'branches');
+    await fs.mkdir(branchesRoot, { recursive: true });
     const realReaddir = fs.readdir.bind(fs);
     const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation((async (
       target: unknown,
@@ -194,6 +266,7 @@ describe('listStaleBranchSlots (#3331)', () => {
 
   it('does not classify registry rows when branches/ listing fails', async () => {
     const branchesRoot = path.join(storagePath, 'branches');
+    await fs.mkdir(branchesRoot, { recursive: true });
     const realReaddir = fs.readdir.bind(fs);
     const readdirSpy = vi.spyOn(fs, 'readdir').mockImplementation((async (
       target: unknown,
@@ -246,6 +319,42 @@ describe('listStaleBranchSlots (#3331)', () => {
         reason: 'registry-only',
       }),
     ]);
+  });
+
+  it('does not classify a live-head registry row whose directory is gone', async () => {
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['feature/x'],
+    });
+
+    expect(rows).toEqual([]);
+  });
+
+  it('returns listing-failed when branches/ is a symlink or junction', async () => {
+    const outside = path.join(fixture.dbPath, 'outside-tree');
+    const slug = branchSlug('feature/x');
+    await writeSlotMeta(path.join(outside, slug), 'feature/x');
+    await fs.mkdir(storagePath, { recursive: true });
+    await linkDir(outside, path.join(storagePath, 'branches'));
+
+    const rows = await listStaleBranchSlots({
+      repoPath,
+      storagePath,
+      branches: [{ branch: 'feature/x' }],
+      heads: ['main'],
+    });
+
+    expect(rows).toEqual([
+      {
+        branch: '',
+        dir: null,
+        sizeBytes: 0,
+        reason: 'listing-failed',
+      },
+    ]);
+    expect(isDeleteCandidate(rows[0]!)).toBe(false);
   });
 
   it('does not classify a leftover directory with unreadable metadata and no registry row', async () => {
@@ -469,7 +578,7 @@ describe('removeBranchSlot (#3331)', () => {
     await fs.writeFile(path.join(outsideSlot, 'payload.bin'), 'secret');
     await fs.mkdir(storagePath, { recursive: true });
     const branchesRoot = path.join(storagePath, 'branches');
-    await fs.symlink(outside, branchesRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    await linkDir(outside, branchesRoot);
     const dir = path.join(branchesRoot, slug);
 
     const result = await removeBranchSlot({
@@ -499,7 +608,7 @@ describe('removeBranchSlot (#3331)', () => {
     const branchesRoot = path.join(storagePath, 'branches');
     await fs.mkdir(branchesRoot, { recursive: true });
     const dir = path.join(branchesRoot, branchSlug('feature/x'));
-    await fs.symlink(outside, dir, process.platform === 'win32' ? 'junction' : 'dir');
+    await linkDir(outside, dir);
 
     const result = await removeBranchSlot({
       repoPath,
@@ -514,6 +623,138 @@ describe('removeBranchSlot (#3331)', () => {
     await expect(fs.readFile(path.join(outside, 'payload.bin'), 'utf8')).resolves.toBe('secret');
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
+  });
+
+  it('unlinks a nested junction inside a leftover slot and leaves the outside target', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    await fs.writeFile(path.join(dir, 'payload.bin'), 'stale');
+    const inner = path.join(dir, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    const outside = path.join(fixture.dbPath, 'outside-nested');
+    await fs.mkdir(outside, { recursive: true });
+    await fs.writeFile(path.join(outside, 'secret.bin'), 'keep');
+    await linkDir(outside, path.join(inner, 'escape'));
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: true, keptRegistry: false });
+    await expect(fs.access(dir)).rejects.toThrow();
+    await expect(fs.access(outside)).resolves.toBeUndefined();
+    await expect(fs.readFile(path.join(outside, 'secret.bin'), 'utf8')).resolves.toBe('keep');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('does not walk a nested directory swapped for a junction mid-cleanup', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const dir = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(dir, 'feature/x');
+    const inner = path.join(dir, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    const outside = path.join(fixture.dbPath, 'outside-swapped');
+    await fs.mkdir(outside, { recursive: true });
+    const victim = path.join(outside, 'victim-link');
+    await linkDir(fixture.dbPath, victim);
+
+    // Swap `inner` for a junction to `outside` right after its containment
+    // realpath resolves — past the per-child checks, before the recursion.
+    const realRealpath = fs.realpath.bind(fs);
+    let swapped = false;
+    const realpathSpy = vi.spyOn(fs, 'realpath').mockImplementation((async (
+      target: Parameters<typeof fs.realpath>[0],
+    ) => {
+      const resolved = await realRealpath(target);
+      if (!swapped && path.resolve(String(target)) === path.resolve(inner)) {
+        swapped = true;
+        await fs.rm(inner, { recursive: true });
+        await linkDir(outside, inner);
+      }
+      return resolved;
+    }) as typeof fs.realpath);
+
+    try {
+      await removeBranchSlot({ repoPath, storagePath, branch: 'feature/x', dir });
+    } finally {
+      realpathSpy.mockRestore();
+    }
+
+    expect(swapped).toBe(true);
+    await expect(fs.lstat(victim)).resolves.toBeDefined();
+  });
+
+  it('unlinks a nested junction aimed at a sibling slot', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const sibling = path.join(storagePath, 'branches', branchSlug('main'));
+    await writeSlotMeta(leftover, 'feature/x');
+    await writeSlotMeta(sibling, 'main');
+    await fs.writeFile(path.join(sibling, 'live.bin'), 'keep');
+    const inner = path.join(leftover, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    await linkDir(sibling, path.join(inner, 'escape'));
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: leftover,
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(fs.access(leftover)).rejects.toThrow();
+    await expect(fs.readFile(path.join(sibling, 'live.bin'), 'utf8')).resolves.toBe('keep');
+  });
+
+  it('unlinks a slot junction aimed at a sibling slot', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    const sibling = path.join(storagePath, 'branches', branchSlug('main'));
+    await writeSlotMeta(sibling, 'main');
+    await fs.writeFile(path.join(sibling, 'live.bin'), 'keep');
+    await fs.mkdir(path.dirname(leftover), { recursive: true });
+    await linkDir(sibling, leftover);
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: leftover,
+    });
+
+    expect(result).toEqual({ ok: true, emptiedBranchesDir: false, keptRegistry: false });
+    await expect(fs.lstat(leftover)).rejects.toThrow();
+    await expect(fs.readFile(path.join(sibling, 'live.bin'), 'utf8')).resolves.toBe('keep');
+  });
+
+  it('deletes a leftover slot that contains a directory cycle', async () => {
+    await registerRepo(repoPath, metaFor('main'));
+    await registerRepo(repoPath, metaFor('feature/x'), { branch: 'feature/x' });
+    const leftover = path.join(storagePath, 'branches', branchSlug('feature/x'));
+    await writeSlotMeta(leftover, 'feature/x');
+    const inner = path.join(leftover, 'inner');
+    await fs.mkdir(inner, { recursive: true });
+    await linkDir(inner, path.join(inner, 'loop'));
+
+    const result = await removeBranchSlot({
+      repoPath,
+      storagePath,
+      branch: 'feature/x',
+      dir: leftover,
+    });
+
+    expect(result.ok).toBe(true);
+    await expect(fs.access(leftover)).rejects.toThrow();
   });
 
   it('deletes a normal leftover slot directory', async () => {
