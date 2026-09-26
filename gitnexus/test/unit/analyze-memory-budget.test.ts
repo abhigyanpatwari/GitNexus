@@ -28,7 +28,7 @@ class ExitCalled extends Error {
   }
 }
 
-describe('--memory-budget validation at the CLI entry (AE7)', () => {
+describe('--memory-budget validation at the CLI entry', () => {
   const initialArgv = process.argv;
   let stderrChunks: string[];
 

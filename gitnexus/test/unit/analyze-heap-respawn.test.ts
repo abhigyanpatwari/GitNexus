@@ -477,7 +477,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     process.exitCode = undefined;
   });
 
-  it('AE1: replaces an 8192MB execArgv pin with a 2000MB heap, logging one line that names the pin', async () => {
+  it('replaces an 8192MB execArgv pin with a 2000MB heap, logging one line that names the pin', async () => {
     mockSpawnExit();
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
@@ -512,7 +512,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     });
   });
 
-  it('AE2: raises a 1024MB NODE_OPTIONS pin to a 3000MB heap, without the below-cap warning', async () => {
+  it('raises a 1024MB NODE_OPTIONS pin to a 3000MB heap, without the below-cap warning', async () => {
     process.env.NODE_OPTIONS = '--max-old-space-size=1024';
     mockSpawnExit();
     const { _captureLogger } = await import('../../src/core/logger.js');
@@ -534,7 +534,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     }).toEqual({ old: true, semi: true, recordCount: 1, namesPin: true, namesAutoCap: false });
   });
 
-  it('AE3: a 12000MB budget above a 6000MB auto cap respawns at 12000 with a swap-risk warning', async () => {
+  it('a 12000MB budget above a 6000MB auto cap respawns at 12000 with a swap-risk warning', async () => {
     // 7500MB cgroup limit -> auto cap floor(0.8 × 7500) = 6000MB.
     constrainTo(7500);
     mockSpawnExit();
@@ -555,7 +555,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     }).toEqual({ old: true, recordCount: 1, namesAutoCap: true, warnsSwap: true });
   });
 
-  it('AE8: a budget-respawned child (8192 pin, then the budget flags) proceeds silently', async () => {
+  it('a budget-respawned child (8192 pin, then the budget flags) proceeds silently', async () => {
     process.env.GITNEXUS_HEAP_LIMIT_SOURCE = 'budget';
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();

@@ -903,6 +903,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
 
       expect(rebuilt.alreadyUpToDate).toBeUndefined();
+      expect(rebuilt.rebuildReasons).toContain('spring-vendor-prefixes');
       expect(logs.join('\n')).toContain('Spring vendor mapping prefixes changed');
       expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
 
@@ -1593,7 +1594,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  // AE4: an upgrade that trips several reasons at once names them in ONE
+  // an upgrade that trips several reasons at once names them in ONE
   // numbered block and prints no other rebuild line.
   it('schema, runner identity, and a new Actuator request print one numbered block of three', async () => {
     const repo = await setupMiniRepo();
@@ -1685,6 +1686,40 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  // A recorded graph-write collapse at an unchanged commit must not take the
+  // alreadyUpToDate fast path: the gate forces a full rebuild and names it.
+  it('a recorded graphWriteCollapsed stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta?.graphWriteCollapsed).toBeUndefined();
+      expect(meta).toBeTruthy();
+
+      // Same commit, clean tree, same DDL: only the collapse stamp differs.
+      const collapsed: RepoMeta = {
+        ...(meta as RepoMeta),
+        graphWriteCollapsed: { expected: 500, persisted: 3 },
+      };
+      await saveMeta(storagePath, collapsed);
+
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(reanalyzed.rebuildReasons).toContain('graph-write-collapse');
+      expect(logs.join('\n')).toContain('previous run persisted 3 of 500 expected relationships');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   // #2331/#2339: mirrors the schema-fingerprint mismatch test above, but for
   // the CJK segmentation mode stamp. Uses a non-default mode ('bigram') rather
   // than 'none' — with the default, (undefined ?? 'none') !== 'none' is
@@ -1714,6 +1749,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       // Pipeline actually ran (cjkSegmentation mismatch → force=true).
       expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(reanalyzed.rebuildReasons).toContain('cjk-segmentation');
       // And the meta is restamped to the live resolved mode.
       const restamped = await loadMeta(storagePath);
       expect(restamped!.cjkSegmentation).toBe('bigram');

@@ -1473,7 +1473,7 @@ describe('runFullAnalysis FTS crash marker', () => {
 });
 
 /**
- * U6 (#3137, PR #3385): the collected rebuild reasons ride on every
+ * #3137: the collected rebuild reasons ride on every
  * `incrementalInProgress` writer, so an interrupted rebuild can name its
  * causes, and every clearing path drops them with the marker.
  */
@@ -1600,7 +1600,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     }
   });
 
-  it('AE5: a schema rebuild killed at the wipe names the interrupted rebuild and the schema change once', async () => {
+  it('a schema rebuild killed at the wipe names the interrupted rebuild and the schema change once', async () => {
     const { wipeLbugDbFiles } = mockRun();
     wipeLbugDbFiles.mockRejectedValueOnce(new Error('simulated kill at the wipe'));
     const tmpRepo = await createTempDir('gitnexus-reasons-ae5-');
@@ -1663,7 +1663,8 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
         'first kill',
       );
       const first = await loadMeta(storagePath);
-      await saveMeta(storagePath, { ...first!, schemaFingerprint: BUMPED_SCHEMA });
+      expect(first).toBeTruthy();
+      await saveMeta(storagePath, { ...(first as RepoMeta), schemaFingerprint: BUMPED_SCHEMA });
       await expect(runFullAnalysis(tmpRepo.dbPath, options, callbacks)).rejects.toThrow(
         'second kill',
       );
@@ -1751,7 +1752,7 @@ describe('runFullAnalysis rebuild reasons on the crash marker', () => {
     }
   });
 
-  it('AE6: under --branch the reasons land only in the branch slot, and success clears them', async () => {
+  it('under --branch the reasons land only in the branch slot, and success clears them', async () => {
     const { writes } = mockRun();
     const tmpRepo = await createTempDir('gitnexus-reasons-branch-');
     try {

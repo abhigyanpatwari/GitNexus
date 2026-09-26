@@ -1,8 +1,12 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   RebuildReasonCollector,
   readStoredRebuildReasons,
   type RebuildReason,
+  type RebuildReasonKey,
 } from '../../src/core/rebuild-reasons.js';
 
 const schema: RebuildReason = { key: 'schema-fingerprint', text: 'index schema changed (A → B)' };
@@ -24,7 +28,7 @@ describe('RebuildReasonCollector summary', () => {
     expect(collector.formatSummary()).toBe(`Full rebuild required: ${schema.text}`);
   });
 
-  it('formats three reasons as one numbered block (AE4)', () => {
+  it('formats three reasons as one numbered block', () => {
     const collector = new RebuildReasonCollector();
     collector.add(schema);
     collector.add(runner);
@@ -129,7 +133,7 @@ describe('RebuildReasonCollector interrupted-rebuild recovery', () => {
     expect(text).toContain(schema.text);
   });
 
-  it('merges a re-detected reason with a matching key into the entry (AE5)', () => {
+  it('merges a re-detected reason with a matching key into the entry', () => {
     const collector = new RebuildReasonCollector();
     collector.recordInterruptedRebuild([schema]);
     collector.add({ key: 'schema-fingerprint', text: 'index schema changed (B → C)' });
@@ -232,5 +236,60 @@ describe('readStoredRebuildReasons', () => {
       readStoredRebuildReasons([{ key: 'future-key', text: 'from a newer build' }]),
     );
     expect(collector.reasons()[0].text).toContain('from a newer build');
+  });
+});
+
+/**
+ * R15 coverage table: every `RebuildReasonKey` paired with the test file that
+ * drives it through `runFullAnalysis` and asserts the key. The exhaustiveness
+ * check below fails `tsc` when a key is added to the union without a row here.
+ */
+const REBUILD_REASON_COVERAGE = [
+  { key: 'user-force', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'skills', file: 'test/unit/stream-graph-emit-force-ordering.test.ts' },
+  { key: 'parse-cache-bypass', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'drop-embeddings', file: 'test/unit/stream-graph-emit-force-ordering.test.ts' },
+  { key: 'interrupted-rebuild', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'private-graph-unavailable', file: 'test/integration/shared-store-analyze.test.ts' },
+  { key: 'shared-store-missing-graph', file: 'test/integration/shared-store-analyze.test.ts' },
+  {
+    key: 'content-retention',
+    file: 'test/integration/external-storage-content-retention.test.ts',
+  },
+  { key: 'pdg-mode', file: 'test/unit/pdg-mode-flip.test.ts' },
+  { key: 'schema-fingerprint', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'graph-write-collapse', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'analysis-features', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'spring-vendor-prefixes', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'runner-identity', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'cjk-segmentation', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'embedding-dims', file: 'test/unit/embedding-dims-guard.test.ts' },
+  { key: 'spring-actuator', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'asyncapi', file: 'test/unit/incremental-orchestration.test.ts' },
+  { key: 'escalated-full-write', file: 'test/unit/incremental-orchestration.test.ts' },
+] as const satisfies readonly { readonly key: RebuildReasonKey; readonly file: string }[];
+
+type UncoveredRebuildReasonKey = Exclude<
+  RebuildReasonKey,
+  (typeof REBUILD_REASON_COVERAGE)[number]['key']
+>;
+/** Compile-time gate: resolves to `true` only when no key is missing above. */
+const everyRebuildReasonCovered: [UncoveredRebuildReasonKey] extends [never]
+  ? true
+  : UncoveredRebuildReasonKey = true;
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+describe('rebuild reason coverage table (R15)', () => {
+  it('lists every key exactly once', () => {
+    const keys: readonly RebuildReasonKey[] = REBUILD_REASON_COVERAGE.map(({ key }) => key);
+    expect(everyRebuildReasonCovered).toBe(true);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it.each(REBUILD_REASON_COVERAGE)('$key is asserted by $file', ({ key, file }) => {
+    const absolute = path.join(packageRoot, file);
+    expect(existsSync(absolute)).toBe(true);
+    expect(readFileSync(absolute, 'utf8')).toContain(`'${key}'`);
   });
 });

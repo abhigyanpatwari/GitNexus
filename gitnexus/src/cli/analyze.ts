@@ -610,7 +610,7 @@ export interface BudgetHeapDecision {
  * `parseMaxOldSpaceMb` accepts). A process whose pin already equals the
  * budget, or the old space the budget respawn sets, keeps running; anything
  * else respawns once at the budget. The budget's own flags follow the user's
- * in the child, so the child always resolves to "at the budget" (AE8).
+ * in the child, so the child always resolves to "at the budget".
  */
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;

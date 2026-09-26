@@ -1976,7 +1976,7 @@ async function runFullAnalysisInner(
   // evaluated (none early-returns), and a rebuild happens iff a forcing
   // reason was collected.
   //
-  // KTD8: the metadata a crashed FIRST build left behind is the slot claim
+  // #3137: the metadata a crashed FIRST build left behind is the slot claim
   // (`lastCommit: ''`, no fingerprint, no runner identity), not an index. It
   // rebuilds structurally anyway, and measuring it against these gates would
   // announce a schema and runner-identity change that never happened.

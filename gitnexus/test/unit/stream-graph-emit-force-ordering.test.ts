@@ -137,7 +137,12 @@ const recordSummaries = (): SummaryCall[] => {
 /** Run to the (mocked) pipeline and return the log lines. */
 const runToPipeline = async (
   repoPath: string,
-  options: { useParseCache?: boolean; skills?: boolean; repairFts?: boolean },
+  options: {
+    useParseCache?: boolean;
+    skills?: boolean;
+    repairFts?: boolean;
+    dropEmbeddings?: boolean;
+  },
 ): Promise<string[]> => {
   const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
   const logs: string[] = [];
@@ -206,7 +211,37 @@ describe('pre-pipeline rebuild reasons (#3137)', () => {
     }
   }, 120_000);
 
-  it('a first-build claim retry names no schema or runner-identity change (KTD8)', async () => {
+  it('--drop-embeddings over a stored embedding checkpoint contributes the drop-embeddings reason', async () => {
+    const summaries = recordSummaries();
+    const tmpRepo = await createTempDir('gitnexus-rebuild-reason-drop-embeddings-');
+    try {
+      // The reason is collected only where a checkpoint is being discarded.
+      await writeMeta(tmpRepo.dbPath, {
+        lastCommit: '',
+        indexedAt: new Date(0).toISOString(),
+        embeddingCheckpoint: {
+          at: new Date(0).toISOString(),
+          nodesProcessed: 0,
+          totalNodes: 1,
+          chunksProcessed: 0,
+          model: 'test-model',
+          dimensions: 384,
+          provider: 'local',
+          pendingNodeIds: [],
+        },
+      });
+
+      const logs = await runToPipeline(tmpRepo.dbPath, { dropEmbeddings: true });
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0].keys).toContain('drop-embeddings');
+      expect(logs).toContain('Discarding the embedding checkpoint (--drop-embeddings).');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  }, 120_000);
+
+  it('a first-build claim retry names no schema or runner-identity change', async () => {
     const summaries = recordSummaries();
     const tmpRepo = await createTempDir('gitnexus-rebuild-reason-claim-');
     try {
