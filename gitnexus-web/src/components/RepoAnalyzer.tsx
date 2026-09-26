@@ -931,7 +931,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
                     dropped: uploadSummary.dropped,
                   })
                 : t('onboarding:repoAnalyzer.upload.selectedDrop', {
-                    count: uplo0adSummary.count,
+                    count: uploadSummary.count,
                     fileCount: uploadSummary.count,
                     dropped: uploadSummary.dropped,
                     skippedDirs: uploadSummary.skippedDirs,
