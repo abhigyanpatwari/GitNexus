@@ -22,9 +22,10 @@
  * `allFileList` entries, and the per-target file ORDER follows
  * `allFileList`.
  *
- * Import-config fans a file to every matching declared target. Grouping
- * (`groupSwiftFilesBySpmTarget`) is first-target-wins. That divergence
- * is intentional.
+ * Import-config fans a file to every matching declared target. Module
+ * grouping (`groupSwiftFilesByModule`) anchors target paths at the repo root
+ * and picks the deepest. That divergence is intentional: this legacy
+ * strategy only sees the root declaration map.
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';

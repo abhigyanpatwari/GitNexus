@@ -15,13 +15,13 @@
   "reexport_extra": 1,
   "nested_repeat_resolved": 1,
   "first_wins": 1,
-  "_membership_note": "Exact resolve/grouping counts on the unique query set (one File0 per target). declared_resolved=32 is two declared spellings (Mod{t+1} and Mod{t+1}.Model) across 16 targets. sdk_external=32 is Foundation+UIKit. undeclared_external=16 is the in-repo CoreUI folder that Package.swift does not declare — the hole bench/import-target's Swift arm cannot see. empty_declared_external=1 pins an empty declaredTargets map. reexport_extra=1 pins import Mod0 including Mod1 after @_exported. nested_repeat_resolved=1 pins vendor/Sources/Mod0/Sources/Mod0/Nested.swift (#2931). first_wins=1 pins a two-prefix file into Mod0 only.",
+  "_membership_note": "Exact resolve/grouping counts on the unique query set (one File0 per target). declared_resolved=32 is two declared spellings (Mod{t+1} and Mod{t+1}.Model) across 16 targets. sdk_external=32 is Foundation+UIKit. undeclared_external=16 is the in-repo CoreUI folder that Package.swift does not declare — the hole bench/import-target's Swift arm cannot see. empty_declared_external=1 pins an empty declaredTargets map. reexport_extra=1 pins import Mod0 including Mod1 after @_exported. nested_repeat_resolved=1 pins vendor/Sources/Mod0/Sources/Mod0/Nested.swift (#2931). first_wins=1 pins a two-prefix file into Mod0 only — under #3355 root-anchored grouping because it sits under Sources/Mod0, not because Mod0 is listed first.",
 
   "parse_targets": 3,
   "parse_binary_skipped": 1,
   "url_comment_targets": 1,
   "parse_complete": 1,
-  "_parse_note": "Exact parse floors on a fixed manifest, not the scaling corpus. parse_targets=3 is Models+App+AppTests. parse_binary_skipped=1 means Lib/Gen/CFoo never entered the map. url_comment_targets=1 pins https:// on the same line as a later .target. parse_complete=1 pins both manifests readable.",
+  "_parse_note": "Exact parse floors on a fixed manifest, not the scaling corpus. parse_targets=3 is the importable source targets Models+App+AppTests. parse_binary_skipped=1 means Lib/CFoo never entered the map and Gen is a non-importable plugin module at Plugins/Gen (#3355: plugins compile as their own module, so grouping needs them; before #3355 Gen was skipped too). url_comment_targets=1 pins https:// on the same line as a later .target. parse_complete=1 pins both manifests readable.",
 
   "layout_fingerprint": "2b220baa1df63778489949f9596879ba1c89a49e62c57bd9d2336fd8d74c17bd",
   "_layout_fingerprint_note": "sha256 over sorted from|target->files rows on the unique query set. A change here is a BEHAVIOUR change — the resolver returned a different target set. Explain it, never re-baseline it alone.",
