@@ -46,10 +46,7 @@ import {
   getGitRoot,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
-import {
-  parseGrepQuery,
-  GREP_TIME_BUDGET_MS,
-} from '../../server/grep-params.js';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
 import { runGrepScanInWorker } from '../../server/grep-scan.js';
 import {
   listRegisteredRepos,
@@ -9478,8 +9475,7 @@ export class LocalBackend {
     const meta = await loadMeta(path.dirname(repo.lbugPath));
     if (contentRetentionFromMeta(meta) !== 'full') {
       return {
-        error:
-          'Source content is not retained by this index (content retention is not "full").',
+        error: 'Source content is not retained by this index (content retention is not "full").',
       };
     }
     const repoRoot = path.resolve(repo.repoPath);
@@ -9508,8 +9504,7 @@ export class LocalBackend {
     const endLine = toFiniteNumber(params?.endLine);
     if (startLine !== undefined) {
       const start = Math.max(0, startLine);
-      const end =
-        endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
+      const end = endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
       return {
         path: fullRel,
         content: lines.slice(start, end).join('\n'),
@@ -9575,7 +9570,10 @@ export class LocalBackend {
       results,
       ...(timedOut ? { timedOut: true as const } : {}),
       ...(timedOut
-        ? { suggestion: 'Wall-clock budget expired — re-issue narrower (fileFilter or a tighter pattern).' }
+        ? {
+            suggestion:
+              'Wall-clock budget expired — re-issue narrower (fileFilter or a tighter pattern).',
+          }
         : {}),
     };
   }
