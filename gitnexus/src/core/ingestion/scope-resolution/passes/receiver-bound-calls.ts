@@ -1115,7 +1115,6 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
-
         }
       }
 
@@ -1275,7 +1274,6 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
-
         }
       }
 
@@ -2259,7 +2257,7 @@ export function emitReceiverBoundCalls(
           // rather than publishing a partial set as complete.
           if (
             site.kind === 'call' &&
-            provider.resolveMissingReceiverMembersFromSubtypes?.(receiverName) === true
+            provider.resolveMissingReceiverMembersFromSubtypes?.(typeRef) === true
           ) {
             const subtypeTargets = new Map<string, SymbolDefinition>();
             const ambiguousCandidateIds = new Set<string>();
@@ -2291,10 +2289,7 @@ export function emitReceiverBoundCalls(
                   ...scopes.methodDispatch.mroFor(subtype.nodeId),
                 ];
                 for (const effectiveOwnerId of effectiveOwners) {
-                  const overloads = model.methods.lookupAllByOwner(
-                    effectiveOwnerId,
-                    memberName,
-                  );
+                  const overloads = model.methods.lookupAllByOwner(effectiveOwnerId, memberName);
                   if (overloads.length === 0) continue;
                   const candidate = pickFirstNonStaticOnly(
                     effectiveOwnerId,

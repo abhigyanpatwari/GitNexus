@@ -289,6 +289,7 @@ import type {
   ScopeId,
   SupportedLanguages,
   SymbolDefinition,
+  TypeRef,
 } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -1397,22 +1398,23 @@ export interface ScopeResolver {
   readonly resolveThisViaEnclosingClass?: boolean;
 
   /**
-   * Opt a receiver spelling into subtype dispatch when Case 4 resolves the
+   * Opt a receiver type fact into subtype dispatch when Case 4 resolves the
    * receiver's declared class but finds no same-named member on that class or
    * its ancestors. The shared pass walks the concrete subtype closure and
-   * emits every unique, arity-compatible implementation it can prove.
+   * emits up to the shared fan-out cap of unique, arity-compatible
+   * implementations it can prove.
    *
-   * This is deliberately a predicate rather than a language or spelling check
-   * in shared ingestion. Dynamic languages can enable only receiver forms
-   * whose runtime class may legally supply a member absent from the declared
-   * owner (Python's instance `self`, for example). A declined receiver retains
-   * the existing owner/MRO behavior byte-for-byte.
+   * This is deliberately a predicate rather than a language check in shared
+   * ingestion. Dynamic languages can enable only type facts whose runtime
+   * class may legally supply a member absent from the declared owner (Python's
+   * synthesized instance-receiver binding, for example). A declined receiver
+   * retains the existing owner/MRO behavior byte-for-byte.
    *
    * When enabled, a no-target or overload-ambiguous result is a definitive
    * receiver-bound miss: the pass records a suppression and marks the site
    * handled so receiver-blind name fallback cannot mint a false exact edge.
    */
-  readonly resolveMissingReceiverMembersFromSubtypes?: (receiverName: string) => boolean;
+  readonly resolveMissingReceiverMembersFromSubtypes?: (typeRef: TypeRef) => boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that

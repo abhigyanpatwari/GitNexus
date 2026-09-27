@@ -1087,10 +1087,7 @@ describe('Python mixin self-dispatch', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'python-mixin-self-dispatch'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-mixin-self-dispatch'), () => {});
   }, 60000);
 
   it('resolves each self.helper() through direct and sibling-base implementations', () => {
@@ -1113,6 +1110,26 @@ describe('Python mixin self-dispatch', () => {
         ['first', 'second'].includes(call.source),
     );
     expect(staticCalls.map((call) => call.source).sort()).toEqual(['first', 'second']);
+  });
+
+  it('uses self provenance for a renamed first-parameter receiver', () => {
+    const renamedCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'renamed' && call.target === 'helper',
+    );
+    expect(renamedCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'helpers.py',
+      'worker.py',
+    ]);
+  });
+
+  it('does not fan ordinary annotated receivers out through concrete subtypes', () => {
+    const annotatedFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'call_annotated' &&
+        call.target === 'helper' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(annotatedFanout).toEqual([]);
   });
 
   it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
@@ -1144,7 +1161,7 @@ describe('Python mixin self-dispatch', () => {
 
   it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
     const calls = getRelationships(result, 'CALLS').filter((call) =>
-      ['first', 'second', 'dispatch', 'missing'].includes(call.source),
+      ['first', 'second', 'renamed', 'call_annotated', 'dispatch', 'missing'].includes(call.source),
     );
     expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
   });
