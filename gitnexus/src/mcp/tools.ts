@@ -64,6 +64,9 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const LIST_REPOS_DEFAULT_LIMIT = 50;
 export const LIST_REPOS_MAX_LIMIT = 200;
 
+/** Whole-file `read_file` cap. The schema default and the handler fallback share this. */
+export const READ_FILE_DEFAULT_MAX_LINES = 2000;
+
 /**
  * Pagination bounds for the `explain` tool (#2083 M3 U6). Findings are sparse
  * and capped per function at analyze time, but a large repo can still
@@ -1021,7 +1024,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
   {
     name: 'read_file',
     description: `Read a file from the repository checkout, optionally sliced to a 0-indexed line range.
-Returns checkout bytes plus totalLines and the slice bounds. Path containment matches HTTP GET /api/file. A whole-file read is capped by maxLines (default 2000, 0 = no cap), which is stricter than the uncapped HTTP body.
+Returns checkout bytes plus totalLines and the slice bounds. The realpath re-check matches HTTP GET /api/file. The lexical barrier is the CodeQL \`startsWith('..')\` form narrowed to the \`..\` segment, so a file named \`..config\` stays readable. A whole-file read is capped by maxLines (default ${READ_FILE_DEFAULT_MAX_LINES}, 0 = no cap), which is stricter than the uncapped HTTP body.
 
 WHEN TO USE: After query()/cypher()/context() gave you a filePath (or file:line), read the surrounding source: header context (open/variable/import lines), a full declaration, or any line window. Prefer context({name, include_content: true}) when you already have the symbol — it returns the symbol span plus call edges in one call.
 AFTER THIS: Use the read text to ground signatures verbatim; never invent names from memory.
@@ -1048,9 +1051,8 @@ Paths that escape the repository are refused. A missing file returns a not-found
         },
         maxLines: {
           type: 'integer',
-          description:
-            'Maximum lines returned for a whole-file read (default 2000, 0 = no cap). Ignored when startLine is set. Negative values are rejected.',
-          default: 2000,
+          description: `Maximum lines returned for a whole-file read (default ${READ_FILE_DEFAULT_MAX_LINES}, 0 = no cap). Ignored when startLine is set. Negative values are rejected.`,
+          default: READ_FILE_DEFAULT_MAX_LINES,
           minimum: 0,
         },
         repo: {
@@ -1114,13 +1116,16 @@ Optional caseSensitive and literal match HTTP /api/grep (default: case-insensiti
  * of truth: the schema property is injected here so it cannot drift from the
  * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
  * `list_repos` and the `group_*` tools are intentionally excluded — they are
- * not single-repo, single-branch operations. `read_file` and `grep` are
- * excluded too: they read the checkout (`CHECKOUT_SOURCE_TOOLS`), so a pin
- * would label those bytes with another commit.
+ * not single-repo, single-branch operations. `read_file` and `grep` are in
+ * this set so `repo` stays required with the other per-repo tools, and the
+ * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
+ * checkout bytes with another commit.
  */
 export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep']);
 
 export const REPO_SCOPED_TOOLS = new Set([
+  'read_file',
+  'grep',
   'query',
   'cypher',
   'context',
@@ -1149,6 +1154,8 @@ for (const tool of GITNEXUS_TOOLS) {
   // advertising the aliases instead would re-break Claude Code on `query`.
   tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
+  // Checkout reads follow the working tree. Do not advertise `branch`.
+  if (CHECKOUT_SOURCE_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's
   // workspace-index behavior. Ignored in group mode (repo starts "@").

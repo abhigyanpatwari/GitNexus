@@ -23,7 +23,7 @@ import {
   ListPromptsRequestSchema,
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { CHECKOUT_SOURCE_TOOLS, GITNEXUS_TOOLS, REPO_SCOPED_TOOLS } from './tools.js';
+import { GITNEXUS_TOOLS, REPO_SCOPED_TOOLS } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
@@ -217,7 +217,7 @@ export function createMCPServer(
           description: tool.description,
           inputSchema:
             (tool.name === 'rename' ? mutatingRequiresRepo : readOnlyRequiresRepo) &&
-            (REPO_SCOPED_TOOLS.has(tool.name) || CHECKOUT_SOURCE_TOOLS.has(tool.name))
+            REPO_SCOPED_TOOLS.has(tool.name)
               ? {
                   ...tool.inputSchema,
                   required: [...new Set([...tool.inputSchema.required, 'repo'])],

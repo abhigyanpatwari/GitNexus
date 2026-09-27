@@ -133,6 +133,7 @@ import {
   QUERY_MAX_MAX_SYMBOLS,
   CONTEXT_CHAIN_MAX_DEPTH,
   CHECKOUT_SOURCE_TOOLS,
+  READ_FILE_DEFAULT_MAX_LINES,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -9493,9 +9494,10 @@ export class LocalBackend {
 
   /**
    * MCP read_file — repo-contained checkout read with an optional 0-indexed
-   * line slice. Path containment matches GET /api/file (lexical `path.relative`
-   * barrier kept inline for CodeQL, then a realpath re-check). ENOENT is
-   * file-not-found only after the checkout directory is known to exist.
+   * line slice. The realpath re-check matches GET /api/file. The lexical
+   * barrier stays inline for CodeQL and is narrowed to the `..` segment, so
+   * a file named `..config` is not a traversal. ENOENT is file-not-found
+   * only after the checkout directory is known to exist.
    */
   private async readFile(
     repo: RepoHandle,
@@ -9557,7 +9559,7 @@ export class LocalBackend {
     if (requestedMaxLines !== undefined && requestedMaxLines < 0) {
       return { error: '"maxLines" must be an integer >= 0 (0 = no cap).' };
     }
-    const maxLines = requestedMaxLines ?? 2000;
+    const maxLines = requestedMaxLines ?? READ_FILE_DEFAULT_MAX_LINES;
     if (maxLines > 0 && lines.length > maxLines) {
       return {
         path: fullRel,
@@ -9591,16 +9593,14 @@ export class LocalBackend {
     const unavailable = await this.fullSourceUnavailable(repo);
     if (unavailable) return unavailable;
     await this.ensureInitialized(repo);
-    const queryFlag = (value: unknown): unknown =>
-      value === true ? 'true' : value === false ? 'false' : value;
     let parsed;
     try {
       parsed = parseGrepQuery({
         pattern: params?.pattern,
         fileFilter: params?.fileFilter,
         limit: params?.limit,
-        caseSensitive: queryFlag(params?.caseSensitive),
-        literal: queryFlag(params?.literal),
+        caseSensitive: params?.caseSensitive,
+        literal: params?.literal,
       });
     } catch (err: any) {
       return { error: err?.message || 'Invalid grep query.' };
