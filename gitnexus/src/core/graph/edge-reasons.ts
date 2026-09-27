@@ -36,3 +36,16 @@ const HEURISTIC_EDGE_REASONS: ReadonlySet<string> = new Set([GLOBAL_NAME_FALLBAC
 /** True when this edge's target was guessed by name rather than resolved. */
 export const isHeuristicEdgeReason = (reason: string): boolean =>
   HEURISTIC_EDGE_REASONS.has(reason);
+
+/**
+ * An IMPORTS edge from a File to the `Module` node of the compiler module it
+ * belongs to, for languages where every file of a module sees every other
+ * file's declarations with no `import` (whole-module visibility).
+ *
+ * One edge per member file instead of one per ordered file pair: the pairwise
+ * form is n·(n−1) edges and exhausted V8's Map limit on large modules (#3355).
+ * Consumers that need "files that see this file" follow the hub: two files are
+ * co-members when both have a membership edge to the same `Module` node
+ * (`queryImportersBatch`).
+ */
+export const MODULE_MEMBERSHIP_REASON = 'module-membership';

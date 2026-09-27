@@ -19,13 +19,12 @@
  *   - **Labeled arguments** narrow by ARITY only (count-primary, labels
  *     soft) — see `arity.ts`. Label-precise dispatch is deferred to the
  *     type-binding layer.
- *   - **Same-module visibility**: every file in an SPM target sees its
- *     siblings' top-level defs without an `import`. Modeled via
- *     `populateSwiftTargetSiblings`, grouped by the SPM target *subtree*
- *     (`Sources/<Target>/…`) via `groupSwiftFilesBySpmTarget` fed from the
- *     `loadResolutionConfig` SPM map, mirroring Go's package siblings. With
- *     no scanned source dir (no `Sources/`/`Package/Sources/`/`src/`) the
- *     map is null and all files form one `__default__` module.
+ *   - **Same-module visibility**: every file in a module sees its
+ *     siblings' top-level defs without an `import`. A module is a SwiftPM
+ *     target (root or nested package) or an Xcode native target, found by
+ *     `loadSwiftWorkspaceConfig` and matched by `swiftModuleKeysOf`. Files in
+ *     neither form one `__default__` module. Each module has one shared
+ *     table in the namespace channel (`populateSwiftTargetSiblings`).
  *   - **`super`** is the superclass receiver (`super.method()`); plain
  *     `self` is the instance receiver. Both synthesized in
  *     `receiver-binding.ts`.
@@ -39,9 +38,9 @@
  *      conforming type.
  *   2. **Cross-module `import` resolution** uses a Package.swift
  *      declaration map when one is present, otherwise the directory-segment
- *      index minus well-known SDK module names (#2964). Same-target
- *      visibility (the common case) is SPM-target-subtree grouping via
- *      `groupSwiftFilesBySpmTarget`, not explicit imports.
+ *      index minus well-known SDK module names (#2964). With workspace
+ *      modules, `import X` resolves to the modules named X. Same-module
+ *      visibility (the common case) is module membership, not imports.
  *   3. **Operator / subscript overloads** dispatch by name only.
  *   4. **`@_exported import`** is `ParsedImport` `kind: 'reexport'` and
  *      in-repo modules are closed transitively at resolve time. `public
@@ -50,7 +49,7 @@
 
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { loadSwiftPackageConfig } from '../../language-config.js';
+import { loadSwiftWorkspaceConfig } from './workspace-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -69,7 +68,7 @@ import {
   type SwiftResolveContext,
 } from './index.js';
 import { stripSwiftTypePreservingDecoration } from './interpret.js';
-import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import { groupSwiftFilesByModule } from './target-grouping.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
@@ -79,14 +78,13 @@ const swiftScopeResolver: ScopeResolver = {
   languageProvider: swiftProvider,
   importEdgeReason: 'swift-scope: import',
 
-  // Load the SPM target map (Sources/<Target>/ subtree mapping) once per
-  // workspace pass. Threaded through the orchestrator as `resolutionConfig`
-  // and consumed by the three same-module grouping hooks
+  // Load the workspace's Swift modules (root and nested SwiftPM targets,
+  // Xcode targets) once per workspace pass. Threaded through the
+  // orchestrator as `resolutionConfig` to the same-module hooks
   // (`emitImplicitImportEdges`, `populateNamespaceSiblings`,
-  // `mirrorNamespaceTypeBindings`) via `coerceSwiftTargets` so they group by
-  // the SPM target subtree, not the immediate directory. Mirrors
-  // `goScopeResolver`'s `loadGoModulePath`.
-  loadResolutionConfig: (repoPath: string) => loadSwiftPackageConfig(repoPath),
+  // `mirrorNamespaceTypeBindings`), `import` resolution, and the
+  // global-name-fallback veto.
+  loadResolutionConfig: (repoPath: string) => loadSwiftWorkspaceConfig(repoPath),
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
     const ws: SwiftResolveContext = {
@@ -232,10 +230,13 @@ function populateSwiftExtensionOwners(
   parsedFiles: readonly ParsedFile[],
   ctx?: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
 ): void {
-  const filesByTarget = groupSwiftFilesBySpmTarget(
+  // Every membership: a shared file may extend a type compiled only into a
+  // later target. Stamping never overwrites an owner, so the first match wins.
+  const filesByTarget = groupSwiftFilesByModule(
     parsedFiles,
     (parsed) => parsed.filePath,
-    coerceSwiftTargets(ctx?.resolutionConfig),
+    ctx?.resolutionConfig,
+    { allMemberships: true },
   );
   for (const files of filesByTarget.values()) {
     stampSwiftExtensionOwnersInTarget(files);

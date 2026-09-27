@@ -195,6 +195,50 @@
     "captureGroups": 13,
     "digest": "2738a4d77473a2641166b95bc1107f99afca55e9b9d4186eb102e053d378d8ab"
   },
+  "swift-nested-packages/Core/Net/Package.swift": {
+    "captureGroups": 6,
+    "digest": "f953980204f1643bc4078cefb3c68b1964ca60c3dec5b34d985c9afc228ac0c8"
+  },
+  "swift-nested-packages/Core/Net/Sources/Net/Client.swift": {
+    "captureGroups": 6,
+    "digest": "4b8d4a7f228aea7bef1d7bb35fec7ff1e15b7767d4342dfb406691dc37494101"
+  },
+  "swift-nested-packages/Core/Net/Sources/Net/Session.swift": {
+    "captureGroups": 8,
+    "digest": "fd0c092b3087ffaab98d467079dfbb582f8607b7c52331513a1bfac84cc13a4a"
+  },
+  "swift-nested-packages/Docs/Net/Snippet.swift": {
+    "captureGroups": 6,
+    "digest": "4b8d4a7f228aea7bef1d7bb35fec7ff1e15b7767d4342dfb406691dc37494101"
+  },
+  "swift-nested-packages/Features/Login/Package.swift": {
+    "captureGroups": 6,
+    "digest": "5c61c90b6eac35feae13a8acf932b579642319a19daf1167a6e7416f9b4696c4"
+  },
+  "swift-nested-packages/Features/Login/Sources/Login/Config.swift": {
+    "captureGroups": 6,
+    "digest": "84dfcff34e31d09c0eb692a05d9cf2aad4507b1357b24c882fe4d67ce914a1ae"
+  },
+  "swift-nested-packages/Features/Login/Sources/Login/Connect.swift": {
+    "captureGroups": 9,
+    "digest": "965b487addf7ba0e65a6fec3abaad465fe359c2b8b353bf95d316fb5697df364"
+  },
+  "swift-nested-packages/Features/Login/Sources/Login/LoginFlow.swift": {
+    "captureGroups": 8,
+    "digest": "65133f32b8f3a7fb439f230b402866c0d5946a15f552c000c68c6b546bf9d985"
+  },
+  "swift-nested-packages/Features/Other/Package.swift": {
+    "captureGroups": 6,
+    "digest": "8e3383d91e40d61529efc9f05e0820014a742180b695673f93282f517559038c"
+  },
+  "swift-nested-packages/Features/Other/Sources/Net/Config.swift": {
+    "captureGroups": 6,
+    "digest": "84dfcff34e31d09c0eb692a05d9cf2aad4507b1357b24c882fe4d67ce914a1ae"
+  },
+  "swift-nested-packages/Features/Other/Sources/Net/Use.swift": {
+    "captureGroups": 8,
+    "digest": "bbb3d04da1054e094206650be5d36a5ceb0958b8d6e8660dd00e589c5df4ea58"
+  },
   "swift-overload-dispatch/App.swift": {
     "captureGroups": 8,
     "digest": "da644f9163f61ef3ec0a000d31dd93b5f0dd11b33def9d96ffe425ff4288b922"
@@ -266,6 +310,22 @@
   "swift-self-this-resolution/Sources/Models/User.swift": {
     "captureGroups": 11,
     "digest": "133a8a1186742b19b7408703262fed82ebdf2aa48b9728ae78aa3b26b5b06428"
+  },
+  "swift-xcode-targets/App/AppMain.swift": {
+    "captureGroups": 8,
+    "digest": "31be46b8eefb24ae279b136de3a3d90303a06a3adcb6dc748b515cf176fade38"
+  },
+  "swift-xcode-targets/App/Config.swift": {
+    "captureGroups": 6,
+    "digest": "84dfcff34e31d09c0eb692a05d9cf2aad4507b1357b24c882fe4d67ce914a1ae"
+  },
+  "swift-xcode-targets/Widget/Config.swift": {
+    "captureGroups": 6,
+    "digest": "84dfcff34e31d09c0eb692a05d9cf2aad4507b1357b24c882fe4d67ce914a1ae"
+  },
+  "swift-xcode-targets/Widget/WidgetMain.swift": {
+    "captureGroups": 8,
+    "digest": "1dd3dd883196db9b313447cffaf0520640ec1de7fef68034b4058ea51f024bcd"
   },
   "synthetic:dao-20": {
     "captureGroups": 361,
