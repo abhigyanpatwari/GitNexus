@@ -16,7 +16,70 @@ const DEFAULT_REPO_GIT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_CONCURRENCY = 1;
 export const DEFAULT_ANALYZE_FAILURE_THRESHOLD = 3;
 const MIN_ANALYZE_FAILURE_THRESHOLD = 2;
-const ALLOWED_REMOTE_HOSTS = new Set(['github.com', 'gitlab.com', 'gitee.com']);
+const BUILTIN_REMOTE_HOSTS = new Set(['github.com', 'gitlab.com', 'gitee.com']);
+// Exact DNS names only. The host is a directory under local_path, so wildcards,
+// ports, and path characters stay out. A label is 1-63 chars and cannot start
+// or end with a hyphen; the whole name is at most 253 characters.
+// One trailing dot is stripped before this runs: it marks an absolute lookup,
+// it is not a different host.
+const AUTO_SYNC_HOST_PATTERN =
+  /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/** Lowercase, and drop one trailing root dot so `git.` and `git` are one host. */
+function canonicalAutoSyncHost(host: string): string {
+  return host.trim().toLowerCase().replace(/\.$/, '');
+}
+
+function isStrictDottedQuad(host: string): boolean {
+  const labels = host.split('.');
+  if (labels.length !== 4) return false;
+  return labels.every((label) => /^(0|[1-9]\d{0,2})$/.test(label) && Number(label) <= 255);
+}
+
+/**
+ * Spellings glibc inet_aton dials as a different address than the token
+ * (`192.168.1` → 192.168.0.1, `0x7f.0.0.1` / `2130706433` → 127.0.0.1).
+ * A strict four-octet address is the address written; listing it is opt-in.
+ */
+function isAmbiguousNumericHost(host: string): boolean {
+  const labels = host.split('.');
+  if (labels.some((label) => /^0x[0-9a-f]+$/i.test(label) || /^0\d/.test(label))) return true;
+  return labels.every((label) => /^\d+$/.test(label)) && !isStrictDottedQuad(host);
+}
+
+function autoSyncHostProblem(host: string): 'shape' | 'numeric' | null {
+  if (!AUTO_SYNC_HOST_PATTERN.test(host)) return 'shape';
+  if (isAmbiguousNumericHost(host)) return 'numeric';
+  return null;
+}
+
+function autoSyncHostProblemMessage(problem: 'shape' | 'numeric'): string {
+  return problem === 'numeric'
+    ? 'must not use an ambiguous numeric spelling'
+    : 'must be a DNS hostname';
+}
+
+function rewriteAutoSyncRemoteHost(remoteUrl: string, mapHost: (host: string) => string): string {
+  const ssh = /^(git@)([^:\s/]+)(:[^\s]+)$/.exec(remoteUrl);
+  if (ssh) return `${ssh[1]}${mapHost(ssh[2])}${ssh[3]}`;
+  const https = /^(https:\/\/)([^/\s]+)(\/[^\s]+)$/.exec(remoteUrl);
+  if (https) return `${https[1]}${mapHost(https[2])}${https[3]}`;
+  return remoteUrl;
+}
+
+/**
+ * Name git should resolve. A trailing dot forces an absolute lookup, so a
+ * search list cannot answer `git` as `git.<domain>` or retry an FQDN under
+ * that domain after NXDOMAIN. A strict IPv4 literal stays undotted: `10.0.0.1.`
+ * is a DNS name, not that address.
+ */
+export function absoluteAutoSyncRemoteUrl(remoteUrl: string): string {
+  return rewriteAutoSyncRemoteHost(remoteUrl.trim(), (host) => {
+    const canonical = canonicalAutoSyncHost(host);
+    if (isStrictDottedQuad(canonical)) return canonical;
+    return `${canonical}.`;
+  });
+}
 
 /**
  * A single clone/pull must fit inside one sync interval and inside an hour.
@@ -51,6 +114,11 @@ export interface AutoSyncConfig {
   analyzeTimeoutMs: number;
   maxConcurrency: number;
   analyzeFailureThreshold: number;
+  /**
+   * Extra remote hosts from top-level `allowed_hosts`, already lowercased.
+   * Omitted on hand-built configs; treated as none.
+   */
+  allowedHosts?: readonly string[];
   projects: AutoSyncProjectConfig[];
 }
 
@@ -188,6 +256,8 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
     errors.push(`analyze_failure_threshold must be an integer >= ${MIN_ANALYZE_FAILURE_THRESHOLD}`);
   }
 
+  const allowedHosts = parseAllowedAutoSyncHosts(raw.allowed_hosts, errors);
+
   const rawProjects = raw.projects;
   if (!Array.isArray(rawProjects) || rawProjects.length === 0) {
     errors.push('projects must contain at least one project');
@@ -221,7 +291,7 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
       }
       for (let urlIndex = 0; urlIndex < remoteUrls.length; urlIndex += 1) {
         try {
-          validateAutoSyncRemoteUrl(remoteUrls[urlIndex]);
+          validateAutoSyncRemoteUrl(remoteUrls[urlIndex], allowedHosts);
         } catch (err: unknown) {
           errors.push(`projects[${index}].remote_urls[${urlIndex}] ${(err as Error).message}`);
         }
@@ -281,11 +351,42 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
     analyzeTimeoutMs,
     maxConcurrency,
     analyzeFailureThreshold,
+    allowedHosts,
     projects,
   };
 }
 
-export function parseAutoSyncRemoteIdentity(remoteUrl: string): { host: string; repoPath: string } {
+function parseAllowedAutoSyncHosts(value: unknown, errors: string[]): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    errors.push('allowed_hosts must be a list of DNS hostnames');
+    return [];
+  }
+  const hosts: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < value.length; index += 1) {
+    const entry = value[index];
+    if (typeof entry !== 'string') {
+      errors.push(`allowed_hosts[${index}] must be a DNS hostname`);
+      continue;
+    }
+    const host = canonicalAutoSyncHost(entry);
+    const problem = autoSyncHostProblem(host);
+    if (problem) {
+      errors.push(`allowed_hosts[${index}] ${autoSyncHostProblemMessage(problem)}`);
+      continue;
+    }
+    if (seen.has(host)) continue;
+    seen.add(host);
+    hosts.push(host);
+  }
+  return hosts;
+}
+
+export function parseAutoSyncRemoteIdentity(
+  remoteUrl: string,
+  allowedHosts?: readonly string[],
+): { host: string; repoPath: string } {
   const trimmed = remoteUrl.trim();
   if (trimmed.includes('?') || trimmed.includes('#')) {
     throw new Error('must not include query strings or fragments');
@@ -304,26 +405,53 @@ export function parseAutoSyncRemoteIdentity(remoteUrl: string): { host: string; 
       throw new Error('must not include userinfo or a port');
     }
   } else {
-    throw new Error('must use an SSH or HTTPS URL on github.com, gitlab.com, or gitee.com');
+    throw new Error(
+      'must use an SSH or HTTPS URL (git@host:owner/repo or https://host/owner/repo)',
+    );
   }
-  host = host.toLowerCase();
-  assertAutoSyncRemotePath(host, repoPath);
+  host = canonicalAutoSyncHost(host);
+  assertAutoSyncRemotePath(host, repoPath, allowedHosts);
   return { host, repoPath };
 }
 
 /** Canonical `host/owner/repo` key. Strips one trailing `.git`. Throws on an invalid remote. */
-export function getAutoSyncRepoIdentity(remoteUrl: string): string {
-  const { host, repoPath } = parseAutoSyncRemoteIdentity(remoteUrl);
+export function getAutoSyncRepoIdentity(
+  remoteUrl: string,
+  allowedHosts?: readonly string[],
+): string {
+  const { host, repoPath } = parseAutoSyncRemoteIdentity(remoteUrl, allowedHosts);
   return `${host}/${repoPath.replace(/\.git$/i, '')}`;
 }
 
-export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
-  parseAutoSyncRemoteIdentity(remoteUrl);
+export function validateAutoSyncRemoteUrl(
+  remoteUrl: string,
+  allowedHosts?: readonly string[],
+): void {
+  parseAutoSyncRemoteIdentity(remoteUrl, allowedHosts);
 }
 
-function assertAutoSyncRemotePath(host: string, repoPath: string): void {
-  if (!ALLOWED_REMOTE_HOSTS.has(host)) {
-    throw new Error('host must be one of github.com, gitlab.com, or gitee.com');
+function isPermittedAutoSyncHost(host: string, allowedHosts?: readonly string[]): boolean {
+  if (BUILTIN_REMOTE_HOSTS.has(host)) return true;
+  if (!allowedHosts) return false;
+  for (const entry of allowedHosts) {
+    if (canonicalAutoSyncHost(entry) === host) return true;
+  }
+  return false;
+}
+
+function assertAutoSyncRemotePath(
+  host: string,
+  repoPath: string,
+  allowedHosts?: readonly string[],
+): void {
+  const problem = autoSyncHostProblem(host);
+  if (problem) {
+    throw new Error(`host ${autoSyncHostProblemMessage(problem)}`);
+  }
+  if (!isPermittedAutoSyncHost(host, allowedHosts)) {
+    throw new Error(
+      'host must be one of github.com, gitlab.com, or gitee.com, or listed in top-level allowed_hosts',
+    );
   }
   const pathParts = repoPath.split('/');
   // Every segment becomes a directory component: the namespace segments build

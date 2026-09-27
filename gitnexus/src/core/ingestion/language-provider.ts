@@ -26,6 +26,7 @@ import type {
   WorkspaceIndex,
 } from 'gitnexus-shared';
 import type { LanguageTypeConfig } from './type-extractors/types.js';
+import type { NotebookLineSegment } from './ipynb-extractor.js';
 import type { CallRouter } from './call-routing.js';
 import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
@@ -828,6 +829,8 @@ interface LanguageProviderConfig {
      */
     sourceMeta?: {
       readonly sourceKind?: 'full-file' | 'pre-extracted-script';
+      /** Python `.ipynb` only: JSON line segments for the pre-extracted buffer. */
+      readonly notebookSegments?: readonly NotebookLineSegment[];
     },
   ) => readonly CaptureMatch[];
 

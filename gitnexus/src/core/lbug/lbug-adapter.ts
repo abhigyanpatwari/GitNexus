@@ -9,6 +9,7 @@ import { closeQueryResults } from './query-result-utils.js';
 import { chunk } from '../../lib/utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
+import { MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -2978,6 +2979,30 @@ export const restoreDerivedRels = async (rels: readonly DerivedRelSnapshot[]): P
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
+ * The two importer queries for a `b.filePath <predicate>` target set:
+ *   1. direct importers — any IMPORTS edge into a target file;
+ *   2. module co-members — files with a `MODULE_MEMBERSHIP_REASON` edge to a
+ *      `Module` node that a target file also has one. Whole-module visibility
+ *      means a declaration added to one member can change how any other member
+ *      resolves, so co-members are importers of each other. The hub form keeps
+ *      this linear in module size (#3355).
+ */
+const importerCyphers = (targetPredicate: string): string[] => [
+  `
+    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+    WHERE r.type = 'IMPORTS' AND b.filePath ${targetPredicate}
+    RETURN DISTINCT a.filePath AS importer
+  `,
+  `
+    MATCH (a:File)-[r1:${REL_TABLE_NAME}]->(m:Module)<-[r2:${REL_TABLE_NAME}]-(b:File)
+    WHERE r1.type = 'IMPORTS' AND r1.reason = '${MODULE_MEMBERSHIP_REASON}'
+      AND r2.type = 'IMPORTS' AND r2.reason = '${MODULE_MEMBERSHIP_REASON}'
+      AND b.filePath ${targetPredicate} AND a.filePath <> b.filePath
+    RETURN DISTINCT a.filePath AS importer
+  `,
+];
+
+/**
  * Return the distinct repo-relative paths of files that import
  * `targetFilePath` according to the IMPORTS edges currently in the
  * DB. Used by the incremental writeback path to expand the
@@ -2998,31 +3023,29 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const escaped = escapeCypherString(targetFilePath);
-  const cypher = `
-    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
-    WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
-    RETURN DISTINCT a.filePath AS importer
-  `;
+  const cyphers = importerCyphers(`= '${escaped}'`);
   // Runs inside the connection lock: queryImporters is called in the importer-BFS
   // loop during incremental --pdg writeback while the WAL driver is live, so an
   // unlocked conn.query here could race a concurrent CHECKPOINT on the singleton.
   return withConnLock(async () => {
-    let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    try {
-      queryResult = await c.query(cypher);
-      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-      const rows = await result.getAll();
-      const out: string[] = [];
-      for (const row of rows) {
-        const v = (row as { importer?: unknown }).importer;
-        if (typeof v === 'string' && v.length > 0) out.push(v);
+    const out = new Set<string>();
+    for (const cypher of cyphers) {
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+      try {
+        queryResult = await c.query(cypher);
+        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+        const rows = await result.getAll();
+        for (const row of rows) {
+          const v = (row as { importer?: unknown }).importer;
+          if (typeof v === 'string' && v.length > 0) out.add(v);
+        }
+      } catch {
+        return [];
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
       }
-      return out;
-    } catch {
-      return [];
-    } finally {
-      if (queryResult) await closeQueryResults(queryResult);
     }
+    return [...out];
   });
 };
 
@@ -3060,21 +3083,24 @@ export const queryImportersBatch = async (
   const importers = new Set<string>();
   for (const [chunkIndex, batch] of chunk(targetFilePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
     const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
-    const cypher = `
-      MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
-      WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
-      RETURN DISTINCT a.filePath AS importer
-    `;
     await withConnLock(async () => {
       let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       try {
-        queryResult = await c.query(cypher);
-        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-        const rows = await result.getAll();
-        for (const row of rows) {
-          const v = (row as { importer?: unknown }).importer;
-          if (typeof v === 'string' && v.length > 0) importers.add(v);
+        // Collect into a chunk-local set so a failure on the second query
+        // drops the whole chunk, as it did when there was one query.
+        const found: string[] = [];
+        for (const cypher of importerCyphers(`IN ${listLiteral}`)) {
+          queryResult = await c.query(cypher);
+          const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+          const rows = await result.getAll();
+          for (const row of rows) {
+            const v = (row as { importer?: unknown }).importer;
+            if (typeof v === 'string' && v.length > 0) found.push(v);
+          }
+          await closeQueryResults(queryResult);
+          queryResult = undefined;
         }
+        for (const v of found) importers.add(v);
       } catch (err) {
         // Degrade-don't-fail, mirroring queryImporters — but LOUDLY
         // (tri-review 4669518496 P2-5): a dropped chunk means every importer
