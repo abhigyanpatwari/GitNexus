@@ -109,7 +109,7 @@ import {
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
-import { effectiveRamBytes, memoryAutopilotDisabled } from '../utils/effective-ram.js';
+import { heapPressureRemedy, memoryAutopilotDisabled } from '../utils/effective-ram.js';
 import path from 'node:path';
 import v8 from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -175,33 +175,6 @@ export function projectParseHeapNeedBytes(parseableFileCount: number): number {
 export function shouldAbortForHeapPressure(heapUsedBytes: number, heapLimitBytes: number): boolean {
   if (memoryAutopilotDisabled()) return false;
   return heapUsedBytes > heapLimitBytes * HEAP_ABORT_FRACTION;
-}
-
-/**
- * The ONE action a user should take when this repository doesn't fit the
- * current heap (#2649). Users hitting memory limits are already frustrated —
- * a menu of env knobs at that moment is noise. Branch on whether the machine
- * itself has more memory to give: if this process's limit sits well below
- * what the RAM-aware auto-sizer would grant (an inherited NODE_OPTIONS pin or
- * explicit flag), the fix is to drop the pin — gitnexus sizes itself.
- * Otherwise the machine is the ceiling and only scope or hardware helps.
- * Escape hatches (GITNEXUS_MEMORY etc.) stay in the README env table.
- */
-export function heapPressureRemedy(heapLimitBytes: number): string {
-  // Effective RAM honors a real cgroup limit — raw os.totalmem() told users
-  // inside an 8GB-limited container on a 64GB host that "this machine has
-  // more memory available", an advice loop with no exit (#2649 review).
-  const autoCapBytes = effectiveRamBytes() * 0.75;
-  if (heapLimitBytes < autoCapBytes * 0.9) {
-    return (
-      `This machine has more memory available: re-run without the --max-old-space-size ` +
-      `pin (NODE_OPTIONS or node flag) — gitnexus sizes its heap to the machine automatically.`
-    );
-  }
-  return (
-    `This machine is at its memory ceiling: exclude generated or vendored directories ` +
-    `via .gitnexusignore, or analyze on a machine with more memory.`
-  );
 }
 
 /** Max bytes of source content to load per parse cache pack.
