@@ -167,6 +167,20 @@ describe('LocalBackend read_file and grep', () => {
     expect(dot.content).toBe('dotfile\n');
   });
 
+  it('does not grep through a symlink that leaves the checkout', async () => {
+    if (!symlinks) return;
+    vi.mocked(executeQuery).mockResolvedValue([
+      { filePath: 'escape.txt' },
+      { filePath: 'src/auth.ts' },
+    ]);
+    const leaked = await grep({ pattern: 'secret' });
+    expect(leaked.results).toEqual([]);
+    const kept = await grep({ pattern: 'signOrder' });
+    expect(kept.results).toEqual([
+      expect.objectContaining({ filePath: 'src/auth.ts', line: 1, text: 'signOrder()' }),
+    ]);
+  });
+
   it('refuses traversal, a symlink out of the repo, and a missing file', async () => {
     expect((await read({ path: '../secret.txt' })).error).toBe('Path traversal denied.');
     expect((await read({ path: '/etc/passwd' })).error).toBe('Path traversal denied.');

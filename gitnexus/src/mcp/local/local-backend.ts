@@ -9615,9 +9615,35 @@ export class LocalBackend {
       if (parsed.fileFilter && !filePath.toLowerCase().includes(parsed.fileFilter)) continue;
       filePaths.push(filePath);
     }
+    // The shared scanner only checks a lexical prefix, then readFile follows
+    // symlinks. Drop paths whose realpath leaves the checkout, same as read_file.
+    const repoRoot = path.resolve(repo.repoPath);
+    const realRoot = await fs.realpath(repoRoot);
+    const containedPaths: string[] = [];
+    for (const filePath of filePaths) {
+      const fullPath = path.resolve(repoRoot, filePath);
+      const fullRel = path.relative(repoRoot, fullPath);
+      if (
+        path.isAbsolute(fullRel) ||
+        (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+      ) {
+        continue;
+      }
+      let realFull: string;
+      try {
+        realFull = await fs.realpath(fullPath);
+      } catch {
+        continue;
+      }
+      const realRel = path.relative(realRoot, realFull);
+      if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+        continue;
+      }
+      containedPaths.push(filePath);
+    }
     const { results, timedOut } = await runGrepScanInWorker({
-      repoRoot: path.resolve(repo.repoPath),
-      filePaths,
+      repoRoot,
+      filePaths: containedPaths,
       pattern: parsed.regex.source,
       flags: parsed.regex.flags,
       limit: parsed.limit,
