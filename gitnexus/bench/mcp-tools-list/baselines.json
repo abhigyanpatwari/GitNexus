@@ -8,8 +8,8 @@
   "list_repos": 200,
   "_shape_note": "THE FLOOR. Without these three, every ratio below is a ceiling over nothing. listTools_vs_listRepos_ratio only asserts something while the corpus still pays N parallel rev-list processes. Shrink it to three happy-path rows and both arms are cheap; the ratio still passes, asserting a property the corpus no longer has.",
 
-  "tools_listed": 17,
-  "_tools_note": "Exact GITNEXUS_TOOLS roster size returned by client.listTools(). A schema path that throws, filters, or returns [] still looks fast on the ratio arm.",
+  "tools_listed": 19,
+  "_tools_note": "Exact GITNEXUS_TOOLS roster size returned by client.listTools(). 19 after read_file and grep were added as the MCP twins of GET /api/file and GET /api/grep (was 17). GITNEXUS_TOOLS.length and listTools must move together; a schema path that throws, filters, or returns [] still looks fast on the ratio arm.",
 
   "schema_read_only_requires_repo": true,
   "schema_mutating_requires_repo": true,
