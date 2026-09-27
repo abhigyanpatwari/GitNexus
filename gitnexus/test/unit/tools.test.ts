@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 17 tools are defined (per-repo + group_list/group_sync)
+ * - All 19 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -356,10 +356,11 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
+  it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
+    const noBranch = new Set(['list_repos', 'read_file', 'grep', ...GROUP_TOOLS]);
     for (const tool of GITNEXUS_TOOLS) {
-      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
-        expect(tool.inputSchema.properties.branch).toBeUndefined();
+      if (noBranch.has(tool.name)) {
+        expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();
         continue;
       }
       expect(tool.inputSchema.properties.branch, tool.name).toBeDefined();
@@ -367,6 +368,14 @@ describe('GITNEXUS_TOOLS', () => {
       // Optional — omitting it keeps the default/primary-branch behavior.
       expect(tool.inputSchema.required).not.toContain('branch');
     }
+  });
+
+  it('grep advertises the HTTP caseSensitive and literal flags', () => {
+    const grep = GITNEXUS_TOOLS.find((tool) => tool.name === 'grep')!;
+    expect(grep.inputSchema.properties.caseSensitive.type).toBe('boolean');
+    expect(grep.inputSchema.properties.literal.type).toBe('boolean');
+    expect(grep.description).toContain('hit.line - 1');
+    expect(grep.description).toMatch(/working tree/i);
   });
 
   it('group tools without backend repo param omit repo property', () => {

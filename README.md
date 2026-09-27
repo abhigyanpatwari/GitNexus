@@ -158,7 +158,7 @@ flowchart TB
 
 ## What Your AI Agent Gets
 
-### 17 MCP tools (15 per-repo + 2 group)
+### 19 MCP tools (17 per-repo + 2 group)
 
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
@@ -177,10 +177,12 @@ flowchart TB
 | `api_impact`     | Pre-change impact report for an API route handler                      |
 | `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)  |
 | `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)     |
+| `read_file`      | Read a checkout file (optional 0-indexed slice; `maxLines` cap)        |
+| `grep`           | Regex search of the working tree for indexed files (1-based hits)      |
 | `group_list`     | List configured repository groups                                      |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ### Resources for instant context
 

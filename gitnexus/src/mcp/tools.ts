@@ -1020,13 +1020,13 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
   },
   {
     name: 'read_file',
-    description: `Read a source file from the indexed repository, optionally sliced to a line range.
-Returns the exact file bytes (plus totalLines and the 0-indexed slice bounds) — the same content the HTTP GET /api/file endpoint serves, including its ?startLine=&endLine= support.
+    description: `Read a file from the repository checkout, optionally sliced to a 0-indexed line range.
+Returns checkout bytes plus totalLines and the slice bounds. Path containment matches HTTP GET /api/file. A whole-file read is capped by maxLines (default 2000, 0 = no cap), which is stricter than the uncapped HTTP body.
 
 WHEN TO USE: After query()/cypher()/context() gave you a filePath (or file:line), read the surrounding source: header context (open/variable/import lines), a full declaration, or any line window. Prefer context({name, include_content: true}) when you already have the symbol — it returns the symbol span plus call edges in one call.
 AFTER THIS: Use the read text to ground signatures verbatim; never invent names from memory.
 
-Path traversal is refused (403-style error); missing files return a not-found error. Whole-file reads on very large files may be truncated by maxLines (default 2000, 0 = no cap) — re-issue with startLine/endLine for the window you need.`,
+Paths that escape the repository are refused. A missing file returns a not-found error only when the checkout directory exists. When full source is unavailable (content retention is not "full", or the checkout directory is gone), the result is code "source-unavailable" — not an empty body and not "file not found". This tool reads the checkout and does not accept branch.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -1034,7 +1034,7 @@ Path traversal is refused (403-style error); missing files return a not-found er
         path: {
           type: 'string',
           description:
-            'Repo-relative file path (e.g. "Mathlib/Analysis/SpecificLimits/Basic.lean"). Absolute paths and ".." escapes are refused.',
+            'Repository-contained file path (e.g. "Mathlib/Analysis/SpecificLimits/Basic.lean"). Paths that escape the repository, including ".." escapes, are refused.',
         },
         startLine: {
           type: 'number',
@@ -1063,13 +1063,13 @@ Path traversal is refused (403-style error); missing files return a not-found er
   },
   {
     name: 'grep',
-    description: `Regex search across file contents in the indexed repo — the MCP twin of HTTP GET /api/grep.
-Scans indexed files (never loads all files into memory; wall-clock budgeted) and returns file:line hits up to limit.
+    description: `Regex search of the live checkout for files the index retained — the MCP twin of HTTP GET /api/grep.
+The file list is indexed File nodes that still have content. Bytes are read from the working tree, so edits since the last analyze are visible. Hits are 1-based. read_file startLine/endLine are 0-based.
 
 WHEN TO USE: Only after graph tools came back empty or ambiguous — exact-name pinning, docstring fallback, or literal tokens the index does not model (e.g. tactic names inside proof bodies, notation). Graph first (query/context/cypher); grep is the offline-capable fallback, never the default.
-AFTER THIS: Read the hit window with read_file({path, startLine, endLine}) or pin the symbol with context({name}).
+AFTER THIS: Read the matching line with read_file({path, startLine: hit.line - 1, endLine: hit.line - 1}) or pin the symbol with context({name}).
 
-Results carry timedOut: true when the wall-clock budget expired first — re-issue narrower (fileFilter or a tighter pattern).`,
+Optional caseSensitive and literal match HTTP /api/grep (default: case-insensitive regex). When full source is unavailable the result is code "source-unavailable", not an empty hit list. This tool reads the checkout and does not accept branch. Results carry timedOut: true when the wall-clock budget expired first — re-issue narrower (fileFilter or a tighter pattern).`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -1089,6 +1089,16 @@ Results carry timedOut: true when the wall-clock budget expired first — re-iss
           minimum: 1,
           maximum: 200,
         },
+        caseSensitive: {
+          type: 'boolean',
+          description:
+            'Optional. When true, match case. Default is case-insensitive, matching HTTP /api/grep.',
+        },
+        literal: {
+          type: 'boolean',
+          description:
+            'Optional. When true, treat pattern as a literal substring (escaped), matching HTTP /api/grep literal=1. Default is a regex.',
+        },
         repo: {
           type: 'string',
           description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
@@ -1104,14 +1114,16 @@ Results carry timedOut: true when the wall-clock budget expired first — re-iss
  * of truth: the schema property is injected here so it cannot drift from the
  * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
  * `list_repos` and the `group_*` tools are intentionally excluded — they are
- * not single-repo, single-branch operations.
+ * not single-repo, single-branch operations. `read_file` and `grep` are
+ * excluded too: they read the checkout (`CHECKOUT_SOURCE_TOOLS`), so a pin
+ * would label those bytes with another commit.
  */
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep']);
+
 export const REPO_SCOPED_TOOLS = new Set([
   'query',
   'cypher',
   'context',
-  'read_file',
-  'grep',
   'detect_changes',
   'explain',
   'pdg_query',

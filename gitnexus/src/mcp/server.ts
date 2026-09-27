@@ -84,7 +84,7 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
       return `\n\n---\n**Next:** To pin a symbol seen in the file, use context({name: "<symbol>"${repoParam}}). To find other occurrences, use grep({pattern: "<token>"${repoParam}}).`;
 
     case 'grep':
-      return `\n\n---\n**Next:** Read the hit window with read_file({path: "<file>"${repoParam}, startLine: <n>, endLine: <m>}) or pin the symbol with context({name: "<symbol>"${repoParam}}).`;
+      return `\n\n---\n**Next:** Read the hit window with read_file({path: "<file>"${repoParam}, startLine: <hit.line - 1>, endLine: <hit.line - 1>}). Grep line is 1-based; read_file is 0-based. Or pin the symbol with context({name: "<symbol>"${repoParam}}).`;
     // Legacy tool names — still return useful hints
     case 'search':
       return `\n\n---\n**Next:** To understand a result in context, use context({name: "<symbol_name>"${repoParam}}).`;

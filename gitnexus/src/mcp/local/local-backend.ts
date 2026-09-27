@@ -132,6 +132,7 @@ import {
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
   CONTEXT_CHAIN_MAX_DEPTH,
+  CHECKOUT_SOURCE_TOOLS,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -2877,6 +2878,15 @@ export class LocalBackend {
       p.repo.startsWith('@')
     ) {
       return this.callToolAtGroupRepo(method, p);
+    }
+
+    // These tools read the checkout, not a pinned index. `branch` would still
+    // rewrite lbugPath/lastCommit and withToolStaleness would label checkout
+    // bytes with that pin. Reject before selectToolRepository applies it.
+    if (CHECKOUT_SOURCE_TOOLS.has(method) && p.branch !== undefined && p.branch !== '') {
+      return {
+        error: `${method} follows the checked-out working tree and does not accept "branch". Omit it.`,
+      };
     }
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
@@ -9459,10 +9469,33 @@ export class LocalBackend {
   }
 
   /**
-   * MCP read_file — repo-contained source read with optional 0-indexed line
-   * slice. Mirrors the HTTP GET /api/file handler contract (path containment
-   * via the canonical path.relative idiom, realpath re-check, startLine /
-   * endLine slice, 404 on ENOENT) minus the Express req/res shell.
+   * Same predicate as HTTP `getSourceAvailability`: full retention plus a live
+   * checkout. Meta is the graph directory so a published shared-store commit
+   * still carries `contentRetention`. Wording matches HTTP 410.
+   */
+  private async fullSourceUnavailable(repo: RepoHandle): Promise<{
+    error: string;
+    code: 'source-unavailable';
+    reason: 'content-retention' | 'checkout-missing';
+  } | null> {
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const retention = contentRetentionFromMeta(meta);
+    const checkoutIsDir = retention === 'full' ? await checkoutIsDirectory(repo.repoPath) : false;
+    if (isFullSourceAvailable(retention, checkoutIsDir)) return null;
+    const reason = retention !== 'full' ? 'content-retention' : 'checkout-missing';
+    const because = reason === 'content-retention' ? 'content retention' : 'source checkout';
+    return {
+      error: `Full source is unavailable because the ${because} is unavailable.`,
+      code: 'source-unavailable',
+      reason,
+    };
+  }
+
+  /**
+   * MCP read_file — repo-contained checkout read with an optional 0-indexed
+   * line slice. Path containment matches GET /api/file (lexical `path.relative`
+   * barrier kept inline for CodeQL, then a realpath re-check). ENOENT is
+   * file-not-found only after the checkout directory is known to exist.
    */
   private async readFile(
     repo: RepoHandle,
@@ -9472,16 +9505,24 @@ export class LocalBackend {
     if (typeof rawPath !== 'string' || rawPath === '') {
       return { error: 'Missing required argument "path" (repo-relative file path).' };
     }
-    const meta = await loadMeta(path.dirname(repo.lbugPath));
-    if (contentRetentionFromMeta(meta) !== 'full') {
-      return {
-        error: 'Source content is not retained by this index (content retention is not "full").',
-      };
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
+    const toFiniteNumber = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const startLine = toFiniteNumber(params?.startLine);
+    const endLine = toFiniteNumber(params?.endLine);
+    if (endLine !== undefined && startLine === undefined) {
+      return { error: '"endLine" requires "startLine".' };
     }
     const repoRoot = path.resolve(repo.repoPath);
     const fullPath = path.resolve(repoRoot, rawPath);
     const fullRel = path.relative(repoRoot, fullPath);
-    if (fullRel.startsWith('..') || path.isAbsolute(fullRel)) {
+    // `startsWith('..')` is the CodeQL path-injection sanitizer. Narrow it to
+    // the `..` segment so a repo file named `..config` is not a traversal.
+    if (
+      path.isAbsolute(fullRel) ||
+      (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+    ) {
       return { error: 'Path traversal denied.' };
     }
     let realRoot: string;
@@ -9498,10 +9539,6 @@ export class LocalBackend {
     }
     const raw = await fs.readFile(realFull, 'utf-8');
     const lines = raw.split('\n');
-    const toFiniteNumber = (v: unknown): number | undefined =>
-      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
-    const startLine = toFiniteNumber(params?.startLine);
-    const endLine = toFiniteNumber(params?.endLine);
     if (startLine !== undefined) {
       const start = Math.max(0, startLine);
       const end = endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
@@ -9529,21 +9566,34 @@ export class LocalBackend {
   }
 
   /**
-   * MCP grep — regex scan across indexed file contents. Mirrors the HTTP GET
-   * /api/grep handler contract (parseGrepQuery + lbug File list + worker scan
-   * under GREP_TIME_BUDGET_MS).
+   * MCP grep — HTTP GET /api/grep twin. The file list is indexed File nodes
+   * that still have content; bytes come from the live checkout (same worker).
+   * Fails like HTTP 410 when full source is unavailable instead of returning
+   * an empty hit list.
    */
   private async grep(
     repo: RepoHandle,
-    params: { pattern?: unknown; fileFilter?: unknown; limit?: unknown },
+    params: {
+      pattern?: unknown;
+      fileFilter?: unknown;
+      limit?: unknown;
+      caseSensitive?: unknown;
+      literal?: unknown;
+    },
   ): Promise<any> {
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
     await this.ensureInitialized(repo);
+    const queryFlag = (value: unknown): unknown =>
+      value === true ? 'true' : value === false ? 'false' : value;
     let parsed;
     try {
       parsed = parseGrepQuery({
         pattern: params?.pattern,
         fileFilter: params?.fileFilter,
         limit: params?.limit,
+        caseSensitive: queryFlag(params?.caseSensitive),
+        literal: queryFlag(params?.literal),
       });
     } catch (err: any) {
       return { error: err?.message || 'Invalid grep query.' };
