@@ -42,6 +42,11 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import {
+  beginPythonSubtypeDispatchCapture,
+  recordPythonSimplePositionalCall,
+  recordPythonSubtypeMethodShape,
+} from './subtype-dispatch.js';
 
 const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_definition', 'lambda']),
@@ -84,6 +89,7 @@ export function emitPythonScopeCaptures(
     notebookSegments?: readonly NotebookLineSegment[];
   },
 ): readonly CaptureMatch[] {
+  beginPythonSubtypeDispatchCapture(filePath);
   let parseText = sourceText;
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   let notebookSegments: readonly NotebookLineSegment[] | undefined;
@@ -94,6 +100,10 @@ export function emitPythonScopeCaptures(
     tree = resolved.tree;
     notebookSegments = resolved.notebookSegments;
   }
+  const subtypeLineMapper =
+    notebookSegments === undefined
+      ? undefined
+      : (line: number): number => mapExtractLine(line - 1, notebookSegments) + 1;
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
   // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
@@ -141,7 +151,7 @@ export function emitPythonScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
-    synthesizePythonCallArityCapture(grouped, nodeMap);
+    synthesizePythonCallArityCapture(grouped, nodeMap, filePath, subtypeLineMapper);
 
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
@@ -212,6 +222,7 @@ export function emitPythonScopeCaptures(
         if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
           delete grouped['@declaration.function'];
           grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
+          recordPythonSubtypeMethodShape(filePath, fnNode, subtypeLineMapper);
         }
         const arity = computePythonArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -327,6 +338,8 @@ function remapCaptureMatch(
 function synthesizePythonCallArityCapture(
   grouped: Record<string, Capture>,
   nodeMap: Readonly<Record<string, SyntaxNode>>,
+  filePath: string,
+  mapLine?: (line: number) => number,
 ): void {
   const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
     (tag) => grouped[tag] !== undefined,
@@ -349,6 +362,9 @@ function synthesizePythonCallArityCapture(
   }
 
   grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(args.length));
+  if (args.every((arg) => arg.type !== 'keyword_argument')) {
+    recordPythonSimplePositionalCall(filePath, callNode, mapLine);
+  }
 }
 
 /**

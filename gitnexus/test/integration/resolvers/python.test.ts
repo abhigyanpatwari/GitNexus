@@ -1200,6 +1200,88 @@ describe('Python mixin self-dispatch', () => {
     ).toBe(true);
   });
 
+  it('suppresses inherited providers when the simplified MRO cannot prove Python order', () => {
+    const orderCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
+    );
+    expect(orderCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.name === 'order_hook' &&
+          outcome.reason === 'member-lookup-ambiguous',
+      ),
+    ).toBe(true);
+  });
+
+  it('honors inherited field shadowing instead of skipping to a later method', () => {
+    const shadowCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_shadow' && call.target === 'shadow_hook',
+    );
+    expect(shadowCalls).toEqual([]);
+  });
+
+  it('does not treat implicit class/static lifecycle receivers as instance fan-out', () => {
+    const lifecycleCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['__init_subclass__', '__new__'].includes(call.source) &&
+        ['lifecycle_hook', 'new_hook'].includes(call.target),
+    );
+    expect(lifecycleCalls).toEqual([]);
+  });
+
+  it('does not treat an implicit __class_getitem__ receiver as instance fan-out', () => {
+    const genericCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__class_getitem__' && call.target === 'class_only',
+    );
+    expect(genericCalls).toEqual([]);
+  });
+
+  it('suppresses positional/keyword binding mismatches during subtype dispatch', () => {
+    const shapedCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['positional_to_keyword_only', 'keyword_to_positional_only'].includes(call.source) &&
+        ['keyword_only_target', 'positional_only_target'].includes(call.target),
+    );
+    expect(shapedCalls).toEqual([]);
+  });
+
+  it('does not expose a hidden compatible base behind an incompatible override', () => {
+    const hiddenBaseCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_to_keyword_only' && call.target === 'keyword_only_target',
+    );
+    expect(hiddenBaseCalls).toEqual([]);
+  });
+
+  it('suppresses a positional call that leaves a required keyword-only parameter unsatisfied', () => {
+    const requiredKeywordCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_missing_required_keyword' &&
+        call.target === 'required_keyword_target',
+    );
+    expect(requiredKeywordCalls).toEqual([]);
+  });
+
+  it('resolves both simple one-positional-argument mixin callers', () => {
+    const forwardingCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['forward_first', 'forward_second'].includes(call.source) &&
+        call.target === 'forward_target',
+    );
+    expect(forwardingCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual(
+      ['forward_first → worker.py', 'forward_second → worker.py'],
+    );
+  });
+
+  it('does not cross Python private-name mangling boundaries', () => {
+    const privateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_private' && call.target === '__private_hook',
+    );
+    expect(privateCalls).toEqual([]);
+  });
+
   it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
     const calls = getRelationships(result, 'CALLS').filter((call) =>
       [

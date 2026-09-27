@@ -12,11 +12,14 @@
  * the 2 booleans, and register in `scope-resolution/pipeline/registry.ts`.
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
-import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type {
+  ArityVerdict,
+  ScopeResolver,
+} from '../../scope-resolution/contract/scope-resolver.js';
 import { indexOnlyElementType } from '../../type-extractors/shared.js';
 import { pythonProvider } from '../python.js';
 import {
@@ -27,6 +30,48 @@ import {
   resolvePythonImportTarget,
   type PythonResolveContext,
 } from './index.js';
+import {
+  applyPythonSubtypeDispatchSideChannel,
+  isPythonSimplePositionalSubtypeCall,
+  pythonSubtypePositionalCapacity,
+} from './subtype-dispatch.js';
+
+/**
+ * Python subtype dispatch is deliberately limited to instance receiver facts.
+ * Private names are class-mangled and cannot be matched by their source
+ * spelling across an eventual subtype. Argument-shape proof is candidate-level
+ * because it needs both the call-site and target-method capture facts.
+ */
+export function pythonMissingReceiverSubtypeDecision(
+  typeRef: TypeRef,
+  context: {
+    readonly receiverBindingIsStatic: boolean | undefined;
+    readonly memberName: string;
+    readonly callArity: number | undefined;
+  },
+): boolean | 'suppress' {
+  if (typeRef.source !== 'self' || context.receiverBindingIsStatic !== false) return false;
+  const isPrivateName = context.memberName.startsWith('__') && !context.memberName.endsWith('__');
+  if (isPrivateName) return 'suppress';
+  return true;
+}
+
+/** Additive compatibility proof for Python's missing-member subtype candidates. */
+export function pythonMissingReceiverSubtypeCandidateCompatibility(
+  callerFilePath: string,
+  callsite: Pick<ReferenceSite, 'arity' | 'atRange'>,
+  candidate: SymbolDefinition,
+): ArityVerdict {
+  if (
+    callsite.arity === undefined ||
+    !isPythonSimplePositionalSubtypeCall(callerFilePath, callsite.atRange)
+  ) {
+    return 'unknown';
+  }
+  const capacity = pythonSubtypePositionalCapacity(candidate);
+  if (capacity === undefined) return 'unknown';
+  return callsite.arity <= capacity ? 'compatible' : 'incompatible';
+}
 
 const pythonScopeResolver: ScopeResolver = {
   // A free call naming a class constructs it: `Service(db).do_work()` (#2708).
@@ -81,16 +126,18 @@ const pythonScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
+  applyCaptureSideChannel: applyPythonSubtypeDispatchSideChannel,
+
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
 
   // A mixin may call a method supplied only by its eventual concrete class.
-  // Python records both instance and classmethod receivers as `self`. Resolve
-  // the callable that DEFINED the binding, rather than the innermost caller,
-  // so a nested closure inheriting `cls` cannot masquerade as instance
-  // dispatch. The defining scope is existing TypeRef provenance and keeps
-  // arbitrary receiver spellings supported without widening the schema.
-  resolveMissingReceiverMembersFromSubtypes: (typeRef, { receiverBindingIsStatic }) =>
-    typeRef.source === 'self' && receiverBindingIsStatic === false,
+  // Resolve the callable that DEFINED the binding, rather than the innermost
+  // caller, so a class receiver inherited by a closure cannot masquerade as
+  // instance dispatch. The helper also suppresses Python shapes whose exact
+  // target cannot be represented by the existing call-site facts.
+  resolveMissingReceiverMembersFromSubtypes: pythonMissingReceiverSubtypeDecision,
+  missingReceiverSubtypeCandidateCompatibility: (callsite, candidate, context) =>
+    pythonMissingReceiverSubtypeCandidateCompatibility(context.callerFilePath, callsite, candidate),
 
   // Python permits both @staticmethod and @classmethod access through an
   // instance. The graph's generic `isStatic` bit therefore does not mean

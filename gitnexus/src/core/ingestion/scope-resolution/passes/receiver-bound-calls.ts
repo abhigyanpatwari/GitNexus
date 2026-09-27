@@ -187,6 +187,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'resolveMissingReceiverMembersFromSubtypes'
+  | 'missingReceiverSubtypeCandidateCompatibility'
   | 'arityCompatibility'
   | 'conversionRankFn'
   | 'conversionOnlyArgTypePrefixes'
@@ -335,6 +336,37 @@ export const MAX_INTERFACE_DISPATCH_FANOUT = (() => {
 
 /** Bound on the sample of over-cap interface members kept for the warning. */
 const MAX_REPORTED_SKIPPED_INTERFACES = 20;
+
+/**
+ * Keep every proven subtype target while making omitted coverage explicit.
+ * `recordUnresolved` intentionally depends on candidate coverage, not edge
+ * emission: collapse-mode dedup can make every `tryEmitEdge` return false even
+ * though the site is already known and complete.
+ */
+export function prepareSubtypeDispatchCoverage<T extends { readonly nodeId: string }>(
+  targets: readonly T[],
+  missingCandidateIds: Iterable<string>,
+  maxTargets: number,
+): {
+  readonly targets: readonly T[];
+  readonly droppedTargets: readonly T[];
+  readonly missingCandidateIds: readonly string[];
+  readonly partialCoverage: boolean;
+  readonly recordUnresolved: boolean;
+} {
+  const keptTargets = targets.slice(0, maxTargets);
+  const droppedTargets = targets.slice(maxTargets);
+  const missing = new Set(missingCandidateIds);
+  for (const target of droppedTargets) missing.add(target.nodeId);
+  const partialCoverage = missing.size > 0;
+  return {
+    targets: keptTargets,
+    droppedTargets,
+    missingCandidateIds: [...missing],
+    partialCoverage,
+    recordUnresolved: partialCoverage || targets.length === 0,
+  };
+}
 
 /** What `emitReceiverBoundCalls` reports back to the orchestrator. */
 export interface ReceiverBoundResult {
@@ -673,10 +705,10 @@ export function emitReceiverBoundCalls(
     return graph.getNode(graphId)?.properties.isStatic === true;
   };
 
-  const shouldResolveMissingReceiverMembersFromSubtypes = (
+  const missingReceiverSubtypeDecision = (
     typeRef: TypeRef,
     site: ReferenceSite,
-  ): boolean => {
+  ): boolean | 'suppress' => {
     const predicate = provider.resolveMissingReceiverMembersFromSubtypes;
     if (predicate === undefined) return false;
     const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
@@ -691,7 +723,12 @@ export function emitReceiverBoundCalls(
       receiverBindingGraphId === undefined
         ? undefined
         : graph.getNode(receiverBindingGraphId)?.properties.isStatic;
-    return predicate(typeRef, { callerIsStatic, receiverBindingIsStatic });
+    return predicate(typeRef, {
+      callerIsStatic,
+      receiverBindingIsStatic,
+      memberName: site.name,
+      callArity: site.arity,
+    });
   };
 
   /**
@@ -2279,15 +2316,30 @@ export function emitReceiverBoundCalls(
           //
           // Multiple concrete subtype implementations are runtime alternatives,
           // not an overload ambiguity, so emit the same bounded fan-out used by
-          // interface dispatch. An ambiguity *within* any subtype is different:
-          // there is no exact target model for it, so suppress the whole site
-          // rather than publishing a partial set as complete.
-          if (
-            site.kind === 'call' &&
-            shouldResolveMissingReceiverMembersFromSubtypes(typeRef, site)
-          ) {
+          // interface dispatch. An ambiguity *within* one subtype does not erase
+          // proven targets from other subtypes; it marks the site's coverage as
+          // partial so callers cannot mistake the emitted set for completeness.
+          const subtypeDecision =
+            site.kind === 'call' ? missingReceiverSubtypeDecision(typeRef, site) : false;
+          if (subtypeDecision !== false) {
+            if (subtypeDecision === 'suppress') {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                reason: 'receiver-unresolved',
+                receiverOrigin: 'in-program',
+                candidateIds: [],
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                siteKind: site.kind,
+              });
+              handledSites.add(siteKey);
+              continue;
+            }
             const subtypeTargets = new Map<string, SymbolDefinition>();
             const ambiguousCandidateIds = new Set<string>();
+            const unknownCompatibilityCandidateIds = new Set<string>();
             const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
             const subtypeQueue = [ownerDef.nodeId];
             let subtypeHead = 0;
@@ -2299,24 +2351,36 @@ export function emitReceiverBoundCalls(
                 visitedSubtypeIds.add(subtype.nodeId);
                 subtypeQueue.push(subtype.nodeId);
 
-                // Select the method this concrete subtype would actually see,
-                // not only one it owns directly. A Python mixin can be paired
-                // with a sibling base that supplies the hook:
+                // Prefer a concrete override owned by this subtype. Otherwise
+                // accept exactly one inherited provider. The generic MRO is a
+                // BFS approximation rather than Python C3, so selecting the
+                // first of multiple inherited owners would fabricate order.
+                // A class-body field of the same name also blocks descriptor
+                // lookup and must suppress a later method candidate.
                 //
                 //   class Worker(HookMixin, Helpers): ...
                 //
                 // `Helpers` is not itself a subtype of HookMixin, so the
                 // subtype closure cannot discover it. The already-built MRO
-                // for Worker is the authoritative bridge and preserves the
-                // provider's base-order semantics without a second graph.
-                let picked: SymbolDefinition | undefined;
+                // supplies the inherited owner set; the conservative rule
+                // above deliberately does not trust its approximate order.
                 let subtypeAmbiguous = false;
+                let picked: SymbolDefinition | undefined;
                 const effectiveOwners = [
                   subtype.nodeId,
                   ...scopes.methodDispatch.mroFor(subtype.nodeId),
                 ];
-                for (const effectiveOwnerId of effectiveOwners) {
+                const inheritedCandidates = new Map<string, SymbolDefinition>();
+                for (let ownerIndex = 0; ownerIndex < effectiveOwners.length; ownerIndex++) {
+                  const effectiveOwnerId = effectiveOwners[ownerIndex]!;
                   const overloads = model.methods.lookupAllByOwner(effectiveOwnerId, memberName);
+                  const field = model.fields.lookupFieldByOwner(effectiveOwnerId, memberName);
+                  if (field !== undefined) {
+                    ambiguousCandidateIds.add(field.nodeId);
+                    for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
+                    subtypeAmbiguous = true;
+                    break;
+                  }
                   if (overloads.length === 0) continue;
                   const candidate = pickFirstNonStaticOnly(
                     effectiveOwnerId,
@@ -2332,19 +2396,50 @@ export function emitReceiverBoundCalls(
                   }
                   if (candidate === STATIC_ONLY_FILTERED) continue;
                   if (candidate !== undefined) {
-                    picked = candidate;
-                    break;
+                    if (provider.arityCompatibility(site, candidate) === 'incompatible') {
+                      // The owner bound this name. Python-style lookup cannot
+                      // skip an incompatible override and expose a hidden base.
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    const subtypeCompatibility =
+                      provider.missingReceiverSubtypeCandidateCompatibility?.(site, candidate, {
+                        callerFilePath: parsed.filePath,
+                      });
+                    if (subtypeCompatibility === 'incompatible') {
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    if (subtypeCompatibility === 'unknown') {
+                      unknownCompatibilityCandidateIds.add(candidate.nodeId);
+                      subtypeAmbiguous = true;
+                      break;
+                    }
+                    if (
+                      candidate.isDeleted === true ||
+                      isDeclarationOnly(candidate) ||
+                      isUnreachableByInstanceDispatch(candidate)
+                    ) {
+                      continue;
+                    }
+                    if (ownerIndex === 0) {
+                      picked = candidate;
+                      break;
+                    }
+                    inheritedCandidates.set(candidate.nodeId, candidate);
+                  }
+                }
+                if (!subtypeAmbiguous && picked === undefined) {
+                  if (inheritedCandidates.size === 1) {
+                    picked = inheritedCandidates.values().next().value;
+                  } else if (inheritedCandidates.size > 1) {
+                    for (const candidate of inheritedCandidates.values()) {
+                      ambiguousCandidateIds.add(candidate.nodeId);
+                    }
+                    subtypeAmbiguous = true;
                   }
                 }
                 if (subtypeAmbiguous || picked === undefined) continue;
-                if (provider.arityCompatibility(site, picked) === 'incompatible') continue;
-                if (
-                  picked.isDeleted === true ||
-                  isDeclarationOnly(picked) ||
-                  isUnreachableByInstanceDispatch(picked)
-                ) {
-                  continue;
-                }
                 subtypeTargets.set(picked.nodeId, picked);
               }
             }
@@ -2359,27 +2454,29 @@ export function emitReceiverBoundCalls(
                 reason: 'member-lookup-ambiguous',
                 candidateIds: [...ambiguousCandidateIds],
               });
-              handledSites.add(siteKey);
-              continue;
             }
 
-            const targets = [...subtypeTargets.values()];
-            if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
-              dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
+            const allTargets = [...subtypeTargets.values()];
+            const coverage = prepareSubtypeDispatchCoverage(
+              allTargets,
+              new Set([...ambiguousCandidateIds, ...unknownCompatibilityCandidateIds]),
+              MAX_INTERFACE_DISPATCH_FANOUT,
+            );
+            const targets = coverage.targets;
+            if (coverage.droppedTargets.length > 0) {
+              dispatchFanoutSkipped += coverage.droppedTargets.length;
               if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
-                const dropped = targets
-                  .slice(MAX_INTERFACE_DISPATCH_FANOUT, MAX_INTERFACE_DISPATCH_FANOUT + 5)
+                const dropped = coverage.droppedTargets
+                  .slice(0, 5)
                   .map((target) => target.qualifiedName ?? target.nodeId);
-                const omitted = targets.length - MAX_INTERFACE_DISPATCH_FANOUT - dropped.length;
+                const omitted = coverage.droppedTargets.length - dropped.length;
                 dispatchFanoutSkippedNames.push(
-                  `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets; ` +
+                  `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${allTargets.length} targets; ` +
                     `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
                 );
               }
-              targets.length = MAX_INTERFACE_DISPATCH_FANOUT;
             }
 
-            let emittedForSite = 0;
             for (const target of targets) {
               const ok = tryEmitEdge(
                 graph,
@@ -2395,16 +2492,15 @@ export function emitReceiverBoundCalls(
               );
               if (ok) {
                 emitted++;
-                emittedForSite++;
               }
             }
 
-            if (emittedForSite === 0) {
+            if (coverage.recordUnresolved) {
               options.recordResolutionOutcome?.({
                 kind: 'suppressed',
                 reason: 'receiver-unresolved',
                 receiverOrigin: 'in-program',
-                candidateIds: [],
+                candidateIds: coverage.missingCandidateIds,
                 phase: 'receiver-bound-calls',
                 filePath: parsed.filePath,
                 name: site.name,

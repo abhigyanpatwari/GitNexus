@@ -295,7 +295,10 @@ export const pythonMethodConfig: MethodExtractionConfig = {
   extractVisibility: extractPythonVisibility,
 
   isStatic(node) {
-    return hasDecorator(node, 'staticmethod') || hasDecorator(node, 'classmethod');
+    const funcNode = unwrapDecorated(node);
+    return (
+      hasDecorator(node, 'staticmethod') || classifyPythonBoundReceiver(funcNode)?.kind === 'class'
+    );
   },
 
   isAbstract(node, _ownerNode) {

@@ -793,7 +793,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v115 (#3390): Python call captures now carry `@reference.arity` when the
 // argument count is statically known. Warm v114 ParsedFiles lack that fact, so
 // arity-aware method filtering would remain inert for every unchanged file.
-const SCHEMA_BUMP = 115;
+// v116 (#3390 follow-up): Python's private capture side-channel now records
+// simple-positional call sites and fixed positional method capacity. Warm v115
+// ParsedFiles lack those facts, so conservative mixin subtype dispatch would
+// suppress unchanged one-argument callers.
+const SCHEMA_BUMP = 116;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

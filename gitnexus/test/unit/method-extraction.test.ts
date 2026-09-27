@@ -13,6 +13,7 @@ import {
 import { cppMethodConfig } from '../../src/core/ingestion/method-extractors/configs/c-cpp.js';
 import { pythonMethodConfig } from '../../src/core/ingestion/method-extractors/configs/python.js';
 import { computePythonArityMetadata } from '../../src/core/ingestion/languages/python/arity-metadata.js';
+import { synthesizeReceiverTypeBinding } from '../../src/core/ingestion/languages/python/receiver-binding.js';
 import { rubyMethodConfig } from '../../src/core/ingestion/method-extractors/configs/ruby.js';
 import { rustMethodConfig } from '../../src/core/ingestion/method-extractors/configs/rust.js';
 import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
@@ -2828,6 +2829,51 @@ class Service:
         parameterCount: 0,
         requiredParameterCount: 0,
       });
+    });
+
+    it('recognizes implicit descriptor kinds for Python lifecycle methods', () => {
+      const tree = parsePython(`
+class Service:
+    def __init_subclass__(owner, flag):
+        pass
+
+    def __new__(owner, value):
+        pass
+
+    def __class_getitem__(owner, item):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const byName = new Map(
+        functions.map((node) => [node.childForFieldName('name')?.text, node] as const),
+      );
+      const extractedByName = new Map(
+        extractor
+          .extract(tree.rootNode.child(0)!, pythonCtx)!
+          .methods.map((method) => [method.name, method] as const),
+      );
+
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__init_subclass__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['flag']);
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__new__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['owner', 'value']);
+      const classGetitemBinding = synthesizeReceiverTypeBinding(byName.get('__class_getitem__')!);
+      expect(classGetitemBinding?.['@type-binding.cls']).toBeDefined();
+      expect(classGetitemBinding?.['@type-binding.self']).toBeUndefined();
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('__class_getitem__')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['item']);
+      expect(extractedByName.get('__init_subclass__')!.isStatic).toBe(true);
+      expect(extractedByName.get('__class_getitem__')!.isStatic).toBe(true);
+      expect(extractedByName.get('__new__')!.isStatic).toBe(false);
     });
 
     it('preserves non-receiver splats, keyword-only parameters, and variadic minima', () => {

@@ -1415,7 +1415,10 @@ export interface ScopeResolver {
    * for the callable where the receiver TypeRef was declared. The latter is
    * load-bearing for closures that inherit an outer receiver binding. Either
    * is undefined when its callable cannot be resolved; providers using these
-   * facts to distinguish dispatch kinds should fail closed.
+   * facts to distinguish dispatch kinds should fail closed. `memberName` and
+   * `callArity` are the already-captured site facts; providers may return
+   * `'suppress'` when those facts prove the language cannot safely infer a
+   * subtype target but receiver-blind fallback would be wrong.
    *
    * When enabled, a no-target or overload-ambiguous result is a definitive
    * receiver-bound miss: the pass records a suppression and marks the site
@@ -1426,8 +1429,26 @@ export interface ScopeResolver {
     context: {
       readonly callerIsStatic: boolean | undefined;
       readonly receiverBindingIsStatic: boolean | undefined;
+      readonly memberName: string;
+      readonly callArity: number | undefined;
     },
-  ) => boolean;
+  ) => boolean | 'suppress';
+
+  /**
+   * Optional language-specific compatibility check for each candidate found by
+   * `resolveMissingReceiverMembersFromSubtypes`. It runs in addition to ordinary
+   * arity filtering. `unknown` suppresses the whole inferred site rather than
+   * publishing a partial subtype fan-out as complete.
+   *
+   * Python uses this with private capture-side-channel facts to prove that an
+   * ordinary positional call fits a target's positional parameter capacity,
+   * without adding argument-kind fields to the public `ReferenceSite` schema.
+   */
+  readonly missingReceiverSubtypeCandidateCompatibility?: (
+    callsite: ReferenceSite,
+    candidate: SymbolDefinition,
+    context: { readonly callerFilePath: string },
+  ) => ArityVerdict;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
