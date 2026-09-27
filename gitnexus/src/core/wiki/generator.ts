@@ -65,6 +65,16 @@ import {
 
 import { shouldIgnorePath } from '../../config/ignore-service.js';
 
+// Module-tree files inside the wiki dir. `module_tree.json` is OUTPUT: every
+// full run writes it (HTML viewer nav, user reference). It is read back as
+// INPUT only while a `--review` stop is pending, signalled by the marker file.
+// Honouring it unconditionally pinned the FIRST run's grouping forever: --force
+// and the >5-new-files escalation only deleted the snapshot, so a repo that
+// grew from 179 to 1240 files kept its 22 original modules (14% coverage).
+const MODULE_TREE_FILE = 'module_tree.json';
+const MODULE_TREE_SNAPSHOT_FILE = 'first_module_tree.json';
+const MODULE_TREE_REVIEW_MARKER = 'module_tree.review-pending';
+
 // ─── Types ────────────────────────────────────────────────────────────
 
 export interface WikiOptions {
@@ -264,10 +274,12 @@ export class WikiGenerator {
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
     }
 
-    // Force mode: delete snapshot to force full re-grouping
+    // Force mode: delete the resumability snapshot to force full re-grouping.
+    // (module_tree.json needs no deletion — it is never honoured outside a
+    // pending --review, see buildModuleTree.)
     if (forceMode) {
       try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
+        await fs.unlink(path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE));
       } catch {}
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
@@ -364,6 +376,10 @@ export class WikiGenerator {
     // If reviewOnly mode, save tree and stop for user to review/edit
     if (this.options.reviewOnly) {
       await this.saveModuleTree(moduleTree);
+      // Arm the review: the next run honours module_tree.json (possibly
+      // edited by the user) exactly once, whether it is the CLI's automatic
+      // continue or a later manual `gitnexus wiki` after 'edit'/'n'.
+      await fs.writeFile(path.join(this.wikiDir, MODULE_TREE_REVIEW_MARKER), '', 'utf-8');
       this.onProgress('review', 30, 'Module tree ready for review');
       const reviewResult: WikiRunResult = {
         pagesGenerated: 0,
@@ -451,21 +467,31 @@ export class WikiGenerator {
   // ─── Phase 1: Build Module Tree ────────────────────────────────────
 
   private async buildModuleTree(files: FileWithExports[]): Promise<ModuleTreeNode[]> {
-    // First, check for user-edited module_tree.json (from --review workflow)
-    const editablePath = path.join(this.wikiDir, 'module_tree.json');
-    try {
-      const edited = await fs.readFile(editablePath, 'utf-8');
-      const parsed = JSON.parse(edited);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        this.onProgress('grouping', 25, 'Using edited module tree');
-        return parsed;
+    const editablePath = path.join(this.wikiDir, MODULE_TREE_FILE);
+    const snapshotPath = path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE);
+    const markerPath = path.join(this.wikiDir, MODULE_TREE_REVIEW_MARKER);
+
+    // A user-edited module_tree.json is honoured ONLY while a --review stop is
+    // pending. The marker is consumed here so the edit applies exactly once;
+    // afterwards module_tree.json is plain output again and can never pin a
+    // later --force / escalation run to the first grouping.
+    if (await this.fileExists(markerPath)) {
+      await fs.unlink(markerPath).catch(() => {});
+      try {
+        const parsed = JSON.parse(await fs.readFile(editablePath, 'utf-8'));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          this.onProgress('grouping', 25, 'Using edited module tree');
+          // The edit supersedes the pre-review grouping as the resumability
+          // snapshot, so a crash mid-generation resumes with the user's tree.
+          await fs.writeFile(snapshotPath, JSON.stringify(parsed, null, 2), 'utf-8');
+          return parsed;
+        }
+      } catch {
+        // Unreadable edit: fall through to the snapshot / fresh grouping.
       }
-    } catch {
-      // No edited tree, check for original snapshot
     }
 
     // Check for existing immutable snapshot (resumability)
-    const snapshotPath = path.join(this.wikiDir, 'first_module_tree.json');
     try {
       const existing = await fs.readFile(snapshotPath, 'utf-8');
       const parsed = JSON.parse(existing);
@@ -1033,7 +1059,7 @@ export class WikiGenerator {
       );
       // Delete old snapshot to force re-grouping
       try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
+        await fs.unlink(path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE));
       } catch {}
       const fullResult = await this.fullGeneration(currentCommit);
       return { ...fullResult, mode: 'incremental' };
@@ -1410,7 +1436,7 @@ export class WikiGenerator {
 
   private async saveModuleTree(tree: ModuleTreeNode[]): Promise<void> {
     await fs.writeFile(
-      path.join(this.wikiDir, 'module_tree.json'),
+      path.join(this.wikiDir, MODULE_TREE_FILE),
       JSON.stringify(tree, null, 2),
       'utf-8',
     );
