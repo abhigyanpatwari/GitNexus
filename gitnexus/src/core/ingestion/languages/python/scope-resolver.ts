@@ -88,6 +88,11 @@ const pythonScopeResolver: ScopeResolver = {
   // semantics and is not part of this capability's evidence boundary.
   resolveMissingReceiverMembersFromSubtypes: (receiverName) => receiverName === 'self',
 
+  // Python permits both @staticmethod and @classmethod access through an
+  // instance. The graph's generic `isStatic` bit therefore does not mean
+  // "unreachable by instance dispatch" for this provider.
+  isStaticOnly: () => false,
+
   // Subscript route only — Python spells collection views as method calls
   // (`.values()`), which the compound resolver's call branch already handles.
   //

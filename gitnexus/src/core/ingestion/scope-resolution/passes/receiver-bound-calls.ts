@@ -2274,20 +2274,47 @@ export function emitReceiverBoundCalls(
                 visitedSubtypeIds.add(subtype.nodeId);
                 subtypeQueue.push(subtype.nodeId);
 
-                const overloads = model.methods.lookupAllByOwner(subtype.nodeId, memberName);
-                if (overloads.length === 0) continue;
-                const picked = pickFirstNonStaticOnly(
+                // Select the method this concrete subtype would actually see,
+                // not only one it owns directly. A Python mixin can be paired
+                // with a sibling base that supplies the hook:
+                //
+                //   class Worker(HookMixin, Helpers): ...
+                //
+                // `Helpers` is not itself a subtype of HookMixin, so the
+                // subtype closure cannot discover it. The already-built MRO
+                // for Worker is the authoritative bridge and preserves the
+                // provider's base-order semantics without a second graph.
+                let picked: SymbolDefinition | undefined;
+                let subtypeAmbiguous = false;
+                const effectiveOwners = [
                   subtype.nodeId,
-                  memberName,
-                  site,
-                  model,
-                  provider,
-                );
-                if (picked === OVERLOAD_AMBIGUOUS) {
-                  for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
-                  continue;
+                  ...scopes.methodDispatch.mroFor(subtype.nodeId),
+                ];
+                for (const effectiveOwnerId of effectiveOwners) {
+                  const overloads = model.methods.lookupAllByOwner(
+                    effectiveOwnerId,
+                    memberName,
+                  );
+                  if (overloads.length === 0) continue;
+                  const candidate = pickFirstNonStaticOnly(
+                    effectiveOwnerId,
+                    memberName,
+                    site,
+                    model,
+                    provider,
+                  );
+                  if (candidate === OVERLOAD_AMBIGUOUS) {
+                    for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
+                    subtypeAmbiguous = true;
+                    break;
+                  }
+                  if (candidate === STATIC_ONLY_FILTERED) continue;
+                  if (candidate !== undefined) {
+                    picked = candidate;
+                    break;
+                  }
                 }
-                if (picked === undefined || picked === STATIC_ONLY_FILTERED) continue;
+                if (subtypeAmbiguous || picked === undefined) continue;
                 if (provider.arityCompatibility(site, picked) === 'incompatible') continue;
                 if (
                   picked.isDeleted === true ||

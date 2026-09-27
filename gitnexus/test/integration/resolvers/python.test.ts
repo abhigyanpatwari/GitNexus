@@ -1093,14 +1093,26 @@ describe('Python mixin self-dispatch', () => {
     );
   }, 60000);
 
-  it('resolves both HookMixin self.helper() calls only to the arity-compatible Worker.helper', () => {
+  it('resolves each self.helper() through direct and sibling-base implementations', () => {
     const helperCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.target === 'helper' && ['first', 'second'].includes(call.source),
     );
     expect(helperCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual([
+      'first → helpers.py',
       'first → worker.py',
+      'second → helpers.py',
       'second → worker.py',
     ]);
+  });
+
+  it('keeps the sibling-base @staticmethod reachable through instance self dispatch', () => {
+    const staticCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.target === 'helper' &&
+        call.targetFilePath === 'helpers.py' &&
+        ['first', 'second'].includes(call.source),
+    );
+    expect(staticCalls.map((call) => call.source).sort()).toEqual(['first', 'second']);
   });
 
   it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
