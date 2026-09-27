@@ -8,10 +8,10 @@ export function interpretCImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
 
-  return { 
-    kind: 'wildcard', 
+  return {
+    kind: 'wildcard',
     targetRaw: source,
-    isSystem: captures['@import.system'] !== undefined 
+    isSystem: captures['@import.system'] !== undefined,
   };
 }
 

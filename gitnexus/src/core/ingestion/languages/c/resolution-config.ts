@@ -159,6 +159,12 @@ interface InheritedScope {
   readonly clangdUser: readonly string[];
   /** `include_directories` and PRIVATE / PUBLIC target roots from ancestor CMakeLists. */
   readonly cmake: readonly string[];
+  /**
+   * A flag file, `.ccls`, or concrete `includePath` in this directory or an
+   * ancestor claimed the scope. An empty claim is not "no config": `finish`
+   * must not invent implicit `include/` roots for it.
+   */
+  readonly flagsClaimed: boolean;
   /** Absolute dirs for `${PROJECT_SOURCE_DIR}` and `${CMAKE_SOURCE_DIR}`. */
   readonly projectDir: string;
   readonly cmakeRootDir: string | undefined;
@@ -181,6 +187,7 @@ export function loadCFamilyResolutionConfig(
     cmake: [],
     projectDir: repoPath,
     cmakeRootDir: undefined,
+    flagsClaimed: false,
   };
   const scopes = new Map<string, InheritedScope>([['', rootScope]]);
   const cmakeGlobal: string[] = [];
@@ -218,15 +225,22 @@ export function loadCFamilyResolutionConfig(
     // does not list gets no flags from here — not an ancestor's flag file.
     let flagHeader = parent.flagHeader;
     let flagUser = parent.flagUser;
+    let flagsClaimed = parent.flagsClaimed;
     if (parsed !== undefined) {
       flagHeader = [];
       flagUser = [];
+      flagsClaimed = false;
     } else {
       const header: string[] = [];
       const user: string[] = [];
+      let sawConcreteInclude = false;
       for (const includePath of vscode.includePaths) {
+        if (isGlobIncludePath(includePath)) continue;
         const rel = toRepoRelative(includePath, dirAbs, repoPath);
-        if (rel !== undefined) header.push(rel);
+        if (rel !== undefined) {
+          header.push(rel);
+          sawConcreteInclude = true;
+        }
       }
       const hasFlags = collectFlagFile(
         join(dirAbs, 'compile_flags.txt'),
@@ -236,10 +250,11 @@ export function loadCFamilyResolutionConfig(
         user,
       );
       const hasCcls = collectFlagFile(join(dirAbs, '.ccls'), dirAbs, repoPath, header, user);
-      const hasFlagFile = hasFlags || hasCcls || vscode.includePaths.length > 0;
+      const hasFlagFile = hasFlags || hasCcls || sawConcreteInclude;
       if (hasFlagFile) {
         flagHeader = header;
         flagUser = user;
+        flagsClaimed = true;
       }
     }
 
@@ -254,6 +269,7 @@ export function loadCFamilyResolutionConfig(
       cmake: cmake.scoped.length === 0 ? parent.cmake : [...parent.cmake, ...cmake.scoped],
       projectDir: cmake.projectDir ?? parent.projectDir,
       cmakeRootDir: parent.cmakeRootDir ?? cmake.cmakeRootDir,
+      flagsClaimed,
     });
   }
 
@@ -267,7 +283,7 @@ export function loadCFamilyResolutionConfig(
       ...cmakeGlobal,
     ]);
     return {
-      headerSearchPaths: header.length > 0 ? header : implicitRoots,
+      headerSearchPaths: header.length > 0 ? header : scope.flagsClaimed ? [] : implicitRoots,
       userHeaderSearchPaths: uniquePaths([...scope.flagUser, ...scope.clangdUser]),
     };
   };
@@ -435,16 +451,32 @@ function readClangd(dirAbs: string): ClangdFlags {
     return { add: [] };
   }
   if (doc === null || typeof doc !== 'object') return { add: [] };
-  const record = doc as { CompileFlags?: { Add?: unknown }; CompilationDatabase?: unknown };
+  const flags = recordCompileFlags(doc);
+  const nested = flags?.CompilationDatabase;
+  const topLevel = (doc as { CompilationDatabase?: unknown }).CompilationDatabase;
   const databaseDir =
-    typeof record.CompilationDatabase === 'string' ? record.CompilationDatabase : undefined;
-  return { add: clangdAddFlags(record.CompileFlags?.Add), databaseDir };
+    typeof nested === 'string' ? nested : typeof topLevel === 'string' ? topLevel : undefined;
+  return { add: clangdAddFlags(flags?.Add), databaseDir };
 }
 
 function clangdAddFlags(add: unknown): string[] {
   if (typeof add === 'string') return splitCommand(add);
   if (!Array.isArray(add)) return [];
   return add.filter((flag): flag is string => typeof flag === 'string');
+}
+
+function recordCompileFlags(
+  doc: object,
+): { Add?: unknown; CompilationDatabase?: unknown } | undefined {
+  const flags = (doc as { CompileFlags?: unknown }).CompileFlags;
+  if (flags === null || typeof flags !== 'object') return undefined;
+  return flags as { Add?: unknown; CompilationDatabase?: unknown };
+}
+
+/** `${workspaceFolder}/**` is a recursive glob, not a search root. */
+function isGlobIncludePath(raw: string): boolean {
+  const substituted = raw.replaceAll('${workspaceFolder}', '').replaceAll('${workspaceRoot}', '');
+  return substituted.includes('*');
 }
 
 interface VscodeProperties {
@@ -495,6 +527,45 @@ const CMAKE_PROJECT_COMMAND = /(?:^|[^\w])project\s*\(/i;
 const CMAKE_ORDER_KEYWORDS = new Set(['SYSTEM', 'BEFORE', 'AFTER']);
 
 /**
+ * Drop CMake line comments and bracket comments (`#[[ ... ]]`) without
+ * eating `#` inside a quoted argument.
+ */
+function stripCMakeComments(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '"') {
+      const start = i;
+      i += 1;
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\') i += 1;
+        i += 1;
+      }
+      if (i < text.length) i += 1;
+      out += text.slice(start, i);
+      continue;
+    }
+    if (ch === '#') {
+      const bracket = text.slice(i + 1).match(/^\[(=*)\[/);
+      if (bracket !== null) {
+        const close = `]${bracket[1]}]`;
+        const bodyStart = i + 1 + bracket[0].length;
+        const end = text.indexOf(close, bodyStart);
+        i = end === -1 ? text.length : end + close.length;
+        continue;
+      }
+      const nl = text.indexOf('\n', i);
+      i = nl === -1 ? text.length : nl;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Include roots one CMakeLists.txt declares.
  *
  * `include_directories` and PRIVATE target roots reach this directory's
@@ -517,7 +588,7 @@ function readCMakeLists(
   if (text.length === 0) {
     return { scoped: [], global: [], projectDir: undefined, cmakeRootDir: undefined };
   }
-  const source = text.replace(/#[^\n]*/g, '');
+  const source = stripCMakeComments(text);
   const projectDir = CMAKE_PROJECT_COMMAND.test(source) ? dirAbs : undefined;
   const variables = new Map<string, string>([
     ['CMAKE_CURRENT_SOURCE_DIR', dirAbs],

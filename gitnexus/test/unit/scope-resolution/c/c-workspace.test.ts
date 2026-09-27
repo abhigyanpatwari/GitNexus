@@ -152,7 +152,7 @@ describe('C/C++ workspace scan', () => {
     touch('fromdb/db.h');
     touch(
       '.clangd',
-      ['CompilationDatabase: build', 'CompileFlags:', '  Add: [-Iextras]', ''].join('\n'),
+      ['CompileFlags:', '  CompilationDatabase: build', '  Add: [-Iextras]', ''].join('\n'),
     );
     touch(
       'build/compile_commands.json',
@@ -176,12 +176,17 @@ describe('C/C++ workspace scan', () => {
     expect(scanned.headerSearchPaths).toContain('extras');
     expect(scanned.headerSearchPaths).not.toContain('fromdb');
     expect(scanned.headerSearchPaths).not.toContain('ignored-root');
-    const workspace = new Set(['main.c', 'fromdb/db.h', 'extras/extra.h']);
+    const workspace = new Set(['main.c', 'util.h', 'lib/other.c', 'fromdb/db.h', 'extras/extra.h']);
     expect(
       cScopeResolver.resolveImportTarget('db.h', 'main.c', workspace, scanned, angle('db.h')),
     ).toBe('fromdb/db.h');
+    // A header beside the listed translation unit uses that unit's -I.
     expect(
-      cScopeResolver.resolveImportTarget('db.h', 'other.c', workspace, scanned, angle('db.h')),
+      cScopeResolver.resolveImportTarget('db.h', 'util.h', workspace, scanned, angle('db.h')),
+    ).toBe('fromdb/db.h');
+    // A file in another directory is not covered by this database entry.
+    expect(
+      cScopeResolver.resolveImportTarget('db.h', 'lib/other.c', workspace, scanned, angle('db.h')),
     ).toBeNull();
   });
 
@@ -201,6 +206,7 @@ describe('C/C++ workspace scan', () => {
     );
     const scanned = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
     expect(scanned.headerSearchPaths).toContain('include');
+    expect(scanned.headerSearchPaths).not.toContain('');
     expect(scanned.headerSearchPaths).not.toContain('src');
   });
 
@@ -588,6 +594,66 @@ describe('C/C++ monorepo config', () => {
     expect(config.headerSearchPaths).toEqual(['include']);
     const workspace = new Set(['src/main.c', 'include/guess.h']);
     expect(resolveAngle(config, 'guess.h', 'src/main.c', workspace)).toBeNull();
-    expect(resolveAngle(config, 'guess.h', 'include/other.h', workspace)).toBe('include/guess.h');
+    // The header is not a database key. Implicit `include/` must not bind it.
+    expect(resolveAngle(config, 'guess.h', 'include/other.h', workspace)).toBeNull();
+  });
+
+  it('uses the listed translation unit -I for a header in the same directory', () => {
+    touch('generated/real.h');
+    touch('include/stdio.h');
+    touch('src/main.c');
+    touch('src/util.h');
+    touch(
+      'compile_commands.json',
+      JSON.stringify([
+        {
+          directory: TMP,
+          file: 'src/main.c',
+          arguments: ['cc', '-Igenerated', '-c', 'src/main.c'],
+        },
+      ]),
+    );
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    const workspace = new Set(['src/main.c', 'src/util.h', 'generated/real.h', 'include/stdio.h']);
+    expect(resolveAngle(config, 'stdio.h', 'src/main.c', workspace)).toBeNull();
+    expect(resolveAngle(config, 'real.h', 'src/main.c', workspace)).toBe('generated/real.h');
+    expect(resolveAngle(config, 'stdio.h', 'src/util.h', workspace)).toBeNull();
+    expect(resolveAngle(config, 'real.h', 'src/util.h', workspace)).toBe('generated/real.h');
+  });
+
+  it('does not install implicit include roots for a root flag file with no -I', () => {
+    touch('include/stdio.h');
+    touch('src/main.c');
+    touch('compile_flags.txt', '-Wall\n');
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.headerSearchPaths).toEqual([]);
+    const workspace = new Set(['src/main.c', 'include/stdio.h']);
+    expect(resolveAngle(config, 'stdio.h', 'src/main.c', workspace)).toBeNull();
+  });
+
+  it('ignores include_directories inside a CMake bracket comment', () => {
+    touch('decoy/sys.h');
+    touch('src/main.c');
+    touch('CMakeLists.txt', '#[[\ninclude_directories(decoy)\n]]\n');
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.headerSearchPaths).not.toContain('decoy');
+    const workspace = new Set(['src/main.c', 'decoy/sys.h']);
+    expect(resolveAngle(config, 'sys.h', 'src/main.c', workspace)).toBeNull();
+  });
+
+  it('does not treat ${workspaceFolder}/** as an empty search root', () => {
+    touch('include/util.h');
+    touch('src/main.c');
+    touch(
+      '.vscode/c_cpp_properties.json',
+      JSON.stringify({
+        configurations: [{ name: 'Linux', includePath: ['${workspaceFolder}/**'] }],
+      }),
+    );
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.headerSearchPaths).toEqual(['include']);
+    expect(config.headerSearchPaths).not.toContain('');
+    const workspace = new Set(['src/main.c', 'include/util.h']);
+    expect(resolveAngle(config, 'util.h', 'src/main.c', workspace)).toBe('include/util.h');
   });
 });

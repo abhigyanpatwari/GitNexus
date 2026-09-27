@@ -189,18 +189,57 @@ function listsFor(
   fromFile: string,
 ): { readonly header: readonly string[]; readonly user: readonly string[] } {
   const units = lookup?.translationUnits;
-  const unit =
-    units !== undefined && units.size > 0 ? units.get(normalizeRepoPath(fromFile)) : undefined;
+  if (units !== undefined && units.size > 0) {
+    const exact = units.get(normalizeRepoPath(fromFile));
+    if (exact !== undefined) {
+      return { header: exact.headerSearchPaths, user: exact.userHeaderSearchPaths };
+    }
+    const near = pathsFromTranslationUnits(units, fromFile);
+    if (near !== undefined) return near;
+  }
   const scopes = lookup?.directoryScopes;
   const paths =
-    unit ?? (scopes !== undefined && scopes.size > 0 ? nearestScope(scopes, fromFile) : undefined);
+    scopes !== undefined && scopes.size > 0 ? nearestScope(scopes, fromFile) : undefined;
   if (paths !== undefined) {
     return { header: paths.headerSearchPaths, user: paths.userHeaderSearchPaths };
+  }
+  if (units !== undefined && units.size > 0) {
+    return { header: [], user: [] };
   }
   return {
     header: lookup?.headerSearchPaths ?? [],
     user: lookup?.userHeaderSearchPaths ?? [],
   };
+}
+
+/**
+ * The database lists source files, not the headers they include. A header
+ * uses the `-I` / `-iquote` lists of a translation unit in the same directory.
+ * A file in another directory does not inherit that list.
+ */
+function pathsFromTranslationUnits(
+  units: ReadonlyMap<string, CTranslationUnitPaths>,
+  fromFile: string,
+): { readonly header: readonly string[]; readonly user: readonly string[] } | undefined {
+  const file = normalizeRepoPath(fromFile);
+  const dir = directoryOf(file);
+  const header: string[] = [];
+  const user: string[] = [];
+  let found = false;
+  for (const [unitFile, paths] of units) {
+    if (directoryOf(unitFile) !== dir) continue;
+    found = true;
+    header.push(...paths.headerSearchPaths);
+    user.push(...paths.userHeaderSearchPaths);
+  }
+  if (!found) return undefined;
+  return { header: [...new Set(header)], user: [...new Set(user)] };
+}
+
+function directoryOf(file: string): string {
+  const normalized = normalizeRepoPath(file);
+  const slash = normalized.lastIndexOf('/');
+  return slash === -1 ? '' : normalized.slice(0, slash);
 }
 
 function matchSearchPaths(

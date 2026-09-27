@@ -433,8 +433,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  * Fixing one means giving that language its real algorithm the way #2953 gave
  * TypeScript one, then deleting its line here.
  */
-const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
-]);
+const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([]);
 
 /**
  * The six that hold it, and what earns each one.
