@@ -180,6 +180,12 @@ export interface CloneOrPullOptions {
   expectedRepoName?: string;
   quarantineRoot?: string;
   allowAutoSyncSsh?: boolean;
+  /**
+   * Extra hosts from watch_config.yml `allowed_hosts`. Honored only together
+   * with `allowAutoSyncSsh`; built-in github.com, gitlab.com, and gitee.com
+   * stay allowed either way.
+   */
+  autoSyncAllowedHosts?: readonly string[];
   timeoutMs?: number;
   branch?: string;
   overwriteLocalChanges?: boolean;
@@ -319,9 +325,15 @@ export function normalizeGitUrlForCompare(url: string): string {
 }
 
 /** Same allowlisted repo across SSH and HTTPS, ignoring a trailing `.git`. */
-function sameAllowlistedAutoSyncRepo(left: string, right: string): boolean {
+function sameAllowlistedAutoSyncRepo(
+  left: string,
+  right: string,
+  allowedHosts?: readonly string[],
+): boolean {
   try {
-    return getAutoSyncRepoIdentity(left) === getAutoSyncRepoIdentity(right);
+    return (
+      getAutoSyncRepoIdentity(left, allowedHosts) === getAutoSyncRepoIdentity(right, allowedHosts)
+    );
   } catch {
     return false;
   }
@@ -552,7 +564,7 @@ export async function cloneOrPull(
   // Always validate the requested URL — the prior shape only ran this in
   // the code path where the repo was cloned. Now it runs unconditionally,
   // preventing SSRF / blocked-host bypasses even when targetDir already exists.
-  if (options?.allowAutoSyncSsh) validateAutoSyncRemoteUrl(url);
+  if (options?.allowAutoSyncSsh) validateAutoSyncRemoteUrl(url, options.autoSyncAllowedHosts);
   else validateGitUrl(url);
   await fs.mkdir(cloneRoot, { recursive: true });
   if (options?.allowedCloneRoot) {
@@ -597,7 +609,7 @@ export async function cloneOrPull(
     if (
       originUrl &&
       normalizeGitUrlForCompare(originUrl) !== normalizeGitUrlForCompare(url) &&
-      sameAllowlistedAutoSyncRepo(originUrl, url)
+      sameAllowlistedAutoSyncRepo(originUrl, url, options?.autoSyncAllowedHosts)
     ) {
       await runGit(['remote', 'set-url', 'origin', url], safeTarget, {
         timeoutMs: options?.timeoutMs,
