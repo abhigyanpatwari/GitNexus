@@ -1112,7 +1112,7 @@ describe('Python mixin self-dispatch', () => {
     expect(staticCalls.map((call) => call.source).sort()).toEqual(['first', 'second']);
   });
 
-  it('uses self provenance for a renamed first-parameter receiver', () => {
+  it('uses self provenance with renamed caller and target receiver parameters', () => {
     const renamedCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'renamed' && call.target === 'helper',
     );

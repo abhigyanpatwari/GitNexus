@@ -179,9 +179,7 @@ describe('Python scope captures — golden parity', () => {
   });
 
   it('keeps call arity unknown when an argument splat is present', () => {
-    const src = ['from_list(*values)', 'from_dict(**values)', 'mixed(*values, named=1)'].join(
-      '\n',
-    );
+    const src = ['from_list(*values)', 'from_dict(**values)', 'mixed(*values, named=1)'].join('\n');
 
     expect(callArity(src, 'from_list')).toBeUndefined();
     expect(callArity(src, 'from_dict')).toBeUndefined();

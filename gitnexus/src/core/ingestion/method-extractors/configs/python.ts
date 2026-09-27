@@ -15,9 +15,6 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 // Python helpers
 // ---------------------------------------------------------------------------
 
-/** Names that represent the instance/class receiver — not real parameters. */
-const SELF_NAMES = new Set(['self', 'cls']);
-
 /**
  * Unwrap a decorated_definition to its inner function_definition.
  *
@@ -86,12 +83,35 @@ function hasDecorator(node: SyntaxNode, name: string): boolean {
   return false;
 }
 
+/** Whether Python binds the first positional parameter through a descriptor. */
+function hasBoundReceiver(node: SyntaxNode): boolean {
+  const funcNode = unwrapDecorated(node);
+  const memberNode = funcNode.parent?.type === 'decorated_definition' ? funcNode.parent : funcNode;
+  const bodyNode = memberNode.parent;
+  const isDirectClassMember =
+    bodyNode?.type === 'block' && bodyNode.parent?.type === 'class_definition';
+  return isDirectClassMember && !hasDecorator(node, 'staticmethod');
+}
+
+function isPositionalParameter(node: SyntaxNode): boolean {
+  if (node.type === 'typed_parameter') {
+    return node.firstNamedChild?.type === 'identifier';
+  }
+  return (
+    node.type === 'identifier' ||
+    node.type === 'default_parameter' ||
+    node.type === 'typed_default_parameter'
+  );
+}
+
 /**
  * Extract parameters from a Python function_definition.
  *
  * Handles: identifier, default_parameter, typed_parameter, typed_default_parameter,
  * list_splat_pattern (*args), dictionary_splat_pattern (**kwargs), and typed variants.
- * Skips `self` and `cls` first parameters.
+ * Skips the first positional parameter of bound class members, independent of
+ * its spelling. Module functions, nested functions, and static methods retain
+ * their first parameter.
  */
 function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
   const funcNode = unwrapDecorated(node);
@@ -100,18 +120,20 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
 
   const params: ParameterInfo[] = [];
   let isFirst = true;
+  const skipBoundReceiver = hasBoundReceiver(node);
 
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param) continue;
+    if (param.type === 'comment') continue;
+    if (isFirst && skipBoundReceiver && isPositionalParameter(param)) {
+      isFirst = false;
+      continue;
+    }
 
     switch (param.type) {
       case 'identifier': {
-        // Bare parameter: `self`, `cls`, or untyped `x`
-        if (isFirst && SELF_NAMES.has(param.text)) {
-          isFirst = false;
-          continue;
-        }
+        // Bare parameter: untyped `x`
         isFirst = false;
         params.push({
           name: param.text,
@@ -143,10 +165,6 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
         const inner = param.firstNamedChild;
         if (!inner) break;
 
-        if (isFirst && inner.type === 'identifier' && SELF_NAMES.has(inner.text)) {
-          isFirst = false;
-          continue;
-        }
         isFirst = false;
 
         const typeNode = param.childForFieldName('type');

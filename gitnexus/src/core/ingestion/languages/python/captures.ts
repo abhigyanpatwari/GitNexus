@@ -348,11 +348,7 @@ function synthesizePythonCallArityCapture(
     return;
   }
 
-  grouped['@reference.arity'] = syntheticCapture(
-    '@reference.arity',
-    callNode,
-    String(args.length),
-  );
+  grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(args.length));
 }
 
 /**

@@ -2,7 +2,7 @@ from mixins import ClassReceiverMixin, HookMixin
 
 
 class Worker(HookMixin):
-    def helper(self) -> int:
+    def helper(instance) -> int:
         return 1
 
 

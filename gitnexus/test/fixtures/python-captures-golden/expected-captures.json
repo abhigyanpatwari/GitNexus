@@ -541,11 +541,11 @@
   },
   "python-mixin-self-dispatch/mixins.py": {
     "captureGroups": 57,
-    "digest": "6d83bc37cc27837a58241728a16f0395283dc6ed728ff29a989f9898cef34f8a"
+    "digest": "cc65f8edf51236a54bde11c6a56a99097e699fa4420dcaea090709821bd39839"
   },
   "python-mixin-self-dispatch/worker.py": {
     "captureGroups": 19,
-    "digest": "c31e6ed2a6c4c400d9451d1960bd24e2d204dcaaf2522a24ffccc2282b55ed9d"
+    "digest": "7655eb53f445ded871dd5d0af24f91ea4838b15da936e24a53e10e482f6b83ad"
   },
   "python-mixin-self-dispatch/wrong_arity.py": {
     "captureGroups": 12,

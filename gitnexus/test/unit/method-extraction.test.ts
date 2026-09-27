@@ -2748,6 +2748,70 @@ class UserService:
     });
   });
 
+  describe('bound receiver parameters', () => {
+    it('uses class and decorator context instead of receiver spelling', () => {
+      const tree = parsePython(`
+class Service:
+    def ordinary(instance):
+        pass
+
+    @trace
+    def decorated(receiver):
+        pass
+
+    @classmethod
+    def factory(owner):
+        pass
+
+    @staticmethod
+    def static(self):
+        pass
+
+    def typed_args(*args: int):
+        pass
+
+    def typed_kwargs(**kwargs: int):
+        pass
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, pythonCtx);
+      const byName = new Map(result!.methods.map((method) => [method.name, method]));
+
+      expect(byName.get('ordinary')!.parameters).toHaveLength(0);
+      expect(byName.get('decorated')!.parameters).toHaveLength(0);
+      expect(byName.get('factory')!.parameters).toHaveLength(0);
+      expect(byName.get('static')!.parameters.map((parameter) => parameter.name)).toEqual(['self']);
+      expect(byName.get('typed_args')!.parameters[0]).toMatchObject({
+        name: 'args',
+        isVariadic: true,
+      });
+      expect(byName.get('typed_kwargs')!.parameters[0]).toMatchObject({
+        name: 'kwargs',
+        isVariadic: true,
+      });
+    });
+
+    it('retains first parameters on module and nested functions', () => {
+      const tree = parsePython(`
+def module(instance):
+    pass
+
+def outer():
+    def nested(receiver):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const moduleFn = functions.find((node) => node.childForFieldName('name')?.text === 'module')!;
+      const nestedFn = functions.find((node) => node.childForFieldName('name')?.text === 'nested')!;
+
+      expect(
+        pythonMethodConfig.extractParameters(moduleFn).map((parameter) => parameter.name),
+      ).toEqual(['instance']);
+      expect(
+        pythonMethodConfig.extractParameters(nestedFn).map((parameter) => parameter.name),
+      ).toEqual(['receiver']);
+    });
+  });
+
   describe('@abstractmethod', () => {
     it('detects abstract method', () => {
       const tree = parsePython(`
