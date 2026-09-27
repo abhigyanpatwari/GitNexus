@@ -15,7 +15,12 @@ import { cppArityCompatibility } from './arity.js';
 import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
-import { scanCppHeaderFiles } from './header-scan.js';
+import { cIncludeLookupFromConfig } from '../c/import-target.js';
+import {
+  CPP_HEADER_EXTENSIONS,
+  cFamilyImportFiles,
+  loadCFamilyResolutionConfig,
+} from '../c/resolution-config.js';
 import {
   expandCppWildcardNames,
   isFileLocal,
@@ -110,22 +115,26 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppInlineNamespaces();
     clearCppUserDefinedConversions();
     clearCppMemberLookupState();
-    return scanCppHeaderFiles(repoPath);
+    return loadCFamilyResolutionConfig(repoPath, CPP_HEADER_EXTENSIONS);
   },
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
-    // Augment allFilePaths with header files discovered via loadResolutionConfig.
-    // C++ .h/.hpp/.hxx/.hh files may be classified differently by language
-    // detection but are importable from .cpp files via #include.
-    const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
-    if (headerPaths !== undefined && headerPaths.size > 0) {
-      return resolveCppImportTarget(
-        targetRaw,
-        fromFile,
-        augmentedFilePathsFor(allFilePaths)(headerPaths),
-      );
-    }
-    return resolveCppImportTarget(targetRaw, fromFile, allFilePaths);
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
+    // Same adapter as C, with this file's own augmented-set memo. C++
+    // `#include` then goes through `resolveCppImportTarget`, whose suffix
+    // index is also private to C++.
+    const { files, config } = cFamilyImportFiles(
+      allFilePaths,
+      resolutionConfig,
+      augmentedFilePathsFor(allFilePaths),
+    );
+    const parsed = context?.parsedImport;
+    const isSystem = parsed?.kind === 'wildcard' && parsed.isSystem === true;
+    return resolveCppImportTarget(
+      targetRaw,
+      fromFile,
+      files,
+      cIncludeLookupFromConfig(config, isSystem),
+    );
   },
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>
