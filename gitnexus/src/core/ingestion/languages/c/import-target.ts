@@ -2,6 +2,7 @@ import { dirname, join } from 'path';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import {
   collapseRepoPath,
+  nearestScope,
   normalizeRepoPath,
   type CTranslationUnitPaths,
 } from './resolution-config.js';
@@ -61,6 +62,8 @@ export interface CIncludeLookup {
    * The map is the one built at config load — lookup does not copy it.
    */
   readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
+  /** Nearest-ancestor lists for a file with no database entry. */
+  readonly directoryScopes?: ReadonlyMap<string, CTranslationUnitPaths>;
 }
 
 /**
@@ -82,6 +85,7 @@ export function cIncludeLookupFromConfig(
         readonly headerSearchPaths?: readonly string[];
         readonly userHeaderSearchPaths?: readonly string[];
         readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
+        readonly directoryScopes?: ReadonlyMap<string, CTranslationUnitPaths>;
       }
     | undefined,
   isSystem: boolean,
@@ -91,6 +95,7 @@ export function cIncludeLookupFromConfig(
     headerSearchPaths: config?.headerSearchPaths,
     userHeaderSearchPaths: config?.userHeaderSearchPaths,
     translationUnits: config?.translationUnits,
+    directoryScopes: config?.directoryScopes,
   };
 }
 
@@ -184,11 +189,13 @@ function listsFor(
   fromFile: string,
 ): { readonly header: readonly string[]; readonly user: readonly string[] } {
   const units = lookup?.translationUnits;
-  if (units !== undefined && units.size > 0) {
-    const unit = units.get(normalizeRepoPath(fromFile));
-    if (unit !== undefined) {
-      return { header: unit.headerSearchPaths, user: unit.userHeaderSearchPaths };
-    }
+  const unit =
+    units !== undefined && units.size > 0 ? units.get(normalizeRepoPath(fromFile)) : undefined;
+  const scopes = lookup?.directoryScopes;
+  const paths =
+    unit ?? (scopes !== undefined && scopes.size > 0 ? nearestScope(scopes, fromFile) : undefined);
+  if (paths !== undefined) {
+    return { header: paths.headerSearchPaths, user: paths.userHeaderSearchPaths };
   }
   return {
     header: lookup?.headerSearchPaths ?? [],

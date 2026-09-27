@@ -449,3 +449,145 @@ describe('C/C++ include robustness', () => {
     ).toBeNull();
   });
 });
+
+describe('C/C++ monorepo config', () => {
+  function resolveAngle(
+    config: ReturnType<typeof loadCFamilyResolutionConfig>,
+    targetRaw: string,
+    fromFile: string,
+    workspace: ReadonlySet<string>,
+  ): string | null {
+    return cScopeResolver.resolveImportTarget(
+      targetRaw,
+      fromFile,
+      workspace,
+      config,
+      angle(targetRaw),
+    );
+  }
+
+  it('reads a compile_commands.json in each sub-project and lets the nearest one win', () => {
+    touch('libs/a/public/a.h');
+    touch('libs/b/api/b.h');
+    touch('libs/a/src/a.c');
+    touch('libs/b/src/b.c');
+    touch(
+      'compile_commands.json',
+      JSON.stringify([
+        { directory: TMP, file: 'libs/a/src/a.c', arguments: ['cc', '-Iroot-only', '-c'] },
+      ]),
+    );
+    touch(
+      'libs/a/compile_commands.json',
+      JSON.stringify([
+        { directory: join(TMP, 'libs/a'), file: 'src/a.c', arguments: ['cc', '-Ipublic', '-c'] },
+      ]),
+    );
+    touch(
+      'libs/b/build/compile_commands.json',
+      JSON.stringify([
+        { directory: join(TMP, 'libs/b'), file: 'src/b.c', arguments: ['cc', '-Iapi', '-c'] },
+      ]),
+    );
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.translationUnits.get('libs/a/src/a.c')?.headerSearchPaths).toEqual([
+      'libs/a/public',
+    ]);
+    expect(config.translationUnits.get('libs/b/src/b.c')?.headerSearchPaths).toEqual([
+      'libs/b/api',
+    ]);
+    const workspace = new Set([
+      'libs/a/src/a.c',
+      'libs/b/src/b.c',
+      'libs/a/public/a.h',
+      'libs/b/api/b.h',
+    ]);
+    expect(resolveAngle(config, 'a.h', 'libs/a/src/a.c', workspace)).toBe('libs/a/public/a.h');
+    expect(resolveAngle(config, 'b.h', 'libs/b/src/b.c', workspace)).toBe('libs/b/api/b.h');
+    expect(resolveAngle(config, 'b.h', 'libs/a/src/a.c', workspace)).toBeNull();
+  });
+
+  it('scopes a sub-project compile_flags.txt to its own subtree', () => {
+    touch('libs/a/compile_flags.txt', '-Ipublic\n-iquote\nquoted\n');
+    touch('libs/a/public/a.h');
+    touch('libs/a/src/a.c');
+    touch('libs/b/src/b.c');
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.directoryScopes.get('libs/a')).toEqual({
+      headerSearchPaths: ['libs/a/public'],
+      userHeaderSearchPaths: ['libs/a/quoted'],
+    });
+    expect(config.headerSearchPaths).not.toContain('libs/a/public');
+    const workspace = new Set(['libs/a/src/a.c', 'libs/b/src/b.c', 'libs/a/public/a.h']);
+    expect(resolveAngle(config, 'a.h', 'libs/a/src/a.c', workspace)).toBe('libs/a/public/a.h');
+    expect(resolveAngle(config, 'a.h', 'libs/b/src/b.c', workspace)).toBeNull();
+  });
+
+  it('reads CMake include_directories and target_include_directories by visibility', () => {
+    touch(
+      'CMakeLists.txt',
+      ['project(mono C)', 'include_directories(common)', 'add_subdirectory(libs/net)'].join('\n'),
+    );
+    touch(
+      'libs/net/CMakeLists.txt',
+      [
+        '# include_directories(commented-out)',
+        'add_library(net src/net.c)',
+        'target_include_directories(net',
+        '  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/api> $<INSTALL_INTERFACE:include>',
+        '  PRIVATE src/internal ${CMAKE_CURRENT_BINARY_DIR}/gen',
+        '  INTERFACE "${PROJECT_SOURCE_DIR}/shared")',
+      ].join('\n'),
+    );
+    touch('common/common.h');
+    touch('shared/shared.h');
+    touch('libs/net/api/net.h');
+    touch('libs/net/src/internal/internal.h');
+    touch('libs/net/src/net.c');
+    touch('app/main.c');
+    touch('include/guess.h');
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.headerSearchPaths).toEqual(['common', 'libs/net/api', 'shared']);
+    expect(config.directoryScopes.get('libs/net')?.headerSearchPaths).toEqual([
+      'common',
+      'libs/net/api',
+      'libs/net/src/internal',
+      'shared',
+    ]);
+    const workspace = new Set([
+      'app/main.c',
+      'libs/net/src/net.c',
+      'common/common.h',
+      'shared/shared.h',
+      'libs/net/api/net.h',
+      'libs/net/src/internal/internal.h',
+      'include/guess.h',
+    ]);
+    expect(resolveAngle(config, 'net.h', 'app/main.c', workspace)).toBe('libs/net/api/net.h');
+    expect(resolveAngle(config, 'shared.h', 'app/main.c', workspace)).toBe('shared/shared.h');
+    expect(resolveAngle(config, 'common.h', 'libs/net/src/net.c', workspace)).toBe(
+      'common/common.h',
+    );
+    expect(resolveAngle(config, 'internal.h', 'libs/net/src/net.c', workspace)).toBe(
+      'libs/net/src/internal/internal.h',
+    );
+    expect(resolveAngle(config, 'internal.h', 'app/main.c', workspace)).toBeNull();
+    // Declared roots exist, so the implicit `include/` guess is off.
+    expect(resolveAngle(config, 'guess.h', 'app/main.c', workspace)).toBeNull();
+  });
+
+  it('keeps the implicit include roots off a file the compilation database lists', () => {
+    touch('include/guess.h');
+    touch('src/main.c');
+    touch(
+      'compile_commands.json',
+      JSON.stringify([{ directory: TMP, file: 'src/main.c', arguments: ['cc', '-c'] }]),
+    );
+    const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
+    expect(config.translationUnits.get('src/main.c')?.headerSearchPaths).toEqual([]);
+    expect(config.headerSearchPaths).toEqual(['include']);
+    const workspace = new Set(['src/main.c', 'include/guess.h']);
+    expect(resolveAngle(config, 'guess.h', 'src/main.c', workspace)).toBeNull();
+    expect(resolveAngle(config, 'guess.h', 'include/other.h', workspace)).toBe('include/guess.h');
+  });
+});
