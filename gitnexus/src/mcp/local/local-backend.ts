@@ -46,6 +46,8 @@ import {
   getGitRoot,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
+import { runGrepScanInWorker } from '../../server/grep-scan.js';
 import {
   listRegisteredRepos,
   canonicalizePath,
@@ -130,6 +132,8 @@ import {
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
   CONTEXT_CHAIN_MAX_DEPTH,
+  CHECKOUT_SOURCE_TOOLS,
+  READ_FILE_DEFAULT_MAX_LINES,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -2877,6 +2881,15 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
+    // These tools read the checkout, not a pinned index. `branch` would still
+    // rewrite lbugPath/lastCommit and withToolStaleness would label checkout
+    // bytes with that pin. Reject before selectToolRepository applies it.
+    if (CHECKOUT_SOURCE_TOOLS.has(method) && p.branch !== undefined && p.branch !== '') {
+      return {
+        error: `${method} follows the checked-out working tree and does not accept "branch". Omit it.`,
+      };
+    }
+
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
     const repo = await this.selectToolRepository(
@@ -2926,6 +2939,10 @@ export class LocalBackend {
         return this.apiImpact(repo, p);
       case 'trace':
         return this.trace(repo, p);
+      case 'read_file':
+        return this.withToolStaleness(repo, await this.readFile(repo, p));
+      case 'grep':
+        return this.withToolStaleness(repo, await this.grep(repo, p));
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -9450,6 +9467,198 @@ export class LocalBackend {
       /* no ENTRY_POINT_OF edges yet */
     }
     return result;
+  }
+
+  /**
+   * Same predicate as HTTP `getSourceAvailability`: full retention plus a live
+   * checkout. Meta is the graph directory so a published shared-store commit
+   * still carries `contentRetention`. Wording matches HTTP 410.
+   */
+  private async fullSourceUnavailable(repo: RepoHandle): Promise<{
+    error: string;
+    code: 'source-unavailable';
+    reason: 'content-retention' | 'checkout-missing';
+  } | null> {
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const retention = contentRetentionFromMeta(meta);
+    const checkoutIsDir = retention === 'full' ? await checkoutIsDirectory(repo.repoPath) : false;
+    if (isFullSourceAvailable(retention, checkoutIsDir)) return null;
+    const reason = retention !== 'full' ? 'content-retention' : 'checkout-missing';
+    const because = reason === 'content-retention' ? 'content retention' : 'source checkout';
+    return {
+      error: `Full source is unavailable because the ${because} is unavailable.`,
+      code: 'source-unavailable',
+      reason,
+    };
+  }
+
+  /**
+   * MCP read_file — repo-contained checkout read with an optional 0-indexed
+   * line slice. The realpath re-check matches GET /api/file. The lexical
+   * barrier stays inline for CodeQL and is narrowed to the `..` segment, so
+   * a file named `..config` is not a traversal. ENOENT is file-not-found
+   * only after the checkout directory is known to exist.
+   */
+  private async readFile(
+    repo: RepoHandle,
+    params: { path?: unknown; startLine?: unknown; endLine?: unknown; maxLines?: unknown },
+  ): Promise<any> {
+    const rawPath = params?.path;
+    if (typeof rawPath !== 'string' || rawPath === '') {
+      return { error: 'Missing required argument "path" (repo-relative file path).' };
+    }
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
+    const toInteger = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined;
+    const startLine = toInteger(params?.startLine);
+    const endLine = toInteger(params?.endLine);
+    if (endLine !== undefined && startLine === undefined) {
+      return { error: '"endLine" requires "startLine".' };
+    }
+    const repoRoot = path.resolve(repo.repoPath);
+    const fullPath = path.resolve(repoRoot, rawPath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    // `startsWith('..')` is the CodeQL path-injection sanitizer. Narrow it to
+    // the `..` segment so a repo file named `..config` is not a traversal.
+    if (
+      path.isAbsolute(fullRel) ||
+      (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+    ) {
+      return { error: 'Path traversal denied.' };
+    }
+    let realRoot: string;
+    let realFull: string;
+    try {
+      [realRoot, realFull] = await Promise.all([fs.realpath(repoRoot), fs.realpath(fullPath)]);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return { error: `File not found: ${rawPath}` };
+      throw err;
+    }
+    const realRel = path.relative(realRoot, realFull);
+    if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+      return { error: 'Path traversal denied.' };
+    }
+    const raw = await fs.readFile(realFull, 'utf-8');
+    const lines = raw.split('\n');
+    if (startLine !== undefined) {
+      if (endLine !== undefined && endLine < 0) {
+        return { error: '"endLine" must be an integer >= 0.' };
+      }
+      const start = Math.max(0, startLine);
+      const end = endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
+      return {
+        path: fullRel,
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      };
+    }
+    const requestedMaxLines = toInteger(params?.maxLines);
+    if (requestedMaxLines !== undefined && requestedMaxLines < 0) {
+      return { error: '"maxLines" must be an integer >= 0 (0 = no cap).' };
+    }
+    const maxLines = requestedMaxLines ?? READ_FILE_DEFAULT_MAX_LINES;
+    if (maxLines > 0 && lines.length > maxLines) {
+      return {
+        path: fullRel,
+        content: lines.slice(0, maxLines).join('\n'),
+        startLine: 0,
+        endLine: maxLines - 1,
+        totalLines: lines.length,
+        truncated: true,
+        suggestion: 'Re-issue with startLine/endLine for the window you need.',
+      };
+    }
+    return { path: fullRel, content: raw, totalLines: lines.length };
+  }
+
+  /**
+   * MCP grep — HTTP GET /api/grep twin. The file list is indexed File nodes
+   * that still have content; bytes come from the live checkout (same worker).
+   * Fails like HTTP 410 when full source is unavailable instead of returning
+   * an empty hit list.
+   */
+  private async grep(
+    repo: RepoHandle,
+    params: {
+      pattern?: unknown;
+      fileFilter?: unknown;
+      limit?: unknown;
+      caseSensitive?: unknown;
+      literal?: unknown;
+    },
+  ): Promise<any> {
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
+    await this.ensureInitialized(repo);
+    let parsed;
+    try {
+      parsed = parseGrepQuery({
+        pattern: params?.pattern,
+        fileFilter: params?.fileFilter,
+        limit: params?.limit,
+        caseSensitive: params?.caseSensitive,
+        literal: params?.literal,
+      });
+    } catch (err: any) {
+      return { error: err?.message || 'Invalid grep query.' };
+    }
+    const fileRows: Array<{ filePath?: string }> = await executeQuery(
+      repo.lbugPath,
+      `MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`,
+    );
+    const filePaths: string[] = [];
+    for (const row of fileRows) {
+      const filePath: string = row.filePath || '';
+      if (parsed.fileFilter && !filePath.toLowerCase().includes(parsed.fileFilter)) continue;
+      filePaths.push(filePath);
+    }
+    // The shared scanner only checks a lexical prefix, then readFile follows
+    // symlinks. Drop paths whose realpath leaves the checkout, same as read_file.
+    const repoRoot = path.resolve(repo.repoPath);
+    const realRoot = await fs.realpath(repoRoot);
+    const containedPaths: string[] = [];
+    for (const filePath of filePaths) {
+      const fullPath = path.resolve(repoRoot, filePath);
+      const fullRel = path.relative(repoRoot, fullPath);
+      if (
+        path.isAbsolute(fullRel) ||
+        (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+      ) {
+        continue;
+      }
+      let realFull: string;
+      try {
+        realFull = await fs.realpath(fullPath);
+      } catch {
+        continue;
+      }
+      const realRel = path.relative(realRoot, realFull);
+      if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+        continue;
+      }
+      containedPaths.push(filePath);
+    }
+    const { results, timedOut } = await runGrepScanInWorker({
+      repoRoot,
+      filePaths: containedPaths,
+      pattern: parsed.regex.source,
+      flags: parsed.regex.flags,
+      limit: parsed.limit,
+      deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+    });
+    return {
+      results,
+      ...(timedOut ? { timedOut: true as const } : {}),
+      ...(timedOut
+        ? {
+            suggestion:
+              'Wall-clock budget expired — re-issue narrower (fileFilter or a tighter pattern).',
+          }
+        : {}),
+    };
   }
 
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {

@@ -210,7 +210,7 @@ Note that the bundled Graphology path is no longer the slow option it once was: 
 
 ## MCP Tools
 
-Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
+Your AI agent gets **19 tools** (17 per-repo + 2 group) automatically:
 
 | Tool             | What It Does                                                                                                                                      |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -229,10 +229,12 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 | `api_impact`     | Pre-change impact report for an API route handler                                                                                                 |
 | `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)                                                                             |
 | `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)                                                                                |
+| `read_file`      | Read a checkout file (optional 0-indexed slice; `maxLines` cap)                                                                                   |
+| `grep`           | Regex search of the working tree for indexed files (1-based hits; optional `caseSensitive` / `literal`)                                           |
 | `group_list`     | List configured repository groups                                                                                                                 |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links                                                                                          |
 
-> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ## MCP Resources
 
