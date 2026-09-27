@@ -131,6 +131,11 @@ describe('createMCPServer', () => {
 
       expect(query?.inputSchema.required).toContain('repo');
       expect(listRepos?.inputSchema.required).not.toContain('repo');
+      for (const name of ['read_file', 'grep'] as const) {
+        const tool = tools.tools.find((candidate) => candidate.name === name);
+        expect(tool?.inputSchema.required, name).toContain('repo');
+        expect(tool?.inputSchema.properties, name).not.toHaveProperty('branch');
+      }
       expect(
         GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required,
       ).not.toContain('repo');
@@ -282,6 +287,21 @@ describe('getNextStepHint (via tool call response)', () => {
         `${QUERY_HINT_BASE} For source of a process_symbols row without content, use context({uid: "<id>", include_content: true, repo: "demo"}).`,
       ),
     ).toBe(true);
+  });
+
+  it('grep hint converts the 1-based hit line to a 0-based read_file window', async () => {
+    const backend = createMockBackend({
+      callTool: vi
+        .fn()
+        .mockResolvedValue({ results: [{ filePath: 'a.ts', line: 1, text: 'signOrder()' }] }),
+    });
+    const { text } = await callToolThroughServer(backend, 'grep', {
+      pattern: 'signOrder',
+      repo: 'demo',
+    });
+    expect(text).toContain('startLine: <hit.line - 1>');
+    expect(text).toContain('endLine: <hit.line - 1>');
+    expect(text).toContain('Grep line is 1-based; read_file is 0-based');
   });
 });
 

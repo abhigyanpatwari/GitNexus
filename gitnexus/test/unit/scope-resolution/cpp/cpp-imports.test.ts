@@ -108,16 +108,20 @@ describe('C++ import interpretation (interpretCppImport)', () => {
       '@import.kind': capt('@import.kind', 'wildcard'),
       '@import.source': capt('@import.source', 'header.hpp'),
     });
-    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'header.hpp' });
+    // isSystem is false for quoted #include "..." (no @import.system capture).
+    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'header.hpp', isSystem: false });
   });
 
-  it('returns null for system headers', () => {
+  it('interprets system header as wildcard with isSystem:true', () => {
+    // The interpreter no longer returns null for system headers — it returns a
+    // ParsedImport with isSystem:true. The resolver (cppScopeResolver) is the
+    // layer that refuses to suffix-match system headers against workspace files.
     const result = interpretCppImport({
       '@import.kind': capt('@import.kind', 'wildcard'),
       '@import.source': capt('@import.source', 'iostream'),
       '@import.system': capt('@import.system', 'true'),
     });
-    expect(result).toBeNull();
+    expect(result).toEqual({ kind: 'wildcard', targetRaw: 'iostream', isSystem: true });
   });
 
   it('interprets named import (using std::vector)', () => {
