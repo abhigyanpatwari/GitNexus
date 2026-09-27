@@ -4,6 +4,11 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Wiki module tree pinned to the first run** — `buildModuleTree` honoured `module_tree.json` whenever it existed, and every full run rewrote that file, so `wiki --force` and the ">5 new files" incremental escalation kept reusing the first grouping (a repo that grew from 179 to 1240 files kept 22 modules covering 14% of files). `module_tree.json` is now output only; an edited tree is honoured exactly once while a `--review` stop is pending (`module_tree.review-pending` marker).
+- **Index copied from another checkout** — `analyze` now treats a `.gitnexus/meta.json` whose `repoPath` does not resolve to the current checkout like a dirty index and forces a full rebuild instead of trusting incremental state that describes a different path.
+
 ## [1.5.3] - 2026-04-01
 
 ### Added

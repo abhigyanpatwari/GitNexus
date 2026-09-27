@@ -42,6 +42,7 @@ import {
   ensureGitNexusIgnored,
   registerRepo,
   cleanupOldKuzuFiles,
+  canonicalizePath,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -317,6 +318,30 @@ export const primaryInversionWarning = (
   return (
     `Warning: the default branch "${d}" is not the primary index — "${o}" owns the flat slot. ` +
     `Run \`gitnexus clean --branch ${o}\` then re-index on "${d}", or query it explicitly with \`--branch ${d}\`.`
+  );
+};
+
+/**
+ * A `.gitnexus` whose meta records a different `repoPath` than the checkout
+ * being analyzed was copied here from elsewhere (another machine, a clone, a
+ * worktree snapshot). Its incremental state — fileHashes, lastCommit, dirty
+ * flag — describes the other checkout, so an incremental analyze on top of it
+ * cannot be trusted. Returns the log line that justifies a forced full
+ * rebuild, or undefined when the paths match (after canonicalisation:
+ * symlinks, case, trailing separators) or the meta predates the field.
+ * Exported for testing.
+ */
+export const foreignIndexNotice = (
+  recordedRepoPath: string | null | undefined,
+  repoPath: string,
+): string | undefined => {
+  if (!recordedRepoPath?.trim()) return undefined;
+  const recorded = canonicalizePath(recordedRepoPath);
+  const current = canonicalizePath(repoPath);
+  if (recorded === current) return undefined;
+  return (
+    `Index at .gitnexus was built for "${recordedRepoPath}" but this checkout is "${repoPath}" ` +
+    '(copied from another location?); forcing full rebuild so the index matches this checkout.'
   );
 };
 
@@ -604,6 +629,15 @@ export async function runFullAnalysis(
     // Reload meta after clearing the flag in-memory; we still want fileHashes
     // for the post-rebuild meta carry-over, but force=true ensures the
     // rebuild path executes.
+  }
+
+  // ── Foreign index: .gitnexus copied from another checkout ──────────
+  // Same shape as the dirty-flag recovery above: the on-disk incremental
+  // state belongs to a different path, so rebuild rather than increment.
+  const foreignNotice = foreignIndexNotice(existingMeta?.repoPath, repoPath);
+  if (foreignNotice) {
+    log(foreignNotice);
+    options = { ...options, force: true };
   }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
