@@ -144,7 +144,19 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     const opts = runFullAnalysisMock.mock.calls[0][1];
     expect(opts.useParseCache).toBe(false);
-    expect(opts.force).toBe(true);
+    // Not folded into --force: runFullAnalysis names the bypass as its own
+    // rebuild reason (#3137), so no run announces a --force nobody passed.
+    expect(opts.force).toBeFalsy();
+  });
+
+  it('passes --skills through without folding it into --force', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { skills: true });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.skills).toBe(true);
+    expect(opts.force).toBeFalsy();
   });
 
   it('reuses parser output by default', async () => {

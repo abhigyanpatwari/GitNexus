@@ -33,6 +33,7 @@ import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/nam
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import type { StoredRebuildReason } from '../core/rebuild-reasons.js';
 import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
@@ -459,6 +460,12 @@ export interface RepoMeta {
      *  diagnostics must show whether the write set was already
      *  under-expanded when the run died. */
     droppedImporterChunks?: number;
+    /**
+     * Why this run rebuilds (#3137), so an interrupted rebuild can name its
+     * causes on the next run. Untrusted on read: parse it with
+     * `readStoredRebuildReasons`, since the file is schema-less JSON.
+     */
+    reasons?: StoredRebuildReason[];
   };
   /**
    * Durable embedding-resume marker, written in two distinct situations that

@@ -519,10 +519,9 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       files: ['lib/models.dart', 'tool/generate.dart', 'lib/main.dart'],
       fromFile: 'lib/main.dart',
       resolutionConfig: undefined,
-      // An external package: both `lib/<rel>` and bare `<rel>` miss, which is
-      // the two-scan case.
-      missTarget: (i) => `package:vendor${i}/ghost.dart`,
-      hitTarget: 'package:app/models.dart',
+      // Package imports are exact lookups; relative misses exercise the index.
+      missTarget: (i) => `vendor${i}/ghost.dart`,
+      hitTarget: './models.dart',
       parsedImport: IGNORES_CONTEXT,
       minimumScans: 1,
       minimumParsedFileReads: 0,

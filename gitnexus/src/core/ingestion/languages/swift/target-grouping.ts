@@ -1,92 +1,169 @@
 /**
- * Swift SPM-target file grouping for the registry-primary same-module
- * hooks (`implicit-imports.ts`, `target-siblings.ts`,
- * `sibling-type-bindings.ts`).
+ * Swift module membership for the registry-primary same-module hooks
+ * (`implicit-imports.ts`, `target-siblings.ts`, `sibling-type-bindings.ts`,
+ * extension-owner stamping) and for `import` resolution and the
+ * global-name-fallback veto.
  *
- * A Swift module is an SPM *target* — a directory *subtree*
- * (`Sources/<Target>/…`), not a single immediate directory. Grouping by
- * the immediate containing directory (the prior `containingDir` proxy)
- * drops cross-directory same-module edges and can mis-resolve a
- * constructor call to a wrong same-simple-named type in another target.
+ * A Swift module is a compiler unit: a SwiftPM target (a directory subtree)
+ * or an Xcode native target (a file list and synchronized folders). Every
+ * file of a module sees every other file's `internal` declarations with no
+ * `import`; nothing crosses a module boundary without one.
  *
- * The SPM target map is threaded in via the `resolutionConfig` channel
- * (`loadSwiftPackageConfig` → `resolutionConfig` → these hooks); see
- * `scope-resolver.ts` and `scope-resolution/pipeline/run.ts`.
+ * The module list comes from `loadSwiftWorkspaceConfig` through the
+ * `resolutionConfig` channel (`modules`). A hand-built `{ targets }` config
+ * (tests, the root-only loader) is read as SwiftPM targets keyed by name.
  *
- * Path matching is the same segment-boundary rule as import-config
- * (`fileMatchesSwiftTargetDir`). Grouping assigns each file to the FIRST
- * matching target; import-config fans a file out to every matching target.
+ * Matching:
+ *   - SwiftPM: the deepest target directory that is a path-prefix of the file,
+ *     anchored at the repo root. A target path is relative to its package, and
+ *     the loader has already rebased it to the repo root, so a directory
+ *     further down the path (a vendored copy of the same layout) is not the
+ *     target. One module per file: SwiftPM rejects overlapping target sources.
+ *     A target's `sources:` / `exclude:` narrow it; a file they leave out
+ *     belongs to no target.
+ *   - Xcode: exact file membership plus synchronized folders, minus the
+ *     folder's exceptions for that target. A file compiled into several
+ *     targets belongs to all of them, including a SwiftPM target whose
+ *     directory it also lies under.
+ *   - A package manifest (`Package.swift`, `Package@swift-X.Y.swift`) is
+ *     compiled on its own against `PackageDescription`: a module of one file.
+ *   - Anything else: a module of one file when discovery read every manifest
+ *     and project (`moduleNamesComplete`), since no module compiles it;
+ *     otherwise the single `__default__` module, because an unread manifest
+ *     or project may be what owns it.
  */
 
-import { swiftDeclaredTargetPrefix, type SwiftPackageConfig } from '../../language-config.js';
+import type { SwiftModuleSpec, SwiftPackageConfig } from '../../language-config.js';
 export { coerceDeclaredSwiftTargets } from '../../language-config.js';
 
-const DEFAULT_TARGET = '__default__';
+export const DEFAULT_SWIFT_MODULE = '__default__';
+
+const SWIFT_MANIFEST_RE = /(^|\/)Package(@swift-[\d.]+)?\.swift$/;
 
 /**
- * Group `items` by SPM target subtree:
- *
- *   - `targets` null/empty (no scanned source dir found) → ALL items go to
- *     a single `__default__` bucket (single-Xcode-project assumption).
- *   - Otherwise: a file matches a target when its normalized path either
- *     starts with `<targetDir>/` or contains `/<targetDir>/` at a segment
- *     boundary. Using a segment-aware suffix search matters when an earlier,
- *     non-boundary occurrence of the same text appears in the path (#2931).
- *   - Each file is assigned to the FIRST matching target only (one bucket per
- *     file, no fan-out).
- *   - Files matching no target fall into the `__default__` bucket.
- *
- * `targets` is `name → directory` (the `SwiftPackageConfig.targets` map).
+ * The module name the compiler derives from a target or product name: every
+ * character that cannot appear in an identifier becomes `_`, and a leading
+ * digit gets a `_` prefix. SwiftPM (`c99name`) and Xcode
+ * (`$(PRODUCT_NAME:c99extidentifier)`) both apply it, so `my-lib` is
+ * `import my_lib`.
  */
-export function groupSwiftFilesBySpmTarget<T>(
+export function swiftC99ModuleName(name: string): string {
+  const mangled = name.replace(/[^\p{L}\p{M}\p{N}_]/gu, '_');
+  return /^\p{N}/u.test(mangled) ? `_${mangled}` : mangled;
+}
+
+/** True when `filePath` is `dir` or lies below it. */
+function isUnder(filePath: string, dir: string): boolean {
+  return dir === '' || filePath === dir || filePath.startsWith(`${dir}/`);
+}
+
+interface SwiftModuleMatcher {
+  readonly spmByDir: ReadonlyMap<string, string>;
+  readonly xcodeByFile: ReadonlyMap<string, readonly string[]>;
+  readonly xcodeByFolder: ReadonlyMap<
+    string,
+    readonly { key: string; excluded: readonly string[] }[]
+  >;
+  readonly specByKey: ReadonlyMap<string, SwiftModuleSpec>;
+  readonly order: ReadonlyMap<string, number>;
+  /** Leftover files are one-file modules (see the file header). */
+  readonly leftoversStandalone: boolean;
+}
+
+const MATCHERS = new WeakMap<object, SwiftModuleMatcher>();
+
+/**
+ * The modules a config declares, or null when it carries none. `modules` wins;
+ * a bare `{ targets }` map is read as SwiftPM targets keyed by name.
+ */
+export function swiftModuleSpecs(resolutionConfig: unknown): readonly SwiftModuleSpec[] | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  if (config == null) return null;
+  if (Array.isArray(config.modules)) return config.modules;
+  const targets = coerceSwiftTargets(config);
+  if (targets === null || targets.size === 0) return null;
+  return [...targets].map(([name, dir]) => ({
+    key: name,
+    name,
+    dir: normalizeDir(dir),
+    importable: true,
+  }));
+}
+
+/** Module keys `filePath` belongs to, in declaration order; `[__default__]` when none. */
+export function swiftModuleKeysOf(filePath: string, resolutionConfig: unknown): readonly string[] {
+  const norm = filePath.includes('\\') ? filePath.replace(/\\/g, '/') : filePath;
+  const standalone = [`file:${norm}`];
+  if (SWIFT_MANIFEST_RE.test(norm)) return standalone;
+  const matcher = matcherFor(resolutionConfig);
+  if (matcher === null) return DEFAULT_KEYS;
+  const ancestors = ancestorDirs(norm);
+  const keys = new Set<string>();
+
+  for (const dir of ancestors) {
+    const key = matcher.spmByDir.get(dir);
+    if (key === undefined) continue;
+    if (isFilteredIn(norm, matcher.specByKey.get(key)!)) keys.add(key);
+    break; // The deepest target owns the directory; its filters may leave this file out.
+  }
+
+  for (const key of matcher.xcodeByFile.get(norm) ?? []) keys.add(key);
+  for (const dir of ancestors) {
+    for (const folder of matcher.xcodeByFolder.get(dir) ?? []) {
+      if (!folder.excluded.some((path) => isUnder(norm, path))) keys.add(folder.key);
+    }
+  }
+  if (keys.size > 0) {
+    return [...keys].sort((a, b) => matcher.order.get(a)! - matcher.order.get(b)!);
+  }
+  return matcher.leftoversStandalone ? standalone : DEFAULT_KEYS;
+}
+
+/** SwiftPM `sources:` / `exclude:` for a file already under the target directory. */
+function isFilteredIn(filePath: string, spec: SwiftModuleSpec): boolean {
+  if (spec.sources !== undefined && !spec.sources.some((path) => isUnder(filePath, path))) {
+    return false;
+  }
+  return !(spec.excluded ?? []).some((path) => isUnder(filePath, path));
+}
+
+/** The module a key names; undefined for `__default__` or an unknown key. */
+export function swiftModuleSpecOf(
+  key: string,
+  resolutionConfig: unknown,
+): SwiftModuleSpec | undefined {
+  return matcherFor(resolutionConfig)?.specByKey.get(key);
+}
+
+/**
+ * Group `items` by module. By default each item joins only its FIRST module,
+ * for passes that must see a file once (extension-owner stamping). With
+ * `allMemberships`, an item compiled into several Xcode targets joins each.
+ */
+export function groupSwiftFilesByModule<T>(
   items: readonly T[],
   getPath: (item: T) => string,
-  targets: ReadonlyMap<string, string> | null,
+  resolutionConfig: unknown,
+  options: { readonly allMemberships?: boolean } = {},
 ): Map<string, T[]> {
-  // No SPM config -> single target (common for Xcode projects).
-  if (targets === null || targets.size === 0) {
-    return new Map([[DEFAULT_TARGET, [...items]]]);
-  }
-
-  const targetPrefixes = [...targets.entries()].map(([name, dir]) => ({
-    name,
-    prefix: swiftDeclaredTargetPrefix(dir),
-  }));
-
   const groups = new Map<string, T[]>();
-  const defaultGroup: T[] = [];
-
   for (const item of items) {
-    const rawPath = getPath(item);
-    const normalized = rawPath.includes('\\') ? rawPath.replace(/\\/g, '/') : rawPath;
-    let assigned = false;
-    for (const { name, prefix } of targetPrefixes) {
-      if (pathMatchesTargetPrefix(normalized, prefix)) {
-        let group = groups.get(name);
-        if (group === undefined) {
-          group = [];
-          groups.set(name, group);
-        }
-        group.push(item);
-        assigned = true;
-        break; // FIRST match only — one bucket per file, no fan-out.
+    const keys = swiftModuleKeysOf(getPath(item), resolutionConfig);
+    for (const key of options.allMemberships === true ? keys : keys.slice(0, 1)) {
+      let group = groups.get(key);
+      if (group === undefined) {
+        group = [];
+        groups.set(key, group);
       }
+      group.push(item);
     }
-    if (!assigned) defaultGroup.push(item);
   }
-
-  if (defaultGroup.length > 0) groups.set(DEFAULT_TARGET, defaultGroup);
   return groups;
 }
 
 /**
- * Duck-type the opaque `resolutionConfig` (loaded by
- * `loadSwiftPackageConfig` and threaded through the orchestrator) into the
- * SPM `targets` map, or `null` when no Swift package config is present.
- *
- * Uses structural duck-typing (no `instanceof`) because the value crosses
- * the `unknown`-typed `resolutionConfig` channel and may be `null`,
- * `undefined`, or a config object whose `targets` is a `Map<string,string>`.
+ * Duck-type the opaque `resolutionConfig` into the SwiftPM `targets` map, or
+ * `null` when no Swift package config is present.
  */
 export function coerceSwiftTargets(resolutionConfig: unknown): ReadonlyMap<string, string> | null {
   const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
@@ -96,12 +173,66 @@ export function coerceSwiftTargets(resolutionConfig: unknown): ReadonlyMap<strin
   return null;
 }
 
-function pathMatchesTargetPrefix(normalizedPath: string, prefix: string): boolean {
-  if (prefix === '') return true;
-  return normalizedPath.startsWith(prefix) || normalizedPath.includes(`/${prefix}`);
+const DEFAULT_KEYS: readonly string[] = Object.freeze([DEFAULT_SWIFT_MODULE]);
+
+function matcherFor(resolutionConfig: unknown): SwiftModuleMatcher | null {
+  if (typeof resolutionConfig !== 'object' || resolutionConfig === null) return null;
+  const cached = MATCHERS.get(resolutionConfig);
+  if (cached !== undefined) return cached;
+  const specs = swiftModuleSpecs(resolutionConfig);
+  if (specs === null) return null;
+
+  const spmByDir = new Map<string, string>();
+  const xcodeByFile = new Map<string, string[]>();
+  const xcodeByFolder = new Map<string, { key: string; excluded: readonly string[] }[]>();
+  const specByKey = new Map<string, SwiftModuleSpec>();
+  const order = new Map<string, number>();
+  for (const spec of specs) {
+    if (specByKey.has(spec.key)) continue;
+    specByKey.set(spec.key, spec);
+    order.set(spec.key, order.size);
+    if (spec.dir !== undefined) {
+      // First target wins a shared directory; SwiftPM rejects that layout.
+      if (!spmByDir.has(spec.dir)) spmByDir.set(spec.dir, spec.key);
+      continue;
+    }
+    for (const file of spec.files ?? []) {
+      const keys = xcodeByFile.get(file);
+      if (keys === undefined) xcodeByFile.set(file, [spec.key]);
+      else keys.push(spec.key);
+    }
+    const excluded = spec.excluded ?? [];
+    for (const folder of spec.folders ?? []) {
+      const entries = xcodeByFolder.get(folder);
+      const entry = { key: spec.key, excluded };
+      if (entries === undefined) xcodeByFolder.set(folder, [entry]);
+      else entries.push(entry);
+    }
+  }
+
+  const leftoversStandalone =
+    (resolutionConfig as Partial<SwiftPackageConfig>).moduleNamesComplete === true;
+  const matcher = { spmByDir, xcodeByFile, xcodeByFolder, specByKey, order, leftoversStandalone };
+  MATCHERS.set(resolutionConfig, matcher);
+  return matcher;
 }
 
-/** Segment-boundary membership used by grouping and declared import resolve. */
-export function fileMatchesSwiftTargetDir(normalizedPath: string, targetDir: string): boolean {
-  return pathMatchesTargetPrefix(normalizedPath, swiftDeclaredTargetPrefix(targetDir));
+/** Ancestor directories of a file path, deepest first, ending with '' (the root). */
+function ancestorDirs(filePath: string): string[] {
+  const out: string[] = [];
+  let i = filePath.lastIndexOf('/');
+  while (i > 0) {
+    out.push(filePath.slice(0, i));
+    i = filePath.lastIndexOf('/', i - 1);
+  }
+  out.push('');
+  return out;
+}
+
+/** `./Sources/App/` → `Sources/App`; `.` → ''. */
+function normalizeDir(dir: string): string {
+  let norm = dir.replace(/\\/g, '/');
+  while (norm.startsWith('./')) norm = norm.slice(2);
+  norm = norm.replace(/\/+$/, '');
+  return norm === '.' ? '' : norm;
 }

@@ -223,6 +223,43 @@ describe('auto-sync runner', () => {
     ]);
   });
 
+  it('passes embeddings from .gitnexusrc into runAnalysis', async () => {
+    const targetDir = '/tmp/repos/gitee.com/qts_server/qts_account';
+    await fs.mkdir(targetDir, { recursive: true });
+    await fs.writeFile(path.join(targetDir, '.gitnexusrc'), '{"embeddings": true}');
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async () => targetDir),
+      getCurrentBranch: vi.fn(() => 'master'),
+      getCurrentCommit: vi.fn(() => 'commit-2'),
+      runAnalysis: vi.fn(async () => ({ stats: { files: 1 } }) as any),
+      registerRepo: vi.fn(async () => 'qts_account'),
+      loadState: vi.fn(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => false),
+      syncGroupByName: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    try {
+      await runAutoSyncOnce(config, {
+        deps,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+
+      expect(deps.runAnalysis).toHaveBeenCalledWith(
+        targetDir,
+        expect.objectContaining({ embeddings: true }),
+        1_800_000,
+        undefined,
+        undefined,
+        1,
+      );
+    } finally {
+      await fs.rm(path.join(targetDir, '.gitnexusrc'), { force: true });
+    }
+  });
+
   it('enables PDG atomically at an unchanged commit when project configuration opts in', async () => {
     const pdgConfig: AutoSyncConfig = {
       ...config,
@@ -571,6 +608,9 @@ describe('auto-sync runner', () => {
 
   it('normalizes the .git suffix case in auto-sync repository identities', () => {
     expect(getAutoSyncRepoIdentity('git@GitHub.com:team/service.GIT')).toBe(
+      'github.com/team/service',
+    );
+    expect(getAutoSyncRepoIdentity('https://github.com/team/service.git')).toBe(
       'github.com/team/service',
     );
   });
@@ -1238,28 +1278,39 @@ describe('auto-sync runner', () => {
     expect(deps.writeCommitInfo).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects non auto-sync SSH URLs at runner boundary', async () => {
-    const invalidConfig: AutoSyncConfig = {
+  it('clones allowlisted HTTPS remotes at the runner boundary', async () => {
+    const httpsConfig: AutoSyncConfig = {
       ...config,
       projects: [{ ...config.projects[0], remoteUrls: ['https://github.com/owner/repo.git'] }],
     };
     const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
-      cloneOrPull: vi.fn(),
+      cloneOrPull: vi.fn(async () => '/tmp/repos/github.com/owner/repo'),
       loadState: vi.fn(async () => ({})),
       saveState: vi.fn(async () => {}),
       writeCommitInfo: vi.fn(async () => {}),
       addRepoToGroup: vi.fn(async () => false),
       syncGroupByName: vi.fn(async () => {}),
       getAvailableMemoryGB: vi.fn(() => 8),
+      getCurrentBranch: vi.fn(() => 'master'),
+      getCurrentCommit: vi.fn(() => 'abc'),
+      runAnalysis: vi.fn(async () => ({ stats: {} })),
+      registerRepo: vi.fn(async () => 'repo'),
     });
 
-    const result = await runAutoSyncOnce(invalidConfig, {
+    const error = vi.fn();
+    const result = await runAutoSyncOnce(httpsConfig, {
       deps,
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      logger: { info: vi.fn(), warn: vi.fn(), error },
     });
 
-    expect(result.failed).toBe(1);
-    expect(deps.cloneOrPull).not.toHaveBeenCalled();
+    expect(error.mock.calls, JSON.stringify(error.mock.calls)).toEqual([]);
+    expect(result.failed).toBe(0);
+    expect(deps.cloneOrPull).toHaveBeenCalledWith(
+      'https://github.com/owner/repo.git',
+      '/tmp/repos/github.com/owner/repo',
+      undefined,
+      expect.any(Object),
+    );
   });
 
   it('resets consecutive analyze failures when the code commit changes, then records this failure', async () => {

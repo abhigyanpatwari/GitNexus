@@ -3,9 +3,10 @@
  *
  * Kotlin's tree-sitter grammar (vendored, NOT an npm package — loaded via
  * `requireVendoredGrammar('tree-sitter-kotlin')`, exactly like tree-sitter-swift)
- * is field-less for control flow: NONE of the control-flow nodes expose
- * `childForFieldName` fields (verified by a real parse — every `fieldNameForChild`
- * came back null), so this visitor navigates purely by child TYPE and position.
+ * is mostly field-less for control flow (`when` / loops / `try` / `elvis_expression`
+ * expose no fields), so this visitor navigates purely by child TYPE and position.
+ * `if_expression` is the exception: it DOES field `condition` / `consequence` /
+ * `alternative` (#3354 — callable-flow capture reads them); position still works.
  * Every node-type literal below was grammar-validated against the vendored
  * tree-sitter-kotlin via the introspection probe before use (mandatory pre-step —
  * the grammar-literal CI gate maps `kotlin.ts → Kotlin` and fails on a wrong

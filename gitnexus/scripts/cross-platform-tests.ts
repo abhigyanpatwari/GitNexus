@@ -341,6 +341,12 @@ const FILESYSTEM = [
   // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
   // disk — against a 30 s testTimeout.
   'test/unit/source-control-bytes.test.ts',
+  // Auto-sync reads a cloned `.gitnexusrc` through the symlink/hard-link guard,
+  // and clone recovery uses real `git` plus temp dirs. Ubuntu coverage alone
+  // would never create the Windows file symlink (`type: 'file'`) or run the
+  // git-config failure path on windows-latest / macos-latest.
+  'test/unit/gitnexus-rc-embeddings.test.ts',
+  'test/unit/git-clone.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

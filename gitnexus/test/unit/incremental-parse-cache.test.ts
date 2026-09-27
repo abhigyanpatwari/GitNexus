@@ -288,8 +288,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 103 -> 104 for #3339 review: pair-HOC queries name
   // `mutation(withAuth(arrow))` object-pair handlers. Warm caches replay
   // anonymous arrows, so both stores re-extract.
-  it('pins SCHEMA_BUMP to 104 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(104);
+  // Moved 104 -> 112 for #3354: callable-value flow follows `??`/`||`/`?:`
+  // branches. 105-111 are claimed by open PR #3326.
+  it('pins SCHEMA_BUMP to 112 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(112);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -298,6 +300,7 @@ describe('PARSE_CACHE_VERSION', () => {
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
+      104, 105, 106, 107, 108, 109, 110, 111,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

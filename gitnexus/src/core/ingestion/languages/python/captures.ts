@@ -53,6 +53,20 @@ const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   assignmentNodeTypes: new Set(['assignment', 'named_expression']),
   identifierNodeTypes: new Set(['identifier']),
   functionScopedValueBindings: true,
+  // `a if c else b` is a FIELDLESS `conditional_expression` (positional
+  // value, condition, value), so the shared condition/consequence/alternative
+  // rule never sees its branches and only the last operand flowed (#3354).
+  // `a or b` is a fielded `boolean_operator` the shared rule already handles.
+  valueAlternatives: (node: SyntaxNode) => {
+    if (node.type !== 'conditional_expression') return undefined;
+    const named = node.namedChildren.filter(
+      (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+    );
+    const [value, , alternative] = named;
+    return named.length === 3 && value !== undefined && alternative !== undefined
+      ? [value, alternative]
+      : undefined;
+  },
 } as const;
 
 export function emitPythonScopeCaptures(

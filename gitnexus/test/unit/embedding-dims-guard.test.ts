@@ -190,6 +190,7 @@ describe('run-analyze embedding-dims guard (#2798)', () => {
       // Pipeline actually ran (embeddingDims mismatch -> force=true), the
       // notice names both widths, and the rebuild stamped the live one.
       expect(result.alreadyUpToDate).toBeUndefined();
+      expect(result.rebuildReasons).toContain('embedding-dims');
       expect(logs.join('\n')).toContain(
         `embedding dimensions changed (index built with FLOAT[${stale}], this run embeds at ${EMBEDDING_DIMS})`,
       );

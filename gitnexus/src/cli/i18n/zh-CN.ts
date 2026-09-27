@@ -199,7 +199,7 @@ export const zhCN = {
   'help.command.autoSync.description':
     '控制基于 GITNEXUS_HOME/watch_config.yml 的定时 clone/pull 和分析',
   'help.autoSync.details':
-    '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：仅允许 github.com、gitlab.com 和 gitee.com 上的 SSH 地址。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
+    '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：允许 github.com、gitlab.com 和 gitee.com 上的 SSH 或 HTTPS 地址。无效的 watch_config.yml 会立即跳过 auto-sync。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
   'help.command.watch.description':
     '含义不明确：本地文件请用 `analyze --watch`，定时远程同步请用 `auto-sync`',
   'help.watch.details':
@@ -280,6 +280,8 @@ export const zhCN = {
   'help.option.analyze.workerTimeout': 'Worker 子批次空闲超时，超时后重试/回退。默认：30。',
   'help.option.analyze.walCheckpointThreshold':
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
+  'help.option.analyze.memoryBudget':
+    'analyze 主线程 V8 堆大小（MB，整数 >= 200）。以该堆大小重新运行 analyze，覆盖按 RAM/cgroup 自动计算的上限及任何 --max-old-space-size 设置；解析 worker 各自保留独立的堆上限。',
   'help.option.analyze.workers':
     '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
   'help.option.analyze.maxProcesses':

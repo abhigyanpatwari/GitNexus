@@ -285,17 +285,43 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
   };
 }
 
-export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
+export function parseAutoSyncRemoteIdentity(remoteUrl: string): { host: string; repoPath: string } {
   const trimmed = remoteUrl.trim();
   if (trimmed.includes('?') || trimmed.includes('#')) {
     throw new Error('must not include query strings or fragments');
   }
-  const match = /^git@([^:\s/]+):([^\s]+)$/.exec(trimmed);
-  if (!match) {
-    throw new Error('must use an SSH URL on github.com, gitlab.com, or gitee.com');
+  const sshMatch = /^git@([^:\s/]+):([^\s]+)$/.exec(trimmed);
+  const httpsMatch = /^https:\/\/([^/\s]+)\/([^\s]+)$/.exec(trimmed);
+  let host: string;
+  let repoPath: string;
+  if (sshMatch) {
+    host = sshMatch[1];
+    repoPath = sshMatch[2];
+  } else if (httpsMatch) {
+    host = httpsMatch[1];
+    repoPath = httpsMatch[2];
+    if (host.includes('@') || host.includes(':')) {
+      throw new Error('must not include userinfo or a port');
+    }
+  } else {
+    throw new Error('must use an SSH or HTTPS URL on github.com, gitlab.com, or gitee.com');
   }
-  const host = match[1].toLowerCase();
-  const repoPath = match[2];
+  host = host.toLowerCase();
+  assertAutoSyncRemotePath(host, repoPath);
+  return { host, repoPath };
+}
+
+/** Canonical `host/owner/repo` key. Strips one trailing `.git`. Throws on an invalid remote. */
+export function getAutoSyncRepoIdentity(remoteUrl: string): string {
+  const { host, repoPath } = parseAutoSyncRemoteIdentity(remoteUrl);
+  return `${host}/${repoPath.replace(/\.git$/i, '')}`;
+}
+
+export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
+  parseAutoSyncRemoteIdentity(remoteUrl);
+}
+
+function assertAutoSyncRemotePath(host: string, repoPath: string): void {
   if (!ALLOWED_REMOTE_HOSTS.has(host)) {
     throw new Error('host must be one of github.com, gitlab.com, or gitee.com');
   }

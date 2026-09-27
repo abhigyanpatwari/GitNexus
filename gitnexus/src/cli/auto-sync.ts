@@ -124,6 +124,8 @@ function defaultSyncConfig(localPath: string): string {
     '    overwrite_local_changes: false',
     '    remote_urls:',
     '      - git@github.com:owner/repo.git',
+    '      # HTTPS remotes on github.com, gitlab.com, or gitee.com are also allowed',
+    '      # - https://github.com/owner/public-repo.git',
     '',
   ].join('\n');
 }
