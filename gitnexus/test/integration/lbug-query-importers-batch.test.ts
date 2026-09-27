@@ -108,6 +108,67 @@ withTestLbugDB('query-importers-batch', (handle) => {
   });
 });
 
+withTestLbugDB('query-importers-batch-module-members', (handle) => {
+  describe('queryImportersBatch — module co-members (#3355)', () => {
+    it('returns files sharing a module-membership hub, and ignores other File->Module edges', async () => {
+      const { loadGraphToLbug, queryImportersBatch } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      const { MODULE_MEMBERSHIP_REASON } = await import('../../src/core/graph/edge-reasons.js');
+
+      const file = (fp: string): TestNodeInput => ({
+        id: `File:${fp}`,
+        label: 'File',
+        name: path.basename(fp),
+        filePath: fp,
+      });
+      const nodes: TestNodeInput[] = [
+        file('Net/A.swift'),
+        file('Net/B.swift'),
+        file('Net/C.swift'),
+        file('Login/D.swift'),
+        file('jobs/one.jcl'),
+        file('jobs/two.jcl'),
+        { id: 'Module:swift:Net', label: 'Module', name: 'Net', filePath: 'Net' },
+        { id: 'Module:swift:Login', label: 'Module', name: 'Login', filePath: 'Login' },
+        { id: 'Module:proc', label: 'Module', name: 'PROC', filePath: 'jobs/proc.jcl' },
+      ];
+      const member = (fp: string, moduleId: string): TestRelInput => ({
+        sourceId: `File:${fp}`,
+        targetId: moduleId,
+        type: 'IMPORTS',
+        reason: MODULE_MEMBERSHIP_REASON,
+      });
+      const rels: TestRelInput[] = [
+        member('Net/A.swift', 'Module:swift:Net'),
+        member('Net/B.swift', 'Module:swift:Net'),
+        member('Net/C.swift', 'Module:swift:Net'),
+        member('Login/D.swift', 'Module:swift:Login'),
+        // Two JCL jobs including the same PROC are not co-dependent.
+        {
+          sourceId: 'File:jobs/one.jcl',
+          targetId: 'Module:proc',
+          type: 'IMPORTS',
+          reason: 'jcl-include',
+        },
+        {
+          sourceId: 'File:jobs/two.jcl',
+          targetId: 'Module:proc',
+          type: 'IMPORTS',
+          reason: 'jcl-include',
+        },
+      ];
+      await loadGraphToLbug(buildTestGraph(nodes, rels), '/tmp/repo', path.dirname(handle.dbPath));
+
+      await expect(queryImportersBatch(['Net/B.swift'])).resolves.toEqual([
+        'Net/A.swift',
+        'Net/C.swift',
+      ]);
+      await expect(queryImportersBatch(['Login/D.swift'])).resolves.toEqual([]);
+      await expect(queryImportersBatch(['jobs/one.jcl'])).resolves.toEqual([]);
+    }, 120_000);
+  });
+});
+
 // Dedicated trailing block: the DROP below poisons this DB for any further
 // CodeRelation query, so no other test may share it.
 withTestLbugDB('query-importers-batch-failure', () => {

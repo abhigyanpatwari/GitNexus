@@ -23,13 +23,15 @@
  *   and an in-repo `CoreUI` folder that is NOT in Package.swift stay
  *   external. An empty `declaredTargets` map fails every name closed. Import
  *   of a module that `@_exported import`s another unions that module's files.
- *   A `#2931` nested `Sources/Mod0` path still belongs to Mod0. Grouping
- *   assigns a two-prefix file to the FIRST target only.
+ *   A `#2931` nested `Sources/Mod0` path still belongs to Mod0 for import
+ *   resolve. Grouping anchors target paths at the repo root (#3355), so a
+ *   two-prefix file joins the target it sits under, not a later match.
  *
  * - `parse_targets` / `parse_binary_skipped` / `url_comment_targets` /
- *   `parse_complete` — EXACT. Source factories are kept; binary/plugin
- *   factories are not modules; `https://` on the same line does not hide a
- *   later `.target`.
+ *   `parse_complete` — EXACT. Source factories are kept; binary and
+ *   system-library factories are not modules; a plugin is a non-importable
+ *   module under `Plugins/` (#3355); `https://` on the same line does not hide
+ *   a later `.target`.
  *
  * - `layout_fingerprint` — EXACT. sha256 over sorted `from|target->files`
  *   rows on the unique query set. Catches a target-set change that leaves
@@ -54,7 +56,7 @@ import { performance } from 'node:perf_hooks';
 import { parseSwiftPackageManifest } from '../../src/core/ingestion/language-config.ts';
 import { swiftPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/swift.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
-import { groupSwiftFilesBySpmTarget } from '../../src/core/ingestion/languages/swift/target-grouping.ts';
+import { groupSwiftFilesByModule } from '../../src/core/ingestion/languages/swift/target-grouping.ts';
 
 const baselines = JSON.parse(readFileSync(new URL('./baselines.json', import.meta.url), 'utf8'));
 
@@ -266,7 +268,9 @@ function correctness(corpus) {
   );
   const emptyDeclaredExternal = empty == null ? 1 : 0;
 
-  const groups = groupSwiftFilesBySpmTarget(corpus.files, (p) => p, corpus.targets);
+  // Anchored at the repo root: Clash.swift is under Sources/Mod0; the
+  // Sources/Mod1 further down its path is a vendored copy, not Mod1 (#3355).
+  const groups = groupSwiftFilesByModule(corpus.files, (p) => p, { targets: corpus.targets });
   const firstWins =
     groups.get('Mod0')?.includes(corpus.extras.clash) === true &&
     groups.get('Mod1')?.includes(corpus.extras.clash) !== true
@@ -299,13 +303,16 @@ let package = Package(
     reexportExtra,
     nestedRepeatResolved,
     firstWins,
-    parseTargets: parseFixed.targets.size,
+    // Importable source targets. Plugins are modules (grouped) but never
+    // `import`-able (#3355), so they are counted by the arm below instead.
+    parseTargets: parseFixed.targets.size - parseFixed.plugins.size,
     parseBinarySkipped:
-      parseFixed.targets.has('Lib') ||
-      parseFixed.targets.has('Gen') ||
-      parseFixed.targets.has('CFoo')
-        ? 0
-        : 1,
+      !parseFixed.targets.has('Lib') &&
+      !parseFixed.targets.has('CFoo') &&
+      parseFixed.targets.get('Gen') === 'Plugins/Gen' &&
+      parseFixed.plugins.has('Gen')
+        ? 1
+        : 0,
     urlCommentTargets: urlComment.targets.get('T') === 'Sources/T' ? 1 : 0,
     parseComplete: parseFixed.complete && urlComment.complete ? 1 : 0,
     fingerprint: createHash('sha256').update(records.sort().join('\n')).digest('hex'),

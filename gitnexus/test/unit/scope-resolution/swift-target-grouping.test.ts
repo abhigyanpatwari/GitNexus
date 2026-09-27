@@ -1,47 +1,50 @@
 import { describe, expect, it } from 'vitest';
-import { groupSwiftFilesBySpmTarget } from '../../../src/core/ingestion/languages/swift/target-grouping.js';
+import { groupSwiftFilesByModule } from '../../../src/core/ingestion/languages/swift/target-grouping.js';
 
-describe('groupSwiftFilesBySpmTarget', () => {
-  it('matches a later segment-aligned target prefix after an earlier partial occurrence', () => {
-    const targets = new Map([['Core', 'Modules/Core']]);
+// #2931 made grouping accept a target prefix found anywhere in the path, as a
+// stand-in for nested-package discovery. The workspace loader now rebases every
+// target to the repo root (#3355), so matching is anchored there: a repeated
+// layout further down the path is a different package, not this target.
+describe('groupSwiftFilesByModule — anchored target matching', () => {
+  const config = { targets: new Map([['Core', 'Modules/Core']]) };
+
+  it('does not match a target prefix that appears only further down the path', () => {
     const items = ['vendor/SubModules/Core/shim/Modules/Core/Thing.swift'];
 
-    const groups = groupSwiftFilesBySpmTarget(items, (item) => item, targets);
+    const groups = groupSwiftFilesByModule(items, (item) => item, config);
 
-    expect(groups.get('Core')).toEqual(items);
-    expect(groups.get('__default__')).toBeUndefined();
+    expect(groups.get('Core')).toBeUndefined();
+    expect(groups.get('__default__')).toEqual(items);
   });
 
-  it('keeps an earlier segment-aligned match when a later occurrence is partial', () => {
-    const targets = new Map([['Core', 'Modules/Core']]);
+  it('matches a target dir at the repo root even when the name repeats below it', () => {
     const items = ['Modules/Core/Thing/SubModules/Core/Thing.swift'];
 
-    const groups = groupSwiftFilesBySpmTarget(items, (item) => item, targets);
+    const groups = groupSwiftFilesByModule(items, (item) => item, config);
 
     expect(groups.get('Core')).toEqual(items);
-    expect(groups.get('__default__')).toBeUndefined();
   });
 
   it('does not treat a partial path segment as a target match', () => {
-    const targets = new Map([['Core', 'Modules/Core']]);
     const item = 'vendor/SubModules/Core/Thing.swift';
 
-    const groups = groupSwiftFilesBySpmTarget([item], (value) => value, targets);
+    const groups = groupSwiftFilesByModule([item], (value) => value, config);
 
-    expect(groups.get('Core')).toBeUndefined();
     expect(groups.get('__default__')).toEqual([item]);
   });
 
-  it('keeps first-target-wins behavior when target paths overlap', () => {
-    const targets = new Map([
-      ['Outer', 'Sources'],
-      ['Inner', 'Sources/Feature'],
-    ]);
+  it('prefers the deepest target when target paths overlap', () => {
+    const overlapping = {
+      targets: new Map([
+        ['Outer', 'Sources'],
+        ['Inner', 'Sources/Feature'],
+      ]),
+    };
     const item = 'Sources/Feature/Thing.swift';
 
-    const groups = groupSwiftFilesBySpmTarget([item], (value) => value, targets);
+    const groups = groupSwiftFilesByModule([item], (value) => value, overlapping);
 
-    expect(groups.get('Outer')).toEqual([item]);
-    expect(groups.get('Inner')).toBeUndefined();
+    expect(groups.get('Inner')).toEqual([item]);
+    expect(groups.get('Outer')).toBeUndefined();
   });
 });

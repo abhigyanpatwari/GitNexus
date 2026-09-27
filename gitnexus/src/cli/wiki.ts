@@ -29,6 +29,7 @@ import { detectCursorCLI } from '../core/wiki/cursor-client.js';
 import { detectGrokCLI } from '../core/wiki/grok-client.js';
 import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
+import { parseIntegerOption } from './int-option.js';
 
 export interface WikiCommandOptions {
   force?: boolean;
@@ -46,23 +47,6 @@ export interface WikiCommandOptions {
   retries?: string;
   lang?: string;
   allowInsecureConnection?: string;
-}
-
-function parsePositiveIntegerOption(
-  value: string | undefined,
-  flag: string,
-  multiplier = 1,
-): number | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  if (!/^[1-9]\d*$/.test(trimmed)) {
-    throw new Error(`${flag} must be a positive integer`);
-  }
-  const parsed = parseInt(trimmed, 10);
-  if (parsed > Math.floor(Number.MAX_SAFE_INTEGER / multiplier)) {
-    throw new Error(`${flag} is too large`);
-  }
-  return parsed;
 }
 
 function isLocalProvider(
@@ -206,8 +190,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   let retries: number | undefined;
   let allowedInsecureHttpHosts: string[] | undefined;
   try {
-    timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
-    retries = parsePositiveIntegerOption(options?.retries, '--retries');
+    timeoutSeconds =
+      options?.timeout === undefined
+        ? undefined
+        : parseIntegerOption(options.timeout, '--timeout', { minimum: 1, scale: 1000 });
+    retries =
+      options?.retries === undefined
+        ? undefined
+        : parseIntegerOption(options.retries, '--retries', { minimum: 1 });
     allowedInsecureHttpHosts =
       options?.allowInsecureConnection === undefined
         ? undefined
