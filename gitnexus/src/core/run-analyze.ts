@@ -2369,6 +2369,13 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
+      // A clean working tree is not enough when the previous index captured
+      // uncommitted content at this same HEAD.  If those paths were later
+      // restored, the current tree is clean but the persisted file hashes and
+      // FTS rows still describe the dirty snapshot.  Force one incremental
+      // pass; a successful clean run clears `dirtyPaths`, restoring the fast
+      // path on the following invocation.
+      const indexedDirty = (existingMeta.indexCoverage?.dirtyPaths?.length ?? 0) > 0;
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -2398,7 +2405,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !healUnregistered) {
+      if (!dirty && !indexedDirty && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {

@@ -1167,6 +1167,45 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('re-indexes a dirty snapshot after the file is restored at the same HEAD', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      const clean = await readFile(target, 'utf-8');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      await writeFile(target, `${clean}\n// temporary dirty snapshot\n`, 'utf-8');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const dirtyMeta = await loadMeta(storagePath);
+      expect(dirtyMeta?.indexCoverage?.dirtyPaths).toContain('src/logger.ts');
+      const dirtyHash = dirtyMeta?.fileHashes?.['src/logger.ts'];
+
+      await writeFile(target, clean, 'utf-8');
+      const restored = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+
+      expect(restored.alreadyUpToDate).toBeUndefined();
+      const restoredMeta = await loadMeta(storagePath);
+      expect(restoredMeta?.indexCoverage?.dirtyPaths).toEqual([]);
+      expect(restoredMeta?.fileHashes?.['src/logger.ts']).not.toBe(dirtyHash);
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('skips the framework annotation drift query when no Bean source changed', async () => {
     const repo = await setupMiniRepo();
     try {
