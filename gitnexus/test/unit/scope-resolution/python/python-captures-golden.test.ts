@@ -83,7 +83,8 @@ function callArity(src: string, name: string): string | undefined {
       (candidate['@reference.call.free'] !== undefined ||
         candidate['@reference.call.member'] !== undefined),
   );
-  return match?.['@reference.arity']?.text;
+  if (!match) throw new Error(`Missing call capture for ${name}`);
+  return match['@reference.arity']?.text;
 }
 
 /** All `.py` files under `lang-resolution/python-*`, as sorted repo-relative-ish keys. */
