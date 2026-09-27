@@ -1119,6 +1119,7 @@ describe('Python mixin self-dispatch', () => {
       (call) => call.source === 'renamed' && call.target === 'helper',
     );
     expect(renamedCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'conditional.py',
       'helpers.py',
       'worker.py',
     ]);
