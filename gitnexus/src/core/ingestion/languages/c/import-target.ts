@@ -64,6 +64,8 @@ export interface CIncludeLookup {
   readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
   /** Nearest-ancestor lists for a file with no database entry. */
   readonly directoryScopes?: ReadonlyMap<string, CTranslationUnitPaths>;
+  /** Interface include roots from `target_link_libraries`, keyed by source file. */
+  readonly cmakeLinkHeaders?: ReadonlyMap<string, readonly string[]>;
 }
 
 /**
@@ -86,6 +88,7 @@ export function cIncludeLookupFromConfig(
         readonly userHeaderSearchPaths?: readonly string[];
         readonly translationUnits?: ReadonlyMap<string, CTranslationUnitPaths>;
         readonly directoryScopes?: ReadonlyMap<string, CTranslationUnitPaths>;
+        readonly cmakeLinkHeaders?: ReadonlyMap<string, readonly string[]>;
       }
     | undefined,
   isSystem: boolean,
@@ -96,6 +99,7 @@ export function cIncludeLookupFromConfig(
     userHeaderSearchPaths: config?.userHeaderSearchPaths,
     translationUnits: config?.translationUnits,
     directoryScopes: config?.directoryScopes,
+    cmakeLinkHeaders: config?.cmakeLinkHeaders,
   };
 }
 
@@ -192,24 +196,57 @@ function listsFor(
   if (units !== undefined && units.size > 0) {
     const exact = units.get(normalizeRepoPath(fromFile));
     if (exact !== undefined) {
-      return { header: exact.headerSearchPaths, user: exact.userHeaderSearchPaths };
+      return withCmakeLinks(lookup, fromFile, {
+        header: exact.headerSearchPaths,
+        user: exact.userHeaderSearchPaths,
+      });
     }
     const near = pathsFromTranslationUnits(units, fromFile);
-    if (near !== undefined) return near;
+    if (near !== undefined) return withCmakeLinks(lookup, fromFile, near);
   }
   const scopes = lookup?.directoryScopes;
   const paths =
     scopes !== undefined && scopes.size > 0 ? nearestScope(scopes, fromFile) : undefined;
   if (paths !== undefined) {
-    return { header: paths.headerSearchPaths, user: paths.userHeaderSearchPaths };
+    return withCmakeLinks(lookup, fromFile, {
+      header: paths.headerSearchPaths,
+      user: paths.userHeaderSearchPaths,
+    });
   }
   if (units !== undefined && units.size > 0) {
-    return { header: [], user: [] };
+    return withCmakeLinks(lookup, fromFile, { header: [], user: [] });
   }
-  return {
+  return withCmakeLinks(lookup, fromFile, {
     header: lookup?.headerSearchPaths ?? [],
     user: lookup?.userHeaderSearchPaths ?? [],
-  };
+  });
+}
+
+function withCmakeLinks(
+  lookup: CIncludeLookup | undefined,
+  fromFile: string,
+  lists: { readonly header: readonly string[]; readonly user: readonly string[] },
+): { readonly header: readonly string[]; readonly user: readonly string[] } {
+  const extra = cmakeLinksFor(lookup?.cmakeLinkHeaders, fromFile);
+  if (extra.length === 0) return lists;
+  return { header: [...new Set([...lists.header, ...extra])], user: lists.user };
+}
+
+function cmakeLinksFor(
+  links: ReadonlyMap<string, readonly string[]> | undefined,
+  fromFile: string,
+): readonly string[] {
+  if (links === undefined || links.size === 0) return [];
+  const file = normalizeRepoPath(fromFile);
+  const exact = links.get(file);
+  if (exact !== undefined) return exact;
+  const dir = directoryOf(file);
+  const header: string[] = [];
+  for (const [source, paths] of links) {
+    if (directoryOf(source) !== dir) continue;
+    header.push(...paths);
+  }
+  return [...new Set(header)];
 }
 
 /**

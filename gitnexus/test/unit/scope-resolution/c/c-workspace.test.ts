@@ -532,7 +532,14 @@ describe('C/C++ monorepo config', () => {
   it('reads CMake include_directories and target_include_directories by visibility', () => {
     touch(
       'CMakeLists.txt',
-      ['project(mono C)', 'include_directories(common)', 'add_subdirectory(libs/net)'].join('\n'),
+      [
+        'project(mono C)',
+        'include_directories(common)',
+        'add_subdirectory(libs/net)',
+        'add_subdirectory(libs/other)',
+        'add_executable(app app/main.c)',
+        'target_link_libraries(app PRIVATE net)',
+      ].join('\n'),
     );
     touch(
       'libs/net/CMakeLists.txt',
@@ -552,13 +559,14 @@ describe('C/C++ monorepo config', () => {
     touch('libs/net/src/net.c');
     touch('app/main.c');
     touch('include/guess.h');
+    touch('libs/other/src/other.c');
+    touch('libs/other/CMakeLists.txt', 'add_library(other src/other.c)\n');
     const config = loadCFamilyResolutionConfig(TMP, C_HEADER_EXTENSIONS);
-    expect(config.headerSearchPaths).toEqual(['common', 'libs/net/api', 'shared']);
+    expect(config.headerSearchPaths).toEqual(['common']);
     expect(config.directoryScopes.get('libs/net')?.headerSearchPaths).toEqual([
       'common',
       'libs/net/api',
       'libs/net/src/internal',
-      'shared',
     ]);
     const workspace = new Set([
       'app/main.c',
@@ -568,9 +576,12 @@ describe('C/C++ monorepo config', () => {
       'libs/net/api/net.h',
       'libs/net/src/internal/internal.h',
       'include/guess.h',
+      'libs/other/src/other.c',
     ]);
     expect(resolveAngle(config, 'net.h', 'app/main.c', workspace)).toBe('libs/net/api/net.h');
     expect(resolveAngle(config, 'shared.h', 'app/main.c', workspace)).toBe('shared/shared.h');
+    expect(resolveAngle(config, 'net.h', 'libs/other/src/other.c', workspace)).toBeNull();
+    expect(resolveAngle(config, 'shared.h', 'libs/other/src/other.c', workspace)).toBeNull();
     expect(resolveAngle(config, 'common.h', 'libs/net/src/net.c', workspace)).toBe(
       'common/common.h',
     );

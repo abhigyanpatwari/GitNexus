@@ -89,6 +89,11 @@ export interface CFamilyResolutionConfig {
    * nearest ancestor's entry, else the top-level lists.
    */
   readonly directoryScopes: ReadonlyMap<string, CTranslationUnitPaths>;
+  /**
+   * Interface include roots a source file sees because its CMake target
+   * links another target. Keyed by repo-relative source path.
+   */
+  readonly cmakeLinkHeaders?: ReadonlyMap<string, readonly string[]>;
 }
 
 export function coerceCFamilyResolutionConfig(value: unknown): CFamilyResolutionConfig | undefined {
@@ -113,6 +118,7 @@ export function coerceCFamilyResolutionConfig(value: unknown): CFamilyResolution
       record.translationUnits instanceof Map ? record.translationUnits : EMPTY_TRANSLATION_UNITS,
     directoryScopes:
       record.directoryScopes instanceof Map ? record.directoryScopes : EMPTY_DIRECTORY_SCOPES,
+    cmakeLinkHeaders: record.cmakeLinkHeaders instanceof Map ? record.cmakeLinkHeaders : undefined,
   };
 }
 
@@ -190,7 +196,7 @@ export function loadCFamilyResolutionConfig(
     flagsClaimed: false,
   };
   const scopes = new Map<string, InheritedScope>([['', rootScope]]);
-  const cmakeGlobal: string[] = [];
+  const cmakeBits: CmakeBit[] = [];
   const databases: { readonly depth: number; readonly units: ParsedUnits }[] = [];
   const parsedDatabases = new Map<string, ParsedUnits | undefined>();
 
@@ -259,7 +265,7 @@ export function loadCFamilyResolutionConfig(
     }
 
     const cmake = readCMakeLists(dirAbs, repoPath, parent);
-    cmakeGlobal.push(...cmake.global);
+    cmakeBits.push(cmake);
 
     scopes.set(dir, {
       flagHeader,
@@ -276,12 +282,7 @@ export function loadCFamilyResolutionConfig(
   // Declared roots win. The implicit `include/` guess is only for a file no
   // config speaks for; the compiler would not search those directories either.
   const finish = (scope: InheritedScope): CTranslationUnitPaths => {
-    const header = uniquePaths([
-      ...scope.flagHeader,
-      ...scope.clangdHeader,
-      ...scope.cmake,
-      ...cmakeGlobal,
-    ]);
+    const header = uniquePaths([...scope.flagHeader, ...scope.clangdHeader, ...scope.cmake]);
     return {
       headerSearchPaths: header.length > 0 ? header : scope.flagsClaimed ? [] : implicitRoots,
       userHeaderSearchPaths: uniquePaths([...scope.flagUser, ...scope.clangdUser]),
@@ -314,6 +315,7 @@ export function loadCFamilyResolutionConfig(
     userHeaderSearchPaths: root.userHeaderSearchPaths,
     translationUnits,
     directoryScopes,
+    cmakeLinkHeaders: cmakeUsageBySource(cmakeBits),
   };
 }
 
@@ -523,6 +525,8 @@ function resolvePointedPath(raw: string, dirAbs: string, repoPath: string): stri
 
 const CMAKE_INCLUDE_COMMAND =
   /(?:^|[^\w])(include_directories|target_include_directories)\s*\(([^)]*)\)/gi;
+const CMAKE_TARGET_COMMAND = /(?:^|[^\w])(add_library|add_executable)\s*\(([^)]*)\)/gi;
+const CMAKE_LINK_COMMAND = /(?:^|[^\w])target_link_libraries\s*\(([^)]*)\)/gi;
 const CMAKE_PROJECT_COMMAND = /(?:^|[^\w])project\s*\(/i;
 const CMAKE_ORDER_KEYWORDS = new Set(['SYSTEM', 'BEFORE', 'AFTER']);
 
@@ -565,28 +569,52 @@ function stripCMakeComments(text: string): string {
   return out;
 }
 
+interface CmakeBit {
+  readonly scoped: readonly string[];
+  readonly projectDir: string | undefined;
+  readonly cmakeRootDir: string | undefined;
+  readonly targets: readonly { readonly name: string; readonly sources: readonly string[] }[];
+  readonly interfaceIncludes: readonly { readonly target: string; readonly path: string }[];
+  readonly links: readonly {
+    readonly target: string;
+    readonly dep: string;
+    readonly propagate: boolean;
+  }[];
+}
+
+const CMAKE_TARGET_KEYWORDS = new Set([
+  'STATIC',
+  'SHARED',
+  'MODULE',
+  'OBJECT',
+  'INTERFACE',
+  'ALIAS',
+  'IMPORTED',
+  'GLOBAL',
+  'EXCLUDE_FROM_ALL',
+]);
+const CMAKE_LINK_SKIP = new Set(['debug', 'optimized', 'general']);
+
 /**
  * Include roots one CMakeLists.txt declares.
  *
- * `include_directories` and PRIVATE target roots reach this directory's
- * subtree. PUBLIC and INTERFACE roots are what dependents compile with.
- * ponytail: no target_link_libraries graph, so PUBLIC/INTERFACE roots reach
- * every file; follow links per target if a monorepo needs dependents only.
- * A path left with `${VAR}` or a generator expression is dropped, not guessed.
+ * `include_directories` and PRIVATE/PUBLIC target roots reach this directory's
+ * subtree (PUBLIC is also an interface root). INTERFACE roots and linked
+ * targets' interface roots reach only the dependents recorded by
+ * `target_link_libraries`. A path left with `${VAR}` or a generator expression
+ * is dropped, not guessed.
  */
-function readCMakeLists(
-  dirAbs: string,
-  repoPath: string,
-  parent: InheritedScope,
-): {
-  readonly scoped: readonly string[];
-  readonly global: readonly string[];
-  readonly projectDir: string | undefined;
-  readonly cmakeRootDir: string | undefined;
-} {
+function readCMakeLists(dirAbs: string, repoPath: string, parent: InheritedScope): CmakeBit {
   const text = readText(join(dirAbs, 'CMakeLists.txt'));
   if (text.length === 0) {
-    return { scoped: [], global: [], projectDir: undefined, cmakeRootDir: undefined };
+    return {
+      scoped: [],
+      projectDir: undefined,
+      cmakeRootDir: undefined,
+      targets: [],
+      interfaceIncludes: [],
+      links: [],
+    };
   }
   const source = stripCMakeComments(text);
   const projectDir = CMAKE_PROJECT_COMMAND.test(source) ? dirAbs : undefined;
@@ -598,12 +626,22 @@ function readCMakeLists(
   ]);
 
   const scoped: string[] = [];
-  const global: string[] = [];
+  const targets: { name: string; sources: string[] }[] = [];
+  const interfaceIncludes: { target: string; path: string }[] = [];
+  const links: { target: string; dep: string; propagate: boolean }[] = [];
+
+  for (const match of source.matchAll(CMAKE_TARGET_COMMAND)) {
+    const parsed = cmakeTargetArgs(match[2] ?? '', dirAbs, repoPath);
+    if (parsed.name !== undefined) targets.push(parsed);
+  }
+  for (const match of source.matchAll(CMAKE_LINK_COMMAND)) {
+    links.push(...cmakeLinkArgs(match[1] ?? ''));
+  }
+
   for (const match of source.matchAll(CMAKE_INCLUDE_COMMAND)) {
     const isTarget = match[1]?.toLowerCase() === 'target_include_directories';
-    const args = [...(match[2] ?? '').matchAll(/"([^"]*)"|(\S+)/g)].map(
-      (arg) => arg[1] ?? arg[2] ?? '',
-    );
+    const args = cmakeArgTokens(match[2] ?? '');
+    const targetName = isTarget ? args[0] : undefined;
     let visibility = 'PRIVATE';
     for (const arg of isTarget ? args.slice(1) : args) {
       if (CMAKE_ORDER_KEYWORDS.has(arg)) continue;
@@ -616,10 +654,100 @@ function readCMakeLists(
       const rel = toRepoRelative(expanded, dirAbs, repoPath);
       if (rel === undefined) continue;
       if (visibility !== 'INTERFACE') scoped.push(rel);
-      if (isTarget && visibility !== 'PRIVATE') global.push(rel);
+      if (isTarget && targetName !== undefined && visibility !== 'PRIVATE') {
+        interfaceIncludes.push({ target: targetName, path: rel });
+      }
     }
   }
-  return { scoped, global, projectDir, cmakeRootDir: dirAbs };
+  return { scoped, projectDir, cmakeRootDir: dirAbs, targets, interfaceIncludes, links };
+}
+
+function cmakeArgTokens(body: string): string[] {
+  return [...body.matchAll(/"([^"]*)"|(\S+)/g)].map((arg) => arg[1] ?? arg[2] ?? '');
+}
+
+function cmakeTargetArgs(
+  body: string,
+  dirAbs: string,
+  repoPath: string,
+): { name: string | undefined; sources: string[] } {
+  let name: string | undefined;
+  const sources: string[] = [];
+  for (const arg of cmakeArgTokens(body)) {
+    if (CMAKE_TARGET_KEYWORDS.has(arg)) continue;
+    if (name === undefined) {
+      name = arg;
+      continue;
+    }
+    if (!arg.includes('/') && !arg.includes('.')) continue;
+    const rel = toRepoRelative(arg, dirAbs, repoPath);
+    if (rel !== undefined) sources.push(rel);
+  }
+  return { name, sources };
+}
+
+function cmakeLinkArgs(body: string): { target: string; dep: string; propagate: boolean }[] {
+  const args = cmakeArgTokens(body);
+  const target = args[0];
+  if (target === undefined) return [];
+  let propagate = true;
+  const links: { target: string; dep: string; propagate: boolean }[] = [];
+  for (const arg of args.slice(1)) {
+    if (arg === 'PRIVATE' || arg === 'PUBLIC' || arg === 'INTERFACE') {
+      propagate = arg !== 'PRIVATE';
+      continue;
+    }
+    if (CMAKE_LINK_SKIP.has(arg) || arg.startsWith('$') || arg.startsWith('-')) continue;
+    links.push({ target, dep: arg, propagate });
+  }
+  return links;
+}
+
+/** Interface include roots each source file sees through `target_link_libraries`. */
+function cmakeUsageBySource(bits: readonly CmakeBit[]): ReadonlyMap<string, readonly string[]> {
+  const sources = new Map<string, string[]>();
+  const interfaceIncludes = new Map<string, string[]>();
+  const links = new Map<string, { dep: string; propagate: boolean }[]>();
+  for (const bit of bits) {
+    for (const target of bit.targets) {
+      const list = sources.get(target.name) ?? [];
+      list.push(...target.sources);
+      sources.set(target.name, list);
+    }
+    for (const include of bit.interfaceIncludes) {
+      const list = interfaceIncludes.get(include.target) ?? [];
+      list.push(include.path);
+      interfaceIncludes.set(include.target, list);
+    }
+    for (const link of bit.links) {
+      const list = links.get(link.target) ?? [];
+      list.push({ dep: link.dep, propagate: link.propagate });
+      links.set(link.target, list);
+    }
+  }
+
+  const usageOf = (name: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const addInterface = (dep: string): void => {
+      if (seen.has(dep)) return;
+      seen.add(dep);
+      out.push(...(interfaceIncludes.get(dep) ?? []));
+      for (const next of links.get(dep) ?? []) {
+        if (next.propagate) addInterface(next.dep);
+      }
+    };
+    for (const link of links.get(name) ?? []) addInterface(link.dep);
+    return [...new Set(out)];
+  };
+
+  const bySource = new Map<string, readonly string[]>();
+  for (const [name, files] of sources) {
+    const unique = [...new Set(usageOf(name))];
+    if (unique.length === 0) continue;
+    for (const file of files) bySource.set(file, unique);
+  }
+  return bySource;
 }
 
 function expandCMakePath(
