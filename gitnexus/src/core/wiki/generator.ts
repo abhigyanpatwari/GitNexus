@@ -278,18 +278,7 @@ export class WikiGenerator {
     // (module_tree.json needs no deletion — it is never honoured outside a
     // pending --review, see buildModuleTree.)
     if (forceMode) {
-      try {
-        await fs.unlink(path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE));
-      } catch {}
-      // Delete existing module pages so they get regenerated
-      const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
-      for (const f of existingFiles) {
-        if (f.endsWith('.md')) {
-          try {
-            await fs.unlink(path.join(this.wikiDir, f));
-          } catch {}
-        }
-      }
+      await this.clearForRegrouping();
     }
 
     // Init graph
@@ -330,6 +319,28 @@ export class WikiGenerator {
     await this.ensureHTMLViewer();
 
     return result;
+  }
+
+  /**
+   * Reset the wiki dir for a from-scratch grouping: drop the resumability
+   * snapshot so buildModuleTree asks the LLM again, and drop every module page
+   * so fullGeneration regenerates all of them (it skips pages that exist).
+   * meta.json and module_tree.json are left in place — both are rewritten at
+   * the end of the run, and module_tree.json is never read back without a
+   * pending review.
+   */
+  private async clearForRegrouping(): Promise<void> {
+    try {
+      await fs.unlink(path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE));
+    } catch {}
+    const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
+    for (const f of existingFiles) {
+      if (f.endsWith('.md')) {
+        try {
+          await fs.unlink(path.join(this.wikiDir, f));
+        } catch {}
+      }
+    }
   }
 
   // ─── HTML Viewer ─────────────────────────────────────────────────────
@@ -1057,10 +1068,10 @@ export class WikiGenerator {
         15,
         'Significant new files detected, running full generation...',
       );
-      // Delete old snapshot to force re-grouping
-      try {
-        await fs.unlink(path.join(this.wikiDir, MODULE_TREE_SNAPSHOT_FILE));
-      } catch {}
+      // Same reset as --force: without it fullGeneration would keep any page
+      // whose slug survives the regrouping (it skips existing pages) and leave
+      // dead slugs behind as orphans in the viewer.
+      await this.clearForRegrouping();
       const fullResult = await this.fullGeneration(currentCommit);
       return { ...fullResult, mode: 'incremental' };
     }

@@ -189,6 +189,48 @@ describe('buildModuleTree does not reuse a stale module_tree.json', () => {
     expect(names).not.toContain('Old');
   });
 
+  it('incremental escalation clears the old module pages before regrouping', async () => {
+    // A slug that survives regrouping ('auth') must not keep its stale page —
+    // fullGeneration skips modules whose page already exists — and a slug
+    // that dies ('old') must not linger as an orphan in the viewer.
+    const manyNew = Array.from({ length: 6 }, (_, i) => ({
+      filePath: `src/new${i}.ts`,
+      symbols: [{ name: `fn${i}`, type: 'function' }],
+    }));
+    mockGraph([...FRESH_FILES, ...manyNew]);
+    vi.doMock('child_process', () => ({
+      execSync: vi.fn().mockReturnValue(Buffer.from('bbbb\n')),
+      execFileSync: vi.fn().mockImplementation((_cmd: string, args: string[]) => {
+        if (args[0] === 'merge-base') return Buffer.from('');
+        if (args[0] === 'diff') return Buffer.from(manyNew.map((f) => f.filePath).join('\n'));
+        throw new Error(`unexpected git call: ${args.join(' ')}`);
+      }),
+    }));
+    await fs.writeFile(path.join(wikiDir, 'old.md'), '# Old');
+    await fs.writeFile(path.join(wikiDir, 'auth.md'), '# Auth (stale)');
+    await fs.writeFile(path.join(wikiDir, 'module_tree.json'), JSON.stringify(OLD_TREE));
+    await fs.writeFile(
+      path.join(wikiDir, 'meta.json'),
+      JSON.stringify({
+        fromCommit: 'aaaa',
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        model: 'test',
+        lang: '',
+        moduleFiles: { Old: ['src/old.ts'] },
+        moduleTree: OLD_TREE,
+      }),
+    );
+    await spyLLM();
+
+    // reviewOnly stops right after grouping, so anything still on disk was
+    // deliberately kept — and nothing new has been generated yet.
+    const gen = await makeGenerator({ reviewOnly: true });
+    await gen.run();
+
+    expect(await exists(path.join(wikiDir, 'old.md'))).toBe(false);
+    expect(await exists(path.join(wikiDir, 'auth.md'))).toBe(false);
+  });
+
   it('a --review stop writes module_tree.json AND the review-pending marker', async () => {
     mockGraph();
     mockNoGit();
