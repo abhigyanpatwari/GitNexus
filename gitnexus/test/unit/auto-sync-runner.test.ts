@@ -738,6 +738,88 @@ describe('auto-sync runner', () => {
     );
   });
 
+  it('clones an allowlisted self-hosted remote under its host path', async () => {
+    const selfHosted: AutoSyncConfig = {
+      ...config,
+      allowedHosts: ['gitlab.mycompany.com'],
+      projects: [
+        {
+          localPath: '/tmp/repos',
+          overwriteLocalChanges: false,
+          branches: ['main'],
+          remoteUrls: ['git@gitlab.mycompany.com:group/repo.git'],
+        },
+      ],
+    };
+    expect(
+      getConfiguredRepoPath(
+        selfHosted.projects[0],
+        'repo',
+        'git@gitlab.mycompany.com:group/repo.git',
+        selfHosted.allowedHosts,
+      ),
+    ).toBe('/tmp/repos/gitlab.mycompany.com/group/repo');
+
+    const cloneOrPull = vi.fn(async () => '/tmp/repos/gitlab.mycompany.com/group/repo');
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull,
+      getCurrentBranch: vi.fn(() => 'main'),
+      getCurrentCommit: vi.fn(() => 'commit-2'),
+      runAnalysis: vi.fn(async () => ({ stats: { files: 1 } }) as any),
+      registerRepo: vi.fn(async () => 'repo'),
+      loadState: vi.fn(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => false),
+      syncGroupByName: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    await runAutoSyncOnce(selfHosted, {
+      deps,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    expect(cloneOrPull).toHaveBeenCalledWith(
+      'git@gitlab.mycompany.com:group/repo.git',
+      '/tmp/repos/gitlab.mycompany.com/group/repo',
+      undefined,
+      expect.objectContaining({
+        allowAutoSyncSsh: true,
+        autoSyncAllowedHosts: ['gitlab.mycompany.com'],
+        branch: 'main',
+        expectedRepoName: 'repo',
+      }),
+    );
+  });
+
+  it('skips a self-hosted remote that is not listed in allowed_hosts', async () => {
+    const selfHosted: AutoSyncConfig = {
+      ...config,
+      projects: [
+        {
+          localPath: '/tmp/repos',
+          overwriteLocalChanges: false,
+          branches: ['main'],
+          remoteUrls: ['git@gitlab.mycompany.com:group/repo.git'],
+        },
+      ],
+    };
+    const cloneOrPull = vi.fn(async () => '/tmp/repos/should-not-clone');
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const result = await runAutoSyncOnce(selfHosted, {
+      deps: withCloneRoot({
+        cloneOrPull,
+        getAvailableMemoryGB: vi.fn(() => 8),
+      }),
+      logger,
+    });
+
+    expect(result.failed).toBe(1);
+    expect(cloneOrPull).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('allowed_hosts'));
+  });
+
   it('passes watch cancellation controls to the isolated analysis runner', async () => {
     const controller = new AbortController();
     const onAnalysisCancellationRequested = vi.fn();
