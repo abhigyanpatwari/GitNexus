@@ -170,7 +170,7 @@ function formatGolden(snap: Snapshot): string {
 }
 
 describe('Python scope captures — golden parity', () => {
-  it('records statically countable call arguments', () => {
+  it('keeps ordinary Python call arity out of the generic reference schema', () => {
     const src = [
       'zero()',
       'one(value)',
@@ -182,11 +182,11 @@ describe('Python scope captures — golden parity', () => {
       ')',
     ].join('\n');
 
-    expect(callArity(src, 'zero')).toBe('0');
-    expect(callArity(src, 'one')).toBe('1');
-    expect(callArity(src, 'keyword')).toBe('1');
-    expect(callArity(src, 'mixed')).toBe('2');
-    expect(callArity(src, 'member')).toBe('1');
+    expect(callArity(src, 'zero')).toBeUndefined();
+    expect(callArity(src, 'one')).toBeUndefined();
+    expect(callArity(src, 'keyword')).toBeUndefined();
+    expect(callArity(src, 'mixed')).toBeUndefined();
+    expect(callArity(src, 'member')).toBeUndefined();
   });
 
   it('keeps call arity unknown when an argument splat is present', () => {

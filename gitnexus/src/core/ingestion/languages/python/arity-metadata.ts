@@ -9,8 +9,9 @@
  *     decorator context, independent of spelling; static/free functions keep it.
  *   - Defaulted params contribute to `optionalCount`, flipping
  *     `requiredParameterCount = total − optionalCount`.
- *   - Variadic (`*args` / `**kwargs`) leaves the maximum `parameterCount`
- *     unbounded while retaining the definite required non-variadic minimum.
+ *   - Variadic (`*args` / `**kwargs`) leaves both count-only bounds unknown:
+ *     parameter kinds are not retained, so a required keyword-only argument
+ *     cannot safely be treated as a positional minimum.
  *   - `parameterTypes` is populated only with real type text, matching
  *     legacy behavior.
  */
@@ -30,12 +31,10 @@ export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetad
 
   let hasVariadic = false;
   let optionalCount = 0;
-  let requiredCount = 0;
   const types: string[] = [];
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
-    else requiredCount++;
     if (p.type !== null) types.push(p.type);
   }
 
@@ -47,7 +46,7 @@ export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetad
   // to rule out under-application (e.g. picking `write_audit(x, y)` for
   // a 1-arg call). Legacy could get away with leaving it undefined
   // because its call-graph builder had a separate arity pre-filter.
-  const requiredParameterCount = hasVariadic ? requiredCount : total - optionalCount;
+  const requiredParameterCount = hasVariadic ? undefined : total - optionalCount;
 
   return {
     parameterCount,

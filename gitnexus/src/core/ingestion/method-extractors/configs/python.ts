@@ -297,7 +297,10 @@ export const pythonMethodConfig: MethodExtractionConfig = {
   isStatic(node) {
     const funcNode = unwrapDecorated(node);
     return (
-      hasDecorator(node, 'staticmethod') || classifyPythonBoundReceiver(funcNode)?.kind === 'class'
+      hasDecorator(node, 'staticmethod') ||
+      hasDecorator(node, 'classmethod') ||
+      funcNode.childForFieldName('name')?.text === '__new__' ||
+      classifyPythonBoundReceiver(funcNode)?.kind === 'class'
     );
   },
 

@@ -32,7 +32,7 @@ import {
 } from './index.js';
 import {
   applyPythonSubtypeDispatchSideChannel,
-  isPythonSimplePositionalSubtypeCall,
+  pythonSubtypeCallPositionalCount,
   pythonSubtypePositionalCapacity,
 } from './subtype-dispatch.js';
 
@@ -59,18 +59,18 @@ export function pythonMissingReceiverSubtypeDecision(
 /** Additive compatibility proof for Python's missing-member subtype candidates. */
 export function pythonMissingReceiverSubtypeCandidateCompatibility(
   callerFilePath: string,
-  callsite: Pick<ReferenceSite, 'arity' | 'atRange'>,
+  callsite: Pick<ReferenceSite, 'atRange'>,
   candidate: SymbolDefinition,
 ): ArityVerdict {
-  if (
-    callsite.arity === undefined ||
-    !isPythonSimplePositionalSubtypeCall(callerFilePath, callsite.atRange)
-  ) {
-    return 'unknown';
-  }
+  const positionalCount = pythonSubtypeCallPositionalCount(callerFilePath, callsite.atRange);
+  if (positionalCount === undefined) return 'unknown';
+
   const capacity = pythonSubtypePositionalCapacity(candidate);
-  if (capacity === undefined) return 'unknown';
-  return callsite.arity <= capacity ? 'compatible' : 'incompatible';
+  const minimum = candidate.requiredParameterCount;
+  const maximum = candidate.parameterCount;
+  if (capacity === undefined || minimum === undefined || maximum === undefined) return 'unknown';
+  if (positionalCount < minimum || positionalCount > maximum) return 'incompatible';
+  return positionalCount <= capacity ? 'compatible' : 'incompatible';
 }
 
 const pythonScopeResolver: ScopeResolver = {

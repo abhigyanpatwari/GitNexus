@@ -124,6 +124,24 @@ export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundRece
 }
 
 /**
+ * `__new__` is static-like for method dispatch, but Python supplies its class
+ * argument during construction rather than through descriptor binding. Keep
+ * that explicit parameter in arity metadata while still typing its local name.
+ */
+function classifyPythonExplicitNewReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
+  if (fnNode.childForFieldName('name')?.text !== '__new__') return null;
+  const enclosingClass = findEnclosingClassDefinition(fnNode);
+  const params = fnNode.childForFieldName('parameters');
+  if (enclosingClass === null || params === null) return null;
+  const parameter = firstBoundReceiverParameter(params);
+  if (parameter === null) return null;
+  const name = firstParameterName(parameter);
+  const className = classDefinitionName(enclosingClass);
+  if (name === null || className === null) return null;
+  return { kind: 'class', parameter, name, className };
+}
+
+/**
  * Build a `@type-binding.self` (instance method) or `@type-binding.cls`
  * (`@classmethod`) match for `fnNode`, or `null` if `fnNode` is not a
  * method, is `@staticmethod`, or has no parameters.
@@ -132,7 +150,7 @@ export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundRece
  * 'function_definition'`.
  */
 export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch | null {
-  const receiver = classifyPythonBoundReceiver(fnNode);
+  const receiver = classifyPythonBoundReceiver(fnNode) ?? classifyPythonExplicitNewReceiver(fnNode);
   if (receiver === null) return null;
 
   // Receiver convention: instance methods get `self`, classmethods get `cls`.

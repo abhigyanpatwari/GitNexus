@@ -2396,6 +2396,15 @@ export function emitReceiverBoundCalls(
                   }
                   if (candidate === STATIC_ONLY_FILTERED) continue;
                   if (candidate !== undefined) {
+                    if (isDeclarationOnly(candidate)) {
+                      // An abstract declaration still binds the name for this
+                      // owner. Do not expose a concrete method hidden in a base;
+                      // concrete descendants are visited as their own subtypes.
+                      inheritedCandidates.clear();
+                      ambiguousCandidateIds.add(candidate.nodeId);
+                      subtypeAmbiguous = true;
+                      break;
+                    }
                     if (provider.arityCompatibility(site, candidate) === 'incompatible') {
                       // The owner bound this name. Python-style lookup cannot
                       // skip an incompatible override and expose a hidden base.
@@ -2417,7 +2426,6 @@ export function emitReceiverBoundCalls(
                     }
                     if (
                       candidate.isDeleted === true ||
-                      isDeclarationOnly(candidate) ||
                       isUnreachableByInstanceDispatch(candidate)
                     ) {
                       continue;

@@ -151,7 +151,7 @@ export function emitPythonScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
-    synthesizePythonCallArityCapture(grouped, nodeMap, filePath, subtypeLineMapper);
+    recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
@@ -331,11 +331,11 @@ function remapCaptureMatch(
 }
 
 /**
- * Attach the count of statically known arguments to ordinary Python calls.
- * Calls containing a positional or keyword splat deliberately keep unknown
- * arity because the expanded runtime cardinality cannot be inferred here.
+ * Record fixed positional argument counts only for Python's conservative
+ * missing-member subtype fallback. Ordinary reference arity stays unchanged:
+ * count-only metadata cannot model Python keyword binding or definition order.
  */
-function synthesizePythonCallArityCapture(
+function recordPythonSubtypeCallShape(
   grouped: Record<string, Capture>,
   nodeMap: Readonly<Record<string, SyntaxNode>>,
   filePath: string,
@@ -344,7 +344,7 @@ function synthesizePythonCallArityCapture(
   const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
     (tag) => grouped[tag] !== undefined,
   );
-  if (callTag === undefined || grouped['@reference.arity'] !== undefined) return;
+  if (callTag === undefined) return;
 
   // Decorator references use the same call tags but are anchored on a
   // `decorator`, not a `call`, so they intentionally retain their old shape.
@@ -357,14 +357,18 @@ function synthesizePythonCallArityCapture(
   const args = argumentList.namedChildren.filter(
     (child): child is SyntaxNode => child !== null && child.type !== 'comment',
   );
-  if (args.some((arg) => arg.type === 'list_splat' || arg.type === 'dictionary_splat')) {
+  if (
+    args.some(
+      (arg) =>
+        arg.type === 'list_splat' ||
+        arg.type === 'dictionary_splat' ||
+        arg.type === 'keyword_argument',
+    )
+  ) {
     return;
   }
 
-  grouped['@reference.arity'] = syntheticCapture('@reference.arity', callNode, String(args.length));
-  if (args.every((arg) => arg.type !== 'keyword_argument')) {
-    recordPythonSimplePositionalCall(filePath, callNode, mapLine);
-  }
+  recordPythonSimplePositionalCall(filePath, callNode, args.length, mapLine);
 }
 
 /**

@@ -1,7 +1,11 @@
+from abc import ABC, abstractmethod
+
 from mixins import (
+    AbstractBoundaryMixin,
     ArgumentForwardingMixin,
     ArgumentShapeMixin,
     ClassReceiverMixin,
+    DuplicateDefinitionMixin,
     FieldShadowMixin,
     GenericMixin,
     HookMixin,
@@ -101,3 +105,35 @@ class ArgumentForwardingWorker(ArgumentForwardingMixin):
 class PrivateNameWorker(PrivateNameMixin):
     def __private_hook(self) -> int:
         return 1
+
+
+class AbstractBoundaryX(ABC):
+    @abstractmethod
+    def abstract_hook(self) -> int:
+        raise NotImplementedError
+
+
+class AbstractBoundaryA(AbstractBoundaryX):
+    pass
+
+
+class AbstractBoundaryB:
+    def abstract_hook(self) -> int:
+        return 1
+
+
+class AbstractBoundaryWorker(AbstractBoundaryMixin, AbstractBoundaryA, AbstractBoundaryB):
+    pass
+
+
+class ConcreteAbstractWorker(AbstractBoundaryWorker):
+    def abstract_hook(self) -> int:
+        return 2
+
+
+class DuplicateDefinitionWorker(DuplicateDefinitionMixin):
+    def duplicate_hook(self, value: int) -> int:
+        return value
+
+    def duplicate_hook(self, left: int, right: int) -> int:
+        return left + right

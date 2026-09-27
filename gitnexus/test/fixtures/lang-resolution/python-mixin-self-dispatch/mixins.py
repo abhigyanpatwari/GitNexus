@@ -57,7 +57,12 @@ class LifecycleReceiverMixin:
         return cls.lifecycle_hook()
 
     def __new__(cls) -> int:
+        cls.allocate()
         return cls.new_hook()
+
+    @classmethod
+    def allocate(cls) -> int:
+        return 1
 
 
 class GenericMixin:
@@ -87,3 +92,13 @@ class ArgumentForwardingMixin:
 class PrivateNameMixin:
     def dispatch_private(self) -> int:
         return self.__private_hook()
+
+
+class AbstractBoundaryMixin:
+    def dispatch_abstract(self) -> int:
+        return self.abstract_hook()
+
+
+class DuplicateDefinitionMixin:
+    def dispatch_duplicate(self) -> int:
+        return self.duplicate_hook(1)

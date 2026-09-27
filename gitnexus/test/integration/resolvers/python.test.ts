@@ -1229,6 +1229,11 @@ describe('Python mixin self-dispatch', () => {
         ['lifecycle_hook', 'new_hook'].includes(call.target),
     );
     expect(lifecycleCalls).toEqual([]);
+    const allocationCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__new__' && call.target === 'allocate',
+    );
+    expect(allocationCalls).toHaveLength(1);
+    expect(allocationCalls[0]!.rel.targetId).toContain('LifecycleReceiverMixin.allocate');
   });
 
   it('does not treat an implicit __class_getitem__ receiver as instance fan-out', () => {
@@ -1280,6 +1285,29 @@ describe('Python mixin self-dispatch', () => {
       (call) => call.source === 'dispatch_private' && call.target === '__private_hook',
     );
     expect(privateCalls).toEqual([]);
+  });
+
+  it('keeps an abstract declaration as a name boundary while resolving concrete descendants', () => {
+    const abstractCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_abstract' && call.target === 'abstract_hook',
+    );
+    expect(abstractCalls).toHaveLength(1);
+    expect(abstractCalls[0]!.rel.targetId).toContain('ConcreteAbstractWorker.abstract_hook');
+  });
+
+  it('keeps duplicate same-owner definitions ambiguous without generic Python call arity', () => {
+    const duplicateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_duplicate' && call.target === 'duplicate_hook',
+    );
+    expect(duplicateCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'duplicate_hook' &&
+          outcome.reason === 'member-lookup-ambiguous',
+      ),
+    ).toBe(true);
   });
 
   it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {

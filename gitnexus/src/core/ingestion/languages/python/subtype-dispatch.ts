@@ -4,6 +4,7 @@ import { definitionIdPosition } from '../../scope-resolution/utils/definition-id
 import { classifyPythonBoundReceiver } from './receiver-binding.js';
 
 type PositionTuple = readonly [line: number, column: number];
+type CallShapeTuple = readonly [line: number, column: number, positionalCount: number];
 type CapacityTuple = readonly [line: number, column: number, capacity: number];
 type LineMapper = (line: number) => number;
 
@@ -14,11 +15,11 @@ type LineMapper = (line: number) => number;
  */
 export interface PythonSubtypeDispatchSideChannel {
   readonly kind: 'python-subtype-dispatch';
-  readonly simplePositionalCalls: readonly PositionTuple[];
+  readonly simplePositionalCalls: readonly CallShapeTuple[];
   readonly positionalCapacities: readonly CapacityTuple[];
 }
 
-const simplePositionalCallsByFile = new Map<string, Set<string>>();
+const simplePositionalCallsByFile = new Map<string, Map<string, number>>();
 const positionalCapacitiesByFile = new Map<string, Map<string, number>>();
 
 const positionKey = (line: number, column: number): string => `${line}:${column}`;
@@ -38,15 +39,16 @@ export function beginPythonSubtypeDispatchCapture(filePath: string): void {
 export function recordPythonSimplePositionalCall(
   filePath: string,
   callNode: SyntaxNode,
+  positionalCount: number,
   mapLine?: LineMapper,
 ): void {
   const [line, column] = nodePosition(callNode, mapLine);
   let sites = simplePositionalCallsByFile.get(filePath);
   if (sites === undefined) {
-    sites = new Set<string>();
+    sites = new Map<string, number>();
     simplePositionalCallsByFile.set(filePath, sites);
   }
-  sites.add(positionKey(line, column));
+  sites.set(positionKey(line, column), positionalCount);
 }
 
 function parameterBindingNode(parameter: SyntaxNode): SyntaxNode {
@@ -140,9 +142,11 @@ function parsePositionKey(key: string): PositionTuple | undefined {
 export function collectPythonSubtypeDispatchSideChannel(
   filePath: string,
 ): PythonSubtypeDispatchSideChannel | undefined {
-  const callSites = [...(simplePositionalCallsByFile.get(filePath) ?? [])]
-    .map(parsePositionKey)
-    .filter((position): position is PositionTuple => position !== undefined);
+  const callSites: CallShapeTuple[] = [];
+  for (const [key, positionalCount] of simplePositionalCallsByFile.get(filePath) ?? []) {
+    const position = parsePositionKey(key);
+    if (position !== undefined) callSites.push([position[0], position[1], positionalCount]);
+  }
   const capacities: CapacityTuple[] = [];
   for (const [key, capacity] of positionalCapacitiesByFile.get(filePath) ?? []) {
     const position = parsePositionKey(key);
@@ -172,13 +176,13 @@ export function applyPythonSubtypeDispatchSideChannel(parsed: ParsedFile): void 
   }
 
   for (const position of data.simplePositionalCalls) {
-    if (!validPosition(position)) continue;
+    if (!validCallShape(position)) continue;
     let sites = simplePositionalCallsByFile.get(parsed.filePath);
     if (sites === undefined) {
-      sites = new Set<string>();
+      sites = new Map<string, number>();
       simplePositionalCallsByFile.set(parsed.filePath, sites);
     }
-    sites.add(positionKey(position[0], position[1]));
+    sites.set(positionKey(position[0], position[1]), position[2]);
   }
   for (const entry of data.positionalCapacities) {
     if (!validCapacity(entry)) continue;
@@ -201,18 +205,21 @@ function validPosition(value: readonly number[]): value is PositionTuple {
   );
 }
 
+function validCallShape(value: readonly number[]): value is CallShapeTuple {
+  return validPosition(value.slice(0, 2)) && Number.isInteger(value[2]) && value[2]! >= 0;
+}
+
 function validCapacity(value: readonly number[]): value is CapacityTuple {
   return validPosition(value.slice(0, 2)) && Number.isInteger(value[2]) && value[2]! >= 0;
 }
 
-export function isPythonSimplePositionalSubtypeCall(
+export function pythonSubtypeCallPositionalCount(
   filePath: string,
   range: { readonly startLine: number; readonly startCol: number },
-): boolean {
-  return (
-    simplePositionalCallsByFile.get(filePath)?.has(positionKey(range.startLine, range.startCol)) ??
-    false
-  );
+): number | undefined {
+  return simplePositionalCallsByFile
+    .get(filePath)
+    ?.get(positionKey(range.startLine, range.startCol));
 }
 
 export function pythonSubtypePositionalCapacity(candidate: SymbolDefinition): number | undefined {

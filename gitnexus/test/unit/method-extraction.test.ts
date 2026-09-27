@@ -2842,6 +2842,10 @@ class Service:
 
     def __class_getitem__(owner, item):
         pass
+
+    @classmethod
+    def variadic_factory(*args):
+        pass
       `);
       const functions = tree.rootNode.descendantsOfType('function_definition');
       const byName = new Map(
@@ -2863,6 +2867,9 @@ class Service:
           .extractParameters(byName.get('__new__')!)
           .map((parameter) => parameter.name),
       ).toEqual(['owner', 'value']);
+      const newBinding = synthesizeReceiverTypeBinding(byName.get('__new__')!);
+      expect(newBinding?.['@type-binding.cls']).toBeDefined();
+      expect(newBinding?.['@type-binding.self']).toBeUndefined();
       const classGetitemBinding = synthesizeReceiverTypeBinding(byName.get('__class_getitem__')!);
       expect(classGetitemBinding?.['@type-binding.cls']).toBeDefined();
       expect(classGetitemBinding?.['@type-binding.self']).toBeUndefined();
@@ -2873,7 +2880,9 @@ class Service:
       ).toEqual(['item']);
       expect(extractedByName.get('__init_subclass__')!.isStatic).toBe(true);
       expect(extractedByName.get('__class_getitem__')!.isStatic).toBe(true);
-      expect(extractedByName.get('__new__')!.isStatic).toBe(false);
+      expect(extractedByName.get('__new__')!.isStatic).toBe(true);
+      expect(extractedByName.get('variadic_factory')!.isStatic).toBe(true);
+      expect(extractedByName.get('variadic_factory')!.parameters).toHaveLength(1);
     });
 
     it('preserves non-receiver splats, keyword-only parameters, and variadic minima', () => {
@@ -2905,7 +2914,7 @@ class Service:
       ).toEqual(['option']);
       expect(computePythonArityMetadata(byName.get('needs_value')!)).toMatchObject({
         parameterCount: undefined,
-        requiredParameterCount: 1,
+        requiredParameterCount: undefined,
         parameterNames: ['required', 'args'],
       });
     });
