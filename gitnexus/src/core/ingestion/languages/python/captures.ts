@@ -122,6 +122,8 @@ export function emitPythonScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    synthesizePythonCallArityCapture(grouped, nodeMap);
+
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
       // `import_from_statement` node (query: `(import_statement) @import.statement`
@@ -241,6 +243,42 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
+}
+
+/**
+ * Attach the count of statically known arguments to ordinary Python calls.
+ * Calls containing a positional or keyword splat deliberately keep unknown
+ * arity because the expanded runtime cardinality cannot be inferred here.
+ */
+function synthesizePythonCallArityCapture(
+  grouped: Record<string, Capture>,
+  nodeMap: Readonly<Record<string, SyntaxNode>>,
+): void {
+  const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
+    (tag) => grouped[tag] !== undefined,
+  );
+  if (callTag === undefined || grouped['@reference.arity'] !== undefined) return;
+
+  // Decorator references use the same call tags but are anchored on a
+  // `decorator`, not a `call`, so they intentionally retain their old shape.
+  const callNode = nodeMap[callTag];
+  if (callNode === undefined || callNode.type !== 'call') return;
+
+  const argumentList = callNode.childForFieldName('arguments');
+  if (argumentList === null || argumentList.type !== 'argument_list') return;
+
+  const args = argumentList.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+  );
+  if (args.some((arg) => arg.type === 'list_splat' || arg.type === 'dictionary_splat')) {
+    return;
+  }
+
+  grouped['@reference.arity'] = syntheticCapture(
+    '@reference.arity',
+    callNode,
+    String(args.length),
+  );
 }
 
 /**

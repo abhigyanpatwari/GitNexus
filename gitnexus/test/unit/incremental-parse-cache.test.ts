@@ -290,8 +290,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // anonymous arrows, so both stores re-extract.
   // Moved 104 -> 112 for #3354: callable-value flow follows `??`/`||`/`?:`
   // branches. 105-111 are claimed by open PR #3326.
-  it('pins SCHEMA_BUMP to 112 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(112);
+  it('pins SCHEMA_BUMP to 113 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3390)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(113);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
