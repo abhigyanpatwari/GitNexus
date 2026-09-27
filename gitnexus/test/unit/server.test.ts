@@ -131,6 +131,11 @@ describe('createMCPServer', () => {
 
       expect(query?.inputSchema.required).toContain('repo');
       expect(listRepos?.inputSchema.required).not.toContain('repo');
+      for (const name of ['read_file', 'grep'] as const) {
+        const tool = tools.tools.find((candidate) => candidate.name === name);
+        expect(tool?.inputSchema.required, name).toContain('repo');
+        expect(tool?.inputSchema.properties, name).not.toHaveProperty('branch');
+      }
       expect(
         GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required,
       ).not.toContain('repo');

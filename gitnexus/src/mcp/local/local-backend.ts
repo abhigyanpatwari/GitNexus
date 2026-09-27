@@ -9507,10 +9507,10 @@ export class LocalBackend {
     }
     const unavailable = await this.fullSourceUnavailable(repo);
     if (unavailable) return unavailable;
-    const toFiniteNumber = (v: unknown): number | undefined =>
-      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
-    const startLine = toFiniteNumber(params?.startLine);
-    const endLine = toFiniteNumber(params?.endLine);
+    const toInteger = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined;
+    const startLine = toInteger(params?.startLine);
+    const endLine = toInteger(params?.endLine);
     if (endLine !== undefined && startLine === undefined) {
       return { error: '"endLine" requires "startLine".' };
     }
@@ -9550,7 +9550,11 @@ export class LocalBackend {
         totalLines: lines.length,
       };
     }
-    const maxLines = toFiniteNumber(params?.maxLines) ?? 2000;
+    const requestedMaxLines = toInteger(params?.maxLines);
+    if (requestedMaxLines !== undefined && requestedMaxLines < 0) {
+      return { error: '"maxLines" must be an integer >= 0 (0 = no cap).' };
+    }
+    const maxLines = requestedMaxLines ?? 2000;
     if (maxLines > 0 && lines.length > maxLines) {
       return {
         path: fullRel,

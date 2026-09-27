@@ -145,6 +145,15 @@ describe('LocalBackend read_file and grep', () => {
     expect(out.totalLines).toBe(3);
   });
 
+  it('rejects a negative maxLines and reports truncated integer slice bounds', async () => {
+    const negative = await read({ path: 'src/auth.ts', maxLines: -1 });
+    expect(negative).toEqual({ error: '"maxLines" must be an integer >= 0 (0 = no cap).' });
+    const fractional = await read({ path: 'src/auth.ts', startLine: 0.5, endLine: 0.5 });
+    expect(fractional.content).toBe('signOrder()');
+    expect(fractional.startLine).toBe(0);
+    expect(fractional.endLine).toBe(0);
+  });
+
   it('reads a contained absolute path and a file whose name starts with ..', async () => {
     const absolute = await read({ path: path.join(root, 'src', 'auth.ts') });
     expect(absolute.content).toContain('signOrder()');

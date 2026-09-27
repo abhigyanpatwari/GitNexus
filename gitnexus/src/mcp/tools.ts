@@ -1037,19 +1037,21 @@ Paths that escape the repository are refused. A missing file returns a not-found
             'Repository-contained file path (e.g. "Mathlib/Analysis/SpecificLimits/Basic.lean"). Paths that escape the repository, including ".." escapes, are refused.',
         },
         startLine: {
-          type: 'number',
-          description: 'Optional 0-indexed first line of the slice (inclusive).',
+          type: 'integer',
+          description:
+            'Optional 0-indexed first line of the slice (inclusive). Fractional values are truncated.',
           minimum: 0,
         },
         endLine: {
-          type: 'number',
-          description: 'Optional 0-indexed last line of the slice (inclusive). Requires startLine.',
+          type: 'integer',
+          description:
+            'Optional 0-indexed last line of the slice (inclusive). Requires startLine. Fractional values are truncated.',
           minimum: 0,
         },
         maxLines: {
-          type: 'number',
+          type: 'integer',
           description:
-            'Maximum lines returned for a whole-file read (default 2000, 0 = no cap). Ignored when startLine is set.',
+            'Maximum lines returned for a whole-file read (default 2000, 0 = no cap). Ignored when startLine is set. Negative values are rejected.',
           default: 2000,
           minimum: 0,
         },
