@@ -20,8 +20,66 @@ const BUILTIN_REMOTE_HOSTS = new Set(['github.com', 'gitlab.com', 'gitee.com']);
 // Exact DNS names only. The host is a directory under local_path, so wildcards,
 // ports, and path characters stay out. A label is 1-63 chars and cannot start
 // or end with a hyphen; the whole name is at most 253 characters.
+// One trailing dot is stripped before this runs: it marks an absolute lookup,
+// it is not a different host.
 const AUTO_SYNC_HOST_PATTERN =
   /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/** Lowercase, and drop one trailing root dot so `git.` and `git` are one host. */
+function canonicalAutoSyncHost(host: string): string {
+  return host.trim().toLowerCase().replace(/\.$/, '');
+}
+
+function isStrictDottedQuad(host: string): boolean {
+  const labels = host.split('.');
+  if (labels.length !== 4) return false;
+  return labels.every((label) => /^(0|[1-9]\d{0,2})$/.test(label) && Number(label) <= 255);
+}
+
+/**
+ * Spellings glibc inet_aton dials as a different address than the token
+ * (`192.168.1` → 192.168.0.1, `0x7f.0.0.1` / `2130706433` → 127.0.0.1).
+ * A strict four-octet address is the address written; listing it is opt-in.
+ */
+function isAmbiguousNumericHost(host: string): boolean {
+  const labels = host.split('.');
+  if (labels.some((label) => /^0x[0-9a-f]+$/i.test(label) || /^0\d/.test(label))) return true;
+  return labels.every((label) => /^\d+$/.test(label)) && !isStrictDottedQuad(host);
+}
+
+function autoSyncHostProblem(host: string): 'shape' | 'numeric' | null {
+  if (!AUTO_SYNC_HOST_PATTERN.test(host)) return 'shape';
+  if (isAmbiguousNumericHost(host)) return 'numeric';
+  return null;
+}
+
+function autoSyncHostProblemMessage(problem: 'shape' | 'numeric'): string {
+  return problem === 'numeric'
+    ? 'must not use an ambiguous numeric spelling'
+    : 'must be a DNS hostname';
+}
+
+function rewriteAutoSyncRemoteHost(remoteUrl: string, mapHost: (host: string) => string): string {
+  const ssh = /^(git@)([^:\s/]+)(:[^\s]+)$/.exec(remoteUrl);
+  if (ssh) return `${ssh[1]}${mapHost(ssh[2])}${ssh[3]}`;
+  const https = /^(https:\/\/)([^/\s]+)(\/[^\s]+)$/.exec(remoteUrl);
+  if (https) return `${https[1]}${mapHost(https[2])}${https[3]}`;
+  return remoteUrl;
+}
+
+/**
+ * Name git should resolve. A trailing dot forces an absolute lookup, so a
+ * search list cannot answer `git` as `git.<domain>` or retry an FQDN under
+ * that domain after NXDOMAIN. A strict IPv4 literal stays undotted: `10.0.0.1.`
+ * is a DNS name, not that address.
+ */
+export function absoluteAutoSyncRemoteUrl(remoteUrl: string): string {
+  return rewriteAutoSyncRemoteHost(remoteUrl.trim(), (host) => {
+    const canonical = canonicalAutoSyncHost(host);
+    if (isStrictDottedQuad(canonical)) return canonical;
+    return `${canonical}.`;
+  });
+}
 
 /**
  * A single clone/pull must fit inside one sync interval and inside an hour.
@@ -312,9 +370,10 @@ function parseAllowedAutoSyncHosts(value: unknown, errors: string[]): string[] {
       errors.push(`allowed_hosts[${index}] must be a DNS hostname`);
       continue;
     }
-    const host = entry.trim().toLowerCase();
-    if (!AUTO_SYNC_HOST_PATTERN.test(host)) {
-      errors.push(`allowed_hosts[${index}] must be a DNS hostname`);
+    const host = canonicalAutoSyncHost(entry);
+    const problem = autoSyncHostProblem(host);
+    if (problem) {
+      errors.push(`allowed_hosts[${index}] ${autoSyncHostProblemMessage(problem)}`);
       continue;
     }
     if (seen.has(host)) continue;
@@ -350,7 +409,7 @@ export function parseAutoSyncRemoteIdentity(
       'must use an SSH or HTTPS URL (git@host:owner/repo or https://host/owner/repo)',
     );
   }
-  host = host.toLowerCase();
+  host = canonicalAutoSyncHost(host);
   assertAutoSyncRemotePath(host, repoPath, allowedHosts);
   return { host, repoPath };
 }
@@ -375,7 +434,7 @@ function isPermittedAutoSyncHost(host: string, allowedHosts?: readonly string[])
   if (BUILTIN_REMOTE_HOSTS.has(host)) return true;
   if (!allowedHosts) return false;
   for (const entry of allowedHosts) {
-    if (entry.toLowerCase() === host) return true;
+    if (canonicalAutoSyncHost(entry) === host) return true;
   }
   return false;
 }
@@ -385,8 +444,9 @@ function assertAutoSyncRemotePath(
   repoPath: string,
   allowedHosts?: readonly string[],
 ): void {
-  if (!AUTO_SYNC_HOST_PATTERN.test(host)) {
-    throw new Error('host must be a DNS hostname');
+  const problem = autoSyncHostProblem(host);
+  if (problem) {
+    throw new Error(`host ${autoSyncHostProblemMessage(problem)}`);
   }
   if (!isPermittedAutoSyncHost(host, allowedHosts)) {
     throw new Error(

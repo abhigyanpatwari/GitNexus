@@ -19,10 +19,12 @@ import {
   resetAutoSyncState,
   saveAutoSyncState,
   shouldAnalyzeCommit,
+  getAutoSyncRepoIdentity,
   validateAutoSyncRemoteUrl,
   validateAutoSyncBranchName,
   writeProjectCommitInfo,
 } from '../../src/core/auto-sync/index.js';
+import { absoluteAutoSyncRemoteUrl } from '../../src/core/auto-sync/config.js';
 import { acquireFileLock } from '../../src/storage/file-lock.js';
 
 describe('auto-sync', () => {
@@ -664,6 +666,53 @@ describe('auto-sync', () => {
         '/tmp/watch_config.yml',
       ),
     ).toThrow('allowed_hosts must be a list of DNS hostnames');
+  });
+
+  it('rejects ambiguous numeric hosts and treats one trailing dot as the same name', () => {
+    const config = (allowed: string, remote: string) =>
+      [
+        'sync_interval_minutes: 10',
+        `allowed_hosts: ["${allowed}"]`,
+        'projects:',
+        '  - local_path: /tmp/repos',
+        '    branches: [main]',
+        '    remote_urls:',
+        `      - ${remote}`,
+      ].join('\n');
+
+    for (const host of ['192.168.1', '127.1', '0x7f.0.0.1', '0177.0.0.1', '2130706433']) {
+      expect(() =>
+        parseAutoSyncConfig(config(host, 'git@github.com:owner/repo.git'), '/tmp/watch_config.yml'),
+      ).toThrow('ambiguous numeric spelling');
+      expect(() => validateAutoSyncRemoteUrl(`git@${host}:group/repo.git`, [host])).toThrow(
+        'ambiguous numeric spelling',
+      );
+    }
+
+    expect(() =>
+      validateAutoSyncRemoteUrl('git@10.0.0.1:group/repo.git', ['10.0.0.1']),
+    ).not.toThrow();
+    expect(absoluteAutoSyncRemoteUrl('git@10.0.0.1:group/repo.git')).toBe(
+      'git@10.0.0.1:group/repo.git',
+    );
+
+    const allowed = ['git', 'gitlab.mycompany.com'];
+    expect(() => validateAutoSyncRemoteUrl('git@git.:group/repo.git', allowed)).not.toThrow();
+    expect(getAutoSyncRepoIdentity('git@git.:group/repo.git', allowed)).toBe('git/group/repo');
+    expect(getAutoSyncRepoIdentity('git@gitlab.mycompany.com.:group/repo.git', allowed)).toBe(
+      'gitlab.mycompany.com/group/repo',
+    );
+    expect(absoluteAutoSyncRemoteUrl('git@git:group/repo.git')).toBe('git@git.:group/repo.git');
+    expect(absoluteAutoSyncRemoteUrl('git@git.:group/repo.git')).toBe('git@git.:group/repo.git');
+    expect(absoluteAutoSyncRemoteUrl('https://gitlab.mycompany.com/group/repo.git')).toBe(
+      'https://gitlab.mycompany.com./group/repo.git',
+    );
+
+    const parsed = parseAutoSyncConfig(
+      config('git.', 'git@git:group/repo.git'),
+      '/tmp/watch_config.yml',
+    );
+    expect(parsed.allowedHosts).toEqual(['git']);
   });
 
   it('parses repo git timeout durations', () => {
