@@ -87,6 +87,16 @@ function callArity(src: string, name: string): string | undefined {
   return match['@reference.arity']?.text;
 }
 
+function receiverBindingNames(src: string): string[] {
+  return emitPythonScopeCaptures(src, 'receiver.py')
+    .filter(
+      (match) =>
+        match['@type-binding.self'] !== undefined || match['@type-binding.cls'] !== undefined,
+    )
+    .map((match) => match['@type-binding.name']!.text)
+    .sort();
+}
+
 /** All `.py` files under `lang-resolution/python-*`, as sorted repo-relative-ish keys. */
 function collectPythonFixtures(): { key: string; absPath: string }[] {
   const out: { key: string; absPath: string }[] = [];
@@ -185,6 +195,20 @@ describe('Python scope captures — golden parity', () => {
     expect(callArity(src, 'from_list')).toBeUndefined();
     expect(callArity(src, 'from_dict')).toBeUndefined();
     expect(callArity(src, 'mixed')).toBeUndefined();
+  });
+
+  it('synthesizes receiver bindings only for real positional parameters', () => {
+    const src = [
+      'class Example:',
+      '    def ordinary(instance): pass',
+      '    @classmethod',
+      '    def factory(owner): pass',
+      '    def variadic(*args): pass',
+      '    def keyword_variadic(**kwargs): pass',
+      '    def keyword_only(*, option): pass',
+    ].join('\n');
+
+    expect(receiverBindingNames(src)).toEqual(['instance', 'owner']);
   });
 
   it('matches the committed golden snapshot across all python-* fixtures + DAO shape', () => {

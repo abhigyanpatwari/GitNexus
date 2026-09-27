@@ -12,6 +12,7 @@ import {
 } from '../../src/core/ingestion/method-extractors/configs/typescript-javascript.js';
 import { cppMethodConfig } from '../../src/core/ingestion/method-extractors/configs/c-cpp.js';
 import { pythonMethodConfig } from '../../src/core/ingestion/method-extractors/configs/python.js';
+import { computePythonArityMetadata } from '../../src/core/ingestion/languages/python/arity-metadata.js';
 import { rubyMethodConfig } from '../../src/core/ingestion/method-extractors/configs/ruby.js';
 import { rustMethodConfig } from '../../src/core/ingestion/method-extractors/configs/rust.js';
 import { dartMethodConfig } from '../../src/core/ingestion/method-extractors/configs/dart.js';
@@ -2809,6 +2810,58 @@ def outer():
       expect(
         pythonMethodConfig.extractParameters(nestedFn).map((parameter) => parameter.name),
       ).toEqual(['receiver']);
+    });
+
+    it('recognizes receivers through class-suite control flow', () => {
+      const tree = parsePython(`
+class Service:
+    if ENABLED:
+        def conditional(instance):
+            pass
+      `);
+      const conditional = tree.rootNode
+        .descendantsOfType('function_definition')
+        .find((node) => node.childForFieldName('name')?.text === 'conditional')!;
+
+      expect(pythonMethodConfig.extractParameters(conditional)).toEqual([]);
+      expect(computePythonArityMetadata(conditional)).toMatchObject({
+        parameterCount: 0,
+        requiredParameterCount: 0,
+      });
+    });
+
+    it('preserves non-receiver splats, keyword-only parameters, and variadic minima', () => {
+      const tree = parsePython(`
+class Service:
+    def variadic(*args: int):
+        pass
+
+    def keyword_only(*, option: int):
+        pass
+
+    def needs_value(instance, required: int, *args: int):
+        pass
+      `);
+      const functions = tree.rootNode.descendantsOfType('function_definition');
+      const byName = new Map(
+        functions.map((node) => [node.childForFieldName('name')?.text, node] as const),
+      );
+
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('variadic')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['args']);
+      expect(
+        pythonMethodConfig
+          .extractParameters(byName.get('keyword_only')!)
+          .map((parameter) => parameter.name),
+      ).toEqual(['option']);
+      expect(computePythonArityMetadata(byName.get('needs_value')!)).toMatchObject({
+        parameterCount: undefined,
+        requiredParameterCount: 1,
+        parameterNames: ['required', 'args'],
+      });
     });
   });
 

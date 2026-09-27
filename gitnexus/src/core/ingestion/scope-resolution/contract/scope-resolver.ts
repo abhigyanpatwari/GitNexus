@@ -1411,8 +1411,11 @@ export interface ScopeResolver {
    * retains the existing owner/MRO behavior byte-for-byte.
    *
    * `callerIsStatic` is the existing graph-node fact for the callable that
-   * contains the site. It is undefined when that caller cannot be resolved;
-   * providers that use it to distinguish dispatch kinds should fail closed.
+   * contains the site. `receiverBindingIsStatic` is the corresponding fact
+   * for the callable where the receiver TypeRef was declared. The latter is
+   * load-bearing for closures that inherit an outer receiver binding. Either
+   * is undefined when its callable cannot be resolved; providers using these
+   * facts to distinguish dispatch kinds should fail closed.
    *
    * When enabled, a no-target or overload-ambiguous result is a definitive
    * receiver-bound miss: the pass records a suppression and marks the site
@@ -1420,7 +1423,10 @@ export interface ScopeResolver {
    */
   readonly resolveMissingReceiverMembersFromSubtypes?: (
     typeRef: TypeRef,
-    context: { readonly callerIsStatic: boolean | undefined },
+    context: {
+      readonly callerIsStatic: boolean | undefined;
+      readonly receiverBindingIsStatic: boolean | undefined;
+    },
   ) => boolean;
 
   /**

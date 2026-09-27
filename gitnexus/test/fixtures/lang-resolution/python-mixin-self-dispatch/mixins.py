@@ -26,3 +26,17 @@ class ClassReceiverMixin:
 class AmbiguousMixin:
     def dispatch(self) -> int:
         return self.run()
+
+
+class VariadicPseudoReceiverMixin:
+    def variadic_dispatch(*args) -> int:
+        return args.variadic_target()
+
+
+class NestedClassReceiverMixin:
+    @classmethod
+    def invoke_nested(owner) -> int:
+        def inner() -> int:
+            return owner.instance_only()
+
+        return inner()

@@ -1095,8 +1095,10 @@ describe('Python mixin self-dispatch', () => {
       (call) => call.target === 'helper' && ['first', 'second'].includes(call.source),
     );
     expect(helperCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual([
+      'first → conditional.py',
       'first → helpers.py',
       'first → worker.py',
+      'second → conditional.py',
       'second → helpers.py',
       'second → worker.py',
     ]);
@@ -1150,6 +1152,26 @@ describe('Python mixin self-dispatch', () => {
     ).toBe(false);
   });
 
+  it('does not use pseudo-receivers or captured classmethod receivers for instance fan-out', () => {
+    const falseFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.rel.reason === 'interface-dispatch' &&
+        ((call.source === 'variadic_dispatch' && call.target === 'variadic_target') ||
+          (call.source === 'inner' && call.target === 'instance_only')),
+    );
+    expect(falseFanout).toEqual([]);
+  });
+
+  it('excludes required fixed arguments that precede a variadic tail', () => {
+    const wrongArityCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['first', 'second', 'renamed'].includes(call.source) &&
+        call.target === 'helper' &&
+        call.targetFilePath === 'wrong_arity.py',
+    );
+    expect(wrongArityCalls).toEqual([]);
+  });
+
   it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
     const runCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'dispatch' && call.target === 'run',
@@ -1179,7 +1201,16 @@ describe('Python mixin self-dispatch', () => {
 
   it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
     const calls = getRelationships(result, 'CALLS').filter((call) =>
-      ['first', 'second', 'renamed', 'call_annotated', 'dispatch', 'missing'].includes(call.source),
+      [
+        'first',
+        'second',
+        'renamed',
+        'call_annotated',
+        'dispatch',
+        'missing',
+        'variadic_dispatch',
+        'inner',
+      ].includes(call.source),
     );
     expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
   });

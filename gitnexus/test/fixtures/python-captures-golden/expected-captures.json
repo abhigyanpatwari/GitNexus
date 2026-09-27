@@ -527,6 +527,10 @@
     "captureGroups": 10,
     "digest": "0d81efdead49a51822b48916d5137699d8343e68811af7cceae37946596159c5"
   },
+  "python-mixin-self-dispatch/conditional.py": {
+    "captureGroups": 10,
+    "digest": "fa09cba191ae3ba4afb67db0ceef56725e2a73707c8b106b397206afe173c115"
+  },
   "python-mixin-self-dispatch/decoys.py": {
     "captureGroups": 10,
     "digest": "aefd2ce8ab50a2ddca86f277e2503b33ea825c67041e0f1ad3f3cc6f26f30534"
@@ -540,16 +544,16 @@
     "digest": "4250018e9eabafe863caedc43306c69ff28fe17f19103edf2f01ed6438d0af19"
   },
   "python-mixin-self-dispatch/mixins.py": {
-    "captureGroups": 57,
-    "digest": "cc65f8edf51236a54bde11c6a56a99097e699fa4420dcaea090709821bd39839"
+    "captureGroups": 77,
+    "digest": "22532d5e03595dda69f37eefbc0bc7e4fbf2f55b607f43539f6a951fef80af61"
   },
   "python-mixin-self-dispatch/worker.py": {
-    "captureGroups": 19,
-    "digest": "7655eb53f445ded871dd5d0af24f91ea4838b15da936e24a53e10e482f6b83ad"
+    "captureGroups": 37,
+    "digest": "a9c11a63c15d510887c3d7f9be4c2baa4088b49f934b72a2eb06673b25b632c2"
   },
   "python-mixin-self-dispatch/wrong_arity.py": {
-    "captureGroups": 12,
-    "digest": "3f289a81a37c1d5fb5b845dfdcc8ef6ae44c9bed7f964ae7b1920f692eb8cceb"
+    "captureGroups": 23,
+    "digest": "cee8694d2ad5dd78580958241b3d0c8c96c5806d22f425f8141305db770a8166"
   },
   "python-module-export-vs-method-collision/app.py": {
     "captureGroups": 14,
@@ -817,7 +821,7 @@
   },
   "python-variadic-resolution/logger.py": {
     "captureGroups": 7,
-    "digest": "c22a99ee6e9b2e0a196f23204655ee5b23b89de1650c60d6d629d440ec4fae53"
+    "digest": "a25a400e23dcb62518ac98da07e994c6356d49b6d75bf58b0f892ad63e46224b"
   },
   "python-walrus-chain/app.py": {
     "captureGroups": 37,

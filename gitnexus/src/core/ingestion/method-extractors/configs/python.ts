@@ -8,6 +8,7 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
+import { classifyPythonBoundReceiver } from '../../languages/python/receiver-binding.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -83,27 +84,6 @@ function hasDecorator(node: SyntaxNode, name: string): boolean {
   return false;
 }
 
-/** Whether Python binds the first positional parameter through a descriptor. */
-function hasBoundReceiver(node: SyntaxNode): boolean {
-  const funcNode = unwrapDecorated(node);
-  const memberNode = funcNode.parent?.type === 'decorated_definition' ? funcNode.parent : funcNode;
-  const bodyNode = memberNode.parent;
-  const isDirectClassMember =
-    bodyNode?.type === 'block' && bodyNode.parent?.type === 'class_definition';
-  return isDirectClassMember && !hasDecorator(node, 'staticmethod');
-}
-
-function isPositionalParameter(node: SyntaxNode): boolean {
-  if (node.type === 'typed_parameter') {
-    return node.firstNamedChild?.type === 'identifier';
-  }
-  return (
-    node.type === 'identifier' ||
-    node.type === 'default_parameter' ||
-    node.type === 'typed_default_parameter'
-  );
-}
-
 /**
  * Extract parameters from a Python function_definition.
  *
@@ -120,13 +100,13 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
 
   const params: ParameterInfo[] = [];
   let isFirst = true;
-  const skipBoundReceiver = hasBoundReceiver(node);
+  const boundReceiverId = classifyPythonBoundReceiver(funcNode)?.parameter.id;
 
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param) continue;
     if (param.type === 'comment') continue;
-    if (isFirst && skipBoundReceiver && isPositionalParameter(param)) {
+    if (isFirst && boundReceiverId !== undefined && param.id === boundReceiverId) {
       isFirst = false;
       continue;
     }

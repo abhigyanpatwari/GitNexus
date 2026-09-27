@@ -682,7 +682,16 @@ export function emitReceiverBoundCalls(
     const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
     const callerIsStatic =
       callerGraphId === undefined ? undefined : graph.getNode(callerGraphId)?.properties.isStatic;
-    return predicate(typeRef, { callerIsStatic });
+    const receiverBindingGraphId = resolveCallerGraphId(
+      typeRef.declaredAtScope,
+      scopes,
+      nodeLookup,
+    );
+    const receiverBindingIsStatic =
+      receiverBindingGraphId === undefined
+        ? undefined
+        : graph.getNode(receiverBindingGraphId)?.properties.isStatic;
+    return predicate(typeRef, { callerIsStatic, receiverBindingIsStatic });
   };
 
   /**
