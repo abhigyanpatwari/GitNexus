@@ -154,6 +154,12 @@ describe('LocalBackend read_file and grep', () => {
     expect(fractional.endLine).toBe(0);
   });
 
+  it('rejects a negative endLine instead of slicing from the end of the file', async () => {
+    const out = await read({ path: 'src/auth.ts', startLine: 0, endLine: -2 });
+    expect(out).toEqual({ error: '"endLine" must be an integer >= 0.' });
+    expect(out.content).toBeUndefined();
+  });
+
   it('reads a contained absolute path and a file whose name starts with ..', async () => {
     const absolute = await read({ path: path.join(root, 'src', 'auth.ts') });
     expect(absolute.content).toContain('signOrder()');

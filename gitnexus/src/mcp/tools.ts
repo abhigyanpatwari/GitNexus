@@ -1038,14 +1038,12 @@ Paths that escape the repository are refused. A missing file returns a not-found
         },
         startLine: {
           type: 'integer',
-          description:
-            'Optional 0-indexed first line of the slice (inclusive). Fractional values are truncated.',
+          description: 'Optional 0-indexed first line of the slice (inclusive).',
           minimum: 0,
         },
         endLine: {
           type: 'integer',
-          description:
-            'Optional 0-indexed last line of the slice (inclusive). Requires startLine. Fractional values are truncated.',
+          description: 'Optional 0-indexed last line of the slice (inclusive). Requires startLine.',
           minimum: 0,
         },
         maxLines: {

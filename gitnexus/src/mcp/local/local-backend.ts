@@ -9540,6 +9540,9 @@ export class LocalBackend {
     const raw = await fs.readFile(realFull, 'utf-8');
     const lines = raw.split('\n');
     if (startLine !== undefined) {
+      if (endLine !== undefined && endLine < 0) {
+        return { error: '"endLine" must be an integer >= 0.' };
+      }
       const start = Math.max(0, startLine);
       const end = endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
       return {
