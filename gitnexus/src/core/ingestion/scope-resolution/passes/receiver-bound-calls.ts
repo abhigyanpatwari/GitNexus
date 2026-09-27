@@ -60,7 +60,13 @@
  * resolved to a wrong target.
  */
 
-import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  ReferenceSite,
+  ScopeId,
+  SymbolDefinition,
+  TypeRef,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -101,7 +107,7 @@ import {
   type GroundedTypeArgument,
   type HeritageTypeArguments,
 } from '../utils/generic-instantiation.js';
-import { resolveDefGraphId } from '../graph-bridge/ids.js';
+import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
@@ -665,6 +671,18 @@ export function emitReceiverBoundCalls(
     const graphId = resolveDefGraphId(def.filePath, def, nodeLookup);
     if (graphId === undefined) return false;
     return graph.getNode(graphId)?.properties.isStatic === true;
+  };
+
+  const shouldResolveMissingReceiverMembersFromSubtypes = (
+    typeRef: TypeRef,
+    site: ReferenceSite,
+  ): boolean => {
+    const predicate = provider.resolveMissingReceiverMembersFromSubtypes;
+    if (predicate === undefined) return false;
+    const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
+    const callerIsStatic =
+      callerGraphId === undefined ? undefined : graph.getNode(callerGraphId)?.properties.isStatic;
+    return predicate(typeRef, { callerIsStatic });
   };
 
   /**
@@ -2257,7 +2275,7 @@ export function emitReceiverBoundCalls(
           // rather than publishing a partial set as complete.
           if (
             site.kind === 'call' &&
-            provider.resolveMissingReceiverMembersFromSubtypes?.(typeRef) === true
+            shouldResolveMissingReceiverMembersFromSubtypes(typeRef, site)
           ) {
             const subtypeTargets = new Map<string, SymbolDefinition>();
             const ambiguousCandidateIds = new Set<string>();

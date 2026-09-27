@@ -17,6 +17,12 @@ class AnnotatedCaller:
         return other.helper()
 
 
+class ClassReceiverMixin:
+    @classmethod
+    def invoke(receiver, value: int) -> int:
+        return receiver.class_only(value)
+
+
 class AmbiguousMixin:
     def dispatch(self) -> int:
         return self.run()

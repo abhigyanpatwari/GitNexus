@@ -84,9 +84,11 @@ const pythonScopeResolver: ScopeResolver = {
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
 
   // A mixin may call a method supplied only by its eventual concrete class.
-  // Gate on the synthesized receiver provenance rather than its conventional
-  // spelling; Python records both instance and classmethod receivers as `self`.
-  resolveMissingReceiverMembersFromSubtypes: (typeRef) => typeRef.source === 'self',
+  // Python records both instance and classmethod receivers as `self`, so the
+  // enclosing callable's existing static bit distinguishes the two without
+  // relying on the receiver's conventional spelling.
+  resolveMissingReceiverMembersFromSubtypes: (typeRef, { callerIsStatic }) =>
+    typeRef.source === 'self' && callerIsStatic === false,
 
   // Python permits both @staticmethod and @classmethod access through an
   // instance. The graph's generic `isStatic` bit therefore does not mean

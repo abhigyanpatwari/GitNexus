@@ -79,9 +79,9 @@
  *     pass running first prevents the wrong edge.
  *
  *   - **I2 — `handledSites` semantics.** A site is added to
- *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
- *     Sites a pass touched but couldn't resolve do NOT get marked —
- *     they still get a chance from the shared resolver. Exception:
+ *     `handledSites` after successful emission or a definitive suppression
+ *     that must prevent receiver-blind fallback. Ordinary unresolved misses
+ *     remain unhandled so the shared resolver can try them. Additionally,
  *     the free-call fallback marks the site after it decides the site,
  *     including when it emits no edge — dedup-collapse, a visibility
  *     veto (`fallback-refused`), or a selected callable that is deleted
@@ -1410,11 +1410,18 @@ export interface ScopeResolver {
    * synthesized instance-receiver binding, for example). A declined receiver
    * retains the existing owner/MRO behavior byte-for-byte.
    *
+   * `callerIsStatic` is the existing graph-node fact for the callable that
+   * contains the site. It is undefined when that caller cannot be resolved;
+   * providers that use it to distinguish dispatch kinds should fail closed.
+   *
    * When enabled, a no-target or overload-ambiguous result is a definitive
    * receiver-bound miss: the pass records a suppression and marks the site
    * handled so receiver-blind name fallback cannot mint a false exact edge.
    */
-  readonly resolveMissingReceiverMembersFromSubtypes?: (typeRef: TypeRef) => boolean;
+  readonly resolveMissingReceiverMembersFromSubtypes?: (
+    typeRef: TypeRef,
+    context: { readonly callerIsStatic: boolean | undefined },
+  ) => boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that

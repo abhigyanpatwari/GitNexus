@@ -1132,6 +1132,24 @@ describe('Python mixin self-dispatch', () => {
     expect(annotatedFanout).toEqual([]);
   });
 
+  it('does not treat a renamed classmethod receiver as instance dispatch', () => {
+    const classReceiverFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'invoke' &&
+        call.target === 'class_only' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(classReceiverFanout).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'class_only' &&
+          outcome.reason === 'receiver-unresolved',
+      ),
+    ).toBe(false);
+  });
+
   it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
     const runCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'dispatch' && call.target === 'run',
