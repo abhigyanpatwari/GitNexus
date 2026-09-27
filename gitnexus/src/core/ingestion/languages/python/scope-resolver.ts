@@ -83,6 +83,11 @@ const pythonScopeResolver: ScopeResolver = {
 
   isSuperReceiver: (text) => /^super\s*\(/.test(text),
 
+  // A mixin may call a method supplied only by its eventual concrete class.
+  // Keep this narrower than `cls`: classmethod dispatch has different static
+  // semantics and is not part of this capability's evidence boundary.
+  resolveMissingReceiverMembersFromSubtypes: (receiverName) => receiverName === 'self',
+
   // Subscript route only — Python spells collection views as method calls
   // (`.values()`), which the compound resolver's call branch already handles.
   //

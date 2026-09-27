@@ -132,7 +132,8 @@
  *       6. Case 3 dotted typeBinding for namespace prefix
  *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
  *          fan-out on an Interface fold, #2832)
- *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember, then an
+ *          opt-in concrete-subtype fan-out when the normal member is missing)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
  *
@@ -1394,6 +1395,24 @@ export interface ScopeResolver {
    * suppression must remain unchanged.
    */
   readonly resolveThisViaEnclosingClass?: boolean;
+
+  /**
+   * Opt a receiver spelling into subtype dispatch when Case 4 resolves the
+   * receiver's declared class but finds no same-named member on that class or
+   * its ancestors. The shared pass walks the concrete subtype closure and
+   * emits every unique, arity-compatible implementation it can prove.
+   *
+   * This is deliberately a predicate rather than a language or spelling check
+   * in shared ingestion. Dynamic languages can enable only receiver forms
+   * whose runtime class may legally supply a member absent from the declared
+   * owner (Python's instance `self`, for example). A declined receiver retains
+   * the existing owner/MRO behavior byte-for-byte.
+   *
+   * When enabled, a no-target or overload-ambiguous result is a definitive
+   * receiver-bound miss: the pass records a suppression and marks the site
+   * handled so receiver-blind name fallback cannot mint a false exact edge.
+   */
+  readonly resolveMissingReceiverMembersFromSubtypes?: (receiverName: string) => boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that

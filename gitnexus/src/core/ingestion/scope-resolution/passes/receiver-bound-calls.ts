@@ -33,7 +33,8 @@
  *      interface-dispatch fan-out when the folded receiver type is an
  *      Interface (#2832) — same call Cases 0 and 4 make.
  *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
- *      MRO walk + `findOwnedMember`
+ *      MRO walk + `findOwnedMember`, then an opt-in concrete-subtype fan-out
+ *      when the normal member is missing
  *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
  *      whose `nodeId` is referenced as an `ownerId` in `model.methods`
  *      (object-literal services). Last-resort fallback for lowercase
@@ -179,6 +180,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
+  | 'resolveMissingReceiverMembersFromSubtypes'
+  | 'arityCompatibility'
   | 'conversionRankFn'
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
@@ -1112,6 +1115,7 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
+
         }
       }
 
@@ -1271,6 +1275,7 @@ export function emitReceiverBoundCalls(
             handledSites.add(siteKey);
             continue;
           }
+
         }
       }
 
@@ -2238,6 +2243,126 @@ export function emitReceiverBoundCalls(
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
             // reference index.
+            handledSites.add(siteKey);
+            continue;
+          }
+
+          // Dynamic subtype dispatch for a receiver whose declared owner and
+          // ancestors do not define the member. The provider predicate keeps
+          // language syntax out of this shared pass; Python opts in only for
+          // instance `self` calls made from mixin-style base classes.
+          //
+          // Multiple concrete subtype implementations are runtime alternatives,
+          // not an overload ambiguity, so emit the same bounded fan-out used by
+          // interface dispatch. An ambiguity *within* any subtype is different:
+          // there is no exact target model for it, so suppress the whole site
+          // rather than publishing a partial set as complete.
+          if (
+            site.kind === 'call' &&
+            provider.resolveMissingReceiverMembersFromSubtypes?.(receiverName) === true
+          ) {
+            const subtypeTargets = new Map<string, SymbolDefinition>();
+            const ambiguousCandidateIds = new Set<string>();
+            const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
+            const subtypeQueue = [ownerDef.nodeId];
+            let subtypeHead = 0;
+
+            while (subtypeHead < subtypeQueue.length) {
+              const supertypeId = subtypeQueue[subtypeHead++]!;
+              for (const subtype of subtypesBySupertypeDefId.get(supertypeId) ?? []) {
+                if (visitedSubtypeIds.has(subtype.nodeId)) continue;
+                visitedSubtypeIds.add(subtype.nodeId);
+                subtypeQueue.push(subtype.nodeId);
+
+                const overloads = model.methods.lookupAllByOwner(subtype.nodeId, memberName);
+                if (overloads.length === 0) continue;
+                const picked = pickFirstNonStaticOnly(
+                  subtype.nodeId,
+                  memberName,
+                  site,
+                  model,
+                  provider,
+                );
+                if (picked === OVERLOAD_AMBIGUOUS) {
+                  for (const overload of overloads) ambiguousCandidateIds.add(overload.nodeId);
+                  continue;
+                }
+                if (picked === undefined || picked === STATIC_ONLY_FILTERED) continue;
+                if (provider.arityCompatibility(site, picked) === 'incompatible') continue;
+                if (
+                  picked.isDeleted === true ||
+                  isDeclarationOnly(picked) ||
+                  isUnreachableByInstanceDispatch(picked)
+                ) {
+                  continue;
+                }
+                subtypeTargets.set(picked.nodeId, picked);
+              }
+            }
+
+            if (ambiguousCandidateIds.size > 0) {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'member-lookup-ambiguous',
+                candidateIds: [...ambiguousCandidateIds],
+              });
+              handledSites.add(siteKey);
+              continue;
+            }
+
+            const targets = [...subtypeTargets.values()];
+            if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
+              dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
+              if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+                const dropped = targets
+                  .slice(MAX_INTERFACE_DISPATCH_FANOUT, MAX_INTERFACE_DISPATCH_FANOUT + 5)
+                  .map((target) => target.qualifiedName ?? target.nodeId);
+                const omitted = targets.length - MAX_INTERFACE_DISPATCH_FANOUT - dropped.length;
+                dispatchFanoutSkippedNames.push(
+                  `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets; ` +
+                    `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
+                );
+              }
+              targets.length = MAX_INTERFACE_DISPATCH_FANOUT;
+            }
+
+            let emittedForSite = 0;
+            for (const target of targets) {
+              const ok = tryEmitEdge(
+                graph,
+                scopes,
+                nodeLookup,
+                site,
+                target,
+                'interface-dispatch',
+                seen,
+                0.85,
+                collapse,
+                calleeCapture,
+              );
+              if (ok) {
+                emitted++;
+                emittedForSite++;
+              }
+            }
+
+            if (emittedForSite === 0) {
+              options.recordResolutionOutcome?.({
+                kind: 'suppressed',
+                reason: 'receiver-unresolved',
+                receiverOrigin: 'in-program',
+                candidateIds: [],
+                phase: 'receiver-bound-calls',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                siteKind: site.kind,
+              });
+            }
             handledSites.add(siteKey);
             continue;
           }

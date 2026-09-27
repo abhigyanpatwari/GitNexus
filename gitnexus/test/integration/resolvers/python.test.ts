@@ -9,6 +9,7 @@ import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
   getRelationships,
+  getResolutionOutcomes,
   getNodesByLabel,
   getNodesByLabelFull,
   edgeSet,
@@ -1075,6 +1076,65 @@ describe('Python self resolution', () => {
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('models/user.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mixin self-dispatch: a method supplied only by a concrete subtype
+// ---------------------------------------------------------------------------
+
+describe('Python mixin self-dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'python-mixin-self-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves both HookMixin self.helper() calls only to the arity-compatible Worker.helper', () => {
+    const helperCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.target === 'helper' && ['first', 'second'].includes(call.source),
+    );
+    expect(helperCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual([
+      'first → worker.py',
+      'second → worker.py',
+    ]);
+  });
+
+  it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
+    const runCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch' && call.target === 'run',
+    );
+    expect(runCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'ambiguous_a.py',
+      'ambiguous_b.py',
+    ]);
+  });
+
+  it('suppresses a missing self member instead of falling back to a same-named free function', () => {
+    const missingCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'missing' && call.target === 'missing_target',
+    );
+    expect(missingCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'missing_target' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.receiverOrigin === 'in-program',
+      ),
+    ).toBe(true);
+  });
+
+  it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) =>
+      ['first', 'second', 'dispatch', 'missing'].includes(call.source),
+    );
+    expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
   });
 });
 
