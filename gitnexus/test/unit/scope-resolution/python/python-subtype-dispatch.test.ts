@@ -138,4 +138,40 @@ describe('Python missing-member subtype argument shapes', () => {
       simplePositionalCalls: [[21, 0, 1]],
     });
   });
+
+  it('does not prove a decorated subtype target when the decorator identity is unknown', () => {
+    emitPythonScopeCaptures(callerSource, 'caller.py');
+    emitPythonScopeCaptures(
+      [
+        'from abc import abstractmethod as am',
+        'class AbstractWorker:',
+        '    @am',
+        '    def target(self, value):',
+        '        return value',
+        'class StaticWorker:',
+        '    @staticmethod',
+        '    def target(value):',
+        '        return value',
+        'class ClassWorker:',
+        '    @classmethod',
+        '    def target(cls, value):',
+        '        return value',
+      ].join('\n'),
+      'targets.py',
+    );
+
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(4)),
+    ).toBe('unknown');
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(8)),
+    ).toBe('compatible');
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility(
+        'caller.py',
+        positionalSite,
+        candidate(12),
+      ),
+    ).toBe('compatible');
+  });
 });

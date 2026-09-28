@@ -1349,6 +1349,43 @@ describe('Python mixin self-dispatch', () => {
   });
 });
 
+describe('Python aliased abstract subtype method', () => {
+  it('does not publish an abstract declaration as a concrete self-dispatch target', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-abstract-alias-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'from abc import ABC, abstractmethod as am',
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          'class AbstractWorker(Mixin, ABC):',
+          '    @am',
+          '    def hook(self):',
+          '        return 1',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (call) => call.source === 'dispatch' && call.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'worker.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 // ---------------------------------------------------------------------------
 // Incomplete Python inheritance must not invent an MRO binding
 // ---------------------------------------------------------------------------
