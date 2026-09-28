@@ -410,6 +410,9 @@ export function emitReceiverBoundCalls(
      *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
      *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
     readonly heritageTypeArguments?: HeritageTypeArguments;
+    /** Classes whose written inheritance includes a base the graph could not
+     * prove. A later inherited member cannot be selected across that gap. */
+    readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
   } = {},
 ): ReceiverBoundResult {
   let emitted = 0;
@@ -2340,6 +2343,7 @@ export function emitReceiverBoundCalls(
             const subtypeTargets = new Map<string, SymbolDefinition>();
             const ambiguousCandidateIds = new Set<string>();
             const unknownCompatibilityCandidateIds = new Set<string>();
+            const incompleteInheritanceSubtypeIds = new Set<string>();
             const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
             const subtypeQueue = [ownerDef.nodeId];
             let subtypeHead = 0;
@@ -2367,7 +2371,17 @@ export function emitReceiverBoundCalls(
                   subtype.nodeId,
                   ...scopes.methodDispatch.mroFor(subtype.nodeId),
                 ];
+                let unresolvedBaseBeforeOwner = false;
                 for (const effectiveOwnerId of effectiveOwners) {
+                  if (unresolvedBaseBeforeOwner) {
+                    incompleteInheritanceSubtypeIds.add(subtype.nodeId);
+                    break;
+                  }
+                  // A method on this owner still binds before its own bases.
+                  // If no member binds here, an unresolved base may precede
+                  // every later owner in the runtime MRO.
+                  unresolvedBaseBeforeOwner =
+                    options.unresolvedInheritanceByClass?.has(effectiveOwnerId) === true;
                   const overloads = model.methods.lookupAllByOwner(effectiveOwnerId, memberName);
                   const field = model.fields.lookupFieldByOwner(effectiveOwnerId, memberName);
                   if (field !== undefined) {
@@ -2450,7 +2464,11 @@ export function emitReceiverBoundCalls(
             const allTargets = [...subtypeTargets.values()];
             const coverage = prepareSubtypeDispatchCoverage(
               allTargets,
-              new Set([...ambiguousCandidateIds, ...unknownCompatibilityCandidateIds]),
+              new Set([
+                ...ambiguousCandidateIds,
+                ...unknownCompatibilityCandidateIds,
+                ...incompleteInheritanceSubtypeIds,
+              ]),
               MAX_INTERFACE_DISPATCH_FANOUT,
             );
             const targets = coverage.targets;

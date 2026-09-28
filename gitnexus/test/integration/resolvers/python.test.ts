@@ -1350,6 +1350,91 @@ describe('Python mixin self-dispatch', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Incomplete Python inheritance must not invent an MRO binding
+// ---------------------------------------------------------------------------
+
+describe('Python incomplete inheritance', () => {
+  it('ignores a self-named external base without losing the class for its children', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import unittest
+
+class TestCase(unittest.TestCase):
+    def project_helper(self):
+        return 1
+
+class Child(TestCase):
+    def call(self):
+        return self.project_helper()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const extendsEdges = getRelationships(result, 'EXTENDS');
+      expect(extendsEdges.some((edge) => edge.rel.sourceId === edge.rel.targetId)).toBe(false);
+      expect(extendsEdges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+        'Child->TestCase',
+      ]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'call' && edge.target === 'project_helper',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps an unindexed earlier base unresolved while retaining direct overrides', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-base-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class First:
+    def hook(self):
+        return 1
+
+class Second:
+    def hook(self):
+        return 2
+
+class Worker(HookMixin, external.Parent, First, Second):
+    pass
+
+class DirectWorker(HookMixin, external.Parent, First, Second):
+    def hook(self):
+        return 3
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      // The external parent may supply hook at runtime, so First and Second
+      // are not proven targets. DirectWorker's own method still binds first.
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
 // Parent class resolution: EXTENDS edge
 // ---------------------------------------------------------------------------
 
