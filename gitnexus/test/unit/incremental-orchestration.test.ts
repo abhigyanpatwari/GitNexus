@@ -1254,6 +1254,40 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('clears a mode-only dirty receipt when the clean content still matches', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      execSync('git update-index --chmod=+x src/logger.ts', {
+        cwd: repo.dbPath,
+        stdio: 'pipe',
+      });
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const dirtyMeta = await loadMeta(storagePath);
+      expect(dirtyMeta?.indexCoverage?.dirtyPaths).toContain('src/logger.ts');
+
+      execSync('git update-index --chmod=-x src/logger.ts', {
+        cwd: repo.dbPath,
+        stdio: 'pipe',
+      });
+      const restored = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+
+      expect(restored.alreadyUpToDate).toBe(true);
+      const restoredMeta = await loadMeta(storagePath);
+      expect(restoredMeta?.indexCoverage?.dirtyPaths).toEqual([]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('skips the framework annotation drift query when no Bean source changed', async () => {
     const repo = await setupMiniRepo();
     try {

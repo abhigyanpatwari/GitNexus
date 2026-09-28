@@ -2377,6 +2377,7 @@ async function runFullAnalysisInner(
       // unreadable/deleted file) must fall through to incremental reconciliation.
       const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
       let indexedContentChanged = indexedDirtyPaths.length > 0;
+      let reconciledCleanCoverage = false;
       if (!dirty && existingMeta.fileHashes) {
         // Porcelain also hides newly edited assume-unchanged/skip-worktree
         // paths that were absent from the previous receipt. Include the live
@@ -2393,6 +2394,12 @@ async function runFullAnalysisInner(
           indexedContentChanged = pathsToCheck.some(
             (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
           );
+          // A mode-only dirty snapshot can leave a coverage receipt even though
+          // restoring the mode makes porcelain clean and content hashes equal.
+          // Clear that receipt before taking the fast path; otherwise shared
+          // publication remains blocked forever despite a clean checkout.
+          reconciledCleanCoverage =
+            !indexedContentChanged && indexedDirtyPaths.length > 0 && liveDirtyPaths.length === 0;
         }
       }
       // Registration wrinkle around the fast path (#2264). A prior
@@ -2409,6 +2416,19 @@ async function runFullAnalysisInner(
       // opt-in branch so the common fast path keeps its single-stat cost.
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
+      if (reconciledCleanCoverage) {
+        try {
+          existingMeta.indexCoverage = {
+            ...existingMeta.indexCoverage,
+            dirtyPaths: [],
+          };
+          await saveMeta(metaDir, existingMeta);
+        } catch {
+          // If the receipt cannot be persisted, fall through to the normal
+          // reconciliation path instead of returning with stale metadata.
+          indexedContentChanged = true;
+        }
+      }
       // §5.C is deliberately NOT self-healed here. An #2841 FTS-forced rebuild
       // stamps `lastCommit`, so a plain rerun lands on this fast path and the
       // search indexes stay missing until the next content change. The fix for
