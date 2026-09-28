@@ -410,6 +410,9 @@ export function emitReceiverBoundCalls(
      *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
      *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
     readonly heritageTypeArguments?: HeritageTypeArguments;
+    /** Classes whose written inheritance includes a base the graph could not
+     * prove. A later inherited member cannot be selected across that gap. */
+    readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
   } = {},
 ): ReceiverBoundResult {
   let emitted = 0;
@@ -2340,6 +2343,7 @@ export function emitReceiverBoundCalls(
             const subtypeTargets = new Map<string, SymbolDefinition>();
             const ambiguousCandidateIds = new Set<string>();
             const unknownCompatibilityCandidateIds = new Set<string>();
+            const incompleteInheritanceSubtypeIds = new Set<string>();
             const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
             const subtypeQueue = [ownerDef.nodeId];
             let subtypeHead = 0;
@@ -2352,27 +2356,32 @@ export function emitReceiverBoundCalls(
                 subtypeQueue.push(subtype.nodeId);
 
                 // Prefer a concrete override owned by this subtype. Otherwise
-                // accept exactly one inherited provider. The generic MRO is a
-                // BFS approximation rather than Python C3, so selecting the
-                // first of multiple inherited owners would fabricate order.
-                // A class-body field of the same name also blocks descriptor
-                // lookup and must suppress a later method candidate.
+                // take the first inherited provider in MRO order. Python's
+                // MRO is C3, so that first provider is the method CPython
+                // binds. A later base that also defines the name is hidden,
+                // the same way a class-body field hides a method.
                 //
                 //   class Worker(HookMixin, Helpers): ...
                 //
                 // `Helpers` is not itself a subtype of HookMixin, so the
-                // subtype closure cannot discover it. The already-built MRO
-                // supplies the inherited owner set; the conservative rule
-                // above deliberately does not trust its approximate order.
+                // subtype closure cannot discover it. The MRO is the bridge.
                 let subtypeAmbiguous = false;
                 let picked: SymbolDefinition | undefined;
                 const effectiveOwners = [
                   subtype.nodeId,
                   ...scopes.methodDispatch.mroFor(subtype.nodeId),
                 ];
-                const inheritedCandidates = new Map<string, SymbolDefinition>();
-                for (let ownerIndex = 0; ownerIndex < effectiveOwners.length; ownerIndex++) {
-                  const effectiveOwnerId = effectiveOwners[ownerIndex]!;
+                let unresolvedBaseBeforeOwner = false;
+                for (const effectiveOwnerId of effectiveOwners) {
+                  if (unresolvedBaseBeforeOwner) {
+                    incompleteInheritanceSubtypeIds.add(subtype.nodeId);
+                    break;
+                  }
+                  // A method on this owner still binds before its own bases.
+                  // If no member binds here, an unresolved base may precede
+                  // every later owner in the runtime MRO.
+                  unresolvedBaseBeforeOwner =
+                    options.unresolvedInheritanceByClass?.has(effectiveOwnerId) === true;
                   const overloads = model.methods.lookupAllByOwner(effectiveOwnerId, memberName);
                   const field = model.fields.lookupFieldByOwner(effectiveOwnerId, memberName);
                   if (field !== undefined) {
@@ -2400,7 +2409,6 @@ export function emitReceiverBoundCalls(
                       // An abstract declaration still binds the name for this
                       // owner. Do not expose a concrete method hidden in a base;
                       // concrete descendants are visited as their own subtypes.
-                      inheritedCandidates.clear();
                       ambiguousCandidateIds.add(candidate.nodeId);
                       subtypeAmbiguous = true;
                       break;
@@ -2430,22 +2438,16 @@ export function emitReceiverBoundCalls(
                     ) {
                       continue;
                     }
-                    if (ownerIndex === 0) {
-                      picked = candidate;
-                      break;
-                    }
-                    inheritedCandidates.set(candidate.nodeId, candidate);
+                    // First compatible definition in MRO order. Do not keep
+                    // scanning: a later base is not the runtime target.
+                    picked = candidate;
+                    break;
                   }
                 }
-                if (!subtypeAmbiguous && picked === undefined) {
-                  if (inheritedCandidates.size === 1) {
-                    picked = inheritedCandidates.values().next().value;
-                  } else if (inheritedCandidates.size > 1) {
-                    for (const candidate of inheritedCandidates.values()) {
-                      ambiguousCandidateIds.add(candidate.nodeId);
-                    }
-                    subtypeAmbiguous = true;
-                  }
+                if (unresolvedBaseBeforeOwner && picked === undefined && !subtypeAmbiguous) {
+                  // The final known owner can have a base absent from the
+                  // indexed MRO, leaving this subtype's target unproven.
+                  incompleteInheritanceSubtypeIds.add(subtype.nodeId);
                 }
                 if (subtypeAmbiguous || picked === undefined) continue;
                 subtypeTargets.set(picked.nodeId, picked);
@@ -2467,7 +2469,11 @@ export function emitReceiverBoundCalls(
             const allTargets = [...subtypeTargets.values()];
             const coverage = prepareSubtypeDispatchCoverage(
               allTargets,
-              new Set([...ambiguousCandidateIds, ...unknownCompatibilityCandidateIds]),
+              new Set([
+                ...ambiguousCandidateIds,
+                ...unknownCompatibilityCandidateIds,
+                ...incompleteInheritanceSubtypeIds,
+              ]),
               MAX_INTERFACE_DISPATCH_FANOUT,
             );
             const targets = coverage.targets;

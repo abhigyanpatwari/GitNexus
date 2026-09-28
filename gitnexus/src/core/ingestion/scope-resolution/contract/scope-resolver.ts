@@ -528,11 +528,9 @@ export interface ScopeResolver {
 
   /**
    * Compute the method-dispatch order for every Class def in the
-   * workspace. Python uses depth-first first-seen via
-   * `pythonLinearize`; future languages may use C3 (Ruby, Python's
-   * real MRO when we go beyond the simplified walk), single-
-   * inheritance only (Java), or empty-map (languages without
-   * inheritance).
+   * workspace. Python passes `c3LinearizeStrategy` (CPython's MRO).
+   * Single-inheritance languages pass `defaultLinearize`. Languages
+   * without inheritance return an empty map.
    */
   buildMro(
     graph: KnowledgeGraph,
