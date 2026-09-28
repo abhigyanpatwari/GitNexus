@@ -1200,6 +1200,33 @@ describe('Python mixin self-dispatch', () => {
     ).toBe(true);
   });
 
+  it('records only the expected mixin dispatch gaps and partial coverage', () => {
+    const unresolvedSites = getResolutionOutcomes(result)
+      .filter(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'mixins.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(unresolvedSites).toEqual(
+      [
+        '3:helper',
+        '6:helper',
+        '9:helper',
+        '12:missing_target',
+        '52:shadow_hook',
+        '75:keyword_only_target',
+        '78:positional_only_target',
+        '81:required_keyword_target',
+        '94:__private_hook',
+        '99:abstract_hook',
+        '104:duplicate_hook',
+      ].sort(),
+    );
+  });
+
   it('resolves a diamond mixin call to the C3 method, not the breadth-first base', () => {
     const orderCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
