@@ -1354,6 +1354,42 @@ describe('Python mixin self-dispatch', () => {
 // ---------------------------------------------------------------------------
 
 describe('Python incomplete inheritance', () => {
+  it('records a missing subtype alongside a valid sibling target', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-missing-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `class Mixin:
+    def dispatch(self):
+        return self.hook()
+
+class HasHook(Mixin):
+    def hook(self):
+        pass
+
+class MissingHook(Mixin):
+    pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('HasHook.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:MissingHook')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('ignores a self-named external base without losing the class for its children', async () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
     try {
