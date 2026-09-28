@@ -138,4 +138,67 @@ describe('Python missing-member subtype argument shapes', () => {
       simplePositionalCalls: [[21, 0, 1]],
     });
   });
+
+  it('does not prove a decorated subtype target when the decorator identity is unknown', () => {
+    emitPythonScopeCaptures(callerSource, 'caller.py');
+    emitPythonScopeCaptures(
+      [
+        'from abc import abstractmethod as am',
+        'class AbstractWorker:',
+        '    @am',
+        '    def target(self, value):',
+        '        return value',
+        'class StaticWorker:',
+        '    @staticmethod',
+        '    def target(value):',
+        '        return value',
+        'class ClassWorker:',
+        '    @classmethod',
+        '    def target(cls, value):',
+        '        return value',
+      ].join('\n'),
+      'targets.py',
+    );
+
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(4)),
+    ).toBe('unknown');
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(8)),
+    ).toBe('compatible');
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility(
+        'caller.py',
+        positionalSite,
+        candidate(12),
+      ),
+    ).toBe('compatible');
+  });
+
+  it('does not accept a receiverless ordinary method as a zero-argument instance target', () => {
+    emitPythonScopeCaptures(
+      'class Caller:\n    def dispatch(self):\n        return self.target()',
+      'caller.py',
+    );
+    emitPythonScopeCaptures(
+      'class Worker:\n    def target():\n        pass\n    @staticmethod\n    def static_target():\n        pass',
+      'targets.py',
+    );
+
+    const site = { atRange: { startLine: 3, startCol: 15, endLine: 3, endCol: 28 } };
+    const receiverless = { ...candidate(2), parameterCount: 0, requiredParameterCount: 0 };
+    const staticTarget = {
+      ...candidate(5),
+      nodeId: 'def:targets.py#5:4:Method:static_target',
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    };
+
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, receiverless),
+    ).toBe('unknown');
+    expect(
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, staticTarget),
+    ).toBe('compatible');
+  });
 });

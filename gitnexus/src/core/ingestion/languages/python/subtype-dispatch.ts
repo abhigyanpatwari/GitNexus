@@ -1,7 +1,7 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { definitionIdPosition } from '../../scope-resolution/utils/definition-id.js';
-import { classifyPythonBoundReceiver } from './receiver-binding.js';
+import { classifyPythonBoundReceiver, isPythonStaticLikeMethod } from './receiver-binding.js';
 
 type PositionTuple = readonly [line: number, column: number];
 type CallShapeTuple = readonly [line: number, column: number, positionalCount: number];
@@ -81,6 +81,9 @@ function positionalCapacity(fnNode: SyntaxNode): number | undefined {
   const parameters = fnNode.childForFieldName('parameters');
   if (parameters === null) return undefined;
   const receiver = classifyPythonBoundReceiver(fnNode)?.parameter;
+  // Plain class functions still receive the instance even with no declared
+  // receiver slot. Without that slot, a zero-argument call is not proven safe.
+  if (receiver === undefined && !isPythonStaticLikeMethod(fnNode)) return undefined;
   let capacity = 0;
   let keywordOnly = false;
 
@@ -121,6 +124,20 @@ export function recordPythonSubtypeMethodShape(
   fnNode: SyntaxNode,
   mapLine?: LineMapper,
 ): void {
+  // An unknown decorator may replace the function or mark it abstract.
+  // Positional shape alone cannot prove a concrete subtype dispatch target.
+  // The two built-in descriptor decorators are handled by receiver binding.
+  const wrapper = fnNode.parent;
+  if (
+    wrapper?.type === 'decorated_definition' &&
+    wrapper.namedChildren.some((child) => {
+      if (child.type !== 'decorator') return false;
+      const name = child.firstNamedChild?.text;
+      return name !== 'staticmethod' && name !== 'classmethod';
+    })
+  ) {
+    return;
+  }
   const capacity = positionalCapacity(fnNode);
   if (capacity === undefined) return;
   const [line, column] = nodePosition(fnNode, mapLine);

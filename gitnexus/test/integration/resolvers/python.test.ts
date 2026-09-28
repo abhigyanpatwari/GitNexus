@@ -1349,11 +1349,119 @@ describe('Python mixin self-dispatch', () => {
   });
 });
 
+describe('Python aliased abstract subtype method', () => {
+  it('does not publish an abstract declaration as a concrete self-dispatch target', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-abstract-alias-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'from abc import ABC, abstractmethod as am',
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          'class AbstractWorker(Mixin, ABC):',
+          '    @am',
+          '    def hook(self):',
+          '        return 1',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (call) => call.source === 'dispatch' && call.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'worker.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe('Python receiverless subtype method', () => {
+  it('does not emit a CALLS edge to a method that rejects the injected instance', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-receiverless-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          'class Worker(Mixin):',
+          '    def hook():',
+          '        pass',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (call) => call.source === 'dispatch' && call.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'worker.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 // ---------------------------------------------------------------------------
 // Incomplete Python inheritance must not invent an MRO binding
 // ---------------------------------------------------------------------------
 
 describe('Python incomplete inheritance', () => {
+  it('records a missing subtype alongside a valid sibling target', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-missing-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `class Mixin:
+    def dispatch(self):
+        return self.hook()
+
+class HasHook(Mixin):
+    def hook(self):
+        pass
+
+class MissingHook(Mixin):
+    pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('HasHook.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:MissingHook')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('ignores a self-named external base without losing the class for its children', async () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
     try {
