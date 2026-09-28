@@ -304,6 +304,43 @@ describe('processProcesses', () => {
     expect(testProcess).toBeUndefined();
   });
 
+  it('excludes Dart *_test.dart entry points outside the test directory', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'func:dartTestMain',
+      label: 'Function',
+      properties: {
+        name: 'main',
+        filePath: 'lib/pages/dashboard_test.dart',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
+    });
+    graph.addNode({
+      id: 'func:dartHelper',
+      label: 'Function',
+      properties: {
+        name: 'loadDashboard',
+        filePath: 'lib/pages/dashboard.dart',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
+    });
+    graph.addRelationship({
+      id: 'call:dartTest',
+      sourceId: 'func:dartTestMain',
+      targetId: 'func:dartHelper',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
+    });
+
+    const result = await processProcesses(graph, []);
+    expect(result.processes.some((p) => p.entryPointId === 'func:dartTestMain')).toBe(false);
+  });
+
   it('filters out low-confidence calls (below 0.5)', async () => {
     const graph = createKnowledgeGraph();
 
