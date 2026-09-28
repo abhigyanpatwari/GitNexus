@@ -220,12 +220,20 @@ describe('shared sibling store analyze (#3352)', () => {
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
     await fs.writeFile(path.join(wtA, 'a.ts'), 'export function uncommitted() { return 9; }\n');
     await runFullAnalysis(wtA, {}, { onProgress: () => {} });
-    git(wtA, 'checkout', '--', 'a.ts');
-    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
 
     const layout = layoutOf(wtA);
     expect(await listCommitDirs(layout)).toEqual([]);
     expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(true);
+
+    git(wtA, 'checkout', '--', 'a.ts');
+    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+
+    const meta = await loadMeta(layout.checkoutSlot);
+    expect(meta?.indexCoverage?.dirtyPaths).toEqual([]);
+    expect(await listCommitDirs(layout)).toEqual([
+      path.basename(path.dirname(meta?.graphPath as string)),
+    ]);
+    expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(false);
   }, 180_000);
 });
 

@@ -2369,6 +2369,39 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
+      // A clean porcelain status is not enough when the previous index captured
+      // uncommitted content at this same HEAD: assume-unchanged and skip-worktree
+      // paths are deliberately absent from porcelain. Re-hash only the paths
+      // recorded dirty by the previous run. Matching hashes mean the index still
+      // describes disk and may take the fast path; a mismatch (including an
+      // unreadable/deleted file) must fall through to incremental reconciliation.
+      const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
+      let indexedContentChanged = indexedDirtyPaths.length > 0;
+      let reconciledCleanCoverage = false;
+      if (!dirty && existingMeta.fileHashes) {
+        // Porcelain also hides newly edited assume-unchanged/skip-worktree
+        // paths that were absent from the previous receipt. Include the live
+        // hidden-path set in the bounded comparison so those edits cannot take
+        // the fast path and publish stale content for HEAD.
+        const liveDirtyPaths = listWorkingTreeDirtyPaths(repoPath);
+        if (liveDirtyPaths === null) {
+          indexedContentChanged = true;
+        } else {
+          const pathsToCheck = [...new Set([...indexedDirtyPaths, ...liveDirtyPaths])].filter(
+            (rel) => existingMeta.fileHashes?.[rel] !== undefined,
+          );
+          const currentDirtyHashes = await computeFileHashes(repoPath, pathsToCheck);
+          indexedContentChanged = pathsToCheck.some(
+            (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
+          );
+          // A mode-only dirty snapshot can leave a coverage receipt even though
+          // restoring the mode makes porcelain clean and content hashes equal.
+          // Clear that receipt before taking the fast path; otherwise shared
+          // publication remains blocked forever despite a clean checkout.
+          reconciledCleanCoverage =
+            !indexedContentChanged && indexedDirtyPaths.length > 0 && liveDirtyPaths.length === 0;
+        }
+      }
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -2383,6 +2416,19 @@ async function runFullAnalysisInner(
       // opt-in branch so the common fast path keeps its single-stat cost.
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
+      if (reconciledCleanCoverage) {
+        try {
+          existingMeta.indexCoverage = {
+            ...existingMeta.indexCoverage,
+            dirtyPaths: [],
+          };
+          await saveMeta(metaDir, existingMeta);
+        } catch {
+          // If the receipt cannot be persisted, fall through to the normal
+          // reconciliation path instead of returning with stale metadata.
+          indexedContentChanged = true;
+        }
+      }
       // §5.C is deliberately NOT self-healed here. An #2841 FTS-forced rebuild
       // stamps `lastCommit`, so a plain rerun lands on this fast path and the
       // search indexes stay missing until the next content change. The fix for
@@ -2398,7 +2444,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !healUnregistered) {
+      if (!dirty && !indexedContentChanged && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
