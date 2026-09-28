@@ -103,6 +103,19 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     expect(names).toContain('/rel/info');
   });
 
+  it('propagates a package-router mount prefix through unprefixed child includes', () => {
+    const names = routeNames();
+    expect(names).toContain('/api/agents');
+    expect(names).toContain('/api/models');
+    expect(names).toContain('/api/v1/models');
+    expect(names).not.toContain('/agents');
+    expect(names).not.toContain('/models');
+    expect(names).toContain('/model-audit');
+    expect(names).not.toContain('/api/model-audit');
+    expect(names).not.toContain('/v1/model-audit');
+    expect(names).not.toContain('/api/v1/model-audit');
+  });
+
   it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {
     const names = routeNames();
     expect(names).toContain('/local');

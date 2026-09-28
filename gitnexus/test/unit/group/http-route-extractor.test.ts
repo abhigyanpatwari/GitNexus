@@ -7162,6 +7162,22 @@ async def concurrent():
       expect(providers.find((c) => c.contractId === 'http::GET::/ai/concurrent')).toBeDefined();
     });
 
+    it('carries a package-router mount across unprefixed child includes without basename bleed', async () => {
+      const dir = path.resolve(__dirname, '../../fixtures/fastapi-prefix-app');
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const ids = new Set(contracts.filter((c) => c.role === 'provider').map((c) => c.contractId));
+
+      expect(ids).toContain('http::GET::/api/agents');
+      expect(ids).toContain('http::GET::/api/models');
+      expect(ids).toContain('http::GET::/api/v1/models');
+      expect(ids).not.toContain('http::GET::/agents');
+      expect(ids).not.toContain('http::GET::/models');
+      expect(ids).toContain('http::GET::/model-audit');
+      expect(ids).not.toContain('http::GET::/api/model-audit');
+      expect(ids).not.toContain('http::GET::/v1/model-audit');
+      expect(ids).not.toContain('http::GET::/api/v1/model-audit');
+    });
+
     it('joins FastAPI @router.<verb> path with APIRouter(prefix=...) in the same file', async () => {
       const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix');
       fs.mkdirSync(path.join(dir, 'api'), { recursive: true });

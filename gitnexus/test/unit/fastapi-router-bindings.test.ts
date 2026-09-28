@@ -20,8 +20,8 @@
  *     `from ..siblings.calls import …`) are captured.
  *   • `as`-aliased imports route the prefix to the alias, not to
  *     `router`.
- *   • Nothing is emitted when `include_router` is absent or has no
- *     `prefix=` keyword.
+ *   • Simple unprefixed child includes are captured for inherited mounts;
+ *     unrelated calls without a literal prefix are not.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -34,6 +34,7 @@ import {
   type ExtractedRouterImport,
   type ExtractedRouterModuleAlias,
 } from '../../src/core/ingestion/route-extractors/fastapi-router-bindings.js';
+import { resolveFastAPIRouterPrefixes } from '../../src/core/ingestion/route-extractors/fastapi-router-prefixes.js';
 
 function run(filePath: string, content: string) {
   const includes: ExtractedRouterInclude[] = [];
@@ -210,6 +211,54 @@ describe('extractFastAPIRouterBindings — Shape B (bare local name)', () => {
     );
     const shapes = includes.map((i) => i.routerExpr).sort();
     expect(shapes).toEqual(['users.router']);
+  });
+});
+
+describe('nested FastAPI router prefix resolution', () => {
+  it('follows relative package and child imports without basename bleed', () => {
+    const root = runFull(
+      'src/one/app.py',
+      "from .api import router as api_router\napp.include_router(api_router, prefix='/api')",
+    );
+    const pkg = runFull(
+      'src/one/api/__init__.py',
+      'from .models import router as models_router\nrouter.include_router(models_router)',
+    );
+    const resolved = resolveFastAPIRouterPrefixes(
+      [
+        'src/one/app.py',
+        'src/one/api/__init__.py',
+        'src/one/api/models.py',
+        'src/two/api/models.py',
+      ],
+      [...root.includes, ...pkg.includes],
+      [...root.imports, ...pkg.imports],
+      [...root.moduleAliases, ...pkg.moduleAliases],
+    );
+
+    expect(resolved.prefixesByFile.get('src/one/api/models.py')).toEqual(new Set(['/api']));
+    expect(resolved.prefixesByFile.has('src/two/api/models.py')).toBe(false);
+    expect(pkg.includes[0]).toMatchObject({
+      host: 'router',
+      routerExpr: 'models_router',
+      prefix: '',
+    });
+  });
+
+  it('declines an absolute import shared by multiple source roots', () => {
+    const root = runFull(
+      'main.py',
+      "from api.models import router as models_router\napp.include_router(models_router, prefix='/api')",
+    );
+    const resolved = resolveFastAPIRouterPrefixes(
+      ['main.py', 'one/api/models.py', 'two/api/models.py'],
+      root.includes,
+      root.imports,
+      root.moduleAliases,
+    );
+
+    expect(resolved.prefixesByFile.size).toBe(0);
+    expect(resolved.resolvedIncludes.size).toBe(0);
   });
 });
 
