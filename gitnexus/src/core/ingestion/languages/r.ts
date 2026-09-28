@@ -14,6 +14,8 @@ import { resolveRImport } from '../import-resolvers/r.js';
 import { R_QUERIES } from '../tree-sitter-queries.js';
 import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';
+import { emitRScopeCaptures } from './r/captures.js';
+import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -178,4 +180,7 @@ export const rProvider = defineLanguage({
   fieldExtractor: new RFieldExtractor(),
   methodExtractor: rMethodExtractor,
   builtInNames: R_BUILT_INS,
+  emitScopeCaptures: emitRScopeCaptures,
+  interpretImport: interpretRImport,
+  interpretTypeBinding: interpretRTypeBinding,
 });
