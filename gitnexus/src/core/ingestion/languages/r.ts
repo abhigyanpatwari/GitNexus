@@ -175,7 +175,6 @@ export const rProvider = defineLanguage({
   typeConfig: rTypeConfig,
   exportChecker: rExportChecker,
   importResolver: resolveRImport,
-  importSemantics: 'wildcard-leaf',
   fieldExtractor: new RFieldExtractor(),
   methodExtractor: rMethodExtractor,
   builtInNames: R_BUILT_INS,

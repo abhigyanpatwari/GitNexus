@@ -1553,8 +1553,8 @@ export async function runChunkedParseAndResolve(
   // the worker can't always find the enclosing class during AST walks. Methods/properties
   // store an `ownerNameHint` (string) instead; we resolve it here against TypeRegistry
   // (now fully populated) and register into MethodRegistry / FieldRegistry explicitly.
-  attachDeferredROwners(graph, ctx.model, 'Method', 'HAS_METHOD');
-  attachDeferredROwners(graph, ctx.model, 'Property', 'HAS_PROPERTY');
+  attachDeferredROwners(graph, model, 'Method', 'HAS_METHOD');
+  attachDeferredROwners(graph, model, 'Property', 'HAS_PROPERTY');
   const rPackageConfig = await loadRPackageConfig(repoPath);
   refineRExportStatus(graph, rPackageConfig);
 
