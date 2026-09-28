@@ -1200,19 +1200,14 @@ describe('Python mixin self-dispatch', () => {
     ).toBe(true);
   });
 
-  it('suppresses inherited providers when the simplified MRO cannot prove Python order', () => {
+  it('resolves a diamond mixin call to the C3 method, not the breadth-first base', () => {
     const orderCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
     );
-    expect(orderCalls).toEqual([]);
-    expect(
-      getResolutionOutcomes(result).some(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.name === 'order_hook' &&
-          outcome.reason === 'member-lookup-ambiguous',
-      ),
-    ).toBe(true);
+    expect(orderCalls).toHaveLength(1);
+    // OrderX.order_hook is the CPython target. OrderB.order_hook is the
+    // breadth-first hit and must not be the edge.
+    expect(result.graph.getNode(orderCalls[0]!.rel.targetId)?.properties.startLine).toBe(40);
   });
 
   it('honors inherited field shadowing instead of skipping to a later method', () => {
