@@ -190,12 +190,15 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     try {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(dir, { skills: true });
+      await analyzeCommand(dir, { skills: true, contextFile: '.claude/CLAUDE.md' });
 
       expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
       expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
       const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
-      expect(aiCtxOpts).toMatchObject({ defaultBranch: 'develop' });
+      expect(aiCtxOpts).toMatchObject({
+        defaultBranch: 'develop',
+        contextFile: '.claude/CLAUDE.md',
+      });
     } finally {
       exitSpy.mockRestore();
     }
@@ -214,6 +217,25 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
       expect.stringMatching(/--default-branch/),
       expect.objectContaining({ recoveryHint: 'default-branch-invalid' }),
     );
+  });
+
+  it('passes --context-file to analysis and the up-to-date refresh', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(dir, { contextFile: '.claude/CLAUDE.md' });
+
+    expect(runFullAnalysisMock.mock.calls[0][1].contextFile).toBe('.claude/CLAUDE.md');
+    expect(refreshBaseRefLineMock.mock.calls[0][2]).toMatchObject({
+      contextFile: '.claude/CLAUDE.md',
+    });
+  });
+
+  it('rejects an escaping --context-file before analysis', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(dir, { contextFile: '../outside.md' });
+
+    expect(process.exitCode).toBe(1);
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(cliErrorMock).toHaveBeenCalledWith(expect.stringMatching(/--context-file/));
   });
 
   it('does not auto-detect the branch when config skips context generation (#1996)', async () => {
