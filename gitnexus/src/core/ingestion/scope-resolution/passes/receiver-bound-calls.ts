@@ -2344,6 +2344,7 @@ export function emitReceiverBoundCalls(
             const ambiguousCandidateIds = new Set<string>();
             const unknownCompatibilityCandidateIds = new Set<string>();
             const incompleteInheritanceSubtypeIds = new Set<string>();
+            const missingMemberSubtypeIds = new Set<string>();
             const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
             const subtypeQueue = [ownerDef.nodeId];
             let subtypeHead = 0;
@@ -2449,7 +2450,15 @@ export function emitReceiverBoundCalls(
                   // indexed MRO, leaving this subtype's target unproven.
                   incompleteInheritanceSubtypeIds.add(subtype.nodeId);
                 }
-                if (subtypeAmbiguous || picked === undefined) continue;
+                if (subtypeAmbiguous) continue;
+                if (picked === undefined) {
+                  // This runtime subtype has no proven binding. Preserve
+                  // partial coverage even when a sibling supplies a target.
+                  if (!incompleteInheritanceSubtypeIds.has(subtype.nodeId)) {
+                    missingMemberSubtypeIds.add(subtype.nodeId);
+                  }
+                  continue;
+                }
                 subtypeTargets.set(picked.nodeId, picked);
               }
             }
@@ -2473,6 +2482,7 @@ export function emitReceiverBoundCalls(
                 ...ambiguousCandidateIds,
                 ...unknownCompatibilityCandidateIds,
                 ...incompleteInheritanceSubtypeIds,
+                ...missingMemberSubtypeIds,
               ]),
               MAX_INTERFACE_DISPATCH_FANOUT,
             );
