@@ -649,6 +649,7 @@ export interface TypeRef {
     | 'parameter-annotation'
     | 'return-annotation'
     | 'self'
+    | 'decorator-unknown'
     | 'assignment-inferred'
     | 'constructor-inferred'
     | 'receiver-propagated';

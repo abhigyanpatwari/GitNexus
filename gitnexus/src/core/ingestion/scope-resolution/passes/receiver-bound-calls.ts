@@ -185,6 +185,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
+  | 'suppressReceiverLookup'
   | 'resolveThisViaEnclosingClass'
   | 'resolveMissingReceiverMembersFromSubtypes'
   | 'missingReceiverSubtypeCandidateCompatibility'
@@ -1061,6 +1062,30 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+
+      if (provider.suppressReceiverLookup !== undefined) {
+        const baseName =
+          decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
+          receiverName.split(/[.([\s]/, 1)[0];
+        const baseTypeRef =
+          baseName === undefined
+            ? undefined
+            : findReceiverTypeBinding(site.inScope, baseName, scopes);
+        if (baseTypeRef !== undefined && provider.suppressReceiverLookup(baseTypeRef)) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
+      }
 
       // ── owned-but-unbound receiver ───────────────────────────────
       // The language declared this scope REBINDS the receiver and gave
