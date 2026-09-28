@@ -4,7 +4,7 @@
  *
  * The provider is a thin wiring object — Python's specific bits
  * (super recognizer, LEGB merge precedence, Python's relative-import
- * resolver, the simplified MRO walk) plug into `runScopeResolution`.
+ * resolver, C3 method resolution) plug into `runScopeResolution`.
  *
  * Migration reference: when bringing up the next language
  * (TypeScript / Java / Kotlin / Ruby), copy this file's structure —
@@ -14,7 +14,7 @@
 
 import type { ParsedFile, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { buildMro, c3LinearizeStrategy } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type {
   ArityVerdict,
@@ -122,7 +122,7 @@ const pythonScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => pythonArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+    buildMro(graph, parsedFiles, nodeLookup, c3LinearizeStrategy),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

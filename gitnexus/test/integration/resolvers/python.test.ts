@@ -1200,19 +1200,41 @@ describe('Python mixin self-dispatch', () => {
     ).toBe(true);
   });
 
-  it('suppresses inherited providers when the simplified MRO cannot prove Python order', () => {
+  it('records only the expected mixin dispatch gaps and partial coverage', () => {
+    const unresolvedSites = getResolutionOutcomes(result)
+      .filter(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'mixins.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(unresolvedSites).toEqual(
+      [
+        '3:helper',
+        '6:helper',
+        '9:helper',
+        '12:missing_target',
+        '52:shadow_hook',
+        '75:keyword_only_target',
+        '78:positional_only_target',
+        '81:required_keyword_target',
+        '94:__private_hook',
+        '99:abstract_hook',
+        '104:duplicate_hook',
+      ].sort(),
+    );
+  });
+
+  it('resolves a diamond mixin call to the C3 method, not the breadth-first base', () => {
     const orderCalls = getRelationships(result, 'CALLS').filter(
       (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
     );
-    expect(orderCalls).toEqual([]);
-    expect(
-      getResolutionOutcomes(result).some(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.name === 'order_hook' &&
-          outcome.reason === 'member-lookup-ambiguous',
-      ),
-    ).toBe(true);
+    expect(orderCalls).toHaveLength(1);
+    // OrderX.order_hook is the CPython target. OrderB.order_hook is the
+    // breadth-first hit and must not be the edge.
+    expect(result.graph.getNode(orderCalls[0]!.rel.targetId)?.properties.startLine).toBe(40);
   });
 
   it('honors inherited field shadowing instead of skipping to a later method', () => {
@@ -1325,6 +1347,132 @@ describe('Python mixin self-dispatch', () => {
     );
     expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Incomplete Python inheritance must not invent an MRO binding
+// ---------------------------------------------------------------------------
+
+describe('Python incomplete inheritance', () => {
+  it('ignores a self-named external base without losing the class for its children', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import unittest
+
+class TestCase(unittest.TestCase):
+    def project_helper(self):
+        return 1
+
+class Child(TestCase):
+    def call(self):
+        return self.project_helper()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const extendsEdges = getRelationships(result, 'EXTENDS');
+      expect(extendsEdges.some((edge) => edge.rel.sourceId === edge.rel.targetId)).toBe(false);
+      expect(extendsEdges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+        'Child->TestCase',
+      ]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'call' && edge.target === 'project_helper',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps an unindexed earlier base unresolved while retaining direct overrides', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-base-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class First:
+    def hook(self):
+        return 1
+
+class Second:
+    def hook(self):
+        return 2
+
+class Worker(HookMixin, external.Parent, First, Second):
+    pass
+
+class DirectWorker(HookMixin, external.Parent, First, Second):
+    def hook(self):
+        return 3
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      // The external parent may supply hook at runtime, so First and Second
+      // are not proven targets. DirectWorker's own method still binds first.
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('records partial coverage when the final known MRO owner has an unindexed base', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-tail-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class Tail(external.Parent):
+    pass
+
+class Worker(HookMixin, Tail):
+    pass
+
+class DirectWorker(HookMixin):
+    def hook(self):
+        return 1
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------

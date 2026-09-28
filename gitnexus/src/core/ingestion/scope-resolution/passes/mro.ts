@@ -7,9 +7,8 @@
  * into `MethodDispatchIndex` via `buildPopulatedMethodDispatch`.
  *
  * **Why a strategy hook:** linearization differs across languages.
- *   - Python (depth-first first-seen, single inheritance): trivially
- *     correct; multi-inheritance falls back to BFS dedup. Real C3
- *     would handle diamond hierarchies — defer until we hit one.
+ *   - Python: C3 (`c3LinearizeStrategy`), the order CPython binds.
+ *     Single inheritance matches the BFS walk. A diamond does not.
  *   - Java (single-inheritance only): walk one parent.
  *   - C++ (multiple inheritance): C3-like or BFS depending on how
  *     strict the consumer needs to be.
@@ -23,6 +22,7 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { LinearizeStrategy } from '../contract/scope-resolver.js';
+import { c3Linearize } from '../../model/resolve.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { isClassLike } from '../scope/walkers.js';
 
@@ -89,10 +89,9 @@ export function buildMro(
 }
 
 /**
- * Default linearization: depth-first BFS-with-visited, first-seen
- * wins. Correct for single-inheritance languages and for Python's
- * simplified MRO. Multi-inheritance diamond hierarchies need a real
- * C3 implementation; per-language overrides land here.
+ * Default linearization: breadth-first, first-seen wins. Correct for
+ * single inheritance. A diamond visits a direct base before the deeper
+ * base C3 would rank first. Python does not use this.
  */
 export const defaultLinearize: LinearizeStrategy = (_classDefId, directParents, parentsByDefId) => {
   const ancestors: string[] = [];
@@ -107,4 +106,36 @@ export const defaultLinearize: LinearizeStrategy = (_classDefId, directParents, 
     for (const p of parentsByDefId.get(cur) ?? []) queue.push(p);
   }
   return ancestors;
+};
+
+/**
+ * CPython C3 order, excluding the class itself.
+ *
+ * The parent map and merge cache are reused for every class in one
+ * `buildMro` call. An inconsistent or cyclic hierarchy has no CPython
+ * order; those classes get an empty ancestor list rather than a
+ * breadth-first order that would name the wrong method.
+ */
+const c3SlotByParents = new WeakMap<
+  ReadonlyMap<string, readonly string[]>,
+  { parentMap: Map<string, string[]>; cache: Map<string, string[] | null> }
+>();
+
+export const c3LinearizeStrategy: LinearizeStrategy = (
+  classDefId,
+  directParents,
+  parentsByDefId,
+) => {
+  let slot = c3SlotByParents.get(parentsByDefId);
+  if (slot === undefined) {
+    const parentMap = new Map<string, string[]>();
+    for (const [id, parents] of parentsByDefId) parentMap.set(id, [...parents]);
+    slot = { parentMap, cache: new Map() };
+    c3SlotByParents.set(parentsByDefId, slot);
+  }
+  if (!slot.parentMap.has(classDefId)) {
+    slot.parentMap.set(classDefId, [...directParents]);
+  }
+  const linearized = c3Linearize(classDefId, slot.parentMap, slot.cache);
+  return linearized ?? [];
 };

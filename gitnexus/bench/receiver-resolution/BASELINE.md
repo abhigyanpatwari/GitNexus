@@ -9,7 +9,19 @@ test asserts this outcome. CI run 36319863343 at `4034cee` measured one addition
 Python call drop (113 to 114; all-kind total 159 to 160), classified as in-program
 with no receiver-shape annotation. No shape-arm result or performance threshold
 changed. The renamed bound-receiver correction preserves the existing method's
-effective arity; the exact-head CI gate must still confirm these counts.
+effective arity. The measurements below supersede this earlier snapshot.
+
+The final #3390 head did not retain that snapshot: its full corpus measured 125
+call drops, including 12 in the new mixin fixture. At #3393 head, C3 resolves
+`order_hook` to `OrderX.order_hook`, removing that fixture's one ambiguous drop.
+The full corpus now measures 124 call drops (16 Python, 54 in-program), with 11
+from the mixin fixture. The ten fixture outcomes missing from the old baseline
+are three `helper()` calls with valid targets and an unproven variadic sibling,
+field shadowing, three incompatible argument shapes, private-name lookup, an
+abstract declaration, and duplicate definitions. The integration test pins
+their exact call sites; none of these ten is the C3 `order_hook` call. These
+counts track conservative unresolved coverage, including partial fan-out, not
+only calls with no emitted edge.
 
 The Python capture fingerprint is also intentionally regenerated: ordinary call
 captures now include statically known argument counts, the corpus includes eight
