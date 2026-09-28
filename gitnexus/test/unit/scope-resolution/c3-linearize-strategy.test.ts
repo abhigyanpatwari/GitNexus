@@ -22,7 +22,7 @@ describe('c3LinearizeStrategy', () => {
     ]);
   });
 
-  it('does not match breadth-first order on that diamond', () => {
+  it('does not match breadth-first order on that hierarchy', () => {
     expect(defaultLinearize('OrderedWorker', parents.get('OrderedWorker')!, parents)).toEqual([
       'MroOrderMixin',
       'OrderA',

@@ -2444,6 +2444,11 @@ export function emitReceiverBoundCalls(
                     break;
                   }
                 }
+                if (unresolvedBaseBeforeOwner && picked === undefined && !subtypeAmbiguous) {
+                  // The final known owner can have a base absent from the
+                  // indexed MRO, leaving this subtype's target unproven.
+                  incompleteInheritanceSubtypeIds.add(subtype.nodeId);
+                }
                 if (subtypeAmbiguous || picked === undefined) continue;
                 subtypeTargets.set(picked.nodeId, picked);
               }
