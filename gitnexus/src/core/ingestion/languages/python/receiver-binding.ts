@@ -45,6 +45,13 @@ function hasDecorator(fnNode: SyntaxNode, decoratorName: string): boolean {
   return false;
 }
 
+/** Static-like descriptors do not inject an instance on attribute access. */
+export function isPythonStaticLikeMethod(fnNode: SyntaxNode): boolean {
+  return (
+    fnNode.childForFieldName('name')?.text === '__new__' || hasDecorator(fnNode, 'staticmethod')
+  );
+}
+
 function firstBoundReceiverParameter(parameters: SyntaxNode): SyntaxNode | null {
   for (let i = 0; i < parameters.namedChildCount; i++) {
     const child = parameters.namedChild(i);
@@ -93,14 +100,12 @@ export interface PythonBoundReceiver {
  */
 export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
   const enclosingClass = findEnclosingClassDefinition(fnNode);
-  if (enclosingClass === null || hasDecorator(fnNode, 'staticmethod')) return null;
+  if (enclosingClass === null || isPythonStaticLikeMethod(fnNode)) return null;
 
   const functionName = fnNode.childForFieldName('name')?.text;
   // Python applies these descriptor kinds implicitly even without decorators.
   // __new__ is static-like (its class argument is explicit), while
   // __init_subclass__ and __class_getitem__ receive the class implicitly.
-  if (functionName === '__new__') return null;
-
   const params = fnNode.childForFieldName('parameters');
   if (params === null) return null;
   const parameter = firstBoundReceiverParameter(params);
