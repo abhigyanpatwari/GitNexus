@@ -167,7 +167,11 @@ describe('Python missing-member subtype argument shapes', () => {
       pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(8)),
     ).toBe('compatible');
     expect(
-      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', positionalSite, candidate(12)),
+      pythonMissingReceiverSubtypeCandidateCompatibility(
+        'caller.py',
+        positionalSite,
+        candidate(12),
+      ),
     ).toBe('compatible');
   });
 });
