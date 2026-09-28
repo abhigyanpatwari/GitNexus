@@ -3,7 +3,8 @@
  * for methods.
  *
  * Tree-sitter can't easily express "the first parameter of a function
- * defined directly inside a class body" via a single static query.
+ * defined in a class suite, including conditional suite branches" via a
+ * single static query.
  * Doing this in code keeps the embedded scope query declarative and
  * lets us encode the `@classmethod` / `@staticmethod` decorator
  * awareness that Python's runtime depends on.
@@ -44,31 +45,100 @@ function hasDecorator(fnNode: SyntaxNode, decoratorName: string): boolean {
   return false;
 }
 
-function firstNamedParameter(parameters: SyntaxNode): SyntaxNode | null {
+function firstBoundReceiverParameter(parameters: SyntaxNode): SyntaxNode | null {
   for (let i = 0; i < parameters.namedChildCount; i++) {
     const child = parameters.namedChild(i);
     if (child === null) continue;
-    // Skip `*` / `/` markers.
-    if (child.type === 'positional_separator' || child.type === 'keyword_separator') continue;
-    return child;
+    if (child.type === 'comment') continue;
+
+    // A positional-only separator follows at least one real positional
+    // parameter, so encountering it before a candidate is malformed input.
+    // A keyword-only separator, *args, or **kwargs means there is no variable
+    // that directly receives Python's descriptor-injected instance.
+    if (
+      child.type === 'positional_separator' ||
+      child.type === 'keyword_separator' ||
+      child.type === 'list_splat_pattern' ||
+      child.type === 'dictionary_splat_pattern'
+    ) {
+      return null;
+    }
+
+    return firstParameterName(child) === null ? null : child;
   }
   return null;
 }
 
 function firstParameterName(param: SyntaxNode): string | null {
   if (param.type === 'identifier') return param.text;
-  // typed_parameter / default_parameter / typed_default_parameter:
-  // first child holds the identifier / pattern.
-  const ident = param.childForFieldName('name') ?? findIdentifierChild(param);
-  return ident?.text ?? null;
+  // typed_parameter / default_parameter / typed_default_parameter must name a
+  // real positional variable. In particular, do not look through a typed
+  // list_splat_pattern or dictionary_splat_pattern for its nested identifier.
+  const named = param.childForFieldName('name') ?? param.firstNamedChild;
+  return named?.type === 'identifier' ? named.text : null;
 }
 
-function findIdentifierChild(node: SyntaxNode): SyntaxNode | null {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null && child.type === 'identifier') return child;
-  }
-  return null;
+export interface PythonBoundReceiver {
+  readonly kind: 'instance' | 'class';
+  readonly parameter: SyntaxNode;
+  readonly name: string;
+  readonly className: string;
+}
+
+/**
+ * Classify the parameter that Python's descriptor protocol binds implicitly.
+ * Class-suite control flow does not change descriptor ownership, while an
+ * intervening function does. Splat and keyword-only parameters cannot name
+ * the injected receiver directly and therefore fail closed.
+ */
+export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
+  const enclosingClass = findEnclosingClassDefinition(fnNode);
+  if (enclosingClass === null || hasDecorator(fnNode, 'staticmethod')) return null;
+
+  const functionName = fnNode.childForFieldName('name')?.text;
+  // Python applies these descriptor kinds implicitly even without decorators.
+  // __new__ is static-like (its class argument is explicit), while
+  // __init_subclass__ and __class_getitem__ receive the class implicitly.
+  if (functionName === '__new__') return null;
+
+  const params = fnNode.childForFieldName('parameters');
+  if (params === null) return null;
+  const parameter = firstBoundReceiverParameter(params);
+  if (parameter === null) return null;
+
+  const name = firstParameterName(parameter);
+  const className = classDefinitionName(enclosingClass);
+  if (name === null || className === null) return null;
+
+  return {
+    kind:
+      hasDecorator(fnNode, 'classmethod') ||
+      functionName === '__init_subclass__' ||
+      functionName === '__class_getitem__'
+        ? 'class'
+        : 'instance',
+    parameter,
+    name,
+    className,
+  };
+}
+
+/**
+ * `__new__` is static-like for method dispatch, but Python supplies its class
+ * argument during construction rather than through descriptor binding. Keep
+ * that explicit parameter in arity metadata while still typing its local name.
+ */
+function classifyPythonExplicitNewReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
+  if (fnNode.childForFieldName('name')?.text !== '__new__') return null;
+  const enclosingClass = findEnclosingClassDefinition(fnNode);
+  const params = fnNode.childForFieldName('parameters');
+  if (enclosingClass === null || params === null) return null;
+  const parameter = firstBoundReceiverParameter(params);
+  if (parameter === null) return null;
+  const name = firstParameterName(parameter);
+  const className = classDefinitionName(enclosingClass);
+  if (name === null || className === null) return null;
+  return { kind: 'class', parameter, name, className };
 }
 
 /**
@@ -80,37 +150,35 @@ function findIdentifierChild(node: SyntaxNode): SyntaxNode | null {
  * 'function_definition'`.
  */
 export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch | null {
-  const enclosingClass = findEnclosingClassDefinition(fnNode);
-  if (enclosingClass === null) return null;
-
-  // Skip @staticmethod-decorated methods (no implicit receiver).
-  if (hasDecorator(fnNode, 'staticmethod')) return null;
-  const isClassmethod = hasDecorator(fnNode, 'classmethod');
-
-  const params = fnNode.childForFieldName('parameters');
-  if (params === null) return null;
-  const first = firstNamedParameter(params);
-  if (first === null) return null;
-
-  const className = classDefinitionName(enclosingClass);
-  if (className === null) return null;
-
-  const firstName = firstParameterName(first);
-  if (firstName === null) return null;
+  const receiver = classifyPythonBoundReceiver(fnNode) ?? classifyPythonExplicitNewReceiver(fnNode);
+  if (receiver === null) return null;
 
   // Receiver convention: instance methods get `self`, classmethods get `cls`.
-  // We trust the AST literal name (Python convention is strict in practice).
-  if (isClassmethod) {
+  // The capture tag records the descriptor kind; the variable may use any
+  // spelling.
+  if (receiver.kind === 'class') {
     return {
-      '@type-binding.cls': nodeToCapture('@type-binding.cls', first),
-      '@type-binding.name': syntheticCapture('@type-binding.name', first, firstName),
-      '@type-binding.type': syntheticCapture('@type-binding.type', first, className),
+      '@type-binding.cls': nodeToCapture('@type-binding.cls', receiver.parameter),
+      '@type-binding.name': syntheticCapture(
+        '@type-binding.name',
+        receiver.parameter,
+        receiver.name,
+      ),
+      '@type-binding.type': syntheticCapture(
+        '@type-binding.type',
+        receiver.parameter,
+        receiver.className,
+      ),
     };
   }
   return {
-    '@type-binding.self': nodeToCapture('@type-binding.self', first),
-    '@type-binding.name': syntheticCapture('@type-binding.name', first, firstName),
-    '@type-binding.type': syntheticCapture('@type-binding.type', first, className),
+    '@type-binding.self': nodeToCapture('@type-binding.self', receiver.parameter),
+    '@type-binding.name': syntheticCapture('@type-binding.name', receiver.parameter, receiver.name),
+    '@type-binding.type': syntheticCapture(
+      '@type-binding.type',
+      receiver.parameter,
+      receiver.className,
+    ),
   };
 }
 

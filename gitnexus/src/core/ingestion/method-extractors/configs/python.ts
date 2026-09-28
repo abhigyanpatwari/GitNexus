@@ -8,15 +8,13 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
+import { classifyPythonBoundReceiver } from '../../languages/python/receiver-binding.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Python helpers
 // ---------------------------------------------------------------------------
-
-/** Names that represent the instance/class receiver — not real parameters. */
-const SELF_NAMES = new Set(['self', 'cls']);
 
 /**
  * Unwrap a decorated_definition to its inner function_definition.
@@ -91,7 +89,9 @@ function hasDecorator(node: SyntaxNode, name: string): boolean {
  *
  * Handles: identifier, default_parameter, typed_parameter, typed_default_parameter,
  * list_splat_pattern (*args), dictionary_splat_pattern (**kwargs), and typed variants.
- * Skips `self` and `cls` first parameters.
+ * Skips the first positional parameter of bound class members, independent of
+ * its spelling. Module functions, nested functions, and static methods retain
+ * their first parameter.
  */
 function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
   const funcNode = unwrapDecorated(node);
@@ -100,18 +100,20 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
 
   const params: ParameterInfo[] = [];
   let isFirst = true;
+  const boundReceiverId = classifyPythonBoundReceiver(funcNode)?.parameter.id;
 
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param) continue;
+    if (param.type === 'comment') continue;
+    if (isFirst && boundReceiverId !== undefined && param.id === boundReceiverId) {
+      isFirst = false;
+      continue;
+    }
 
     switch (param.type) {
       case 'identifier': {
-        // Bare parameter: `self`, `cls`, or untyped `x`
-        if (isFirst && SELF_NAMES.has(param.text)) {
-          isFirst = false;
-          continue;
-        }
+        // Bare parameter: untyped `x`
         isFirst = false;
         params.push({
           name: param.text,
@@ -143,10 +145,6 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
         const inner = param.firstNamedChild;
         if (!inner) break;
 
-        if (isFirst && inner.type === 'identifier' && SELF_NAMES.has(inner.text)) {
-          isFirst = false;
-          continue;
-        }
         isFirst = false;
 
         const typeNode = param.childForFieldName('type');
@@ -297,7 +295,13 @@ export const pythonMethodConfig: MethodExtractionConfig = {
   extractVisibility: extractPythonVisibility,
 
   isStatic(node) {
-    return hasDecorator(node, 'staticmethod') || hasDecorator(node, 'classmethod');
+    const funcNode = unwrapDecorated(node);
+    return (
+      hasDecorator(node, 'staticmethod') ||
+      hasDecorator(node, 'classmethod') ||
+      funcNode.childForFieldName('name')?.text === '__new__' ||
+      classifyPythonBoundReceiver(funcNode)?.kind === 'class'
+    );
   },
 
   isAbstract(node, _ownerNode) {

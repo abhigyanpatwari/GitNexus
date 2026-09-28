@@ -519,6 +519,42 @@
     "captureGroups": 31,
     "digest": "9e3f359187a82e936cd74c59848a296d19f138865a71882e3bbd3842bb4f0704"
   },
+  "python-mixin-self-dispatch/ambiguous_a.py": {
+    "captureGroups": 10,
+    "digest": "8ff1561b66846722c78a95f0492f4bcc67587e52a22c6d09d980b2025b1a9f53"
+  },
+  "python-mixin-self-dispatch/ambiguous_b.py": {
+    "captureGroups": 10,
+    "digest": "0d81efdead49a51822b48916d5137699d8343e68811af7cceae37946596159c5"
+  },
+  "python-mixin-self-dispatch/conditional.py": {
+    "captureGroups": 10,
+    "digest": "fa09cba191ae3ba4afb67db0ceef56725e2a73707c8b106b397206afe173c115"
+  },
+  "python-mixin-self-dispatch/decoys.py": {
+    "captureGroups": 10,
+    "digest": "aefd2ce8ab50a2ddca86f277e2503b33ea825c67041e0f1ad3f3cc6f26f30534"
+  },
+  "python-mixin-self-dispatch/helpers.py": {
+    "captureGroups": 7,
+    "digest": "21cf0a934e0bd7556082f83084d27a5ff04706f88f3d8de16811ed76646dc3cd"
+  },
+  "python-mixin-self-dispatch/inherited.py": {
+    "captureGroups": 7,
+    "digest": "4250018e9eabafe863caedc43306c69ff28fe17f19103edf2f01ed6438d0af19"
+  },
+  "python-mixin-self-dispatch/mixins.py": {
+    "captureGroups": 188,
+    "digest": "730fcef0260b2a8af6a6c80d2700011a82ac9d54bc842fcdb15a5907986c49ed"
+  },
+  "python-mixin-self-dispatch/worker.py": {
+    "captureGroups": 211,
+    "digest": "82b087675071c005a6a58c84659009d180e71297f0ed7c915a1d8f745883730e"
+  },
+  "python-mixin-self-dispatch/wrong_arity.py": {
+    "captureGroups": 23,
+    "digest": "77c19005cc204aff148f6b230d0334cda52f338f34418bf9b609c6c5c44d87a5"
+  },
   "python-module-export-vs-method-collision/app.py": {
     "captureGroups": 14,
     "digest": "1362e9187b6a8a8223e55833c725b3f02475faaa803ac657b917d434b550356a"
