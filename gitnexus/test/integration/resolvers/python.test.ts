@@ -1349,9 +1349,9 @@ describe('Python mixin self-dispatch', () => {
   });
 });
 
-describe('Python aliased abstract subtype method', () => {
-  it('does not publish an abstract declaration as a concrete self-dispatch target', async () => {
-    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-abstract-alias-'));
+describe('Python unproven subtype methods', () => {
+  it('keeps unproven subtype targets unresolved beside a concrete sibling', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unproven-subtype-'));
     try {
       writeFixtureRepo(repoDir, {
         'worker.py': [
@@ -1359,62 +1359,69 @@ describe('Python aliased abstract subtype method', () => {
           'class Mixin:',
           '    def dispatch(self):',
           '        return self.hook()',
+          'class Concrete(Mixin):',
+          '    def hook(self):',
+          '        return 0',
           'class AbstractWorker(Mixin, ABC):',
           '    @am',
           '    def hook(self):',
           '        return 1',
+          'class Receiverless(Mixin):',
+          '    def hook():',
+          '        pass',
         ].join('\n'),
       });
       const result = await runPipelineFromRepo(repoDir, () => {});
-      expect(
-        getRelationships(result, 'CALLS').filter(
-          (call) => call.source === 'dispatch' && call.target === 'hook',
-        ),
-      ).toEqual([]);
-      expect(
-        getResolutionOutcomes(result).some(
-          (outcome) =>
-            outcome.kind === 'suppressed' &&
-            outcome.filePath === 'worker.py' &&
-            outcome.name === 'hook' &&
-            outcome.reason === 'receiver-unresolved',
-        ),
-      ).toBe(true);
+      const calls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'dispatch' && call.target === 'hook',
+      );
+      expect(calls.map((call) => call.rel.targetId)).toEqual([
+        expect.stringContaining('Concrete.hook'),
+      ]);
+      const unresolved = getResolutionOutcomes(result).filter(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.name === 'hook' &&
+          outcome.reason === 'receiver-unresolved',
+      );
+      expect(unresolved.flatMap((outcome) => outcome.candidateIds).sort()).toEqual([
+        // AbstractWorker.hook (line 10) and Receiverless.hook (line 13).
+        'def:worker.py#10:4:Method:hook',
+        'def:worker.py#13:4:Method:hook',
+      ]);
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }
   }, 60000);
-});
 
-describe('Python receiverless subtype method', () => {
-  it('does not emit a CALLS edge to a method that rejects the injected instance', async () => {
-    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-receiverless-subtype-'));
+  it('marks a member-less intermediate subtype partial and keeps the leaf edge', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-intermediate-subtype-'));
     try {
       writeFixtureRepo(repoDir, {
         'worker.py': [
           'class Mixin:',
           '    def dispatch(self):',
           '        return self.hook()',
-          'class Worker(Mixin):',
-          '    def hook():',
-          '        pass',
+          // Base() is instantiable, and its dispatch() raises AttributeError.
+          'class Base(Mixin):',
+          '    pass',
+          'class Impl(Base):',
+          '    def hook(self):',
+          '        return 1',
         ].join('\n'),
       });
       const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (call) => call.source === 'dispatch' && call.target === 'hook',
+      );
+      expect(calls.map((call) => call.rel.targetId)).toEqual([
+        expect.stringContaining('Impl.hook'),
+      ]);
       expect(
-        getRelationships(result, 'CALLS').filter(
-          (call) => call.source === 'dispatch' && call.target === 'hook',
-        ),
-      ).toEqual([]);
-      expect(
-        getResolutionOutcomes(result).some(
-          (outcome) =>
-            outcome.kind === 'suppressed' &&
-            outcome.filePath === 'worker.py' &&
-            outcome.name === 'hook' &&
-            outcome.reason === 'receiver-unresolved',
-        ),
-      ).toBe(true);
+        getResolutionOutcomes(result)
+          .filter((outcome) => outcome.name === 'hook' && outcome.reason === 'receiver-unresolved')
+          .flatMap((outcome) => outcome.candidateIds),
+      ).toEqual([expect.stringMatching(/:Class:Base$/)]);
     } finally {
       fs.rmSync(repoDir, { recursive: true, force: true });
     }

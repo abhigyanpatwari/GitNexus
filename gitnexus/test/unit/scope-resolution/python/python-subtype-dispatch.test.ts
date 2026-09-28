@@ -201,4 +201,84 @@ describe('Python missing-member subtype argument shapes', () => {
       pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, staticTarget),
     ).toBe('compatible');
   });
+
+  it('resolves decorator identity the way CPython evaluates it', () => {
+    emitPythonScopeCaptures(callerSource, 'caller.py');
+    emitPythonScopeCaptures(
+      [
+        'from abc import abstractmethod',
+        'class Commented:',
+        '    @staticmethod  # type: ignore[misc]',
+        '    def target(value):',
+        '        return value',
+        'class Stacked:',
+        '    @staticmethod',
+        '    @classmethod',
+        '    def target(cls, value):',
+        '        return value',
+        'class Receiverless:',
+        '    def target(**options):',
+        '        return options',
+        'class KeywordOnlyReceiverless:',
+        '    def target(*, value=0):',
+        '        return value',
+      ].join('\n'),
+      'targets.py',
+    );
+    emitPythonScopeCaptures(
+      [
+        // `import X as Y` binds only Y, so the builtin stays visible.
+        'from builtins import staticmethod as sm',
+        'class Aliased:',
+        '    @staticmethod',
+        '    def target(value):',
+        '        return value',
+      ].join('\n'),
+      'aliased.py',
+    );
+    emitPythonScopeCaptures(
+      [
+        'from abc import abstractmethod as staticmethod',
+        'class Shadowed:',
+        '    @staticmethod',
+        '    def target(value):',
+        '        return value',
+      ].join('\n'),
+      'shadowed.py',
+    );
+    const receiverless = (line: number) => ({
+      ...candidate(line),
+      parameterCount: 0,
+      requiredParameterCount: 0,
+    });
+    const shadowed = { ...candidate(4), nodeId: 'def:shadowed.py#4:4:Method:target' };
+    const verdict = (site: typeof positionalSite | typeof tooFewSite, target: SymbolDefinition) =>
+      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, target);
+
+    expect([
+      // A trailing comment is not part of the decorator expression.
+      verdict(positionalSite, candidate(4)),
+      verdict(tooFewSite, candidate(4)),
+      // staticmethod(classmethod(f)) yields a non-callable classmethod object.
+      verdict(positionalSite, candidate(9)),
+      // Python still passes the instance, which these signatures cannot bind.
+      verdict(tooFewSite, receiverless(12)),
+      verdict(tooFewSite, receiverless(15)),
+      // The module rebinds `staticmethod`, so the decorator is not the builtin.
+      verdict(positionalSite, { ...shadowed, filePath: 'shadowed.py' }),
+      verdict(positionalSite, {
+        ...candidate(4),
+        nodeId: 'def:aliased.py#4:4:Method:target',
+        filePath: 'aliased.py',
+      }),
+    ]).toEqual([
+      'compatible',
+      'incompatible',
+      'unknown',
+      'unknown',
+      'unknown',
+      'unknown',
+      'compatible',
+    ]);
+  });
 });

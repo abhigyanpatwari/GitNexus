@@ -2792,6 +2792,18 @@ class Service:
       });
     });
 
+    it('reads decorator identity from the expression, not its trailing comment', () => {
+      const tree = parsePython(`
+class Service:
+    @staticmethod  # type: ignore[misc]
+    def commented(value):
+        pass
+      `);
+      const result = extractor.extract(tree.rootNode.child(0)!, pythonCtx);
+
+      expect(result!.methods[0]!.parameters.map((parameter) => parameter.name)).toEqual(['value']);
+    });
+
     it('retains first parameters on module and nested functions', () => {
       const tree = parsePython(`
 def module(instance):

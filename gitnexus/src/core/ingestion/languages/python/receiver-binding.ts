@@ -30,31 +30,85 @@ function classDefinitionName(classNode: SyntaxNode): string | null {
   return classNode.childForFieldName('name')?.text ?? null;
 }
 
-/** Syntactic decorator expressions; aliases cannot be identified by spelling. */
+/** Decorator expressions, outermost first. Tree-sitter keeps a trailing
+ *  comment inside the decorator node, so read the expression child only. */
 function decoratorNames(fnNode: SyntaxNode): string[] {
   const parent = fnNode.parent;
   if (parent === null || parent.type !== 'decorated_definition') return [];
   const names: string[] = [];
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child === null || child.type !== 'decorator') continue;
-    const text = child.text.replace(/^@/, '').trim();
-    names.push(text);
+  for (const child of parent.namedChildren) {
+    if (child.type !== 'decorator') continue;
+    // An empty name matches nothing, so a malformed decorator stays unknown.
+    names.push(child.namedChildren.find((part) => part.type !== 'comment')?.text ?? '');
   }
   return names;
 }
 
-/** Matches bare and module-qualified decorator spellings. */
-function hasDecorator(fnNode: SyntaxNode, decoratorName: string): boolean {
-  return decoratorNames(fnNode).some((expression) => {
-    const name = expression.split('(')[0]!.trim();
-    return name === decoratorName || name.endsWith(`.${decoratorName}`);
-  });
+type BuiltinDescriptor = 'classmethod' | 'staticmethod' | 'property';
+
+// Only bare spellings: aliases, dotted tails and decorator calls have no known
+// descriptor contract without import resolution.
+const BUILTIN_DESCRIPTORS: ReadonlySet<string> = new Set<BuiltinDescriptor>([
+  'classmethod',
+  'staticmethod',
+  'property',
+]);
+
+const shadowedDescriptorsByTree = new WeakMap<object, ReadonlySet<string>>();
+
+/** Is `node` the `field` child of its parent? */
+function isField(node: SyntaxNode, field: string): boolean {
+  return node.parent?.childForFieldName(field)?.id === node.id;
 }
 
-// These spellings have a known descriptor contract in ordinary Python code.
-// Arbitrary dotted tails, aliases and decorator calls do not.
-const KNOWN_RECEIVER_DECORATORS = new Set(['classmethod', 'staticmethod', 'property']);
+/**
+ * Name uses that cannot bind the identifier in this scope: a decorator
+ * expression, an attribute member, a keyword-argument name, a `from M import`
+ * module path, and the source of `import X as Y` (which binds only `Y`).
+ */
+function isNonBindingNameUse(identifier: SyntaxNode): boolean {
+  const parent = identifier.parent;
+  if (parent === null) return false;
+  if (parent.type === 'decorator') return true;
+  if (parent.type === 'attribute') return isField(identifier, 'attribute');
+  if (parent.type === 'keyword_argument') return isField(identifier, 'name');
+  if (parent.type !== 'dotted_name') return false;
+  const owner = parent.parent?.type;
+  return (
+    (owner === 'import_from_statement' && isField(parent, 'module_name')) ||
+    (owner === 'aliased_import' && isField(parent, 'name'))
+  );
+}
+
+/**
+ * Builtin descriptor names that the file may rebind. A decorator name resolves
+ * through class, module and builtin scopes, so any binding shadows the builtin.
+ * ponytail: every other identifier use counts, including plain reads such as
+ * `staticmethod(f)`. That over-approximation fails closed; add full
+ * binding-position analysis if it costs real recall.
+ */
+function shadowedDescriptors(node: SyntaxNode): ReadonlySet<string> {
+  const tree = node.tree;
+  const cached = shadowedDescriptorsByTree.get(tree);
+  if (cached !== undefined) return cached;
+  const shadowed = new Set<string>();
+  for (const identifier of tree.rootNode.descendantsOfType('identifier')) {
+    if (!BUILTIN_DESCRIPTORS.has(identifier.text) || isNonBindingNameUse(identifier)) continue;
+    shadowed.add(identifier.text);
+  }
+  shadowedDescriptorsByTree.set(tree, shadowed);
+  return shadowed;
+}
+
+/** Does `expression` denote a builtin descriptor type (or `kind`) here? */
+function isBuiltinDescriptor(
+  fnNode: SyntaxNode,
+  expression: string,
+  kind?: BuiltinDescriptor,
+): boolean {
+  if (kind === undefined ? !BUILTIN_DESCRIPTORS.has(expression) : expression !== kind) return false;
+  return !shadowedDescriptors(fnNode).has(expression);
+}
 
 /** Accept a local `@property` accessor chain, skipping only plain unrelated
  * methods. Other intervening class-suite statements may rebind the descriptor,
@@ -97,7 +151,7 @@ function isLocalPropertyAccessor(fnNode: SyntaxNode, expression: string): boolea
     if (candidate?.childForFieldName('name')?.text !== methodName) return false;
     const decorators = decoratorNames(candidate);
     if (decorators.length !== 1) return false;
-    if (decorators[0] === 'property') return true;
+    if (isBuiltinDescriptor(candidate, decorators[0]!, 'property')) return true;
     if (
       !['getter', 'setter', 'deleter'].some((kind) => decorators[0] === `${methodName}.${kind}`)
     ) {
@@ -110,12 +164,29 @@ function isLocalPropertyAccessor(fnNode: SyntaxNode, expression: string): boolea
 /** Static-like descriptors do not inject an instance on attribute access. */
 export function isPythonStaticLikeMethod(fnNode: SyntaxNode): boolean {
   return (
-    fnNode.childForFieldName('name')?.text === '__new__' || hasDecorator(fnNode, 'staticmethod')
+    fnNode.childForFieldName('name')?.text === '__new__' ||
+    decoratorNames(fnNode).some((name) => isBuiltinDescriptor(fnNode, name, 'staticmethod'))
+  );
+}
+
+/**
+ * Can the method's parameter list prove its call shape? Only a plain function
+ * or one builtin `staticmethod` / `classmethod` wrapper qualifies. Any other
+ * decorator may replace the callable, and a descriptor stack can make it
+ * uncallable: `staticmethod(classmethod(f))` yields a classmethod object.
+ */
+export function hasPythonProvenCallShape(fnNode: SyntaxNode): boolean {
+  const decorators = decoratorNames(fnNode);
+  if (decorators.length === 0) return true;
+  return (
+    decorators.length === 1 &&
+    (isBuiltinDescriptor(fnNode, decorators[0]!, 'staticmethod') ||
+      isBuiltinDescriptor(fnNode, decorators[0]!, 'classmethod'))
   );
 }
 
 function isKnownReceiverDecorator(fnNode: SyntaxNode, expression: string): boolean {
-  return KNOWN_RECEIVER_DECORATORS.has(expression) || isLocalPropertyAccessor(fnNode, expression);
+  return isBuiltinDescriptor(fnNode, expression) || isLocalPropertyAccessor(fnNode, expression);
 }
 
 function firstBoundReceiverParameter(parameters: SyntaxNode): SyntaxNode | null {
@@ -179,9 +250,6 @@ export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundRece
   }
 
   const functionName = fnNode.childForFieldName('name')?.text;
-  // Python applies these descriptor kinds implicitly even without decorators.
-  // __new__ is static-like (its class argument is explicit), while
-  // __init_subclass__ and __class_getitem__ receive the class implicitly.
   const params = fnNode.childForFieldName('parameters');
   if (params === null) return null;
   const parameter = firstBoundReceiverParameter(params);
@@ -192,6 +260,8 @@ export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundRece
   if (name === null || className === null) return null;
 
   return {
+    // Python makes __init_subclass__ and __class_getitem__ implicit
+    // classmethods, so they receive the class even without a decorator.
     kind:
       decorators.includes('classmethod') ||
       functionName === '__init_subclass__' ||
@@ -239,7 +309,9 @@ export function classifyPythonUncertainReceiver(fnNode: SyntaxNode): PythonBound
   // Python applies decorators bottom-up. An outer built-in staticmethod
   // guarantees no implicit receiver even when an inner decorator is opaque.
   // The first parameter remains explicit and can keep its annotation.
-  if (decorators[0] === 'staticmethod') return null;
+  if (decorators.length > 0 && isBuiltinDescriptor(fnNode, decorators[0]!, 'staticmethod')) {
+    return null;
+  }
   if (decorators.every((name) => isKnownReceiverDecorator(fnNode, name))) return null;
   const enclosingClass = findEnclosingClassDefinition(fnNode);
   const parameters = fnNode.childForFieldName('parameters');
@@ -370,7 +442,6 @@ function constructorCallTypeName(
 export function synthesizeConstructorFieldTypeBindings(fnNode: SyntaxNode): CaptureMatch[] {
   if (fnNode.childForFieldName('name')?.text !== '__init__') return [];
   if (findEnclosingClassDefinition(fnNode) === null) return [];
-  if (hasDecorator(fnNode, 'staticmethod') || hasDecorator(fnNode, 'classmethod')) return [];
 
   const receiver = synthesizeReceiverTypeBinding(fnNode);
   const receiverName = receiver?.['@type-binding.self']?.text;
