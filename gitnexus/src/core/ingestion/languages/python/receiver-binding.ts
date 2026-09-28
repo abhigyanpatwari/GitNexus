@@ -230,22 +230,34 @@ function classifyPythonExplicitNewReceiver(fnNode: SyntaxNode): PythonBoundRecei
  * The caller is responsible for guaranteeing `fnNode.type ===
  * 'function_definition'`.
  */
+/**
+ * The first parameter of a class method under an unrecognized decorator.
+ * Python may still bind it implicitly, but its receiver kind is unproven.
+ */
+export function classifyPythonUncertainReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
+  const decorators = decoratorNames(fnNode);
+  // Python applies decorators bottom-up. An outer built-in staticmethod
+  // guarantees no implicit receiver even when an inner decorator is opaque.
+  // The first parameter remains explicit and can keep its annotation.
+  if (decorators[0] === 'staticmethod') return null;
+  if (decorators.every((name) => isKnownReceiverDecorator(fnNode, name))) return null;
+  const enclosingClass = findEnclosingClassDefinition(fnNode);
+  const parameters = fnNode.childForFieldName('parameters');
+  const parameter = parameters === null ? null : firstBoundReceiverParameter(parameters);
+  const name = parameter === null ? null : firstParameterName(parameter);
+  const className = enclosingClass === null ? null : classDefinitionName(enclosingClass);
+  if (parameter === null || name === null || className === null) return null;
+  return { kind: 'instance', parameter, name, className };
+}
+
 export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch | null {
   const receiver = classifyPythonBoundReceiver(fnNode) ?? classifyPythonExplicitNewReceiver(fnNode);
   if (receiver === null) {
-    // Python applies decorators bottom-up. An outer built-in staticmethod
-    // guarantees no implicit receiver even when an inner decorator is opaque.
-    // The first parameter remains explicit and can keep its annotation.
-    if (decoratorNames(fnNode)[0] === 'staticmethod') return null;
     // Keep an uncertain receiver anchored to its enclosing class so the
     // resolver can report the missing member without treating it as `self`.
-    if (decoratorNames(fnNode).every((name) => isKnownReceiverDecorator(fnNode, name))) return null;
-    const enclosingClass = findEnclosingClassDefinition(fnNode);
-    const parameter = fnNode.childForFieldName('parameters');
-    const first = parameter === null ? null : firstBoundReceiverParameter(parameter);
-    const name = first === null ? null : firstParameterName(first);
-    const className = enclosingClass === null ? null : classDefinitionName(enclosingClass);
-    if (first === null || name === null || className === null) return null;
+    const uncertain = classifyPythonUncertainReceiver(fnNode);
+    if (uncertain === null) return null;
+    const { parameter: first, name, className } = uncertain;
     return {
       '@type-binding.uncertain-receiver': nodeToCapture('@type-binding.uncertain-receiver', first),
       '@type-binding.name': syntheticCapture('@type-binding.name', first, name),
