@@ -4878,8 +4878,9 @@ async function runFullAnalysisInner(
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
-            dirtyPaths: (
-              listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
+            dirtyPaths: (isWorkingTreeDirty(repoPath)
+              ? (listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord))
+              : []
             ).filter(
               (rel) => newFileHashesRecord[rel] !== undefined && !isGitNexusManagedPath(rel),
             ),

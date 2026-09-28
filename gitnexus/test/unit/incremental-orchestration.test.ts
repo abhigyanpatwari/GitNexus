@@ -1206,6 +1206,32 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('keeps the fast path after indexing an assume-unchanged file', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      execSync('git update-index --assume-unchanged src/logger.ts', {
+        cwd: repo.dbPath,
+        stdio: 'pipe',
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta?.indexCoverage?.dirtyPaths).toEqual([]);
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('skips the framework annotation drift query when no Bean source changed', async () => {
     const repo = await setupMiniRepo();
     try {
