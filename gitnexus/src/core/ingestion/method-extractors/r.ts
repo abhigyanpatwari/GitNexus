@@ -115,6 +115,7 @@ function extractR6Methods(
         annotations: section === 'active' ? ['@active'] : [],
         sourceFile: context.filePath,
         line: entry.startPosition.row + 1,
+        column: entry.startPosition.column,
       });
     }
   }
@@ -183,6 +184,7 @@ function extractRefClassMethods(
         annotations: [],
         sourceFile: context.filePath,
         line: entry.startPosition.row + 1,
+        column: entry.startPosition.column,
       });
     }
   }

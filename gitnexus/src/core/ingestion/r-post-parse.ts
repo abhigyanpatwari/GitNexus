@@ -40,6 +40,9 @@ export const attachDeferredROwners = (
   edgeType: EdgeLabel,
 ): void => {
   graph.forEachNode((node: GraphNode) => {
+    // Skip immediately for non-R nodes — avoids doing any further work per node
+    // in this full-graph traversal for repos with no R files at all.
+    if (node.properties.language !== SupportedLanguages.R) return;
     if (node.label !== nodeLabel) return;
 
     // If we already have a resolved ownerId, the hint is redundant — drop it.
@@ -125,13 +128,8 @@ export const refineRExportStatus = (
     if (!name) return;
 
     if (nsInfo.namedExports.has(name)) return; // explicit export — keep public
-    const matched = nsInfo.exportPatterns.some((pattern) => {
-      try {
-        return new RegExp(pattern).test(name);
-      } catch {
-        return false;
-      }
-    });
+    // exportPatterns are precompiled RegExp[] (see loadRPackageConfig) — no per-node recompile.
+    const matched = nsInfo.exportPatterns.some((pattern) => pattern.test(name));
     if (matched) return;
 
     // Not in NAMESPACE → not exported.

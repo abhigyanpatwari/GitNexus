@@ -2625,8 +2625,11 @@ export interface RNamespaceInfo {
   hasNamespaceFile: boolean;
   /** Explicit named exports from export()/exportClasses()/exportMethods()/S3method(). */
   namedExports: Set<string>;
-  /** Regex patterns from exportPattern("..."). */
-  exportPatterns: string[];
+  /** Precompiled regex patterns from exportPattern("..."), compiled once here so
+   *  `refineRExportStatus` doesn't recompile a RegExp per node it checks. Patterns
+   *  that fail to compile are dropped at this stage (invalid `exportPattern()` args
+   *  never match, same as the previous per-call `try { new RegExp(...) } catch` behavior). */
+  exportPatterns: RegExp[];
 }
 
 export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig | null> {
@@ -2669,7 +2672,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
               try {
                 const nsContent = await fs.readFile(nsPath, 'utf-8');
                 const namedExports = new Set<string>();
-                const exportPatterns: string[] = [];
+                const exportPatterns: RegExp[] = [];
                 const lines = nsContent.split(/\r?\n/);
 
                 for (const rawLine of lines) {
@@ -2695,7 +2698,11 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
 
                   const exportPatternMatch = /^exportPattern\(\s*["'](.+?)["']\s*\)$/.exec(line);
                   if (exportPatternMatch) {
-                    exportPatterns.push(exportPatternMatch[1]);
+                    try {
+                      exportPatterns.push(new RegExp(exportPatternMatch[1]));
+                    } catch {
+                      // Invalid regex in exportPattern() — skip it (never matches).
+                    }
                   }
                 }
 
