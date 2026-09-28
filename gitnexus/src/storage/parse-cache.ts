@@ -803,7 +803,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v118 (#3398): decorated Python methods with unproven decorator identity no
 // longer publish subtype positional capacity. Warm v117 side-channel snapshots
 // would retain that capacity and could emit a false concrete call target.
-const SCHEMA_BUMP = 118;
+// v119 (#3396): Python subtype method capacities now omit receiverless ordinary
+// methods. Warm v118 ParsedFiles would replay a false compatible target.
+const SCHEMA_BUMP = 119;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

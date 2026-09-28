@@ -1386,6 +1386,41 @@ describe('Python aliased abstract subtype method', () => {
   }, 60000);
 });
 
+describe('Python receiverless subtype method', () => {
+  it('does not emit a CALLS edge to a method that rejects the injected instance', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-receiverless-subtype-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'worker.py': [
+          'class Mixin:',
+          '    def dispatch(self):',
+          '        return self.hook()',
+          'class Worker(Mixin):',
+          '    def hook():',
+          '        pass',
+        ].join('\n'),
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (call) => call.source === 'dispatch' && call.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.filePath === 'worker.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 // ---------------------------------------------------------------------------
 // Incomplete Python inheritance must not invent an MRO binding
 // ---------------------------------------------------------------------------
