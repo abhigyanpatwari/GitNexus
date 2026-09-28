@@ -2377,11 +2377,23 @@ async function runFullAnalysisInner(
       // unreadable/deleted file) must fall through to incremental reconciliation.
       const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
       let indexedContentChanged = indexedDirtyPaths.length > 0;
-      if (!dirty && indexedDirtyPaths.length > 0 && existingMeta.fileHashes) {
-        const currentDirtyHashes = await computeFileHashes(repoPath, indexedDirtyPaths);
-        indexedContentChanged = indexedDirtyPaths.some(
-          (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
-        );
+      if (!dirty && existingMeta.fileHashes) {
+        // Porcelain also hides newly edited assume-unchanged/skip-worktree
+        // paths that were absent from the previous receipt. Include the live
+        // hidden-path set in the bounded comparison so those edits cannot take
+        // the fast path and publish stale content for HEAD.
+        const liveDirtyPaths = listWorkingTreeDirtyPaths(repoPath);
+        if (liveDirtyPaths === null) {
+          indexedContentChanged = true;
+        } else {
+          const pathsToCheck = [...new Set([...indexedDirtyPaths, ...liveDirtyPaths])].filter(
+            (rel) => existingMeta.fileHashes?.[rel] !== undefined,
+          );
+          const currentDirtyHashes = await computeFileHashes(repoPath, pathsToCheck);
+          indexedContentChanged = pathsToCheck.some(
+            (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
+          );
+        }
       }
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save

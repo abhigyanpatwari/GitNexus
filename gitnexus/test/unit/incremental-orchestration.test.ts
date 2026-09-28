@@ -1211,13 +1211,14 @@ describe('runFullAnalysis — incremental orchestration', () => {
     try {
       const target = path.join(repo.dbPath, 'src', 'logger.ts');
       const clean = await readFile(target, 'utf-8');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       execSync('git update-index --assume-unchanged src/logger.ts', {
         cwd: repo.dbPath,
         stdio: 'pipe',
       });
 
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       await writeFile(target, `${clean}\n// hidden dirty snapshot\n`, 'utf-8');
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 

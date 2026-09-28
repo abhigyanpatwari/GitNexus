@@ -379,7 +379,7 @@ export const publishSharedGraph = async (
   const own = path.join(slot, LBUG_DIRECTORY);
 
   // A graph built while files were dirty must not become shared until analyze
-  // has reconciled those paths with disk and cleared the coverage receipt.
+  // has reconciled those paths with disk and cleared them from the coverage receipt.
   const builtClean = (meta.indexCoverage?.dirtyPaths ?? []).length === 0;
   const shareable =
     currentCommit !== '' &&
