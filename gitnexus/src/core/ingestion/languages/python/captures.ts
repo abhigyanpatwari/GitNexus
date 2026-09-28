@@ -42,6 +42,11 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import {
+  beginPythonSubtypeDispatchCapture,
+  recordPythonSimplePositionalCall,
+  recordPythonSubtypeMethodShape,
+} from './subtype-dispatch.js';
 
 const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_definition', 'lambda']),
@@ -84,6 +89,7 @@ export function emitPythonScopeCaptures(
     notebookSegments?: readonly NotebookLineSegment[];
   },
 ): readonly CaptureMatch[] {
+  beginPythonSubtypeDispatchCapture(filePath);
   let parseText = sourceText;
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   let notebookSegments: readonly NotebookLineSegment[] | undefined;
@@ -94,6 +100,10 @@ export function emitPythonScopeCaptures(
     tree = resolved.tree;
     notebookSegments = resolved.notebookSegments;
   }
+  const subtypeLineMapper =
+    notebookSegments === undefined
+      ? undefined
+      : (line: number): number => mapExtractLine(line - 1, notebookSegments) + 1;
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
   // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
@@ -140,6 +150,8 @@ export function emitPythonScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
@@ -210,6 +222,7 @@ export function emitPythonScopeCaptures(
         if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
           delete grouped['@declaration.function'];
           grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
+          recordPythonSubtypeMethodShape(filePath, fnNode, subtypeLineMapper);
         }
         const arity = computePythonArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -315,6 +328,47 @@ function remapCaptureMatch(
     next[key] = { ...cap, range: remapRange(cap.range, segments) };
   }
   return next;
+}
+
+/**
+ * Record fixed positional argument counts only for Python's conservative
+ * missing-member subtype fallback. Ordinary reference arity stays unchanged:
+ * count-only metadata cannot model Python keyword binding or definition order.
+ */
+function recordPythonSubtypeCallShape(
+  grouped: Record<string, Capture>,
+  nodeMap: Readonly<Record<string, SyntaxNode>>,
+  filePath: string,
+  mapLine?: (line: number) => number,
+): void {
+  const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
+    (tag) => grouped[tag] !== undefined,
+  );
+  if (callTag === undefined) return;
+
+  // Decorator references use the same call tags but are anchored on a
+  // `decorator`, not a `call`, so they intentionally retain their old shape.
+  const callNode = nodeMap[callTag];
+  if (callNode === undefined || callNode.type !== 'call') return;
+
+  const argumentList = callNode.childForFieldName('arguments');
+  if (argumentList === null || argumentList.type !== 'argument_list') return;
+
+  const args = argumentList.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+  );
+  if (
+    args.some(
+      (arg) =>
+        arg.type === 'list_splat' ||
+        arg.type === 'dictionary_splat' ||
+        arg.type === 'keyword_argument',
+    )
+  ) {
+    return;
+  }
+
+  recordPythonSimplePositionalCall(filePath, callNode, args.length, mapLine);
 }
 
 /**

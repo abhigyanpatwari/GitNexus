@@ -46,6 +46,8 @@ import { extractDjangoRoutes } from '../route-extractors/django.js';
 import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
 import { extractPythonModuleConstants } from '../route-extractors/python-const-resolver.js';
 import { pythonDecoratorRouteHandlerName } from '../route-extractors/python-decorator-handler.js';
+import { assertCloneable } from '../workers/clone-safety.js';
+import { collectPythonSubtypeDispatchSideChannel } from './python/subtype-dispatch.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -152,6 +154,8 @@ export const pythonProvider = defineLanguage({
   // full per-hook rationale and the canonical capture vocabulary in
   // ./python/query.ts (PYTHON_SCOPE_QUERY constant).
   emitScopeCaptures: emitPythonScopeCaptures,
+  collectCaptureSideChannel: (filePath) =>
+    assertCloneable(collectPythonSubtypeDispatchSideChannel(filePath)),
   cfgVisitor: createPythonCfgVisitor(),
   interpretImport: interpretPythonImport,
   interpretTypeBinding: interpretPythonTypeBinding,

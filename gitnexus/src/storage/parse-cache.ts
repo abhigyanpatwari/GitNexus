@@ -790,7 +790,17 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v114 (#2965): C and C++ angle includes are real wildcard imports with
 // `isSystem`. Warm shards stored those captures as absent, so incremental
 // analyze never asked the resolver to search include paths. 113 is #3371.
-const SCHEMA_BUMP = 114;
+// v115 (#3390): Python call captures now carry `@reference.arity` when the
+// argument count is statically known. Warm v114 ParsedFiles lack that fact, so
+// arity-aware method filtering would remain inert for every unchanged file.
+// v116 (#3390 follow-up): Python's private capture side-channel now records
+// simple-positional call sites and fixed positional method capacity. Warm v115
+// ParsedFiles lack those facts, so conservative mixin subtype dispatch would
+// suppress unchanged one-argument callers.
+// v117 (#3390 private-only successor): simple-positional call entries now carry
+// their count privately, while ordinary Python references no longer receive
+// synthetic arity. Warm v116 ParsedFiles have neither equivalent fact.
+const SCHEMA_BUMP = 117;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
