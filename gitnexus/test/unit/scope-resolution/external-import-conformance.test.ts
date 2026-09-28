@@ -413,6 +413,21 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     },
   ],
   [
+    SupportedLanguages.R,
+    {
+      files: ['scripts/main.R', 'vendor/ggplot2.py', 'pkgA/R/utils.R'],
+      fromFile: 'scripts/main.R',
+      resolutionConfig: undefined,
+      external: 'ggplot2',
+      decoy: 'vendor/ggplot2.py',
+      reachesDecoy: 'ggplot2.py',
+      parsedImport: (targetRaw) =>
+        targetRaw === 'ggplot2'
+          ? { kind: 'wildcard', targetRaw }
+          : { kind: 'side-effect', targetRaw },
+    },
+  ],
+  [
     SupportedLanguages.ObjectiveC,
     {
       files: ['Headers/Foundation.h', 'Headers/Widget.h', 'Sources/main.m'],
