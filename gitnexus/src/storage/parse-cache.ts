@@ -805,7 +805,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // would retain that capacity and could emit a false concrete call target.
 // v119 (#3396): Python subtype method capacities now omit receiverless ordinary
 // methods. Warm v118 ParsedFiles would replay a false compatible target.
-const SCHEMA_BUMP = 119;
+// v120 (#3394): decorated Python method receiver bindings now distinguish
+// unproven decorators from instance receivers. Warm v119 ParsedFiles would
+// replay a fabricated `self` binding or lack the uncertainty marker entirely.
+const SCHEMA_BUMP = 120;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

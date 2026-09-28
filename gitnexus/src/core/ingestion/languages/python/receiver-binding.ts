@@ -30,17 +30,79 @@ function classDefinitionName(classNode: SyntaxNode): string | null {
   return classNode.childForFieldName('name')?.text ?? null;
 }
 
-/** Does the function carry a `@<decoratorName>` decorator? Matches both
- *  bare `@classmethod` and module-qualified `@functools.classmethod`. */
-function hasDecorator(fnNode: SyntaxNode, decoratorName: string): boolean {
+/** Syntactic decorator expressions; aliases cannot be identified by spelling. */
+function decoratorNames(fnNode: SyntaxNode): string[] {
   const parent = fnNode.parent;
-  if (parent === null || parent.type !== 'decorated_definition') return false;
+  if (parent === null || parent.type !== 'decorated_definition') return [];
+  const names: string[] = [];
   for (let i = 0; i < parent.namedChildCount; i++) {
     const child = parent.namedChild(i);
     if (child === null || child.type !== 'decorator') continue;
-    const text = child.text.replace(/^@/, '').split('(')[0]!.trim();
-    const tail = text.split('.').pop();
-    if (tail === decoratorName) return true;
+    const text = child.text.replace(/^@/, '').trim();
+    names.push(text);
+  }
+  return names;
+}
+
+/** Matches bare and module-qualified decorator spellings. */
+function hasDecorator(fnNode: SyntaxNode, decoratorName: string): boolean {
+  return decoratorNames(fnNode).some((expression) => {
+    const name = expression.split('(')[0]!.trim();
+    return name === decoratorName || name.endsWith(`.${decoratorName}`);
+  });
+}
+
+// These spellings have a known descriptor contract in ordinary Python code.
+// Arbitrary dotted tails, aliases and decorator calls do not.
+const KNOWN_RECEIVER_DECORATORS = new Set(['classmethod', 'staticmethod', 'property']);
+
+/** Accept a local `@property` accessor chain, skipping only plain unrelated
+ * methods. Other intervening class-suite statements may rebind the descriptor,
+ * including tuple assignment or control flow. */
+function isLocalPropertyAccessor(fnNode: SyntaxNode, expression: string): boolean {
+  const methodName = fnNode.childForFieldName('name')?.text;
+  if (
+    methodName === undefined ||
+    !['getter', 'setter', 'deleter'].some((kind) => expression === `${methodName}.${kind}`)
+  )
+    return false;
+  const wrapper = fnNode.parent;
+  const classBody = findEnclosingClassDefinition(fnNode)?.childForFieldName('body');
+  if (wrapper?.type !== 'decorated_definition' || classBody === null || classBody === undefined) {
+    return false;
+  }
+  let wrapperIndex = -1;
+  for (let i = 0; i < classBody.namedChildCount; i++) {
+    const sibling = classBody.namedChild(i);
+    if (sibling?.id === wrapper.id) {
+      wrapperIndex = i;
+      break;
+    }
+  }
+  for (let i = wrapperIndex - 1; i >= 0; i--) {
+    const sibling = classBody.namedChild(i);
+    if (
+      sibling?.type === 'function_definition' &&
+      sibling.childForFieldName('name')?.text !== methodName
+    ) {
+      // A plain function definition binds only its own name in the class suite.
+      continue;
+    }
+    if (sibling?.type !== 'decorated_definition') return false;
+    let candidate: SyntaxNode | null = null;
+    for (let j = 0; j < sibling.namedChildCount; j++) {
+      const child = sibling.namedChild(j);
+      if (child?.type === 'function_definition') candidate = child;
+    }
+    if (candidate?.childForFieldName('name')?.text !== methodName) return false;
+    const decorators = decoratorNames(candidate);
+    if (decorators.length !== 1) return false;
+    if (decorators[0] === 'property') return true;
+    if (
+      !['getter', 'setter', 'deleter'].some((kind) => decorators[0] === `${methodName}.${kind}`)
+    ) {
+      return false;
+    }
   }
   return false;
 }
@@ -50,6 +112,10 @@ export function isPythonStaticLikeMethod(fnNode: SyntaxNode): boolean {
   return (
     fnNode.childForFieldName('name')?.text === '__new__' || hasDecorator(fnNode, 'staticmethod')
   );
+}
+
+function isKnownReceiverDecorator(fnNode: SyntaxNode, expression: string): boolean {
+  return KNOWN_RECEIVER_DECORATORS.has(expression) || isLocalPropertyAccessor(fnNode, expression);
 }
 
 function firstBoundReceiverParameter(parameters: SyntaxNode): SyntaxNode | null {
@@ -100,7 +166,17 @@ export interface PythonBoundReceiver {
  */
 export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundReceiver | null {
   const enclosingClass = findEnclosingClassDefinition(fnNode);
-  if (enclosingClass === null || isPythonStaticLikeMethod(fnNode)) return null;
+  if (enclosingClass === null) return null;
+  const decorators = decoratorNames(fnNode);
+  if (
+    isPythonStaticLikeMethod(fnNode) ||
+    decorators.some((name) => !isKnownReceiverDecorator(fnNode, name))
+  ) {
+    // Python evaluates decorators as expressions. An unrecognized one may
+    // replace the function with a class/static descriptor, so its first
+    // parameter is not proven to receive an instance.
+    return null;
+  }
 
   const functionName = fnNode.childForFieldName('name')?.text;
   // Python applies these descriptor kinds implicitly even without decorators.
@@ -117,7 +193,7 @@ export function classifyPythonBoundReceiver(fnNode: SyntaxNode): PythonBoundRece
 
   return {
     kind:
-      hasDecorator(fnNode, 'classmethod') ||
+      decorators.includes('classmethod') ||
       functionName === '__init_subclass__' ||
       functionName === '__class_getitem__'
         ? 'class'
@@ -156,7 +232,26 @@ function classifyPythonExplicitNewReceiver(fnNode: SyntaxNode): PythonBoundRecei
  */
 export function synthesizeReceiverTypeBinding(fnNode: SyntaxNode): CaptureMatch | null {
   const receiver = classifyPythonBoundReceiver(fnNode) ?? classifyPythonExplicitNewReceiver(fnNode);
-  if (receiver === null) return null;
+  if (receiver === null) {
+    // Python applies decorators bottom-up. An outer built-in staticmethod
+    // guarantees no implicit receiver even when an inner decorator is opaque.
+    // The first parameter remains explicit and can keep its annotation.
+    if (decoratorNames(fnNode)[0] === 'staticmethod') return null;
+    // Keep an uncertain receiver anchored to its enclosing class so the
+    // resolver can report the missing member without treating it as `self`.
+    if (decoratorNames(fnNode).every((name) => isKnownReceiverDecorator(fnNode, name))) return null;
+    const enclosingClass = findEnclosingClassDefinition(fnNode);
+    const parameter = fnNode.childForFieldName('parameters');
+    const first = parameter === null ? null : firstBoundReceiverParameter(parameter);
+    const name = first === null ? null : firstParameterName(first);
+    const className = enclosingClass === null ? null : classDefinitionName(enclosingClass);
+    if (first === null || name === null || className === null) return null;
+    return {
+      '@type-binding.uncertain-receiver': nodeToCapture('@type-binding.uncertain-receiver', first),
+      '@type-binding.name': syntheticCapture('@type-binding.name', first, name),
+      '@type-binding.type': syntheticCapture('@type-binding.type', first, className),
+    };
+  }
 
   // Receiver convention: instance methods get `self`, classmethods get `cls`.
   // The capture tag records the descriptor kind; the variable may use any

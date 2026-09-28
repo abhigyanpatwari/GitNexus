@@ -1462,6 +1462,323 @@ class MissingHook(Mixin):
     }
   }, 60000);
 
+  it('retains explicit annotated parameters under an outer staticmethod', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-stacked-staticmethod-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `class Service:
+    def work(self):
+        pass
+
+def identity(fn):
+    return fn
+
+class Mixin:
+    @staticmethod
+    @identity
+    def dispatch(obj: Service):
+        return obj.work()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.source === 'dispatch' && edge.target === 'work',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not trust shadowed decorator spellings or receiver annotations', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-decorator-shadow-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `from builtins import classmethod as override
+from builtins import classmethod as cm
+from builtins import classmethod as abstractmethod
+
+class FakeTyping:
+    override = override
+
+typing = FakeTyping()
+
+class Mixin:
+    @override
+    def bare(owner):
+        return owner.bare_hook()
+
+    @abstractmethod
+    def abstract_alias(owner):
+        return owner.abstract_alias_hook()
+
+    @typing.override
+    def qualified(owner):
+        return owner.qualified_hook()
+
+    @cm
+    def annotated(owner: 'Mixin'):
+        return owner.annotated_hook()
+
+    def bare_hook(self): pass
+    def abstract_alias_hook(self): pass
+    def qualified_hook(self): pass
+    def annotated_hook(self): pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      for (const [source, target] of [
+        ['bare', 'bare_hook'],
+        ['abstract_alias', 'abstract_alias_hook'],
+        ['qualified', 'qualified_hook'],
+        ['annotated', 'annotated_hook'],
+      ]) {
+        expect(calls.filter((edge) => edge.source === source && edge.target === target)).toEqual(
+          [],
+        );
+        expect(
+          getResolutionOutcomes(result).some(
+            (outcome) => outcome.name === target && outcome.reason === 'receiver-unresolved',
+          ),
+        ).toBe(true);
+      }
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps proven property accessors while declining unverified decorator names', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-known-decorators-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import abc
+import typing
+
+class Standard:
+    @abc.abstractmethod
+    def abstract(self):
+        return self.abstract_helper()
+
+    @typing.override
+    def overridden(self):
+        return self.override_helper()
+
+    def abstract_helper(self): pass
+    def override_helper(self): pass
+
+class Setter:
+    @property
+    def value(self):
+        return 0
+
+    def unrelated(self):
+        pass
+
+    @value.setter
+    def value(self, replacement):
+        self.setter_helper()
+
+    def setter_helper(self): pass
+
+class Deleter:
+    @property
+    def entry(self):
+        return 0
+
+    @entry.deleter
+    def entry(self):
+        self.deleter_helper()
+
+    def deleter_helper(self): pass
+
+class WrappedGetter:
+    @custom
+    @property
+    def field(self):
+        return 0
+
+    @field.setter
+    def field(owner, replacement):
+        owner.wrapped_helper()
+
+    def wrapped_helper(self): pass
+
+class CustomDescriptor:
+    def setter(self, fn):
+        return classmethod(fn)
+
+class ReboundProperty:
+    @property
+    def rebound(self):
+        return 0
+
+    rebound, ignored = CustomDescriptor(), None
+
+    @rebound.setter
+    def rebound(owner, replacement):
+        owner.rebound_helper()
+
+    def rebound_helper(self): pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      for (const [source, target] of [
+        ['value', 'setter_helper'],
+        ['entry', 'deleter_helper'],
+      ]) {
+        expect(calls.some((edge) => edge.source === source && edge.target === target)).toBe(true);
+      }
+      for (const [source, target] of [
+        ['abstract', 'abstract_helper'],
+        ['overridden', 'override_helper'],
+      ]) {
+        expect(calls.filter((edge) => edge.source === source && edge.target === target)).toEqual(
+          [],
+        );
+        expect(
+          getResolutionOutcomes(result).some(
+            (outcome) => outcome.name === target && outcome.reason === 'receiver-unresolved',
+          ),
+        ).toBe(true);
+      }
+      expect(
+        calls.filter((edge) => edge.source === 'field' && edge.target === 'wrapped_helper'),
+      ).toEqual([]);
+      expect(
+        calls.filter((edge) => edge.source === 'rebound' && edge.target === 'rebound_helper'),
+      ).toEqual([]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'wrapped_helper' && outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'rebound_helper' && outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not infer instance dispatch through an aliased classmethod decorator', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-classmethod-alias-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `from builtins import classmethod as cm
+
+class Child:
+    def nested_hook(self):
+        pass
+
+class Mixin:
+    def __init__(self):
+        self.child = Child()
+
+    @cm
+    def dispatch(owner):
+        return owner.hook()
+
+    @cm
+    def direct_false(owner):
+        return owner.own_hook()
+
+    @cm
+    def unicode_false(é):
+        return é.unicode_helper()
+
+    @cm
+    def compound_false(owner):
+        return owner.child.nested_hook()
+
+    def own_hook(self):
+        pass
+
+    def unicode_helper(self):
+        pass
+
+    @classmethod
+    def direct(cls):
+        return cls.class_hook()
+
+    @classmethod
+    def class_hook(cls):
+        pass
+
+class Worker(Mixin):
+    def hook(self):
+        pass
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'compound_false' && edge.target === 'nested_hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'direct_false' && edge.target === 'own_hook',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'unicode_false' && edge.target === 'unicode_helper',
+        ),
+      ).toEqual([]);
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.source === 'direct' && edge.target === 'class_hook',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'own_hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'unicode_helper' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.filePath === 'case.py' &&
+            outcome.name === 'nested_hook' &&
+            outcome.reason === 'receiver-unresolved',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('ignores a self-named external base without losing the class for its children', async () => {
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
     try {
