@@ -14,9 +14,12 @@ describe('c3LinearizeStrategy', () => {
   ]);
 
   it('ranks the deeper CPython base ahead of the direct breadth-first base', () => {
-    expect(
-      c3LinearizeStrategy('OrderedWorker', parents.get('OrderedWorker')!, parents),
-    ).toEqual(['MroOrderMixin', 'OrderA', 'OrderX', 'OrderB']);
+    expect(c3LinearizeStrategy('OrderedWorker', parents.get('OrderedWorker')!, parents)).toEqual([
+      'MroOrderMixin',
+      'OrderA',
+      'OrderX',
+      'OrderB',
+    ]);
   });
 
   it('does not match breadth-first order on that diamond', () => {
