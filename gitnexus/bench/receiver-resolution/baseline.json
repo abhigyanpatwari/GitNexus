@@ -199,10 +199,10 @@
     }
   },
   "countArm": {
-    "callDrops": 114,
-    "totalDropsAllKinds": 160,
+    "callDrops": 125,
+    "totalDropsAllKinds": 171,
     "bySiteKind": {
-      "call": 114,
+      "call": 125,
       "read": 27,
       "write": 19
     },
@@ -210,7 +210,7 @@
       ".java": 49,
       ".zig": 11,
       ".cs": 8,
-      ".ts": 7,
+      ".ts": 18,
       ".cpp": 7,
       ".tsx": 6,
       ".py": 6,
@@ -232,7 +232,7 @@
     },
     "callDropsByOrigin": {
       "external": 44,
-      "in-program": 44,
+      "in-program": 55,
       "unknown": 26
     }
   }

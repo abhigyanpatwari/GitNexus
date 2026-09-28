@@ -1,5 +1,14 @@
 # Receiver-resolution baseline
 
+## Hidden-index lifecycle regression (#3389)
+
+The incremental-orchestration regression adds TypeScript calls that deliberately
+exercise real in-program helpers while moving a tracked file through clean,
+edited, hidden-index, and restored states. The exact hosted merge-head run
+measured eleven additional in-program TypeScript call drops: call drops move
+from 114 to 125 and all-kind drops from 160 to 171. Receiver shapes and all
+non-TypeScript buckets are unchanged; no resolver threshold was relaxed.
+
 ## Python mixin dispatch (#3390)
 
 The added mixin fixture deliberately calls an absent `missing_target` on a known
