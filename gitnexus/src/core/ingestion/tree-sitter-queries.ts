@@ -2227,6 +2227,80 @@ export const RUBY_QUERIES = `
 (class
   name: (scope_resolution) @name) @definition.class
 
+; Ruby class-like factories. Keep this allowlist exact: arbitrary block-taking
+; calls use the same AST shape and must remain ordinary lexical blocks.
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (do_block) @definition.struct))
+  (#eq? @_factory.receiver "Struct")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block) @definition.struct))
+  (#eq? @_factory.receiver "Struct")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (do_block) @definition.class))
+  (#eq? @_factory.receiver "Data")
+  (#eq? @_factory.method "define"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block) @definition.class))
+  (#eq? @_factory.receiver "Data")
+  (#eq? @_factory.method "define"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (do_block) @definition.class))
+  (#eq? @_factory.receiver "Class")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block) @definition.class))
+  (#eq? @_factory.receiver "Class")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (do_block))) @definition.module
+  (#eq? @_factory.receiver "Module")
+  (#eq? @_factory.method "new"))
+
+((assignment
+  left: (constant) @name
+  right: (call
+    receiver: (constant) @_factory.receiver
+    method: (identifier) @_factory.method
+    block: (block))) @definition.module
+  (#eq? @_factory.receiver "Module")
+  (#eq? @_factory.method "new"))
+
 ; ── Instance methods ─────────────────────────────────────────────────────────
 (method
   name: (identifier) @name) @definition.method

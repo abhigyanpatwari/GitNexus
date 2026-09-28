@@ -114,6 +114,9 @@ function defaultSyncConfig(localPath: string): string {
     'repo_git_timeout: 10s',
     'analyze_timeout: 5m',
     'analyze_failure_threshold: 3',
+    '# Extra SSH/HTTPS hosts beyond github.com, gitlab.com, and gitee.com.',
+    '# Exact DNS names only; wildcards are rejected.',
+    '# allowed_hosts: [gitlab.mycompany.com]',
     'projects:',
     `  - local_path: ${localPath}`,
     '    branches: [master, main]',
@@ -124,6 +127,8 @@ function defaultSyncConfig(localPath: string): string {
     '    overwrite_local_changes: false',
     '    remote_urls:',
     '      - git@github.com:owner/repo.git',
+    '      # HTTPS remotes are also allowed. Other hosts need top-level allowed_hosts.',
+    '      # - https://github.com/owner/public-repo.git',
     '',
   ].join('\n');
 }

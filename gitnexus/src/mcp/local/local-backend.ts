@@ -6,6 +6,7 @@
  * LadybugDB connections are opened lazily per repo on first query.
  */
 
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -25,6 +26,7 @@ import { querySpringAopMetadata } from './aop-metadata.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
+import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
@@ -44,6 +46,8 @@ import {
   getGitRoot,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
+import { runGrepScanInWorker } from '../../server/grep-scan.js';
 import {
   listRegisteredRepos,
   canonicalizePath,
@@ -128,6 +132,8 @@ import {
   QUERY_MAX_LIMIT,
   QUERY_MAX_MAX_SYMBOLS,
   CONTEXT_CHAIN_MAX_DEPTH,
+  CHECKOUT_SOURCE_TOOLS,
+  READ_FILE_DEFAULT_MAX_LINES,
 } from '../tools.js';
 import { foldNumericToolArgumentAliases } from '../tool-arguments.js';
 import { findImportCycles, IMPORT_CYCLE_LIMIT } from '../../core/graph/import-cycles.js';
@@ -145,6 +151,7 @@ import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resoluti
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
+  DART_PACKAGE_IDENTITY_REASON,
   DEFERRED_IMPORT_REASON_SUFFIX,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
 } from '../../core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
@@ -299,6 +306,15 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
     if (typeof value === 'string' && value.trim()) return value;
   }
   return undefined;
+}
+
+/**
+ * A `*_uid` param as a lookup key: trimmed, or `undefined` when it is blank or
+ * not a string (#3354). Strict adapters send `" "`/`""` for an omitted optional
+ * string, and the MCP envelope is not type-validated.
+ */
+function nonBlankUid(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
 interface StringAliasDefinition {
@@ -1632,6 +1648,7 @@ export class LocalBackend {
    * degradation is visible once instead of silent.
    */
   private warnedMissingEmbeddingStack = false;
+  private warnedNoEmbeddingVectors = false;
 
   /**
    * Width the semantic lane last produced a QUERY vector at for an index, keyed
@@ -1901,7 +1918,7 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = path.join(storagePath, 'lbug');
+      const lbugPath = resolveGraphPath(storagePath);
 
       const handle: RepoHandle = {
         id,
@@ -2109,7 +2126,7 @@ export class LocalBackend {
       this.maybeWarnSiblingDrift(result).catch(() => {
         /* best-effort; never throw from resolveRepo */
       });
-      return this.applyBranchScope(result, branch);
+      return this.applyBranchScope(this.followSharedGraph(result), branch);
     }
 
     // Still no match — throw with helpful message
@@ -2164,6 +2181,21 @@ export class LocalBackend {
    *   and restamped labels the cached handle predates resolve on the next
    *   call.
    */
+  /**
+   * A shared-store checkout (#3352) moves between immutable commit graphs and
+   * its private graph as it is re-analyzed, while the cached handle keeps the
+   * graph it resolved first. Re-resolve the flat graph (one stat when the slot
+   * metadata is unchanged) and update the cached handle when it moved, so the
+   * pool opens the graph the checkout reads now.
+   */
+  private followSharedGraph(handle: RepoHandle): RepoHandle {
+    const current = resolveGraphPath(handle.storagePath);
+    if (current === handle.lbugPath) return handle;
+    const moved = { ...handle, lbugPath: current };
+    if (this.repos.get(handle.id) === handle) this.repos.set(handle.id, moved);
+    return moved;
+  }
+
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
     // At most one cache refresh per resolution: enough for the NEXT call to
@@ -2178,7 +2210,10 @@ export class LocalBackend {
     // One small JSON read per scoped call; mid-run meta writes preserve the
     // old label until the end-of-run atomic stamp (run-analyze dirty stamps
     // spread the existing meta), so this read never runs ahead of the DB.
-    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    // The flat slot's own metadata, not the graph's directory: a shared-store
+    // checkout's graph sits in a commit directory whose metadata carries no
+    // branch label (#3352).
+    const flatMeta = await loadMeta(handle.storagePath);
     if (flatMeta?.branch && flatMeta.branch === branch) {
       // The disk meta decides routing, so it also supplies the metadata —
       // the cached handle's label/commit/stats can predate the restamp.
@@ -2846,6 +2881,15 @@ export class LocalBackend {
       return this.callToolAtGroupRepo(method, p);
     }
 
+    // These tools read the checkout, not a pinned index. `branch` would still
+    // rewrite lbugPath/lastCommit and withToolStaleness would label checkout
+    // bytes with that pin. Reject before selectToolRepository applies it.
+    if (CHECKOUT_SOURCE_TOOLS.has(method) && p.branch !== undefined && p.branch !== '') {
+      return {
+        error: `${method} follows the checked-out working tree and does not accept "branch". Omit it.`,
+      };
+    }
+
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
     const repo = await this.selectToolRepository(
@@ -2895,6 +2939,10 @@ export class LocalBackend {
         return this.apiImpact(repo, p);
       case 'trace':
         return this.trace(repo, p);
+      case 'read_file':
+        return this.withToolStaleness(repo, await this.readFile(repo, p));
+      case 'grep':
+        return this.withToolStaleness(repo, await this.grep(repo, p));
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -2914,20 +2962,25 @@ export class LocalBackend {
     const rows = await executeParameterized(
       repo.lbugPath,
       // A cycle here means "these modules cannot be initialized in any order".
-      // Only edges that force initialization count, so four kinds are excluded:
+      // Only edges that force initialization count, so five kinds are excluded:
       // Swift implicit module visibility and markdown links (never code
-      // dependencies at all); imports reachable only through `import()` or a
+      // dependencies at all); Dart package-identity edges, which point at
+      // pubspec.yaml so a manifest edit invalidates importers and cannot
+      // form an init cycle; imports reachable only through `import()` or a
       // function body, which are deferred by construction — deferring is the
       // standard idiom for BREAKING an init cycle, so counting it reports the
       // fix as the bug; and imports reachable only through TypeScript
       // `import type`, which `tsc` erases outright, so no module load exists
       // to order. `imports-to-edges.ts` tags the last two with
       // DEFERRED_IMPORT_REASON_SUFFIX / TYPE_ONLY_IMPORT_REASON_SUFFIX.
+      // The Dart exclusion has to sit in this filter, before LIMIT, or the
+      // identity edges consume the 100000-row admission cap on a cycle-free graph.
       `MATCH (source:File)-[r:CodeRelation]->(target:File)
        WHERE r.type = 'IMPORTS'
          AND (r.reason IS NULL OR (
            r.reason <> 'swift-scope: implicit module visibility'
            AND r.reason <> 'markdown-link'
+           AND r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'
            AND NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'
            AND NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'
          ))
@@ -3547,38 +3600,9 @@ export class LocalBackend {
 
     // Step 4: Build response
     timer.start('formatting');
-    const processes = rankedProcesses.map((p) => ({
-      id: p.id,
-      summary: p.heuristicLabel || p.label,
-      priority: Math.round(p.priority * 1000) / 1000,
-      symbol_count: p.symbols.length,
-      process_type: p.processType,
-      step_count: p.stepCount,
-      ...(p.routes && p.routes.length > 0
-        ? {
-            route: p.routes[0].url,
-            method: p.routes[0].method || undefined,
-            routes: p.routes,
-          }
-        : {}),
-      ...(chainByProcessId.has(p.id) ? { chain: chainByProcessId.get(p.id) } : {}),
-    }));
-
-    const processSymbols = rankedProcesses.flatMap((p) =>
-      p.symbols.slice(0, maxSymbolsPerProcess).map((s) => ({
-        ...s,
-        // mark the entry-point symbol so an agent reading the
-        // process can tell procedure vs. workflow vs. helper at a glance.
-        ...(p.entryPointId && s.id === p.entryPointId ? { is_entry_point: true } : {}),
-      })),
-    );
-
-    // Deduplicate process_symbols by id
-    const seen = new Set<string>();
-    const dedupedSymbols = processSymbols.filter((s) => {
-      if (seen.has(s.id)) return false;
-      seen.add(s.id);
-      return true;
+    const { processes, process_symbols } = shapeQueryProcessAttaches(rankedProcesses, {
+      maxSymbolsPerProcess,
+      chainByProcessId,
     });
     timer.stop(); // formatting
 
@@ -3762,7 +3786,7 @@ export class LocalBackend {
 
     return {
       processes,
-      process_symbols: dedupedSymbols,
+      process_symbols,
       definitions: definitions.slice(0, 20), // cap standalone definitions
       timing,
       ...(contentAvailability ? { contentAvailability } : {}),
@@ -3891,6 +3915,18 @@ export class LocalBackend {
   }
 
   /**
+   * Keyword-only indexes are the default. Do not put this on `query.warning`
+   * (that field is reserved for FTS/stack degradation). Log once per backend.
+   */
+  private logKeywordOnlyEmbeddings(): void {
+    if (this.warnedNoEmbeddingVectors) return;
+    this.warnedNoEmbeddingVectors = true;
+    logger.warn(
+      'GitNexus [query:vector]: This index has no embedding vectors — results are keyword-only. Enable embeddings in `.gitnexusrc` (auto-sync honors that file) or run `gitnexus analyze --embeddings`.',
+    );
+  }
+
+  /**
    * Semantic vector search helper
    */
   private async semanticSearch(
@@ -3912,10 +3948,8 @@ export class LocalBackend {
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN COUNT(*) AS cnt LIMIT 1`,
       );
       if (!tableCheck.length || (tableCheck[0].cnt ?? tableCheck[0][0]) === 0) {
-        // No vectors to search: nothing is embedded below, so drop any width a
-        // previous call recorded rather than let query() warn about a lane that
-        // did not run this time (#2798).
         this.lastQueryEmbeddingDims.delete(repo.lbugPath);
+        this.logKeywordOnlyEmbeddings();
         return [];
       }
 
@@ -4077,6 +4111,8 @@ export class LocalBackend {
         isLocalEmbeddingSidecarAbortMessage(message);
       if (isDegradedVectorError) {
         if (degraded) degraded.reason = message;
+      } else if (isBenignMissingTableError(err)) {
+        this.logKeywordOnlyEmbeddings();
       }
       if (!this.warnedMissingEmbeddingStack && isDegradedVectorError) {
         this.warnedMissingEmbeddingStack = true;
@@ -4460,7 +4496,11 @@ export class LocalBackend {
       }
     | { kind: 'not_found' }
   > {
-    const { uid, name, include_content } = query;
+    const { name, include_content } = query;
+    // A blank or non-string uid is omitted, not a lookup key — fall through to
+    // the name instead of `not_found`, matching normalizeToolParams' impact
+    // target_uid check.
+    const uid = nonBlankUid(query.uid);
     const selectClause = `n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine${include_content ? ', n.content AS content' : ''}`;
 
     // Direct UID — zero-ambiguity path.
@@ -6816,7 +6856,7 @@ export class LocalBackend {
     if (fromOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Source symbol '${params.from_uid ?? params.from}' not found.`,
+        error: `Source symbol '${nonBlankUid(params.from_uid) ?? params.from}' not found.`,
         suggestion: 'Check the symbol name or use --from-uid for zero-ambiguity.',
       };
     }
@@ -6843,7 +6883,7 @@ export class LocalBackend {
     if (toOutcome.kind === 'not_found') {
       return {
         status: 'not_found',
-        error: `Target symbol '${params.to_uid ?? params.to}' not found.`,
+        error: `Target symbol '${nonBlankUid(params.to_uid) ?? params.to}' not found.`,
         suggestion: 'Check the symbol name or use --to-uid for zero-ambiguity.',
       };
     }
@@ -7223,7 +7263,7 @@ export class LocalBackend {
     );
 
     if (outcome.kind === 'not_found') {
-      const missing = params.target_uid ?? target;
+      const missing = nonBlankUid(params.target_uid) ?? target;
       // not_found = no resolved symbol, so the envelope keeps the partial-but-
       // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
       const notFoundTarget: PdgImpactTarget = { name: target };
@@ -8046,6 +8086,14 @@ export class LocalBackend {
     const confidenceFilter = safeMinConfidence > 0 ? ' AND r.confidence >= $minConfidence' : '';
 
     const symId = sym.id || sym[0];
+    // #3354: a walk with no anchor id cannot say anything about THIS symbol,
+    // yet it still ships a normal-looking `exact` result with the target's
+    // name echoed back. Throw so every caller's catch reports UNKNOWN instead.
+    if (!symId) {
+      throw new Error(
+        `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
+      );
+    }
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no
@@ -9420,6 +9468,198 @@ export class LocalBackend {
       /* no ENTRY_POINT_OF edges yet */
     }
     return result;
+  }
+
+  /**
+   * Same predicate as HTTP `getSourceAvailability`: full retention plus a live
+   * checkout. Meta is the graph directory so a published shared-store commit
+   * still carries `contentRetention`. Wording matches HTTP 410.
+   */
+  private async fullSourceUnavailable(repo: RepoHandle): Promise<{
+    error: string;
+    code: 'source-unavailable';
+    reason: 'content-retention' | 'checkout-missing';
+  } | null> {
+    const meta = await loadMeta(path.dirname(repo.lbugPath));
+    const retention = contentRetentionFromMeta(meta);
+    const checkoutIsDir = retention === 'full' ? await checkoutIsDirectory(repo.repoPath) : false;
+    if (isFullSourceAvailable(retention, checkoutIsDir)) return null;
+    const reason = retention !== 'full' ? 'content-retention' : 'checkout-missing';
+    const because = reason === 'content-retention' ? 'content retention' : 'source checkout';
+    return {
+      error: `Full source is unavailable because the ${because} is unavailable.`,
+      code: 'source-unavailable',
+      reason,
+    };
+  }
+
+  /**
+   * MCP read_file — repo-contained checkout read with an optional 0-indexed
+   * line slice. The realpath re-check matches GET /api/file. The lexical
+   * barrier stays inline for CodeQL and is narrowed to the `..` segment, so
+   * a file named `..config` is not a traversal. ENOENT is file-not-found
+   * only after the checkout directory is known to exist.
+   */
+  private async readFile(
+    repo: RepoHandle,
+    params: { path?: unknown; startLine?: unknown; endLine?: unknown; maxLines?: unknown },
+  ): Promise<any> {
+    const rawPath = params?.path;
+    if (typeof rawPath !== 'string' || rawPath === '') {
+      return { error: 'Missing required argument "path" (repo-relative file path).' };
+    }
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
+    const toInteger = (v: unknown): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined;
+    const startLine = toInteger(params?.startLine);
+    const endLine = toInteger(params?.endLine);
+    if (endLine !== undefined && startLine === undefined) {
+      return { error: '"endLine" requires "startLine".' };
+    }
+    const repoRoot = path.resolve(repo.repoPath);
+    const fullPath = path.resolve(repoRoot, rawPath);
+    const fullRel = path.relative(repoRoot, fullPath);
+    // `startsWith('..')` is the CodeQL path-injection sanitizer. Narrow it to
+    // the `..` segment so a repo file named `..config` is not a traversal.
+    if (
+      path.isAbsolute(fullRel) ||
+      (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+    ) {
+      return { error: 'Path traversal denied.' };
+    }
+    let realRoot: string;
+    let realFull: string;
+    try {
+      [realRoot, realFull] = await Promise.all([fs.realpath(repoRoot), fs.realpath(fullPath)]);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') return { error: `File not found: ${rawPath}` };
+      throw err;
+    }
+    const realRel = path.relative(realRoot, realFull);
+    if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+      return { error: 'Path traversal denied.' };
+    }
+    const raw = await fs.readFile(realFull, 'utf-8');
+    const lines = raw.split('\n');
+    if (startLine !== undefined) {
+      if (endLine !== undefined && endLine < 0) {
+        return { error: '"endLine" must be an integer >= 0.' };
+      }
+      const start = Math.max(0, startLine);
+      const end = endLine !== undefined ? Math.min(lines.length, endLine + 1) : lines.length;
+      return {
+        path: fullRel,
+        content: lines.slice(start, end).join('\n'),
+        startLine: start,
+        endLine: end - 1,
+        totalLines: lines.length,
+      };
+    }
+    const requestedMaxLines = toInteger(params?.maxLines);
+    if (requestedMaxLines !== undefined && requestedMaxLines < 0) {
+      return { error: '"maxLines" must be an integer >= 0 (0 = no cap).' };
+    }
+    const maxLines = requestedMaxLines ?? READ_FILE_DEFAULT_MAX_LINES;
+    if (maxLines > 0 && lines.length > maxLines) {
+      return {
+        path: fullRel,
+        content: lines.slice(0, maxLines).join('\n'),
+        startLine: 0,
+        endLine: maxLines - 1,
+        totalLines: lines.length,
+        truncated: true,
+        suggestion: 'Re-issue with startLine/endLine for the window you need.',
+      };
+    }
+    return { path: fullRel, content: raw, totalLines: lines.length };
+  }
+
+  /**
+   * MCP grep — HTTP GET /api/grep twin. The file list is indexed File nodes
+   * that still have content; bytes come from the live checkout (same worker).
+   * Fails like HTTP 410 when full source is unavailable instead of returning
+   * an empty hit list.
+   */
+  private async grep(
+    repo: RepoHandle,
+    params: {
+      pattern?: unknown;
+      fileFilter?: unknown;
+      limit?: unknown;
+      caseSensitive?: unknown;
+      literal?: unknown;
+    },
+  ): Promise<any> {
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable) return unavailable;
+    await this.ensureInitialized(repo);
+    let parsed;
+    try {
+      parsed = parseGrepQuery({
+        pattern: params?.pattern,
+        fileFilter: params?.fileFilter,
+        limit: params?.limit,
+        caseSensitive: params?.caseSensitive,
+        literal: params?.literal,
+      });
+    } catch (err: any) {
+      return { error: err?.message || 'Invalid grep query.' };
+    }
+    const fileRows: Array<{ filePath?: string }> = await executeQuery(
+      repo.lbugPath,
+      `MATCH (n:File) WHERE n.content IS NOT NULL RETURN n.filePath AS filePath`,
+    );
+    const filePaths: string[] = [];
+    for (const row of fileRows) {
+      const filePath: string = row.filePath || '';
+      if (parsed.fileFilter && !filePath.toLowerCase().includes(parsed.fileFilter)) continue;
+      filePaths.push(filePath);
+    }
+    // The shared scanner only checks a lexical prefix, then readFile follows
+    // symlinks. Drop paths whose realpath leaves the checkout, same as read_file.
+    const repoRoot = path.resolve(repo.repoPath);
+    const realRoot = await fs.realpath(repoRoot);
+    const containedPaths: string[] = [];
+    for (const filePath of filePaths) {
+      const fullPath = path.resolve(repoRoot, filePath);
+      const fullRel = path.relative(repoRoot, fullPath);
+      if (
+        path.isAbsolute(fullRel) ||
+        (fullRel.startsWith('..') && (fullRel === '..' || fullRel.startsWith(`..${path.sep}`)))
+      ) {
+        continue;
+      }
+      let realFull: string;
+      try {
+        realFull = await fs.realpath(fullPath);
+      } catch {
+        continue;
+      }
+      const realRel = path.relative(realRoot, realFull);
+      if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
+        continue;
+      }
+      containedPaths.push(filePath);
+    }
+    const { results, timedOut } = await runGrepScanInWorker({
+      repoRoot,
+      filePaths: containedPaths,
+      pattern: parsed.regex.source,
+      flags: parsed.regex.flags,
+      limit: parsed.limit,
+      deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+    });
+    return {
+      results,
+      ...(timedOut ? { timedOut: true as const } : {}),
+      ...(timedOut
+        ? {
+            suggestion:
+              'Wall-clock budget expired — re-issue narrower (fileFilter or a tighter pattern).',
+          }
+        : {}),
+    };
   }
 
   private async routeMap(repo: RepoHandle, params: { route?: string }): Promise<any> {

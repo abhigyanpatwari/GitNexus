@@ -11,6 +11,7 @@ import {
   createLbugLazyAction,
 } from './lazy-action.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
+import { IntegerOptionError, parseMemoryBudgetMb } from './int-option.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
@@ -28,7 +29,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex, Factory Droid',
   )
   .option(
     '-c, --coding-agent <agents>',
@@ -145,6 +146,18 @@ program
     'Register this repo even if another path already uses the same --name alias. ' +
       'Leaves `-r <name>` ambiguous for the two paths; use -r <path> to disambiguate.',
   )
+  .option(
+    '--share-with <repo>',
+    'Join the shared index store of a registered checkout of the same repository ' +
+      '(name or path); the remote URL must match. Clones join a sibling clone’s store ' +
+      'automatically; this names one explicitly and clears a --no-share opt-out.',
+  )
+  .option(
+    '--no-share',
+    'Clones only: leave the shared index store, index into <repo>/.gitnexus again, and stop ' +
+      'joining sibling clones automatically until --share-with (linked worktrees always share; ' +
+      'set GITNEXUS_SHARED_STORE=off instead)',
+  )
   .option('-v, --verbose', 'Enable verbose ingestion warnings (default: false)')
   .option(
     '--max-file-size <kb>',
@@ -158,6 +171,12 @@ program
     '--wal-checkpoint-threshold <bytes>',
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze ' +
       '(integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
+  )
+  .option(
+    '--memory-budget <mb>',
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with ' +
+      'exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size ' +
+      'pin; parse workers keep their own heap caps.',
   )
   .option(
     '--workers <n>',
@@ -218,6 +237,18 @@ program
     if (analyzeOpts['debounce'] !== undefined && analyzeOpts['watch'] !== true) {
       process.stderr.write('\n  --debounce requires --watch\n\n');
       process.exit(1);
+    }
+    // Validate --memory-budget here so analyze and --watch both reject a bad
+    // value before ensureHeap sizes (and possibly respawns) the heap (#3137).
+    const budgetOpt = analyzeOpts['memoryBudget'];
+    if (budgetOpt !== undefined) {
+      try {
+        parseMemoryBudgetMb(String(budgetOpt));
+      } catch (error) {
+        if (!(error instanceof IntegerOptionError)) throw error;
+        process.stderr.write(`\n  ${error.message}\n\n`);
+        process.exit(1);
+      }
     }
     // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
     // module-load time during the lazy import('./analyze.js') below (via the
@@ -350,6 +381,14 @@ program
   .option('--all', 'Clean all indexed repos')
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
   .option('--stale', 'Reclaim leftover branch indexes that are not a live local head')
+  .option(
+    '--gc',
+    'Drop shared-store checkouts no registry entry uses and delete commit graphs nothing references',
+  )
+  .option(
+    '--local-index',
+    'Delete the index left in <repo>/.gitnexus after this checkout moved into a shared store',
+  )
   .option(
     '--lbug-sidecars',
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',

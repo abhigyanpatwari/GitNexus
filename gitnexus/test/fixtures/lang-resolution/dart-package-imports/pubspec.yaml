@@ -1,0 +1,5 @@
+name: app
+dependencies:
+  http: ^1.0.0
+  data:
+    path: packages/data

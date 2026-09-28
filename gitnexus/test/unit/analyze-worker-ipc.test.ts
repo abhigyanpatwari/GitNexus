@@ -49,6 +49,7 @@ describe('#2112: analyze-worker IPC projection', () => {
       alreadyUpToDate: false,
       ftsRepairedOnly: undefined,
       ftsSkipped: true,
+      storagePath: '/repos/demo/.gitnexus',
     });
     expect('pipelineResult' in projected).toBe(false);
   });

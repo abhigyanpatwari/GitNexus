@@ -305,6 +305,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
       logs.length = 0;
       const flipOn = await runFullAnalysis(repo.dbPath, { skipAgentsMd: true, pdg: true }, cb);
       expect(flipOn.alreadyUpToDate).toBeUndefined();
+      expect(flipOn.rebuildReasons).toContain('pdg-mode');
       expect(logs.some((m) => m.includes('pdg mode changed'))).toBe(true);
       expect(await countBasicBlocks(repo.dbPath)).toBeGreaterThan(0);
       const stamped = await loadMeta(storagePath);
@@ -336,6 +337,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
       logs.length = 0;
       const flipOff = await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, cb);
       expect(flipOff.alreadyUpToDate).toBeUndefined();
+      expect(flipOff.rebuildReasons).toContain('pdg-mode');
       expect(logs.some((m) => m.includes('pdg mode changed'))).toBe(true);
       expect(await countBasicBlocks(repo.dbPath)).toBe(0);
       expect((await loadMeta(storagePath))!.pdg).toBeUndefined();
@@ -365,6 +367,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         cb,
       );
       expect(capChange.alreadyUpToDate).toBeUndefined();
+      expect(capChange.rebuildReasons).toContain('pdg-mode');
       expect(logs.some((m) => m.includes('different caps'))).toBe(true);
       expect((await loadMeta(storagePath))!.pdg).toEqual({
         maxFunctionLines: 2000,

@@ -778,7 +778,29 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v104 (#3339 review): TS/JS pair-HOC queries now name object-pair
 // `mutation(withAuth(arrow))` handlers. Warm caches replay the pre-fix
 // capture set (anonymous arrows, no Function name), so both stores re-extract.
-const SCHEMA_BUMP = 104;
+// v112 (#3354): callable-value flow now follows each branch of `a ?? f`,
+// `a || f`, and `c ? f : g`. Warm caches replay the pre-fix flow facts, which
+// have no flow for those assignments, so both stores re-extract. 105-111 are
+// claimed by open PR #3326 (Elixir).
+// Same v112: the `valueAlternatives` provider hook extends it to Kotlin
+// `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
+// Ruby multi-statement `if` one opaque source.
+// v113 (#3371): `.ipynb` code cells are extracted to Python before parse.
+// Warm caches keyed on raw JSON would replay empty/failed Python parses.
+// v114 (#2965): C and C++ angle includes are real wildcard imports with
+// `isSystem`. Warm shards stored those captures as absent, so incremental
+// analyze never asked the resolver to search include paths. 113 is #3371.
+// v115 (#3390): Python call captures now carry `@reference.arity` when the
+// argument count is statically known. Warm v114 ParsedFiles lack that fact, so
+// arity-aware method filtering would remain inert for every unchanged file.
+// v116 (#3390 follow-up): Python's private capture side-channel now records
+// simple-positional call sites and fixed positional method capacity. Warm v115
+// ParsedFiles lack those facts, so conservative mixin subtype dispatch would
+// suppress unchanged one-argument callers.
+// v117 (#3390 private-only successor): simple-positional call entries now carry
+// their count privately, while ordinary Python references no longer receive
+// synthetic arity. Warm v116 ParsedFiles have neither equivalent fact.
+const SCHEMA_BUMP = 117;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

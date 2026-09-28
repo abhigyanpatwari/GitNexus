@@ -26,7 +26,8 @@ export type EditorId =
   | 'opencode'
   | 'codebuddy'
   | 'qoder'
-  | 'codex';
+  | 'codex'
+  | 'droid';
 
 /** An editor whose MCP config is a JSONC document (server keyed by name). */
 export interface McpJsoncTarget {
@@ -151,6 +152,15 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
       file: path.join(home, '.qoder.json'),
       keyPath: ['mcpServers', 'gitnexus'],
     },
+    {
+      id: 'droid',
+      label: 'Factory Droid',
+      // Factory's user-scope MCP config (https://docs.factory.ai/cli/configuration/mcp).
+      // Same `mcpServers` object shape as Cursor/Claude; user config takes
+      // precedence over project-level .factory/mcp.json.
+      file: path.join(home, '.factory', 'mcp.json'),
+      keyPath: ['mcpServers', 'gitnexus'],
+    },
   ];
 
   const codex: CodexMcpTarget = {
@@ -175,6 +185,9 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
     { id: 'qoder', label: 'Qoder', dir: path.join(home, '.qoder', 'skills') },
     // Codex reads skills from ~/.agents/skills (not ~/.codex).
     { id: 'codex', label: 'Codex', dir: path.join(home, '.agents', 'skills') },
+    // Factory Droid reads user-scope skills from ~/.factory/skills/{name}/SKILL.md
+    // (https://docs.factory.ai/cli/configuration/skills).
+    { id: 'droid', label: 'Factory Droid', dir: path.join(home, '.factory', 'skills') },
   ];
 
   const hooks: HookTarget[] = [

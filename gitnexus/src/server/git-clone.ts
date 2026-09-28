@@ -18,7 +18,11 @@ import {
   assertDirectoryOwnerAndPermissions,
   quarantineAutoSyncPartial,
 } from '../core/auto-sync/path-security.js';
-import { validateAutoSyncRemoteUrl } from '../core/auto-sync/config.js';
+import {
+  absoluteAutoSyncRemoteUrl,
+  getAutoSyncRepoIdentity,
+  validateAutoSyncRemoteUrl,
+} from '../core/auto-sync/config.js';
 
 export { validateGitUrl };
 
@@ -179,7 +183,18 @@ export interface CloneOrPullOptions {
   allowedCloneRoot?: string;
   expectedRepoName?: string;
   quarantineRoot?: string;
+  /**
+   * Auto-sync clone/pull. DNS names are stored with one trailing dot so a
+   * resolver search list cannot replace the allowlisted host. A strict IPv4
+   * literal is stored as written.
+   */
   allowAutoSyncSsh?: boolean;
+  /**
+   * Extra hosts from watch_config.yml `allowed_hosts`. Honored only together
+   * with `allowAutoSyncSsh`; built-in github.com, gitlab.com, and gitee.com
+   * stay allowed either way.
+   */
+  autoSyncAllowedHosts?: readonly string[];
   timeoutMs?: number;
   branch?: string;
   overwriteLocalChanges?: boolean;
@@ -318,21 +333,37 @@ export function normalizeGitUrlForCompare(url: string): string {
   }
 }
 
+/** Same allowlisted repo across SSH and HTTPS, ignoring a trailing `.git`. */
+function sameAllowlistedAutoSyncRepo(
+  left: string,
+  right: string,
+  allowedHosts?: readonly string[],
+): boolean {
+  try {
+    return (
+      getAutoSyncRepoIdentity(left, allowedHosts) === getAutoSyncRepoIdentity(right, allowedHosts)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Read `remote.origin.url` from an existing clone using `git config --get`.
  *
- * Returns `null` if the config key is absent, the spawn fails, or the
- * directory isn't a git repository. The caller decides what a missing
- * remote means for its threat model — for cloneOrPull, a missing remote
- * on an existing clone is treated as a refuse-to-pull condition.
+ * Returns `null` only when the key is absent (exit 1) or empty. Timeouts and
+ * every other git failure throw, so a lock or spawn error is not treated as
+ * a missing origin.
  */
 export async function getRemoteOriginUrl(cwd: string, timeoutMs?: number): Promise<string | null> {
   try {
     const stdout = await runGit(['config', '--get', 'remote.origin.url'], cwd, { timeoutMs });
     return stdout.trim() || null;
   } catch (error) {
-    if ((error as Error).message.includes('timed out')) throw error;
-    return null;
+    const message = (error as Error).message ?? '';
+    if (message.includes('timed out')) throw error;
+    if (message.includes('failed (exit code 1)')) return null;
+    throw error;
   }
 }
 
@@ -354,8 +385,9 @@ export async function assertRemoteMatchesRequestedUrl(
   targetDir: string,
   requestedUrl: string,
   timeoutMs?: number,
+  knownOriginUrl?: string,
 ): Promise<void> {
-  const remoteUrl = await getRemoteOriginUrl(targetDir, timeoutMs);
+  const remoteUrl = knownOriginUrl ?? (await getRemoteOriginUrl(targetDir, timeoutMs));
   if (remoteUrl === null) {
     throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
   }
@@ -541,8 +573,11 @@ export async function cloneOrPull(
   // Always validate the requested URL — the prior shape only ran this in
   // the code path where the repo was cloned. Now it runs unconditionally,
   // preventing SSRF / blocked-host bypasses even when targetDir already exists.
-  if (options?.allowAutoSyncSsh) validateAutoSyncRemoteUrl(url);
+  if (options?.allowAutoSyncSsh) validateAutoSyncRemoteUrl(url, options.autoSyncAllowedHosts);
   else validateGitUrl(url);
+  // Fetch uses remote.origin.url, so the absolute name has to be what is
+  // stored, not only the clone argv. Non-auto-sync clones keep the given URL.
+  const dialUrl = options?.allowAutoSyncSsh ? absoluteAutoSyncRemoteUrl(url) : url;
   await fs.mkdir(cloneRoot, { recursive: true });
   if (options?.allowedCloneRoot) {
     await assertDirectoryOwnerAndPermissions(cloneRoot);
@@ -552,10 +587,25 @@ export async function cloneOrPull(
   await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
   await assertPreRealpathContainment(cloneRoot, safeTarget);
 
-  const exists = await fs.access(path.join(safeTarget, '.git')).then(
+  let exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
+
+  let originUrl: string | null = null;
+  if (exists && options?.allowAutoSyncSsh) {
+    originUrl = await getRemoteOriginUrl(safeTarget, options?.timeoutMs);
+    if (!originUrl) {
+      if (options.quarantineRoot) {
+        await quarantineAutoSyncPartial(safeTarget, options.quarantineRoot);
+        exists = false;
+      } else {
+        throw new Error(
+          `Existing clone at ${safeTarget} has no remote.origin — remove ${safeTarget} and retry`,
+        );
+      }
+    }
+  }
 
   const targetExists = await fs.access(safeTarget).then(
     () => true,
@@ -567,15 +617,31 @@ export async function cloneOrPull(
       await assertNoSymlinkPath(cloneRoot, path.join(safeTarget, '.git'), true);
     }
     await assertPostRealpathContainment(cloneRoot, safeTarget);
+    let originForCompare = originUrl;
+    if (
+      originUrl &&
+      normalizeGitUrlForCompare(originUrl) !== normalizeGitUrlForCompare(dialUrl) &&
+      sameAllowlistedAutoSyncRepo(originUrl, url, options?.autoSyncAllowedHosts)
+    ) {
+      await runGit(['remote', 'set-url', 'origin', dialUrl], safeTarget, {
+        timeoutMs: options?.timeoutMs,
+      });
+      originForCompare = dialUrl;
+    }
     // Confirm the existing clone is actually the same repository the caller
     // requested. Without this check, a pull would silently succeed against
     // whatever remote the dir was originally cloned from.
-    await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
+    await assertRemoteMatchesRequestedUrl(
+      safeTarget,
+      dialUrl,
+      options?.timeoutMs,
+      originForCompare ?? undefined,
+    );
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
     const gitOpts = {
       token: options?.token,
-      url,
+      url: dialUrl,
       timeoutMs: options?.timeoutMs,
     };
     // Already at the requested pin? Then there is no switch to make, so do
@@ -652,11 +718,11 @@ export async function cloneOrPull(
     try {
       const runGitImpl = options?.runGitForTest ?? runGit;
       const cloneArgs = options?.branch
-        ? buildBranchCloneArgs(url, safeTarget, options.branch)
-        : buildCloneArgs(url, safeTarget);
+        ? buildBranchCloneArgs(dialUrl, safeTarget, options.branch)
+        : buildCloneArgs(dialUrl, safeTarget);
       await runGitImpl(cloneArgs, undefined, {
         token: options?.token,
-        url,
+        url: dialUrl,
         timeoutMs: options?.timeoutMs,
       });
       await assertPostRealpathContainment(cloneRoot, safeTarget);
@@ -763,7 +829,8 @@ function resolveGitCredential(options?: { token?: string; url?: string }): strin
 
   let host: string;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    // One trailing dot is the absolute-lookup marker, same host (`github.com.`).
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
   } catch {
     return undefined;
   }

@@ -379,6 +379,12 @@ type ParsedImportSyntax =
        *  deferred — `use` does not execute
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
+      /**
+       * C/C++ `#include <…>` (true) versus `#include "…"`.
+       * Angle includes resolve only on header search paths. Quoted includes
+       * may still use the including file's directory and the basename index.
+       */
+      readonly isSystem?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at

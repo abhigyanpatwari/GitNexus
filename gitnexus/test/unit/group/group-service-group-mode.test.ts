@@ -56,6 +56,97 @@ function makePort(overrides: Partial<GroupToolPort> = {}): GroupToolPort {
 }
 
 describe('GroupService group-mode API surface', () => {
+  it('groupQuery with service keeps a hub-only process after pair-key attaches (AE3)', async () => {
+    const { tmpDir, cleanup } = makeTmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const query = vi.fn(async () => ({
+        processes: [{ id: 'proc:A' }, { id: 'proc:B' }],
+        process_symbols: [
+          { id: 'func:validate', process_id: 'proc:A', filePath: 'services/auth/a.ts' },
+          { id: 'func:validate', process_id: 'proc:B', filePath: 'services/auth/b.ts' },
+        ],
+      }));
+      const svc = new GroupService(makePort({ query }));
+      const r = (await svc.groupQuery({
+        name: 'test-group',
+        query: 'validate',
+        service: 'services/auth',
+      })) as {
+        results: Array<{ id?: string; symbol_count?: number }>;
+        process_symbols?: unknown;
+      };
+      const resultIds = r.results.map((row) => row.id);
+      expect(resultIds).toContain('proc:A');
+      expect(resultIds).toContain('proc:B');
+      expect(r.results.find((row) => row.id === 'proc:A')?.symbol_count).toBe(1);
+      expect(r.results.find((row) => row.id === 'proc:B')?.symbol_count).toBe(1);
+      expect(r).not.toHaveProperty('process_symbols');
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
+  it('groupQuery counts only in-prefix attaches on a kept process', async () => {
+    const { tmpDir, cleanup } = makeTmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const query = vi.fn(async () => ({
+        processes: [{ id: 'proc:B', symbol_count: 9 }],
+        process_symbols: [
+          { id: 'func:a', process_id: 'proc:B', filePath: 'services/auth/a.ts' },
+          { id: 'func:b', process_id: 'proc:B', filePath: 'services/auth/b.ts' },
+          { id: 'func:c', process_id: 'proc:B', filePath: 'other/c.ts' },
+        ],
+      }));
+      const svc = new GroupService(makePort({ query }));
+      const r = (await svc.groupQuery({
+        name: 'test-group',
+        query: 'validate',
+        service: 'services/auth',
+      })) as { results: Array<{ id?: string; symbol_count?: number }> };
+      expect(r.results.every((row) => row.id === 'proc:B' && row.symbol_count === 2)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
+  it('groupQuery drops a hub process whose only attach is outside the service prefix', async () => {
+    const { tmpDir, cleanup } = makeTmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const query = vi.fn(async () => ({
+        processes: [
+          { id: 'proc:A', symbol_count: 5 },
+          { id: 'proc:B', symbol_count: 5 },
+        ],
+        process_symbols: [
+          { id: 'func:validate', process_id: 'proc:A', filePath: 'other/outside.ts' },
+          { id: 'func:validate', process_id: 'proc:B', filePath: 'services/auth/b.ts' },
+        ],
+      }));
+      const svc = new GroupService(makePort({ query }));
+      const r = (await svc.groupQuery({
+        name: 'test-group',
+        query: 'validate',
+        service: 'services/auth',
+      })) as {
+        results: Array<{ id?: string; symbol_count?: number }>;
+        process_symbols?: unknown;
+      };
+      const resultIds = r.results.map((row) => row.id);
+      expect(resultIds).toContain('proc:B');
+      expect(resultIds).not.toContain('proc:A');
+      expect(r.results.every((row) => row.id === 'proc:B' && row.symbol_count === 1)).toBe(true);
+      expect(r).not.toHaveProperty('process_symbols');
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
+  });
+
   it('groupQuery uses name (never @-repo) and optional service filters processes', async () => {
     const { tmpDir, cleanup } = makeTmpGroup();
     vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -72,9 +163,10 @@ describe('GroupService group-mode API surface', () => {
         name: 'test-group',
         query: 'oauth',
         service: 'services/auth',
-      })) as { results: Array<{ id?: string }> };
+      })) as { results: Array<{ id?: string; symbol_count?: number }> };
       expect(query).toHaveBeenCalled();
       expect(r.results.every((row) => row.id === 'p1')).toBe(true);
+      expect(r.results.every((row) => row.symbol_count === 1)).toBe(true);
     } finally {
       vi.unstubAllEnvs();
       cleanup();

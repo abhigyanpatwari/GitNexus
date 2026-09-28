@@ -11,6 +11,7 @@ import {
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
+import { extractNotebookPython, isNotebookPath } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
 
@@ -38,9 +39,21 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
   // C++ UE macros, Dart extension types) would leave embeddings looking at an
   // error-recovered tree. Resolved from `language` so the transform and the
   // parser always come from the same provider. Length-preserving, so node
-  // offsets still index `content`.
-  const parseContent = getProvider(language).preprocessSource?.(content, filePath) ?? content;
+  // offsets still index `content` except for `.ipynb`, which is replaced by
+  // concatenated code-cell Python (same as the parse worker).
+  const provider = getProvider(language);
+  if (isNotebookPath(filePath)) {
+    const body = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+    if (body.trimStart().startsWith('{')) {
+      const extracted = extractNotebookPython(content);
+      if (!extracted) return null;
+      const parseContent =
+        provider.preprocessSource?.(extracted.pythonSource, filePath) ?? extracted.pythonSource;
+      return parseSourceSafe(parserInstance, parseContent);
+    }
+  }
 
+  const parseContent = provider.preprocessSource?.(content, filePath) ?? content;
   return parseSourceSafe(parserInstance, parseContent);
 };
 

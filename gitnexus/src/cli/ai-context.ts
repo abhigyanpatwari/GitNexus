@@ -6,6 +6,8 @@
  * CLAUDE.md is for Claude Code which only reads that file.
  */
 
+import { GITNEXUS_DIR } from '../storage/storage-constants.js';
+import { storeRootOfCheckoutSlot } from '../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -619,7 +621,13 @@ export async function generateAIContextFiles(
   // CLI and hooks already share; failure to copy is non-fatal (docs carry a
   // bootstrap fallback). `runnerPath` is project-relative with POSIX separators
   // so the emitted command is identical across platforms.
-  const runnerPath = path.relative(repoPath, path.join(storagePath, 'run.cjs')).replace(/\\/g, '/');
+  // A shared-store slot (#3352) lives under the GitNexus home, so its path
+  // would be machine- and worktree-specific in committed docs; the runner goes
+  // next to the checkout's store pointer instead.
+  const runnerDir = storeRootOfCheckoutSlot(storagePath)
+    ? path.join(repoPath, GITNEXUS_DIR)
+    : storagePath;
+  const runnerPath = path.relative(repoPath, path.join(runnerDir, 'run.cjs')).replace(/\\/g, '/');
   try {
     const runnerSrc = path.join(
       __dirname,
@@ -629,8 +637,8 @@ export async function generateAIContextFiles(
       'claude',
       'resolve-analyze-cmd.cjs',
     );
-    await fs.mkdir(storagePath, { recursive: true });
-    await fs.copyFile(runnerSrc, path.join(storagePath, 'run.cjs'));
+    await fs.mkdir(runnerDir, { recursive: true });
+    await fs.copyFile(runnerSrc, path.join(runnerDir, 'run.cjs'));
   } catch (err) {
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }

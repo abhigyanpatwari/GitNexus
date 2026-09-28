@@ -12,10 +12,10 @@
  *      binding, and `__init__` assignments from annotated parameters emit
  *      class-scoped instance-field bindings (see `receiver-binding.ts`).
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * No I/O. A `.ipynb` path also depends on `filePath` and `sourceMeta`, not only the source text.
  */
 
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, Range } from 'gitnexus-shared';
 import {
   nodeToCapture,
   syntheticCapture,
@@ -24,6 +24,12 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getPythonParser, getPythonScopeQuery } from './query.js';
+import {
+  extractNotebookPython,
+  isNotebookPath,
+  mapExtractLine,
+  type NotebookLineSegment,
+} from '../../ipynb-extractor.js';
 import {
   synthesizeConstructorFieldTypeBindings,
   synthesizeReceiverTypeBinding,
@@ -36,6 +42,11 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
+import {
+  beginPythonSubtypeDispatchCapture,
+  recordPythonSimplePositionalCall,
+  recordPythonSubtypeMethodShape,
+} from './subtype-dispatch.js';
 
 const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set(['function_definition', 'lambda']),
@@ -53,27 +64,59 @@ const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   assignmentNodeTypes: new Set(['assignment', 'named_expression']),
   identifierNodeTypes: new Set(['identifier']),
   functionScopedValueBindings: true,
+  // `a if c else b` is a FIELDLESS `conditional_expression` (positional
+  // value, condition, value), so the shared condition/consequence/alternative
+  // rule never sees its branches and only the last operand flowed (#3354).
+  // `a or b` is a fielded `boolean_operator` the shared rule already handles.
+  valueAlternatives: (node: SyntaxNode) => {
+    if (node.type !== 'conditional_expression') return undefined;
+    const named = node.namedChildren.filter(
+      (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+    );
+    const [value, , alternative] = named;
+    return named.length === 3 && value !== undefined && alternative !== undefined
+      ? [value, alternative]
+      : undefined;
+  },
 } as const;
 
 export function emitPythonScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
 ): readonly CaptureMatch[] {
+  beginPythonSubtypeDispatchCapture(filePath);
+  let parseText = sourceText;
+  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  let notebookSegments: readonly NotebookLineSegment[] | undefined;
+  if (isNotebookPath(filePath)) {
+    const resolved = resolveNotebookCaptureSource(sourceText, tree, sourceMeta);
+    if (resolved === null) return [];
+    parseText = resolved.parseText;
+    tree = resolved.tree;
+    notebookSegments = resolved.notebookSegments;
+  }
+  const subtypeLineMapper =
+    notebookSegments === undefined
+      ? undefined
+      : (line: number): number => mapExtractLine(line - 1, notebookSegments) + 1;
   // Skip the parse when the caller (the scope-resolution orchestrator's
   // `treeCache`) already produced a Tree for this source — empty under
   // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
   // is typed as `unknown` at the
   // contract layer (see `LanguageProvider.emitScopeCaptures`); cast
   // here at the use site.
-  let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
   if (tree === undefined) {
     try {
-      tree = parseSourceSafe(getPythonParser(), sourceText, undefined, {
-        bufferSize: getTreeSitterBufferSize(sourceText),
+      tree = parseSourceSafe(getPythonParser(), parseText, undefined, {
+        bufferSize: getTreeSitterBufferSize(parseText),
       });
     } catch (err) {
-      throw scopeExtractionError('parse', _filePath, err);
+      throw scopeExtractionError('parse', filePath, err);
     }
     recordCacheMiss();
   } else {
@@ -84,7 +127,7 @@ export function emitPythonScopeCaptures(
   try {
     rawMatches = getPythonScopeQuery().matches(tree.rootNode);
   } catch (err) {
-    throw scopeExtractionError('scope query', _filePath, err);
+    throw scopeExtractionError('scope query', filePath, err);
   }
 
   const out: CaptureMatch[] = [];
@@ -107,6 +150,8 @@ export function emitPythonScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    recordPythonSubtypeCallShape(grouped, nodeMap, filePath, subtypeLineMapper);
 
     if (grouped['@import.statement'] !== undefined) {
       // `@import.statement` is captured directly ON the `import_statement` /
@@ -177,6 +222,7 @@ export function emitPythonScopeCaptures(
         if (pythonFunctionDefinitionLabel(fnNode, 'Function') === 'Method') {
           delete grouped['@declaration.function'];
           grouped['@declaration.method'] = { ...anchorCap, name: '@declaration.method' };
+          recordPythonSubtypeMethodShape(filePath, fnNode, subtypeLineMapper);
         }
         const arity = computePythonArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -226,7 +272,103 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  if (notebookSegments !== undefined) {
+    return out.map((match) => remapCaptureMatch(match, notebookSegments));
+  }
   return out;
+}
+
+function resolveNotebookCaptureSource(
+  sourceText: string,
+  cachedTree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined,
+  sourceMeta?: {
+    sourceKind?: 'full-file' | 'pre-extracted-script';
+    notebookSegments?: readonly NotebookLineSegment[];
+  },
+): {
+  parseText: string;
+  tree: ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
+  notebookSegments?: readonly NotebookLineSegment[];
+} | null {
+  if (sourceMeta?.notebookSegments) {
+    return {
+      parseText: sourceText,
+      tree: cachedTree,
+      notebookSegments: sourceMeta.notebookSegments,
+    };
+  }
+  const extracted = extractNotebookPython(sourceText);
+  if (extracted === null) {
+    if (sourceMeta?.sourceKind === 'pre-extracted-script') {
+      return { parseText: sourceText, tree: cachedTree };
+    }
+    return null;
+  }
+  return {
+    parseText: extracted.pythonSource,
+    tree: sourceMeta?.sourceKind === 'pre-extracted-script' ? cachedTree : undefined,
+    notebookSegments: extracted.segments,
+  };
+}
+
+function remapRange(range: Range, segments: readonly NotebookLineSegment[]): Range {
+  return {
+    ...range,
+    startLine: mapExtractLine(range.startLine - 1, segments) + 1,
+    endLine: mapExtractLine(range.endLine - 1, segments) + 1,
+  };
+}
+
+function remapCaptureMatch(
+  match: CaptureMatch,
+  segments: readonly NotebookLineSegment[],
+): CaptureMatch {
+  const next: Record<string, Capture> = {};
+  for (const [key, cap] of Object.entries(match)) {
+    next[key] = { ...cap, range: remapRange(cap.range, segments) };
+  }
+  return next;
+}
+
+/**
+ * Record fixed positional argument counts only for Python's conservative
+ * missing-member subtype fallback. Ordinary reference arity stays unchanged:
+ * count-only metadata cannot model Python keyword binding or definition order.
+ */
+function recordPythonSubtypeCallShape(
+  grouped: Record<string, Capture>,
+  nodeMap: Readonly<Record<string, SyntaxNode>>,
+  filePath: string,
+  mapLine?: (line: number) => number,
+): void {
+  const callTag = (['@reference.call.free', '@reference.call.member'] as const).find(
+    (tag) => grouped[tag] !== undefined,
+  );
+  if (callTag === undefined) return;
+
+  // Decorator references use the same call tags but are anchored on a
+  // `decorator`, not a `call`, so they intentionally retain their old shape.
+  const callNode = nodeMap[callTag];
+  if (callNode === undefined || callNode.type !== 'call') return;
+
+  const argumentList = callNode.childForFieldName('arguments');
+  if (argumentList === null || argumentList.type !== 'argument_list') return;
+
+  const args = argumentList.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type !== 'comment',
+  );
+  if (
+    args.some(
+      (arg) =>
+        arg.type === 'list_splat' ||
+        arg.type === 'dictionary_splat' ||
+        arg.type === 'keyword_argument',
+    )
+  ) {
+    return;
+  }
+
+  recordPythonSimplePositionalCall(filePath, callNode, args.length, mapLine);
 }
 
 /**

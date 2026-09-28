@@ -7,7 +7,7 @@
  *
  * Supports multiple indexed repositories via the global registry.
  *
- * Tools: list_repos, query, cypher, context, impact, detect_changes, rename
+ * Tools: list_repos, query, cypher, context, read_file, grep, impact, detect_changes, rename
  * Resources: repos, repo/{name}/context, repo/{name}/clusters, ...
  */
 
@@ -63,7 +63,7 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
       return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
     case 'query':
-      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
+      return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.${args?.include_content === true ? ` For source of a process_symbols row without content, use context({uid: "<id>", include_content: true${repoParam}}).` : ''}`;
 
     case 'context':
       return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
@@ -80,6 +80,11 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
     case 'cypher':
       return `\n\n---\n**Next:** To explore a result symbol, use context({name: "<name>"${repoParam}}). For schema reference, READ gitnexus://repo/${repoPath}/schema.`;
 
+    case 'read_file':
+      return `\n\n---\n**Next:** To pin a symbol seen in the file, use context({name: "<symbol>"${repoParam}}). To find other occurrences, use grep({pattern: "<token>"${repoParam}}).`;
+
+    case 'grep':
+      return `\n\n---\n**Next:** Read the hit window with read_file({path: "<file>"${repoParam}, startLine: <hit.line - 1>, endLine: <hit.line - 1>}). Grep line is 1-based; read_file is 0-based. Or pin the symbol with context({name: "<symbol>"${repoParam}}).`;
     // Legacy tool names — still return useful hints
     case 'search':
       return `\n\n---\n**Next:** To understand a result in context, use context({name: "<symbol_name>"${repoParam}}).`;

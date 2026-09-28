@@ -5,12 +5,13 @@
  *
  * Mirrors the legacy `buildMethodProps` conversion so scope-extracted
  * defs carry the same arity semantics as the parse-worker path:
- *   - `self` / `cls` are stripped (consumed by `extractPythonParameters`).
+ *   - A bound method's first positional receiver is stripped by class and
+ *     decorator context, independent of spelling; static/free functions keep it.
  *   - Defaulted params contribute to `optionalCount`, flipping
  *     `requiredParameterCount = total − optionalCount`.
- *   - Variadic (`*args` / `**kwargs`) collapses `parameterCount` to
- *     `undefined`, which `pythonArityCompatibility` then treats as
- *     `'unknown'` — keeping the candidate in the registry's lookup set.
+ *   - Variadic (`*args` / `**kwargs`) leaves both count-only bounds unknown:
+ *     parameter kinds are not retained, so a required keyword-only argument
+ *     cannot safely be treated as a positional minimum.
  *   - `parameterTypes` is populated only with real type text, matching
  *     legacy behavior.
  */

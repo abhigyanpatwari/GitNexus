@@ -9,6 +9,7 @@ import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
   getRelationships,
+  getResolutionOutcomes,
   getNodesByLabel,
   getNodesByLabelFull,
   edgeSet,
@@ -1076,6 +1077,402 @@ describe('Python self resolution', () => {
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('models/user.py');
   });
+});
+
+// ---------------------------------------------------------------------------
+// Mixin self-dispatch: a method supplied only by a concrete subtype
+// ---------------------------------------------------------------------------
+
+describe('Python mixin self-dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-mixin-self-dispatch'), () => {});
+  }, 60000);
+
+  it('resolves each self.helper() through direct and sibling-base implementations', () => {
+    const helperCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.target === 'helper' && ['first', 'second'].includes(call.source),
+    );
+    expect(helperCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual([
+      'first → conditional.py',
+      'first → helpers.py',
+      'first → worker.py',
+      'second → conditional.py',
+      'second → helpers.py',
+      'second → worker.py',
+    ]);
+  });
+
+  it('keeps the sibling-base @staticmethod reachable through instance self dispatch', () => {
+    const staticCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.target === 'helper' &&
+        call.targetFilePath === 'helpers.py' &&
+        ['first', 'second'].includes(call.source),
+    );
+    expect(staticCalls.map((call) => call.source).sort()).toEqual(['first', 'second']);
+  });
+
+  it('uses self provenance with renamed caller and target receiver parameters', () => {
+    const renamedCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'renamed' && call.target === 'helper',
+    );
+    expect(renamedCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'conditional.py',
+      'helpers.py',
+      'worker.py',
+    ]);
+  });
+
+  it('does not fan ordinary annotated receivers out through concrete subtypes', () => {
+    const annotatedFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'call_annotated' &&
+        call.target === 'helper' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(annotatedFanout).toEqual([]);
+  });
+
+  it('does not treat a renamed classmethod receiver as instance dispatch', () => {
+    const classReceiverFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'invoke' &&
+        call.target === 'class_only' &&
+        call.rel.reason === 'interface-dispatch',
+    );
+    expect(classReceiverFanout).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'class_only' &&
+          outcome.reason === 'receiver-unresolved',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not use pseudo-receivers or captured classmethod receivers for instance fan-out', () => {
+    const falseFanout = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.rel.reason === 'interface-dispatch' &&
+        ((call.source === 'variadic_dispatch' && call.target === 'variadic_target') ||
+          (call.source === 'inner' && call.target === 'instance_only')),
+    );
+    expect(falseFanout).toEqual([]);
+  });
+
+  it('excludes required fixed arguments that precede a variadic tail', () => {
+    const wrongArityCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['first', 'second', 'renamed'].includes(call.source) &&
+        call.target === 'helper' &&
+        call.targetFilePath === 'wrong_arity.py',
+    );
+    expect(wrongArityCalls).toEqual([]);
+  });
+
+  it('fans an ambiguous runtime subtype dispatch out instead of picking one target', () => {
+    const runCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch' && call.target === 'run',
+    );
+    expect(runCalls.map((call) => call.targetFilePath).sort()).toEqual([
+      'ambiguous_a.py',
+      'ambiguous_b.py',
+    ]);
+  });
+
+  it('suppresses a missing self member instead of falling back to a same-named free function', () => {
+    const missingCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'missing' && call.target === 'missing_target',
+    );
+    expect(missingCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'missing_target' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.receiverOrigin === 'in-program',
+      ),
+    ).toBe(true);
+  });
+
+  it('records only the expected mixin dispatch gaps and partial coverage', () => {
+    const unresolvedSites = getResolutionOutcomes(result)
+      .filter(
+        (outcome) =>
+          outcome.kind === 'suppressed' &&
+          outcome.reason === 'receiver-unresolved' &&
+          outcome.filePath === 'mixins.py',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+      .sort();
+    expect(unresolvedSites).toEqual(
+      [
+        '3:helper',
+        '6:helper',
+        '9:helper',
+        '12:missing_target',
+        '52:shadow_hook',
+        '75:keyword_only_target',
+        '78:positional_only_target',
+        '81:required_keyword_target',
+        '94:__private_hook',
+        '99:abstract_hook',
+        '104:duplicate_hook',
+      ].sort(),
+    );
+  });
+
+  it('resolves a diamond mixin call to the C3 method, not the breadth-first base', () => {
+    const orderCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_order' && call.target === 'order_hook',
+    );
+    expect(orderCalls).toHaveLength(1);
+    // OrderX.order_hook is the CPython target. OrderB.order_hook is the
+    // breadth-first hit and must not be the edge.
+    expect(result.graph.getNode(orderCalls[0]!.rel.targetId)?.properties.startLine).toBe(40);
+  });
+
+  it('honors inherited field shadowing instead of skipping to a later method', () => {
+    const shadowCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_shadow' && call.target === 'shadow_hook',
+    );
+    expect(shadowCalls).toEqual([]);
+  });
+
+  it('does not treat implicit class/static lifecycle receivers as instance fan-out', () => {
+    const lifecycleCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['__init_subclass__', '__new__'].includes(call.source) &&
+        ['lifecycle_hook', 'new_hook'].includes(call.target),
+    );
+    expect(lifecycleCalls).toEqual([]);
+    const allocationCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__new__' && call.target === 'allocate',
+    );
+    expect(allocationCalls).toHaveLength(1);
+    expect(allocationCalls[0]!.rel.targetId).toContain('LifecycleReceiverMixin.allocate');
+  });
+
+  it('does not treat an implicit __class_getitem__ receiver as instance fan-out', () => {
+    const genericCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === '__class_getitem__' && call.target === 'class_only',
+    );
+    expect(genericCalls).toEqual([]);
+  });
+
+  it('suppresses positional/keyword binding mismatches during subtype dispatch', () => {
+    const shapedCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['positional_to_keyword_only', 'keyword_to_positional_only'].includes(call.source) &&
+        ['keyword_only_target', 'positional_only_target'].includes(call.target),
+    );
+    expect(shapedCalls).toEqual([]);
+  });
+
+  it('does not expose a hidden compatible base behind an incompatible override', () => {
+    const hiddenBaseCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_to_keyword_only' && call.target === 'keyword_only_target',
+    );
+    expect(hiddenBaseCalls).toEqual([]);
+  });
+
+  it('suppresses a positional call that leaves a required keyword-only parameter unsatisfied', () => {
+    const requiredKeywordCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        call.source === 'positional_missing_required_keyword' &&
+        call.target === 'required_keyword_target',
+    );
+    expect(requiredKeywordCalls).toEqual([]);
+  });
+
+  it('resolves both simple one-positional-argument mixin callers', () => {
+    const forwardingCalls = getRelationships(result, 'CALLS').filter(
+      (call) =>
+        ['forward_first', 'forward_second'].includes(call.source) &&
+        call.target === 'forward_target',
+    );
+    expect(forwardingCalls.map((call) => `${call.source} → ${call.targetFilePath}`).sort()).toEqual(
+      ['forward_first → worker.py', 'forward_second → worker.py'],
+    );
+  });
+
+  it('does not cross Python private-name mangling boundaries', () => {
+    const privateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_private' && call.target === '__private_hook',
+    );
+    expect(privateCalls).toEqual([]);
+  });
+
+  it('keeps an abstract declaration as a name boundary while resolving concrete descendants', () => {
+    const abstractCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_abstract' && call.target === 'abstract_hook',
+    );
+    expect(abstractCalls).toHaveLength(1);
+    expect(abstractCalls[0]!.rel.targetId).toContain('ConcreteAbstractWorker.abstract_hook');
+  });
+
+  it('keeps duplicate same-owner definitions ambiguous without generic Python call arity', () => {
+    const duplicateCalls = getRelationships(result, 'CALLS').filter(
+      (call) => call.source === 'dispatch_duplicate' && call.target === 'duplicate_hook',
+    );
+    expect(duplicateCalls).toEqual([]);
+    expect(
+      getResolutionOutcomes(result).some(
+        (outcome) =>
+          outcome.filePath === 'mixins.py' &&
+          outcome.name === 'duplicate_hook' &&
+          outcome.reason === 'member-lookup-ambiguous',
+      ),
+    ).toBe(true);
+  });
+
+  it('never routes mixin self-dispatch to receiver-blind decoy functions', () => {
+    const calls = getRelationships(result, 'CALLS').filter((call) =>
+      [
+        'first',
+        'second',
+        'renamed',
+        'call_annotated',
+        'dispatch',
+        'missing',
+        'variadic_dispatch',
+        'inner',
+      ].includes(call.source),
+    );
+    expect(calls.some((call) => call.targetFilePath === 'decoys.py')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Incomplete Python inheritance must not invent an MRO binding
+// ---------------------------------------------------------------------------
+
+describe('Python incomplete inheritance', () => {
+  it('ignores a self-named external base without losing the class for its children', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-self-parent-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import unittest
+
+class TestCase(unittest.TestCase):
+    def project_helper(self):
+        return 1
+
+class Child(TestCase):
+    def call(self):
+        return self.project_helper()
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const extendsEdges = getRelationships(result, 'EXTENDS');
+      expect(extendsEdges.some((edge) => edge.rel.sourceId === edge.rel.targetId)).toBe(false);
+      expect(extendsEdges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+        'Child->TestCase',
+      ]);
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'call' && edge.target === 'project_helper',
+        ),
+      ).toHaveLength(1);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps an unindexed earlier base unresolved while retaining direct overrides', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-base-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class First:
+    def hook(self):
+        return 1
+
+class Second:
+    def hook(self):
+        return 2
+
+class Worker(HookMixin, external.Parent, First, Second):
+    pass
+
+class DirectWorker(HookMixin, external.Parent, First, Second):
+    def hook(self):
+        return 3
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      // The external parent may supply hook at runtime, so First and Second
+      // are not proven targets. DirectWorker's own method still binds first.
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('records partial coverage when the final known MRO owner has an unindexed base', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-unknown-tail-'));
+    try {
+      writeFixtureRepo(repoDir, {
+        'case.py': `import external
+
+class HookMixin:
+    def dispatch(self):
+        return self.hook()
+
+class Tail(external.Parent):
+    pass
+
+class Worker(HookMixin, Tail):
+    pass
+
+class DirectWorker(HookMixin):
+    def hook(self):
+        return 1
+`,
+      });
+      const result = await runPipelineFromRepo(repoDir, () => {});
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) => edge.source === 'dispatch' && edge.target === 'hook',
+      );
+      expect(calls.map((edge) => edge.rel.targetId)).toEqual([
+        expect.stringContaining('DirectWorker.hook'),
+      ]);
+      expect(
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.name === 'hook' &&
+            outcome.reason === 'receiver-unresolved' &&
+            outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------

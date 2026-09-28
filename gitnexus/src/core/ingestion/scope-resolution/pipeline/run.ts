@@ -223,6 +223,7 @@ function preEmitInheritanceEdges(
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
   recordTypeArguments: HeritageTypeArgumentSink,
+  unresolvedInheritanceByClass: Set<string>,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -263,10 +264,23 @@ function preEmitInheritanceEdges(
       site.rawQualifiedName,
       callerClass,
     );
-    if (targetDef === undefined) continue;
+    if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
+      // Static lookup can mistake the current declaration for an earlier
+      // same-named base. A self-edge is not inheritance evidence and would
+      // poison MRO construction; retain the uncertainty for dispatch.
+      unresolvedInheritanceByClass.add(callerClass.nodeId);
+      continue;
+    }
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     const targetGraphId = resolveDefGraphId(targetDef.filePath, targetDef, nodeLookup);
-    if (callerGraphId === undefined || targetGraphId === undefined) continue;
+    if (
+      callerGraphId === undefined ||
+      targetGraphId === undefined ||
+      callerGraphId === targetGraphId
+    ) {
+      unresolvedInheritanceByClass.add(callerClass.nodeId);
+      continue;
+    }
     // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
     // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
     // deriving from a class-like is EXTENDS. The discriminator is purely
@@ -827,9 +841,16 @@ export function runScopeResolution(
     const key = heritageTypeArgumentsKey(subtypeGraphId, supertypeGraphId);
     if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
   };
+  const unresolvedInheritanceByClass = new Set<string>();
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
-    : preEmitInheritanceEdges(graph, finalized, nodeLookup, recordHeritageTypeArguments);
+    : preEmitInheritanceEdges(
+        graph,
+        finalized,
+        nodeLookup,
+        recordHeritageTypeArguments,
+        unresolvedInheritanceByClass,
+      );
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
@@ -1125,6 +1146,7 @@ export function runScopeResolution(
           // interface-dispatch fan-out can refuse an incompatible instantiation
           // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
           heritageTypeArguments,
+          unresolvedInheritanceByClass,
         },
       );
   let receiverExtras = receiverBound.emitted;
@@ -1216,6 +1238,7 @@ export function runScopeResolution(
         calleeIdSink: calleeIdAccumulator,
         isBuiltInName: provider.languageProvider.isBuiltInName,
         heritageTypeArguments,
+        unresolvedInheritanceByClass,
       },
     );
     receiverExtras += replayedReceiverBound.emitted;

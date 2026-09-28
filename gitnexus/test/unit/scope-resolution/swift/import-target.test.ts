@@ -127,3 +127,73 @@ describe('resolveSwiftImportTarget — declared Package.swift (R3, R4)', () => {
     ).toEqual(['Sources/Models/Other.swift']);
   });
 });
+
+describe('resolveSwiftImportTarget — workspace modules (#3355)', () => {
+  const files = [
+    'Core/Net/Sources/Net/Client.swift',
+    'Core/Net/Tests/NetTests/ClientTests.swift',
+    'Features/Other/Sources/Net/Config.swift',
+    'Features/Login/Sources/Login/Flow.swift',
+    'Features/Login/Plugins/Gen/main.swift',
+    'Docs/Net/Snippet.swift',
+    'App/Main.swift',
+  ];
+  const modules = [
+    { key: 'Core/Net/Sources/Net', name: 'Net', dir: 'Core/Net/Sources/Net', importable: true },
+    {
+      key: 'Core/Net/Tests/NetTests',
+      name: 'NetTests',
+      dir: 'Core/Net/Tests/NetTests',
+      importable: true,
+    },
+    {
+      key: 'Features/Other/Sources/Net',
+      name: 'Net',
+      dir: 'Features/Other/Sources/Net',
+      importable: true,
+    },
+    {
+      key: 'Features/Login/Sources/Login',
+      name: 'Login',
+      dir: 'Features/Login/Sources/Login',
+      importable: true,
+    },
+    {
+      key: 'Features/Login/Plugins/Gen',
+      name: 'Gen',
+      dir: 'Features/Login/Plugins/Gen',
+      importable: false,
+    },
+    { key: 'xcode:App.xcodeproj:App', name: 'App', files: ['App/Main.swift'], importable: true },
+  ];
+  const config = (complete: boolean) => ({
+    targets: new Map(),
+    modules,
+    moduleNamesComplete: complete,
+  });
+  const from = 'Features/Login/Sources/Login/Flow.swift';
+
+  it('resolves a name to every module carrying it, not to folders named alike', () => {
+    expect(resolve('Net', files, from, config(true))).toEqual([
+      'Core/Net/Sources/Net/Client.swift',
+      'Features/Other/Sources/Net/Config.swift',
+    ]);
+  });
+
+  it('resolves an Xcode target by name', () => {
+    expect(resolve('App', files, from, config(true))).toEqual(['App/Main.swift']);
+  });
+
+  it('never resolves a plugin, which is not importable', () => {
+    expect(resolve('Gen', files, from, config(true))).toBeNull();
+    expect(resolve('Gen', files, from, config(false))).toBeNull();
+  });
+
+  it('treats an unknown name as external when every manifest was read', () => {
+    expect(resolve('Docs', files, from, config(true))).toBeNull();
+  });
+
+  it('falls back to the folder index for an unknown name when some manifest was not read', () => {
+    expect(resolve('Docs', files, from, config(false))).toEqual(['Docs/Net/Snippet.swift']);
+  });
+});

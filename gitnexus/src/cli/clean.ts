@@ -17,7 +17,7 @@ import {
   type RegistryEntry,
 } from '../storage/repo-manager.js';
 import { requireDeletableStoragePath, StorageDeletionError } from '../storage/storage-resolver.js';
-import { formatStaleSlotLine } from './stale-branch-format.js';
+import { formatSlotSize, formatStaleSlotLine } from './stale-branch-format.js';
 import { listLocalHeads } from '../storage/git.js';
 import {
   isContainedBranchDir,
@@ -33,6 +33,16 @@ import {
   listParkedLbugSidecars,
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
+import { getGlobalDir } from '../storage/global-dir.js';
+import { STORES_DIR } from '../storage/shared-store.js';
+import {
+  findLegacyLocalIndex,
+  reclaimAfterSlotRemoval,
+  reclaimSharedStore,
+  removeLegacyLocalIndex,
+  removeCheckoutStorage,
+  type ReclaimResult,
+} from '../storage/shared-store-lifecycle.js';
 
 type OwnedCwdStorage = {
   repo: NonNullable<Awaited<ReturnType<typeof findRepo>>>;
@@ -147,13 +157,101 @@ const cleanStaleBranchSlots = async (force: boolean): Promise<void> => {
   }
 };
 
+const reportReclaim = (result: ReclaimResult | null): void => {
+  if (!result) return;
+  if (result.removed.length > 0) {
+    console.log(t('clean.shared.reclaimed', { count: result.removed.length }));
+  }
+  if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
+};
+
+/** `clean --gc`: collect every shared store under GITNEXUS_HOME (#3352). */
+const collectSharedStores = async (force: boolean): Promise<void> => {
+  const storesDir = path.join(getGlobalDir(), STORES_DIR);
+  // Only a missing stores root means "nothing to collect"; an unreadable one
+  // must fail loudly rather than report success.
+  const names = await fs.readdir(storesDir).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return [] as string[];
+    throw err;
+  });
+  // Stray files (`.DS_Store`) are not stores, and a symlink is not followed:
+  // reclaim deletes under the root it is given. A store another collector
+  // removed meanwhile is simply gone. The lstat skips a stray link; it is not
+  // a race guard, since stores/ belongs to the user running clean and anyone
+  // able to swap an entry there can already delete the store itself.
+  const roots: string[] = [];
+  for (const name of names) {
+    const root = path.join(storesDir, name);
+    const stat = await fs.lstat(root).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') return null;
+      throw err;
+    });
+    if (stat?.isDirectory()) roots.push(root);
+  }
+  if (roots.length === 0) {
+    console.log(t('clean.gc.none'));
+    return;
+  }
+  for (const root of roots) {
+    // Without --force this is a preview: same selection, nothing deleted.
+    const result = await reclaimSharedStore(root, { gc: true, dryRun: !force });
+    console.log(
+      t(force ? 'clean.gc.store' : 'clean.gc.preview', {
+        path: root,
+        members: result.droppedMembers.length,
+        graphs: result.removed.length,
+      }),
+    );
+    if (result.keptMembers.length > 0) {
+      console.log(t('clean.gc.keptMembers', { count: result.keptMembers.length }));
+    }
+    if (result.kept.length > 0) console.log(t('clean.shared.kept', { count: result.kept.length }));
+    if (result.storeRemoved) console.log(t('clean.shared.storeRemoved', { path: root }));
+  }
+  if (!force) console.log(`\n${t('common.runForceConfirm')}`);
+};
+
 export const cleanCommand = async (options?: {
   force?: boolean;
   all?: boolean;
   lbugSidecars?: boolean;
   stale?: boolean;
   branch?: string;
+  gc?: boolean;
+  localIndex?: boolean;
 }) => {
+  if (options?.gc) {
+    await collectSharedStores(options.force === true);
+    return;
+  }
+
+  // --local-index: delete a pre-adoption index left in <checkout>/.gitnexus
+  // after the checkout moved into a shared store (#3352). Keeps the pointer.
+  if (options?.localIndex) {
+    const repo = await findRepo(process.cwd());
+    if (!repo) {
+      console.log(t('clean.notFoundHere'));
+      return;
+    }
+    const legacy = await findLegacyLocalIndex(repo.repoPath, repo.storagePath);
+    if (!legacy) {
+      console.log(t('clean.localIndex.none'));
+      return;
+    }
+    if (!options.force) {
+      console.log(
+        t('clean.localIndex.preview', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
+      );
+      console.log(`\n${t('common.runForceConfirm')}`);
+      return;
+    }
+    await removeLegacyLocalIndex(repo.repoPath, repo.storagePath);
+    console.log(
+      t('clean.localIndex.deleted', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
+    );
+    return;
+  }
+
   // --stale: reclaim leftover per-branch slots whose recorded branch is not
   // a live local head (#3331). Exclusive arm before --branch.
   if (options?.stale) {
@@ -292,9 +390,12 @@ export const cleanCommand = async (options?: {
     for (const entry of entries) {
       try {
         const storagePath = await requireDeletableStoragePath(entry);
-        await fs.rm(storagePath, { recursive: true, force: true });
-        await unregisterRepo(entry.path);
+        // A shared slot is unregistered before it is deleted: its lock file
+        // lives inside it, so it must go last. A failed delete throws with the
+        // `clean --gc --force` recovery (shared-store-clean.test.ts).
+        await removeCheckoutStorage(storagePath, () => unregisterRepo(entry.path), entry.path);
         console.log(t('clean.deletedRepo', { name: entry.name, storagePath }));
+        reportReclaim(await reclaimAfterSlotRemoval(storagePath));
       } catch (err) {
         if (err instanceof StorageDeletionError) {
           logger.error(`Refusing to clean ${entry.name}: ${err.message}`);
@@ -338,9 +439,9 @@ export const cleanCommand = async (options?: {
   }
 
   try {
-    await fs.rm(storagePath, { recursive: true, force: true });
-    await unregisterRepo(repo.repoPath);
+    await removeCheckoutStorage(storagePath, () => unregisterRepo(repo.repoPath), repo.repoPath);
     console.log(t('common.deleted', { target: storagePath }));
+    reportReclaim(await reclaimAfterSlotRemoval(storagePath));
   } catch (err) {
     logger.error({ err }, 'Failed to delete:');
   }

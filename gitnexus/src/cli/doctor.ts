@@ -1,4 +1,5 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
+import { findLegacyLocalIndex } from '../storage/shared-store-lifecycle.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 import {
@@ -411,6 +412,14 @@ export const doctorCommand = async () => {
     branches: entry?.branches,
   });
   const leftoverLines = leftoverBranchSlotDoctorLines(slots);
+  // A pre-adoption index left in <repo>/.gitnexus after this checkout moved
+  // into a shared store (#3352).
+  const legacy = await findLegacyLocalIndex(cwdRepo.repoPath, cwdRepo.storagePath);
+  if (legacy) {
+    leftoverLines.push(
+      t('status.legacyLocalIndex', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
+    );
+  }
   if (leftoverLines.length === 0) return;
   console.log('');
   for (const line of leftoverLines) {
