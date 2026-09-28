@@ -1206,9 +1206,11 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  it('keeps the fast path after indexing an assume-unchanged file', async () => {
+  it('re-indexes a restored assume-unchanged edit, then returns to the fast path', async () => {
     const repo = await setupMiniRepo();
     try {
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      const clean = await readFile(target, 'utf-8');
       execSync('git update-index --assume-unchanged src/logger.ts', {
         cwd: repo.dbPath,
         stdio: 'pipe',
@@ -1216,10 +1218,29 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      await writeFile(target, `${clean}\n// hidden dirty snapshot\n`, 'utf-8');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       const { storagePath } = getStoragePaths(repo.dbPath);
-      const meta = await loadMeta(storagePath);
-      expect(meta?.indexCoverage?.dirtyPaths).toEqual([]);
+      const dirtyMeta = await loadMeta(storagePath);
+      expect(dirtyMeta?.indexCoverage?.dirtyPaths).toContain('src/logger.ts');
+      const dirtyHash = dirtyMeta?.fileHashes?.['src/logger.ts'];
+
+      await writeFile(target, clean, 'utf-8');
+      execSync('git update-index --no-assume-unchanged src/logger.ts', {
+        cwd: repo.dbPath,
+        stdio: 'pipe',
+      });
+      const restored = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(restored.alreadyUpToDate).toBeUndefined();
+
+      const restoredMeta = await loadMeta(storagePath);
+      expect(restoredMeta?.indexCoverage?.dirtyPaths).toEqual([]);
+      expect(restoredMeta?.fileHashes?.['src/logger.ts']).not.toBe(dirtyHash);
 
       const steady = await runFullAnalysis(
         repo.dbPath,

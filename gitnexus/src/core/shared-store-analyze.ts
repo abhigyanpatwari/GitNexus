@@ -378,9 +378,8 @@ export const publishSharedGraph = async (
   if (!meta) return;
   const own = path.join(slot, LBUG_DIRECTORY);
 
-  // A graph built while files were dirty still holds those edits even after
-  // they are reverted (the up-to-date path does not re-diff a clean tree), so
-  // only a graph whose build saw no dirty covered file may become shared.
+  // A graph built while files were dirty must not become shared until analyze
+  // has reconciled those paths with disk and cleared the coverage receipt.
   const builtClean = (meta.indexCoverage?.dirtyPaths ?? []).length === 0;
   const shareable =
     currentCommit !== '' &&

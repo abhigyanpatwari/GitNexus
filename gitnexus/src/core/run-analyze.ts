@@ -2369,13 +2369,20 @@ async function runFullAnalysisInner(
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
       const dirty = isWorkingTreeDirty(repoPath);
-      // A clean working tree is not enough when the previous index captured
-      // uncommitted content at this same HEAD.  If those paths were later
-      // restored, the current tree is clean but the persisted file hashes and
-      // FTS rows still describe the dirty snapshot.  Force one incremental
-      // pass; a successful clean run clears `dirtyPaths`, restoring the fast
-      // path on the following invocation.
-      const indexedDirty = (existingMeta.indexCoverage?.dirtyPaths?.length ?? 0) > 0;
+      // A clean porcelain status is not enough when the previous index captured
+      // uncommitted content at this same HEAD: assume-unchanged and skip-worktree
+      // paths are deliberately absent from porcelain. Re-hash only the paths
+      // recorded dirty by the previous run. Matching hashes mean the index still
+      // describes disk and may take the fast path; a mismatch (including an
+      // unreadable/deleted file) must fall through to incremental reconciliation.
+      const indexedDirtyPaths = existingMeta.indexCoverage?.dirtyPaths ?? [];
+      let indexedContentChanged = indexedDirtyPaths.length > 0;
+      if (!dirty && indexedDirtyPaths.length > 0 && existingMeta.fileHashes) {
+        const currentDirtyHashes = await computeFileHashes(repoPath, indexedDirtyPaths);
+        indexedContentChanged = indexedDirtyPaths.some(
+          (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
+        );
+      }
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -2405,7 +2412,7 @@ async function runFullAnalysisInner(
       // re-analysis whenever an index authored where FTS was unavailable was
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
-      if (!dirty && !indexedDirty && !healUnregistered) {
+      if (!dirty && !indexedContentChanged && !healUnregistered) {
         const processDetectionStamp =
           existingMeta.processDetection ?? toProcessDetectionStamp(processDetectionBudget);
         if (options.registryName) {
@@ -4878,9 +4885,8 @@ async function runFullAnalysisInner(
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
-            dirtyPaths: (isWorkingTreeDirty(repoPath)
-              ? (listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord))
-              : []
+            dirtyPaths: (
+              listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
             ).filter(
               (rel) => newFileHashesRecord[rel] !== undefined && !isGitNexusManagedPath(rel),
             ),
