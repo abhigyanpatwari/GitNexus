@@ -30,3 +30,8 @@ importFrom(scorelib, reexp_fn)
 importFrom(scorelib, nest_fn)
 # External packages never bind.
 importFrom(dplyr, mutate)
+# Cross-package decoy guesses the NAMESPACE contradicts (name-guess veto).
+importFrom(dplyr, filter)
+importFrom(scorelib, dup_ext)
+importFrom(dplyr, dup_ext)
+importFrom(dplyr, scripts_only_fn)

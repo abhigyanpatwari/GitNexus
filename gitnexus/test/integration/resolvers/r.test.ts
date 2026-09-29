@@ -945,6 +945,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
     'analytics/R/reexport_use.R',
     'analytics/R/second.R',
     'analytics/R/use.R',
+    'analytics/R/veto_use.R',
   ];
   const BOUND_TARGET_FILES = [
     'legacyscore/R/l.R', // dup_fn: the later importFrom() (legacyscore) wins
@@ -1121,6 +1122,58 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
     });
   });
 
+  describe('global-name guesses contradicted by the NAMESPACE importFrom() (veto)', () => {
+    const VETO = 'analytics/R/veto_use.R';
+
+    it('refuses the guess to a decoy in another local package when the name is imported from an external package', () => {
+      // importFrom(dplyr, mutate) + a same-named `mutate` in legacyscore: the unique-name guess
+      // (a FALSE 0.5 edge before the veto) is impossible in R, so no edge is published.
+      expect(edgeSummaries('mutate_user', VETO)).toEqual([]);
+    });
+
+    it('keeps the 0.5 fallback edge to the own-package definition of an externally imported name', () => {
+      // importFrom(dplyr, filter) and `filter` defined in analytics/R/own.R: the candidate is the
+      // caller's own package, which masks the import. Precise own-package binding is fork #10.
+      expect(edgeSummaries('filter_user', VETO)).toEqual([
+        'filter:analytics/R/own.R:global-name-fallback:0.5',
+      ]);
+    });
+
+    it('refuses the guess when the last importFrom() of the name names an external package', () => {
+      // importFrom(scorelib, dup_ext) then importFrom(dplyr, dup_ext): the last entry wins, nothing
+      // is bound, and the guess to scorelib's exported `dup_ext` is contradicted (no IMPORTS edge
+      // either).
+      expect(edgeSummaries('dup_ext_user', VETO)).toEqual([]);
+      expect(importTargets(VETO)).not.toContain('scorelib/R/dup.R');
+    });
+
+    it('keeps the 0.5 fallback edge to a candidate outside every package R/ directory', () => {
+      // `scripts_only_fn` lives in analytics/scripts/helper.R, which no NAMESPACE governs.
+      expect(edgeSummaries('scripts_only_user', VETO)).toEqual([
+        'scripts_only_fn:analytics/scripts/helper.R:global-name-fallback:0.5',
+      ]);
+    });
+
+    it('does not apply to a caller outside the package R/ directory (tests/testthat keeps the guess)', () => {
+      expect(edgeSummaries('test_mutate_user', 'analytics/tests/testthat/test-veto.R')).toEqual([
+        'mutate:legacyscore/R/l.R:global-name-fallback:0.5',
+      ]);
+    });
+
+    it('keeps the re-export fallback edge to the origin package (allowance for a local provider that re-exports)', () => {
+      expect(edgeSummaries('reexport_user', 'analytics/R/reexport_use.R')).toEqual([
+        'reexp_fn:corelib/R/c.R:global-name-fallback:0.5',
+      ]);
+    });
+
+    it('records every refusal as fallback-refused and no other kind of veto outcome', () => {
+      const refused = (result.resolutionOutcomes ?? []).filter(
+        (o) => o.kind === 'fallback-refused',
+      );
+      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'mutate', 'mutate']);
+    });
+  });
+
   describe('explicitly qualified call to another local package', () => {
     it('documents current name-only behaviour after importFrom() binding (fork #7)', () => {
       // `legacyscore::tidy_scores()` names legacyscore, yet the qualifier is discarded and the
@@ -1129,6 +1182,13 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       expect(edgeSummaries('qualified_user', 'analytics/R/fork7.R')).toEqual([
         'tidy_scores:scorelib/R/s.R:import-resolved:0.85',
       ]);
+    });
+
+    it('documents current name-only behaviour (fork #7): a correct qualified edge is refused by the veto', () => {
+      // `legacyscore::mutate()` names the package that really defines `mutate`, but the qualifier
+      // is discarded and the NAMESPACE imports `mutate` from dplyr, so the guess is vetoed
+      // (baseline before the veto: a correct 0.5 edge to legacyscore). Fork #7 should flip this.
+      expect(edgeSummaries('qualified_mutate_user', 'analytics/R/fork7.R')).toEqual([]);
     });
   });
 });

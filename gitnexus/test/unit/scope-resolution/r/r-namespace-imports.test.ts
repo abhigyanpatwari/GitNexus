@@ -21,6 +21,7 @@ import type {
   RPackageConfig,
 } from '../../../../src/core/ingestion/language-config.js';
 import {
+  isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,
   rFileTopLevel,
   rPackageDirForFile,
@@ -686,5 +687,294 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
         ),
       ).toEqual([F]);
     });
+  });
+});
+
+// ─── isRGlobalNameFallbackPlausible (truth table T1-T11) ────────────────────
+
+describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
+  const pkgs = {
+    analytics: 'analytics',
+    scorelib: 'scorelib',
+    legacyscore: 'legacyscore',
+    corelib: 'corelib',
+  };
+  const def = (path: string, names: string[]) =>
+    parse(names.map((n) => `${n} <- function(d) d`).join('\n'), path);
+
+  /**
+   * Runs the real `populateRNamespaceImports` (which records the per-package top-level names the
+   * veto reads) over `files`, then asks the veto about a call to `name` in `callerFile` whose
+   * unique-name guess landed in `candidateFile`.
+   */
+  const verdict = (opts: {
+    importFrom: readonly (readonly [string, string])[];
+    files: readonly ParsedFile[];
+    callerFile?: string;
+    candidateFile: string;
+    name: string;
+    packages?: Record<string, string>;
+    rawQualifiedName?: string;
+    skipPopulate?: boolean;
+  }): boolean => {
+    const cfg = config(opts.packages ?? pkgs, {
+      analytics: { importFrom: opts.importFrom },
+      scorelib: { exports: ['f', 'tidy_scores', 'reexp_fn'] },
+      legacyscore: { exports: ['f', 'tidy_scores', 'mutate'] },
+      corelib: { exports: ['f', 'reexp_fn'] },
+    });
+    const files = [...opts.files];
+    if (opts.skipPopulate !== true) populate(files, cfg);
+    return isRGlobalNameFallbackPlausible({
+      callerParsed: { filePath: opts.callerFile ?? 'analytics/R/use.R' },
+      candidate: { filePath: opts.candidateFile },
+      resolutionConfig: cfg,
+      site: { name: opts.name, rawQualifiedName: opts.rawQualifiedName },
+    });
+  };
+
+  const caller = () => def('analytics/R/use.R', ['run_all']);
+
+  it('T1: allows a candidate in the caller own package (own namespace masks; stays a fallback edge)', () => {
+    expect(
+      verdict({
+        importFrom: [['dplyr', 'filter']],
+        files: [caller(), def('analytics/R/own.R', ['filter'])],
+        candidateFile: 'analytics/R/own.R',
+        name: 'filter',
+      }),
+    ).toBe(true);
+  });
+
+  it('T2: vetoes a decoy in another local package when the name is imported from an external package', () => {
+    expect(
+      verdict({
+        importFrom: [['dplyr', 'mutate']],
+        files: [caller(), def('legacyscore/R/l.R', ['mutate'])],
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'mutate',
+      }),
+    ).toBe(false);
+  });
+
+  it('T3a: vetoes a candidate in a third local package when the provider package defines the name', () => {
+    const files = [
+      caller(),
+      def('scorelib/R/s.R', ['tidy_scores']),
+      def('legacyscore/R/l.R', ['tidy_scores']),
+    ];
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'tidy_scores']],
+        files,
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'tidy_scores',
+      }),
+    ).toBe(false);
+  });
+
+  it('T3b: allows the candidate that lives in the imported-from package itself', () => {
+    const files = [
+      caller(),
+      def('scorelib/R/s.R', ['tidy_scores']),
+      def('legacyscore/R/l.R', ['tidy_scores']),
+    ];
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'tidy_scores']],
+        files,
+        candidateFile: 'scorelib/R/s.R',
+        name: 'tidy_scores',
+      }),
+    ).toBe(true);
+  });
+
+  it('T4: allows the origin package when a local provider re-exports the name (it defines none)', () => {
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'reexp_fn']],
+        files: [caller(), def('scorelib/R/s.R', ['other_fn']), def('corelib/R/c.R', ['reexp_fn'])],
+        candidateFile: 'corelib/R/c.R',
+        name: 'reexp_fn',
+      }),
+    ).toBe(true);
+  });
+
+  it('T4 (undecidable): allows when no per-package names were recorded for the provider', () => {
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'f']],
+        files: [caller(), def('scorelib/R/s.R', ['f']), def('legacyscore/R/l.R', ['f'])],
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'f',
+        skipPopulate: true,
+      }),
+    ).toBe(true);
+  });
+
+  describe('duplicate importFrom() entries: only the LAST entry counts', () => {
+    const files = () => [caller(), def('scorelib/R/s.R', ['f']), def('legacyscore/R/l.R', ['f'])];
+
+    it('T5a: external package last (scorelib, then dplyr) vetoes the candidate in scorelib', () => {
+      expect(
+        verdict({
+          importFrom: [
+            ['scorelib', 'f'],
+            ['dplyr', 'f'],
+          ],
+          files: files(),
+          candidateFile: 'scorelib/R/s.R',
+          name: 'f',
+        }),
+      ).toBe(false);
+    });
+
+    it('T5b: local package last (dplyr, then scorelib) vetoes a candidate in a third package', () => {
+      expect(
+        verdict({
+          importFrom: [
+            ['dplyr', 'f'],
+            ['scorelib', 'f'],
+          ],
+          files: files(),
+          candidateFile: 'legacyscore/R/l.R',
+          name: 'f',
+        }),
+      ).toBe(false);
+    });
+
+    it('T5c: local package last allows the candidate in that package', () => {
+      expect(
+        verdict({
+          importFrom: [
+            ['dplyr', 'f'],
+            ['scorelib', 'f'],
+          ],
+          files: files(),
+          candidateFile: 'scorelib/R/s.R',
+          name: 'f',
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it('T6a: allows a candidate outside every package R/ directory (scripts/)', () => {
+    expect(
+      verdict({
+        importFrom: [['dplyr', 'mutate']],
+        files: [caller(), def('analytics/scripts/x.R', ['mutate'])],
+        candidateFile: 'analytics/scripts/x.R',
+        name: 'mutate',
+      }),
+    ).toBe(true);
+  });
+
+  it('T6b: allows any candidate when the caller file is outside the package R/ directory', () => {
+    for (const callerFile of [
+      'analytics/tests/testthat/test-x.R',
+      'analytics/scripts/run.R',
+      'plumber.R',
+    ]) {
+      expect(
+        verdict({
+          importFrom: [['dplyr', 'mutate']],
+          files: [def('legacyscore/R/l.R', ['mutate'])],
+          callerFile,
+          candidateFile: 'legacyscore/R/l.R',
+          name: 'mutate',
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it('T7 (known limitation): a later import(corelib) is not tokenised, so the candidate in corelib is still vetoed', () => {
+    // NAMESPACE: importFrom(scorelib, f) then import(corelib). R would take the later binding;
+    // `import()` is dropped by the parser, so only the importFrom entry exists.
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'f']],
+        files: [caller(), def('scorelib/R/s.R', ['f']), def('corelib/R/c.R', ['f'])],
+        candidateFile: 'corelib/R/c.R',
+        name: 'f',
+      }),
+    ).toBe(false);
+  });
+
+  it('T8: allows everything for a self-import (nothing is imported)', () => {
+    expect(
+      verdict({
+        importFrom: [['analytics', 'f']],
+        files: [caller(), def('legacyscore/R/l.R', ['f'])],
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'f',
+      }),
+    ).toBe(true);
+  });
+
+  it('T9: allows a call whose name has no importFrom() entry', () => {
+    expect(
+      verdict({
+        importFrom: [['scorelib', 'f']],
+        files: [caller(), def('scorelib/R/s.R', ['f']), def('legacyscore/R/l.R', ['g'])],
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'g',
+      }),
+    ).toBe(true);
+  });
+
+  describe('T10: cannot decide', () => {
+    const ctx = (resolutionConfig: unknown) => ({
+      callerParsed: { filePath: 'analytics/R/use.R' },
+      candidate: { filePath: 'legacyscore/R/l.R' },
+      resolutionConfig,
+      site: { name: 'mutate' },
+    });
+
+    it('allows without a resolution config, and for a config of an unexpected shape', () => {
+      expect([
+        isRGlobalNameFallbackPlausible(ctx(undefined)),
+        isRGlobalNameFallbackPlausible(ctx(null)),
+        isRGlobalNameFallbackPlausible(ctx({})),
+        isRGlobalNameFallbackPlausible(ctx('nope')),
+      ]).toEqual([true, true, true, true]);
+    });
+
+    it('allows when the caller package has no NAMESPACE entry', () => {
+      expect(
+        isRGlobalNameFallbackPlausible(ctx(config(pkgs, { legacyscore: { exports: ['mutate'] } }))),
+      ).toBe(true);
+    });
+
+    it('allows a caller file that belongs to no package', () => {
+      const cfg = config(pkgs, { analytics: { importFrom: [['dplyr', 'mutate']] } });
+      expect(
+        isRGlobalNameFallbackPlausible({ ...ctx(cfg), callerParsed: { filePath: 'other/R/x.R' } }),
+      ).toBe(true);
+    });
+  });
+
+  it('T11 (known limitation, fork #7): vetoes the correct legacyscore::mutate() edge — the qualifier is not consulted', () => {
+    expect(
+      verdict({
+        importFrom: [['dplyr', 'mutate']],
+        files: [caller(), def('legacyscore/R/l.R', ['mutate'])],
+        candidateFile: 'legacyscore/R/l.R',
+        name: 'mutate',
+        rawQualifiedName: 'legacyscore::mutate',
+      }),
+    ).toBe(false);
+  });
+
+  it('handles a root-level caller package (dir "")', () => {
+    const packages = { rootpkg: '', legacyscore: 'legacyscore' };
+    const cfg = config(packages, { rootpkg: { importFrom: [['dplyr', 'mutate']] } });
+    const ask = (callerFile: string) =>
+      isRGlobalNameFallbackPlausible({
+        callerParsed: { filePath: callerFile },
+        candidate: { filePath: 'legacyscore/R/l.R' },
+        resolutionConfig: cfg,
+        site: { name: 'mutate' },
+      });
+    expect([ask('R/use.R'), ask('tests/testthat/test-x.R')]).toEqual([false, true]);
   });
 });

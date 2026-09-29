@@ -456,3 +456,74 @@ export function populateRNamespaceImports(
     }
   }
 }
+
+// ─── Global-name fallback veto (isGlobalNameFallbackPlausible) ──────────────
+
+/**
+ * Structural subset of the hook context `isRGlobalNameFallbackPlausible`
+ * reads; the shared contract's full context is assignable to it.
+ */
+export interface RGlobalNameFallbackContext {
+  readonly callerParsed: { readonly filePath: string };
+  readonly candidate: { readonly filePath: string };
+  /** Opaque `loadResolutionConfig` result; an {@link RPackageConfig} for R. */
+  readonly resolutionConfig?: unknown;
+  readonly site: { readonly name: string };
+}
+
+/**
+ * Refuse a `global-name-fallback` guess that the caller package's NAMESPACE
+ * contradicts. Returns `false` (veto) only when ALL of these hold:
+ *
+ *  - the caller file lives under `<pkgDir>/R/**` of a package with a NAMESPACE
+ *    that has an `importFrom(P, <site.name>)` entry (the LAST such entry over
+ *    all entries, external packages included — the same rule C4 applies);
+ *  - `P` is not the caller's own package (a self-import binds nothing);
+ *  - the candidate lives under some package's `R/**`, and that package is
+ *    neither the caller's own (own namespace masks; a plain 0.5 fallback edge
+ *    until own-package binding exists) nor `P`;
+ *  - if `P` is local, it defines `site.name` at top level; otherwise `P`
+ *    re-exports the name from a third package and the candidate may be the
+ *    real origin (unknown per-package names = cannot decide = allow).
+ *
+ * Everything else — no config, caller outside a package `R/` (`tests/`,
+ * `scripts/`, root `plumber.R`), no entry, candidate outside any package
+ * `R/` — answers `true`, so `source()`/`library()` script flows are untouched.
+ *
+ * Known unsound shapes, pinned by characterisation tests (fork #7): the
+ * qualifier of `pkg::name()` is discarded, so a correct `legacyscore::mutate()`
+ * edge is refused when `importFrom(dplyr, mutate)` exists; and `import(pkg)`
+ * is not tokenised, so a later `import(pkg)` that R would prefer is invisible.
+ */
+export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext): boolean {
+  const cfg = ctx.resolutionConfig as RPackageConfig | null | undefined;
+  if (
+    typeof cfg !== 'object' ||
+    cfg === null ||
+    !(cfg.packages instanceof Map) ||
+    !(cfg.namespaceInfoByPackageDir instanceof Map)
+  ) {
+    return true;
+  }
+
+  const caller = rPackageDirForFile(ctx.callerParsed.filePath, cfg);
+  if (caller === undefined) return true;
+  const importFrom = cfg.namespaceInfoByPackageDir.get(caller.dir)?.importFrom;
+  if (importFrom === undefined) return true;
+
+  let lastEntry: RNamespaceImportFromEntry | undefined;
+  for (const entry of importFrom) if (entry.name === ctx.site.name) lastEntry = entry;
+  if (lastEntry === undefined) return true;
+  const importedFrom = lastEntry.pkg;
+  if (importedFrom === caller.name) return true;
+
+  const candidatePkg = rPackageDirForFile(ctx.candidate.filePath, cfg);
+  if (candidatePkg === undefined) return true;
+  if (candidatePkg.name === caller.name || candidatePkg.name === importedFrom) return true;
+
+  if (cfg.packages.has(importedFrom)) {
+    const providerNames = rRecordedPackageTopLevelNames(cfg)?.get(importedFrom);
+    if (providerNames === undefined || !providerNames.has(ctx.site.name)) return true;
+  }
+  return false;
+}

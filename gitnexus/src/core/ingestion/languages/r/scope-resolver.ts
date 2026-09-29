@@ -35,7 +35,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig } from '../../language-config.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
-import { populateRNamespaceImports } from './namespace-imports.js';
+import { isRGlobalNameFallbackPlausible, populateRNamespaceImports } from './namespace-imports.js';
 import { rProvider } from '../r.js';
 import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 
@@ -178,4 +178,10 @@ export const rScopeResolver: ScopeResolver = {
   // text: without this, merely declaring the hook makes the pipeline read the
   // text of every R file on the main thread.
   postExtractSourceTextPolicy: 'uncached-files',
+
+  // A bare call whose name the caller package's NAMESPACE imports from a
+  // package other than the one the unique-name guess landed in is impossible
+  // in R (see `isRGlobalNameFallbackPlausible` for the exact rule and the
+  // documented `pkg::name()` / `import()` limitations).
+  isGlobalNameFallbackPlausible: isRGlobalNameFallbackPlausible,
 };
