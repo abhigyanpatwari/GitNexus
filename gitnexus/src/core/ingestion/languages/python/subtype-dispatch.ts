@@ -1,7 +1,11 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { definitionIdPosition } from '../../scope-resolution/utils/definition-id.js';
-import { classifyPythonBoundReceiver, isPythonStaticLikeMethod } from './receiver-binding.js';
+import {
+  classifyPythonBoundReceiver,
+  hasPythonProvenCallShape,
+  isPythonStaticLikeMethod,
+} from './receiver-binding.js';
 
 type PositionTuple = readonly [line: number, column: number];
 type CallShapeTuple = readonly [line: number, column: number, positionalCount: number];
@@ -124,20 +128,9 @@ export function recordPythonSubtypeMethodShape(
   fnNode: SyntaxNode,
   mapLine?: LineMapper,
 ): void {
-  // An unknown decorator may replace the function or mark it abstract.
-  // Positional shape alone cannot prove a concrete subtype dispatch target.
-  // The two built-in descriptor decorators are handled by receiver binding.
-  const wrapper = fnNode.parent;
-  if (
-    wrapper?.type === 'decorated_definition' &&
-    wrapper.namedChildren.some((child) => {
-      if (child.type !== 'decorator') return false;
-      const name = child.firstNamedChild?.text;
-      return name !== 'staticmethod' && name !== 'classmethod';
-    })
-  ) {
-    return;
-  }
+  // An unknown decorator may replace the function or mark it abstract, so
+  // its parameter list cannot prove a concrete subtype dispatch target.
+  if (!hasPythonProvenCallShape(fnNode)) return;
   const capacity = positionalCapacity(fnNode);
   if (capacity === undefined) return;
   const [line, column] = nodePosition(fnNode, mapLine);
