@@ -898,3 +898,261 @@ describe('R native pipe chains', () => {
     });
   });
 });
+
+describe('R NAMESPACE importFrom() bindings to local packages', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-namespace-imports'), () => {});
+  }, 60000);
+
+  const callEdges = (sourceName: string, fileSuffix: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (e) => e.source === sourceName && e.sourceFilePath.endsWith(fileSuffix),
+    );
+
+  /** Sorted unique CALLS targets of the source named `sourceName` in the file ending `fileSuffix`. */
+  const callsFrom = (sourceName: string, fileSuffix: string): string[] =>
+    [...new Set(callEdges(sourceName, fileSuffix).map((e) => e.target))].sort();
+
+  /** `target:targetFile:reason:confidence` of every edge from `sourceName`, sorted. */
+  const edgeSummaries = (sourceName: string, fileSuffix: string): string[] =>
+    callEdges(sourceName, fileSuffix)
+      .map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`)
+      .sort();
+
+  /** Sorted unique IMPORTS target files of the file `sourceFile` (fixture-root-relative). */
+  const importTargets = (sourceFile: string): string[] =>
+    [
+      ...new Set(
+        getRelationships(result, 'IMPORTS')
+          .filter((e) => e.sourceFilePath === sourceFile)
+          .map((e) => e.targetFilePath),
+      ),
+    ].sort();
+
+  const USE = 'analytics/R/use.R';
+
+  // Every `R/` file of the caller package, with the import set the synthesised
+  // named imports must produce for it (defining provider files only).
+  const CALLER_FILES = [
+    'analytics/R/decoy_first.R',
+    'analytics/R/dotted_use.R',
+    'analytics/R/fork7.R',
+    'analytics/R/nested_use.R',
+    'analytics/R/own.R',
+    'analytics/R/r6_use.R',
+    'analytics/R/reexport_use.R',
+    'analytics/R/second.R',
+    'analytics/R/use.R',
+  ];
+  const BOUND_TARGET_FILES = [
+    'legacyscore/R/l.R', // dup_fn: the later importFrom() (legacyscore) wins
+    'scorelib/R/nested.R',
+    'scorelib/R/plain.R',
+    'scorelib/R/r6.R',
+    'scorelib/R/s.R',
+  ];
+
+  describe('bare calls to names imported from a local package', () => {
+    it('resolves every imported name from the one calling function, and nothing else', () => {
+      expect(callsFrom('run_all', USE)).toEqual([
+        'dup_fn',
+        'hidden_helper',
+        'normalise_scores',
+        'quoted_fn',
+        'rank_scores',
+        'tidy_scores',
+      ]);
+    });
+
+    it('binds a single-line importFrom() name to the provider even though another package defines it', () => {
+      // Baseline (before this change): no edge — `tidy_scores` is defined in scorelib AND
+      // legacyscore, so the name-only guess is ambiguous and drops it.
+      expect(
+        callEdges('run_all', USE)
+          .filter((e) => e.target === 'tidy_scores')
+          .map((e) => `${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`),
+      ).toEqual(['scorelib/R/s.R:import-resolved:0.85']);
+    });
+
+    it('binds names from a multi-line importFrom() and a quoted importFrom() by import, not by name guess', () => {
+      // Baseline: 0.5 `global-name-fallback` edges only (the multi-line/quoted forms were unparsed).
+      expect(
+        ['normalise_scores', 'rank_scores', 'quoted_fn'].map((name) =>
+          callEdges('run_all', USE)
+            .filter((e) => e.target === name)
+            .map((e) => `${name}:${e.targetFilePath}:${e.rel.reason}`),
+        ),
+      ).toEqual([
+        ['normalise_scores:scorelib/R/s.R:import-resolved'],
+        ['rank_scores:scorelib/R/s.R:import-resolved'],
+        ['quoted_fn:scorelib/R/s.R:import-resolved'],
+      ]);
+    });
+
+    it('applies the imports to every R file of the caller package, not only the caller of the name', () => {
+      expect(edgeSummaries('second_user', 'analytics/R/second.R')).toEqual([
+        'tidy_scores:scorelib/R/s.R:import-resolved:0.85',
+      ]);
+    });
+
+    it('lets the later importFrom() win when two local packages are imported for one name', () => {
+      // scorelib is imported first, legacyscore last: R replaces the earlier binding.
+      expect(
+        callEdges('run_all', USE)
+          .filter((e) => e.target === 'dup_fn')
+          .map((e) => `${e.targetFilePath}:${e.rel.reason}`),
+      ).toEqual(['legacyscore/R/l.R:import-resolved']);
+    });
+
+    it('does not bind an imported name that the calling package also defines (own namespace masks)', () => {
+      // `own_dup` is defined in analytics/R/own.R AND scorelib: ambiguous, so no edge. An edge to
+      // scorelib's `own_dup` would mean the synthesised import outranked R's own-namespace rule.
+      expect(callsFrom('run_all', USE)).not.toContain('own_dup');
+    });
+
+    it('does not bind a name the provider defines but does not export, and keeps the fallback edge', () => {
+      expect(
+        callEdges('run_all', USE)
+          .filter((e) => e.target === 'hidden_helper')
+          .map((e) => `${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`),
+      ).toEqual(['scorelib/R/internal.R:global-name-fallback:0.5']);
+    });
+
+    it('emits no edge for an exported name that no package defines', () => {
+      expect(callsFrom('run_all', USE)).not.toContain('no_such_fn');
+    });
+
+    it('emits no edge for a call outside the package R/ directory (NAMESPACE does not apply)', () => {
+      // `tidy_scores` is ambiguous by name (scorelib + legacyscore); tests/ gets no import.
+      expect(callsFrom('test_that_user', 'analytics/tests/testthat/test-x.R')).toEqual([]);
+    });
+  });
+
+  describe('IMPORTS edges', () => {
+    it('gives every caller R file IMPORTS edges to exactly the provider files that define an imported name', () => {
+      expect(CALLER_FILES.map((f) => [f, importTargets(f)])).toEqual(
+        CALLER_FILES.map((f) => [f, BOUND_TARGET_FILES]),
+      );
+    });
+
+    it('does not link the provider file of a shadowed, unexported or dotted-only name', () => {
+      const all = CALLER_FILES.flatMap((f) => importTargets(f));
+      expect(all.filter((t) => /own_dup|dup\.R|internal|dotted/.test(t))).toEqual([]);
+    });
+
+    it('never links an external package import to a same-named file in another language', () => {
+      const targets = getRelationships(result, 'IMPORTS').map((e) => e.targetFilePath);
+      expect(targets.filter((t) => t.startsWith('vendor/'))).toEqual([]);
+    });
+
+    it('adds no IMPORTS edge for files outside the package R/ directory', () => {
+      const sources = getRelationships(result, 'IMPORTS').map((e) => e.sourceFilePath);
+      expect(
+        sources.filter((s) => s.startsWith('analytics/scripts/') || s.includes('/tests/')),
+      ).toEqual([]);
+    });
+  });
+
+  describe('dotted names', () => {
+    it('leaves a dotted importedName unbound (baseline call edge unchanged)', () => {
+      // `normalise.scores` can never bind by import (finalize keys defs by the text after the
+      // last `.`); the call keeps the baseline low-confidence edge, not an import-resolved one.
+      expect(edgeSummaries('dotted_name_user', 'analytics/R/dotted_use.R')).toEqual([
+        'normalise.scores:scorelib/R/dotted.R:scope-resolution: call:0.35',
+      ]);
+    });
+
+    it('never binds tidy to print.tidy when print.tidy is defined first', () => {
+      // finalize would index `print.tidy` under `tidy`; the guard refuses the import instead, so
+      // there is no 0.85 edge to the wrong def (baseline: ambiguous, no edge).
+      expect(edgeSummaries('print_before_bare_user', 'analytics/R/dotted_use.R')).toEqual([]);
+    });
+
+    it('also refuses the mirror layout (bare def first): the guard is order-blind', () => {
+      expect(edgeSummaries('bare_before_print_user', 'analytics/R/dotted_use.R')).toEqual([]);
+    });
+
+    it('does not fire for an underscore name (plain_fn binds by import)', () => {
+      expect(edgeSummaries('underscore_user', 'analytics/R/dotted_use.R')).toEqual([
+        'plain_fn:scorelib/R/plain.R:import-resolved:0.85',
+      ]);
+    });
+  });
+
+  describe('R6 members and nested definitions in the provider', () => {
+    it('binds the top-level def, not the same-named R6 method defined earlier in the same file', () => {
+      // Fails without `namedImportsBindTopLevelOnly` (the wide index would store the method).
+      expect(
+        callEdges('r6_flag_user', 'analytics/R/r6_use.R').map(
+          (e) => `${e.targetLabel}:${e.target}:${e.rel.reason}`,
+        ),
+      ).toEqual(['Function:score_it:import-resolved']);
+    });
+
+    it('does not bind an import to an R6 method when no top-level def carries the name', () => {
+      expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([
+        'describe_run:scorelib/R/r6.R:global-name-fallback:0.5',
+      ]);
+    });
+
+    it('documents residual O1: a nested function defined before the top-level one still wins the binding', () => {
+      // The named branch can only choose FILES; finalize's first-callable rule then picks the
+      // nested def. Fixing it needs an `isExported` capture (query change): out of scope here.
+      const edges = callEdges('nested_user', 'analytics/R/nested_use.R');
+      expect(edges.map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}`)).toEqual([
+        'nest_fn:scorelib/R/nested.R:import-resolved',
+      ]);
+      const nestFnLines = getNodesByLabelFull(result, 'Function')
+        .filter((n) => n.name === 'nest_fn' && n.properties.filePath === 'scorelib/R/nested.R')
+        .map((n) => n.properties.startLine as number);
+      const boundLine = result.graph.getNode(edges[0].rel.targetId)?.properties.startLine;
+      expect(boundLine).toBe(Math.min(...nestFnLines));
+    });
+  });
+
+  describe('re-export through a local provider', () => {
+    it('keeps the baseline fallback edge to the defining package (no import binding)', () => {
+      // scorelib re-exports `reexp_fn` from corelib and defines no top-level def of the name.
+      expect(edgeSummaries('reexport_user', 'analytics/R/reexport_use.R')).toEqual([
+        'reexp_fn:corelib/R/c.R:global-name-fallback:0.5',
+      ]);
+    });
+  });
+
+  describe('explicitly qualified call to another local package', () => {
+    it('documents current name-only behaviour after importFrom() binding (fork #7)', () => {
+      // `legacyscore::tidy_scores()` names legacyscore, yet the qualifier is discarded and the
+      // synthesised import (scorelib) binds it: a FALSE 0.85 edge (baseline: ambiguous, no edge).
+      // Fork #7 should flip this.
+      expect(edgeSummaries('qualified_user', 'analytics/R/fork7.R')).toEqual([
+        'tidy_scores:scorelib/R/s.R:import-resolved:0.85',
+      ]);
+    });
+  });
+});
+
+describe('R importFrom(pkgB, CleanData) in the shared r-packages fixture', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-packages'), () => {});
+  }, 60000);
+
+  it('binds the pkgB::CleanData call by import instead of the name guess', () => {
+    // Baseline: 0.5 `global-name-fallback`. pkgA/NAMESPACE now yields a real import binding.
+    expect(
+      getRelationships(result, 'CALLS')
+        .filter((e) => e.source === 'AddOutlierStatuses' && e.target === 'CleanData')
+        .map((e) => `${e.targetFilePath}:${e.rel.reason}:${e.rel.confidence}`),
+    ).toEqual(['pkgB/R/clean_data.R:import-resolved:0.85']);
+  });
+
+  it('links pkgA R files to the pkgB file that defines the imported name', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (e) => e.sourceFilePath.startsWith('pkgA/R/') && e.targetFilePath === 'pkgB/R/clean_data.R',
+    );
+    expect(imports.length).toBeGreaterThanOrEqual(1);
+  });
+});

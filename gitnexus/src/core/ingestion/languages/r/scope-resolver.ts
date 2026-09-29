@@ -23,7 +23,10 @@
 import type { ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { findEnclosingClassDef, populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import {
+  findEnclosingClassDef,
+  populateClassOwnedMembers,
+} from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -32,6 +35,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig } from '../../language-config.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
+import { populateRNamespaceImports } from './namespace-imports.js';
 import { rProvider } from '../r.js';
 import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 
@@ -164,4 +168,14 @@ export const rScopeResolver: ScopeResolver = {
   // simple name, so an R6/R5 method named like an imported symbol could win
   // the binding over the top-level function.
   namedImportsBindTopLevelOnly: true,
+
+  // NAMESPACE `importFrom()` names provided by a LOCAL package become
+  // synthesised `named` imports (`resolveRImportTarget`'s named branch binds
+  // them). Runs before finalize and over warm-cache ParsedFiles too.
+  populateWorkspaceReferences: populateRNamespaceImports,
+
+  // `populateRNamespaceImports` reads only ParsedFile scopes, never source
+  // text: without this, merely declaring the hook makes the pipeline read the
+  // text of every R file on the main thread.
+  postExtractSourceTextPolicy: 'uncached-files',
 };

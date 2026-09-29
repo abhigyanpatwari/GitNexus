@@ -556,4 +556,35 @@ describe('external imports never resolve into the repository (#2953)', () => {
       `${language}: '${testCase.external}' names nothing in this repo, but resolved to ${JSON.stringify(resolved)}`,
     ).toEqual([]);
   });
+  // R's NAMESPACE `importFrom(ggplot2, geom)` is a `named` import (the wildcard/side-effect arms
+  // above cover `library()`/`source()`). The bare package name must not suffix-match the
+  // same-named `vendor/ggplot2.py`, whether or not a local package config exists.
+  it.each([
+    ['no package config', undefined],
+    [
+      'a package config that lists only other packages',
+      { packages: new Map([['pkgA', 'pkgA']]), namespaceInfoByPackageDir: new Map() },
+    ],
+  ])(
+    'R: a named importFrom() of an external package resolves to nothing (%s)',
+    (_label, config) => {
+      const testCase = CASES.get(SupportedLanguages.R)!;
+      const answer = SCOPE_RESOLVERS.get(SupportedLanguages.R)!.resolveImportTarget(
+        testCase.external,
+        testCase.fromFile,
+        new Set(testCase.files),
+        config,
+        {
+          parsedFiles: [],
+          parsedImport: {
+            kind: 'named',
+            localName: 'geom',
+            importedName: 'geom',
+            targetRaw: testCase.external,
+          },
+        },
+      );
+      expect(filesOf(answer)).toEqual([]);
+    },
+  );
 });
