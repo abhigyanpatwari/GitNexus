@@ -3291,7 +3291,6 @@ export const R_QUERIES = `
 (comment) @comment
 `;
 
-
 import { SupportedLanguages } from 'gitnexus-shared';
 
 const OBJECTIVE_C_QUERIES = `((translation_unit) @objc.root)`;
