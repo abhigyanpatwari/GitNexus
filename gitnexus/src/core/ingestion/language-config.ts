@@ -4,6 +4,7 @@ import { createInterface } from 'readline';
 import path from 'path';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 import {
+  parseRNamespaceExports,
   parseRNamespaceImportFrom,
   type RNamespaceImportFromEntry,
 } from './languages/r/namespace-imports.js';
@@ -2679,38 +2680,12 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
               const nsPath = path.join(dir, 'NAMESPACE');
               try {
                 const nsContent = await fs.readFile(nsPath, 'utf-8');
-                const namedExports = new Set<string>();
-                const exportPatterns: RegExp[] = [];
-                const lines = nsContent.split(/\r?\n/);
-
-                for (const rawLine of lines) {
-                  const line = rawLine.trim();
-                  if (!line || line.startsWith('#')) continue;
-
-                  const exportArgsMatch = /^(export|exportClasses|exportMethods)\(([^)]*)\)$/.exec(
-                    line,
-                  );
-                  if (exportArgsMatch) {
-                    for (const token of exportArgsMatch[2].split(',')) {
-                      const name = token.trim().replace(/^["']|["']$/g, '');
-                      if (name) namedExports.add(name);
-                    }
-                    continue;
-                  }
-
-                  const s3MethodMatch = /^S3method\(\s*([^,\s]+)\s*,\s*([^)\s]+)\s*\)$/.exec(line);
-                  if (s3MethodMatch) {
-                    namedExports.add(`${s3MethodMatch[1]}.${s3MethodMatch[2]}`);
-                    continue;
-                  }
-
-                  const exportPatternMatch = /^exportPattern\(\s*["'](.+?)["']\s*\)$/.exec(line);
-                  if (exportPatternMatch) {
-                    // POSIX classes are translated; an uncompilable pattern is skipped (never matches).
-                    const compiled = compileRExportPattern(exportPatternMatch[1]);
-                    if (compiled) exportPatterns.push(compiled);
-                  }
-                }
+                const parsedExports = parseRNamespaceExports(nsContent);
+                const namedExports = new Set<string>(parsedExports.namedExports);
+                // POSIX classes are translated; an uncompilable pattern is skipped (never matches).
+                const exportPatterns = parsedExports.exportPatterns
+                  .map(compileRExportPattern)
+                  .filter((re): re is RegExp => re !== null);
 
                 namespaceInfoByPackageDir.set(pkgDir, {
                   hasNamespaceFile: true,

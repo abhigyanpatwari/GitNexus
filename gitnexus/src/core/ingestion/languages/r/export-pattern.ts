@@ -12,6 +12,11 @@
  * expressions to ASCII JS equivalents (the C-locale meaning of each class) and
  * compiles the result once. Patterns without `[:` are compiled verbatim, so
  * their behaviour is unchanged. It never throws.
+ *
+ * The argument reaches {@link compileRExportPattern} as an R string *value*:
+ * {@link unescapeRString} first turns the NAMESPACE source text `"\\."` (the
+ * R string value `\.`) into the regex `\.`. Callers that read a pattern out
+ * of NAMESPACE text must unescape before compiling.
  */
 
 const POSIX_CLASSES: Readonly<Record<string, string>> = {
@@ -100,4 +105,73 @@ export function compileRExportPattern(source: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+const SIMPLE_R_ESCAPES: Readonly<Record<string, string>> = {
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  a: '\x07',
+  b: '\b',
+  f: '\f',
+  v: '\v',
+  '\\': '\\',
+  '"': '"',
+  "'": "'",
+  '`': '`',
+  ' ': ' ',
+};
+
+/**
+ * Turn the body of an R string literal (the text between the quotes) into the
+ * string value R would hold: `\\` -> `\`, `\"` -> `"`, `\n` -> newline, and
+ * likewise `\t \r \a \b \f \v \' \``, backslash-space, `\xHH`,
+ * `\uXXXX` / `\u{X..}` and `\UXXXXXXXX` / `\U{X..}` (code points). R
+ * rejects any other backslash sequence; this leniently keeps it verbatim, so a
+ * mistaken `"\."` still reaches the regex compiler as `\.`. Never throws.
+ */
+export function unescapeRString(body: string): string {
+  if (!body.includes('\\')) return body;
+  let out = '';
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== '\\' || i + 1 >= body.length) {
+      out += ch;
+      continue;
+    }
+    const next = body[i + 1];
+    const simple = SIMPLE_R_ESCAPES[next];
+    if (simple !== undefined) {
+      out += simple;
+      i++;
+      continue;
+    }
+    const hex = readHexEscape(body, i + 1);
+    if (hex !== null) {
+      out += hex.text;
+      i = hex.end - 1;
+      continue;
+    }
+    out += ch; // Unknown escape: keep the backslash; the next char is emitted normally.
+  }
+  return out;
+}
+
+/** `x`/`u`/`U` escape whose introducer is at `body[at]`; null when malformed. */
+function readHexEscape(body: string, at: number): { text: string; end: number } | null {
+  const kind = body[at];
+  const maxDigits = kind === 'x' ? 2 : kind === 'u' ? 4 : kind === 'U' ? 8 : 0;
+  if (maxDigits === 0) return null;
+  let i = at + 1;
+  const braced = kind !== 'x' && body[i] === '{';
+  if (braced) i++;
+  const start = i;
+  while (i < body.length && i - start < maxDigits && /[0-9A-Fa-f]/.test(body[i])) i++;
+  if (i === start) return null;
+  if (braced) {
+    if (body[i] !== '}') return null;
+  }
+  const code = parseInt(body.slice(start, i), 16);
+  if (code > 0x10ffff) return null;
+  return { text: String.fromCodePoint(code), end: braced ? i + 1 : i };
 }

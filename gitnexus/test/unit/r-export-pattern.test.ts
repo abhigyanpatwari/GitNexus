@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { compileRExportPattern } from '../../src/core/ingestion/languages/r/export-pattern.js';
+import {
+  compileRExportPattern,
+  unescapeRString,
+} from '../../src/core/ingestion/languages/r/export-pattern.js';
 import { loadRPackageConfig } from '../../src/core/ingestion/language-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
@@ -108,5 +111,30 @@ describe('loadRPackageConfig -> RNamespaceInfo.exportPatterns (POSIX classes)', 
     const patterns = await load('exportPattern("^Pattern")\n');
     expect(patterns.some((p) => p.test('PatternX'))).toBe(true);
     expect(patterns.some((p) => p.test('xPattern'))).toBe(false);
+  });
+});
+
+describe('unescapeRString', () => {
+  it('returns text without a backslash unchanged', () => {
+    expect(unescapeRString('^[[:alpha:]]+')).toBe('^[[:alpha:]]+');
+  });
+
+  it('handles the common single-character escapes', () => {
+    expect(unescapeRString('a\\\\b')).toBe('a\\b');
+    expect(unescapeRString('\\"\\\'\\`')).toBe('"\'`');
+    expect(unescapeRString('\\n\\t\\r\\a\\b\\f\\v')).toBe('\n\t\r\x07\b\f\v');
+  });
+
+  it('handles hex and unicode escapes, with and without braces', () => {
+    expect(unescapeRString('\\x41\\u0042\\u{43}\\U00000044\\U{45}')).toBe('ABCDE');
+    expect(unescapeRString('\\U{1F600}')).toBe('\u{1F600}');
+  });
+
+  it('keeps an unknown or malformed escape verbatim and never throws', () => {
+    expect(unescapeRString('\\.')).toBe('\\.');
+    expect(unescapeRString('\\xZZ')).toBe('\\xZZ');
+    expect(unescapeRString('\\u{110000}')).toBe('\\u{110000}');
+    expect(unescapeRString('\\u{41')).toBe('\\u{41');
+    expect(unescapeRString('trailing\\')).toBe('trailing\\');
   });
 });

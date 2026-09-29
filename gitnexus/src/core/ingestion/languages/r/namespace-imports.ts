@@ -8,13 +8,16 @@
  * because those policy decisions (own-package drop, last-wins, external-package
  * skip) belong to the consumer that knows the workspace, not to the parser.
  *
- * The tokenizer is generic (directive head + balanced argument list across
- * newlines, honouring `"…"`, `'…'` and backtick quoting, `#` comments stripped
- * outside quotes) but only `importFrom` is emitted. `import`,
- * `importClassesFrom` and `importMethodsFrom` are deferred and would be
- * one-line additions to {@link EMITTED_DIRECTIVES}. `S3method`, `export*`,
- * `useDynLib` and anything under an `if (…)` / `else` conditional are ignored.
- * Unbalanced or garbled input never throws: the offending directive is dropped.
+ * The tokenizer ({@link scanRNamespaceDirectives}) is generic (directive head +
+ * balanced argument list across newlines, honouring `"…"`, `'…'` and backtick
+ * quoting, `#` comments stripped outside quotes). Two consumers sit on it:
+ * {@link parseRNamespaceImportFrom} (`importFrom` only; `import`,
+ * `importClassesFrom` and `importMethodsFrom` are deferred) and
+ * {@link parseRNamespaceExports} (`export`, `exportClasses`, `exportMethods`,
+ * `S3method`, `exportPattern`). `useDynLib` and anything under an
+ * `if (…)` / `else` conditional are ignored. Unbalanced or garbled input never
+ * throws: scanning stops at the offending directive and everything parsed
+ * before it is kept.
  *
  * Runtime import direction is `language-config.ts` → this file; any type from
  * `language-config.ts` must be taken with `import type` only, so no runtime
@@ -29,6 +32,7 @@
 
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import type { RPackageConfig } from '../../language-config.js';
+import { unescapeRString } from './export-pattern.js';
 
 /** One `importFrom(pkg, name)` pair, in NAMESPACE file order. */
 export interface RNamespaceImportFromEntry {
@@ -36,7 +40,20 @@ export interface RNamespaceImportFromEntry {
   readonly name: string;
 }
 
-const EMITTED_DIRECTIVES: ReadonlySet<string> = new Set(['importFrom']);
+const IMPORT_FROM_DIRECTIVES: ReadonlySet<string> = new Set(['importFrom']);
+
+/** Directives whose arguments name exported symbols (`S3method` is handled separately). */
+const EXPORT_NAME_DIRECTIVES: ReadonlySet<string> = new Set([
+  'export',
+  'exportClasses',
+  'exportMethods',
+]);
+
+const EXPORT_DIRECTIVES: ReadonlySet<string> = new Set([
+  ...EXPORT_NAME_DIRECTIVES,
+  'S3method',
+  'exportPattern',
+]);
 
 /** Directives whose following statement is conditional and therefore ignored. */
 const CONDITIONAL_HEADS: ReadonlySet<string> = new Set(['if', 'else']);
@@ -186,12 +203,20 @@ function skipConditionalBody(text: string, from: number): number {
   return i;
 }
 
+/** One top-level NAMESPACE directive: its head and its raw (comment-stripped) arguments. */
+interface RawDirective {
+  readonly head: string;
+  readonly args: readonly string[];
+}
+
 /**
- * Extract every `importFrom(pkg, name, ...)` pair from NAMESPACE text, in file
- * order. Never throws; returns `[]` for empty, garbled or unbalanced input.
+ * Tokenise NAMESPACE text into the top-level directives whose head is in
+ * `heads`, in file order. Conditional (`if` / `else`) bodies are skipped, and
+ * directives nested inside another directive's arguments are never emitted.
+ * Never throws; stops at the first unbalanced group, keeping what came before.
  */
-export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEntry[] {
-  const entries: RNamespaceImportFromEntry[] = [];
+function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): RawDirective[] {
+  const directives: RawDirective[] = [];
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
@@ -234,9 +259,19 @@ export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEnt
       i = skipConditionalBody(text, i);
       continue;
     }
-    if (!EMITTED_DIRECTIVES.has(head)) continue;
+    if (heads.has(head)) directives.push({ head, args: group.args });
+  }
+  return directives;
+}
 
-    const values = group.args.map(normaliseArg);
+/**
+ * Extract every `importFrom(pkg, name, ...)` pair from NAMESPACE text, in file
+ * order. Never throws; returns `[]` for empty, garbled or unbalanced input.
+ */
+export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEntry[] {
+  const entries: RNamespaceImportFromEntry[] = [];
+  for (const { args } of scanRNamespaceDirectives(text, IMPORT_FROM_DIRECTIVES)) {
+    const values = args.map(normaliseArg);
     const pkg = values[0];
     if (!pkg) continue;
     for (let n = 1; n < values.length; n++) {
@@ -244,6 +279,58 @@ export function parseRNamespaceImportFrom(text: string): RNamespaceImportFromEnt
     }
   }
   return entries;
+}
+
+/** What a NAMESPACE file exports, as read by {@link parseRNamespaceExports}. */
+export interface RNamespaceExports {
+  /** Names from `export()`, `exportClasses()`, `exportMethods()` and `S3method()` (as `generic.class`), in file order. */
+  readonly namedExports: readonly string[];
+  /** `exportPattern()` arguments, R-unescaped (an R string `"\\."` yields the regex source `\.`), in file order. */
+  readonly exportPatterns: readonly string[];
+}
+
+/**
+ * The single-token string argument of `exportPattern()`, R-unescaped, or `''`
+ * when the argument is empty, not a quoted string, or unterminated. Only `"`
+ * and `'` quote a string in R (a backticked name is a symbol, not a pattern).
+ */
+function exportPatternArg(raw: string): string {
+  const trimmed = raw.trim();
+  const quote = trimmed[0];
+  if (quote !== '"' && quote !== "'") return '';
+  if (skipQuoted(trimmed, 0) !== trimmed.length) return '';
+  return unescapeRString(trimmed.slice(1, -1));
+}
+
+/**
+ * Extract the export directives from NAMESPACE text: `export`, `exportClasses`
+ * and `exportMethods` names, `S3method(generic, class[, method])` as
+ * `generic.class`, and `exportPattern("…")` sources. Multi-line, quoted,
+ * backticked, commented and CRLF input is handled like {@link
+ * parseRNamespaceImportFrom}. Non-simple arguments (named, nested calls) are
+ * skipped. Never throws; returns empty lists for empty or garbled input.
+ */
+export function parseRNamespaceExports(text: string): RNamespaceExports {
+  const namedExports: string[] = [];
+  const exportPatterns: string[] = [];
+  for (const { head, args } of scanRNamespaceDirectives(text, EXPORT_DIRECTIVES)) {
+    if (head === 'exportPattern') {
+      for (const raw of args) {
+        const pattern = exportPatternArg(raw);
+        if (pattern) exportPatterns.push(pattern);
+      }
+    } else if (head === 'S3method') {
+      const generic = normaliseArg(args[0] ?? '');
+      const cls = normaliseArg(args[1] ?? '');
+      if (generic && cls) namedExports.push(`${generic}.${cls}`);
+    } else {
+      for (const raw of args) {
+        const name = normaliseArg(raw);
+        if (name) namedExports.push(name);
+      }
+    }
+  }
+  return { namedExports, exportPatterns };
 }
 
 // ─── Package lookup ─────────────────────────────────────────────────────────
