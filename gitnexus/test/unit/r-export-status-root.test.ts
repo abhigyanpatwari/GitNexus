@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { refineRExportStatus } from '../../src/core/ingestion/r-post-parse.js';
-import type { RNamespaceInfo, RPackageConfig } from '../../src/core/ingestion/language-config.js';
+import type {
+  RNamespaceInfo,
+  RPackageConfig,
+} from '../../src/core/ingestion/languages/r/package-config.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 // Regression tests for fork #6: refineRExportStatus must treat the empty

@@ -7,7 +7,7 @@ import path from 'path';
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import type { RPackageConfig } from '../language-config.js';
+import type { RPackageConfig } from '../languages/r/package-config.js';
 import {
   rFileTopLevel,
   rPackageDirForFile,
@@ -81,7 +81,9 @@ export function resolveRImport(
     rawImportPath,
     ctx.normalizedFileList,
     ctx.allFileList,
-    ctx.configs.rPackageConfig ?? null,
+    // The legacy `ResolveCtx` bundle never carried R's config; the live path is
+    // `resolveRImportTarget` + `loadResolutionConfig`.
+    null,
     ctx.index,
   );
   if (!resolved) return null;

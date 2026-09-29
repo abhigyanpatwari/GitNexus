@@ -22,7 +22,7 @@
 
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { MutableSemanticModel } from './model/semantic-model.js';
-import type { RPackageConfig } from './language-config.js';
+import type { RPackageConfig } from './languages/r/package-config.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../lib/utils.js';

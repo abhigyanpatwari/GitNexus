@@ -5,7 +5,7 @@ import {
   compileRExportPattern,
   unescapeRString,
 } from '../../src/core/ingestion/languages/r/export-pattern.js';
-import { loadRPackageConfig } from '../../src/core/ingestion/language-config.js';
+import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
 // `exportPattern("...")` arguments are POSIX (TRE) regexes; JavaScript RegExp has no

@@ -56,7 +56,7 @@ import {
   type ParsedImport,
   SupportedLanguages,
 } from 'gitnexus-shared';
-import { loadRPackageConfig } from '../language-config.js';
+import { loadRPackageConfig } from '../languages/r/package-config.js';
 import { attachDeferredROwners, refineRExportStatus } from '../r-post-parse.js';
 import { readFileContents } from '../filesystem-walker.js';
 import {

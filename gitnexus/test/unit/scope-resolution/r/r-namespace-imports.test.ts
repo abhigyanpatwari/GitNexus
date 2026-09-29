@@ -19,7 +19,7 @@ import { populateClassOwnedMembers } from '../../../../src/core/ingestion/scope-
 import type {
   RNamespaceInfo,
   RPackageConfig,
-} from '../../../../src/core/ingestion/language-config.js';
+} from '../../../../src/core/ingestion/languages/r/package-config.js';
 import {
   isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,

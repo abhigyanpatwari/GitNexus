@@ -33,7 +33,7 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
-import { loadRPackageConfig } from '../../language-config.js';
+import { loadRPackageConfig } from './package-config.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
 import {
   isRGlobalNameFallbackPlausible,

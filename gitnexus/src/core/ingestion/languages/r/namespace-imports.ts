@@ -34,7 +34,7 @@
  */
 
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
-import type { RPackageConfig } from '../../language-config.js';
+import type { RPackageConfig } from './package-config.js';
 import { unescapeRString } from './export-pattern.js';
 
 /** One `importFrom(pkg, name)` pair, in NAMESPACE file order. */
