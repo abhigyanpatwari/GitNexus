@@ -597,8 +597,8 @@ interface LanguageProviderConfig {
    * Resolve a route's `handlerName` to a symbol node id, for routes this
    * language extracted. When defined, the routes phase asks this hook instead of
    * looking the name up in the route's own file — for languages whose handlers
-   * routinely live elsewhere in the same module (a Go package is a directory)
-   * and whose visibility rules only the language knows.
+   * routinely live in other files of the same package or module, and whose
+   * visibility rules only the language knows.
    *
    * Return a node id only when exactly one definition matches; `undefined`
    * leaves the route without `handlerSymbolId` (fail-open, never a wrong

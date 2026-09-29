@@ -24,6 +24,7 @@
  */
 
 import type Parser from 'tree-sitter';
+import { normalizeExtractedRoutePath } from './route-path.js';
 import type { SyntaxNode } from 'tree-sitter';
 import type { ExtractedDecoratorRoute, RouteHandlerReceiver } from '../workers/parse-worker.js';
 
@@ -52,11 +53,8 @@ interface Framework {
   readonly handlerArg: 'last' | 'second';
 }
 
-const FUNCTION_TYPES: ReadonlySet<string> = new Set([
-  'function_declaration',
-  'method_declaration',
-  'func_literal',
-]);
+const FUNCTION_TYPE_LIST = ['function_declaration', 'method_declaration', 'func_literal'];
+const FUNCTION_TYPES: ReadonlySet<string> = new Set(FUNCTION_TYPE_LIST);
 
 function stringLiteral(node: SyntaxNode | null | undefined): string | null {
   if (!node) return null;
@@ -77,7 +75,11 @@ function readImports(root: SyntaxNode): {
   const localNames = new Set<string>();
   let gin: string | null = null;
   let echo: string | null = null;
-  for (const spec of root.descendantsOfType('import_spec')) {
+  // Imports sit only at file scope; this runs on every Go file, so skip bodies.
+  const specs = root.namedChildren
+    .filter((node) => node.type === 'import_declaration')
+    .flatMap((decl) => decl.descendantsOfType('import_spec'));
+  for (const spec of specs) {
     const importPath = stringLiteral(spec.childForFieldName('path'));
     if (importPath === null) continue;
     const explicit = spec.childForFieldName('name')?.text;
@@ -93,24 +95,31 @@ function readImports(root: SyntaxNode): {
     if (/^github\.com\/labstack\/echo(\/v\d+)?$/.test(importPath)) echo = local;
   }
   // Both, or neither: no way to tell which argument is the handler.
-  if ((gin === null) === (echo === null)) return { localNames, framework: null };
-  const framework: Framework =
-    gin !== null
-      ? {
-          source: GIN_ROUTE_SOURCE,
-          alias: gin,
-          engineType: 'Engine',
-          constructors: new Set(['Default', 'New']),
-          handlerArg: 'last',
-        }
-      : {
-          source: ECHO_ROUTE_SOURCE,
-          alias: echo as string,
-          engineType: 'Echo',
-          constructors: new Set(['New']),
-          handlerArg: 'second',
-        };
-  return { localNames, framework };
+  if (gin !== null && echo === null) {
+    return {
+      localNames,
+      framework: {
+        source: GIN_ROUTE_SOURCE,
+        alias: gin,
+        engineType: 'Engine',
+        constructors: new Set(['Default', 'New']),
+        handlerArg: 'last',
+      },
+    };
+  }
+  if (echo !== null && gin === null) {
+    return {
+      localNames,
+      framework: {
+        source: ECHO_ROUTE_SOURCE,
+        alias: echo,
+        engineType: 'Echo',
+        constructors: new Set(['New']),
+        handlerArg: 'second',
+      },
+    };
+  }
+  return { localNames, framework: null };
 }
 
 /** Named descendants of a function body, not descending into nested functions. */
@@ -258,7 +267,7 @@ class RouterPrefixes {
     const path = stringLiteral(node.childForFieldName('arguments')?.namedChild(0));
     if (path === null) return null;
     const base = this.of(operand);
-    return base === null ? null : joinPath(base, path);
+    return base === null ? null : normalizeExtractedRoutePath(path, base);
   }
 
   private ofName(name: string): string | null {
@@ -286,12 +295,6 @@ class RouterPrefixes {
   }
 }
 
-function joinPath(prefix: string, path: string): string {
-  if (!prefix) return path;
-  if (!path) return prefix;
-  return `${prefix.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
-}
-
 /** Receiver hint for the local name a selector handler (`h.Method`) goes through. */
 function receiverHint(
   name: string,
@@ -309,6 +312,28 @@ function receiverHint(
   return hints.every((h) => h !== null && sameHint(h, first)) ? first : undefined;
 }
 
+interface VerbRegistration {
+  readonly call: SyntaxNode;
+  readonly verb: string;
+  readonly receiver: SyntaxNode;
+  readonly args: readonly SyntaxNode[];
+  readonly path: string;
+}
+
+/** `recv.VERB("<literal>", …handler)` — the shape, before its receiver is proven. */
+function verbRegistration(call: SyntaxNode): VerbRegistration | null {
+  if (call.type !== 'call_expression') return null;
+  const callee = call.childForFieldName('function');
+  if (callee?.type !== 'selector_expression') return null;
+  const verb = callee.childForFieldName('field')?.text;
+  const receiver = callee.childForFieldName('operand');
+  if (!verb || !VERBS.has(verb) || !receiver) return null;
+  const args = call.childForFieldName('arguments')?.namedChildren ?? [];
+  if (args.length < 2) return null;
+  const path = stringLiteral(args[0]);
+  return path === null ? null : { call, verb, receiver, args, path };
+}
+
 export function extractGoGinEchoRoutes(
   tree: Parser.Tree,
   filePath: string,
@@ -319,31 +344,27 @@ export function extractGoGinEchoRoutes(
   if (framework === null) return [];
 
   const out: ExtractedDecoratorRoute[] = [];
-  for (const fn of root.descendantsOfType([...FUNCTION_TYPES])) {
+  for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
     const body = fn.childForFieldName('body');
     if (!body) continue;
     const nodes = bodyNodes(body);
+    const registrations = nodes.flatMap((node) => {
+      const registration = verbRegistration(node);
+      return registration === null ? [] : [registration];
+    });
+    // Most functions in a gin-importing file register nothing; skip their bindings.
+    if (registrations.length === 0) continue;
     const bindings = collectBindings(fn, nodes, framework);
     const prefixes = new RouterPrefixes(bindings, framework);
 
-    for (const call of nodes) {
-      if (call.type !== 'call_expression') continue;
-      const callee = call.childForFieldName('function');
-      if (callee?.type !== 'selector_expression') continue;
-      const verb = callee.childForFieldName('field')?.text;
-      const receiver = callee.childForFieldName('operand');
-      if (!verb || !VERBS.has(verb) || !receiver) continue;
-      const args = call.childForFieldName('arguments')?.namedChildren ?? [];
-      if (args.length < 2) continue;
-      const path = stringLiteral(args[0]);
-      if (path === null) continue;
+    for (const { call, verb, receiver, args, path } of registrations) {
       const prefix = prefixes.of(receiver);
       if (prefix === null) continue;
 
       const handler = framework.handlerArg === 'last' ? args[args.length - 1] : args[1];
       const route: ExtractedDecoratorRoute = {
         filePath,
-        routePath: joinPath(prefix, path) || '/',
+        routePath: normalizeExtractedRoutePath(path, prefix),
         httpMethod: verb,
         decoratorName: verb,
         lineNumber: call.startPosition.row + 1 + lineOffset,

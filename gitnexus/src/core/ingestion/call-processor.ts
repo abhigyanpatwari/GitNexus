@@ -49,7 +49,7 @@ interface RouteResolutionFile {
 interface RouteHandlerResolutionContext {
   readonly files: readonly RouteResolutionFile[];
   readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
-  /** Every file an import resolves to (a Go import names a whole directory). */
+  /** Every file an import resolves to (an import may name a whole directory of files). */
   readonly resolveImportTargets?: (
     parsedImport: ParsedImport,
     fromFile: string,
@@ -550,24 +550,20 @@ export function resolveRouteHandlerSymbols(
     return routeContext.resolveImportTargets(parsedImport, fromFile);
   };
 
+  const decoratorHandlerId = (dr: ExtractedDecoratorRoute): string | undefined => {
+    if (dr.source === DATA_ROUTE_TABLE_SOURCE) return dataHandlerByRoute.get(dr);
+    const providerHandler = routeContext?.providerRouteHandler?.(dr.filePath);
+    if (providerHandler) return providerHandler(dr, { model, importTargetsFor });
+    return dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+  };
+
   // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
   // the route's own file, unless the route's language resolves its own
   // handlers. Data tables additionally suppress an identity when duplicate
   // entries resolve to different handlers: recording either one would invent a
   // single-winner dispatch that the loop does not prove.
   for (const dr of decoratorRoutes) {
-    const providerHandler =
-      dr.source === DATA_ROUTE_TABLE_SOURCE
-        ? undefined
-        : routeContext?.providerRouteHandler?.(dr.filePath);
-    const handlerId =
-      dr.source === DATA_ROUTE_TABLE_SOURCE
-        ? dataHandlerByRoute.get(dr)
-        : providerHandler
-          ? providerHandler(dr, { model, importTargetsFor })
-          : dr.handlerName
-            ? uniqueSymbolId(dr.filePath, dr.handlerName)
-            : undefined;
+    const handlerId = decoratorHandlerId(dr);
     // An unproven data-table entry never becomes a Route node, so it must not
     // reserve the identity and suppress a later, valid framework declaration.
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && handlerId === undefined) continue;

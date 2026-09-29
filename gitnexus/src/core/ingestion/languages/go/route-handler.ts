@@ -1,7 +1,9 @@
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
 import type { RouteHandlerResolutionHookContext } from '../../language-provider.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ExtractedDecoratorRoute } from '../../workers/parse-worker.js';
+import { goPackageDir } from './package-clause.js';
 
 /**
  * Resolve a gin/echo handler designator (`Login`, `pkg.Login`, `h.Login`) to a
@@ -27,7 +29,7 @@ export function resolveGoRouteHandler(
   const designator = route.handlerName;
   if (!designator) return undefined;
   const parts = designator.split('.');
-  const routeDir = dirOf(route.filePath);
+  const routeDir = goPackageDir(route.filePath);
   const { model } = context;
 
   if (parts.length === 1) return uniqueId(functionsIn(model, routeDir, designator));
@@ -49,21 +51,15 @@ export function resolveGoRouteHandler(
   const constructor = unique(functionsIn(model, dir, hint.name));
   const owner = constructor && ownerTypeName(constructor.returnType);
   return constructor && owner
-    ? methodOfType(context, dirOf(constructor.filePath), owner, member)
+    ? methodOfType(context, goPackageDir(constructor.filePath), owner, member)
     : undefined;
-}
-
-function dirOf(filePath: string): string {
-  const normalized = filePath.replaceAll('\\', '/');
-  const slash = normalized.lastIndexOf('/');
-  return slash < 0 ? '' : normalized.slice(0, slash);
 }
 
 /** Non-test files of the package in `dir`; `_test.go` files are a separate build. */
 const inPackage =
   (dir: string) =>
   (def: SymbolDefinition): boolean =>
-    dirOf(def.filePath) === dir && !def.filePath.endsWith('_test.go');
+    goPackageDir(def.filePath) === dir && !def.filePath.endsWith('_test.go');
 
 function unique(defs: readonly SymbolDefinition[]): SymbolDefinition | undefined {
   const byId = new Map(defs.map((def) => [def.nodeId, def]));
@@ -72,14 +68,11 @@ function unique(defs: readonly SymbolDefinition[]): SymbolDefinition | undefined
 
 const uniqueId = (defs: readonly SymbolDefinition[]): string | undefined => unique(defs)?.nodeId;
 
-function functionsIn(
-  model: RouteHandlerResolutionHookContext['model'],
-  dir: string,
-  name: string,
-): readonly SymbolDefinition[] {
+function functionsIn(model: SemanticModel, dir: string, name: string): readonly SymbolDefinition[] {
+  const inDir = inPackage(dir);
   return model.symbols
     .lookupCallableByName(name)
-    .filter((def) => def.type === 'Function' && inPackage(dir)(def));
+    .filter((def) => def.type === 'Function' && inDir(def));
 }
 
 /** The one package directory an import local name resolves to, if any. */
@@ -88,7 +81,7 @@ function packageDir(
   route: ExtractedDecoratorRoute,
   localName: string,
 ): string | undefined {
-  const dirs = new Set(context.importTargetsFor(route.filePath, localName).map(dirOf));
+  const dirs = new Set(context.importTargetsFor(route.filePath, localName).map(goPackageDir));
   return dirs.size === 1 ? dirs.values().next().value : undefined;
 }
 
@@ -110,10 +103,9 @@ function methodOfType(
   member: string,
 ): string | undefined {
   const { model } = context;
+  const inDir = inPackage(dir);
   const owner = unique(
-    model.types
-      .lookupClassByName(typeName)
-      .filter((def) => def.type === 'Struct' && inPackage(dir)(def)),
+    model.types.lookupClassByName(typeName).filter((def) => def.type === 'Struct' && inDir(def)),
   );
   if (owner === undefined) return undefined;
   return uniqueId(
@@ -121,7 +113,7 @@ function methodOfType(
       .lookupMethodByName(member)
       .filter(
         (def) =>
-          inPackage(dir)(def) &&
+          inDir(def) &&
           (def.ownerId === owner.nodeId ||
             def.ownerId === generateId('Struct', `${def.filePath}:${typeName}`)),
       ),

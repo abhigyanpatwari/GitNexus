@@ -1859,22 +1859,6 @@ export async function runChunkedParseAndResolve(
     );
   }
   let routeResolutionFiles = allParsedFiles;
-  const resolveRouteImportTarget = (
-    parsedImport: ParsedImport,
-    fromFile: string,
-  ): string | null => {
-    const language = getLanguageFromFilename(fromFile);
-    if (language === null) return null;
-    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
-      parsedImport.targetRaw ?? '',
-      fromFile,
-      routeFilePaths,
-      routeResolutionConfigs.get(language),
-      { parsedFiles: routeResolutionFiles, parsedImport },
-    );
-    if (typeof target === 'string') return target;
-    return target?.length === 1 ? target[0] : null;
-  };
   const resolveRouteImportTargets = (
     parsedImport: ParsedImport,
     fromFile: string,
@@ -1890,6 +1874,13 @@ export async function runChunkedParseAndResolve(
     );
     if (typeof target === 'string') return [target];
     return target ?? [];
+  };
+  const resolveRouteImportTarget = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): string | null => {
+    const targets = resolveRouteImportTargets(parsedImport, fromFile);
+    return targets.length === 1 ? targets[0] : null;
   };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
     const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
