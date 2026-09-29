@@ -1067,12 +1067,19 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
 
     it('never binds tidy to print.tidy when print.tidy is defined first', () => {
       // finalize would index `print.tidy` under `tidy`; the guard refuses the import instead, so
-      // there is no 0.85 edge to the wrong def (baseline: ambiguous, no edge).
-      expect(edgeSummaries('print_before_bare_user', 'analytics/R/dotted_use.R')).toEqual([]);
+      // there is no 0.85 edge to the wrong def. Since #11 the fallback no longer sees `print.tidy`
+      // as a tail-`tidy` candidate (a bare call cannot invoke it), so the call resolves to the
+      // bare def at 0.5 (was: ambiguous, no edge).
+      expect(edgeSummaries('print_before_bare_user', 'analytics/R/dotted_use.R')).toEqual([
+        'tidy:scorelib/R/dotted.R:global-name-fallback:0.5',
+      ]);
     });
 
     it('also refuses the mirror layout (bare def first): the guard is order-blind', () => {
-      expect(edgeSummaries('bare_before_print_user', 'analytics/R/dotted_use.R')).toEqual([]);
+      // Same 0.5 fallback edge to the bare def since #11 (was: no edge).
+      expect(edgeSummaries('bare_before_print_user', 'analytics/R/dotted_use.R')).toEqual([
+        'tally:scorelib/R/dotted.R:global-name-fallback:0.5',
+      ]);
     });
 
     it('does not fire for an underscore name (plain_fn binds by import)', () => {
@@ -1093,9 +1100,10 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
     });
 
     it('does not bind an import to an R6 method when no top-level def carries the name', () => {
-      expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([
-        'describe_run:scorelib/R/r6.R:global-name-fallback:0.5',
-      ]);
+      // A bare `describe_run()` cannot invoke an R6 method (`Reporter.describe_run`, reached only
+      // as `obj$describe_run()`), so since #11 the fallback offers no candidate either (was: a
+      // 0.5 guess to the method).
+      expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([]);
     });
 
     it('documents residual O1: a nested function defined before the top-level one still wins the binding', () => {

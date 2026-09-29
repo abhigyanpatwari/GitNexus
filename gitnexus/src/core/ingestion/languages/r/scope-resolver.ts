@@ -20,7 +20,7 @@
  * heritage target this plan's fixtures name but never declare.
  */
 
-import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
@@ -35,7 +35,11 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { loadRPackageConfig } from '../../language-config.js';
 import { resolveRImportTarget } from '../../import-resolvers/r.js';
-import { isRGlobalNameFallbackPlausible, populateRNamespaceImports } from './namespace-imports.js';
+import {
+  isRGlobalNameFallbackPlausible,
+  populateRNamespaceImports,
+  rFileTopLevel,
+} from './namespace-imports.js';
 import { rProvider } from '../r.js';
 import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 
@@ -106,23 +110,50 @@ function emitRVirtualHeritageEdges(
  * scope regardless of what NAMESPACE declares as exported — verified during
  * the plan's stress-test round: `pkgA/NAMESPACE` does not export `ResultSet`,
  * yet `require("pkgA")` must still resolve it).
+ *
+ * A bare name is dropped when the same file also defines a dotted top-level
+ * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
+ * every def by the text after its last `.`, so `foo` would be bound to
+ * whichever of the two comes first in the file, and `print.foo` (an S3 method,
+ * never callable as `foo()`) can win. The dropped name resolves through the
+ * free-call fallback instead, where {@link rIsCallableVisibleFromCaller}
+ * removes the dotted def from the candidates. Order-blind, like the matching
+ * guard in `import-resolvers/r.ts`.
  */
-function expandRWildcardNames(
+export function expandRWildcardNames(
   targetModuleScope: ScopeId,
   parsedFiles: readonly ParsedFile[],
 ): readonly string[] {
   const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
   if (target === undefined) return [];
+  const { dottedTails } = rFileTopLevel(target);
   const seen = new Set<string>();
   const names: string[] = [];
   for (const def of target.localDefs) {
     const qn = def.qualifiedName;
     if (qn === undefined || qn.length === 0 || qn.includes('.')) continue; // top-level only
+    if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above
     if (seen.has(qn)) continue;
     seen.add(qn);
     names.push(qn);
   }
   return names;
+}
+
+/**
+ * A bare R call `foo(x)` can never invoke a def whose name contains a `.`
+ * (`print.foo` is only reachable as `print.foo(...)` or through S3 dispatch),
+ * yet the free-call fallback's simple-name index keys it under `foo`. Refuse
+ * such candidates so `foo(x)` cannot collide with `print.foo`.
+ *
+ * Applies to every candidate the hook sees, including R6/R5 members whose
+ * qualified name is `Class.member`: a bare `member(x)` never reaches those
+ * either.
+ */
+export function rIsCallableVisibleFromCaller(ctx: {
+  readonly candidate: SymbolDefinition;
+}): boolean {
+  return !(ctx.candidate.qualifiedName ?? '').includes('.');
 }
 
 export const rScopeResolver: ScopeResolver = {
@@ -184,4 +215,10 @@ export const rScopeResolver: ScopeResolver = {
   // in R (see `isRGlobalNameFallbackPlausible` for the exact rule and the
   // documented `pkg::name()` / `import()` limitations).
   isGlobalNameFallbackPlausible: isRGlobalNameFallbackPlausible,
+
+  // The free-call fallback keys defs by the text after the last `.` of their
+  // qualified name, so an S3 method `print.foo` sits next to a bare `foo` and
+  // makes the bare call ambiguous (no edge). A bare call can never invoke a
+  // dotted def, so drop those candidates.
+  isCallableVisibleFromCaller: rIsCallableVisibleFromCaller,
 };
