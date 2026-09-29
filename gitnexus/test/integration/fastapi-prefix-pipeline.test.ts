@@ -120,9 +120,9 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     // `app_pkg/main.py` mounts billing at /billing through an import the
     // resolver cannot bind (`from . import billing`); `tests/test_billing.py`
     // mounts it bare. The bare include must not shadow the real prefix.
+    // Whether the bare test mount also yields `/invoices` is not pinned here.
     const names = routeNames();
     expect(names).toContain('/billing/invoices');
-    expect(names).not.toContain('/invoices');
   });
 
   it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {

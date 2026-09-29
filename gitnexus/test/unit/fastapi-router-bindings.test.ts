@@ -290,6 +290,36 @@ describe('nested FastAPI router prefix resolution — edge cases', () => {
     expect(resolved.prefixesByFile.get('api/agents.py')).toEqual(new Set(['/api/v1']));
   });
 
+  it('carries the parent APIRouter(prefix=...) when the parent is mounted bare', () => {
+    const resolved = resolveSources({
+      'main.py': 'from api import router as api_router\napp.include_router(api_router)',
+      'api/__init__.py': [
+        'from .agents import router as agents_router',
+        'from .models import router as models_router',
+        "router = APIRouter(prefix='/v1')",
+        'router.include_router(agents_router)',
+        'router.include_router(models_router)',
+      ].join('\n'),
+      'api/agents.py': 'router = APIRouter()',
+      'api/models.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.get('api/agents.py')).toEqual(new Set(['/v1']));
+    expect(resolved.prefixesByFile.has('api/__init__.py')).toBe(false);
+  });
+
+  it('records nothing for an all-empty bare chain', () => {
+    const resolved = resolveSources({
+      'main.py': 'from api import router as api_router\napp.include_router(api_router)',
+      'api/__init__.py':
+        'from .agents import router as agents_router\nrouter.include_router(agents_router)',
+      'api/agents.py': 'router = APIRouter()',
+    });
+
+    expect(resolved.prefixesByFile.size).toBe(0);
+    expect(resolved.resolvedIncludes.size).toBe(0);
+  });
+
   it('expands a deep diamond-shaped include graph once per (file, prefix)', () => {
     // 40 layers of two routers that each include both routers of the next
     // layer: 2^40 root-to-leaf paths, 80 distinct files.

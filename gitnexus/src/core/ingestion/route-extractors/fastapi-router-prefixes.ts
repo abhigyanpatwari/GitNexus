@@ -108,6 +108,7 @@ export function resolveFastAPIRouterPrefixes(
     string,
     { target: string; prefix: string; include: ExtractedRouterInclude }[]
   >();
+  const bareMounts = new Set<string>();
 
   for (const inc of includes) {
     const source = inc.filePath.replace(/\\/g, '/');
@@ -128,12 +129,22 @@ export function resolveFastAPIRouterPrefixes(
       prefixes.add(inc.prefix);
       prefixesByFile.set(target, prefixes);
       resolvedIncludes.add(inc);
+    } else {
+      bareMounts.add(target);
     }
   }
 
-  const roots = [...prefixesByFile].flatMap(([file, prefixes]) =>
-    [...prefixes].map((prefix) => ({ file, prefix })),
-  );
+  // A router mounted without a prefix still seeds traversal (with an empty
+  // prefix) so its own `APIRouter(prefix=...)` reaches its children. Like its
+  // own routes, it only does so when no prefixed mount targets the file.
+  const roots = [
+    ...[...prefixesByFile].flatMap(([file, prefixes]) =>
+      [...prefixes].map((prefix) => ({ file, prefix })),
+    ),
+    ...[...bareMounts]
+      .filter((file) => !prefixesByFile.has(file))
+      .map((file) => ({ file, prefix: '' })),
+  ];
   // `expanded` memoizes (file, prefix) frames so diamond-shaped include graphs
   // stay linear in distinct prefixes; the per-path `visited` set still stops
   // cycles whose edges keep growing the prefix.
@@ -152,11 +163,16 @@ export function resolveFastAPIRouterPrefixes(
         : current.prefix;
       for (const edge of childIncludes.get(current.file) ?? []) {
         if (current.visited.has(edge.target)) continue;
-        const joined = normalizeExtractedRoutePath(edge.prefix, parentPrefix);
-        const targetPrefixes = prefixesByFile.get(edge.target) ?? new Set<string>();
-        targetPrefixes.add(joined);
-        prefixesByFile.set(edge.target, targetPrefixes);
-        resolvedIncludes.add(edge.include);
+        const normalized = normalizeExtractedRoutePath(edge.prefix, parentPrefix);
+        // An all-empty chain adds no prefix; record nothing so the child
+        // keeps its legacy fallback, but keep walking for deeper prefixes.
+        const joined = normalized === '/' ? '' : normalized;
+        if (joined) {
+          const targetPrefixes = prefixesByFile.get(edge.target) ?? new Set<string>();
+          targetPrefixes.add(joined);
+          prefixesByFile.set(edge.target, targetPrefixes);
+          resolvedIncludes.add(edge.include);
+        }
         stack.push({
           file: edge.target,
           prefix: joined,

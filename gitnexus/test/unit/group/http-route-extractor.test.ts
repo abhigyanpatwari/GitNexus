@@ -7254,6 +7254,23 @@ async def concurrent():
         expect(ids).not.toContain('http::GET::/api/list');
       });
 
+      it('carries a bare-mounted parent APIRouter(prefix=...) to unprefixed children', async () => {
+        const ids = await providerIds('fastapi-nested-bare-parent-ctor', {
+          'main.py': 'from api import router as api_router\napp.include_router(api_router)\n',
+          'api/__init__.py': [
+            'from fastapi import APIRouter',
+            'from .agents import router as agents_router',
+            'router = APIRouter(prefix="/v1")',
+            'router.include_router(agents_router)',
+            '',
+          ].join('\n'),
+          'api/agents.py': listRoute,
+        });
+
+        expect(ids).toContain('http::GET::/v1/list');
+        expect(ids).not.toContain('http::GET::/list');
+      });
+
       it('applies a child include prefix under a parent mounted without one', async () => {
         const ids = await providerIds('fastapi-nested-bare-parent', {
           'main.py': 'from api import router as api_router\napp.include_router(api_router)\n',
