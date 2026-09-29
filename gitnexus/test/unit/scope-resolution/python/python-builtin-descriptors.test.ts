@@ -17,8 +17,10 @@ const decoratesWithBuiltin = (source: string): boolean => {
 
 const method = ['    @staticmethod', '    def t(v):', '        return v'];
 
-// Each expectation matches CPython: `A().t(7)` returns 7 exactly when the
-// decorator evaluated to the builtin staticmethod.
+// `true` means CPython's `A().t(7)` returns 7, so the decorator evaluated to
+// the builtin staticmethod. A wildcard import from a module this file cannot
+// see is expected `false` because the resolver fails closed, not because
+// CPython always shadows the builtin there.
 describe('Python builtin descriptor identity', () => {
   it.each([
     ['a later module assignment', ['class A:', ...method, 'staticmethod = lambda f: f'], true],
