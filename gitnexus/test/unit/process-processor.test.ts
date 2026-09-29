@@ -304,6 +304,43 @@ describe('processProcesses', () => {
     expect(testProcess).toBeUndefined();
   });
 
+  it('excludes Dart *_test.dart entry points outside the test directory', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode({
+      id: 'func:dartTestMain',
+      label: 'Function',
+      properties: {
+        name: 'main',
+        filePath: 'lib/pages/dashboard_test.dart',
+        startLine: 1,
+        endLine: 10,
+        isExported: true,
+      },
+    });
+    graph.addNode({
+      id: 'func:dartHelper',
+      label: 'Function',
+      properties: {
+        name: 'loadDashboard',
+        filePath: 'lib/pages/dashboard.dart',
+        startLine: 1,
+        endLine: 5,
+        isExported: true,
+      },
+    });
+    graph.addRelationship({
+      id: 'call:dartTest',
+      sourceId: 'func:dartTestMain',
+      targetId: 'func:dartHelper',
+      type: 'CALLS',
+      confidence: 0.9,
+      reason: '',
+    });
+
+    const result = await processProcesses(graph, []);
+    expect(result.processes.some((p) => p.entryPointId === 'func:dartTestMain')).toBe(false);
+  });
+
   it('filters out low-confidence calls (below 0.5)', async () => {
     const graph = createKnowledgeGraph();
 
@@ -585,7 +622,13 @@ describe('process depth (D1/D2)', () => {
   // `findEntryPoints` returns several starting points, so the deep chain is
   // traced from inside it whatever the traversal order does — a test there
   // passes under BOTH traversals and guards nothing.
-  const cfg = { maxTraceDepth: 10, maxBranching: 4, maxProcesses: 75, minSteps: 3 };
+  const cfg = {
+    maxTraceDepth: 10,
+    maxBranching: 4,
+    maxProcesses: 75,
+    minSteps: 3,
+    maxEntryPointCandidates: 200,
+  };
 
   const deepAndShallow = (order: readonly string[]): Map<string, string[]> => {
     // Fan-out is capped at maxBranching (4), so the budget is exhausted BELOW
@@ -1213,6 +1256,26 @@ describe('the entry-point candidate cap is disclosed too', () => {
 
     expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
     expect(result.stats.truncation.truncated).toBe(false);
+  });
+
+  it('honors maxEntryPointCandidates instead of the compiled 200 (#3313)', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+      maxEntryPointCandidates: 410,
+    });
+
+    expect(result.stats.entryPointsFound).toBe(410);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(0);
+  });
+
+  it('drops one candidate when the override is one below the list length (#3313)', async () => {
+    const result = await processProcesses(manyCandidates(), [], undefined, {
+      maxProcesses: 1000,
+      maxEntryPointCandidates: 409,
+    });
+
+    expect(result.stats.entryPointsFound).toBe(409);
+    expect(result.stats.truncation.entryPointCandidatesDropped).toBe(1);
   });
 });
 

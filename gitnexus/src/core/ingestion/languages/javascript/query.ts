@@ -241,6 +241,200 @@ export const JAVASCRIPT_SCOPE_QUERY = `
   key: (string (string_fragment) @declaration.name)
   value: (function_expression) @declaration.function)
 
+;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
+;; tRPC, Express route definitions, and similar frameworks use this pattern where
+;; an object property's value is a call_expression (like .mutation()/.query()) that
+;; wraps an arrow_function or function_expression as a callback argument.
+;; Without these patterns, tRPC procedures are invisible — the arrow registers as
+;; anonymous and all calls inside fall back to file-level attribution.
+;;
+;; AST shape:
+;;   pair
+;;     key: property_identifier "create"
+;;     value: call_expression
+;;       function: identifier | member_expression
+;;       arguments: arguments
+;;         arrow_function | function_expression
+;;
+;; Anchor discipline: same as direct pairs — on the inner arrow/function, not
+;; the outer call_expression. The arrow's range matches its @scope.function range,
+;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+; Member-expression variants exclude callback-taking array methods —
+; '{ visible: items.filter(item => item.active) }' is a value holding an
+; array, not a Function — same exclusion as the HOC variable rules below.
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
+;; Quoted object keys are identical shapes to the identifier-key pairs above —
+;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
+;; otherwise leave its procedures anonymous and file-level attributed.
+;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
+;; string-key rules, not the identifier-key block above; member-expression
+;; callees keep the array-method exclusion.
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
+;; Existing pair-HOC rules require the arrow to be a DIRECT argument of the
+;; pair's call_expression. They miss mutation's argument being another
+;; call_expression (withAuth(...)). Object-pair only — do NOT add a
+;; variable-level nested-HOC rule (\`const X = memo(forwardRef(...))\` must
+;; stay a Variable; see typescript-hoc-wrapped.test.ts).
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (property_identifier) @declaration.name
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (arrow_function) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((pair
+  key: (string (string_fragment) @declaration.name)
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (call_expression
+        function: (identifier)
+        arguments: (arguments
+          (function_expression) @declaration.function)))))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
 ;; HOC-wrapped variable declarations: const X = HOC((args) => { ... }).
 ;; Covers React.forwardRef, memo, useCallback, useMemo, observer,
 ;; debounce, and any user-defined HOC factory.

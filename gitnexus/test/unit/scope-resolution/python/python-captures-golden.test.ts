@@ -76,6 +76,27 @@ function snapshotOf(src: string, filePath: string): FixtureSnapshot {
   return { captureGroups: matches.length, digest: digestCaptures(matches) };
 }
 
+function callArity(src: string, name: string): string | undefined {
+  const match = emitPythonScopeCaptures(src, 'arity.py').find(
+    (candidate) =>
+      candidate['@reference.name']?.text === name &&
+      (candidate['@reference.call.free'] !== undefined ||
+        candidate['@reference.call.member'] !== undefined),
+  );
+  if (!match) throw new Error(`Missing call capture for ${name}`);
+  return match['@reference.arity']?.text;
+}
+
+function receiverBindingNames(src: string): string[] {
+  return emitPythonScopeCaptures(src, 'receiver.py')
+    .filter(
+      (match) =>
+        match['@type-binding.self'] !== undefined || match['@type-binding.cls'] !== undefined,
+    )
+    .map((match) => match['@type-binding.name']!.text)
+    .sort();
+}
+
 /** All `.py` files under `lang-resolution/python-*`, as sorted repo-relative-ish keys. */
 function collectPythonFixtures(): { key: string; absPath: string }[] {
   const out: { key: string; absPath: string }[] = [];
@@ -149,6 +170,47 @@ function formatGolden(snap: Snapshot): string {
 }
 
 describe('Python scope captures — golden parity', () => {
+  it('keeps ordinary Python call arity out of the generic reference schema', () => {
+    const src = [
+      'zero()',
+      'one(value)',
+      'keyword(value=1)',
+      'mixed(1, named=2)',
+      'obj.member(',
+      '    # comments are not arguments',
+      '    value,',
+      ')',
+    ].join('\n');
+
+    expect(callArity(src, 'zero')).toBeUndefined();
+    expect(callArity(src, 'one')).toBeUndefined();
+    expect(callArity(src, 'keyword')).toBeUndefined();
+    expect(callArity(src, 'mixed')).toBeUndefined();
+    expect(callArity(src, 'member')).toBeUndefined();
+  });
+
+  it('keeps call arity unknown when an argument splat is present', () => {
+    const src = ['from_list(*values)', 'from_dict(**values)', 'mixed(*values, named=1)'].join('\n');
+
+    expect(callArity(src, 'from_list')).toBeUndefined();
+    expect(callArity(src, 'from_dict')).toBeUndefined();
+    expect(callArity(src, 'mixed')).toBeUndefined();
+  });
+
+  it('synthesizes receiver bindings only for real positional parameters', () => {
+    const src = [
+      'class Example:',
+      '    def ordinary(instance): pass',
+      '    @classmethod',
+      '    def factory(owner): pass',
+      '    def variadic(*args): pass',
+      '    def keyword_variadic(**kwargs): pass',
+      '    def keyword_only(*, option): pass',
+    ].join('\n');
+
+    expect(receiverBindingNames(src)).toEqual(['instance', 'owner']);
+  });
+
   it('matches the committed golden snapshot across all python-* fixtures + DAO shape', () => {
     const snapshot = buildSnapshot();
 

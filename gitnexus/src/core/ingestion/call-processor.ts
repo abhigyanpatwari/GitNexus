@@ -30,6 +30,7 @@ import {
 } from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
 import { DATA_ROUTE_TABLE_SOURCE } from './route-extractors/data-route-table.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
 const MAX_TYPE_NAME_LENGTH = 256;
@@ -48,6 +49,48 @@ interface RouteHandlerResolutionContext {
   readonly files: readonly RouteResolutionFile[];
   readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
   readonly isExportedSymbol: (nodeId: string) => boolean;
+  /** 0-based graph-node startLine for same-name tRPC handler disambiguation. */
+  readonly nodeStartLine?: (nodeId: string) => number | undefined;
+}
+
+/** Same Function/Method gate as data-route resolution (`routeCallables`). */
+function routeCallableDefs(defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] {
+  return defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+}
+
+/**
+ * Pick a same-file route handler from `lookupExactAll` hits.
+ *
+ * Graph nodes store 0-based `startLine`; `ExtractedRoute.lineNumber` is 1-based
+ * (`i + 1` in the tRPC scanner). File-index lookup is not callable-only, so
+ * drop Property/Variable/Const (and other non-callables) first. When several
+ * callables share a name, prefer the unique def whose node startLine equals
+ * `toZeroBasedLine(route.lineNumber)`. If that exact match is missing (common
+ * when the arrow starts on the line after `.mutation(`), take the unique def
+ * whose startLine is the nearest `>=` target. Zero or 2+ winners (or no line
+ * reader) → `undefined` (fail-open).
+ */
+function pickSameFileHandler(
+  defs: readonly SymbolDefinition[],
+  route: { lineNumber: number },
+  getStartLine?: (nodeId: string) => number | undefined,
+): SymbolDefinition | undefined {
+  defs = routeCallableDefs(defs);
+  if (defs.length === 1) return defs[0];
+  if (defs.length > 1 && getStartLine !== undefined) {
+    const targetLine = toZeroBasedLine(route.lineNumber);
+    const withLines = defs
+      .map((def) => ({ def, startLine: Number(getStartLine(def.nodeId)) }))
+      .filter((entry) => Number.isFinite(entry.startLine));
+    const exact = withLines.filter((entry) => entry.startLine === targetLine);
+    if (exact.length === 1) return exact[0].def;
+    const atOrAfter = withLines.filter((entry) => entry.startLine >= targetLine);
+    if (atOrAfter.length === 0) return undefined;
+    const nearestLine = Math.min(...atOrAfter.map((entry) => entry.startLine));
+    const nearest = atOrAfter.filter((entry) => entry.startLine === nearestLine);
+    return nearest.length === 1 ? nearest[0].def : undefined;
+  }
+  return undefined;
 }
 
 /** Record one exported graph node into the incremental ExportedTypeMap. */
@@ -207,7 +250,35 @@ export const processRoutesFromExtracted = async (
       await yieldToEventLoop();
     }
 
-    if (!route.controllerName || !route.methodName) continue;
+    if (!route.methodName) continue;
+
+    // tRPC routes carry NO controller: a router is an object binding, not a
+    // class, so the extractor leaves controllerName unset and names the
+    // handler from the callback identifier when present, otherwise from its
+    // object-literal key. Bind the same-file symbol directly.
+    // No unique match → skip, fail-open. Laravel routes always set
+    // controllerName and Django routes leave methodName null, so this
+    // branch is tRPC-only by construction — the laravel guessed-method
+    // fallback below never sees a controller-less route.
+    if (!route.controllerName) {
+      const handler = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        (id) => graph.getNode(id)?.properties.startLine as number | undefined,
+      );
+      if (!handler) continue;
+      const sourceId = generateId('File', route.filePath);
+      const relId = generateId('CALLS', sourceId + ':route->' + handler.nodeId);
+      graph.addRelationship({
+        id: relId,
+        sourceId,
+        targetId: handler.nodeId,
+        type: 'CALLS',
+        confidence: ROUTE_EDGE_CONFIDENCE,
+        reason: 'trpc-route',
+      });
+      continue;
+    }
 
     // Resolve the controller class. Qualified-first: when the routes file
     // disambiguated the controller (a `use` import or inline `::class` FQN, both
@@ -302,8 +373,9 @@ export function resolveRouteHandlerSymbols(
   // stamp always belongs to the route that actually won the Route node.
   const claimed = new Set<string>();
 
-  // Resolve a single same-file symbol by name, refusing to guess on ambiguity:
-  // exactly one match → its nodeId; zero or many → undefined (fail-open).
+  // Resolve a single same-file symbol by name. Exactly one match → its nodeId.
+  // Zero or many matches → undefined (fail-open). tRPC same-name handlers
+  // use pickSameFileHandler at the controller-less call site instead.
   const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
     const defs = model.symbols.lookupExactAll(filePath, name);
     return defs.length === 1 ? defs[0]?.nodeId : undefined;
@@ -315,7 +387,7 @@ export function resolveRouteHandlerSymbols(
   };
 
   const routeCallables = (defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] =>
-    defs.filter((def) => def.type === 'Function' || def.type === 'Method');
+    routeCallableDefs(defs);
 
   const exportedRouteCallables = (
     defs: readonly SymbolDefinition[],
@@ -429,6 +501,12 @@ export function resolveRouteHandlerSymbols(
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
       if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+    } else if (!route.controllerName && route.methodName) {
+      methodId = pickSameFileHandler(
+        model.symbols.lookupExactAll(route.filePath, route.methodName),
+        route,
+        routeContext?.nodeStartLine,
+      )?.nodeId;
     }
     claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
   }

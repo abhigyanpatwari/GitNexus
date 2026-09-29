@@ -175,9 +175,93 @@ export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEv
 }
 
 /** Swift Package Manager module config */
+export type SwiftPackageConfigOrigin = 'package.swift' | 'directories';
+
 export interface SwiftPackageConfig {
   /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
   targets: Map<string, string>;
+  /**
+   * `package.swift` — extracted from a readable Package.swift with no
+   * completeness hazards. Explicit import resolve may treat this as a
+   * declaration map (empty means every name is external).
+   * `directories` — inferred from `Sources/*` (or Package/Sources / src)
+   * when no usable declaration exists. Grouping uses this; import resolve
+   * must not.
+   * Omitted on hand-built test configs: treated as a declaration map so
+   * existing `{ targets }` fixtures stay valid.
+   */
+  origin?: SwiftPackageConfigOrigin;
+  /**
+   * Declaration map when `origin` is `package.swift` (may be empty).
+   * Grouping uses `targets`, which is this map when it is non-empty and the
+   * inferred `Sources/*` map when the declaration is empty — so a
+   * binary-only Package.swift does not collapse every file into `__default__`.
+   */
+  declaredTargets?: Map<string, string>;
+  /**
+   * Every Swift module the workspace loader found (root and nested SwiftPM
+   * targets, Xcode native targets). When present it is the authority for
+   * module membership and `import` resolution; `targets` stays for callers
+   * that only know the SwiftPM map.
+   */
+  modules?: readonly SwiftModuleSpec[];
+  /**
+   * True when every manifest and Xcode project was read completely and no
+   * module was inferred from folder names, so a name missing from `modules`
+   * is an external module (SDK or dependency), not an unread local one.
+   */
+  moduleNamesComplete?: boolean;
+  /** `sources:` / `exclude:` per target name, relative to the target directory. */
+  targetFilters?: Map<string, SwiftTargetFilter>;
+}
+
+/** One Swift module (compiler unit) found in the workspace. */
+export interface SwiftModuleSpec {
+  /** Stable key: a repo-relative SwiftPM target directory, or `xcode:<project>:<target>`. */
+  readonly key: string;
+  /** Module name as written in `import X`. */
+  readonly name: string;
+  /** SwiftPM: repo-relative target directory ('' is the repo root). */
+  readonly dir?: string;
+  /** Xcode: repo-relative member files. */
+  readonly files?: readonly string[];
+  /** Xcode: repo-relative synchronized folders; files below are members. */
+  readonly folders?: readonly string[];
+  /**
+   * Repo-relative paths this module leaves out: Xcode synchronized-folder
+   * exceptions, SwiftPM `exclude:`.
+   */
+  readonly excluded?: readonly string[];
+  /** SwiftPM `sources:`: repo-relative files or directories; members must be under one. */
+  readonly sources?: readonly string[];
+  /** False for SwiftPM plugins: modules, but never `import`-able. */
+  readonly importable: boolean;
+}
+
+/**
+ * Declaration view for explicit import resolve. `origin: 'directories'`
+ * is grouping-only. A hand-built `{ targets }` with no origin stays a
+ * declaration so existing fixtures keep working.
+ */
+export function coerceDeclaredSwiftTargets(
+  resolutionConfig: unknown,
+): ReadonlyMap<string, string> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  if (config == null) return null;
+  if (config.origin === 'directories') return null;
+  if (config.declaredTargets instanceof Map) return config.declaredTargets;
+  if (config.targets instanceof Map) return config.targets;
+  return null;
+}
+
+/** Segment-boundary prefix for a Package.swift `path:`. `"."` / `"./"` is the package root. */
+export function swiftDeclaredTargetPrefix(dir: string): string {
+  let norm = dir.replace(/\\/g, '/');
+  while (norm.startsWith('./')) {
+    norm = norm.slice(2);
+  }
+  norm = norm.replace(/\/+$/, '');
+  return norm === '' || norm === '.' ? '' : `${norm}/`;
 }
 
 /** Zig package config parsed from build.zig.zon and the root build.zig */
@@ -616,19 +700,887 @@ async function collectDeclaredNamespaces(
   return structure.incomplete ? 'truncated' : 'ok';
 }
 
-export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  // Swift imports are module-name based (e.g., `import SiuperModel`)
-  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
-  // We scan for these directories to build a target map
-  const targets = new Map<string, string>();
+const SWIFT_SOURCE_FACTORY_NAMES = [
+  'target',
+  'executableTarget',
+  'testTarget',
+  'macro',
+  'plugin',
+] as const;
+/** No Swift sources: a prebuilt artifact or a C module map. */
+const SWIFT_SKIP_FACTORY_NAMES = ['binaryTarget', 'systemLibrary'] as const;
+const SWIFT_SKIP_FACTORIES = new Set<string>(SWIFT_SKIP_FACTORY_NAMES);
+const SWIFT_FACTORY_RE = new RegExp(
+  `\\.(${[...SWIFT_SOURCE_FACTORY_NAMES, ...SWIFT_SKIP_FACTORY_NAMES].join('|')})\\s*\\(`,
+  'g',
+);
+function extractBalancedParen(source: string, openIndex: number): string | null {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      // `https://` lives inside a string, already excluded above.
+      inLineComment = true;
+      i++;
+      continue;
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return source.slice(openIndex + 1, i);
+    }
+  }
+  return null;
+}
 
-  const sourceDirs = ['Sources', 'Package/Sources', 'src'];
+function isSwiftIdentCont(ch: string | undefined): boolean {
+  return ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+}
+
+function skipSwiftWsAndComments(source: string, start: number): number | null {
+  let i = start;
+  while (i < source.length) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const nl = source.indexOf('\n', i + 2);
+      if (nl === -1) return null;
+      i = nl + 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      let depth = 1;
+      i += 2;
+      while (i < source.length && depth > 0) {
+        if (source[i] === '/' && source[i + 1] === '*') {
+          depth++;
+          i += 2;
+        } else if (source[i] === '*' && source[i + 1] === '/') {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      if (depth !== 0) return null;
+      continue;
+    }
+    return i;
+  }
+  return null;
+}
+
+/** First `name:` / `path:` string outside comments. Escapes and interpolations are unreadable. */
+/** Where `field:`'s value starts in a factory block, or null when absent. */
+function findSwiftFactoryFieldValue(
+  block: string,
+  field: string,
+): { valueAt: number | null } | null {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < block.length; i++) {
+    const ch = block[i];
+    const next = block[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(ch)) continue;
+    let j = i + 1;
+    while (j < block.length && isSwiftIdentCont(block[j])) j++;
+    if (block.slice(i, j) !== field) {
+      i = j - 1;
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(block, j);
+    if (colonAt === null || block[colonAt] !== ':') {
+      i = j - 1;
+      continue;
+    }
+    return { valueAt: skipSwiftWsAndComments(block, colonAt + 1) };
+  }
+  return null;
+}
+
+function readSwiftFactoryField(
+  block: string,
+  field: 'name' | 'path',
+): { value: string | undefined; keyPresent: boolean } {
+  const found = findSwiftFactoryFieldValue(block, field);
+  if (found === null) return { value: undefined, keyPresent: false };
+  const { valueAt } = found;
+  if (valueAt === null) return { value: undefined, keyPresent: true };
+  const quote = block[valueAt];
+  if (quote !== '"' && quote !== "'") return { value: undefined, keyPresent: true };
+  const parsed = readSwiftSimpleQuotedString(block, valueAt);
+  return { value: parsed ?? undefined, keyPresent: true };
+}
+
+/**
+ * `sources:` / `exclude:` as a list of string literals. `undefined` when the
+ * key is absent; `null` when present but not a plain literal list.
+ */
+function readSwiftFactoryStringList(
+  block: string,
+  field: 'sources' | 'exclude',
+): string[] | null | undefined {
+  const found = findSwiftFactoryFieldValue(block, field);
+  if (found === null) return undefined;
+  let i = found.valueAt;
+  if (i === null || block[i] !== '[') return null;
+  const out: string[] = [];
+  for (;;) {
+    const at = skipSwiftWsAndComments(block, i + 1);
+    if (at === null) return null;
+    if (block[at] === ']') return out;
+    if (block[at] !== '"' && block[at] !== "'") return null;
+    const value = readSwiftSimpleQuotedString(block, at);
+    if (value === null) return null;
+    out.push(value);
+    const after = skipSwiftWsAndComments(block, at + value.length + 2);
+    if (after === null) return null;
+    if (block[after] === ']') return out;
+    if (block[after] !== ',') return null;
+    i = after;
+  }
+}
+
+/** Quoted literal with no escapes. Any `\` (including `\u{…}` and `\(`) is unreadable. */
+function readSwiftSimpleQuotedString(source: string, openIndex: number): string | null {
+  const quote = source[openIndex];
+  let i = openIndex + 1;
+  while (i < source.length) {
+    const ch = source[i];
+    if (ch === '\\') return null;
+    if (ch === quote) return source.slice(openIndex + 1, i);
+    if (ch === '\n') return null;
+    i++;
+  }
+  return null;
+}
+
+function swiftManifestHasCompletenessHazard(source: string): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let atLineStart = true;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') {
+        inLineComment = false;
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      } else if (ch === '\n') {
+        atLineStart = true;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      else if (ch === '\n') atLineStart = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      atLineStart = false;
+      continue;
+    }
+    if (ch === '\n') {
+      atLineStart = true;
+      continue;
+    }
+    if (atLineStart && /\s/.test(ch)) continue;
+    if (atLineStart && ch === '#') {
+      if (source.startsWith('if', i + 1) && !isSwiftIdentCont(source[i + 3])) return true;
+      if (source.startsWith('elseif', i + 1) && !isSwiftIdentCont(source[i + 7])) return true;
+    }
+    atLineStart = false;
+  }
+  return false;
+}
+
+interface SwiftCommentScan {
+  i: number;
+  inString: '"' | "'" | null;
+  escape: boolean;
+  inLineComment: boolean;
+  blockCommentDepth: number;
+}
+
+function newSwiftCommentScan(): SwiftCommentScan {
+  return { i: 0, inString: null, escape: false, inLineComment: false, blockCommentDepth: 0 };
+}
+
+/** Resume the comment/string walk up to `upTo`. Matches are left-to-right, so this is O(n) over the file. */
+function advanceSwiftCommentScan(source: string, state: SwiftCommentScan, upTo: number): void {
+  let { i, inString, escape, inLineComment, blockCommentDepth } = state;
+  for (; i < upTo; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+    }
+  }
+  state.i = i;
+  state.inString = inString;
+  state.escape = escape;
+  state.inLineComment = inLineComment;
+  state.blockCommentDepth = blockCommentDepth;
+}
+
+function swiftPathIsUnreadable(customPath: string | undefined, hasPathKey: boolean): boolean {
+  if (!hasPathKey) return false;
+  return customPath === undefined || customPath === '' || customPath.includes('\\(');
+}
+
+/** Where SwiftPM looks for a target that declares no `path:`. */
+export type SwiftTargetDirKind = 'source' | 'test' | 'plugin';
+
+export interface SwiftManifestParse {
+  /** Target name -> package-relative directory. */
+  targets: Map<string, string>;
+  /**
+   * Targets with no `path:`. Their directory above is the conventional
+   * default; `loadSwiftPackageConfig` replaces it with the directory SwiftPM
+   * would actually pick (`Sources`, `Source`, `src`, or `srcs`).
+   */
+  implicitDirs: Map<string, SwiftTargetDirKind>;
+  /** Plugin targets: modules for grouping, never `import`-able. */
+  plugins: Set<string>;
+  /** `sources:` / `exclude:` per target name, relative to the target directory. */
+  filters: Map<string, SwiftTargetFilter>;
+  complete: boolean;
+}
+
+/** A target's `sources:` / `exclude:` lists; absent means "no filter". */
+export interface SwiftTargetFilter {
+  readonly sources?: readonly string[];
+  readonly exclude?: readonly string[];
+}
+
+/** Heuristic Package.swift scan. Never shells out to `swift package dump-package`. */
+export function parseSwiftPackageManifest(source: string): SwiftManifestParse {
+  const targets = new Map<string, string>();
+  const implicitDirs = new Map<string, SwiftTargetDirKind>();
+  const plugins = new Set<string>();
+  const filters = new Map<string, SwiftTargetFilter>();
+  if (swiftManifestHasCompletenessHazard(source)) {
+    return { targets, implicitDirs, plugins, filters, complete: false };
+  }
+
+  const packageTargets = inspectSwiftPackageTargets(source);
+
+  SWIFT_FACTORY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let sawUnreadableFactory = false;
+  const commentScan = newSwiftCommentScan();
+  let coveredEnd = -1;
+  while ((match = SWIFT_FACTORY_RE.exec(source)) !== null) {
+    advanceSwiftCommentScan(source, commentScan, match.index);
+    if (
+      commentScan.inLineComment ||
+      commentScan.blockCommentDepth > 0 ||
+      commentScan.inString !== null
+    ) {
+      continue;
+    }
+    if (
+      packageTargets.sawPackage &&
+      !packageTargets.arraySpans.some(([lo, hi]) => match.index >= lo && match.index <= hi)
+    ) {
+      continue;
+    }
+    if (match.index > 0 && match.index < coveredEnd) continue;
+    const kind = match[1];
+    const paren = source.indexOf('(', match.index);
+    const block = extractBalancedParen(source, paren);
+    if (block === null) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    coveredEnd = Math.max(coveredEnd, paren + 1 + block.length + 1);
+    if (SWIFT_SKIP_FACTORIES.has(kind)) continue;
+    const nameField = readSwiftFactoryField(block, 'name');
+    if (nameField.value === undefined || nameField.value === '') {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    const name = nameField.value;
+    const pathField = readSwiftFactoryField(block, 'path');
+    const customPath = pathField.value;
+    if (swiftPathIsUnreadable(customPath, pathField.keyPresent)) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    const sources = readSwiftFactoryStringList(block, 'sources');
+    const exclude = readSwiftFactoryStringList(block, 'exclude');
+    if (sources === null || exclude === null) {
+      sawUnreadableFactory = true;
+      continue;
+    }
+    if (sources !== undefined || exclude !== undefined) {
+      filters.set(name, {
+        ...(sources !== undefined ? { sources } : {}),
+        ...(exclude !== undefined ? { exclude } : {}),
+      });
+    }
+    const dirKind: SwiftTargetDirKind =
+      kind === 'testTarget' ? 'test' : kind === 'plugin' ? 'plugin' : 'source';
+    if (dirKind === 'plugin') plugins.add(name);
+    const dir = customPath ?? `${SWIFT_DEFAULT_TARGET_PARENT[dirKind]}/${name}`;
+    const existing = targets.get(name);
+    if (existing === undefined) {
+      targets.set(name, dir);
+      if (customPath === undefined) implicitDirs.set(name, dirKind);
+    } else if (customPath !== undefined && implicitDirs.has(name)) {
+      // A later `.target(name:path:)` wins over an earlier same-name
+      // factory that only implied the default path.
+      targets.set(name, customPath);
+      implicitDirs.delete(name);
+    }
+  }
+
+  return {
+    targets,
+    implicitDirs,
+    plugins,
+    filters,
+    complete: !sawUnreadableFactory && !packageTargets.helperBuilt,
+  };
+}
+
+/** Conventional parent of a target with no `path:`, before disk lookup. */
+const SWIFT_DEFAULT_TARGET_PARENT: Readonly<Record<SwiftTargetDirKind, string>> = {
+  source: 'Sources',
+  test: 'Tests',
+  plugin: 'Plugins',
+};
+
+/**
+ * SwiftPM's predefined parents, in its search order (`PackageBuilder`):
+ * sources in `Sources`, `Source`, `src`, `srcs`; tests in `Tests` first, then
+ * the source parents; plugins only in `Plugins`.
+ */
+const SWIFT_PREDEFINED_TARGET_PARENTS: Readonly<Record<SwiftTargetDirKind, readonly string[]>> = {
+  source: ['Sources', 'Source', 'src', 'srcs'],
+  test: ['Tests', 'Sources', 'Source', 'src', 'srcs'],
+  plugin: ['Plugins'],
+};
+
+interface SwiftPackageTargetsInspection {
+  helperBuilt: boolean;
+  sawPackage: boolean;
+  arraySpans: Array<[number, number]>;
+}
+
+const SWIFT_ALL_FACTORY_NAMES = new Set<string>([
+  ...SWIFT_SOURCE_FACTORY_NAMES,
+  ...SWIFT_SKIP_FACTORY_NAMES,
+]);
+
+/** Locate `Package(...)`'s `targets:` argument. Product `targets:` stay nested. */
+function inspectSwiftPackageTargets(source: string): SwiftPackageTargetsInspection {
+  const arraySpans: Array<[number, number]> = [];
+  let helperBuilt = false;
+  const seen = { package: false };
+  const unreadable = forEachSwiftPackageArgs(
+    source,
+    (args, argsStart) => {
+      const found = inspectPackageTargetsArg(args);
+      if (found.helperBuilt) {
+        helperBuilt = true;
+        return true;
+      }
+      if (found.arrayStart !== null && found.arrayEnd !== null) {
+        arraySpans.push([argsStart + found.arrayStart, argsStart + found.arrayEnd]);
+      }
+      return false;
+    },
+    seen,
+  );
+  return { helperBuilt: helperBuilt || unreadable, sawPackage: seen.package, arraySpans };
+}
+
+/** Walk `Package(` calls outside comments/strings. Unclosed `Package(` is incomplete. */
+function forEachSwiftPackageArgs(
+  source: string,
+  visit: (args: string, argsStart: number) => boolean,
+  seen: { package: boolean },
+): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (
+      !source.startsWith('Package', i) ||
+      isSwiftIdentCont(source[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(source[i - 1]))
+    ) {
+      continue;
+    }
+    const parenAt = skipSwiftWsAndComments(source, i + 7);
+    if (parenAt === null || source[parenAt] !== '(') continue;
+    seen.package = true;
+    const args = extractBalancedParen(source, parenAt);
+    if (args === null) return true;
+    if (visit(args, parenAt + 1)) return true;
+    i = parenAt + args.length + 1;
+  }
+  return false;
+}
+
+function inspectPackageTargetsArg(args: string): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i];
+    const next = args[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (paren !== 0) continue;
+    if (
+      !args.startsWith('targets', i) ||
+      isSwiftIdentCont(args[i + 7]) ||
+      (i > 0 && isSwiftIdentCont(args[i - 1]))
+    ) {
+      continue;
+    }
+    const colonAt = skipSwiftWsAndComments(args, i + 7);
+    if (colonAt === null || args[colonAt] !== ':') {
+      i += 6;
+      continue;
+    }
+    return classifyPackageTargetsValue(args, colonAt + 1);
+  }
+  return { helperBuilt: false, arrayStart: null, arrayEnd: null };
+}
+
+function classifyPackageTargetsValue(
+  args: string,
+  afterColon: number,
+): {
+  helperBuilt: boolean;
+  arrayStart: number | null;
+  arrayEnd: number | null;
+} {
+  const start = skipSwiftWsAndComments(args, afterColon);
+  if (start === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+  if (args[start] === '[') {
+    const close = matchSwiftSquare(args, start);
+    if (close === null) return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+    const next = skipSwiftWsAndComments(args, close + 1);
+    if (next !== null && args[next] === '+') {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    if (packageTargetsArrayHasComputed(args, start, close)) {
+      return { helperBuilt: true, arrayStart: start, arrayEnd: close };
+    }
+    return { helperBuilt: false, arrayStart: start, arrayEnd: close };
+  }
+  return { helperBuilt: true, arrayStart: null, arrayEnd: null };
+}
+
+function packageTargetsArrayHasComputed(source: string, open: number, close: number): boolean {
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  let paren = 0;
+  let bracket = 0;
+  for (let i = open; i < close; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') {
+      bracket++;
+      continue;
+    }
+    if (ch === ']') {
+      bracket--;
+      continue;
+    }
+    if (ch === '(') {
+      paren++;
+      continue;
+    }
+    if (ch === ')') {
+      paren--;
+      continue;
+    }
+    if (bracket !== 1 || paren !== 0) continue;
+    if (ch === ',' || /\s/.test(ch)) continue;
+    if (ch === '.') {
+      let j = i + 1;
+      while (j < close && isSwiftIdentCont(source[j])) j++;
+      const name = source.slice(i + 1, j);
+      const after = skipSwiftWsAndComments(source, j);
+      if (after !== null && source[after] === '(' && SWIFT_ALL_FACTORY_NAMES.has(name)) {
+        const block = extractBalancedParen(source, after);
+        if (block === null) return true;
+        i = after + block.length + 1;
+        continue;
+      }
+      return true;
+    }
+    return true;
+  }
+  return false;
+}
+
+function matchSwiftSquare(source: string, openIndex: number): number | null {
+  let depth = 0;
+  let inString: '"' | "'" | null = null;
+  let escape = false;
+  let inLineComment = false;
+  let blockCommentDepth = 0;
+  for (let i = openIndex; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (inLineComment) {
+      if (ch === '\n') inLineComment = false;
+      continue;
+    }
+    if (blockCommentDepth > 0) {
+      if (ch === '*' && next === '/') {
+        blockCommentDepth--;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        blockCommentDepth++;
+        i++;
+      }
+      continue;
+    }
+    if (inString !== null) {
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escape = true;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      inLineComment = true;
+      i++;
+      continue;
+    } else if (ch === '/' && next === '*') {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return null;
+}
+
+async function inferSwiftDirectoryTargets(
+  repoRoot: string,
+  packageDir = '',
+): Promise<Map<string, string>> {
+  const targets = new Map<string, string>();
+  const sourceDirs = ['Sources', 'Source', 'Package/Sources', 'src', 'srcs'];
   for (const sourceDir of sourceDirs) {
     try {
-      const fullPath = path.join(repoRoot, sourceDir);
+      const fullPath = path.join(repoRoot, packageDir, sourceDir);
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        // First parent in SwiftPM's search order wins a repeated name.
+        if (entry.isDirectory() && !targets.has(entry.name)) {
           targets.set(entry.name, sourceDir + '/' + entry.name);
         }
       }
@@ -636,12 +1588,116 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
       // Directory doesn't exist
     }
   }
+  return targets;
+}
 
-  if (targets.size > 0) {
-    if (isDev) {
-      logger.info(`📦 Loaded ${targets.size} Swift package targets`);
+/**
+ * Load the SwiftPM config of the package at `packageDir` (repo root when
+ * omitted). Target directories stay package-relative; see
+ * {@link loadSwiftWorkspaceConfig} for the repo-relative merge.
+ */
+export async function loadSwiftPackageConfig(
+  repoRoot: string,
+  packageDir = '',
+): Promise<SwiftPackageConfig | null> {
+  const pkgRoot = path.join(repoRoot, packageDir);
+  try {
+    const source = await fs.readFile(
+      path.join(pkgRoot, await pickSwiftManifestFile(pkgRoot)),
+      'utf-8',
+    );
+    const parsed = parseSwiftPackageManifest(source);
+    if (parsed.complete) {
+      if (isDev) {
+        logger.info(`📦 Loaded ${parsed.targets.size} Swift package targets from Package.swift`);
+      }
+      const parents = new Map<SwiftTargetDirKind, string | null>();
+      for (const [name, kind] of parsed.implicitDirs) {
+        if (!parents.has(kind)) parents.set(kind, await findSwiftPredefinedParent(pkgRoot, kind));
+        const parent = parents.get(kind);
+        if (parent != null) parsed.targets.set(name, `${parent}/${name}`);
+      }
+      // Plugins are modules (grouping) but never `import`-able.
+      const declaredTargets = new Map(
+        [...parsed.targets].filter(([name]) => !parsed.plugins.has(name)),
+      );
+      if (parsed.targets.size > 0) {
+        return {
+          targets: parsed.targets,
+          origin: 'package.swift',
+          declaredTargets,
+          ...(parsed.filters.size > 0 ? { targetFilters: parsed.filters } : {}),
+        };
+      }
+      const inferred = await inferSwiftDirectoryTargets(repoRoot, packageDir);
+      return { targets: inferred, origin: 'package.swift', declaredTargets };
     }
-    return { targets };
+  } catch {
+    // Missing or unreadable — fall through to inferred folders.
+  }
+
+  const inferred = await inferSwiftDirectoryTargets(repoRoot, packageDir);
+  if (inferred.size > 0) {
+    if (isDev) {
+      logger.info(`📦 Inferred ${inferred.size} Swift source folders`);
+    }
+    return { targets: inferred, origin: 'directories' };
+  }
+  return null;
+}
+
+const SWIFT_VERSIONED_MANIFEST_RE = /^Package@swift-(\d+)(?:\.(\d+))?(?:\.(\d+))?\.swift$/;
+
+/**
+ * The manifest SwiftPM would read in `pkgRoot`. A `Package@swift-X.Y.swift`
+ * overrides `Package.swift` for toolchains at or above X.Y; the toolchain is
+ * unknown here, so assume the newest and take the highest version present.
+ */
+async function pickSwiftManifestFile(pkgRoot: string): Promise<string> {
+  let best = 'Package.swift';
+  let bestVersion: readonly number[] = [];
+  let names: string[];
+  try {
+    names = await fs.readdir(pkgRoot);
+  } catch {
+    return best;
+  }
+  for (const name of names) {
+    const m = SWIFT_VERSIONED_MANIFEST_RE.exec(name);
+    if (m === null) continue;
+    const version = [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)];
+    if (compareVersions(version, bestVersion) > 0) {
+      best = name;
+      bestVersion = version;
+    }
+  }
+  return best;
+}
+
+function compareVersions(a: readonly number[], b: readonly number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? -1) - (b[i] ?? -1);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/**
+ * SwiftPM's parent directory for targets of `kind` in `pkgRoot`: the first
+ * predefined parent that exists, chosen once per package (a target missing
+ * from it is a manifest error in SwiftPM, not a fallthrough). Null when none
+ * exists.
+ */
+async function findSwiftPredefinedParent(
+  pkgRoot: string,
+  kind: SwiftTargetDirKind,
+): Promise<string | null> {
+  for (const parent of SWIFT_PREDEFINED_TARGET_PARENTS[kind]) {
+    try {
+      if ((await fs.stat(path.join(pkgRoot, parent))).isDirectory()) return parent;
+    } catch {
+      // Not there — try the next predefined parent.
+    }
   }
   return null;
 }
@@ -969,7 +2025,7 @@ async function findZigPackageDirs(repoRoot: string): Promise<string[]> {
  * nested-package branch exists to do; `normalizeZigDepPath` rejects the ones
  * that still escape the ROOT after rebasing.
  */
-function isAbsoluteZigDepPath(depPath: string): boolean {
+export function isAbsoluteZigDepPath(depPath: string): boolean {
   const normalized = depPath.replace(/\\/g, '/');
   return normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized);
 }

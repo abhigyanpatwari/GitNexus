@@ -1,10 +1,10 @@
 /**
  * Git ref-name validation used by both the CLI and the HTTP analyze route.
  *
- * Lives in `core/` so `server/api.ts` does not import `cli/analyze-config`
- * (that import closed a cli → server → cli cycle: `cli/serve.ts` already
- * imports `createServer`). The CLI keeps a thin wrapper that rethrows
- * {@link InvalidBranchError} as `GitNexusRcError`.
+ * Lives in `core/` so `server/api.ts` and `run-analyze.ts` do not import
+ * `cli/analyze-config` (that import closed a cli → server → cli cycle:
+ * `cli/serve.ts` already imports `createServer`). The CLI keeps a thin
+ * wrapper that rethrows {@link InvalidBranchError} as `GitNexusRcError`.
  */
 
 /** Git refs longer than this are almost certainly a mistake / injection attempt. */
@@ -125,4 +125,50 @@ export function validateBranchName(value: string, source: string): string {
     );
   }
   return trimmed;
+}
+
+/**
+ * Best-effort validation for an auto-detected branch (from git). Returns the
+ * trimmed name, or `undefined` for anything unusable so callers fall back to
+ * the next precedence tier or leave the index unlabeled. Swallows
+ * {@link InvalidBranchError} only; unexpected errors are rethrown.
+ */
+export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return validateBranchName(value, 'detected branch');
+  } catch (err) {
+    if (err instanceof InvalidBranchError) return undefined;
+    throw err;
+  }
+}
+
+/**
+ * Render a rejected checkout name for `onLog`. Hidden / bidi / control code
+ * points become `\uXXXX` so a git-legal U+202E name cannot reverse the
+ * warning in a terminal. C1 controls (U+0080–U+009F, including NEL U+0085)
+ * and remaining Unicode whitespace (`/\s/` — NBSP, U+2028/U+2029, ideographic
+ * space, etc.) are not all in {@link isHiddenOrControl}; escape them the same
+ * way so the ASCII escape survives `stripControlCharacters` and the warning
+ * stays one line. ASCII `"` is escaped; other characters (including backticks)
+ * stay visible.
+ */
+export function formatRejectedBranchForLog(value: string): string {
+  const shouldEscapeRejectedBranchChar = (cp: number, ch: string): boolean =>
+    isHiddenOrControl(cp) || (cp >= 0x80 && cp <= 0x9f) || /\s/.test(ch);
+
+  let out = '';
+  for (const ch of value) {
+    const cp = ch.codePointAt(0);
+    if (cp !== undefined && shouldEscapeRejectedBranchChar(cp, ch)) {
+      out += `\\u${cp.toString(16).padStart(4, '0')}`;
+      continue;
+    }
+    if (ch === '"') {
+      out += '\\"';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }

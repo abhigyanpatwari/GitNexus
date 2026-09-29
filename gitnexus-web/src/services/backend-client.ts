@@ -18,6 +18,8 @@ import { decideSkipGraph } from '../lib/graph-load-decision';
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface BackendRepo {
+  /** Opaque per-server-process handle; matches `repoId` on analyze completion. */
+  id?: string;
   name: string;
   path: string;
   repoPath?: string; // git HEAD returns "repoPath"; older versions return "path"
@@ -110,6 +112,52 @@ export interface JobStatus {
   completedAt?: number;
 }
 
+/** Snapshot from GET /api/ops — execution metrics for the ops dashboard. */
+export interface OpsLaneMetrics {
+  total: number;
+  active: number;
+  queued: number;
+  complete: number;
+  failed: number;
+  byStatus: Record<JobStatus['status'], number>;
+  avgDurationMs: number | null;
+  maxDurationMs: number | null;
+  activeProgressSum: number;
+}
+
+export interface OpsJobView extends JobStatus {
+  lane: 'analyze' | 'embed';
+  branch?: string;
+  retryCount: number;
+  durationMs: number;
+  partial?: {
+    kind: 'embedding-partial';
+    pendingNodeCount: number;
+    nodesProcessed: number;
+  };
+}
+
+export interface OpsSnapshot {
+  generatedAt: number;
+  uptimeMs: number;
+  health: 'ok';
+  server: {
+    version: string;
+    launchContext: string;
+    nodeVersion: string;
+    latestVersion?: string;
+    updateAvailable?: boolean;
+  };
+  analyze: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  embed: { jobs: OpsJobView[]; metrics: OpsLaneMetrics };
+  totals: {
+    jobs: number;
+    active: number;
+    failed: number;
+    complete: number;
+  };
+}
+
 export class BackendError extends Error {
   constructor(
     message: string,
@@ -190,6 +238,18 @@ export interface SSEOptions {
    * the edge's token gate resolves itself once a token is entered.
    */
   retryOnHttpError?: boolean;
+  /**
+   * When true (default), a successful HTTP open resets the retry counter so a
+   * long-lived stream can reconnect forever after transient drops. Set false
+   * for finite budgets (ops → poll fallback): otherwise a 200 that then closes
+   * would reset the counter on every reconnect and never reach `onError`.
+   */
+  resetRetriesOnOpen?: boolean;
+  /**
+   * Abort the handshake if response headers do not arrive in this window.
+   * Fires `onError` so callers (ops → poll) are not stuck on a pending fetch.
+   */
+  connectTimeoutMs?: number;
 }
 
 /**
@@ -210,6 +270,7 @@ export function streamSSE<T = unknown>(
   const maxRetries = options.maxRetries ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 1_000;
   const capDelayMs = options.capDelayMs ?? Infinity;
+  const resetRetriesOnOpen = options.resetRetriesOnOpen ?? true;
 
   let lastEventId = '';
 
@@ -225,13 +286,26 @@ export function streamSSE<T = unknown>(
     if (controller.signal.aborted) return;
 
     (async () => {
+      let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const headers = withAuthHeader(new Headers());
         if (lastEventId) {
           headers.set('Last-Event-ID', lastEventId);
         }
 
+        if (options.connectTimeoutMs && options.connectTimeoutMs > 0) {
+          handshakeTimer = setTimeout(() => {
+            if (controller.signal.aborted) return;
+            handlers.onError?.('SSE handshake timed out');
+            controller.abort();
+          }, options.connectTimeoutMs);
+        }
+
         const response = await fetch(url, { signal: controller.signal, headers });
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = undefined;
+        }
         if (!response.ok) {
           if (options.retryOnHttpError && scheduleRetry(retryCount)) return;
           handlers.onError?.(`Server returned ${response.status}`);
@@ -244,8 +318,10 @@ export function streamSSE<T = unknown>(
           return;
         }
 
-        // Reset retry count on successful connection
-        retryCount = 0;
+        // Long-lived streams reset; finite budgets (ops poll fallback) must not.
+        if (resetRetriesOnOpen) {
+          retryCount = 0;
+        }
         handlers.onOpen?.();
 
         const decoder = new TextDecoder();
@@ -292,12 +368,20 @@ export function streamSSE<T = unknown>(
           }
         }
 
-        // Stream ended without terminal event — try to reconnect
-        scheduleRetry(retryCount);
+        // Stream ended without terminal event — try to reconnect; when the
+        // retry budget is spent, surface the same onError path the catch arm
+        // already uses so callers (e.g. ops dashboard → poll fallback) can run.
+        // scheduleRetry also returns false when aborted — mirror the catch arm
+        // and do not invoke onError after the caller cancelled the stream.
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
+          handlers.onError?.('Stream ended');
+        }
       } catch (err: unknown) {
+        if (handshakeTimer) clearTimeout(handshakeTimer);
         if (err instanceof DOMException && err.name === 'AbortError') return;
-        // Network error — attempt reconnect with backoff
-        if (!scheduleRetry(retryCount)) {
+        // Network error — attempt reconnect with backoff. Skip onError when the
+        // caller already aborted (scheduleRetry returns false for abort too).
+        if (!controller.signal.aborted && !scheduleRetry(retryCount)) {
           handlers.onError?.(err instanceof Error ? err.message : 'Stream error');
         }
       }
@@ -343,9 +427,26 @@ export const setBackendUrl = (url: string): void => {
 export const getBackendUrl = (): string => _backendUrl;
 
 /**
+ * Strip `user[:password]@` userinfo from an http(s) URL so credentials never
+ * land in `?server=`, history, or `_backendUrl` display/storage paths.
+ */
+function stripBackendUrlCredentials(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) return url;
+    parsed.username = '';
+    parsed.password = '';
+    // URL() may add a trailing slash for bare origins; keep normalize's contract.
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return url.replace(/^(https?:\/\/)[^/]*@/i, '$1');
+  }
+}
+
+/**
  * Normalize a user-entered server URL into a base URL suitable for setBackendUrl().
- * Adds protocol if missing, strips trailing slashes, and strips a trailing /api suffix
- * (since all API methods append their own /api/... paths to _backendUrl).
+ * Adds protocol if missing, strips trailing slashes / userinfo, and strips a
+ * trailing /api suffix (since all API methods append their own /api/... paths).
  */
 export function normalizeServerUrl(input: string): string {
   let url = input.trim().replace(/\/+$/, '');
@@ -361,7 +462,7 @@ export function normalizeServerUrl(input: string): string {
   // Strip /api suffix if present — _backendUrl stores the base, not the /api path
   url = url.replace(/\/api$/, '');
 
-  return url;
+  return stripBackendUrlCredentials(url);
 }
 
 // ── Access token ───────────────────────────────────────────────────────────
@@ -1070,6 +1171,40 @@ export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
   return response.json() as Promise<JobStatus>;
 };
 
+/** Fetch the ops / execution metrics snapshot. */
+export const fetchOpsSnapshot = async (): Promise<OpsSnapshot> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/ops`, {}, 5_000);
+  await assertOk(response);
+  return response.json() as Promise<OpsSnapshot>;
+};
+
+/**
+ * Stream ops snapshots via SSE (≈1 Hz). Falls back callers should use
+ * `fetchOpsSnapshot` polling when the stream cannot be established.
+ */
+export const streamOpsSnapshot = (
+  onSnapshot: (snapshot: OpsSnapshot) => void,
+  onError: (error: string) => void,
+): AbortController => {
+  return streamSSE<OpsSnapshot>(
+    `${_backendUrl}/api/ops/stream`,
+    {
+      onMessage: onSnapshot,
+      onError,
+    },
+    // Finite retries so onError can fire and the dashboard falls back to poll.
+    // Do not reset the budget on a successful open — short-lived 200s must count.
+    {
+      maxRetries: 3,
+      baseDelayMs: 1_000,
+      capDelayMs: 5_000,
+      retryOnHttpError: true,
+      resetRetriesOnOpen: false,
+      connectTimeoutMs: 5_000,
+    },
+  );
+};
+
 /** Cancel a running analysis job. */
 export const cancelAnalyze = async (jobId: string): Promise<void> => {
   const response = await fetchWithTimeout(
@@ -1083,7 +1218,7 @@ export const cancelAnalyze = async (jobId: string): Promise<void> => {
 export const streamAnalyzeProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string; repoId?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(

@@ -11,6 +11,8 @@ import {
   resolveBranchPlacement,
   type RepoMeta,
 } from '../../storage/repo-manager.js';
+import { embeddingsFromGitnexusRc } from '../gitnexus-rc-embeddings.js';
+import { getAutoSyncRepoIdentity } from './config.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -25,7 +27,6 @@ import {
   type ProjectCommitInfoEntry,
 } from './state.js';
 import type { AutoSyncConfig, AutoSyncProjectConfig } from './config.js';
-import { validateAutoSyncRemoteUrl } from './config.js';
 import {
   AutoSyncAnalysisError,
   runAutoSyncAnalysis,
@@ -161,6 +162,7 @@ export async function runAutoSyncOnce(
           repoName,
           targetDir,
           timeoutMs: config.repoGitTimeoutMs,
+          allowedHosts: config.allowedHosts,
           deps,
           logger,
         });
@@ -243,6 +245,7 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
+            const rcEmbeddings = await embeddingsFromGitnexusRc(targetDir);
             const analysis = await deps.runAnalysis(
               targetDir,
               {
@@ -253,6 +256,7 @@ export async function runAutoSyncOnce(
                   ? { preserveExistingPdg: true }
                   : { pdg: requestedPdg }),
                 atomicIncremental: true,
+                ...rcEmbeddings,
               },
               config.analyzeTimeoutMs,
               options.signal,
@@ -358,7 +362,7 @@ export async function runAutoSyncOnce(
           repoResult.branch,
         );
         await deps.registerRepo(repoResult.targetDir, meta, {
-          name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
+          name: getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
           // Omitted rather than passed as undefined, so a primary index is
           // registered with the same option shape it had before this branch.
           ...(placement.branch ? { branch: placement.branch } : {}),
@@ -409,8 +413,8 @@ export async function runAutoSyncOnce(
       try {
         membershipAdded = await deps.addRepoToGroup(
           repoResult.project,
-          getAutoSyncRepoIdentity(repoResult.remoteUrl),
-          getAutoSyncRepoIdentity(repoResult.remoteUrl),
+          getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
+          getAutoSyncRepoIdentity(repoResult.remoteUrl, config.allowedHosts),
         );
         groupMembershipOk = true;
       } catch (err: unknown) {
@@ -487,9 +491,10 @@ export function getConfiguredRepoPath(
   project: Pick<AutoSyncProjectConfig, 'localPath'>,
   repoName: string,
   remoteUrl?: string,
+  allowedHosts?: readonly string[],
 ): string {
   if (!remoteUrl) return path.resolve(project.localPath, repoName);
-  const identity = getAutoSyncRepoIdentity(remoteUrl);
+  const identity = getAutoSyncRepoIdentity(remoteUrl, allowedHosts);
   return path.resolve(project.localPath, ...identity.split('/').slice(0, -1), repoName);
 }
 
@@ -510,11 +515,7 @@ export async function addRepoToGroup(
   return true;
 }
 
-export function getAutoSyncRepoIdentity(remoteUrl: string): string {
-  validateAutoSyncRemoteUrl(remoteUrl);
-  const [, host, remotePath] = /^git@([^:\s/]+):([^\s]+)$/.exec(remoteUrl.trim())!;
-  return `${host.toLowerCase()}/${remotePath.replace(/\.git$/i, '')}`;
-}
+export { getAutoSyncRepoIdentity } from './config.js';
 
 export async function syncGroupByName(groupName: string): Promise<void> {
   const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
@@ -551,8 +552,13 @@ async function buildWorkItems(
     }
     for (const remoteUrl of project.remoteUrls) {
       try {
-        const repoName = extractRepoNameFromRemoteUrl(remoteUrl);
-        const targetDir = getConfiguredRepoPath({ localPath: cloneRoot.root }, repoName, remoteUrl);
+        const repoName = extractRepoNameFromRemoteUrl(remoteUrl, config.allowedHosts);
+        const targetDir = getConfiguredRepoPath(
+          { localPath: cloneRoot.root },
+          repoName,
+          remoteUrl,
+          config.allowedHosts,
+        );
         const previous = targetOwners.get(targetDir);
         if (previous !== undefined) {
           throw new Error(
@@ -616,6 +622,7 @@ async function syncFirstAvailableBranch(input: {
   repoName: string;
   targetDir: string;
   timeoutMs: number;
+  allowedHosts?: readonly string[];
   deps: AutoSyncRunDeps;
   logger: AutoSyncLogger;
 }): Promise<
@@ -631,6 +638,9 @@ async function syncFirstAvailableBranch(input: {
         expectedRepoName: input.repoName,
         quarantineRoot: input.item.cloneRoot!.quarantineRoot,
         allowAutoSyncSsh: true,
+        ...(input.allowedHosts && input.allowedHosts.length > 0
+          ? { autoSyncAllowedHosts: input.allowedHosts }
+          : {}),
         timeoutMs: input.timeoutMs,
         branch,
         overwriteLocalChanges: input.item.project.overwriteLocalChanges,

@@ -21,6 +21,7 @@ import {
 import type { StalenessInfo } from '../../src/core/git-staleness.js';
 import type { RegistryEntry } from '../../src/storage/repo-manager.js';
 import type { RepoMeta } from '../../src/storage/repo-meta.js';
+import { publicRepoId } from '../../src/server/public-repo-id.js';
 
 const FULL_SOURCE = { contentRetention: 'full' as const, sourceAvailable: true };
 
@@ -111,6 +112,14 @@ describe('projectRepoListEntry — GET /api/repos', () => {
       FULL_SOURCE,
     );
     expect([primary.branch, pinned.branch]).toEqual(['master', 'test']);
+  });
+
+  it('gives same-named entries distinct opaque ids that match the job repoId', () => {
+    const a = projectRepoListEntry(entry({ name: 'api', path: '/ws/a/api' }), FRESH, FULL_SOURCE);
+    const b = projectRepoListEntry(entry({ name: 'api', path: '/ws/b/api' }), FRESH, FULL_SOURCE);
+    expect(a.id).not.toBe(b.id);
+    expect(a.id).toBe(publicRepoId('/ws/a/api'));
+    expect(a.id).not.toContain('ws');
   });
 
   it('keeps every field the route returned before, unchanged', () => {

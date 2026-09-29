@@ -237,4 +237,18 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     expect(refreshBaseRefLineMock).toHaveBeenCalledTimes(1);
     expect(refreshBaseRefLineMock).toHaveBeenCalledWith(dir, 'develop', expect.any(Object));
   });
+
+  it('threads .gitnexusrc process-detection knobs and lets CLI win (AE3)', async () => {
+    await writeRc({ maxProcesses: '40', maxEntryPointCandidates: 300 });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { maxProcesses: '25' });
+
+    expect(runFullAnalysisMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        maxProcesses: 25,
+        maxEntryPointCandidates: 300,
+      }),
+    );
+  });
 });

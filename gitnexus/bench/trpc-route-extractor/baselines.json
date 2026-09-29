@@ -1,0 +1,12 @@
+{
+  "_comment": "Baselines for bench/trpc-route-extractor/measure.mjs --check (#3339). fingerprint is sha256 over 800 identifier-mounted route identities (method, path, handler name, line) from one appRouter composing 800 same-file subrouters. inline is the shape-ballasted control; chain is the C# concentrated-namespace analogue (depth-N identifier mounts).",
+  "fingerprint": "72f7286ba5b8cf37c68f0707ee96ae91025e3f102a09a544d02ec015ca19f5fa",
+  "scaling_budget": 1.8,
+  "_scaling_note": "(t_large/t_small)/(800/250) on the sibling-mount arm. Measured 1.55–1.62 after memoizing mount paths (char-scan + GC band); a per-procedure remount walk is quadratic (~3+).",
+  "chain_scaling_budget": 2.8,
+  "_chain_scaling_note": "Same ratio on the depth-N chain. Output path text is Θ(n²), so the procedure-count ratio sits near 1.7–2.0 with a memoized table (CI band); the pre-memo walk measured 11.7 (O(n³) ancestor-array copies).",
+  "widening_overhead_budget": 3.5,
+  "_widening_overhead_note": "mount_large_ms / inline_large_ms. Inline carries one ballast const per procedure so file length is comparable. Measured about 2.4; budget guards a compose-step blow-up without treating scan-of-more-tokens as a failure.",
+  "absolute_ms_budget": 160,
+  "_absolute_ms_note": "Sibling-mount compose for 800 routers. Measured about 41 ms; 4× ceiling matches the route-constant benches' CI headroom."
+}

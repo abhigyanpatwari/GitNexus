@@ -47,6 +47,12 @@
  *   `extractAssignment` (Kotlin's `assignment`, Dart's
  *   `initialized_identifier`). Returning `undefined` falls back to the shared
  *   path, so one callback can handle the odd node and leave the rest alone.
+ * - A **fieldless or oddly-fielded** `??`/`?:`/elvis/ternary node is invisible
+ *   to the shared branch expansion, so only one operand (if any) flows.
+ *   Supply `valueAlternatives` (Kotlin's `elvis_expression`, Swift's
+ *   `nil_coalescing_expression`, Dart's `if_null_expression`, Python's
+ *   `conditional_expression`); return `[node]` to keep a statement-bodied
+ *   `if` opaque (Ruby).
  * - A binding needs a `SymbolDefinition` for the pass to attach to. Captures
  *   alone are not enough: without a `@declaration.*` for the bound name, the
  *   seed has no cell to key on.
@@ -150,6 +156,20 @@ export interface CallableFlowCaptureOptions {
         readonly qualifiedName?: string;
       }
     | undefined;
+  /**
+   * Provider-owned branches of a value-selecting expression (#3354). The
+   * shared rule only knows the field shapes `left`/`operator`/`right` (with a
+   * `??`/`||`/`or` operator) and `condition`/`consequence`/`alternative`; a
+   * grammar that spells the same construct differently (fieldless children,
+   * `value`/`if_nil`, `first`/`second`, a ternary without a `condition`
+   * field) supplies the branches here. Each returned branch is expanded again,
+   * so chains work. Returning `[node]` means "recognized, but opaque": the
+   * whole expression stays one source, which is how a provider keeps the
+   * shared ternary rule off a statement-bodied `if` whose branches are
+   * statement lists, not values. `undefined` falls back to the shared rule
+   * (mirrors `extractAssignment`).
+   */
+  readonly valueAlternatives?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
 }
 
 interface OperandSyntax {
@@ -195,6 +215,25 @@ interface ValueBindingIndex {
     string,
     ReadonlyMap<number, CallableCaptureSignature>
   >;
+  /**
+   * Every node id a visibility walk can stop at: the region ids of the three
+   * maps above plus the formal owners. Any other ancestor fails every check,
+   * so the walks jump from anchor to anchor instead of visiting it.
+   */
+  readonly anchorIds: ReadonlySet<number>;
+  /**
+   * Nearest anchor at-or-above a node, memoized for the whole file. Each
+   * alternative of a long `a || b || …` chain starts its walk at a leaf as
+   * deep as the chain is long; without the memo every leaf re-walked the same
+   * spine to the root, so the chain cost grew quadratically in its length.
+   */
+  readonly nearestAnchorById: Map<number, SyntaxNode | null>;
+  /**
+   * Parent of every named node, recorded by the one DFS. tree-sitter's
+   * `parent` is not a pointer read: it re-descends from the root, so it costs
+   * the node's depth, and a leaf of a long chain is as deep as the chain.
+   */
+  readonly parentById: ReadonlyMap<number, SyntaxNode>;
 }
 
 /**
@@ -203,20 +242,33 @@ interface ValueBindingIndex {
  * One explicit DFS supplies all phases below. Query-backed emitters may still
  * perform their existing query walk; this helper never reparses and remains
  * linear in AST size (the scope-capture benchmark guards the scaling ratio).
+ * That includes a value-selecting source: `valueAlternatives` expands a
+ * chain iteratively into disjoint leaves, and each leaf's visibility walk
+ * reuses the memoized anchor spine instead of re-walking to the root (the
+ * `typescript-deep-chain` benchmark case guards that one).
  */
 export function synthesizeCallableFlowCaptures(
   root: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly CaptureMatch[] {
-  const nodes = collectNodes(root);
+  const parentById = new Map<number, SyntaxNode>();
+  const nodes = collectNodes(root, parentById);
   const functions = collectFunctions(nodes, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
-  const valueBindings = buildValueBindingIndex(nodes, assignments, functions, options);
+  const valueBindings = buildValueBindingIndex(nodes, parentById, assignments, functions, options);
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
-    emitAssignmentFact(assignment, knownCallableNames, valueBindings, options, out);
+    for (const source of valueAlternatives(assignment.source, options)) {
+      emitAssignmentFact(
+        { ...assignment, source },
+        knownCallableNames,
+        valueBindings,
+        options,
+        out,
+      );
+    }
   }
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
@@ -232,7 +284,9 @@ export function synthesizeCallableFlowCaptures(
   return out;
 }
 
-function collectNodes(root: SyntaxNode): SyntaxNode[] {
+/** Every named node in document order; also records each one's parent into
+ *  `parentById` (see `ValueBindingIndex.parentById`). */
+function collectNodes(root: SyntaxNode, parentById: Map<number, SyntaxNode>): SyntaxNode[] {
   const out: SyntaxNode[] = [];
   const stack: SyntaxNode[] = [root];
   while (stack.length > 0) {
@@ -241,7 +295,9 @@ function collectNodes(root: SyntaxNode): SyntaxNode[] {
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--) {
       const child = children[i];
-      if (child !== null) stack.push(child);
+      if (child === null) continue;
+      parentById.set(child.id, node);
+      stack.push(child);
     }
   }
   return out;
@@ -325,6 +381,7 @@ function collectAssignments(
 
 function buildValueBindingIndex(
   nodes: readonly SyntaxNode[],
+  parentById: ReadonlyMap<number, SyntaxNode>,
   assignments: readonly AssignmentParts[],
   functions: readonly FunctionInfo[],
   options: CallableFlowCaptureOptions,
@@ -412,12 +469,54 @@ function buildValueBindingIndex(
       if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
     }
   }
+  const anchorIds = new Set<number>();
+  for (const index of [assignmentRegionIdsByName, memberStoreRegionIdsByName]) {
+    for (const regionIds of index.values()) for (const id of regionIds) anchorIds.add(id);
+  }
+  for (const byRegion of signatureByNameAndRegion.values()) {
+    for (const id of byRegion.keys()) anchorIds.add(id);
+  }
+  for (const owner of formalByOwner.keys()) if (owner !== undefined) anchorIds.add(owner);
   return {
     assignmentRegionIdsByName,
     memberStoreRegionIdsByName,
     formalByOwner,
     signatureByNameAndRegion,
+    anchorIds,
+    parentById,
+    nearestAnchorById: new Map(),
   };
+}
+
+/** A node the DFS did not reach (none in practice) falls back to tree-sitter. */
+function parentOf(node: SyntaxNode, bindings: ValueBindingIndex): SyntaxNode | null {
+  return bindings.parentById.get(node.id) ?? node.parent;
+}
+
+/**
+ * The nearest anchor at-or-above `start` (see `ValueBindingIndex.anchorIds`),
+ * or null when none is. Every node visited on the way is memoized, so across
+ * one file each node's `parent` is taken at most once by these walks.
+ */
+function nearestAnchor(start: SyntaxNode | null, bindings: ValueBindingIndex): SyntaxNode | null {
+  const visited: number[] = [];
+  let node = start;
+  let found: SyntaxNode | null = null;
+  while (node !== null) {
+    const cached = bindings.nearestAnchorById.get(node.id);
+    if (cached !== undefined) {
+      found = cached;
+      break;
+    }
+    visited.push(node.id);
+    if (bindings.anchorIds.has(node.id)) {
+      found = node;
+      break;
+    }
+    node = parentOf(node, bindings);
+  }
+  for (const id of visited) bindings.nearestAnchorById.set(id, found);
+  return found;
 }
 
 /** True when a pointer/parenthesized declarator sits between the declaration
@@ -481,8 +580,11 @@ function isVisibleValueBinding(
   ) {
     return true;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     if (assignmentRegionIds?.has(node.id) === true) return true;
     if (
       options.functionNodeTypes.has(node.type) &&
@@ -490,7 +592,6 @@ function isVisibleValueBinding(
     ) {
       return true;
     }
-    node = node.parent;
   }
   if (bindings.formalByOwner.get(undefined)?.has(name) === true) return true;
   // A declared callable-typed binding (file-scope `void (*fp)(int);`) is a
@@ -520,10 +621,12 @@ function isVisibleMemberStore(
   if (regionIds !== undefined) {
     const providerOwner = options.lexicalFunctionOwner?.(input);
     if (providerOwner !== undefined && regionIds.has(providerOwner.id)) return true;
-    let node: SyntaxNode | null = input;
-    while (node !== null) {
+    for (
+      let node = nearestAnchor(input, bindings);
+      node !== null;
+      node = nearestAnchor(parentOf(node, bindings), bindings)
+    ) {
       if (regionIds.has(node.id)) return true;
-      node = node.parent;
     }
   }
   return visibleCallableSignature(input, name, bindings, options) !== undefined;
@@ -542,11 +645,13 @@ function visibleCallableSignature(
     const signature = byRegion.get(providerOwner.id);
     if (signature !== undefined) return signature;
   }
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
+  for (
+    let node = nearestAnchor(input, bindings);
+    node !== null;
+    node = nearestAnchor(parentOf(node, bindings), bindings)
+  ) {
     const signature = byRegion.get(node.id);
     if (signature !== undefined) return signature;
-    node = node.parent;
   }
   return undefined;
 }
@@ -585,6 +690,115 @@ function assignmentParts(
   }
   if (destination === null || source === null) return [];
   return [{ container: node, destination, source }];
+}
+
+/** Operators whose result is one of their operands, not a computed value. */
+const VALUE_SELECTING_OPERATORS = new Set(['??', '||', 'or']);
+
+/**
+ * Operators that yield their left operand when it is falsy and their right
+ * operand otherwise. A falsy value is never a callable, so only the RIGHT
+ * operand can be the callable that is later invoked. Where `&&` / `and`
+ * yields a boolean instead (Java, C#, Go, Rust, C, C++, PHP, Zig), the
+ * destination is not callable, so the flow never meets an invoke.
+ */
+const RIGHT_SELECTING_OPERATORS = new Set(['&&', 'and']);
+
+/**
+ * The operands a value-selecting expression can evaluate to (#3354):
+ * `a ?? b`, `a || b`, `a or b`, and `c ? a : b` each yield one of their
+ * branches, so each branch flows into the destination. `a && b` / `a and b`
+ * can only yield a callable through `b`, so `x and f or g` reaches `f` and `g`.
+ * Anything else is its own single alternative, which leaves every other
+ * source shape untouched. A branch that is itself an operator expression
+ * (`x.kind === f || g`) yields a computed value, so it contributes nothing.
+ * `options.valueAlternatives` is consulted first for grammars whose shape the
+ * field-based rule below cannot see.
+ */
+function valueAlternatives(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] {
+  // Explicit stack, not recursion: `a || b || …` nests one level per operand,
+  // so a generated keyword table thousands of operands long overflowed the
+  // call stack (and re-copied every partial result at each level).
+  const out: SyntaxNode[] = [];
+  const pending: SyntaxNode[] = [node];
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    const branches = valueBranches(current, options);
+    if (branches === undefined) {
+      // An operator branch is opaque, as the whole compound source was before
+      // the fan-out: emitted alone, `x.kind === Handlers.run` becomes a seed
+      // whose qualified text slices to receiver `Handlers`, member `run`.
+      if (current === node || !isBinaryOperatorExpression(unwrapParentheses(current))) {
+        out.push(current);
+      }
+      continue;
+    }
+    // Reverse push keeps the left-to-right branch order on output.
+    for (let i = branches.length - 1; i >= 0; i--) {
+      const branch = branches[i];
+      if (branch !== undefined) pending.push(branch);
+    }
+  }
+  return out;
+}
+
+/** One level of `valueAlternatives`: the branches `node` selects between, or
+ *  undefined when it is opaque (its own single alternative). */
+function valueBranches(
+  node: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): readonly SyntaxNode[] | undefined {
+  const inner = unwrapParentheses(node);
+  const provided = options.valueAlternatives?.(inner);
+  if (provided !== undefined) {
+    return provided.length === 1 && provided[0]?.id === inner.id ? undefined : provided;
+  }
+  const consequence = inner.childForFieldName('consequence');
+  const alternative = inner.childForFieldName('alternative');
+  if (consequence !== null && alternative !== null && inner.childForFieldName('condition')) {
+    return [consequence, alternative];
+  }
+  const left = inner.childForFieldName('left');
+  const right = inner.childForFieldName('right');
+  const operator = inner.childForFieldName('operator')?.type;
+  if (left === null || right === null || !operator) return undefined;
+  if (VALUE_SELECTING_OPERATORS.has(operator)) return [left, right];
+  if (RIGHT_SELECTING_OPERATORS.has(operator)) return [right];
+  return undefined;
+}
+
+function unwrapParentheses(node: SyntaxNode): SyntaxNode {
+  let inner = node;
+  while (inner.type.includes('parenthesized') && inner.namedChildCount === 1) {
+    const child = inner.namedChild(0);
+    if (child === null) break;
+    inner = child;
+  }
+  return inner;
+}
+
+/**
+ * True for an expression that computes a value from two operands (`a === b`,
+ * `a + b`, `a is b`), which designates neither operand. Read from the same
+ * field vocabulary as `valueBranches` rather than grammar type names: a
+ * `left`/`right` pair, or an operator token (`operator`, Python's
+ * `operators`, Swift's `op`) that follows the expression's start. A member
+ * access that fields its `.` / `->` as `operator` (Ruby `call`, C/C++
+ * `field_expression`) also fields its member name, so it stays a designator;
+ * a unary `&f` / `*fp` leads with its operator and stays one too.
+ */
+function isBinaryOperatorExpression(node: SyntaxNode): boolean {
+  if (node.childForFieldName('left') !== null && node.childForFieldName('right') !== null) {
+    return true;
+  }
+  if (memberNameNode(node) !== null) return false;
+  const operator =
+    node.childForFieldName('operator') ??
+    node.childForFieldName('operators') ??
+    node.childForFieldName('op');
+  return operator !== null && operator.startIndex > node.startIndex;
 }
 
 function emitAssignmentFact(
@@ -1021,11 +1235,7 @@ function memberParts(
   // stay unaffected. Without it every `x.f(arg)` in such a grammar collapsed
   // to a DIRECT call named `f` and the flow solver fanned the argument out to
   // every same-named callable.
-  const memberNode =
-    node.childForFieldName('property') ??
-    node.childForFieldName('field') ??
-    node.childForFieldName('method') ??
-    node.childForFieldName('member');
+  const memberNode = memberNameNode(node);
   if (receiverNode === null || memberNode === null) return undefined;
   const receiver = operandSyntax(receiverNode, options);
   const member = operandSyntax(memberNode, options);
@@ -1036,6 +1246,17 @@ function memberParts(
       options.memberPointerOperators?.has(child.text) === true,
   );
   return { receiver, member, ...(operator !== undefined ? { operator: operator.text } : {}) };
+}
+
+/** The member-name child of a member access, under the field names the
+ *  grammars use for it. */
+function memberNameNode(node: SyntaxNode): SyntaxNode | null {
+  return (
+    node.childForFieldName('property') ??
+    node.childForFieldName('field') ??
+    node.childForFieldName('method') ??
+    node.childForFieldName('member')
+  );
 }
 
 function operandSyntax(

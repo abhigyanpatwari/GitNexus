@@ -33,6 +33,7 @@ import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/nam
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import type { StoredRebuildReason } from '../core/rebuild-reasons.js';
 import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
@@ -102,6 +103,12 @@ export interface RepoMeta {
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;
+  /**
+   * Shared-store checkouts only (#3352): the graph this slot reads when it is
+   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
+   * and validated by `resolveGraphPath`.
+   */
+  graphPath?: string;
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */
@@ -453,6 +460,12 @@ export interface RepoMeta {
      *  diagnostics must show whether the write set was already
      *  under-expanded when the run died. */
     droppedImporterChunks?: number;
+    /**
+     * Why this run rebuilds (#3137), so an interrupted rebuild can name its
+     * causes on the next run. Untrusted on read: parse it with
+     * `readStoredRebuildReasons`, since the file is schema-less JSON.
+     */
+    reasons?: StoredRebuildReason[];
   };
   /**
    * Durable embedding-resume marker, written in two distinct situations that
@@ -616,6 +629,22 @@ export interface RepoMeta {
      * unavailable. Optional for that back-compat reason.
      */
     hasCallSummary?: boolean;
+  };
+  /**
+   * The process-detection budget this index's Community/Process rows were
+   * built under (#3313). Compared on the next analyze so a budget-only
+   * config change re-detects flows without `--force`. `maxProcesses: null`
+   * means the dynamic `symbols / 10` formula. Absent on pre-#3313 metas:
+   * that absence matches default/dynamic knobs (backfill) and mismatches
+   * any explicit override.
+   */
+  processDetection?: {
+    maxProcesses: number | null;
+    maxProcessBranching: number;
+    maxProcessTraceDepth: number;
+    maxEntryPointCandidates: number;
+    /** Live Community/Process rows are not certified under this stamp (#3322). */
+    uncertified?: true;
   };
 }
 

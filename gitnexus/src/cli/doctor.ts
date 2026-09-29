@@ -1,4 +1,5 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
+import { findLegacyLocalIndex } from '../storage/shared-store-lifecycle.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 import {
@@ -34,6 +35,18 @@ import { updateEligibleInstallSync } from '../core/install-context.js';
 import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
 import { cachedUpdateNoticeLine } from './update-notice.js';
+import { formatSlotSize, staleReasonLabel } from './stale-branch-format.js';
+import {
+  findRegistryEntryByRepoPath,
+  findRepo,
+  listRegisteredRepos,
+} from '../storage/repo-manager.js';
+import {
+  isDeleteCandidate,
+  listStaleBranchSlots,
+  staleListingBlock,
+  type StaleBranchSlot,
+} from '../storage/stale-branch-slots.js';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -189,6 +202,35 @@ export function poolSizeDoctorLine(pool: number, envRaw: string | undefined): st
  */
 export function nativeStatusLine(check: NativeCheckResult): string {
   return `  ${padDisplayEnd('native', 10)}${nativeStatusText(check)}`;
+}
+
+/**
+ * Cwd leftover-slot lines (#3331). Pure: no deletes and no registry scan.
+ * When heads cannot be listed, do not title rows as orphaned or name
+ * `clean --stale` (#3337): that command refuses to delete in the same state.
+ */
+export function leftoverBranchSlotDoctorLines(slots: StaleBranchSlot[]): string[] {
+  if (slots.length === 0) return [];
+  const listingBlock = staleListingBlock(slots);
+  if (listingBlock === 'heads-unavailable') {
+    return [t('clean.stale.headsUnavailable')];
+  }
+  if (listingBlock === 'listing-failed') {
+    return [t('clean.stale.listingFailed')];
+  }
+  const lines = [t('doctor.orphanedBranches')];
+  let total = 0;
+  for (const slot of slots) {
+    total += slot.sizeBytes;
+    lines.push(
+      `  ${slot.branch}  ${staleReasonLabel(slot.reason)}  ${formatSlotSize(slot.sizeBytes)}`,
+    );
+  }
+  lines.push(`  ${t('doctor.orphanedBranches.total', { size: formatSlotSize(total) })}`);
+  if (slots.some(isDeleteCandidate)) {
+    lines.push(`  ${t('doctor.orphanedBranches.reclaim')}`);
+  }
+  return lines;
 }
 
 function nativeStatusText(check: NativeCheckResult): string {
@@ -358,5 +400,29 @@ export const doctorCommand = async () => {
     if (cudaRedirect.detail) {
       console.log(`  ${padDisplayEnd('', 12)}${cudaRedirect.detail}`);
     }
+  }
+  // Cwd leftover-slot report only; never delete.
+  const cwdRepo = await findRepo(process.cwd());
+  if (!cwdRepo) return;
+  const entries = await listRegisteredRepos();
+  const entry = findRegistryEntryByRepoPath(entries, cwdRepo.repoPath);
+  const slots = await listStaleBranchSlots({
+    repoPath: cwdRepo.repoPath,
+    storagePath: cwdRepo.storagePath,
+    branches: entry?.branches,
+  });
+  const leftoverLines = leftoverBranchSlotDoctorLines(slots);
+  // A pre-adoption index left in <repo>/.gitnexus after this checkout moved
+  // into a shared store (#3352).
+  const legacy = await findLegacyLocalIndex(cwdRepo.repoPath, cwdRepo.storagePath);
+  if (legacy) {
+    leftoverLines.push(
+      t('status.legacyLocalIndex', { path: legacy.dir, size: formatSlotSize(legacy.bytes) }),
+    );
+  }
+  if (leftoverLines.length === 0) return;
+  console.log('');
+  for (const line of leftoverLines) {
+    console.log(line);
   }
 };

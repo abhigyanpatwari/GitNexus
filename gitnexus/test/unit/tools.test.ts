@@ -2,7 +2,7 @@
  * Unit Tests: MCP Tool Definitions
  *
  * Tests: GITNEXUS_TOOLS from tools.ts
- * - All 17 tools are defined (per-repo + group_list/group_sync)
+ * - All 19 tools are defined (per-repo + group_list/group_sync)
  * - Each tool has valid name, description, inputSchema
  * - Required fields are correct
  * - Optional repo parameter is present on tools that need it
@@ -23,8 +23,8 @@ const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
 const OPEN_WORLD_READ_ONLY_TOOLS = new Set(['query']);
 
 describe('GITNEXUS_TOOLS', () => {
-  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group)', () => {
-    expect(GITNEXUS_TOOLS).toHaveLength(17);
+  it('exports all tools (8 base + 1 explain + 1 pdg_query + 3 route/tool/shape + 1 api_impact + 1 trace + 2 group + read_file + grep)', () => {
+    expect(GITNEXUS_TOOLS).toHaveLength(19);
   });
 
   it('contains all expected tool names', () => {
@@ -43,6 +43,8 @@ describe('GITNEXUS_TOOLS', () => {
         'pdg_query',
         'api_impact',
         'trace',
+        'read_file',
+        'grep',
       ]),
     );
   });
@@ -122,6 +124,37 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.description).toContain('staleness');
       expect(tool.description).toMatch(/lastCommit|branch/);
     }
+  });
+
+  it('query process_symbols description names the (id, process_id) join key (#3351)', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    expect(queryTool.description).toContain('One row per (id, process_id)');
+    expect(queryTool.description).toContain('Join a process to its rows by process_id');
+    expect(queryTool.description).toContain('symbol_count is the number of those rows');
+    expect(queryTool.description).toContain('single-repo envelope');
+    expect(queryTool.description).toContain('does not include process_symbols');
+    expect(queryTool.description).toContain('Join processes[].id to process_symbols[].process_id');
+    expect(queryTool.description).toContain(
+      'when service is set, it counts only attaches under that prefix',
+    );
+    expect(queryTool.description).toContain('query again with repo "@<group>/<memberPath>"');
+    expect(queryTool.description).toContain(
+      'content appears only on the first row for each symbol id across the whole process_symbols array, not per process',
+    );
+    expect(queryTool.description).toContain('even under a different process_id');
+    expect(queryTool.description).toContain('context({uid: "<id>", include_content: true})');
+    expect(queryTool.description).toContain(
+      "With include_content, context() also returns that symbol's source.",
+    );
+  });
+
+  it('query include_content property states the once-per-id rule and the context() fallback', () => {
+    const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
+    const description = queryTool.inputSchema.properties.include_content.description;
+    expect(description).toContain('Include source text retained for matching symbols');
+    expect(description).toContain(
+      'Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
+    );
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
@@ -323,10 +356,11 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
-  it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
+  it('per-repo tools have an optional branch scope param (#2106); group/list and checkout file tools do not', () => {
+    const noBranch = new Set(['list_repos', 'read_file', 'grep', ...GROUP_TOOLS]);
     for (const tool of GITNEXUS_TOOLS) {
-      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
-        expect(tool.inputSchema.properties.branch).toBeUndefined();
+      if (noBranch.has(tool.name)) {
+        expect(tool.inputSchema.properties.branch, tool.name).toBeUndefined();
         continue;
       }
       expect(tool.inputSchema.properties.branch, tool.name).toBeDefined();
@@ -334,6 +368,14 @@ describe('GITNEXUS_TOOLS', () => {
       // Optional — omitting it keeps the default/primary-branch behavior.
       expect(tool.inputSchema.required).not.toContain('branch');
     }
+  });
+
+  it('grep advertises the HTTP caseSensitive and literal flags', () => {
+    const grep = GITNEXUS_TOOLS.find((tool) => tool.name === 'grep')!;
+    expect(grep.inputSchema.properties.caseSensitive.type).toBe('boolean');
+    expect(grep.inputSchema.properties.literal.type).toBe('boolean');
+    expect(grep.description).toContain('hit.line - 1');
+    expect(grep.description).toMatch(/working tree/i);
   });
 
   it('group tools without backend repo param omit repo property', () => {

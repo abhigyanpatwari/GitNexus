@@ -133,6 +133,33 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/Unknown key "defalutBranch"/);
   });
 
+  it('parses process-detection budget keys as numeric strings (#3313)', async () => {
+    await writeRc(
+      JSON.stringify({
+        maxProcesses: 40,
+        maxProcessBranching: '2',
+        maxProcessTraceDepth: 8,
+        maxEntryPointCandidates: 400,
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      maxProcesses: '40',
+      maxProcessBranching: '2',
+      maxProcessTraceDepth: '8',
+      maxEntryPointCandidates: '400',
+    });
+  });
+
+  it('lets a nested analyze block override flat process-detection keys (#3313)', async () => {
+    await writeRc(
+      JSON.stringify({
+        maxProcesses: 80,
+        analyze: { maxProcesses: 25 },
+      }),
+    );
+    expect(loadAnalyzeConfig(dir)).toEqual({ maxProcesses: '25' });
+  });
+
   it('accepts embeddingBaseUrl / embeddingModel but rejects embeddingDims (CLI/env-only)', async () => {
     // URL + MODEL are read lazily at runtime, so they are valid config keys.
     await writeRc(JSON.stringify({ embeddingBaseUrl: 'http://h/v1', embeddingModel: 'm' }));

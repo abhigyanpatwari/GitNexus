@@ -218,6 +218,55 @@ describe('parsedfile-store', () => {
     }
   });
 
+  it('round-trips exact call-result assignment identities', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const pf = makeStoreEntry('Scenario.swift', {
+        callResultAssignmentSites: [
+          {
+            callSite: { startLine: 3, startCol: 14, endLine: 3, endCol: 25 },
+            inScope: 'scope:run',
+            lhs: 'store',
+          },
+        ],
+      });
+      await persistParsedFileChunk(dir, 'assignment', [pf]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['Scenario.swift']));
+      expect(loaded.get('Scenario.swift')?.callResultAssignmentSites).toEqual(
+        pf.callResultAssignmentSites,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops malformed call-result assignments per site and rejects a non-array field', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const mixed = makeStoreEntry('mixed.swift', {
+        callResultAssignmentSites: [
+          {
+            callSite: { startLine: 3, startCol: 14, endLine: 3, endCol: 25 },
+            inScope: 'scope:run',
+            lhs: 'store',
+          },
+          { callSite: '3:14', inScope: 'scope:run', lhs: 'poison' },
+        ],
+      });
+      const garbage = makeStoreEntry('garbage.swift', {
+        callResultAssignmentSites: 'not-an-array',
+      });
+      await persistParsedFileChunk(dir, 'assignment-invalid', [mixed, garbage]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['mixed.swift', 'garbage.swift']));
+      expect(loaded.get('mixed.swift')?.callResultAssignmentSites).toHaveLength(1);
+      expect(loaded.has('garbage.swift')).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('drops a malformed callable-flow site but retains the file and its other sites (per-site sanitation, #2522)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {

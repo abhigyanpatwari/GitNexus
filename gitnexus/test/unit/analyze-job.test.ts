@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   JobManager,
   isTerminalJobStatus,
@@ -14,6 +14,8 @@ describe('JobManager', () => {
 
   afterEach(() => {
     manager.dispose();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('creates a job with queued status', () => {
@@ -191,6 +193,290 @@ describe('JobManager', () => {
     manager.cancelJob(job.id, 'Cancelled by user');
 
     expect(controller.signal.aborted).toBe(true);
+  });
+
+  // Cancellation must reach the worker over IPC first. On Windows
+  // `child.kill('SIGTERM')` is a forceful termination, so leading with the
+  // signal could kill the worker mid LadybugDB write; the signal is only a
+  // bounded fallback for a worker that ignores the cancel request.
+  it('cancelJob asks the worker to stop over IPC before sending any signal', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const sent: unknown[] = [];
+    const signals: string[] = [];
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: (msg: unknown) => {
+        sent.push(msg);
+        return true;
+      },
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+
+    expect(sent).toEqual([{ type: 'cancel' }]);
+    expect(signals).toEqual([]);
+    expect(manager.getJob(job.id)!.status).toBe('analyzing');
+    onExit?.();
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.getJob(job.id)!.error).toBe('Cancelled by user');
+  });
+
+  it('cancelJob keeps the slot occupied until the worker exits', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(manager.getJob(job.id)!.status).toBe('analyzing');
+    expect(manager.hasPendingCancel(job.id)).toBe(true);
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(
+      /Analysis already in progress/,
+    );
+
+    onExit?.();
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('createJob rejects same-repo reuse while a cancel is pending', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(() => manager.createJob({ repoPath: '/tmp/repo' })).toThrow(
+      /Analysis already in progress/,
+    );
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(
+      /Analysis already in progress/,
+    );
+
+    onExit?.();
+    expect(manager.createJob({ repoPath: '/tmp/repo' }).status).toBe('queued');
+  });
+
+  it('createJob rejects same-repo reuse after cancel IPC is consumed but the child remains', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    let onExit: (() => void) | undefined;
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: (_event: string, listener: () => void) => {
+        onExit = listener;
+        return fakeChild;
+      },
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Cancelled by user')).toBe(true);
+    expect(manager.applyPendingCancel(job.id)).toBe(true);
+    expect(manager.getJob(job.id)?.status).toBe('failed');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+    expect(() => manager.createJob({ repoPath: '/tmp/repo' })).toThrow(
+      /Analysis already in progress/,
+    );
+
+    onExit?.();
+    expect(manager.createJob({ repoPath: '/tmp/repo' }).status).toBe('queued');
+  });
+
+  it('applyPendingCancel writes the caller reason and ignores a later worker error', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id, 'Analysis timed out (30 minute limit)')).toBe(true);
+    expect(manager.applyPendingCancel(job.id)).toBe(true);
+    expect(manager.getJob(job.id)!.status).toBe('failed');
+    expect(manager.getJob(job.id)!.error).toBe('Analysis timed out (30 minute limit)');
+    expect(manager.hasPendingCancel(job.id)).toBe(false);
+
+    manager.updateJob(job.id, {
+      status: 'failed',
+      error: 'Analysis cancelled (parent requested cancellation)',
+    });
+    expect(manager.getJob(job.id)!.error).toBe('Analysis timed out (30 minute limit)');
+  });
+
+  it('releaseChild frees the slot when a failed job never emits exit', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: () => true,
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.updateJob(job.id, { status: 'failed', error: 'Worker process error: spawn ENOENT' });
+
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+    manager.releaseChild(job.id);
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('cancelJob falls back to a signal when the IPC channel is already closed', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    // connected:false — requestChildShutdown skips send() and signal-kills.
+    const fakeChild = {
+      connected: false,
+      exitCode: null,
+      signalCode: null,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    manager.cancelJob(job.id);
+
+    expect(signals).toEqual(['SIGTERM']);
+  });
+
+  it('cancelJob SIGKILLs after the grace period when the worker ignores IPC', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+
+    expect(manager.cancelJob(job.id)).toBe(true);
+    expect(signals).toEqual([]);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGKILL']);
+  });
+
+  it('dispose on Windows skips immediate SIGTERM and leaves the IPC grace timer', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.dispose();
+
+    expect(signals).toEqual([]);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGKILL']);
+    vi.restoreAllMocks();
+  });
+
+  it('dispose on Unix SIGTERMs after IPC and clears the grace timer', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+
+    const signals: string[] = [];
+    const fakeChild = {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: () => true,
+      kill: (signal?: string) => {
+        signals.push(signal ?? 'SIGTERM');
+        return true;
+      },
+      on: () => fakeChild,
+    };
+    manager.registerChild(job.id, fakeChild as any);
+    manager.dispose();
+
+    expect(signals).toEqual(['SIGTERM']);
+    vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual(['SIGTERM']);
+    vi.restoreAllMocks();
   });
 
   it('cancelJob returns false for terminal jobs', () => {

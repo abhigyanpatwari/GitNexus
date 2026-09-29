@@ -102,6 +102,7 @@ import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
+  isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import {
   emitTsScopeCaptures,
@@ -127,6 +128,7 @@ import {
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../route-extractors/nest.js';
+import { extractTrpcRoutes, shouldScanForTrpcRoutes } from '../route-extractors/trpc.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
@@ -134,6 +136,20 @@ const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes
   ...extractDataRouteTableRoutes(...args),
   ...extractNestRoutes(...args),
 ];
+
+const extractJsTsTextRoutes = (path: string, content: string) =>
+  shouldScanForTrpcRoutes(path) ? extractTrpcRoutes(path, content) : [];
+
+const pairKeyName = (keyNode: SyntaxNode | null | undefined): string | null => {
+  if (!keyNode) return null;
+  if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
+    return keyNode.text;
+  }
+  if (keyNode.type === 'string') {
+    return keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment')?.text ?? null;
+  }
+  return null;
+};
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
@@ -188,20 +204,9 @@ const tsExtractFunctionName = (
   // tree-sitter-typescript uses `pair`; tree-sitter-javascript also exposes
   // `pair`. (Older grammars used `property_assignment`; we accept both.)
   if (parent.type === 'pair' || parent.type === 'property_assignment') {
-    const keyNode = parent.childForFieldName?.('key');
-    if (!keyNode) return { funcName: null, label: 'Function' };
-    if (keyNode.type === 'property_identifier' || keyNode.type === 'identifier') {
-      return { funcName: keyNode.text, label: 'Function' };
-    }
-    if (keyNode.type === 'string') {
-      // `"add-item": () => ...` — the literal text inside the quotes.
-      const fragment = keyNode.children?.find((c: SyntaxNode) => c.type === 'string_fragment');
-      const text = fragment?.text ?? null;
-      return { funcName: text, label: 'Function' };
-    }
     // computed_property_name (`[ACTION_KEY]`) and other dynamic keys have
-    // no static name — fall through anonymous.
-    return { funcName: null, label: 'Function' };
+    // no static name — pairKeyName returns null and we stay anonymous.
+    return { funcName: pairKeyName(parent.childForFieldName?.('key')), label: 'Function' };
   }
 
   // HOC-wrapped variable declarations: `const Button = forwardRef((p, r) => { ... })`,
@@ -266,6 +271,17 @@ const tsExtractFunctionName = (
         };
       }
       return { funcName: null, label: 'Function' };
+    }
+
+    // HOC-wrapped pair: `create: procedure.mutation(async ({ input }) => { ... })`.
+    // tRPC and similar frameworks wrap callbacks inside .mutation()/.query() calls
+    // that are themselves pair values. The arrow's parent is `arguments`,
+    // grandparent is `call_expression`, great-grandparent is `pair`.
+    if (declarator?.type === 'pair' || declarator?.type === 'property_assignment') {
+      if (isBlockedCallbackRegistrationCall(callExpr)) {
+        return { funcName: null, label: 'Function' };
+      }
+      return { funcName: pairKeyName(declarator.childForFieldName?.('key')), label: 'Function' };
     }
 
     return { funcName: null, label: 'Function' };
@@ -408,6 +424,12 @@ export const typescriptProvider = defineLanguage({
         'expo-router',
       ],
     },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
+    },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
@@ -469,6 +491,9 @@ export const typescriptProvider = defineLanguage({
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
   extractDecoratorRoutes: extractJsTsRoutes,
+  // Content-based (not AST): tRPC procedure routers are scanned from source text.
+  // Path-gate lives here (language provider), not in the shared parse worker.
+  extractTextRoutes: extractJsTsTextRoutes,
 });
 
 export const javascriptProvider = defineLanguage({
@@ -481,6 +506,12 @@ export const javascriptProvider = defineLanguage({
       entryPointMultiplier: 3.2,
       reason: 'nestjs-decorator',
       patterns: ['@Controller', '@Get', '@Post', '@Put', '@Delete', '@Patch'],
+    },
+    {
+      framework: 'trpc',
+      entryPointMultiplier: 3.0,
+      reason: 'trpc-procedure',
+      patterns: ['initTRPC', 'createTRPCRouter', '@trpc/server', '@trpc/client'],
     },
     {
       framework: 'expo-router',
@@ -544,4 +575,6 @@ export const javascriptProvider = defineLanguage({
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
   extractDecoratorRoutes: extractJsTsRoutes,
+  // Content-based (not AST): tRPC procedure routers are scanned from source text.
+  extractTextRoutes: extractJsTsTextRoutes,
 });

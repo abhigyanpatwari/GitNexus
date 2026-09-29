@@ -56,6 +56,7 @@ import type { ParsedImport } from './types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ReferenceSite } from './reference-site.js';
 import type { CallableFlowSite } from './callable-flow-site.js';
+import type { CallResultAssignmentSite } from './call-result-assignment-site.js';
 
 export interface ParsedFile {
   readonly filePath: string;
@@ -81,6 +82,8 @@ export interface ParsedFile {
    * syntax remain source-compatible; consumers normalize absence to `[]`.
    */
   readonly callableFlowSites?: readonly CallableFlowSite[];
+  /** Exact call-expression → assigned local identity for return-type replay. */
+  readonly callResultAssignmentSites?: readonly CallResultAssignmentSite[];
   /**
    * Opaque, language-private serialization of capture-time side-channel
    * state that a provider's `emitScopeCaptures` populates into module-level

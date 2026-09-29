@@ -253,6 +253,58 @@ describe('finalization gate follows the placement the run chose', () => {
     expect(releaseRepoLock).toHaveBeenCalledTimes(1);
   });
 
+  it('aborts settle on cancel without waiting for the 60s timeout', async () => {
+    vi.useFakeTimers();
+    H.settledDir = '';
+    const releaseRepoLock = vi.fn();
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+    child.emit('message', completeMessage(true));
+
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    jobManager.cancelJob(job.id, 'Cancelled by user');
+
+    // One poll: shouldAbort sees pending cancel and returns without the
+    // timeout warning / "finalization not visible" failure.
+    await vi.advanceTimersByTimeAsync(200);
+
+    const done = jobManager.getJob(job.id);
+    expect(done?.status).toBe('failed');
+    expect(done?.error).toBe('Cancelled by user');
+    expect(done?.error).not.toMatch(/finalization not visible/);
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+
+    child.emit('exit', 0);
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not release the lock or publish if cancel lands during settle', async () => {
+    vi.useFakeTimers();
+    H.settledDir = '';
+    const releaseRepoLock = vi.fn();
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    await launcher({ releaseRepoLock })(job, REPO_PATH, {});
+    child.emit('message', completeMessage(true));
+
+    expect(jobManager.getJob(job.id)?.status).toBe('analyzing');
+    jobManager.cancelJob(job.id, 'Cancelled by user');
+    child.emit('exit', 0);
+
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+    expect(releaseRepoLock).not.toHaveBeenCalled();
+    expect(backendInit).not.toHaveBeenCalled();
+
+    H.settledDir = H.STORAGE_PATH;
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(backendInit).not.toHaveBeenCalled();
+    expect(releaseRepoLock).toHaveBeenCalledTimes(1);
+    expect(jobManager.getJob(job.id)?.status).toBe('failed');
+  });
+
   it('holds the write lock until settle resolves, then releases once after publish', async () => {
     vi.useFakeTimers();
     H.settledDir = '';

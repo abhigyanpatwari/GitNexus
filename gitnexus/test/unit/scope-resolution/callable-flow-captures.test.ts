@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { synthesizeCallableFlowCaptures } from '../../../src/core/ingestion/utils/callable-flow-captures.js';
 import { getJsParser } from '../../../src/core/ingestion/languages/javascript/query.js';
+import { getTreeSitterBufferSize } from '../../../src/core/ingestion/constants.js';
 
 const OPTIONS = {
   functionNodeTypes: new Set(['function_declaration', 'arrow_function', 'function_expression']),
@@ -25,7 +26,7 @@ const OPTIONS = {
 } as const;
 
 function factsFor(src: string): Array<Record<string, string>> {
-  const tree = getJsParser().parse(src);
+  const tree = getJsParser().parse(src, undefined, { bufferSize: getTreeSitterBufferSize(src) });
   if (tree === null) throw new Error('parse failed');
   return synthesizeCallableFlowCaptures(tree.rootNode, OPTIONS).map((match) => {
     const out: Record<string, string> = {};
@@ -113,5 +114,25 @@ describe('synthesizeCallableFlowCaptures (shared synthesizer, #2522)', () => {
       bareNamesAreCalls: true,
     });
     expect(suppressed.filter((match) => match['@callable-flow.seed'] !== undefined)).toEqual([]);
+  });
+
+  it('expands a 10000-operand `||` chain and keeps its callable and formal operands (#3354 review)', () => {
+    // Each `||` nests one level deeper, so the expansion used to recurse once
+    // per operand (stack overflow near 8000) and walk each leaf's full depth.
+    // The formal `w` sits at the deepest leaf: its visibility still has to be
+    // found through the enclosing function, 10000 levels up.
+    const operands = Array.from({ length: 10000 }, (_, i) => `w === "k${i}"`);
+    operands.splice(5000, 0, 'target');
+    operands.unshift('w');
+    const facts = factsFor(
+      `function target() {}\nfunction isKw(w) {\n  const f = ${operands.join(' || ')};\n  f();\n}\n`,
+    );
+    expect(byTag(facts, '@callable-flow.seed')).toMatchObject([
+      { '@callable-flow.destination': 'f', '@callable-flow.target-name': 'target' },
+    ]);
+    expect(byTag(facts, '@callable-flow.copy')).toMatchObject([
+      { '@callable-flow.destination': 'f', '@callable-flow.source': 'w' },
+    ]);
+    expect(byTag(facts, '@callable-flow.invoke')).toMatchObject([{ '@callable-flow.callee': 'f' }]);
   });
 });

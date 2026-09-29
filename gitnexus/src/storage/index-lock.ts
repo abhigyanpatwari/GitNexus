@@ -152,6 +152,11 @@ export interface AcquireOptions {
   pollMs?: number;
   /** Called once when we start waiting on a live holder. */
   onWaitStart?: (holder: LockRecord) => void;
+  /**
+   * Sweep orphaned staging files once the lock is held. Default true; pass
+   * false for a read-only caller, such as a dry run, that must delete nothing.
+   */
+  sweep?: boolean;
 }
 
 export class IndexLockTimeoutError extends Error {
@@ -907,7 +912,7 @@ export const acquireIndexLock = async (
   }
   // Without ownership, a staging file may belong to an active writer.
   try {
-    if (!handle.lockFree) sweepStagingArtifacts(lockDir, opts.log);
+    if (!handle.lockFree && opts.sweep !== false) sweepStagingArtifacts(lockDir, opts.log);
   } catch {
     /* best-effort */
   }

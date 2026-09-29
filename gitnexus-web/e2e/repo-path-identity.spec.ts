@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { postAnalyzeWhenIdle } from './helpers/public-contract';
 
 /**
  * E2E tests for repo *path* identity with duplicate display names (#2419).
@@ -50,9 +51,6 @@ const CLI_PATH = path.resolve(process.cwd(), '..', 'gitnexus', 'dist', 'cli', 'i
 const DUPE_NAME = 'pr2419-dupe';
 const READY_TIMEOUT_MS = 45_000;
 
-interface AnalyzeJobResponse {
-  jobId: string;
-}
 interface AnalyzeJobStatus {
   status: string;
   error?: string;
@@ -119,13 +117,13 @@ function markerFile(repoPath: string): string {
 }
 
 async function analyzeAndWait(repoPath: string): Promise<void> {
-  const res = await fetch(`${BACKEND_URL}/api/analyze`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: repoPath, force: true }),
-  });
-  if (!res.ok) throw new Error(`POST /api/analyze for ${repoPath} → HTTP ${res.status}`);
-  const { jobId } = (await res.json()) as AnalyzeJobResponse;
+  // The previous analyze's worker holds the single slot until it exits, even
+  // after its job reports complete — wait out that 409 (and any 429).
+  const res = await postAnalyzeWhenIdle(BACKEND_URL, { path: repoPath, force: true });
+  if (res.http !== 202 || !res.jobId) {
+    throw new Error(`POST /api/analyze for ${repoPath} → HTTP ${res.http}`);
+  }
+  const { jobId } = res;
   const deadline = Date.now() + 120_000;
   for (;;) {
     const poll = await fetch(`${BACKEND_URL}/api/analyze/${jobId}`);

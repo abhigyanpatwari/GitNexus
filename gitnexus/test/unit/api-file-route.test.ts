@@ -27,16 +27,32 @@ import os from 'node:os';
 import { handleFileRequest, type SourceAvailability } from '../../src/server/api.js';
 
 let tmpRoot: string;
+/** Sibling of tmpRoot holding a secret a symlink inside the repo points at. */
+let outsideDir: string;
+/** False when the host cannot create symlinks (Windows without the privilege). */
+let symlinksAvailable = false;
 
 beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-api-file-test-'));
   await fs.writeFile(path.join(tmpRoot, 'hello.txt'), 'hello world\n', 'utf-8');
   await fs.mkdir(path.join(tmpRoot, 'sub'), { recursive: true });
   await fs.writeFile(path.join(tmpRoot, 'sub', 'nested.txt'), 'nested\n', 'utf-8');
+
+  outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-api-file-outside-'));
+  await fs.writeFile(path.join(outsideDir, 'secret.txt'), 'top secret\n', 'utf-8');
+  try {
+    await fs.symlink(path.join(outsideDir, 'secret.txt'), path.join(tmpRoot, 'escape.txt'), 'file');
+    await fs.symlink(outsideDir, path.join(tmpRoot, 'escape-dir'), 'dir');
+    await fs.symlink(path.join(tmpRoot, 'hello.txt'), path.join(tmpRoot, 'alias.txt'), 'file');
+    symlinksAvailable = true;
+  } catch {
+    symlinksAvailable = false;
+  }
 });
 
 afterAll(async () => {
   await fs.rm(tmpRoot, { recursive: true, force: true });
+  await fs.rm(outsideDir, { recursive: true, force: true });
 });
 
 // Minimal express-shaped mock that captures status() / json() calls in a
@@ -129,6 +145,30 @@ describe('handleFileRequest — security wiring', () => {
     const { status, body } = await invoke({ path: 'does-not-exist.txt' });
     expect(status).toBe(404);
     expect(body.error).toBe('File not found');
+  });
+
+  // The lexical path.relative check cannot see symlinks. A repo cloned from an
+  // untrusted remote may contain `escape.txt -> /outside/secret.txt`; the
+  // realpath re-check must refuse it while still serving in-repo symlinks.
+  it('returns 403 for a symlink that resolves outside the repo root', async (ctx) => {
+    if (!symlinksAvailable) return ctx.skip();
+    const { status, body } = await invoke({ path: 'escape.txt' });
+    expect(status).toBe(403);
+    expect(body.error).toBe('Path traversal denied');
+  });
+
+  it('returns 403 for a file reached through a symlinked directory outside the root', async (ctx) => {
+    if (!symlinksAvailable) return ctx.skip();
+    const { status, body } = await invoke({ path: 'escape-dir/secret.txt' });
+    expect(status).toBe(403);
+    expect(body.error).toBe('Path traversal denied');
+  });
+
+  it('still serves a symlink whose target stays inside the repo root', async (ctx) => {
+    if (!symlinksAvailable) return ctx.skip();
+    const { status, body } = await invoke({ path: 'alias.txt' });
+    expect(status).toBe(200);
+    expect(body.content).toBe('hello world\n');
   });
 
   it('rejects a common-prefix sibling directory escape (path.relative idiom)', async () => {

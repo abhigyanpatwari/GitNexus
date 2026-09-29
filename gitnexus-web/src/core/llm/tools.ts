@@ -932,18 +932,48 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         return `⚠️ AMBIGUOUS TARGET: Multiple files named "${target}" found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease specify which file you mean by using a more specific path, e.g.:\n- impact("${allPaths[0].split('/').slice(-3).join('/')}")\n- impact("${allPaths[1]?.split('/').slice(-3).join('/') || allPaths[0]}")`;
       }
 
-      // If target contains a path, try to find matching file
+      // If target contains a path, pick the File node for that path. The
+      // lookup above matched on `filePath CONTAINS target`, so every symbol
+      // DEFINED in the file (functions, classes, ...) is also in the result
+      // set and shares the same filePath — a plain "first row" pick could
+      // silently analyze one arbitrary symbol while reporting a file impact.
       let targetNode = targetResults[0];
       if (target.includes('/') && targetResults.length > 1) {
-        const exactMatch = targetResults.find((r: any) => {
-          const path = Array.isArray(r) ? r[2] : r.filePath;
-          return path && path.toLowerCase().includes(target.toLowerCase());
-        });
-        if (exactMatch) {
-          targetNode = exactMatch;
+        const rowType = (r: any) => (Array.isArray(r) ? r[1] : r.nodeType);
+        const rowPath = (r: any): string | undefined => (Array.isArray(r) ? r[2] : r.filePath);
+        const targetLower = target.toLowerCase();
+        const fileRows = targetResults.filter((r: any) => rowType(r) === 'File');
+        // Exact path first; suffix match only when unique among File rows.
+        const exactFile = fileRows.find((r: any) => rowPath(r)?.toLowerCase() === targetLower);
+        const suffixFiles = exactFile
+          ? []
+          : fileRows.filter((r: any) => rowPath(r)?.toLowerCase()?.endsWith(`/${targetLower}`));
+        const fileMatch = exactFile ?? (suffixFiles.length === 1 ? suffixFiles[0] : undefined);
+        if (suffixFiles.length > 1) {
+          const paths = suffixFiles.map((r: any) => rowPath(r)).filter(Boolean) as string[];
+          return `⚠️ AMBIGUOUS TARGET: Multiple files match "${target}":\n\n${paths.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+        }
+        // LIMIT 10 is a cap. A single suffix-matching File in that page can
+        // still hide another File past the limit — only exact path is safe.
+        if (!exactFile && fileMatch && targetResults.length >= 10) {
+          const distinctPaths = [...new Set<string>(allPaths)];
+          return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+        }
+        if (fileMatch) {
+          targetNode = fileMatch;
         } else {
-          // Still ambiguous even with path
-          return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${allPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+          const distinctPaths = [...new Set<string>(allPaths)];
+          const uniquePath = distinctPaths.length === 1 ? distinctPaths[0] : undefined;
+          const uniqueLower = uniquePath?.toLowerCase();
+          const uniqueIsBounded =
+            uniqueLower === targetLower || uniqueLower?.endsWith(`/${targetLower}`) === true;
+          // LIMIT 10 is a cap, not a complete result set. One CONTAINS hit
+          // that is only a filename substring (src/mylib/foo.ts vs lib/foo.ts)
+          // must not be rebound as a unique File.
+          if (!uniqueIsBounded || targetResults.length >= 10 || !uniquePath) {
+            return `⚠️ AMBIGUOUS TARGET: Could not uniquely match "${target}". Found:\n\n${distinctPaths.map((p: string, i: number) => `${i + 1}. ${p}`).join('\n')}\n\nPlease use a more specific path.`;
+          }
+          targetNode = { id: `file:${uniquePath}`, nodeType: 'File', filePath: uniquePath };
         }
       }
 

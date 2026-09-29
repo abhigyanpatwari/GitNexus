@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -12,6 +12,7 @@ import {
   sanitizeRepoName,
   getDefaultBranch,
   getCurrentBranch,
+  listLocalHeads,
   getGitInfoExcludePath,
   getCoreExcludesFilePath,
 } from '../../src/storage/git.js';
@@ -19,9 +20,11 @@ import {
 // Mock child_process.execSync
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 const mockExecSync = vi.mocked(execSync);
+const mockSpawnSync = vi.mocked(spawnSync);
 
 describe('git utilities', () => {
   beforeEach(() => {
@@ -133,6 +136,68 @@ describe('git utilities', () => {
     it('preserves a slash in the branch name (slugging happens elsewhere)', () => {
       mockExecSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
       expect(getCurrentBranch('/project')).toBe('release/1.2');
+    });
+  });
+
+  describe('listLocalHeads (#3331)', () => {
+    it('returns local head names including a slashed branch', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: 'refs/heads/main\nrefs/heads/feature/x\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/project')).toEqual(['main', 'feature/x']);
+      expect(mockSpawnSync).toHaveBeenCalledWith(
+        'git',
+        ['for-each-ref', '--format=%(refname)', 'refs/heads'],
+        expect.objectContaining({
+          cwd: '/project',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          windowsHide: true,
+          maxBuffer: 64 * 1024 * 1024,
+        }),
+      );
+    });
+
+    it('ignores lines that do not start with refs/heads/', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: 'refs/heads/main\nheads/feature/x\nrefs/tags/feature/x\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/project')).toEqual(['main']);
+    });
+
+    it('returns an empty list when the repo has no local heads', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: '\n',
+        stderr: '',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/project')).toEqual([]);
+    });
+
+    it('returns null when git exits non-zero', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: 128,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        error: undefined,
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/not-a-repo')).toBeNull();
+    });
+
+    it('returns null when git cannot run', () => {
+      mockSpawnSync.mockReturnValueOnce({
+        status: null,
+        stdout: '',
+        stderr: '',
+        error: Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }),
+      } as ReturnType<typeof spawnSync>);
+      expect(listLocalHeads('/missing-git')).toBeNull();
     });
   });
 

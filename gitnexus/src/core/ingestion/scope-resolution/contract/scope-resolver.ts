@@ -79,9 +79,9 @@
  *     pass running first prevents the wrong edge.
  *
  *   - **I2 — `handledSites` semantics.** A site is added to
- *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
- *     Sites a pass touched but couldn't resolve do NOT get marked —
- *     they still get a chance from the shared resolver. Exception:
+ *     `handledSites` after successful emission or a definitive suppression
+ *     that must prevent receiver-blind fallback. Ordinary unresolved misses
+ *     remain unhandled so the shared resolver can try them. Additionally,
  *     the free-call fallback marks the site after it decides the site,
  *     including when it emits no edge — dedup-collapse, a visibility
  *     veto (`fallback-refused`), or a selected callable that is deleted
@@ -132,7 +132,8 @@
  *       6. Case 3 dotted typeBinding for namespace prefix
  *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
  *          fan-out on an Interface fold, #2832)
- *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember, then an
+ *          opt-in concrete-subtype fan-out when the normal member is missing)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
  *
@@ -288,6 +289,7 @@ import type {
   ScopeId,
   SupportedLanguages,
   SymbolDefinition,
+  TypeRef,
 } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -526,11 +528,9 @@ export interface ScopeResolver {
 
   /**
    * Compute the method-dispatch order for every Class def in the
-   * workspace. Python uses depth-first first-seen via
-   * `pythonLinearize`; future languages may use C3 (Ruby, Python's
-   * real MRO when we go beyond the simplified walk), single-
-   * inheritance only (Java), or empty-map (languages without
-   * inheritance).
+   * workspace. Python passes `c3LinearizeStrategy` (CPython's MRO).
+   * Single-inheritance languages pass `defaultLinearize`. Languages
+   * without inheritance return an empty map.
    */
   buildMro(
     graph: KnowledgeGraph,
@@ -692,7 +692,10 @@ export interface ScopeResolver {
    */
   readonly populateWorkspaceOwners?: (
     parsedFiles: readonly ParsedFile[],
-    ctx: { readonly fileContents: ReadonlyMap<string, string> },
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly resolutionConfig?: unknown;
+    },
   ) => void;
 
   /**
@@ -964,6 +967,11 @@ export interface ScopeResolver {
    * regression).
    */
   readonly freeCallsRequireInstanceOwnership?: boolean;
+
+  /** Whether an unqualified call inside a type may dispatch to an inherited
+   * instance method. Languages such as Swift allow implicit-self lookup,
+   * while Python/JavaScript/PHP require an explicit receiver. */
+  readonly implicitThisWalksMro?: boolean;
 
   /**
    * When true, a constructor-form call `Type(...)` links to the Class def
@@ -1375,6 +1383,11 @@ export interface ScopeResolver {
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
 
+  /** Suppress all receiver dispatch when a captured type cannot prove its
+   * runtime binding. Runs before compound and simple receiver lookup; the
+   * caller records a receiver-unresolved outcome. */
+  readonly suppressReceiverLookup?: (typeRef: TypeRef) => boolean;
+
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`
    * receivers (`this->m()` / `this.m()`) that resolves against the
@@ -1386,6 +1399,59 @@ export interface ScopeResolver {
    * suppression must remain unchanged.
    */
   readonly resolveThisViaEnclosingClass?: boolean;
+
+  /**
+   * Opt a receiver type fact into subtype dispatch when Case 4 resolves the
+   * receiver's declared class but finds no same-named member on that class or
+   * its ancestors. The shared pass walks the concrete subtype closure and
+   * emits up to the shared fan-out cap of unique, arity-compatible
+   * implementations it can prove.
+   *
+   * This is deliberately a predicate rather than a language check in shared
+   * ingestion. Dynamic languages can enable only type facts whose runtime
+   * class may legally supply a member absent from the declared owner (Python's
+   * synthesized instance-receiver binding, for example). A declined receiver
+   * retains the existing owner/MRO behavior byte-for-byte.
+   *
+   * `callerIsStatic` is the existing graph-node fact for the callable that
+   * contains the site. `receiverBindingIsStatic` is the corresponding fact
+   * for the callable where the receiver TypeRef was declared. The latter is
+   * load-bearing for closures that inherit an outer receiver binding. Either
+   * is undefined when its callable cannot be resolved; providers using these
+   * facts to distinguish dispatch kinds should fail closed. `memberName` and
+   * `callArity` are the already-captured site facts; providers may return
+   * `'suppress'` when those facts prove the language cannot safely infer a
+   * subtype target but receiver-blind fallback would be wrong.
+   *
+   * When enabled, a no-target or overload-ambiguous result is a definitive
+   * receiver-bound miss: the pass records a suppression and marks the site
+   * handled so receiver-blind name fallback cannot mint a false exact edge.
+   */
+  readonly resolveMissingReceiverMembersFromSubtypes?: (
+    typeRef: TypeRef,
+    context: {
+      readonly callerIsStatic: boolean | undefined;
+      readonly receiverBindingIsStatic: boolean | undefined;
+      readonly memberName: string;
+      readonly callArity: number | undefined;
+    },
+  ) => boolean | 'suppress';
+
+  /**
+   * Optional language-specific compatibility check for each candidate found by
+   * `resolveMissingReceiverMembersFromSubtypes`. It runs in addition to ordinary
+   * arity filtering. `unknown` suppresses the whole inferred site rather than
+   * publishing a partial subtype fan-out as complete.
+   *
+   * Python uses this with private capture-side-channel facts to prove that an
+   * ordinary positional call fits a target's positional parameter capacity,
+   * without adding argument-kind fields to the public `ReferenceSite` schema.
+   */
+  readonly missingReceiverSubtypeCandidateCompatibility?: (
+    callsite: ReferenceSite,
+    candidate: SymbolDefinition,
+    context: { readonly callerFilePath: string },
+  ) => ArityVerdict;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that

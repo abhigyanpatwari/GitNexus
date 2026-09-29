@@ -1,18 +1,22 @@
-import { resolveCImportTarget } from '../c/import-target.js';
+import {
+  createCIncludeSuffixIndex,
+  resolveCFamilyImport,
+  type CIncludeLookup,
+} from '../c/import-target.js';
 
 /**
- * Resolve a C++ #include path to a file in the workspace.
- * C++ #include path resolution is identical to C:
- *   1. Same-directory sibling (relative lookup)
- *   2. Exact match
- *   3. Suffix match with depth + lexicographic tiebreak
- *
- * Re-exports the C implementation since the #include semantics are shared.
+ * C++ `#include` resolution is the C lookup. This module's own suffix
+ * index is the one thing that is not shared: the memo is keyed on the
+ * file set, and one map for both languages would hand each the other's
+ * index when a test passes the same set to both.
  */
+const cppSuffixIndex = createCIncludeSuffixIndex();
+
 export function resolveCppImportTarget(
   targetRaw: string,
   fromFile: string,
   allFilePaths: ReadonlySet<string>,
+  lookup?: CIncludeLookup,
 ): string | null {
-  return resolveCImportTarget(targetRaw, fromFile, allFilePaths);
+  return resolveCFamilyImport(targetRaw, fromFile, allFilePaths, lookup, cppSuffixIndex);
 }

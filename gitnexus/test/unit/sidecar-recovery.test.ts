@@ -15,7 +15,12 @@ import {
   inspectLbugSidecars,
   isMissingShadowSidecarError,
   isPermissionRenameError,
+  INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX,
+  isReadOnlyCheckpointInProgressError,
+  isReadOnlyRecoveryFailure,
   isReadOnlyShadowReplayError,
+  PENDING_SHADOW_REPLAY_RECOVERY_PREFIX,
+  readOnlyRecoveryFailureMessage,
   listParkedDirtyRecoverySidecars,
   listParkedLbugSidecars,
   listQuarantinedMissingShadowWals,
@@ -228,13 +233,125 @@ describe('LadybugDB sidecar recovery', () => {
       expect(source).not.toMatch(/replay shadow pages under read-only mode/);
     });
 
-    it('structural: sidecar-recovery.ts carries exactly two LADYBUGDB-CONTRACT markers (one per shadow predicate)', () => {
+    it('structural: sidecar-recovery.ts carries exactly three LADYBUGDB-CONTRACT markers (one per native-error predicate)', () => {
       const source = readFileSync(
         path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'sidecar-recovery.ts'),
         'utf-8',
       );
       const markers = source.match(/\/\/ LADYBUGDB-CONTRACT:/g) ?? [];
-      expect(markers.length).toBe(2);
+      expect(markers.length).toBe(3);
+    });
+  });
+
+  describe('isReadOnlyCheckpointInProgressError (interrupted checkpoint, homelab repro 2026-09-19)', () => {
+    // Byte text from the live occurrence: a wiki pod killed mid-CHECKPOINT
+    // left lbug.wal + lbug.shadow, and every later read-only open refused with
+    // exactly this message (wrapped by the pool as "LadybugDB unavailable for
+    // __wiki__ ...").
+    const CANONICAL =
+      'Connection exception: Cannot open database in read-only mode while checkpoint is in progress.';
+
+    it('matches the canonical native message', () => {
+      expect(isReadOnlyCheckpointInProgressError(new Error(CANONICAL))).toBe(true);
+    });
+
+    it('matches prefix-wrapped and case-variant forms', () => {
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error(`LadybugDB unavailable for __wiki__. Retry later. (${CANONICAL})`),
+        ),
+      ).toBe(true);
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error('cannot Open Database in Read-Only Mode while checkpoint is in Progress'),
+        ),
+      ).toBe(true);
+    });
+
+    it('accepts non-Error values and rejects unrelated read-only errors', () => {
+      expect(isReadOnlyCheckpointInProgressError(CANONICAL)).toBe(true);
+      expect(isReadOnlyCheckpointInProgressError(null)).toBe(false);
+      expect(isReadOnlyCheckpointInProgressError(undefined)).toBe(false);
+      // The sibling refusals must NOT match — each has its own classifier and
+      // its own recovery nuance.
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error("Couldn't replay shadow pages under read-only mode."),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyCheckpointInProgressError(
+          new Error('Cannot execute write operations in a read-only database!'),
+        ),
+      ).toBe(false);
+      expect(
+        isReadOnlyCheckpointInProgressError(new Error('Cannot open file x.shadow: No such file')),
+      ).toBe(false);
+    });
+
+    it('structural: both adapters route the new classifier through the writable-recovery path', () => {
+      for (const file of ['lbug-adapter.ts', 'pool-adapter.ts']) {
+        const source = readFileSync(
+          path.join(__dirname, '..', '..', 'src', 'core', 'lbug', file),
+          'utf-8',
+        );
+        expect(source, file).toContain('isReadOnlyCheckpointInProgressError');
+        // The refusal rides the SAME recovery as the shadow-replay error —
+        // neither adapter may quarantine or rebuild for this state. The
+        // leading `!` matters: this must pin the THROW-THROUGH guard
+        // (`!shadowReplay && !checkpoint`), and a substring match without it
+        // would also accept the inverted predicate that recovers ONLY the
+        // shadow-replay class — the exact regression this guards against.
+        expect(source, file).toMatch(
+          /!isReadOnlyShadowReplayError\(err\) &&\s*!isReadOnlyCheckpointInProgressError\(err\)/,
+        );
+      }
+      // The classifier regex itself lives only in sidecar-recovery.ts.
+      const adapter = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
+        'utf-8',
+      );
+      expect(adapter).not.toMatch(/checkpoint is in progress\/i/);
+      expect(adapter).toContain('readOnlyRecoveryFailureMessage');
+      expect(adapter).toContain('isReadOnlyRecoveryFailure');
+      const pool = readFileSync(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'pool-adapter.ts'),
+        'utf-8',
+      );
+      expect(pool).not.toMatch(/checkpoint is in progress\/i/);
+    });
+  });
+
+  describe('readOnlyRecoveryFailureMessage does not rematch native classifiers', () => {
+    const CANONICAL =
+      'Connection exception: Cannot open database in read-only mode while checkpoint is in progress.';
+    const SHADOW =
+      "Runtime exception: Couldn't replay shadow pages under read-only mode. Please re-open the database with read-write mode to replay shadow pages.";
+
+    it('wraps checkpoint refusal without rematching the native classifier', () => {
+      const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(CANONICAL));
+      expect(wrapped.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX)).toBe(true);
+      expect(wrapped).toMatch(/gitnexus analyze/);
+      expect(wrapped).not.toMatch(/sidecar is missing/i);
+      expect(wrapped).not.toMatch(/--force/);
+      expect(wrapped).not.toContain(CANONICAL);
+      expect(isReadOnlyCheckpointInProgressError(new Error(wrapped))).toBe(false);
+      expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
+    });
+
+    it('wraps shadow-replay refusal without rematching the native classifier', () => {
+      const wrapped = readOnlyRecoveryFailureMessage(dbPath, new Error(SHADOW));
+      expect(wrapped.startsWith(PENDING_SHADOW_REPLAY_RECOVERY_PREFIX)).toBe(true);
+      expect(wrapped).not.toContain(SHADOW);
+      expect(isReadOnlyShadowReplayError(new Error(wrapped))).toBe(false);
+      expect(isReadOnlyRecoveryFailure(new Error(wrapped))).toBe(true);
+    });
+
+    it('delegates missing-shadow to shadowSidecarRecoveryMessage', () => {
+      const err = new Error('Cannot open file /tmp/lbug.shadow: No such file or directory');
+      expect(readOnlyRecoveryFailureMessage('/tmp/lbug', err)).toBe(
+        shadowSidecarRecoveryMessage('/tmp/lbug', err),
+      );
     });
   });
 

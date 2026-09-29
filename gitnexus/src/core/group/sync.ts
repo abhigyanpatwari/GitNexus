@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { resolveGraphPath } from '../../storage/shared-store.js';
 import path from 'node:path';
 import { Buffer } from 'node:buffer';
 import {
@@ -21,7 +22,6 @@ import {
   STATUS_STORAGE_REQUIREMENTS,
 } from '../../storage/storage-resolver.js';
 import { loadMeta } from '../../storage/repo-meta.js';
-import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
 import type {
   GroupConfig,
   RepoHandle,
@@ -381,7 +381,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           }
 
           const poolId = handle.id;
-          lbugPath = path.join(handle.storagePath, LBUG_DIRECTORY);
+          lbugPath = resolveGraphPath(handle.storagePath);
           await initLbug(poolId, lbugPath);
           // No pin here: contract extraction below uses `executor` while this
           // repo is freshly initialized and live, and completes before the next

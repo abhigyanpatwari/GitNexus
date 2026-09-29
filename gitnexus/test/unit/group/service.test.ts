@@ -295,6 +295,123 @@ describe('GroupService', () => {
       expect(result.error).toContain('name and query are required');
     });
 
+    it('test_groupQuery_uses_advertised_query_defaults_when_omitted', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({ name: 'test-group', query: 'auth flow' });
+        expect(query).toHaveBeenCalled();
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 10, max_symbols: 25 });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupQuery_forwards_explicit_limit_and_max_symbols', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: 3,
+          max_symbols: 7,
+        });
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ limit: 3, max_symbols: 7 });
+        }
+        expect(query).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupQuery_rejects_infinite_and_oversized_limit_and_max_symbols', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+
+        const infiniteLimit = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: Infinity,
+        });
+        expect(infiniteLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
+
+        const oversizedLimit = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: 101,
+        });
+        expect(oversizedLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
+
+        const infiniteSymbols = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          max_symbols: Infinity,
+        });
+        expect(infiniteSymbols).toMatchObject({
+          error: expect.stringMatching(/Invalid "max_symbols"/),
+        });
+
+        const oversizedSymbols = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          max_symbols: 201,
+        });
+        expect(oversizedSymbols).toMatchObject({
+          error: expect.stringMatching(/Invalid "max_symbols"/),
+        });
+
+        const cyclic = { self: null as unknown };
+        cyclic.self = cyclic;
+        const cyclicLimit = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          limit: cyclic,
+        });
+        expect(cyclicLimit).toMatchObject({ error: expect.stringMatching(/Invalid "limit"/) });
+
+        const badDepth = await svc.groupQuery({
+          name: 'test-group',
+          query: 'auth flow',
+          chain_depth: 0.1,
+        });
+        expect(badDepth).toMatchObject({ error: expect.stringMatching(/Invalid "chain_depth"/) });
+        expect(query).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupQuery_forwards_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const query = vi.fn(async () => ({ processes: [] }));
+        const svc = new GroupService(makePort({ query }));
+        await svc.groupQuery({ name: 'test-group', query: 'auth flow', chain_depth: 2 });
+        expect(query).toHaveBeenCalled();
+        for (const call of query.mock.calls) {
+          expect(call[1]).toMatchObject({ chain_depth: 2 });
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
     it('test_groupQuery_merges_results_across_repos', async () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
@@ -444,6 +561,45 @@ repos:
         expect(r.group).toBe('test-group');
         expect(r.results).toHaveLength(2);
         expect(port.context).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContext_rejects_non_integer_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const context = vi.fn(async () => ({ status: 'found' }));
+        const svc = new GroupService(makePort({ context }));
+        const r = await svc.groupContext({
+          name: 'test-group',
+          target: 'MySym',
+          chain_depth: '2',
+        });
+        expect(r).toMatchObject({ error: expect.stringMatching(/Invalid "chain_depth"/) });
+        expect(context).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+        cleanup();
+      }
+    });
+
+    it('test_groupContext_forwards_chain_depth', async () => {
+      const { cleanup, tmpDir } = makeTmpGroup();
+      try {
+        vi.stubEnv('GITNEXUS_HOME', tmpDir);
+        const context = vi.fn(async () => ({
+          status: 'found',
+          symbol: { filePath: 'services/auth/x.ts', uid: 'u1', name: 'X' },
+        }));
+        const svc = new GroupService(makePort({ context }));
+        await svc.groupContext({ name: 'test-group', target: 'MySym', chain_depth: 2 });
+        expect(context).toHaveBeenCalled();
+        for (const call of context.mock.calls) {
+          expect(call[1]).toMatchObject({ chain_depth: 2 });
+        }
       } finally {
         vi.unstubAllEnvs();
         cleanup();

@@ -9,6 +9,7 @@ import { closeQueryResults } from './query-result-utils.js';
 import { chunk } from '../../lib/utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
+import { MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -80,10 +81,13 @@ import {
   guardWalQuarantine,
   type WalCrashEvidence,
   isMissingShadowSidecarError,
+  isReadOnlyCheckpointInProgressError,
+  isReadOnlyRecoveryFailure,
   isReadOnlyShadowReplayError,
   lbugLockRemediation,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
+  readOnlyRecoveryFailureMessage,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
@@ -547,6 +551,11 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
 // whether the read-only shadow replay throws, so no row identity is read.
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
+// The durability half of writable recovery: replayed pages only persist when
+// an explicit CHECKPOINT applies them to the main file (see
+// recoverReadOnlyViaWritableOpen).
+const RECOVERY_CHECKPOINT_QUERY = 'CHECKPOINT';
+
 /**
  * Serve-side entry to the shared WAL-quarantine safety gate. Refuses (throws)
  * when the `.shadow` is present on disk or the orphan WAL is too large to
@@ -650,7 +659,7 @@ const ensureReadOnlyConnectionUsable = async (
       await closeLbugConnection(handle);
       return await reopenReadOnlyAfterMissingShadow(dbPath, err);
     }
-    if (!isReadOnlyShadowReplayError(err)) {
+    if (!isReadOnlyShadowReplayError(err) && !isReadOnlyCheckpointInProgressError(err)) {
       await closeLbugConnection(handle);
       throw err;
     }
@@ -658,7 +667,27 @@ const ensureReadOnlyConnectionUsable = async (
   }
 
   await closeLbugConnection(handle);
+  return await recoverReadOnlyViaWritableOpen(dbPath, shadowReplayErr);
+};
 
+/**
+ * Clear an interrupted-checkpoint / pending-shadow-replay state by opening the
+ * database WRITABLE once — probe (forces the WAL replay) then an explicit
+ * CHECKPOINT (persists it; see the comment at the call site) — and reopening
+ * read-only. Recovery for every read-only refusal an interrupted checkpoint
+ * produces — `isReadOnlyShadowReplayError` and
+ * `isReadOnlyCheckpointInProgressError` — shared by the probe path
+ * (`ensureReadOnlyConnectionUsable`) and the open path (`doInitLbug`'s
+ * read-only branch, where the native open itself refuses before any probe can
+ * run). Homelab repro 2026-09-19: a wiki pod killed mid-CHECKPOINT left the
+ * checkpoint sidecars behind, and every read-only open thereafter failed until
+ * a writable open (any `gitnexus analyze`) recovered it — this makes the read
+ * path self-heal instead.
+ */
+const recoverReadOnlyViaWritableOpen = async (
+  dbPath: string,
+  triggeringErr: unknown,
+): Promise<LbugConnectionHandle> => {
   let writable: LbugConnectionHandle;
   try {
     writable = await openLbugConnection(lbug, dbPath);
@@ -666,18 +695,28 @@ const ensureReadOnlyConnectionUsable = async (
     const code = extractErrnoCode(openErr);
     if (code === 'EROFS' || code === 'EACCES' || code === 'EPERM') {
       throw new Error(
-        shadowSidecarRecoveryMessage(dbPath, shadowReplayErr) +
-          '\n  The workspace appears to be read-only — mount it read-write to perform shadow replay recovery,' +
+        readOnlyRecoveryFailureMessage(dbPath, triggeringErr) +
+          '\n  The workspace appears to be read-only — mount it read-write to perform WAL recovery,' +
           ' or re-run `gitnexus analyze` on a writable filesystem to rebuild the index.',
       );
     }
     throw openErr;
   }
   let missingShadowError: unknown;
+  let probeSucceeded = false;
   try {
     await queryAndDrain(writable.conn, READ_ONLY_SHADOW_REPLAY_PROBE);
+    probeSucceeded = true;
+    // Load-bearing durability step (engine 0.19.1 matrix, homelab repro
+    // 2026-09-19): the probe replays the WAL in MEMORY only. Without an
+    // explicit CHECKPOINT the engine drops those pages at close and the
+    // follow-up read-only open silently serves the pre-checkpoint state.
+    // CHECKPOINT applies the replay to the main file, consuming the
+    // `lbug.wal.checkpoint` / `lbug.shadow` sidecars and clearing the
+    // checkpoint locks the interrupted checkpoint left behind.
+    await queryAndDrain(writable.conn, RECOVERY_CHECKPOINT_QUERY);
   } catch (err) {
-    if (isMissingShadowSidecarError(err)) {
+    if (!probeSucceeded && isMissingShadowSidecarError(err)) {
       missingShadowError = err;
     } else {
       throw err;
@@ -695,8 +734,12 @@ const ensureReadOnlyConnectionUsable = async (
     return reopened;
   } catch (err) {
     await closeLbugConnection(reopened);
-    if (isMissingShadowSidecarError(err)) {
-      throw new Error(shadowSidecarRecoveryMessage(dbPath, err));
+    if (
+      isMissingShadowSidecarError(err) ||
+      isReadOnlyShadowReplayError(err) ||
+      isReadOnlyCheckpointInProgressError(err)
+    ) {
+      throw new Error(readOnlyRecoveryFailureMessage(dbPath, err));
     }
     throw err;
   }
@@ -871,17 +914,26 @@ const doInitLbug = async (
       // mismatched file. Wrap both.
       usable = await ensureReadOnlyConnectionUsable(dbPath, opened);
     } catch (err) {
-      // Not retryable: the on-disk file's storage version doesn't change on
-      // its own, so withLbugDb's retry loop (which only handles
-      // isDbBusyError) would just repeat the same native exception. Fail
-      // immediately with an actionable message instead (review finding on
-      // PR #3189 — this became reachable once the pinned engine version can
-      // trail behind whatever version last wrote an index, e.g. after
-      // downgrading the dependency). Mirrors the pool-adapter.ts check for
-      // the same error, on the separate open path /api/graph and /api/query
-      // actually use (withLbugDb, not the pool).
-      throwIfStorageVersionMismatch(err);
-      throw err;
+      // An interrupted checkpoint can make the OPEN itself refuse read-only
+      // ("Cannot open database in read-only mode while checkpoint is in
+      // progress") before any probe runs. Clear it with one writable open,
+      // then reopen read-only — the same self-heal the probe path applies.
+      // Skip already-wrapped failures so we do not re-enter writable recovery.
+      if (isReadOnlyCheckpointInProgressError(err) && !isReadOnlyRecoveryFailure(err)) {
+        usable = await recoverReadOnlyViaWritableOpen(dbPath, err);
+      } else {
+        // Not retryable: the on-disk file's storage version doesn't change on
+        // its own, so withLbugDb's retry loop (which only handles
+        // isDbBusyError) would just repeat the same native exception. Fail
+        // immediately with an actionable message instead (review finding on
+        // PR #3189 — this became reachable once the pinned engine version can
+        // trail behind whatever version last wrote an index, e.g. after
+        // downgrading the dependency). Mirrors the pool-adapter.ts check for
+        // the same error, on the separate open path /api/graph and /api/query
+        // actually use (withLbugDb, not the pool).
+        throwIfStorageVersionMismatch(err);
+        throw err;
+      }
     }
     db = usable.db;
     conn = usable.conn;
@@ -2927,6 +2979,30 @@ export const restoreDerivedRels = async (rels: readonly DerivedRelSnapshot[]): P
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
+ * The two importer queries for a `b.filePath <predicate>` target set:
+ *   1. direct importers — any IMPORTS edge into a target file;
+ *   2. module co-members — files with a `MODULE_MEMBERSHIP_REASON` edge to a
+ *      `Module` node that a target file also has one. Whole-module visibility
+ *      means a declaration added to one member can change how any other member
+ *      resolves, so co-members are importers of each other. The hub form keeps
+ *      this linear in module size (#3355).
+ */
+const importerCyphers = (targetPredicate: string): string[] => [
+  `
+    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+    WHERE r.type = 'IMPORTS' AND b.filePath ${targetPredicate}
+    RETURN DISTINCT a.filePath AS importer
+  `,
+  `
+    MATCH (a:File)-[r1:${REL_TABLE_NAME}]->(m:Module)<-[r2:${REL_TABLE_NAME}]-(b:File)
+    WHERE r1.type = 'IMPORTS' AND r1.reason = '${MODULE_MEMBERSHIP_REASON}'
+      AND r2.type = 'IMPORTS' AND r2.reason = '${MODULE_MEMBERSHIP_REASON}'
+      AND b.filePath ${targetPredicate} AND a.filePath <> b.filePath
+    RETURN DISTINCT a.filePath AS importer
+  `,
+];
+
+/**
  * Return the distinct repo-relative paths of files that import
  * `targetFilePath` according to the IMPORTS edges currently in the
  * DB. Used by the incremental writeback path to expand the
@@ -2947,31 +3023,29 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const escaped = escapeCypherString(targetFilePath);
-  const cypher = `
-    MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
-    WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
-    RETURN DISTINCT a.filePath AS importer
-  `;
+  const cyphers = importerCyphers(`= '${escaped}'`);
   // Runs inside the connection lock: queryImporters is called in the importer-BFS
   // loop during incremental --pdg writeback while the WAL driver is live, so an
   // unlocked conn.query here could race a concurrent CHECKPOINT on the singleton.
   return withConnLock(async () => {
-    let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    try {
-      queryResult = await c.query(cypher);
-      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-      const rows = await result.getAll();
-      const out: string[] = [];
-      for (const row of rows) {
-        const v = (row as { importer?: unknown }).importer;
-        if (typeof v === 'string' && v.length > 0) out.push(v);
+    const out = new Set<string>();
+    for (const cypher of cyphers) {
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+      try {
+        queryResult = await c.query(cypher);
+        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+        const rows = await result.getAll();
+        for (const row of rows) {
+          const v = (row as { importer?: unknown }).importer;
+          if (typeof v === 'string' && v.length > 0) out.add(v);
+        }
+      } catch {
+        return [];
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
       }
-      return out;
-    } catch {
-      return [];
-    } finally {
-      if (queryResult) await closeQueryResults(queryResult);
     }
+    return [...out];
   });
 };
 
@@ -3009,21 +3083,24 @@ export const queryImportersBatch = async (
   const importers = new Set<string>();
   for (const [chunkIndex, batch] of chunk(targetFilePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
     const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
-    const cypher = `
-      MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
-      WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
-      RETURN DISTINCT a.filePath AS importer
-    `;
     await withConnLock(async () => {
       let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
       try {
-        queryResult = await c.query(cypher);
-        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-        const rows = await result.getAll();
-        for (const row of rows) {
-          const v = (row as { importer?: unknown }).importer;
-          if (typeof v === 'string' && v.length > 0) importers.add(v);
+        // Collect into a chunk-local set so a failure on the second query
+        // drops the whole chunk, as it did when there was one query.
+        const found: string[] = [];
+        for (const cypher of importerCyphers(`IN ${listLiteral}`)) {
+          queryResult = await c.query(cypher);
+          const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+          const rows = await result.getAll();
+          for (const row of rows) {
+            const v = (row as { importer?: unknown }).importer;
+            if (typeof v === 'string' && v.length > 0) found.push(v);
+          }
+          await closeQueryResults(queryResult);
+          queryResult = undefined;
         }
+        for (const v of found) importers.add(v);
       } catch (err) {
         // Degrade-don't-fail, mirroring queryImporters — but LOUDLY
         // (tri-review 4669518496 P2-5): a dropped chunk means every importer

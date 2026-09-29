@@ -168,6 +168,10 @@ describe('RETAINED_REL_TYPES tracks its readers', () => {
     // CALLS is read by taintSummaries, which is exactly why the sink answers a
     // COMPLETE read instead of retaining it — so it is a known exemption.
     readTypes.delete('CALLS');
+    // Dart package invalidation reads IMPORTS endpoints through the sink's
+    // complete typed iterator. dart-package-dependencies.test.ts exercises
+    // transitive closure and idempotence with actual streamed IMPORTS rows.
+    readTypes.delete('IMPORTS');
 
     const missing = [...readTypes].filter((t) => !RETAINED_REL_TYPES.has(t as RelationshipType));
     expect(missing).toEqual([]);

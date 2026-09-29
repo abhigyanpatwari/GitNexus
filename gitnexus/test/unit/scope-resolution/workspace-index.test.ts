@@ -18,6 +18,9 @@
 import { describe, it, expect } from 'vitest';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
+import { swiftScopeResolver } from '../../../src/core/ingestion/languages/swift/scope-resolver.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import {
   findExportedDef,
@@ -35,6 +38,14 @@ function parsePython(source: string, filePath: string) {
     filePath,
     () => {},
   );
+  if (parsed === undefined) throw new Error('scope extraction failed');
+  return parsed;
+}
+
+const swiftAvailable = isLanguageAvailable(SupportedLanguages.Swift);
+
+function parseSwift(source: string, filePath: string) {
+  const parsed = extractParsedFile(swiftScopeResolver.languageProvider, source, filePath, () => {});
   if (parsed === undefined) throw new Error('scope extraction failed');
   return parsed;
 }
@@ -84,6 +95,192 @@ def helper() -> int:
     const index = buildWorkspaceResolutionIndex([parsed]);
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     expect(index.moduleScopeByFile.get('mod.py')).toBe(moduleScope);
+  });
+});
+
+describe.skipIf(!swiftAvailable)('declaredReturnTypeByCallableId — exact callable identity', () => {
+  it('keeps same-file methods and parameter names from overwriting callable returns', () => {
+    const parsed = parseSwift(
+      `
+struct AResult {}
+struct BResult {}
+struct OtherStore {}
+struct Store {}
+struct A {
+  func make() -> AResult { AResult() }
+}
+struct B {
+  func make() -> BResult { BResult() }
+}
+func makeStore(makeStore: OtherStore) -> Store { Store() }
+`,
+      'Collisions.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const callableDefs = parsed.localDefs.filter((def) => def.returnType !== undefined);
+    expect(
+      callableDefs
+        .map((def) => index.declaredReturnTypeByCallableId.get(def.nodeId)?.rawName)
+        .sort(),
+    ).toEqual(['AResult', 'BResult', 'Store']);
+  });
+
+  it('keeps extension and decoy return types separate despite the same method name', () => {
+    const extension = parseSwift(
+      `
+protocol ScenarioSupport {}
+struct Store {}
+extension ScenarioSupport {
+    func makeStore() -> Store { Store() }
+}
+`,
+      'Support.swift',
+    );
+    const decoy = parseSwift(
+      `
+struct OtherStore {}
+struct OtherScenario {
+    private func makeStore() -> OtherStore { OtherStore() }
+}
+`,
+      'AUnrelated.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([extension, decoy]);
+    const methods = [...extension.localDefs, ...decoy.localDefs].filter(
+      (def) => def.qualifiedName?.split('.').at(-1) === 'makeStore',
+    );
+
+    expect(methods).toHaveLength(2);
+    const byFile = new Map(methods.map((def) => [def.filePath, def]));
+    expect(
+      index.declaredReturnTypeByCallableId.get(byFile.get('Support.swift')!.nodeId)?.rawName,
+    ).toBe('Store');
+    expect(
+      index.declaredReturnTypeByCallableId.get(byFile.get('AUnrelated.swift')!.nodeId)?.rawName,
+    ).toBe('OtherStore');
+    expect(index.declaredReturnTypeByCallableId.has('makeStore')).toBe(false);
+  });
+
+  it('does not infer a return type from a same-named parameter', () => {
+    const parsed = parseSwift(
+      `
+struct OtherStore {}
+func makeStore(makeStore: OtherStore) {}
+`,
+      'Unannotated.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const makeStore = parsed.localDefs.find(
+      (def) => def.qualifiedName?.split('.').at(-1) === 'makeStore',
+    );
+
+    expect(makeStore).toBeDefined();
+    expect(index.declaredReturnTypeByCallableId.has(makeStore!.nodeId)).toBe(false);
+  });
+
+  it('does not peel array return types without a language stripper', () => {
+    const parsed = parseSwift(
+      `
+struct User {}
+func makeUsers() -> [User] { [] }
+`,
+      'Peel.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed]);
+    const makeUsers = parsed.localDefs.find(
+      (def) => def.qualifiedName?.split('.').at(-1) === 'makeUsers',
+    );
+    expect(makeUsers?.returnType).toBeDefined();
+    expect(index.declaredReturnTypeByCallableId.get(makeUsers!.nodeId)?.rawName).toBe(
+      makeUsers!.returnType,
+    );
+  });
+
+  it('applies stripTypePreservingDecoration to optional returns only', () => {
+    const parsed = parseSwift(
+      `
+struct Store {}
+func makeStore() -> Store? { nil }
+func makeUsers() -> [User] { [] }
+`,
+      'Optional.swift',
+    );
+    const index = buildWorkspaceResolutionIndex([parsed], undefined, {
+      stripTypePreservingDecoration: (typeName) =>
+        typeName.trim().endsWith('?') ? typeName.trim().slice(0, -1).trim() : undefined,
+    });
+    const byName = new Map(
+      parsed.localDefs
+        .filter((def) => def.returnType !== undefined)
+        .map((def) => [def.qualifiedName?.split('.').at(-1), def]),
+    );
+    expect(index.declaredReturnTypeByCallableId.get(byName.get('makeStore')!.nodeId)?.rawName).toBe(
+      'Store',
+    );
+    expect(index.declaredReturnTypeByCallableId.get(byName.get('makeUsers')!.nodeId)?.rawName).toBe(
+      byName.get('makeUsers')!.returnType,
+    );
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift call-result assignment extraction', () => {
+  it('aligns each lhs with its own same-name call-resolution anchor', () => {
+    const parsed = parseSwift(
+      `
+func run() {
+  let store = makeStore()
+  let other = makeStore()
+}
+`,
+      'Scenario.swift',
+    );
+
+    const assignments = parsed.callResultAssignmentSites ?? [];
+    expect(assignments.map(({ lhs }) => lhs)).toEqual(['store', 'other']);
+    expect(
+      new Set(assignments.map(({ callSite }) => `${callSite.startLine}:${callSite.startCol}`)).size,
+    ).toBe(2);
+
+    const callAnchors = parsed.referenceSites
+      .filter((site) => site.name === 'makeStore')
+      .map(({ atRange }) => `${atRange.startLine}:${atRange.startCol}`);
+    expect(assignments.map(({ callSite }) => `${callSite.startLine}:${callSite.startCol}`)).toEqual(
+      callAnchors,
+    );
+    expect(new Set(assignments.map(({ inScope }) => inScope)).size).toBe(1);
+  });
+
+  it('does not emit replay facts for explicitly typed declarations', () => {
+    const parsed = parseSwift(
+      `
+func run() {
+  let explicit: Store = makeStore()
+}
+`,
+      'Typed.swift',
+    );
+    expect(parsed.callResultAssignmentSites).toBeUndefined();
+  });
+
+  it('unwraps await and try expressions to the exact call position', () => {
+    const parsed = parseSwift(
+      `
+func run() async throws {
+  let awaited = await makeStore()
+  let tried = try makeStore()
+  let triedAwaited = try await makeStore()
+}
+`,
+      'Wrapped.swift',
+    );
+    const assignments = parsed.callResultAssignmentSites ?? [];
+    expect(assignments.map(({ lhs }) => lhs)).toEqual(['awaited', 'tried', 'triedAwaited']);
+    const callAnchors = parsed.referenceSites
+      .filter((site) => site.name === 'makeStore')
+      .map(({ atRange }) => `${atRange.startLine}:${atRange.startCol}`);
+    expect(assignments.map(({ callSite }) => `${callSite.startLine}:${callSite.startCol}`)).toEqual(
+      callAnchors,
+    );
   });
 });
 

@@ -72,7 +72,14 @@
       "button": "上传文件夹",
       "uploading": "上传中…",
       "selected": "已准备 {{fileCount}} 个文件（已跳过 {{dropped}} 个：.git、node_modules、构建产物）",
-      "empty": "该文件夹中未找到可分析的文件。"
+      "selectedDrop": "已准备 {{fileCount, number}} 个文件（已跳过 {{skippedDirs, number}} 个文件夹和 {{dropped, number}} 个文件：.git、node_modules、构建产物、超过 25 MB 的文件）",
+      "empty": "该文件夹中未找到可分析的文件。",
+      "dropHint": "或将文件夹拖放到此处",
+      "dropActive": "松开以上传此文件夹",
+      "reading": "正在读取文件夹… 已找到 {{fileCount, number}} 个文件",
+      "dropSingleFolder": "请拖放单个文件夹，而不是文件或多个文件夹。",
+      "dropTooManyFiles": "该文件夹的文件超过 {{max, number}} 个，请改为拖放子文件夹。",
+      "dropUnsupported": "此浏览器无法读取拖放的文件夹，请改用“上传文件夹”按钮。"
     }
   }
 }

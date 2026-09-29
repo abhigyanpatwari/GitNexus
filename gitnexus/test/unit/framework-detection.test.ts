@@ -66,6 +66,50 @@ describe('detectFrameworkFromPath', () => {
     });
   });
 
+  describe('tRPC', () => {
+    it('detects /trpc/routers/ files at 3.0x', () => {
+      const result = detectFrameworkFromPath('src/server/trpc/routers/user.ts');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('trpc');
+      expect(result!.entryPointMultiplier).toBe(3.0);
+      expect(result!.reason).toBe('trpc-router');
+    });
+
+    it('detects T3 /api/routers/ files at 3.0x', () => {
+      const result = detectFrameworkFromPath('src/server/api/routers/settings.ts');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('trpc');
+      expect(result!.entryPointMultiplier).toBe(3.0);
+    });
+
+    it('detects T3 /api/routers/ JavaScript files at 3.0x', () => {
+      const result = detectFrameworkFromPath('src/server/api/routers/settings.js');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('trpc');
+      expect(result!.entryPointMultiplier).toBe(3.0);
+    });
+
+    it('classifies /app/trpc/routers/ as tRPC, not expo-router', () => {
+      const result = detectFrameworkFromPath('src/app/trpc/routers/user.ts');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('trpc');
+      expect(result!.framework).not.toBe('expo-router');
+      expect(result!.entryPointMultiplier).toBe(3.0);
+    });
+
+    it('classifies /app/trpc/routers/ JavaScript as tRPC, not expo-router', () => {
+      const result = detectFrameworkFromPath('src/app/trpc/routers/user.js');
+      expect(result).not.toBeNull();
+      expect(result!.framework).toBe('trpc');
+      expect(result!.framework).not.toBe('expo-router');
+      expect(result!.entryPointMultiplier).toBe(3.0);
+    });
+
+    it('does not treat a generic /routers/ folder as tRPC', () => {
+      expect(detectFrameworkFromPath('src/routers/vue.ts')).toBeNull();
+    });
+  });
+
   describe('Express / Node.js', () => {
     it('detects route files', () => {
       const result = detectFrameworkFromPath('routes/auth.ts');

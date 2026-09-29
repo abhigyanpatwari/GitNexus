@@ -5,7 +5,7 @@
   },
   "python-abstract-dispatch/base.py": {
     "captureGroups": 22,
-    "digest": "94900994d4bae8c55660e21694afba50d0edd6e22b71bcc897982aa860bbb07e"
+    "digest": "96d3ad96798ff20036cca85bcedf2eb64cc7636143d30a5af8bab65e03b08dc2"
   },
   "python-abstract-dispatch/impl.py": {
     "captureGroups": 19,
@@ -94,6 +94,10 @@
   "python-call-result-binding/service.py": {
     "captureGroups": 9,
     "digest": "9c7f1c54a9b0ba3bfa4410e1843bf5edb570777789ee659a00d7dd6771f3670f"
+  },
+  "python-callable-alternatives/app.py": {
+    "captureGroups": 85,
+    "digest": "d5fc223832a33ff701f09b00174bdf1e127063aae9bdead0e5d242e8bd8e12ef"
   },
   "python-calls/one.py": {
     "captureGroups": 4,
@@ -513,7 +517,43 @@
   },
   "python-method-enrichment/models.py": {
     "captureGroups": 31,
-    "digest": "9e3f359187a82e936cd74c59848a296d19f138865a71882e3bbd3842bb4f0704"
+    "digest": "ae9408b9692b231a2fcd09ec2f82097f7fca76c677a7cb66c02f84ec91f7198e"
+  },
+  "python-mixin-self-dispatch/ambiguous_a.py": {
+    "captureGroups": 10,
+    "digest": "8ff1561b66846722c78a95f0492f4bcc67587e52a22c6d09d980b2025b1a9f53"
+  },
+  "python-mixin-self-dispatch/ambiguous_b.py": {
+    "captureGroups": 10,
+    "digest": "0d81efdead49a51822b48916d5137699d8343e68811af7cceae37946596159c5"
+  },
+  "python-mixin-self-dispatch/conditional.py": {
+    "captureGroups": 10,
+    "digest": "fa09cba191ae3ba4afb67db0ceef56725e2a73707c8b106b397206afe173c115"
+  },
+  "python-mixin-self-dispatch/decoys.py": {
+    "captureGroups": 10,
+    "digest": "aefd2ce8ab50a2ddca86f277e2503b33ea825c67041e0f1ad3f3cc6f26f30534"
+  },
+  "python-mixin-self-dispatch/helpers.py": {
+    "captureGroups": 7,
+    "digest": "21cf0a934e0bd7556082f83084d27a5ff04706f88f3d8de16811ed76646dc3cd"
+  },
+  "python-mixin-self-dispatch/inherited.py": {
+    "captureGroups": 7,
+    "digest": "4250018e9eabafe863caedc43306c69ff28fe17f19103edf2f01ed6438d0af19"
+  },
+  "python-mixin-self-dispatch/mixins.py": {
+    "captureGroups": 188,
+    "digest": "730fcef0260b2a8af6a6c80d2700011a82ac9d54bc842fcdb15a5907986c49ed"
+  },
+  "python-mixin-self-dispatch/worker.py": {
+    "captureGroups": 211,
+    "digest": "729328fa43d852b4da8b040a87a23d49e95ce87639a36146529041161cb62693"
+  },
+  "python-mixin-self-dispatch/wrong_arity.py": {
+    "captureGroups": 23,
+    "digest": "77c19005cc204aff148f6b230d0334cda52f338f34418bf9b609c6c5c44d87a5"
   },
   "python-module-export-vs-method-collision/app.py": {
     "captureGroups": 14,

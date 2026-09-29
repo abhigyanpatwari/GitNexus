@@ -19,17 +19,23 @@ export function interpretSwiftImport(captures: CaptureMatch): ParsedImport | nul
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
 
-  // Swift imports are whole-module (wildcard semantics): `import Foundation`
-  // brings the entire module into scope, no named members. The SPM target
-  // (first dotted segment) is the resolution target; the full path is kept
-  // as importedName for reference. `@testable` resolves identically to a
-  // plain import (same module is visible in test scope).
   const source = sourceCap.text;
-  const fullPath = captures['@import.name']?.text ?? source;
+  const name = captures['@import.name']?.text ?? source;
+  const kindText = captures['@import.kind']?.text;
+
+  if (kindText === 'reexport' || kindText === 'named') {
+    return {
+      kind: kindText,
+      localName: name,
+      importedName: name,
+      targetRaw: source,
+    };
+  }
+
   return {
     kind: 'namespace',
     localName: source,
-    importedName: fullPath,
+    importedName: name,
     targetRaw: source,
   };
 }
@@ -46,7 +52,7 @@ export function interpretSwiftTypeBinding(captures: CaptureMatch): ParsedTypeBin
   //   `[User]`                    → User   (array sugar)
   //   `Array<User>` / `Optional<User>` → User (single-arg generic)
   //   `Foundation.URL`            → URL    (qualifier)
-  const rawType = stripQualifier(stripGeneric(stripArraySugar(stripOptional(typeCap.text.trim()))));
+  const rawType = normalizeSwiftTypeName(typeCap.text);
 
   let source: TypeRef['source'] = 'parameter-annotation';
   if (captures['@type-binding.self'] !== undefined) source = 'self';
@@ -56,6 +62,22 @@ export function interpretSwiftTypeBinding(captures: CaptureMatch): ParsedTypeBin
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
 
   return { boundName: nameCap.text, rawTypeName: rawType, source };
+}
+
+export function normalizeSwiftTypeName(text: string): string {
+  return stripQualifier(stripGeneric(stripArraySugar(stripOptional(text.trim()))));
+}
+
+/**
+ * Type-preserving decoration only — used by `stripTypePreservingDecoration`
+ * for class lookup and declared-return replay. `User?` / `User!` → `User`.
+ * Arrays, generics, and nested `Foo.Bar` are left intact so a binding used
+ * for member lookup does not follow the element type or the trailing ident.
+ */
+export function stripSwiftTypePreservingDecoration(typeName: string): string | undefined {
+  const trimmed = typeName.trim();
+  if (trimmed.endsWith('?') || trimmed.endsWith('!')) return trimmed.slice(0, -1).trim();
+  return undefined;
 }
 
 /** `User?` / `User!` → `User`. */

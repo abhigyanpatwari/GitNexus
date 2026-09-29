@@ -233,6 +233,61 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   return /replay shadow pages under read-only mode/i.test(msg);
 };
 
+// LADYBUGDB-CONTRACT: native error text. When bumping LadybugDB, re-validate
+// this regex against the new error format — `git grep "LADYBUGDB-CONTRACT"`
+// enumerates every version-coupled spot.
+// Version honesty (review finding on the interrupted-checkpoint PR): this
+// string is FIRST OBSERVED on @ladybugdb/core 0.19.1 — live-reproduced by
+// SIGKILLing a writer mid-CHECKPOINT (homelab 2026-09-19, GitNexus image
+// 1.6.10-20260917, built on 0.19.x). The 0.18.3 binary does NOT contain it
+// (checked via `strings`), and 0.18.3 tolerates the same on-disk state, so on
+// 0.18.x this classifier simply never fires. If the engine pin ever moves
+// back to ^0.19, the read-path self-heal is already in place.
+export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);
+};
+
+/** Prefix of the interrupted-checkpoint wrap — must not rematch the native classifier. */
+export const INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX =
+  'LadybugDB could not finish an interrupted checkpoint';
+
+/** Prefix of the pending-shadow-replay wrap — must not rematch the native classifier. */
+export const PENDING_SHADOW_REPLAY_RECOVERY_PREFIX =
+  'LadybugDB could not finish a pending shadow replay';
+
+const READ_ONLY_RECOVERY_REMOUNT =
+  'Mount the workspace read-write or re-run `gitnexus analyze` to complete recovery.';
+
+/** True when `err` is already a classifier-aware recovery wrap (not a native refusal). */
+export const isReadOnlyRecoveryFailure = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.startsWith(INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX) ||
+    msg.startsWith(PENDING_SHADOW_REPLAY_RECOVERY_PREFIX)
+  );
+};
+
+/**
+ * Operator-facing wrap for a failed read-only self-heal. Checkpoint-in-progress
+ * and pending-shadow-replay must not reuse `shadowSidecarRecoveryMessage` —
+ * that copy claims the sidecar is missing and appends the native text, which
+ * rematches the classifiers and can re-enter writable CHECKPOINT.
+ */
+export const readOnlyRecoveryFailureMessage = (dbPath: string, err: unknown): string => {
+  if (isReadOnlyCheckpointInProgressError(err)) {
+    return (
+      `${INTERRUPTED_CHECKPOINT_RECOVERY_PREFIX} for ${dbPath}. ` +
+      `${READ_ONLY_RECOVERY_REMOUNT} ` +
+      'Retry later if another writer is still checkpointing.'
+    );
+  }
+  if (isReadOnlyShadowReplayError(err)) {
+    return `${PENDING_SHADOW_REPLAY_RECOVERY_PREFIX} for ${dbPath}. ${READ_ONLY_RECOVERY_REMOUNT}`;
+  }
+  return shadowSidecarRecoveryMessage(dbPath, err);
+};
+
 export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): string => {
   const msg = err instanceof Error ? err.message : String(err);
   return (

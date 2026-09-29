@@ -6,6 +6,8 @@ export const MCP_READ_ONLY_TOOLS = new Set([
   'list_repos',
   'query',
   'context',
+  'read_file',
+  'grep',
   'detect_changes',
   'check',
   'impact',

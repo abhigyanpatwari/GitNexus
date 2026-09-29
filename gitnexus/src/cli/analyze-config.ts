@@ -33,8 +33,10 @@ import path from 'node:path';
 import { readRepoControlFile } from '../config/repo-control-file.js';
 import {
   InvalidBranchError,
+  sanitizeDetectedBranch,
   validateBranchName as validateBranchNameCore,
 } from '../core/git-ref.js';
+export { sanitizeDetectedBranch };
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
@@ -100,6 +102,10 @@ const KEY_SPECS: Record<string, KeySpec> = {
   workerTimeout: { target: 'workerTimeout', kind: 'numeric-string' },
   walCheckpointThreshold: { target: 'walCheckpointThreshold', kind: 'numeric-string' },
   workers: { target: 'workers', kind: 'numeric-string' },
+  maxProcesses: { target: 'maxProcesses', kind: 'numeric-string' },
+  maxProcessBranching: { target: 'maxProcessBranching', kind: 'numeric-string' },
+  maxProcessTraceDepth: { target: 'maxProcessTraceDepth', kind: 'numeric-string' },
+  maxEntryPointCandidates: { target: 'maxEntryPointCandidates', kind: 'numeric-string' },
   embeddingThreads: { target: 'embeddingThreads', kind: 'numeric-string' },
   embeddingBatchSize: { target: 'embeddingBatchSize', kind: 'numeric-string' },
   embeddingSubBatchSize: { target: 'embeddingSubBatchSize', kind: 'numeric-string' },
@@ -169,20 +175,6 @@ export function validateBranchName(value: string, source: string): string {
       throw new GitNexusRcError(err.message);
     }
     throw err;
-  }
-}
-
-/**
- * Best-effort validation for an auto-detected branch (from git). Never throws —
- * returns `undefined` for anything unusable so the resolver falls back to the
- * next precedence tier.
- */
-export function sanitizeDetectedBranch(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  try {
-    return validateBranchName(value, 'detected branch');
-  } catch {
-    return undefined;
   }
 }
 

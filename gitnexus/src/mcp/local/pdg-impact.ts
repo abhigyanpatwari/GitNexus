@@ -1535,7 +1535,7 @@ export async function pdgLayerStatus(deps: {
     // one row happens to carry cannot change the returned state or note.
     const rows = await deps.executeParameterized(
       deps.lbugPath,
-      `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
+      `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type = 'CDG' OR r.type = 'REACHING_DEF' RETURN r.type AS type LIMIT 1`,
       {},
     );
     edgesVisible = Array.isArray(rows) && rows.length > 0;
@@ -1709,7 +1709,7 @@ async function bfsReachableBlocks(input: {
     const rawRows = await exec(
       lbugPath,
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
-         WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
+         WHERE (r.type = 'CDG' OR r.type = 'REACHING_DEF') AND ${matchEndpoint}.id IN $frontier
          RETURN DISTINCT ${collectEndpoint}.id AS id
          ORDER BY id
          LIMIT ${probeLimit}`,

@@ -485,6 +485,31 @@ describe('swiftPackageStrategy', () => {
     const result = swiftPackageStrategy('Foundation', 'App.swift', ctx);
     expect(result).toBeNull();
   });
+
+  it('does not resolve inferred grouping folders when the declaration is empty', () => {
+    const ctx = makeCtx(['Sources/Foundation/Thing.swift', 'Sources/App/main.swift'], {
+      swiftPackageConfig: {
+        origin: 'package.swift',
+        targets: new Map([
+          ['Foundation', 'Sources/Foundation'],
+          ['App', 'Sources/App'],
+        ]),
+        declaredTargets: new Map(),
+      },
+    });
+    expect(swiftPackageStrategy('Foundation', 'Sources/App/main.swift', ctx)).toBeNull();
+    expect(swiftPackageStrategy('App', 'Sources/App/main.swift', ctx)).toBeNull();
+  });
+
+  it('ignores an inferred directories origin', () => {
+    const ctx = makeCtx(['Sources/Models/User.swift'], {
+      swiftPackageConfig: {
+        origin: 'directories',
+        targets: new Map([['Models', 'Sources/Models']]),
+      },
+    });
+    expect(swiftPackageStrategy('Models', 'Sources/App/main.swift', ctx)).toBeNull();
+  });
 });
 
 describe('rubyRequireStrategy', () => {

@@ -29,6 +29,7 @@ import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
   deriveDefaultExportHocName,
+  isBlockedCallbackRegistrationCall,
 } from '../ts-js-hoc-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SkippedPath } from './clone-safety.js';
@@ -134,6 +135,12 @@ import {
   extractTemplateComponents,
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
+import {
+  extractNotebookPython,
+  isNotebookPath,
+  mapExtractLine,
+  type NotebookLineSegment,
+} from '../ipynb-extractor.js';
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
@@ -1596,6 +1603,9 @@ const processFileGroup = (
     let scopeSourceKind: ScopeCaptureSourceKind = 'full-file';
     let lineOffset = 0;
     let isVueSetup = false;
+    let notebookSegments: readonly NotebookLineSegment[] | undefined;
+    const mapRow = (row: number): number =>
+      notebookSegments ? mapExtractLine(row, notebookSegments) : row + lineOffset;
     if (language === SupportedLanguages.Vue) {
       const extracted = extractVueScript(file.content);
       if (!extracted) continue; // skip .vue files with no script block
@@ -1603,6 +1613,12 @@ const processFileGroup = (
       scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
       isVueSetup = extracted.isSetup;
+    } else if (language === SupportedLanguages.Python && isNotebookPath(file.path)) {
+      const extracted = extractNotebookPython(file.content);
+      if (!extracted) continue;
+      parseContent = extracted.pythonSource;
+      scopeSourceKind = 'pre-extracted-script';
+      notebookSegments = extracted.segments;
     }
 
     // Per-language source-text transform (e.g., UE macro stripping for C++).
@@ -1675,6 +1691,7 @@ const processFileGroup = (
       },
       tree,
       scopeSourceKind,
+      notebookSegments,
     );
     if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
@@ -1721,6 +1738,7 @@ const processFileGroup = (
             // `lineOffset` in the file — shift the CFG into file coordinates so
             // it joins its graph node and BasicBlock lines map to source.
             lineOffset,
+            notebookSegments ? mapRow : undefined,
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
           // Surface per-function CFG skips per-language (#2195): merged + logged
@@ -1877,7 +1895,7 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
-            line: captureMap['assignment'].startPosition.row + 1,
+            line: mapRow(captureMap['assignment'].startPosition.row) + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }
@@ -1912,7 +1930,7 @@ const processFileGroup = (
             filePath: file.path,
             httpMethod,
             decoratorName,
-            lineNumber: decoratorNode.startPosition.row + lineOffset,
+            lineNumber: mapRow(decoratorNode.startPosition.row),
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
             ...(handlerName ? { handlerName } : {}),
           };
@@ -2298,6 +2316,18 @@ const processFileGroup = (
       if (!defaultNodeLabel) continue;
       if (provider.shouldSkipDefinitionCapture?.(captureMap, defaultNodeLabel) === true) continue;
 
+      // `{ timer: setTimeout(() => …, 100) }` registers a timer, not a
+      // Function — the TSQ-path twin of the emit-side gate in
+      // languages/*/captures.ts (the query-level `#not-any-of?` predicate
+      // is unreliable: node-tree-sitter 0.21 shares `stringValues` across
+      // `#any-of?` predicates of a compiled query).
+      if (
+        definitionNode?.type === 'pair' &&
+        isBlockedCallbackRegistrationCall(definitionNode.childForFieldName('value'))
+      ) {
+        continue;
+      }
+
       const nameNode = captureMap['name'];
       const extractedClassSymbol =
         definitionNode && provider.classExtractor?.isTypeDeclaration(definitionNode)
@@ -2470,10 +2500,10 @@ const processFileGroup = (
           : definitionNode?.startPosition;
       const startLine =
         startPosition !== undefined
-          ? startPosition.row + lineOffset
+          ? mapRow(startPosition.row)
           : nameNode
-            ? nameNode.startPosition.row + lineOffset
-            : lineOffset;
+            ? mapRow(nameNode.startPosition.row)
+            : mapRow(0);
       const startColumn = startPosition?.column ?? nameNode?.startPosition.column ?? 0;
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
@@ -2945,7 +2975,7 @@ const processFileGroup = (
                 filePath: file.path,
                 toolName: nodeName,
                 description: (dec.arg || description || '').slice(0, 200),
-                lineNumber: definitionNode.startPosition.row + lineOffset,
+                lineNumber: mapRow(definitionNode.startPosition.row),
                 handlerNodeId: nodeId,
               });
             }
@@ -3050,7 +3080,7 @@ const processFileGroup = (
           (objectLiteralBindingInfo?.ownerName || isArrayContainedObjectCallable)
             ? { startColumn }
             : {}),
-          endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
+          endLine: definitionNode ? mapRow(definitionNode.endPosition.row) : startLine,
           language: language,
           isExported,
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
@@ -3178,6 +3208,13 @@ const processFileGroup = (
     if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       for (const r of extractedRoutes) result.routes.push(r);
+    }
+
+    // Content-based route extraction via provider hook (path-gate lives on
+    // the provider; the worker does not name languages or frameworks).
+    if (provider.extractTextRoutes) {
+      const textRoutes = provider.extractTextRoutes(file.path, file.content);
+      for (const r of textRoutes) result.routes.push(r);
     }
 
     // Extract ORM queries (Prisma, Supabase)

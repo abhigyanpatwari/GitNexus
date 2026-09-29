@@ -261,6 +261,22 @@ describe('Pass 2: declarations + local bindings', () => {
     expect(result.localDefs[0]!.type).toBe('Function');
   });
 
+  it('backfills return types across duplicate declaration captures', () => {
+    const plain = declMatch('function', 'makeStore', 5, 0, 10, 0);
+    const annotated = declMatch('function', 'makeStore', 5, 0, 10, 0, {
+      '@declaration.return-type': cap('@declaration.return-type', 5, 0, 10, 0, 'Store'),
+    });
+    const result = extract(
+      [scopeMatch('module', 1, 0, 100, 0), scopeMatch('function', 5, 0, 10, 0), plain, annotated],
+      'Support.swift',
+      mockProvider(),
+    );
+
+    expect(result.localDefs).toHaveLength(2);
+    expect(new Set(result.localDefs.map((def) => def.nodeId)).size).toBe(1);
+    expect(result.localDefs.map((def) => def.returnType)).toEqual(['Store', 'Store']);
+  });
+
   it('preserves a synthetic declaration marker on the definition', () => {
     const result = extract(
       [
@@ -866,6 +882,55 @@ describe('Pass 6: callable-value-flow facts', () => {
       receiver: { name: 'obj' },
     });
     expect(JSON.parse(JSON.stringify(sites))).toEqual(sites);
+  });
+});
+
+describe('Pass 7: call-result assignment identity', () => {
+  it('keeps same-name calls isolated by exact call-expression position', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 10, 0, 40, 0),
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            20,
+            14,
+            20,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 20, 6, 20, 11, 'store'),
+        },
+        {
+          '@call-result-assignment.call': cap(
+            '@call-result-assignment.call',
+            21,
+            14,
+            21,
+            25,
+            'makeStore()',
+          ),
+          '@call-result-assignment.lhs': cap('@call-result-assignment.lhs', 21, 6, 21, 11, 'other'),
+        },
+      ],
+      'a.swift',
+      mockProvider(),
+    );
+
+    const fnScope = result.scopes.find((scope) => scope.kind === 'Function')!;
+    expect(result.callResultAssignmentSites).toEqual([
+      {
+        callSite: { startLine: 20, startCol: 14, endLine: 20, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'store',
+      },
+      {
+        callSite: { startLine: 21, startCol: 14, endLine: 21, endCol: 25 },
+        inScope: fnScope.id,
+        lhs: 'other',
+      },
+    ]);
   });
 });
 

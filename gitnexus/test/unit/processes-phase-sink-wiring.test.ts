@@ -24,11 +24,12 @@ import type {
   PhaseResult,
   PipelineContext,
 } from '../../src/core/ingestion/pipeline-phases/types.js';
+import type { PipelineOptions } from '../../src/core/ingestion/pipeline.js';
 import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
-function makeCtx(graph: KnowledgeGraph): PipelineContext {
-  return { repoPath: '/tmp/repo', graph, onProgress: () => {}, pipelineStart: 0 };
+function makeCtx(graph: KnowledgeGraph, options?: PipelineOptions): PipelineContext {
+  return { repoPath: '/tmp/repo', graph, onProgress: () => {}, pipelineStart: 0, options };
 }
 
 function phaseResult<T>(phaseName: string, output: T): PhaseResult<T> {
@@ -219,12 +220,16 @@ describe('processes phase — truncation is disclosed proportionately (#2899)', 
 
   const runCaptured = async (
     graph: KnowledgeGraph,
+    options?: PipelineOptions,
   ): Promise<{ output: ProcessesOutput; records: ReturnType<LoggerCapture['records']> }> => {
     // Captured at `debug` so an ABSENT warn can be distinguished from a silent
     // phase: the debug line has to be there instead.
     const capture = _captureLogger('debug');
     try {
-      const output = (await processesPhase.execute(makeCtx(graph), baseDeps())) as ProcessesOutput;
+      const output = (await processesPhase.execute(
+        makeCtx(graph, options),
+        baseDeps(),
+      )) as ProcessesOutput;
       return { output, records: capture.records() };
     } finally {
       capture.restore();
@@ -297,5 +302,77 @@ describe('processes phase — truncation is disclosed proportionately (#2899)', 
     const lines = records.filter((r) => PROCESS_LINES.test(String(r.msg)));
     expect(lines.map((r) => r.level)).toEqual([40]);
     expect(String(lines[0]?.msg)).toContain('210 of 410 candidate entry point(s) never ranked in');
+    expect(String(lines[0]?.msg)).toContain('--max-entry-point-candidates');
+    expect(String(lines[0]?.msg)).not.toContain('--max-process-branching');
+    expect(lines[0]?.effectiveLimits).toEqual(
+      expect.objectContaining({
+        maxEntryPointCandidates: 200,
+        maxProcessTraces: expect.any(Number),
+      }),
+    );
+  });
+
+  it('honors an explicit maxProcesses instead of the dynamic formula (#3313)', async () => {
+    const { output } = await runCaptured(flowsMissing(), { maxProcesses: 40 });
+    expect(output.processResult.stats.truncation.processesDropped).toBe(0);
+    expect(output.processResult.stats.truncation.entryPointsUnexplored).toBe(0);
+  });
+
+  it('clears the entry-point drop when the candidate cap is raised (#3313 AE2)', async () => {
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 205; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:r${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCallEdge(graph, `func:r${c}_${i}`, `func:r${c}_${i + 1}`);
+    }
+    const { output } = await runCaptured(graph, { maxEntryPointCandidates: 410 });
+    expect(output.processResult.stats.truncation.entryPointCandidatesDropped).toBe(0);
+  });
+
+  it('still warns when only maxProcesses is raised on a 410-candidate fixture (#3313 AE2)', async () => {
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 205; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:s${c}_${i}`);
+      for (let i = 0; i < 2; i++) addCallEdge(graph, `func:s${c}_${i}`, `func:s${c}_${i + 1}`);
+    }
+    const { output, records } = await runCaptured(graph, { maxProcesses: 1000 });
+    expect(output.processResult.stats.truncation.entryPointCandidatesDropped).toBe(210);
+    const lines = records.filter((r) => PROCESS_LINES.test(String(r.msg)));
+    expect(lines.map((r) => r.level)).toEqual([40]);
+  });
+
+  it('increases process count when both binders are raised (#3313 AE6)', async () => {
+    const graph = createKnowledgeGraph();
+    for (let c = 0; c < 210; c++) {
+      for (let i = 0; i < 3; i++) addFn(graph, `func:ae6_${c}_${i}`);
+      for (let i = 0; i < 2; i++)
+        addCallEdge(graph, `func:ae6_${c}_${i}`, `func:ae6_${c}_${i + 1}`);
+    }
+    // 210 chains × 3 = 630 symbols. Dynamic maxProcesses needs ≥ 210, so pad.
+    for (let i = 0; i < 1470; i++) addFn(graph, `func:pad_${i}`);
+
+    const baseline = await runCaptured(graph);
+    const raised = await runCaptured(graph, {
+      maxEntryPointCandidates: 420,
+      maxProcesses: 300,
+    });
+    expect(
+      baseline.output.processResult.stats.truncation.entryPointCandidatesDropped,
+    ).toBeGreaterThan(0);
+    expect(raised.output.processResult.stats.truncation.entryPointCandidatesDropped).toBe(0);
+    expect(raised.output.processResult.processes.length).toBeGreaterThan(
+      baseline.output.processResult.processes.length,
+    );
+  });
+
+  it('keeps shape-only caps at debug when branching or depth is raised (#3313 AE7)', async () => {
+    const { output, records } = await runCaptured(shortenedOnly(), {
+      maxProcessBranching: 8,
+      maxProcessTraceDepth: 20,
+    });
+    expect(output.processResult.stats.truncation.calleesDropped).toBe(0);
+    expect(output.processResult.stats.truncation.tracesDepthCapped).toBe(0);
+    const lines = records.filter((r) => PROCESS_LINES.test(String(r.msg)));
+    expect(lines.some((r) => r.level === 40)).toBe(false);
+    expect(lines.some((r) => String(r.msg).includes('whole flows are MISSING'))).toBe(false);
   });
 });

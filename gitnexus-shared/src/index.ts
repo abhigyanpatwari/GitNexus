@@ -22,6 +22,7 @@ export {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   isBladeTemplateFilename,
+  isNotebookFilename,
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 
@@ -98,6 +99,7 @@ export type { ResolveTypeRefContext } from './scope-resolution/resolve-type-ref.
 
 // ScopeExtractor output contracts (RFC §3.2 Phase 1; Ring 2 PKG #919)
 export type { ParsedFile } from './scope-resolution/parsed-file.js';
+export type { CallResultAssignmentSite } from './scope-resolution/call-result-assignment-site.js';
 export type {
   ReferenceSite,
   ReferenceKind,

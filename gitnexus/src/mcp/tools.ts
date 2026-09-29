@@ -64,6 +64,9 @@ const DESTRUCTIVE_TOOL_ANNOTATIONS: ToolAnnotations = {
 export const LIST_REPOS_DEFAULT_LIMIT = 50;
 export const LIST_REPOS_MAX_LIMIT = 200;
 
+/** Whole-file `read_file` cap. The schema default and the handler fallback share this. */
+export const READ_FILE_DEFAULT_MAX_LINES = 2000;
+
 /**
  * Pagination bounds for the `explain` tool (#2083 M3 U6). Findings are sparse
  * and capped per function at analyze time, but a large repo can still
@@ -82,6 +85,14 @@ export const PDG_QUERY_MAX_LIMIT = 200;
 // Shared impact traversal depth cap. The MCP schema advertises this bound;
 // PDG direct backend callers also enforce it before running traversal.
 export const IMPACT_MAX_DEPTH = 32;
+
+/** Advertised query page defaults; backend and group orchestration must match. */
+export const QUERY_DEFAULT_LIMIT = 10;
+export const QUERY_DEFAULT_MAX_SYMBOLS = 25;
+/** Advertised query page maxima (schema + LocalBackend.query reject, not clamp). */
+export const QUERY_MAX_LIMIT = 100;
+export const QUERY_MAX_MAX_SYMBOLS = 200;
+export const CONTEXT_CHAIN_MAX_DEPTH = 3;
 
 const CWD_AWARE_REPO_OMISSION =
   'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
@@ -133,15 +144,15 @@ specify the "repo" parameter explicitly.`,
   {
     name: 'query',
     description: `Query the code knowledge graph for execution flows related to a concept.
-Returns processes (call chains) ranked by relevance, each with its symbols and file locations.
+Returns ranked processes plus a flat process_symbols list. Join processes[].id to process_symbols[].process_id.
 
 WHEN TO USE: Understanding how code works together. Use this when you need execution flows and relationships, not just file matches. Complements grep/IDE search.
-AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs).
+AFTER THIS: Use context() on a specific symbol for 360-degree view (callers, callees, categorized refs). With include_content, context() also returns that symbol's source.
 
 Returns results grouped by process (execution flow):
-- processes: ranked execution flows with relevance priority
-- process_symbols: all symbols in those flows with file locations and module (functional area)
-- definitions: standalone types/interfaces not in any process
+- processes: ranked execution flows with relevance priority. When a process has an HTTP endpoint, each item includes route and method string aliases plus routes: [{ url, method? }] (same shape as context). When chain_depth > 0, each item also includes chain — layered upstream callers + downstream callees from the process entry symbol (same BFS as context({chain_depth})).
+- process_symbols: search-hit symbols in those flows with file locations and module (functional area). On the single-repo envelope { processes, process_symbols, definitions }: One row per (id, process_id) — the same symbol id may appear under more than one process. Join a process to its rows by process_id; symbol_count is the number of those rows. When the process entry is among those hits, it is marked is_entry_point: true. With include_content, content appears only on the first row for each symbol id across the whole process_symbols array, not per process; later rows for that id omit it, even under a different process_id. To get content for a row without it, find the earlier row with the same id, or call context({uid: "<id>", include_content: true}). A repo of "@<group>" returns { group, query, results, per_repo } and does not include process_symbols. results[].symbol_count is the member's post-slice attach count; when service is set, it counts only attaches under that prefix. To get process_symbols for one member, query again with repo "@<group>/<memberPath>" (member path from group.yaml, or results[]._repo).
+- definitions: standalone types/interfaces not in any process. Keyword hits on Route URLs (route_fts) are bridged to their handler via HANDLES_ROUTE (handlerSymbolId, routes) when the edge exists; use route_map({route}) for the full HTTP surface.
 
 Hybrid ranking: BM25 keyword + semantic vector search, ranked by Reciprocal Rank Fusion.
 
@@ -173,23 +184,30 @@ ${HOT_READ_STALENESS_NOTE}`,
         },
         limit: {
           type: 'number',
-          description: 'Max processes to return (default: 5)',
-          default: 5,
+          description: `Max processes to return (default: ${QUERY_DEFAULT_LIMIT}, min: 1, max: ${QUERY_MAX_LIMIT}). Values outside [1, ${QUERY_MAX_LIMIT}] are rejected.`,
+          default: QUERY_DEFAULT_LIMIT,
           minimum: 1,
-          maximum: 100,
+          maximum: QUERY_MAX_LIMIT,
         },
         max_symbols: {
           type: 'number',
-          description: 'Max symbols per process (default: 10)',
-          default: 10,
+          description: `Max symbols per process (default: ${QUERY_DEFAULT_MAX_SYMBOLS}, min: 1, max: ${QUERY_MAX_MAX_SYMBOLS}). Values outside [1, ${QUERY_MAX_MAX_SYMBOLS}] are rejected.`,
+          default: QUERY_DEFAULT_MAX_SYMBOLS,
           minimum: 1,
-          maximum: 200,
+          maximum: QUERY_MAX_MAX_SYMBOLS,
         },
         include_content: {
           type: 'boolean',
           description:
-            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
+            'Include source text retained for matching symbols (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content. Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
           default: false,
+        },
+        chain_depth: {
+          type: 'integer',
+          minimum: 0,
+          maximum: CONTEXT_CHAIN_MAX_DEPTH,
+          default: 0,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) from each returned process's entry symbol and attach the layered result as a per-process chain field (upstream callers + downstream callees). 0 = disabled (default). Same BFS semantics as context({chain_depth}) — exposes the procedure→workflow→helper flow behind a concept in one call.`,
         },
         maxTokens: {
           type: 'integer',
@@ -292,6 +310,7 @@ ${HOT_READ_STALENESS_NOTE}`,
     name: 'context',
     description: `360-degree view of a single code symbol.
 Shows categorized incoming/outgoing references (calls, imports, extends, implements, methods, properties, overrides), process participation, and file location.
+Also returns (when applicable): routes: [{ url, method? }] — HTTP endpoints this symbol handles via (handler)-[HANDLES_ROUTE]->Route or a Process-linked Route-[ENTRY_POINT_OF]->Process edge; is_entry_point: true when this symbol is a process entry point; chain — layered CALLS neighbours (upstream callers + downstream callees) when chain_depth > 0.
 
 WHEN TO USE: After query() to understand a specific symbol in depth. When you need to know all callers, callees, and what execution flows a symbol participates in.
 AFTER THIS: Use impact() if planning changes, or READ gitnexus://repo/{name}/process/{processName} for full execution trace.
@@ -342,6 +361,13 @@ ${HOT_READ_STALENESS_NOTE}`,
           description:
             'Include source text retained for this symbol (default: false). The response reports contentAvailability; indexes built with content retention "none" explicitly report unavailable content.',
           default: false,
+        },
+        chain_depth: {
+          type: 'integer',
+          minimum: 0,
+          maximum: CONTEXT_CHAIN_MAX_DEPTH,
+          default: 0,
+          description: `Optional: walk CALLS edges up to N hops (0-${CONTEXT_CHAIN_MAX_DEPTH}) and return the result as a \`chain\` field (downstream callees + upstream callers layered by depth). 0 = disabled (default). 1 = direct neighbours only. 2-${CONTEXT_CHAIN_MAX_DEPTH} = procedure→workflow→sub-workflow depth. Useful for revealing the full tRPC/RPC call chain in a single call instead of chaining context() invocations.`,
         },
         maxTokens: {
           type: 'integer',
@@ -995,6 +1021,94 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       required: [],
     },
   },
+  {
+    name: 'read_file',
+    description: `Read a file from the repository checkout, optionally sliced to a 0-indexed line range.
+Returns checkout bytes plus totalLines and the slice bounds. The realpath re-check matches HTTP GET /api/file. The lexical barrier is the CodeQL \`startsWith('..')\` form narrowed to the \`..\` segment, so a file named \`..config\` stays readable. A whole-file read is capped by maxLines (default ${READ_FILE_DEFAULT_MAX_LINES}, 0 = no cap), which is stricter than the uncapped HTTP body.
+
+WHEN TO USE: After query()/cypher()/context() gave you a filePath (or file:line), read the surrounding source: header context (open/variable/import lines), a full declaration, or any line window. Prefer context({name, include_content: true}) when you already have the symbol — it returns the symbol span plus call edges in one call.
+AFTER THIS: Use the read text to ground signatures verbatim; never invent names from memory.
+
+Paths that escape the repository are refused. A missing file returns a not-found error only when the checkout directory exists. When full source is unavailable (content retention is not "full", or the checkout directory is gone), the result is code "source-unavailable" — not an empty body and not "file not found". This tool reads the checkout and does not accept branch.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description:
+            'Repository-contained file path (e.g. "Mathlib/Analysis/SpecificLimits/Basic.lean"). Paths that escape the repository, including ".." escapes, are refused.',
+        },
+        startLine: {
+          type: 'integer',
+          description: 'Optional 0-indexed first line of the slice (inclusive).',
+          minimum: 0,
+        },
+        endLine: {
+          type: 'integer',
+          description: 'Optional 0-indexed last line of the slice (inclusive). Requires startLine.',
+          minimum: 0,
+        },
+        maxLines: {
+          type: 'integer',
+          description: `Maximum lines returned for a whole-file read (default ${READ_FILE_DEFAULT_MAX_LINES}, 0 = no cap). Ignored when startLine is set. Negative values are rejected.`,
+          default: READ_FILE_DEFAULT_MAX_LINES,
+          minimum: 0,
+        },
+        repo: {
+          type: 'string',
+          description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'grep',
+    description: `Regex search of the live checkout for files the index retained — the MCP twin of HTTP GET /api/grep.
+The file list is indexed File nodes that still have content. Bytes are read from the working tree, so edits since the last analyze are visible. Hits are 1-based. read_file startLine/endLine are 0-based.
+
+WHEN TO USE: Only after graph tools came back empty or ambiguous — exact-name pinning, docstring fallback, or literal tokens the index does not model (e.g. tactic names inside proof bodies, notation). Graph first (query/context/cypher); grep is the offline-capable fallback, never the default.
+AFTER THIS: Read the matching line with read_file({path, startLine: hit.line - 1, endLine: hit.line - 1}) or pin the symbol with context({name}).
+
+Optional caseSensitive and literal match HTTP /api/grep (default: case-insensitive regex). When full source is unavailable the result is code "source-unavailable", not an empty hit list. This tool reads the checkout and does not accept branch. Results carry timedOut: true when the wall-clock budget expired first — re-issue narrower (fileFilter or a tighter pattern).`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'Regex pattern (max 200 chars) matched against file content lines.',
+        },
+        fileFilter: {
+          type: 'string',
+          description: 'Optional case-insensitive substring filter on file paths.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum hits returned (default 50, max 200).',
+          default: 50,
+          minimum: 1,
+          maximum: 200,
+        },
+        caseSensitive: {
+          type: 'boolean',
+          description:
+            'Optional. When true, match case. Default is case-insensitive, matching HTTP /api/grep.',
+        },
+        literal: {
+          type: 'boolean',
+          description:
+            'Optional. When true, treat pattern as a literal substring (escaped), matching HTTP /api/grep literal=1. Default is a regex.',
+        },
+        repo: {
+          type: 'string',
+          description: `Indexed repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
+      },
+      required: ['pattern'],
+    },
+  },
 ];
 
 /**
@@ -1002,9 +1116,16 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
  * of truth: the schema property is injected here so it cannot drift from the
  * server-side default in `local-backend.ts` (`resolveRepo(repo, branch)`).
  * `list_repos` and the `group_*` tools are intentionally excluded — they are
- * not single-repo, single-branch operations.
+ * not single-repo, single-branch operations. `read_file` and `grep` are in
+ * this set so `repo` stays required with the other per-repo tools, and the
+ * loop below skips `branch` for `CHECKOUT_SOURCE_TOOLS` — a pin would label
+ * checkout bytes with another commit.
  */
+export const CHECKOUT_SOURCE_TOOLS = new Set(['read_file', 'grep']);
+
 export const REPO_SCOPED_TOOLS = new Set([
+  'read_file',
+  'grep',
   'query',
   'cypher',
   'context',
@@ -1033,6 +1154,8 @@ for (const tool of GITNEXUS_TOOLS) {
   // advertising the aliases instead would re-break Claude Code on `query`.
   tool.inputSchema.additionalProperties = false;
   if (!REPO_SCOPED_TOOLS.has(tool.name)) continue;
+  // Checkout reads follow the working tree. Do not advertise `branch`.
+  if (CHECKOUT_SOURCE_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's
   // workspace-index behavior. Ignored in group mode (repo starts "@").

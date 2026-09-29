@@ -53,6 +53,7 @@ import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import type {
+  CallResultAssignmentSite,
   CallableFlowSite,
   ParsedFile,
   ReferenceSite,
@@ -352,20 +353,26 @@ export const loadParsedFilesForPaths = async (
           rejectedFiles++;
           continue;
         }
+        const assignments = sanitizeCallResultAssignmentSites(pf.callResultAssignmentSites);
+        if (assignments === undefined) {
+          rejectedFiles++;
+          continue;
+        }
         const chains = sanitizeReceiverChains(pf.referenceSites);
         if (chains === undefined) {
           rejectedFiles++;
           continue;
         }
-        if (flow.dropped === 0 && chains.dropped === 0) {
+        if (flow.dropped === 0 && assignments.dropped === 0 && chains.dropped === 0) {
           out.set(pf.filePath, pf);
         } else {
-          droppedSites += flow.dropped;
+          droppedSites += flow.dropped + assignments.dropped;
           droppedChains += chains.dropped;
           filesWithDroppedSites++;
           out.set(pf.filePath, {
             ...pf,
             ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
+            ...(assignments.dropped === 0 ? {} : { callResultAssignmentSites: assignments.sites }),
             ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
           });
         }
@@ -398,6 +405,19 @@ function sanitizeCallableFlowSites(
       ? value.slice(0, MAX_CALLABLE_FLOW_SITES_PER_FILE)
       : value;
   const sites = bounded.filter(isValidCallableFlowSite);
+  return { sites, dropped: value.length - sites.length };
+}
+
+function sanitizeCallResultAssignmentSites(
+  value: unknown,
+): { sites: readonly CallResultAssignmentSite[] | undefined; dropped: number } | undefined {
+  if (value === undefined) return { sites: undefined, dropped: 0 };
+  if (!Array.isArray(value)) return undefined;
+  const bounded =
+    value.length > MAX_CALLABLE_FLOW_SITES_PER_FILE
+      ? value.slice(0, MAX_CALLABLE_FLOW_SITES_PER_FILE)
+      : value;
+  const sites = bounded.filter(isValidCallResultAssignmentSite);
   return { sites, dropped: value.length - sites.length };
 }
 
@@ -501,6 +521,15 @@ function isValidCallableFlowSite(value: unknown): value is CallableFlowSite {
     default:
       return false;
   }
+}
+
+function isValidCallResultAssignmentSite(value: unknown): value is CallResultAssignmentSite {
+  return (
+    isRecord(value) &&
+    isValidRange(value.callSite) &&
+    isBoundedString(value.inScope) &&
+    isBoundedString(value.lhs)
+  );
 }
 
 function isValidOperand(value: unknown): boolean {
