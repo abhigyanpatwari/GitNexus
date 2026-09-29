@@ -459,7 +459,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig, R
 
 ### Language Feature Matrix
 
@@ -480,8 +480,11 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
+| R (experimental) | ✓  | ✓              | —       | ✓        | ✓                | ✓                     | ✓      | —          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
+
+**R (experimental)** — `.r` / `.R` files, parsed with `@eagleoutice/tree-sitter-r`. Extracts functions, S4 classes (`setClass`, `setGeneric`, `setMethod`, slots), R6 classes with their methods and fields, R5 (`setRefClass`) methods, and roxygen2 `@param` types. The scope-resolution pipeline resolves `library()` / `require()` / `source()` imports to local packages and files, NAMESPACE `importFrom()` names to local packages, `obj$method()` calls (receiver type inferred from `Type$new()`), calls inside native pipe (`|>`) chains, and R6 `inherit=` / S4 `contains=` heritage. Known limits: a bare call to a function defined in another file of the same package is bound by a workspace-wide unique-name fallback rather than package-namespace lookup; NAMESPACE `export()` is not applied (every top-level symbol is treated as public) and only `importFrom()` is read from NAMESPACE; imports of external (CRAN) packages produce no edges; no framework or entry-point detection.
 
 ## Agent Skills
 
