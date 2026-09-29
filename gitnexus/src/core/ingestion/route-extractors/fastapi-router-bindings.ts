@@ -117,22 +117,23 @@ export interface ExtractedRouterConstructorPrefix {
 // `<host>.include_router(<module>.router, ..., prefix='/x')` (Shape A).
 // `<host>` is left unrestricted — common production names include
 // `app`, `api`, `application`, `asgi_app`. Pinning to the literal
-// `app` would silently drop these.
+// `app` would silently drop these. Arguments before `prefix=` may hold one
+// level of nested calls (`dependencies=[Depends(auth)]`); the two
+// alternatives start on disjoint characters, so matching stays linear.
 const INCLUDE_ROUTER_ATTR_RE =
-  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b(?:[^()]|\([^()]*\))*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
 
 // `<host>.include_router(<local_name>, ..., prefix='/x')` (Shape B).
 const INCLUDE_ROUTER_NAME_RE =
-  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b(?:[^()]|\([^()]*\))*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
 
 // A child router may be included without a local prefix and inherit the
 // prefix of its parent router when that parent is mounted elsewhere. Other
-// keyword arguments and a trailing comma are allowed; a `prefix=` anywhere
-// in the call, or a nested call such as `Depends(...)` that hides the rest
-// of the argument list, declines the match so it never double-fires with
-// the prefixed patterns above.
+// keyword arguments (with one level of nested calls, like the prefixed
+// patterns) and a trailing comma are allowed; a `prefix=` anywhere in the
+// call declines the match so it never double-fires with those patterns.
 const INCLUDE_ROUTER_UNPREFIXED_RE =
-  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_]\w*(?:\.router)?)\s*(?:,(?![^()]*\bprefix\s*=)[^()]*)?\)/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_]\w*(?:\.router)?)\s*(?:,(?!(?:[^()]|\([^()]*\))*?\bprefix\s*=)(?:[^()]|\([^()]*\))*)?\)/g;
 
 // Module path: a sequence of dots (`.`, `..`, `...`) for "current
 // package" imports, OR an optional leading-dot prefix followed by a

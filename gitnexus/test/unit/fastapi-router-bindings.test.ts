@@ -322,7 +322,7 @@ describe('nested FastAPI router prefix resolution — edge cases', () => {
 
   it('expands a deep diamond-shaped include graph once per (file, prefix)', () => {
     // 40 layers of two routers that each include both routers of the next
-    // layer: 2^40 root-to-leaf paths, 80 distinct files.
+    // layer: 2^39 root-to-leaf paths, 80 distinct files.
     const layers = 40;
     const sources: Record<string, string> = {
       'main.py': "from pkg.l0_0 import router as root\napp.include_router(root, prefix='/api')",
@@ -435,17 +435,22 @@ describe('extractFastAPIRouterBindings — negative cases', () => {
     ]);
   });
 
-  it('does not record an unprefixed edge when prefix= appears or a nested call hides it', () => {
+  it('captures prefix= after nested-call arguments without an extra unprefixed edge', () => {
     const { includes } = run(
       'main.py',
       [
         'app.include_router(users.router, tags=["users"], prefix="/users")',
         'app.include_router(items.router, dependencies=[Depends(auth)], prefix="/items")',
+        'app.include_router(orders_router, dependencies=[Depends(auth)], prefix="/orders")',
+        'router.include_router(audit_router, dependencies=[Depends(auth)])',
         '',
       ].join('\n'),
     );
     expect(includes.map(({ routerExpr, prefix }) => ({ routerExpr, prefix }))).toEqual([
       { routerExpr: 'users.router', prefix: '/users' },
+      { routerExpr: 'items.router', prefix: '/items' },
+      { routerExpr: 'orders_router', prefix: '/orders' },
+      { routerExpr: 'audit_router', prefix: '' },
     ]);
   });
 

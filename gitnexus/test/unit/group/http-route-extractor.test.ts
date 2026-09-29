@@ -7271,6 +7271,20 @@ async def concurrent():
         expect(ids).not.toContain('http::GET::/list');
       });
 
+      it('keeps an include prefix written after dependencies=[Depends(...)]', async () => {
+        const ids = await providerIds('fastapi-include-depends-prefix', {
+          'main.py': [
+            'from api import items',
+            'app.include_router(items.router, dependencies=[Depends(auth)], prefix="/items")',
+            '',
+          ].join('\n'),
+          'api/items.py': listRoute,
+        });
+
+        expect(ids).toContain('http::GET::/items/list');
+        expect(ids).not.toContain('http::GET::/list');
+      });
+
       it('applies a child include prefix under a parent mounted without one', async () => {
         const ids = await providerIds('fastapi-nested-bare-parent', {
           'main.py': 'from api import router as api_router\napp.include_router(api_router)\n',
