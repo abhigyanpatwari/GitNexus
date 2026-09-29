@@ -79,8 +79,24 @@ describe('Python builtin descriptor identity', () => {
       false,
     ],
     [
-      'a global statement anywhere',
+      'a global declaration alone',
       ['class A:', ...method, 'def rebind():', '    global staticmethod'],
+      true,
+    ],
+    [
+      'a global rebind in any function',
+      ['class A:', ...method, 'def rebind():', '    global staticmethod', '    staticmethod = 1'],
+      false,
+    ],
+    ['an unconditional del', ['staticmethod = 1', 'del staticmethod', 'class A:', ...method], true],
+    [
+      'a class-body del',
+      ['class A:', '    staticmethod = 1', '    del staticmethod', ...method],
+      true,
+    ],
+    [
+      'a conditional del',
+      ['staticmethod = 1', 'if False:', '    del staticmethod', 'class A:', ...method],
       false,
     ],
   ])('with %s', (_case, lines, builtin) => {
