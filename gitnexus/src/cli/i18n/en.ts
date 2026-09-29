@@ -211,7 +211,7 @@ export const en = {
   'help.command.autoSync.description':
     'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
   'help.autoSync.details':
-    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: SSH or HTTPS URLs on github.com, gitlab.com, and gitee.com are allowed. Invalid watch_config.yml skips auto-sync immediately.\nRuns once immediately, then repeats on sync_interval_minutes.',
+    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: SSH or HTTPS URLs on github.com, gitlab.com, and gitee.com are allowed. Other hosts need a top-level allowed_hosts list of exact DNS names. Invalid watch_config.yml skips auto-sync immediately.\nRuns once immediately, then repeats on sync_interval_minutes.',
   'help.command.watch.description':
     'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
   'help.watch.details':
@@ -307,6 +307,8 @@ export const en = {
     'Worker sub-batch idle timeout before retry/fallback. Default: 30.',
   'help.option.analyze.walCheckpointThreshold':
     'LadybugDB WAL auto-checkpoint threshold in bytes during analyze (integer >= -1; default: 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).',
+  'help.option.analyze.memoryBudget':
+    'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size pin; parse workers keep their own heap caps.',
   'help.option.analyze.workers':
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   'help.option.analyze.maxProcesses':

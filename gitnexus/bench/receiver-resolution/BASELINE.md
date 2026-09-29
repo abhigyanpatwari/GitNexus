@@ -1,5 +1,37 @@
 # Receiver-resolution baseline
 
+## Python mixin dispatch (#3390)
+
+The added mixin fixture deliberately calls an absent `missing_target` on a known
+in-program receiver. The resolver now records that unresolved call rather than
+silently treating missing edges as complete coverage. The focused Python resolver
+test asserts this outcome. CI run 36319863343 at `4034cee` measured one additional
+Python call drop (113 to 114; all-kind total 159 to 160), classified as in-program
+with no receiver-shape annotation. No shape-arm result or performance threshold
+changed. The renamed bound-receiver correction preserves the existing method's
+effective arity. The measurements below supersede this earlier snapshot.
+
+The final #3390 head did not retain that snapshot: its full corpus measured 125
+call drops, including 12 in the new mixin fixture. At #3393 head, C3 resolves
+`order_hook` to `OrderX.order_hook`, removing that fixture's one ambiguous drop.
+The full corpus now measures 124 call drops (16 Python, 54 in-program), with 11
+from the mixin fixture. The ten fixture outcomes missing from the old baseline
+are three `helper()` calls with valid targets and an unproven variadic sibling,
+field shadowing, three incompatible argument shapes, private-name lookup, an
+abstract declaration, and duplicate definitions. The integration test pins
+their exact call sites; none of these ten is the C3 `order_hook` call. These
+counts track conservative unresolved coverage, including partial fan-out, not
+only calls with no emitted edge.
+
+The Python capture fingerprint is also intentionally regenerated: ordinary call
+captures now include statically known argument counts, the corpus includes eight
+new mixin fixture files, and bound method parameter counts exclude receivers by
+class/decorator context rather than spelling. Unknown splat cardinalities remain
+unknown. The final deterministic corpus contains 213 entries and 3,463 capture
+groups. The golden test pins each fixture; only the mixin and renamed target
+digests changed in the bound-receiver delta, with their group counts unchanged.
+Scaling limits and all non-Python capture baselines remain unchanged.
+
 > **`baseline.json` is the source of truth for every number.** It is what
 > `measure.mjs --check` enforces byte-exactly. This file is a lab notebook:
 > each section records what was measured AT THAT UNIT and why it changed the

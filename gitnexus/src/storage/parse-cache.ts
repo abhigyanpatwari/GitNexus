@@ -785,7 +785,40 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Same v112: the `valueAlternatives` provider hook extends it to Kotlin
 // `?:`/`if`, Swift/Dart `??`/`?:`, and Python `x if c else y`, and keeps a
 // Ruby multi-statement `if` one opaque source.
-const SCHEMA_BUMP = 112;
+// v113 (#3371): `.ipynb` code cells are extracted to Python before parse.
+// Warm caches keyed on raw JSON would replay empty/failed Python parses.
+// v114 (#2965): C and C++ angle includes are real wildcard imports with
+// `isSystem`. Warm shards stored those captures as absent, so incremental
+// analyze never asked the resolver to search include paths. 113 is #3371.
+// v115 (#3390): Python call captures now carry `@reference.arity` when the
+// argument count is statically known. Warm v114 ParsedFiles lack that fact, so
+// arity-aware method filtering would remain inert for every unchanged file.
+// v116 (#3390 follow-up): Python's private capture side-channel now records
+// simple-positional call sites and fixed positional method capacity. Warm v115
+// ParsedFiles lack those facts, so conservative mixin subtype dispatch would
+// suppress unchanged one-argument callers.
+// v117 (#3390 private-only successor): simple-positional call entries now carry
+// their count privately, while ordinary Python references no longer receive
+// synthetic arity. Warm v116 ParsedFiles have neither equivalent fact.
+// v118 (#3398): decorated Python methods with unproven decorator identity no
+// longer publish subtype positional capacity. Warm v117 side-channel snapshots
+// would retain that capacity and could emit a false concrete call target.
+// v119 (#3396): Python subtype method capacities now omit receiverless ordinary
+// methods. Warm v118 ParsedFiles would replay a false compatible target.
+// v120 (#3394): decorated Python method receiver bindings now distinguish
+// unproven decorators from instance receivers. Warm v119 ParsedFiles would
+// replay a fabricated `self` binding or lack the uncertainty marker entirely.
+// v121 (#3399 follow-up): Python decorator identity now ignores trailing
+// comments, honors rebinding of builtin descriptor names visible where the
+// decorator is evaluated, and withholds subtype capacity from descriptor
+// stacks. Warm v120 captures carry the old verdicts.
+// v122 (#3414): Python decorator identity models restoring helper calls and
+// treats match-pattern captures and nested nonlocal rebinds as shadowing.
+// Warm v121 captures carry the old verdicts.
+// v123 (#3408): FastAPI include records now carry `host`, router imports carry
+// `modulePath`, and unprefixed child includes are emitted. Warm v122 records
+// lack them, so nested router-prefix propagation would stay inert.
+const SCHEMA_BUMP = 123;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

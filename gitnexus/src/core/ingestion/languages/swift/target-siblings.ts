@@ -1,35 +1,54 @@
 /**
- * Swift same-module (SPM target) implicit visibility for the
- * `populateNamespaceSiblings` hook.
+ * Swift same-module implicit visibility for the `populateNamespaceSiblings`
+ * hook.
  *
  * Swift gives every file in a module access to every other file's
  * top-level declarations WITHOUT any `import` statement (whole-module
- * visibility). This is the Swift analogue of Go's same-package sibling
- * visibility — `populateGoPackageSiblings` is the template.
+ * visibility). Module membership comes from `swiftModuleKeysOf` (SwiftPM
+ * targets, Xcode targets, else one `__default__` module).
  *
- * Module identity: Swift has no in-source `package X` marker. The SPM
- * target is a directory subtree (`Sources/<Target>/…`). Module membership
- * is threaded in via the SPM target map (`ctx.resolutionConfig` →
- * `coerceSwiftTargets`) and grouped by `groupSwiftFilesBySpmTarget`.
- * The helper preserves the legacy `wireSwiftImplicitImports` bucketing
- * contract for ordinary layouts (first target wins and unmatched files use
- * `__default__`) but intentionally fixes #2931's repeated-prefix edge case.
- * When a target map is present (declared Package.swift or inferred
- * `Sources/*` folders), files are grouped by SPM target subtree;
- * otherwise ALL Swift files form one module (`__default__`,
- * single-Xcode-project assumption). Every `.swift` file in the same target
- * sees its siblings' top-level defs.
+ * Representation: one shared table per module in the language-neutral
+ * `namespaceFqnBindings` channel, keyed `swift-module:<key>`, and each member
+ * file's module scope lists that namespace in `accessibleNamespacesByScope`.
+ * `lookupBindingsAt` consults it at module scope, after the file's own
+ * bindings. This is how the compiler resolves a name — against one module
+ * symbol table — and it is O(defs) per module. The earlier form copied every
+ * file's defs into every other file's scope, O(files² × defs): about 3.8 GB of
+ * heap for a 1,000-file module (#3355). C# moved to the same channel for the
+ * same reason (#1871).
  *
- * Bindings are added through the append-only `bindingAugmentations`
- * channel (Contract Invariant I8) with `origin: 'namespace'`, exactly
- * like the Go implementation — `indexes.bindings` is frozen post-
- * finalize and must not be mutated.
+ * A file's own defs are in its module's table too; its finalized local
+ * bindings come first and `lookupBindingsAt` dedupes by node id.
  */
 
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
-import { coerceSwiftTargets, groupSwiftFilesBySpmTarget } from './target-grouping.js';
+import { groupSwiftFilesByModule } from './target-grouping.js';
+
+/** Namespace-channel key of a Swift module. */
+export function swiftModuleNamespace(moduleKey: string): string {
+  return `swift-module:${moduleKey}`;
+}
+
+/**
+ * Make `namespace` visible from each member's module scope. Idempotent, so
+ * both sibling passes can call it in either order.
+ */
+export function grantSwiftModuleAccess(
+  members: readonly ParsedFile[],
+  namespace: string,
+  indexes: ScopeResolutionIndexes,
+): void {
+  const accessible = indexes.accessibleNamespacesByScope as Map<ScopeId, string[]>;
+  for (const parsed of members) {
+    const moduleScope = indexes.moduleScopes.byFilePath.get(parsed.filePath);
+    if (moduleScope === undefined) continue;
+    const list = accessible.get(moduleScope);
+    if (list === undefined) accessible.set(moduleScope, [namespace]);
+    else if (!list.includes(namespace)) list.push(namespace);
+  }
+}
 
 export function populateSwiftTargetSiblings(
   parsedFiles: readonly ParsedFile[],
@@ -39,33 +58,34 @@ export function populateSwiftTargetSiblings(
     readonly resolutionConfig?: unknown;
   },
 ): void {
-  const targets = coerceSwiftTargets(ctx.resolutionConfig);
-  const filesByTarget = groupSwiftFilesBySpmTarget(
+  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+  for (const group of groupSwiftFilesByModule(
     parsedFiles,
     (parsed) => parsed.filePath,
-    targets,
-  );
-
-  const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
-
-  for (const [, group] of filesByTarget) {
+    ctx.resolutionConfig,
+  ).values()) {
     populateNestedTypeFragments(group, indexes, augmentations, ctx.fileContents);
-    if (group.length < 2) continue; // no file siblings to share
-    const siblings = group.map((parsed) => ({
-      filePath: parsed.filePath,
-      defs: [...parsed.localDefs] as SymbolDefinition[],
-    }));
-    for (const target of siblings) {
-      for (const receiver of siblings) {
-        if (receiver.filePath === target.filePath) continue; // no self-reference
-        const receiverModule = indexes.moduleScopes.byFilePath.get(receiver.filePath);
-        if (receiverModule === undefined) continue;
+  }
 
-        for (const def of target.defs) {
-          addNamespaceBinding(augmentations, receiverModule, def);
-        }
-      }
+  const namespaceFqn = indexes.namespaceFqnBindings as Map<string, Map<string, BindingRef[]>>;
+  const modules = groupSwiftFilesByModule(
+    parsedFiles,
+    (parsed) => parsed.filePath,
+    ctx.resolutionConfig,
+    { allMemberships: true },
+  );
+  for (const [moduleKey, members] of modules) {
+    if (members.length < 2) continue; // no file siblings to share
+    const namespace = swiftModuleNamespace(moduleKey);
+    let table = namespaceFqn.get(namespace);
+    if (table === undefined) {
+      table = new Map();
+      namespaceFqn.set(namespace, table);
     }
+    for (const parsed of members) {
+      for (const def of parsed.localDefs) addTableBinding(table, def);
+    }
+    grantSwiftModuleAccess(members, namespace, indexes);
   }
 }
 
@@ -370,6 +390,18 @@ function logicalOwnerKey(def: SymbolDefinition): string {
 
 function simpleName(def: SymbolDefinition): string {
   return def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+}
+
+function addTableBinding(table: Map<string, BindingRef[]>, def: SymbolDefinition): void {
+  const name = simpleName(def);
+  if (name === '') return;
+  let bucket = table.get(name);
+  if (bucket === undefined) {
+    bucket = [];
+    table.set(name, bucket);
+  }
+  if (bucket.some((binding) => binding.def.nodeId === def.nodeId)) return;
+  bucket.push({ def, origin: 'namespace' });
 }
 
 function addNamespaceBinding(

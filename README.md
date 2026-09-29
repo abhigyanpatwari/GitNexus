@@ -158,7 +158,7 @@ flowchart TB
 
 ## What Your AI Agent Gets
 
-### 17 MCP tools (15 per-repo + 2 group)
+### 19 MCP tools (17 per-repo + 2 group)
 
 | Tool             | What It Does                                                           |
 | ---------------- | ---------------------------------------------------------------------- |
@@ -177,10 +177,12 @@ flowchart TB
 | `api_impact`     | Pre-change impact report for an API route handler                      |
 | `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)  |
 | `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)     |
+| `read_file`      | Read a checkout file (optional 0-indexed slice; `maxLines` cap)        |
+| `grep`           | Regex search of the working tree for indexed files (1-based hits)      |
 | `group_list`     | List configured repository groups                                      |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ### Resources for instant context
 
@@ -473,6 +475,7 @@ gitnexus analyze --max-processes <n>  # Process-detection process cap (replaces 
 gitnexus analyze --max-entry-point-candidates <n>  # Ranked entry-point pool (default 200; raise when the warning names it)
 gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --asyncapi-spec ./docs/asyncapi  # Resolve broker addresses from AsyncAPI 3.x documents
+gitnexus analyze --memory-budget 3000  # Main-thread V8 heap in MB (>= 200); overrides the auto-sizer and --max-old-space-size
 gitnexus analyze --wal-checkpoint-threshold 67108864  # LadybugDB WAL auto-checkpoint threshold in bytes
                                  # (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
 ```
@@ -523,6 +526,8 @@ gitnexus auto-sync reset             # Clear failure state; leaves clones and in
 ```yaml
 sync_interval_minutes: 10
 analyze_timeout: 5m
+# Extra hosts beyond github.com, gitlab.com, and gitee.com. Exact names only.
+# allowed_hosts: [gitlab.mycompany.com]
 projects:
   - local_path: /absolute/path/to/clones
     branches: [main, master]
@@ -536,7 +541,7 @@ projects:
 ```
 
 - `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
-- Remote URLs may use SSH SCP or HTTPS and are limited to GitHub, GitLab, or Gitee. The CLI image includes OpenSSH; mount keys yourself. Invalid `watch_config.yml` skips auto-sync immediately. Auto-sync honors `.gitnexusrc` embeddings (HTTP embeddings env still required in the image).
+- Remote URLs may use SSH SCP or HTTPS. Hosts are github.com, gitlab.com, and gitee.com unless listed in top-level `allowed_hosts` (exact DNS names, no wildcards). The CLI image includes OpenSSH; mount keys yourself. Invalid `watch_config.yml` skips auto-sync immediately. Auto-sync honors `.gitnexusrc` embeddings (HTTP embeddings env still required in the image).
 - `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
 - Set per-project `pdg: true` to keep the full control-flow, control/data-dependence, and taint layers current. Untouched configs that omit `pdg` preserve an existing index's mode and cannot silently strip PDG data. Do not paste `pdg: false` from this example onto an existing watch file unless you intend to drop PDG; an explicit `false` opt-out logs a warning before removing existing PDG data. Auto-sync requests atomic incremental publication where supported, so readers keep using the previous graph until a successful update is ready and a failed staged analysis leaves it intact; unsupported paths retain the analyzer's existing in-place behavior.
 - Analysis runs in an isolated worker; `analyze_timeout` defaults to half of `sync_interval_minutes`, but may be longer (for example, a `30m` analysis timeout with `5` minute polling) up to Node's timer limit. If a polling tick arrives while analysis is active, it is coalesced into one immediate follow-up run using the newest commit. If the parent times out and leaves that worker running, the follow-up is deferred to the next interval so a leftover lock holder is not counted as a hard analyze failure. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.

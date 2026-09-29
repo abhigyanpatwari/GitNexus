@@ -586,6 +586,65 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
   });
 });
 
+describe('Swift: isGlobalNameFallbackPlausible with workspace modules (#3355)', () => {
+  const resolutionConfig = {
+    targets: new Map(),
+    modules: [
+      { key: 'Pkg/Lib', name: 'Lib', dir: 'Pkg/Lib', importable: true },
+      { key: 'Pkg/Plugins/Gen', name: 'Gen', dir: 'Pkg/Plugins/Gen', importable: false },
+      { key: 'Pkg/Tests/LibTests', name: 'LibTests', dir: 'Pkg/Tests/LibTests', importable: true },
+      {
+        key: 'xcode:App.xcodeproj:App',
+        name: 'App',
+        files: ['App/Main.swift', 'App/Shared.swift'],
+        importable: true,
+      },
+      {
+        key: 'xcode:App.xcodeproj:Widget',
+        name: 'Widget',
+        files: ['App/Widget.swift', 'App/Shared.swift'],
+        importable: true,
+      },
+    ],
+  };
+  const check = (caller: ParsedFile, candidatePath: string): boolean =>
+    swiftIsGlobalNameFallbackPlausible({
+      callerParsed: caller,
+      candidate: mkCandidate(candidatePath, 'helper'),
+      resolutionConfig,
+    });
+
+  it('gives a custom-path target a module identity', () => {
+    expect(check(mkCaller('App/Main.swift'), 'Pkg/Lib/Helper.swift')).toBe(false);
+    expect(check(mkCaller('App/Main.swift', [namedImport('Lib')]), 'Pkg/Lib/Helper.swift')).toBe(
+      true,
+    );
+  });
+
+  it('requires a test target to import the module it tests (@testable import)', () => {
+    expect(check(mkCaller('Pkg/Tests/LibTests/T.swift'), 'Pkg/Lib/Helper.swift')).toBe(false);
+    expect(
+      check(mkCaller('Pkg/Tests/LibTests/T.swift', [namedImport('Lib')]), 'Pkg/Lib/Helper.swift'),
+    ).toBe(true);
+  });
+
+  it('separates Xcode targets and shares a file compiled into both', () => {
+    expect(check(mkCaller('App/Widget.swift'), 'App/Main.swift')).toBe(false);
+    expect(check(mkCaller('App/Widget.swift'), 'App/Shared.swift')).toBe(true);
+    expect(check(mkCaller('App/Main.swift'), 'App/Shared.swift')).toBe(true);
+  });
+
+  it('does not treat an import of a plugin name as reaching the plugin', () => {
+    expect(
+      check(mkCaller('App/Main.swift', [namedImport('Gen')]), 'Pkg/Plugins/Gen/main.swift'),
+    ).toBe(false);
+  });
+
+  it('allows when either side is outside every known module', () => {
+    expect(check(mkCaller('Loose/Script.swift'), 'Pkg/Lib/Helper.swift')).toBe(true);
+  });
+});
+
 describe('Swift: isGlobalNameFallbackPlausible', () => {
   it.each(['sources', 'tests', 'Tests'])(
     'does not invent target modules under unconfigured %s folders',

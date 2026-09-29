@@ -290,8 +290,19 @@ describe('PARSE_CACHE_VERSION', () => {
   // anonymous arrows, so both stores re-extract.
   // Moved 104 -> 112 for #3354: callable-value flow follows `??`/`||`/`?:`
   // branches. 105-111 are claimed by open PR #3326.
-  it('pins SCHEMA_BUMP to 112 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(112);
+  // Moved 112 -> 113 for #3371: notebook code-cell extraction before Python parse.
+  // Moved 113 -> 114 for #2965: C/C++ angle includes survive interpret as
+  // `isSystem` wildcards. Warm shards omitted them, so include-path lookup
+  // never ran until a full reparse. 113 stays taken by #3371.
+  // Moved 114 -> 115 for #3390: statically known Python call arity.
+  // Moved 115 -> 116 for #3390's Python subtype-dispatch shape side-channel.
+  // Moved 116 -> 117 for #3390's private positional-count side-channel.
+  // Moved 117 -> 118 for #3398, 118 -> 119 for #3396, and 119 -> 120 for #3394.
+  // Moved 120 -> 121 for the #3399 decorator-identity follow-up.
+  // Moved 121 -> 122 for #3414 restoring helper calls.
+  // Moved 122 -> 123 for #3408 FastAPI nested router-prefix capture fields.
+  it('pins SCHEMA_BUMP to 123 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399, #3414, #3408)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(123);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -300,7 +311,7 @@ describe('PARSE_CACHE_VERSION', () => {
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
-      104, 105, 106, 107, 108, 109, 110, 111,
+      104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

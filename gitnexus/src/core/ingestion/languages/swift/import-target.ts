@@ -1,10 +1,18 @@
 /**
  * `resolveImportTarget` adapter for the Swift `ScopeResolver`.
  *
- * A Package.swift declaration map (`origin: 'package.swift'`) resolves
- * only declared target names. Otherwise refuse well-known SDK module
- * names and fall back to the memoized directory-segment index so local
- * folder modules still resolve without a manifest.
+ * With workspace modules (`loadSwiftWorkspaceConfig`), `import X` resolves to
+ * the files of every importable module named X, as the compiler does. SwiftPM
+ * rejects duplicate target names within one build graph, so several modules
+ * named X belong to separate graphs; returning all of them is the sound
+ * approximation. A name no module carries is external when every manifest and
+ * project was read completely (`moduleNamesComplete`).
+ *
+ * Without workspace modules, a Package.swift declaration map
+ * (`origin: 'package.swift'`) resolves only declared target names. Otherwise
+ * refuse well-known SDK module names and fall back to the memoized
+ * directory-segment index so local folder modules still resolve without a
+ * manifest.
  *
  * Same-module visibility without `import` is `populateSwiftTargetSiblings`.
  * This adapter only resolves EXPLICIT cross-module `import`s.
@@ -12,7 +20,12 @@
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
-import { coerceDeclaredSwiftTargets, swiftDeclaredTargetPrefix } from '../../language-config.js';
+import {
+  coerceDeclaredSwiftTargets,
+  swiftDeclaredTargetPrefix,
+  type SwiftPackageConfig,
+} from '../../language-config.js';
+import { swiftModuleKeysOf, swiftModuleSpecOf } from './target-grouping.js';
 import { isSwiftSdkModule } from './sdk-modules.js';
 
 export interface SwiftResolveContext {
@@ -57,6 +70,43 @@ const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): Swif
 });
 
 const SWIFT_DECLARED_INDEX = new WeakMap<ReadonlySet<string>, SwiftDeclaredFileIndex>();
+
+const SWIFT_MODULE_NAME_INDEX = new WeakMap<
+  ReadonlySet<string>,
+  { readonly config: object; readonly byName: ReadonlyMap<string, string[]> }
+>();
+
+/** Workspace-module config, or null for a hand-built or root-only config. */
+function workspaceModulesConfig(resolutionConfig: unknown): Partial<SwiftPackageConfig> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  return config != null && Array.isArray(config.modules) ? config : null;
+}
+
+function isKnownModuleName(config: Partial<SwiftPackageConfig>, moduleName: string): boolean {
+  return (config.modules ?? []).some((spec) => spec.name === moduleName);
+}
+
+/** Importable module name → member `.swift` files, memoized per file set. */
+function getModuleFilesByName(
+  allFilePaths: ReadonlySet<string>,
+  config: object,
+): ReadonlyMap<string, string[]> {
+  const hit = SWIFT_MODULE_NAME_INDEX.get(allFilePaths);
+  if (hit !== undefined && hit.config === config) return hit.byName;
+  const byName = new Map<string, string[]>();
+  for (const raw of allFilePaths) {
+    if (!raw.endsWith('.swift')) continue;
+    for (const key of swiftModuleKeysOf(raw, config)) {
+      const spec = swiftModuleSpecOf(key, config);
+      if (spec === undefined || !spec.importable) continue;
+      const bucket = byName.get(spec.name);
+      if (bucket === undefined) byName.set(spec.name, [raw]);
+      else bucket.push(raw);
+    }
+  }
+  SWIFT_MODULE_NAME_INDEX.set(allFilePaths, { config, byName });
+  return byName;
+}
 
 function getDeclaredFilesByName(
   allFilePaths: ReadonlySet<string>,
@@ -136,7 +186,20 @@ function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | nu
 function resolveSwiftModuleFiles(moduleName: string, ctx: SwiftResolveContext): string[] | null {
   if (moduleName === '') return null;
 
-  const declared = coerceDeclaredSwiftTargets(ctx.resolutionConfig);
+  const workspace = workspaceModulesConfig(ctx.resolutionConfig);
+  if (workspace !== null) {
+    const files = getModuleFilesByName(ctx.allFilePaths, workspace).get(moduleName);
+    if (files !== undefined) {
+      const out = excludeImporter(files, ctx.fromFile);
+      return out.length > 0 ? out : null;
+    }
+    // Known but non-importable (a plugin), or every manifest was read: external.
+    if (workspace.moduleNamesComplete === true || isKnownModuleName(workspace, moduleName)) {
+      return null;
+    }
+  }
+
+  const declared = workspace === null ? coerceDeclaredSwiftTargets(ctx.resolutionConfig) : null;
   if (declared !== null) {
     if (!declared.has(moduleName)) return null;
     const files = getDeclaredFilesByName(ctx.allFilePaths, declared).get(moduleName);

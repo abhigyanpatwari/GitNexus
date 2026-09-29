@@ -4,8 +4,13 @@ import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cProvider } from '../c-cpp.js';
-import { cArityCompatibility, cMergeBindings, resolveCImportTarget } from './index.js';
-import { scanHeaderFiles } from './header-scan.js';
+import { cArityCompatibility, cMergeBindings } from './index.js';
+import { cIncludeLookupFromConfig, resolveCImportTarget } from './import-target.js';
+import {
+  C_HEADER_EXTENSIONS,
+  cFamilyImportFiles,
+  loadCFamilyResolutionConfig,
+} from './resolution-config.js';
 import { expandCWildcardNames, isStaticName, clearStaticNames } from './static-linkage.js';
 import { applyCStaticLinkageSideChannel } from './capture-side-channel.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
@@ -61,7 +66,7 @@ export const cScopeResolver: ScopeResolver = {
     // Clear stale static-linkage data from any previous invocation to
     // prevent cross-repo contamination in server-mode scenarios.
     clearStaticNames();
-    return scanHeaderFiles(repoPath);
+    return loadCFamilyResolutionConfig(repoPath, C_HEADER_EXTENSIONS);
   },
 
   // Worker-boundary restore (see `ScopeResolver.applyCaptureSideChannel`).
@@ -81,19 +86,25 @@ export const cScopeResolver: ScopeResolver = {
   // this process. Runs BEFORE `populateOwners`.
   applyCaptureSideChannel: applyCStaticLinkageSideChannel,
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) => {
     // Augment allFilePaths with .h files discovered via loadResolutionConfig
     // since the phase only passes .c files to the C resolver but #include
-    // targets .h files classified as C++ in language detection.
-    const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
-    if (headerPaths !== undefined && headerPaths.size > 0) {
-      return resolveCImportTarget(
-        targetRaw,
-        fromFile,
-        augmentedFilePathsFor(allFilePaths)(headerPaths),
-      );
-    }
-    return resolveCImportTarget(targetRaw, fromFile, allFilePaths);
+    // targets .h files classified as C++ in language detection. A raw header
+    // Set (the import-target bench) is the same shape with empty search paths.
+    // The augmented set is the memo key — pass it through, never copy it.
+    const { files, config } = cFamilyImportFiles(
+      allFilePaths,
+      resolutionConfig,
+      augmentedFilePathsFor(allFilePaths),
+    );
+    const parsed = context?.parsedImport;
+    const isSystem = parsed?.kind === 'wildcard' && parsed.isSystem === true;
+    return resolveCImportTarget(
+      targetRaw,
+      fromFile,
+      files,
+      cIncludeLookupFromConfig(config, isSystem),
+    );
   },
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>
