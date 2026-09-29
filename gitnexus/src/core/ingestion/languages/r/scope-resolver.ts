@@ -158,4 +158,10 @@ export const rScopeResolver: ScopeResolver = {
   // wildcard-bound names still resolve through `expandsWildcardTo` above;
   // this only covers what that path cannot reach.
   allowGlobalFreeCallFallback: true,
+
+  // A named import binds only to a MODULE-LEVEL definition of the target
+  // file. Without this, `findExportByName` indexes every `localDefs` entry by
+  // simple name, so an R6/R5 method named like an imported symbol could win
+  // the binding over the top-level function.
+  namedImportsBindTopLevelOnly: true,
 };
