@@ -1255,3 +1255,78 @@ describe('R root-level package NAMESPACE export refinement', () => {
     expect(helper?.properties.isExported).toBe(false);
   });
 });
+
+// Characterisation of the deferred-owner attach (fork #19, step 1). R classes are calls, so the worker
+// leaves an `ownerNameHint` that the post-parse pass resolves into `ownerId` + HAS_METHOD/HAS_PROPERTY.
+// The counts and the (source, target, type) triples below were measured at ae93f76b and must not change
+// when that pass moves behind `LanguageProvider.postParse`.
+describe('R deferred-owner attach (r-packages)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-packages'), () => {});
+  }, 60000);
+
+  const ownedTriples = [
+    'AdvancedR6|active_count|HAS_PROPERTY',
+    'AdvancedR6|compute|HAS_METHOD',
+    'AdvancedR6|display_name|HAS_METHOD',
+    'AdvancedR6|get_name|HAS_METHOD',
+    'AdvancedR6|initialize|HAS_METHOD',
+    'AdvancedR6|internal_flag|HAS_PROPERTY',
+    'AdvancedR6|name|HAS_PROPERTY',
+    'AdvancedR6|secret_key|HAS_PROPERTY',
+    'BareR6|get_value|HAS_METHOD',
+    'BareR6|value|HAS_PROPERTY',
+    'BaseA|a_field|HAS_PROPERTY',
+    'BaseB|b_field|HAS_PROPERTY',
+    'DataModel|DataModel|HAS_METHOD',
+    'DataModel|name|HAS_PROPERTY',
+    'DataModel|validate|HAS_METHOD',
+    'DataModel|value|HAS_PROPERTY',
+    'DataProcessor|data|HAS_PROPERTY',
+    'DataProcessor|process|HAS_METHOD',
+    'ExportedS4Class|data|HAS_PROPERTY',
+    'Parent|greet|HAS_METHOD',
+    'ResultSet|count|HAS_METHOD',
+    'ResultSet|initialize|HAS_METHOD',
+    'ResultSet|items|HAS_PROPERTY',
+  ];
+
+  it('emits exactly 11 HAS_METHOD and 12 HAS_PROPERTY edges', () => {
+    expect(getRelationships(result, 'HAS_METHOD')).toHaveLength(11);
+    expect(getRelationships(result, 'HAS_PROPERTY')).toHaveLength(12);
+  });
+
+  it('emits the measured (source, target, type) edge set', () => {
+    const triples = [
+      ...getRelationships(result, 'HAS_METHOD'),
+      ...getRelationships(result, 'HAS_PROPERTY'),
+    ]
+      .map((e) => `${e.source}|${e.target}|${e.rel.type}`)
+      .sort();
+    expect(triples).toEqual(ownedTriples);
+  });
+
+  it('gives exactly the 23 attached R Method/Property nodes a string ownerId', () => {
+    const owned: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (
+        n.properties.language === 'r' &&
+        (n.label === 'Method' || n.label === 'Property') &&
+        typeof n.properties.ownerId === 'string'
+      ) {
+        owned.push(n.id);
+      }
+    });
+    expect(owned).toHaveLength(23);
+  });
+
+  it('leaves no R node with an unresolved ownerNameHint', () => {
+    const leftover: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.properties.language === 'r' && 'ownerNameHint' in n.properties) leftover.push(n.id);
+    });
+    expect(leftover).toEqual([]);
+  });
+});
