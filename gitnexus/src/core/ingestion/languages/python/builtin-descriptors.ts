@@ -108,6 +108,10 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
   }
   if (parent === null) return null;
   const shadow = { node: identifier, effect: 'shadow' as const };
+  // ponytail: every name in a `match` case pattern counts as a capture. Class
+  // names, keyword keys and value patterns are reads, but treating them as
+  // bindings only fails closed.
+  if (inCasePattern(identifier)) return shadow;
   switch (parent.type) {
     case 'assignment':
     case 'augmented_assignment':
@@ -144,10 +148,9 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
         : null;
     case 'dotted_name': {
       const owner = parent.parent;
-      // `import a.b` binds `a`; `case name:` captures a single name.
+      // `import a.b` binds `a`.
       if (owner?.type === 'import_statement')
         return parent.firstNamedChild?.id === node.id ? shadow : null;
-      if (owner?.type === 'case_pattern') return parent.namedChildCount === 1 ? shadow : null;
       if (owner?.type !== 'import_from_statement' || !isField(parent, 'name')) return null;
       return importsFromBuiltins(owner) ? { node: identifier, effect: 'builtin' } : shadow;
     }
@@ -205,8 +208,9 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
  * there as a module binding, so the call's position orders it.
  */
 function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>): void {
-  // Helper function name -> descriptor name -> the restore its call performs.
-  const helpers = new Map<string, Map<string, BindingEffect>>();
+  // Helper function name -> its `def` and, per descriptor name, the restore
+  // its call performs.
+  const helpers = new Map<string, { fn: SyntaxNode; restores: Map<string, BindingEffect> }>();
   for (const [name, list] of bindings) {
     const byHelper = new Map<number, { fn: SyntaxNode; globals: NameBinding[] }>();
     for (const binding of list) {
@@ -221,8 +225,9 @@ function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>):
       const effect = restoreOnCall(fn, globals);
       const helper = fn.childForFieldName('name')?.text;
       if (effect === null || helper === undefined) continue;
-      if (!helpers.has(helper)) helpers.set(helper, new Map());
-      helpers.get(helper)?.set(name, effect);
+      const entry = helpers.get(helper) ?? { fn, restores: new Map<string, BindingEffect>() };
+      entry.restores.set(name, effect);
+      helpers.set(helper, entry);
     }
   }
   if (helpers.size === 0) return;
@@ -234,18 +239,31 @@ function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>):
     bindingCounts.set(found.text, (bindingCounts.get(found.text) ?? 0) + 1);
   }
   for (const [helper, count] of bindingCounts) if (count > 1) helpers.delete(helper);
+  const touched = new Set<NameBinding[]>();
   for (const statement of root.namedChildren) {
     // Only a call that is the whole statement surely runs when reached.
     if (statement.type !== 'expression_statement' || statement.namedChildCount !== 1) continue;
     const call = statement.firstNamedChild;
     const callee = call?.type === 'call' ? call.childForFieldName('function') : null;
-    if (callee?.type !== 'identifier') continue;
-    for (const [name, effect] of helpers.get(callee.text) ?? []) {
-      const list = bindings.get(name) ?? [];
+    const helper = callee?.type === 'identifier' ? helpers.get(callee.text) : undefined;
+    // The call reaches the helper only once its `def` statement has run.
+    if (helper === undefined || statement.startIndex < helper.fn.endIndex) continue;
+    for (const [name, effect] of helper.restores) {
+      const list = bindings.get(name);
+      if (list === undefined) continue;
       list.push({ node: callee, effect, redirect: null });
-      list.sort((a, b) => a.node.startIndex - b.node.startIndex);
+      touched.add(list);
     }
   }
+  for (const list of touched) list.sort((a, b) => a.node.startIndex - b.node.startIndex);
+}
+
+/** Is `node` inside a `match` case pattern? */
+function inCasePattern(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'case_pattern') return true;
+  }
+  return false;
 }
 
 /**
@@ -258,9 +276,10 @@ function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): Binding
   if (fn.type !== 'function_definition' || fn.parent?.type !== 'module') return null;
   if (fn.children.some((child) => child.type === 'async')) return null;
   const body = fn.childForFieldName('body');
-  const [first] = globals;
-  if (body === null || first === undefined) return null;
-  let effect: BindingEffect = first.effect;
+  // `globals` is in source order, so the last restore is the one that sticks.
+  const first = globals[0];
+  const last = globals[globals.length - 1];
+  if (body === null || first === undefined || last === undefined) return null;
   for (const binding of globals) {
     const statement = statementIn(binding.node, body);
     if (
@@ -270,7 +289,6 @@ function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): Binding
     ) {
       return null;
     }
-    effect = binding.effect;
   }
   const escapes = body
     .descendantsOfType(['yield', 'return_statement'])
@@ -279,7 +297,7 @@ function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): Binding
         scopeOf(node)?.id === fn.id &&
         (node.type === 'yield' || node.startIndex < first.node.startIndex),
     );
-  return escapes ? null : effect;
+  return escapes ? null : last.effect;
 }
 
 /**

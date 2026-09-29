@@ -269,6 +269,122 @@ describe('Python builtin descriptor identity', () => {
       false,
     ],
     [
+      // The call runs the builtin print(); the helper is defined afterwards.
+      'a call before the helper is defined',
+      [
+        'staticmethod = lambda f: f',
+        'print()',
+        'class A:',
+        ...method,
+        'def print():',
+        '    global staticmethod',
+        '    del staticmethod',
+      ],
+      false,
+    ],
+    [
+      'a helper name captured by a match pattern',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'match 1:',
+        '    case int() as reset:',
+        '        pass',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a match capture in the helper after its restore',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        '    match [1]:',
+        '        case [*staticmethod]:',
+        '            pass',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a module-level match capture',
+      ['match 1:', '    case object() as staticmethod:', '        pass', 'class A:', ...method],
+      false,
+    ],
+    [
+      'a helper whose restore is conditional',
+      [
+        'staticmethod = lambda f: f',
+        'def reset(flag=False):',
+        '    global staticmethod',
+        '    if flag:',
+        '        del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // Calling a coroutine function does not run its body.
+      'a called async helper',
+      [
+        'staticmethod = lambda f: f',
+        'async def reset():',
+        '    global staticmethod',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a called helper that returns after restoring',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        '    return',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
+      // A nested function's return does not end the helper.
+      'a called helper with a nested return before restoring',
+      [
+        'staticmethod = lambda f: f',
+        'def reset():',
+        '    global staticmethod',
+        '    def g(): return 1',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
+      // CPython restores the builtin; the wildcard import could rebind the
+      // helper name, so the resolver fails closed.
+      'a called helper after a wildcard import',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'from os.path import *',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
       // The helper writes module globals, not the class namespace.
       'a class-body call after a class-local override',
       [
