@@ -671,3 +671,230 @@ describe('R caller attribution', () => {
     }
   });
 });
+
+/**
+ * R native pipe (`|>`) chains: baseline characterisation at the landed
+ * caller-attribution fix. Every assertion here passes without any pipe-specific
+ * production support; the tests lock the current behaviour before NAMESPACE /
+ * importFrom resolution work touches the resolver.
+ * The fixture is synthetic (`r-native-pipes/`, three packages); one function per
+ * scenario so each assertion is an exact `source -> targets` set.
+ * magrittr `%>%` is deliberately NOT covered (no support claimed either way).
+ * Two tests pin known-wrong name-only results for `pkg::fn` stages (fork #7).
+ */
+describe('R native pipe chains', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-native-pipes'), () => {});
+  }, 60000);
+
+  const callEdges = (sourceName: string, fileSuffix: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (e) => e.source === sourceName && e.sourceFilePath.endsWith(fileSuffix),
+    );
+
+  /** Sorted unique CALLS targets of the source named `sourceName` in the file ending `fileSuffix`. */
+  const callsFrom = (sourceName: string, fileSuffix: string): string[] =>
+    [...new Set(callEdges(sourceName, fileSuffix).map((e) => e.target))].sort();
+
+  /** Sorted `Label:name` of every CALLS source in the file ending `fileSuffix` that targets `target`. */
+  const sourceKeys = (fileSuffix: string, target: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((e) => e.sourceFilePath.endsWith(fileSuffix) && e.target === target)
+      .map((e) => `${e.sourceLabel}:${e.source}`)
+      .sort();
+
+  const A = 'pkgmain/R/a.R';
+  const B = 'pkgmain/R/b.R';
+
+  // ─── module-level chain ─────────────────────────────────────────────────
+  describe('module-level chain', () => {
+    it('sources every stage of a top-level chain from the File node', () => {
+      expect(callsFrom('a.R', A)).toEqual(['stage_one', 'stage_two']);
+    });
+
+    it('labels the top-level chain source as File for stage_one', () => {
+      expect(sourceKeys(A, 'stage_one').filter((k) => k.startsWith('File:'))).toEqual(['File:a.R']);
+    });
+
+    it('labels the top-level chain source as File for stage_two', () => {
+      expect(sourceKeys(A, 'stage_two').filter((k) => k.startsWith('File:'))).toEqual(['File:a.R']);
+    });
+
+    it('resolves the top-level stages as local calls at 0.85', () => {
+      expect(
+        callEdges('a.R', A)
+          .map((e) => `${e.target}:${e.rel.reason}:${e.rel.confidence}`)
+          .sort(),
+      ).toEqual(['stage_one:local-call:0.85', 'stage_two:local-call:0.85']);
+    });
+  });
+
+  // ─── multi-line chain ───────────────────────────────────────────────────
+  describe('multi-line chain with a builtin stage', () => {
+    it('resolves every user-defined stage of a five-stage chain', () => {
+      expect(callsFrom('multiline_user', A)).toEqual(['stage_one', 'stage_three', 'stage_two']);
+    });
+
+    it('emits no edge for the builtin-named paste stage', () => {
+      expect(callsFrom('multiline_user', A).includes('paste')).toBe(false);
+    });
+
+    it('emits no CALLS edge to a paste target anywhere', () => {
+      expect(getRelationships(result, 'CALLS').filter((e) => e.target === 'paste')).toEqual([]);
+    });
+  });
+
+  // ─── placeholder ────────────────────────────────────────────────────────
+  describe('placeholder argument', () => {
+    it('resolves only the stage that takes the placeholder', () => {
+      expect(callsFrom('placeholder_user', A)).toEqual(['stage_three']);
+    });
+
+    it('emits no CALLS edge to the placeholder `_`', () => {
+      expect(getRelationships(result, 'CALLS').filter((e) => e.target === '_')).toEqual([]);
+    });
+  });
+
+  // ─── lambda stage ───────────────────────────────────────────────────────
+  describe('lambda stage', () => {
+    it('sources the lambda body call from the enclosing function', () => {
+      expect(callsFrom('lambda_user', A)).toEqual(['uniq_helper']);
+    });
+
+    it('resolves the lambda body call as a 0.85 local call', () => {
+      expect(callEdges('lambda_user', A).map((e) => `${e.rel.reason}:${e.rel.confidence}`)).toEqual(
+        ['local-call:0.85'],
+      );
+    });
+  });
+
+  // ─── attribution across functions ───────────────────────────────────────
+  describe('two pipe functions in one package', () => {
+    it('gives the decoy first function only its own pipe edge', () => {
+      expect(callsFrom('decoy_first', 'pkgmain/R/decoy_first.R')).toEqual(['uniq_helper']);
+    });
+
+    it('does not source later pipes from the decoy first function', () => {
+      expect(
+        sourceKeys('pkgmain/R/decoy_first.R', 'stage_one').concat(
+          sourceKeys('pkgmain/R/decoy_first.R', 'stage_three'),
+        ),
+      ).toEqual([]);
+    });
+
+    it('keeps a plain call and a lambda-stage call in separate sources', () => {
+      expect(sourceKeys(A, 'uniq_helper')).toEqual(['Function:lambda_user', 'Function:plain_user']);
+    });
+  });
+
+  // ─── R6 method chain ────────────────────────────────────────────────────
+  describe('R6 method chain', () => {
+    it('sources the chain from the Method and calls exactly the stage and self$post', () => {
+      expect(callsFrom('run', A)).toEqual(['post', 'stage_one']);
+    });
+
+    it('targets a Method for the self$post stage', () => {
+      expect(callEdges('run', A).find((e) => e.target === 'post')?.targetLabel).toBe('Method');
+    });
+
+    it('targets a Function for the stage_one stage', () => {
+      expect(callEdges('run', A).find((e) => e.target === 'stage_one')?.targetLabel).toBe(
+        'Function',
+      );
+    });
+
+    it('labels the chain source as Method:run', () => {
+      expect(sourceKeys(A, 'post')).toEqual(['Method:run']);
+    });
+  });
+
+  // ─── member stages ──────────────────────────────────────────────────────
+  describe('member stage on a typed object', () => {
+    it('resolves obj$score() and the following stage', () => {
+      expect(callsFrom('typed_user', B)).toEqual(['score', 'stage_one']);
+    });
+
+    it('targets a Method for the typed member stage', () => {
+      expect(callEdges('typed_user', B).find((e) => e.target === 'score')?.targetLabel).toBe(
+        'Method',
+      );
+    });
+  });
+
+  describe('member stage on an untyped object', () => {
+    it('emits no edge for the untyped member stage and resolves the next stage', () => {
+      expect(callsFrom('member_user', A)).toEqual(['stage_one']);
+    });
+  });
+
+  // ─── namespaced stages ──────────────────────────────────────────────────
+  describe('namespaced stage with a unique name in another package', () => {
+    it('resolves pkgother::ext_fn() and the following stage', () => {
+      expect(callsFrom('ns_user', A)).toEqual(['ext_fn', 'stage_one']);
+    });
+
+    it('resolves the namespaced stage into the other package', () => {
+      expect(callEdges('ns_user', A).find((e) => e.target === 'ext_fn')?.targetFilePath).toBe(
+        'pkgother/R/e.R',
+      );
+    });
+
+    it('resolves it by the 0.5 global-name-fallback (the qualifier is unused)', () => {
+      expect(
+        callEdges('ns_user', A)
+          .filter((e) => e.target === 'ext_fn')
+          .map((e) => `${e.rel.reason}:${e.rel.confidence}`),
+      ).toEqual(['global-name-fallback:0.5']);
+    });
+  });
+
+  describe('namespaced stage whose name is also defined in the calling file', () => {
+    it('documents current name-only behaviour (fork #7)', () => {
+      // `pkgother::amb_stage()` is qualified, yet the edge goes to the LOCAL definition
+      // (0.85 local-call): the qualifier is discarded. A false edge; fork #7 should flip this.
+      expect(
+        callEdges('ns_amb_user', A).map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}`),
+      ).toEqual(['amb_stage:pkgmain/R/a.R:local-call']);
+    });
+  });
+
+  describe('namespaced stages whose name is defined in two other packages', () => {
+    it('documents current name-only behaviour (fork #7)', () => {
+      // `pkgother::amb_only() |> pkgthird::amb_only()`: ambiguous by name alone, so no edge
+      // even though each qualifier names exactly one definition. Fork #7 should flip this.
+      expect(callsFrom('ns_amb2_user', B)).toEqual([]);
+    });
+  });
+
+  // ─── backticked stage ───────────────────────────────────────────────────
+  describe('backticked stage with no definition', () => {
+    it('emits no edge for it and still resolves the following stage', () => {
+      expect(callsFrom('bt_user', B)).toEqual(['stage_two']);
+    });
+  });
+
+  // ─── O1: nested function sharing a name with a later top-level function ─
+  describe('nested function sharing a name with a top-level function (plan O1)', () => {
+    const N = 'pkgmain/R/nested.R';
+    const targetStartLine = (fn: string): number | undefined => {
+      const edge = callEdges(fn, N).find((e) => e.target === 'nest_fn');
+      return edge ? result.graph.getNode(edge.rel.targetId)?.properties.startLine : undefined;
+    };
+
+    it('resolves a pipe stage to the same-named nested function from the enclosing function', () => {
+      expect(callsFrom('nested_outer', N)).toEqual(['nest_fn', 'stage_two']);
+    });
+
+    it('resolves the same name from another function to the top-level definition', () => {
+      expect(callsFrom('nested_caller', N)).toEqual(['nest_fn']);
+    });
+
+    it('binds the enclosing function to the nested definition, not the top-level one', () => {
+      expect(targetStartLine('nested_outer') ?? Infinity).toBeLessThan(
+        targetStartLine('nested_caller') ?? -Infinity,
+      );
+    });
+  });
+});
