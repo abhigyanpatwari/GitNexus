@@ -1,0 +1,3 @@
+export(RootExported)
+exportPattern("^Pat")
+S3method(print, RootWidget)

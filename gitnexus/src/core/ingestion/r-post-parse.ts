@@ -116,10 +116,15 @@ export const refineRExportStatus = (
     if (!filePath) return;
 
     const normalizedPath = filePath.replace(/\\/g, '/');
+    // A root-level package (DESCRIPTION/NAMESPACE at the repo root) is keyed as '';
+    // it contains every repo-relative path. Without this guard the prefix would be
+    // '/', which no repo-relative path starts with. Root sorts last, so a nested
+    // package still wins for files under it.
     const pkgDir = pkgDirs.find(
-      (dir) => normalizedPath === dir || normalizedPath.startsWith(dir + '/'),
+      (dir) => dir === '' || normalizedPath === dir || normalizedPath.startsWith(dir + '/'),
     );
-    if (!pkgDir) return;
+    // `find` returns undefined on no match; '' (root package) is a valid, falsy hit.
+    if (pkgDir === undefined) return;
 
     const nsInfo = rPackageConfig.namespaceInfoByPackageDir.get(pkgDir);
     if (!nsInfo || !nsInfo.hasNamespaceFile) return;

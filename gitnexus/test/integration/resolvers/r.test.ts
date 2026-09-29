@@ -1216,3 +1216,34 @@ describe('R importFrom(pkgB, CleanData) in the shared r-packages fixture', () =>
     expect(imports.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// Fork #6: a package whose DESCRIPTION/NAMESPACE sit at the repository root
+// (pkgDir === '') must get the same NAMESPACE export refinement as a nested one.
+describe('R root-level package NAMESPACE export refinement', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-root-package'), () => {});
+  }, 60000);
+
+  const findFn = (name: string) =>
+    getNodesByLabelFull(result, 'Function').find((n) => n.name === name);
+
+  it('keeps an explicit export() public', () => {
+    expect(findFn('RootExported')?.properties.isExported).toBe(true);
+  });
+
+  it('keeps a symbol matching exportPattern() public', () => {
+    expect(findFn('PatternMatched')?.properties.isExported).toBe(true);
+  });
+
+  it('keeps an S3method() registration public', () => {
+    expect(findFn('print.RootWidget')?.properties.isExported).toBe(true);
+  });
+
+  it('marks a symbol absent from NAMESPACE as not exported', () => {
+    const helper = findFn('RootHelper');
+    expect(helper).toBeDefined();
+    expect(helper?.properties.isExported).toBe(false);
+  });
+});
