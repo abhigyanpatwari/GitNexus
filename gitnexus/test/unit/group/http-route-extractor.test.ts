@@ -7178,6 +7178,99 @@ async def concurrent():
       expect(ids).not.toContain('http::GET::/api/v1/model-audit');
     });
 
+    describe('nested FastAPI router prefixes (#3408)', () => {
+      async function providerIds(name: string, files: Record<string, string>) {
+        const dir = path.join(tmpDir, name);
+        for (const [rel, src] of Object.entries(files)) {
+          fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+          fs.writeFileSync(path.join(dir, rel), src);
+        }
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        return new Set(contracts.filter((c) => c.role === 'provider').map((c) => c.contractId));
+      }
+      const listRoute =
+        'from fastapi import APIRouter\nrouter = APIRouter()\n\n@router.get("/list")\nasync def list_all():\n    return []\n';
+
+      it('keeps an unresolved legacy mount alongside an import-resolved mount of the same file', async () => {
+        const ids = await providerIds('fastapi-nested-legacy-union', {
+          'main.py': [
+            'import api.users as users',
+            'from api import router as api_router',
+            'app.include_router(users.router, prefix="/legacy")',
+            'app.include_router(api_router, prefix="/api")',
+            '',
+          ].join('\n'),
+          'api/__init__.py': [
+            'from fastapi import APIRouter',
+            'from .users import router as users_router',
+            'router = APIRouter()',
+            'router.include_router(users_router, prefix="/users")',
+            '',
+          ].join('\n'),
+          'api/users.py': listRoute,
+        });
+
+        expect(ids).toContain('http::GET::/api/users/list');
+        expect(ids).toContain('http::GET::/legacy/list');
+        expect(ids).not.toContain('http::GET::/users/list');
+      });
+
+      it('joins the parent APIRouter(prefix=...) into child pass-through', async () => {
+        const ids = await providerIds('fastapi-nested-parent-ctor', {
+          'main.py':
+            'from api import router as api_router\napp.include_router(api_router, prefix="/api")\n',
+          'api/__init__.py': [
+            'from fastapi import APIRouter',
+            'from .agents import router as agents_router',
+            'router = APIRouter(prefix="/v1")',
+            'router.include_router(agents_router)',
+            '',
+          ].join('\n'),
+          'api/agents.py': listRoute,
+        });
+
+        expect(ids).toContain('http::GET::/api/v1/list');
+        expect(ids).not.toContain('http::GET::/api/list');
+      });
+
+      it('counts empty files when judging absolute-import ambiguity, like ingestion', async () => {
+        // `tests/api/__init__.py` is empty but still makes `api` ambiguous.
+        // Ingestion resolves over every scanned path, so both layers decline.
+        const ids = await providerIds('fastapi-nested-empty-init', {
+          'main.py':
+            'from api import router as api_router\napp.include_router(api_router, prefix="/api")\n',
+          'api/__init__.py': [
+            'from fastapi import APIRouter',
+            'from .agents import router as agents_router',
+            'router = APIRouter()',
+            'router.include_router(agents_router)',
+            '',
+          ].join('\n'),
+          'api/agents.py': listRoute,
+          'tests/api/__init__.py': '',
+        });
+
+        expect(ids).toContain('http::GET::/list');
+        expect(ids).not.toContain('http::GET::/api/list');
+      });
+
+      it('applies a child include prefix under a parent mounted without one', async () => {
+        const ids = await providerIds('fastapi-nested-bare-parent', {
+          'main.py': 'from api import router as api_router\napp.include_router(api_router)\n',
+          'api/__init__.py': [
+            'from fastapi import APIRouter',
+            'from .agents import router as agents_router',
+            'router = APIRouter()',
+            'router.include_router(agents_router, prefix="/v1")',
+            '',
+          ].join('\n'),
+          'api/agents.py': listRoute,
+        });
+
+        expect(ids).toContain('http::GET::/v1/list');
+      });
+    });
+
     it('joins FastAPI @router.<verb> path with APIRouter(prefix=...) in the same file', async () => {
       const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix');
       fs.mkdirSync(path.join(dir, 'api'), { recursive: true });

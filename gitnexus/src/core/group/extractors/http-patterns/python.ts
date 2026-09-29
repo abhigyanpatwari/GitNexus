@@ -9,11 +9,15 @@ import {
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import {
   extractFastAPIRouterBindings,
+  type ExtractedRouterConstructorPrefix,
   type ExtractedRouterImport,
   type ExtractedRouterInclude,
   type ExtractedRouterModuleAlias,
 } from '../../../ingestion/route-extractors/fastapi-router-bindings.js';
-import { resolveFastAPIRouterPrefixes } from '../../../ingestion/route-extractors/fastapi-router-prefixes.js';
+import {
+  mergeMountPrefixes,
+  resolveFastAPIRouterPrefixes,
+} from '../../../ingestion/route-extractors/fastapi-router-prefixes.js';
 import {
   extractPythonModuleConstants,
   parseConstOperands,
@@ -999,6 +1003,7 @@ function buildPythonRepoContext(
   const routerIncludes: ExtractedRouterInclude[] = [];
   const routerImports: ExtractedRouterImport[] = [];
   const routerModuleAliases: ExtractedRouterModuleAlias[] = [];
+  const routerConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
 
   // Single read pass (#2393): slurp every `.py` file's content ONCE. This used to
   // be two passes — the include_router pre-pass below and the #2391 constant cost
@@ -1017,14 +1022,24 @@ function buildPythonRepoContext(
 
   for (const [rel, src] of pyContents) {
     if (src.includes('include_router')) {
-      extractFastAPIRouterBindings(rel, src, routerIncludes, routerImports, routerModuleAliases);
+      extractFastAPIRouterBindings(
+        rel,
+        src,
+        routerIncludes,
+        routerImports,
+        routerModuleAliases,
+        routerConstructorPrefixes,
+      );
     }
   }
+  // Resolve against every repo path, empty files included, so module
+  // ambiguity matches ingestion (which passes all scanned paths).
   const { prefixesByFile, resolvedIncludes } = resolveFastAPIRouterPrefixes(
-    pyContents.keys(),
+    files,
     routerIncludes,
     routerImports,
     routerModuleAliases,
+    routerConstructorPrefixes,
   );
   const resolvedIncludeKeys = new Set(
     [...resolvedIncludes].map((inc) => JSON.stringify([inc.filePath, inc.routerExpr, inc.prefix])),
@@ -1279,17 +1294,17 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // by the literal and the #2391 non-literal (resolved) router loops so both
     // stack prefixes identically.
     const emitRouterProvider = (httpMethod: string, rawPath: string, line: number): void => {
-      // Exact file first, then the legacy long/short fallback. This mirrors
+      // Exact file matches plus the legacy long/short fallback. This mirrors
       // ingestion so graph Route nodes and contracts agree on mounted paths.
       const longKey = fileRel ? fileLongKey(fileRel) : '';
       const longPrefixes = longKey ? ctx?.prefixesByLongKey.get(longKey) : undefined;
       const shortKey = fileRel ? fileShortKey(fileRel) : '';
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
-      const prefixSet =
-        (fileRel ? ctx?.prefixesByFile.get(fileRel.replace(/\\/g, '/')) : undefined) ??
-        longPrefixes ??
-        shortPrefixes;
+      const prefixSet = mergeMountPrefixes(
+        fileRel ? ctx?.prefixesByFile.get(fileRel.replace(/\\/g, '/')) : undefined,
+        longPrefixes ?? shortPrefixes,
+      );
       // Stack the same-file APIRouter(prefix=...) under any cross-file
       // include_router prefix.
       const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;

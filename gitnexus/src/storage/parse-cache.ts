@@ -815,7 +815,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v122 (#3414): Python decorator identity models restoring helper calls and
 // treats match-pattern captures and nested nonlocal rebinds as shadowing.
 // Warm v121 captures carry the old verdicts.
-const SCHEMA_BUMP = 122;
+// v123 (#3408): FastAPI include records now carry `host`, router imports carry
+// `modulePath`, and unprefixed child includes are emitted. Warm v122 records
+// lack them, so nested router-prefix propagation would stay inert.
+const SCHEMA_BUMP = 123;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

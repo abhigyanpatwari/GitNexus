@@ -17,13 +17,15 @@
  * `fastapi-router-prefixes.ts` and `pipeline-phases/parse-impl.ts`. Here we extract raw record
  * kinds and let the pipeline aggregate them across files:
  *
- *   • {@link ExtractedRouterInclude} — prefixed mounts and simple unprefixed
- *     `<host>.include_router(<routerExpr>)` child-router includes, where
- *     `<routerExpr>` is either `<module>.router` (Shape A) or a bare
- *     local name (Shape B). `<host>` is intentionally unconstrained:
- *     production code uses `app`, `api`, `application`, `asgi_app`,
- *     etc., and the call shape (`include_router` invoked with a
- *     `prefix=` keyword) is specific enough on its own.
+ *   • {@link ExtractedRouterInclude} — every
+ *     `<host>.include_router(<routerExpr>, prefix='/x')` mount, plus
+ *     unprefixed `<host>.include_router(<routerExpr>[, <other kwargs>])`
+ *     calls recorded with `prefix: ''`. `<routerExpr>` is either
+ *     `<module>.router` (Shape A) or a bare local name (Shape B). The
+ *     extractor leaves `<host>` unconstrained (production code uses `app`,
+ *     `api`, `application`, `asgi_app`, …); unprefixed records are only
+ *     propagation edges, and `fastapi-router-prefixes.ts` passes a parent
+ *     prefix through them only when the host is `router`.
  *
  *   • {@link ExtractedRouterImport} — every
  *     `from <module> import router [as <alias>]`, captured for both
@@ -124,9 +126,13 @@ const INCLUDE_ROUTER_NAME_RE =
   /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
 
 // A child router may be included without a local prefix and inherit the
-// prefix of its parent router when that parent is mounted elsewhere.
+// prefix of its parent router when that parent is mounted elsewhere. Other
+// keyword arguments and a trailing comma are allowed; a `prefix=` anywhere
+// in the call, or a nested call such as `Depends(...)` that hides the rest
+// of the argument list, declines the match so it never double-fires with
+// the prefixed patterns above.
 const INCLUDE_ROUTER_UNPREFIXED_RE =
-  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_]\w*(?:\.router)?)\s*\)/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_]\w*(?:\.router)?)\s*(?:,(?![^()]*\bprefix\s*=)[^()]*)?\)/g;
 
 // Module path: a sequence of dots (`.`, `..`, `...`) for "current
 // package" imports, OR an optional leading-dot prefix followed by a

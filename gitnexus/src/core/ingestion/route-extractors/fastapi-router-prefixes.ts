@@ -1,5 +1,6 @@
 import { normalizeExtractedRoutePath } from './route-path.js';
 import type {
+  ExtractedRouterConstructorPrefix,
   ExtractedRouterImport,
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
@@ -44,14 +45,40 @@ function resolveModuleFile(
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
-/** Carry mounted prefixes through exact, import-resolved router includes. */
+/**
+ * Prefixes that apply to one router file: exact import-resolved mounts plus
+ * the legacy long/short-key prefixes of mounts the resolver could not bind.
+ * Shared by ingestion and the group extractor so both surfaces agree.
+ */
+export function mergeMountPrefixes(
+  exact: ReadonlySet<string> | undefined,
+  legacy: ReadonlySet<string> | undefined,
+): ReadonlySet<string> | undefined {
+  if (!exact) return legacy;
+  if (!legacy) return exact;
+  return new Set([...exact, ...legacy]);
+}
+
+/**
+ * Carry mounted prefixes through exact, import-resolved router includes.
+ *
+ * Only a host literally named `router` passes its mounted prefix on to the
+ * routers it includes, and resolution is per file rather than per variable:
+ * `api_router = APIRouter(); api_router.include_router(x.router)` does not
+ * pass through, and a prefixed `api_router.include_router(...)` is treated
+ * as a root mount. Unprefixed includes from any other host are ignored.
+ */
 export function resolveFastAPIRouterPrefixes(
   files: Iterable<string>,
   includes: readonly ExtractedRouterInclude[],
   imports: readonly ExtractedRouterImport[],
   moduleAliases: readonly ExtractedRouterModuleAlias[],
+  constructorPrefixes: readonly ExtractedRouterConstructorPrefix[] = [],
 ): ResolvedFastAPIRouterPrefixes {
   const fileSet = new Set([...files].map((file) => file.replace(/\\/g, '/')));
+  const constructorPrefixByFile = new Map(
+    constructorPrefixes.map((ctor) => [ctor.filePath.replace(/\\/g, '/'), ctor.prefix]),
+  );
   const absoluteModules = new Map<string, string | null>();
   for (const file of fileSet) {
     if (!file.endsWith('.py')) continue;
@@ -107,13 +134,25 @@ export function resolveFastAPIRouterPrefixes(
   const roots = [...prefixesByFile].flatMap(([file, prefixes]) =>
     [...prefixes].map((prefix) => ({ file, prefix })),
   );
+  // `expanded` memoizes (file, prefix) frames so diamond-shaped include graphs
+  // stay linear in distinct prefixes; the per-path `visited` set still stops
+  // cycles whose edges keep growing the prefix.
+  const expanded = new Set<string>();
   for (const { file, prefix } of roots) {
     const stack = [{ file, prefix, visited: new Set([file]) }];
-    while (stack.length > 0) {
-      const current = stack.pop()!;
+    for (let current = stack.pop(); current; current = stack.pop()) {
+      const frameKey = `${current.file}\0${current.prefix}`;
+      if (expanded.has(frameKey)) continue;
+      expanded.add(frameKey);
+      // The parent's own `APIRouter(prefix=...)` sits between its mount
+      // prefix and the child include prefix.
+      const ctorPrefix = constructorPrefixByFile.get(current.file);
+      const parentPrefix = ctorPrefix
+        ? normalizeExtractedRoutePath(ctorPrefix, current.prefix)
+        : current.prefix;
       for (const edge of childIncludes.get(current.file) ?? []) {
         if (current.visited.has(edge.target)) continue;
-        const joined = normalizeExtractedRoutePath(edge.prefix, current.prefix);
+        const joined = normalizeExtractedRoutePath(edge.prefix, parentPrefix);
         const targetPrefixes = prefixesByFile.get(edge.target) ?? new Set<string>();
         targetPrefixes.add(joined);
         prefixesByFile.set(edge.target, targetPrefixes);
