@@ -812,7 +812,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // comments, honors rebinding of builtin descriptor names visible where the
 // decorator is evaluated, and withholds subtype capacity from descriptor
 // stacks. Warm v120 captures carry the old verdicts.
-const SCHEMA_BUMP = 121;
+// v122 (#3414): Python decorator identity models restoring helper calls and
+// treats match-pattern captures and nested nonlocal rebinds as shadowing.
+// Warm v121 captures carry the old verdicts.
+const SCHEMA_BUMP = 122;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
