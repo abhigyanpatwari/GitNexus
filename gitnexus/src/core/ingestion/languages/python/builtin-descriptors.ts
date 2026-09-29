@@ -42,21 +42,24 @@ export function isBuiltinDescriptor(
   if (kind === undefined ? !BUILTIN_DESCRIPTORS.has(expression) : expression !== kind) return false;
   // Decorators are evaluated as the `def` statement runs, so its wrapper is the
   // use site. No statement can rebind the name between stacked decorators.
-  const useSite = fnNode.parent?.type === 'decorated_definition' ? fnNode.parent : fnNode;
-  const bindings = descriptorBindings(fnNode).get(expression) ?? [];
-  return !bindings.some(
-    (b) => !b.deletes && isVisibleAt(b, useSite) && !isDeletedBefore(b, bindings, useSite),
-  );
+  const use = fnNode.parent?.type === 'decorated_definition' ? fnNode.parent : fnNode;
+  return lookupName(descriptorBindings(fnNode).get(expression) ?? [], use) !== 'shadow';
 }
+
+/**
+ * The effect a name-binding operation leaves (Language Reference 4.2.1):
+ * `builtin` re-imports the builtin object itself, `unbind` is a `del` that
+ * makes lookup fall through to the next namespace, and `shadow` binds any
+ * other value.
+ */
+type BindingEffect = 'shadow' | 'builtin' | 'unbind';
 
 interface NameBinding {
   readonly node: SyntaxNode;
-  /** Assigned in a function that declares the name `global` / `nonlocal`, so
-   *  it rebinds an outer scope whenever that function is called. */
+  readonly effect: BindingEffect;
+  /** Declared `global` / `nonlocal` in the binding function (4.2.2), so it
+   *  writes an outer namespace whenever that function is called. */
   readonly redirect: 'global' | 'nonlocal' | null;
-  /** A `del` at module or class level, which restores the outer lookup.
-   *  Inside a function, `del` makes the name local and binds like any other. */
-  readonly deletes: boolean;
 }
 
 const FUNCTION_SCOPES = new Set(['function_definition', 'lambda']);
@@ -76,18 +79,29 @@ const TARGET_WRAPPERS = new Set([
   'expression_list',
   'parenthesized_expression',
 ]);
+/** Simple statements whose effect always happens once execution reaches them. */
+const SIMPLE_STATEMENTS = new Set([
+  'expression_statement',
+  'import_statement',
+  'import_from_statement',
+  'delete_statement',
+]);
 
 /** Is `node` the `field` child of its parent? */
 function isField(node: SyntaxNode, field: string): boolean {
   return node.parent?.childForFieldName(field)?.id === node.id;
 }
 
+/** Does `statement` import from the `builtins` module? */
+function importsFromBuiltins(statement: SyntaxNode | null | undefined): boolean {
+  return statement?.childForFieldName('module_name')?.text === 'builtins';
+}
+
 /**
- * Does this identifier bind its name, as CPython's symbol table would record
- * it? Plain reads and `from builtins import <name>` (which binds the builtin
- * itself) do not.
+ * The binding this identifier performs, following the binding constructs of
+ * Language Reference 4.2.1, or `null` for a plain read.
  */
-function bindingOf(identifier: SyntaxNode): NameBinding | null {
+function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null {
   let node = identifier;
   let parent = node.parent;
   while (parent !== null && TARGET_WRAPPERS.has(parent.type)) {
@@ -95,51 +109,49 @@ function bindingOf(identifier: SyntaxNode): NameBinding | null {
     parent = node.parent;
   }
   if (parent === null) return null;
-  const binding: NameBinding = { node: identifier, redirect: null, deletes: false };
+  const shadow = { node: identifier, effect: 'shadow' as const };
   switch (parent.type) {
     case 'assignment':
     case 'augmented_assignment':
     case 'for_statement':
     case 'for_in_clause':
-      return isField(node, 'left') ? binding : null;
+      return isField(node, 'left') ? shadow : null;
     case 'named_expression':
     case 'function_definition':
     case 'class_definition':
     case 'default_parameter':
     case 'typed_default_parameter':
-      return isField(node, 'name') ? binding : null;
+      return isField(node, 'name') ? shadow : null;
     case 'as_pattern':
-      return isField(node, 'alias') ? binding : null;
-    case 'aliased_import':
+      return isField(node, 'alias') ? shadow : null;
+    case 'aliased_import': {
       if (!isField(node, 'alias')) return null;
-      // `from builtins import staticmethod as staticmethod` rebinds the builtin
-      // to its own name, the usual explicit re-export spelling.
-      return parent.childForFieldName('name')?.text === identifier.text &&
-        parent.parent?.childForFieldName('module_name')?.text === 'builtins'
-        ? null
-        : binding;
+      // `from builtins import staticmethod as staticmethod` binds the builtin.
+      const source = parent.childForFieldName('name')?.text;
+      return importsFromBuiltins(parent.parent) && source === identifier.text
+        ? { node: identifier, effect: 'builtin' }
+        : shadow;
+    }
     case 'typed_parameter':
-      return node.type === 'identifier' ? binding : null;
+      return node.type === 'identifier' ? shadow : null;
     case 'parameters':
     case 'lambda_parameters':
-      return binding;
-    case 'delete_statement': {
-      const scope = scopeOf(parent);
-      return { ...binding, deletes: scope === null || !FUNCTION_SCOPES.has(scope.type) };
-    }
+      return shadow;
+    case 'delete_statement':
+      return { node: identifier, effect: 'unbind' };
     case 'type':
       return parent.parent?.type === 'type_parameter' ||
         (parent.parent?.type === 'type_alias_statement' && isField(parent, 'left'))
-        ? binding
+        ? shadow
         : null;
     case 'dotted_name': {
       const owner = parent.parent;
       // `import a.b` binds `a`; `case name:` captures a single name.
       if (owner?.type === 'import_statement')
-        return parent.firstNamedChild?.id === node.id ? binding : null;
-      if (owner?.type === 'case_pattern') return parent.namedChildCount === 1 ? binding : null;
+        return parent.firstNamedChild?.id === node.id ? shadow : null;
+      if (owner?.type === 'case_pattern') return parent.namedChildCount === 1 ? shadow : null;
       if (owner?.type !== 'import_from_statement' || !isField(parent, 'name')) return null;
-      return owner.childForFieldName('module_name')?.text === 'builtins' ? null : binding;
+      return importsFromBuiltins(owner) ? { node: identifier, effect: 'builtin' } : shadow;
     }
     default:
       return null;
@@ -148,13 +160,13 @@ function bindingOf(identifier: SyntaxNode): NameBinding | null {
 
 const bindingsByTree = new WeakMap<object, ReadonlyMap<string, readonly NameBinding[]>>();
 
-/** Every binding of a builtin descriptor name in the file, computed once per tree. */
+/** Every binding of a builtin descriptor name in the file, in source order. */
 function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly NameBinding[]> {
   const tree = node.tree;
   const cached = bindingsByTree.get(tree);
   if (cached !== undefined) return cached;
   // `global x` / `nonlocal x` bind nothing themselves; they redirect the
-  // declaring scope's own bindings of `x` to an outer scope.
+  // declaring scope's own bindings of `x` to an outer namespace.
   const redirected = new Map<string, 'global' | 'nonlocal'>();
   for (const statement of tree.rootNode.descendantsOfType([
     'global_statement',
@@ -172,16 +184,17 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
   };
   for (const found of tree.rootNode.descendantsOfType(['identifier', 'wildcard_import'])) {
     if (found.type === 'wildcard_import') {
-      // `from m import *` may bind any public name at that point.
-      for (const name of BUILTIN_DESCRIPTORS)
-        add(name, { node: found, redirect: null, deletes: false });
+      // `from m import *` binds every public name m defines. Unless m is
+      // `builtins`, whether that includes a descriptor name is unknown here.
+      const effect = importsFromBuiltins(found.parent) ? 'builtin' : 'shadow';
+      for (const name of BUILTIN_DESCRIPTORS) add(name, { node: found, effect, redirect: null });
       continue;
     }
     if (!BUILTIN_DESCRIPTORS.has(found.text)) continue;
     const binding = bindingOf(found);
     if (binding === null) continue;
-    const redirect = redirected.get(`${found.text}@${ownerScope(binding)?.id}`) ?? null;
-    add(found.text, redirect === null ? binding : { ...binding, redirect });
+    const redirect = redirected.get(`${found.text}@${scopeOf(found)?.id}`) ?? null;
+    add(found.text, { ...binding, redirect });
   }
   bindingsByTree.set(tree, bindings);
   return bindings;
@@ -192,7 +205,8 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
  * class body, a comprehension, or the module (`null`). A walrus target skips
  * comprehensions, as PEP 572 binds it in the enclosing scope.
  */
-function scopeOf(node: SyntaxNode, skipComprehensions = false): SyntaxNode | null {
+function scopeOf(node: SyntaxNode): SyntaxNode | null {
+  const skipComprehensions = node.parent?.type === 'named_expression';
   let child = node;
   for (let parent = node.parent; parent !== null; child = parent, parent = parent.parent) {
     if (FUNCTION_SCOPES.has(parent.type)) {
@@ -206,36 +220,16 @@ function scopeOf(node: SyntaxNode, skipComprehensions = false): SyntaxNode | nul
   return null;
 }
 
-/** The scope a binding writes to. */
-function ownerScope(binding: NameBinding): SyntaxNode | null {
-  return scopeOf(binding.node, binding.node.parent?.type === 'named_expression');
+/** The statement containing `node` that sits directly in `body`. */
+function statementIn(node: SyntaxNode, body: SyntaxNode): SyntaxNode | null {
+  let current = node;
+  while (current.parent !== null && current.parent.id !== body.id) current = current.parent;
+  return current.parent === null ? null : current;
 }
 
-/**
- * Does an unconditional module- or class-level `del` remove `binding` after it
- * runs and before `use`? A `del` nested in control flow may not run.
- */
-function isDeletedBefore(
-  binding: NameBinding,
-  bindings: readonly NameBinding[],
-  use: SyntaxNode,
-): boolean {
-  if (binding.redirect !== null) return false;
-  const scope = ownerScope(binding);
-  const body = scope === null ? binding.node.tree.rootNode : scope.childForFieldName('body');
-  return bindings.some((deletion) => {
-    const statement = deletion.node.parent;
-    return (
-      deletion.deletes &&
-      statement?.parent?.id === body?.id &&
-      binding.node.startIndex < deletion.node.startIndex &&
-      deletion.node.startIndex < use.startIndex
-    );
-  });
-}
-
-/** Did `binding` run before `use` in the same scope, or can a loop repeat it first? */
-function runsBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | null): boolean {
+/** Can `binding` run before `use` in the same scope, including an earlier
+ *  iteration of an enclosing loop? */
+function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | null): boolean {
   if (binding.startIndex < use.startIndex) return true;
   for (let loop = use.parent; loop !== null && loop.id !== scope?.id; loop = loop.parent) {
     if (
@@ -249,29 +243,69 @@ function runsBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | nu
   return false;
 }
 
-/** Is `binding` in effect when CPython evaluates a decorator at `use`? */
-function isVisibleAt(binding: NameBinding, use: SyntaxNode): boolean {
-  // The chain of scopes the decorator's name lookup can reach, innermost first.
+/**
+ * What a module or class namespace holds for the name when execution reaches
+ * `use`. A `shadow` that may have run wins. A restoring effect (`builtin`,
+ * `unbind`) counts only when it is a simple statement directly in the scope
+ * body that runs before `use`, so it runs exactly once in order.
+ */
+function namespaceState(
+  bindings: readonly NameBinding[],
+  scope: SyntaxNode | null,
+  use: SyntaxNode | null,
+): BindingEffect {
+  const body = scope === null ? null : scope.childForFieldName('body');
+  let state: BindingEffect = 'unbind';
+  for (const binding of bindings) {
+    if (binding.redirect !== null || scopeOf(binding.node)?.id !== scope?.id) continue;
+    if (use !== null && !mayRunBefore(binding.node, use, scope)) continue;
+    if (binding.effect === 'shadow') {
+      state = 'shadow';
+      continue;
+    }
+    if (state === 'shadow' && use === null) continue;
+    const statement = statementIn(binding.node, body ?? binding.node.tree.rootNode);
+    const ordered = use === null || binding.node.startIndex < use.startIndex;
+    if (ordered && statement !== null && SIMPLE_STATEMENTS.has(statement.type)) {
+      state = binding.effect;
+    }
+  }
+  return state;
+}
+
+/**
+ * Resolve the decorator name at `use` as LOAD_NAME does (Language Reference
+ * 4.2.2): the class namespace, then module globals, then builtins.
+ */
+function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingEffect {
   const chain: (SyntaxNode | null)[] = [scopeOf(use)];
   while (chain[chain.length - 1] !== null) chain.push(scopeOf(chain[chain.length - 1]!));
+  const functions = chain.filter((scope) => scope !== null && FUNCTION_SCOPES.has(scope.type));
   // A class body inside a function runs only when that function is called,
   // after the whole module has executed.
-  const deferred = chain.some((scope) => scope !== null && FUNCTION_SCOPES.has(scope.type));
-  if (binding.redirect === 'nonlocal') return true;
-  if (binding.redirect === 'global') {
-    // The function can only be called once the top-level statement defining
-    // it has started, so a rebind defined after the decorator cannot precede it.
-    let top = binding.node;
-    while (top.parent !== null && top.parent.id !== top.tree.rootNode.id) top = top.parent;
-    return deferred || runsBefore(top, use, null);
+  const deferred = functions.length > 0;
+  for (const binding of bindings) {
+    // Any binding in an enclosing function makes the name local to it, so
+    // the decorator reads that local instead of reaching the builtin.
+    const owner = scopeOf(binding.node);
+    if (binding.redirect === null && functions.some((scope) => scope?.id === owner?.id)) {
+      return 'shadow';
+    }
+    // `nonlocal` needs an existing binding in an enclosing function (7.13),
+    // which the check above already sees.
+    if (binding.effect !== 'shadow') continue;
+    if (binding.redirect === 'global') {
+      // The function can only be called once the top-level statement that
+      // defines it has run. Whether a call happens is unknown, so a restoring
+      // `global` delete is ignored and a rebinding one is assumed.
+      const top = statementIn(binding.node, binding.node.tree.rootNode);
+      if (deferred || (top !== null && mayRunBefore(top, use, null))) return 'shadow';
+    }
   }
-  const bindingScope = ownerScope(binding);
-  const index = chain.findIndex((scope) => scope?.id === bindingScope?.id);
-  if (index < 0) return false;
-  // A binding anywhere in a function makes the name local to it, so the
-  // decorator never reaches the builtin (it reads the local or raises).
-  if (bindingScope !== null && !(bindingScope.type === 'class_definition')) return true;
-  // An enclosing class body is not visible to a nested scope.
-  if (bindingScope !== null) return index === 0 && runsBefore(binding.node, use, bindingScope);
-  return deferred || runsBefore(binding.node, use, null);
+  const classScope = chain[0]?.type === 'class_definition' ? chain[0] : null;
+  if (classScope !== null) {
+    const state = namespaceState(bindings, classScope, use);
+    if (state !== 'unbind') return state;
+  }
+  return namespaceState(bindings, null, deferred ? null : use);
 }

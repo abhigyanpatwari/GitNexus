@@ -125,6 +125,43 @@ describe('Python builtin descriptor identity', () => {
       ],
       false,
     ],
+    [
+      'a builtins import after an override',
+      ['staticmethod = lambda f: f', 'from builtins import staticmethod', 'class A:', ...method],
+      true,
+    ],
+    ['a builtins wildcard import', ['from builtins import *', 'class A:', ...method], true],
+    [
+      'a class-body builtins import over a module override',
+      ['staticmethod = 1', 'class A:', '    from builtins import staticmethod', ...method],
+      true,
+    ],
+    [
+      'a conditional builtins import after an override',
+      [
+        'staticmethod = 1',
+        'if flag:',
+        '    from builtins import staticmethod',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // CPython restores the builtin when reset() runs; whether a call runs is
+      // not modelled, so the resolver keeps the override (fail closed).
+      'a global del in a called helper',
+      [
+        'staticmethod = lambda f: f',
+        'def reset():',
+        '    global staticmethod',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
   ])('with %s', (_case, lines, builtin) => {
     expect(decoratesWithBuiltin(lines.join('\n'))).toBe(builtin);
   });
