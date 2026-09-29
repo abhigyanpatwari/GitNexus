@@ -101,9 +101,33 @@ func Setup() {
       expect(summary(`func (s *Server) routes() { s.router.GET("/x", h) }`)).toEqual([]);
     });
 
+    it('drops routes on mutually-derived groups', () => {
+      expect(
+        summary(`func S(r *gin.Engine) { a := b.Group("/x"); b := a.Group("/y"); a.GET("/z", h) }`),
+      ).toEqual([]);
+    });
+
+    it('drops routes a closure registers on an outer group', () => {
+      expect(
+        summary(`func S(r *gin.Engine) { v := r.Group("/a"); go func() { v.GET("/x", h) }() }`),
+      ).toEqual([]);
+    });
+
+    it('drops routes on a name bound to the second value of a call', () => {
+      expect(summary(`func S(r *gin.Engine) { _, v := pair(r); v.GET("/x", h) }`)).toEqual([]);
+    });
+
     it('drops routes whose path is not a literal', () => {
       expect(summary(`func S(r *gin.Engine) { r.GET(path, h) }`)).toEqual([]);
     });
+  });
+
+  it('pairs a parallel assignment of groups positionally', () => {
+    expect(
+      summary(
+        `func S(r *gin.Engine) { a, b := r.Group("/a"), r.Group("/b"); a.GET("/x", H); b.GET("/y", H) }`,
+      ),
+    ).toEqual(['GET /a/x -> H', 'GET /b/y -> H']);
   });
 
   describe('framework gate', () => {

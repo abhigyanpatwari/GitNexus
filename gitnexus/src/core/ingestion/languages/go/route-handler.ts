@@ -11,10 +11,9 @@ import { goPackageDir } from './package-clause.js';
  * so a handler registered in `router.go` is usually a method declared in a
  * sibling file (#3402).
  *
- * Every step is unique-or-decline. A receiver hint whose owner cannot be found
- * declines rather than falling back to a name-only match: with the router and
- * the handlers in different packages, a same-named method in the router's own
- * directory belongs to an unrelated type.
+ * Every step is unique-or-decline, and nothing falls back to a name-only match:
+ * with the router and the handlers in different packages, a same-named method
+ * in the router's own directory belongs to an unrelated type.
  *
  * Runs at the end of the parse phase, before scope resolution, so a Method's
  * `ownerId` is still the worker's `Struct:<methodFile>:<Receiver>` id — keyed on
@@ -36,11 +35,9 @@ export function resolveGoRouteHandler(
   if (parts.length !== 2) return undefined;
   const member = parts[1];
 
+  // A receiver of unknown type (`h := deps.Users`, a package-level var) declines.
   const hint = route.handlerReceiver;
-  if (hint === undefined) {
-    // Receiver of unknown type: the method is unique in the package, or unknown.
-    return uniqueId(model.methods.lookupMethodByName(member).filter(inPackage(routeDir)));
-  }
+  if (hint === undefined) return undefined;
 
   const dir = hint.qualifier === undefined ? routeDir : packageDir(context, route, hint.qualifier);
   if (dir === undefined) return undefined;

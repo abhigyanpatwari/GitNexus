@@ -144,30 +144,66 @@ describe('resolveGoRouteHandler', () => {
     expect(resolve(model, { handlerName: 'Health' })).toBe('Function:app/router/health.go:Health');
   });
 
-  it('falls back to a unique package method when the receiver type is unknown', () => {
+  it('declines a receiver of unknown type even when the name is unique in the router package', () => {
+    // `h := deps.Users` — the real handler usually lives in another package, so a
+    // same-named method in the router's own directory belongs to an unrelated type.
     const model = createSemanticModel();
-    method(model, 'app/router/a.go', 'A', 'List');
-    method(model, 'app/elsewhere/b.go', 'B', 'List');
+    method(model, 'app/router/page.go', 'Page', 'List');
 
-    expect(resolve(model, { handlerName: 'h.List' })).toBe('Method:app/router/a.go:A.List');
-  });
-
-  it('declines an ambiguous name when the receiver type is unknown (AE2)', () => {
-    const model = createSemanticModel();
-    method(model, 'app/router/auth.go', 'AuthHandler', 'Login');
-    method(model, 'app/router/auth.go', 'AdminAuthHandler', 'Login');
-
-    expect(resolve(model, { handlerName: 'h.Login' })).toBeUndefined();
+    expect(resolve(model, { handlerName: 'h.List' })).toBeUndefined();
   });
 
   it('ignores _test.go siblings when judging uniqueness', () => {
     const model = createSemanticModel();
+    struct(model, 'app/router/auth.go', 'AuthHandler');
     method(model, 'app/router/auth.go', 'AuthHandler', 'Login');
-    method(model, 'app/router/auth_test.go', 'fakeHandler', 'Login');
+    method(model, 'app/router/auth_test.go', 'AuthHandler', 'Login');
 
-    expect(resolve(model, { handlerName: 'h.Login' })).toBe(
-      'Method:app/router/auth.go:AuthHandler.Login',
-    );
+    expect(
+      resolve(model, {
+        handlerName: 'h.Login',
+        handlerReceiver: { kind: 'type', name: 'AuthHandler' },
+      }),
+    ).toBe('Method:app/router/auth.go:AuthHandler.Login');
+  });
+
+  it.each([
+    ['a qualifier whose import spans two directories', { kind: 'module', qualifier: 'split' }],
+    ['a type hint with no name', { kind: 'type' }],
+  ] as const)('declines %s', (_label, handlerReceiver) => {
+    const model = createSemanticModel();
+    fn(model, 'app/a/h.go', 'Do');
+    method(model, 'app/router/t.go', 'T', 'Do');
+
+    expect(
+      resolve(
+        model,
+        { handlerName: 'h.Do', handlerReceiver },
+        { split: ['app/a/h.go', 'app/b/h.go'] },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('declines a deeper selector', () => {
+    const model = createSemanticModel();
+    method(model, 'app/router/t.go', 'T', 'Do');
+
+    expect(resolve(model, { handlerName: 'a.b.Do' })).toBeUndefined();
+  });
+
+  it('declines when two same-named constructors exist in the package', () => {
+    const model = createSemanticModel();
+    struct(model, 'app/router/h.go', 'H');
+    fn(model, 'app/router/h.go', 'NewH', '*H');
+    fn(model, 'app/router/h2.go', 'NewH', '*H');
+    method(model, 'app/router/h.go', 'H', 'Do');
+
+    expect(
+      resolve(model, {
+        handlerName: 'h.Do',
+        handlerReceiver: { kind: 'constructor', name: 'NewH' },
+      }),
+    ).toBeUndefined();
   });
 
   describe('a failed hint never falls back to a name-only match', () => {
