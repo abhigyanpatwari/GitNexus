@@ -808,7 +808,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v120 (#3394): decorated Python method receiver bindings now distinguish
 // unproven decorators from instance receivers. Warm v119 ParsedFiles would
 // replay a fabricated `self` binding or lack the uncertainty marker entirely.
-const SCHEMA_BUMP = 120;
+// v121 (#3399 follow-up): Python decorator identity now ignores trailing
+// comments, honors rebinding of builtin descriptor names visible where the
+// decorator is evaluated, and withholds subtype capacity from descriptor
+// stacks. Warm v120 captures carry the old verdicts.
+const SCHEMA_BUMP = 121;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

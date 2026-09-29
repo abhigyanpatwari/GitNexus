@@ -298,8 +298,9 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 115 -> 116 for #3390's Python subtype-dispatch shape side-channel.
   // Moved 116 -> 117 for #3390's private positional-count side-channel.
   // Moved 117 -> 118 for #3398, 118 -> 119 for #3396, and 119 -> 120 for #3394.
-  it('pins SCHEMA_BUMP to 120 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(120);
+  // Moved 120 -> 121 for the #3399 decorator-identity follow-up.
+  it('pins SCHEMA_BUMP to 121 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179, #3219, #3190, #3253, #3273, #3339, #3354, #3371, #2965, #3390, #3398, #3396, #3394, #3399)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(121);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -308,7 +309,7 @@ describe('PARSE_CACHE_VERSION', () => {
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103,
-      104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+      104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
