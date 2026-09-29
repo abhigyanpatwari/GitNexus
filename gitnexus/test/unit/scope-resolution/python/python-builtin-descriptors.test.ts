@@ -343,6 +343,73 @@ describe('Python builtin descriptor identity', () => {
       true,
     ],
     [
+      'a match value pattern that reads the name',
+      [
+        'import builtins',
+        'match 1:',
+        '    case builtins.staticmethod:',
+        '        pass',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
+      'a match class pattern that reads the name',
+      ['match 1:', '    case staticmethod():', '        pass', 'class A:', ...method],
+      true,
+    ],
+    [
+      'a match keyword capture of the name',
+      ['match 1:', '    case int(real=staticmethod):', '        pass', 'class A:', ...method],
+      false,
+    ],
+    [
+      // A parameter named like the helper is local to its own function.
+      'a function parameter named like the helper',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'def unrelated(reset):',
+        '    pass',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
+      // CPython keeps the builtin because swap() is never called; the
+      // resolver cannot prove that, so it fails closed.
+      'a global rebind of the helper name in another function',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'def swap():',
+        '    global reset',
+        '    reset = print',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // CPython restores the builtin; any `global` rebind in the helper keeps
+      // the resolver fail-closed, even after a return.
+      'a helper that rebinds after returning',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        '    return',
+        '    staticmethod = 1',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
       'a helper whose restore is conditional',
       [
         'staticmethod = lambda f: f',

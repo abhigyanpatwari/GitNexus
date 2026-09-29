@@ -108,10 +108,7 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
   }
   if (parent === null) return null;
   const shadow = { node: identifier, effect: 'shadow' as const };
-  // ponytail: every name in a `match` case pattern counts as a capture. Class
-  // names, keyword keys and value patterns are reads, but treating them as
-  // bindings only fails closed.
-  if (inCasePattern(identifier)) return shadow;
+  if (inCasePattern(identifier)) return isCaseCapture(identifier) ? shadow : null;
   switch (parent.type) {
     case 'assignment':
     case 'augmented_assignment':
@@ -197,7 +194,7 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
     const redirect = redirected.get(`${found.text}@${scopeOf(found)?.id}`) ?? null;
     add(found.text, { ...binding, redirect });
   }
-  addHelperCalls(tree.rootNode, bindings);
+  addHelperCalls(tree.rootNode, bindings, redirected);
   bindingsByTree.set(tree, bindings);
   return bindings;
 }
@@ -207,7 +204,11 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
  * descriptor name through `global` runs that restore at the call. Record it
  * there as a module binding, so the call's position orders it.
  */
-function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>): void {
+function addHelperCalls(
+  root: SyntaxNode,
+  bindings: Map<string, NameBinding[]>,
+  redirected: ReadonlyMap<string, 'global' | 'nonlocal'>,
+): void {
   // Helper function name -> its `def` and, per descriptor name, the restore
   // its call performs.
   const helpers = new Map<string, { fn: SyntaxNode; restores: Map<string, BindingEffect> }>();
@@ -231,11 +232,14 @@ function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>):
     }
   }
   if (helpers.size === 0) return;
-  // A call only denotes the helper when its `def` is the name's one binding.
+  // A call only denotes the helper when its `def` is the name's one module
+  // binding. A local of the same name elsewhere cannot rebind it.
   if (root.descendantsOfType('wildcard_import').length > 0) return;
   const bindingCounts = new Map<string, number>();
   for (const found of root.descendantsOfType('identifier')) {
     if (!helpers.has(found.text) || bindingOf(found) === null) continue;
+    const scope = scopeOf(found);
+    if (scope !== null && redirected.get(`${found.text}@${scope.id}`) !== 'global') continue;
     bindingCounts.set(found.text, (bindingCounts.get(found.text) ?? 0) + 1);
   }
   for (const [helper, count] of bindingCounts) if (count > 1) helpers.delete(helper);
@@ -258,6 +262,20 @@ function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>):
     }
   }
   for (const list of touched) list.sort((a, b) => a.node.startIndex - b.node.startIndex);
+}
+
+/**
+ * Does this name in a case pattern capture? Value patterns (`a.b`), class
+ * names and keyword keys are reads. Every other name is a capture.
+ */
+function isCaseCapture(identifier: SyntaxNode): boolean {
+  const parent = identifier.parent;
+  if (parent?.type === 'keyword_pattern') return parent.firstNamedChild?.id !== identifier.id;
+  if (parent?.type !== 'dotted_name') return true;
+  if (parent.namedChildCount > 1) return false;
+  return !(
+    parent.parent?.type === 'class_pattern' && parent.parent.firstNamedChild?.id === parent.id
+  );
 }
 
 /** Is `node` inside a `match` case pattern? */
