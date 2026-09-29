@@ -3,6 +3,10 @@ import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
+import {
+  parseRNamespaceImportFrom,
+  type RNamespaceImportFromEntry,
+} from './languages/r/namespace-imports.js';
 
 import { isDev } from './utils/env.js';
 import { isHardcodedIgnoredDirectoryAtPath } from '../../config/ignore-service.js';
@@ -2630,6 +2634,8 @@ export interface RNamespaceInfo {
    *  that fail to compile are dropped at this stage (invalid `exportPattern()` args
    *  never match, same as the previous per-call `try { new RegExp(...) } catch` behavior). */
   exportPatterns: RegExp[];
+  /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
+  importFrom: readonly RNamespaceImportFromEntry[];
 }
 
 export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig | null> {
@@ -2710,6 +2716,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                   hasNamespaceFile: true,
                   namedExports,
                   exportPatterns,
+                  importFrom: parseRNamespaceImportFrom(nsContent),
                 });
               } catch {
                 // No NAMESPACE file or can't read it
