@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
-import {
-  typeConfig as rTypeConfig,
-  extractReturnType as rExtractReturnType,
-} from '../../src/core/ingestion/type-extractors/r.js';
+import { extractReturnType as rExtractReturnType } from '../../src/core/ingestion/type-extractors/r.js';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 

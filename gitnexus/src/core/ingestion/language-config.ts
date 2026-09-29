@@ -2671,7 +2671,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
               packages.set(pkgName, pkgDir);
               if (isDev) {
-                console.log(`Found R package: ${pkgName} at ${pkgDir}`);
+                logger.info(`📦 Found R package: ${pkgName} at ${pkgDir}`);
               }
 
               const nsPath = path.join(dir, 'NAMESPACE');
