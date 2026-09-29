@@ -16,6 +16,12 @@ const decoratesWithBuiltin = (source: string): boolean => {
 };
 
 const method = ['    @staticmethod', '    def t(v):', '        return v'];
+const resetHelper = ['def reset():', '    global staticmethod', '    del staticmethod'];
+const nonlocalRebind = [
+  '    def rebind():',
+  '        nonlocal staticmethod',
+  '        staticmethod = lambda f: f',
+];
 
 // `true` means CPython's `A().t(7)` returns 7, so the decorator evaluated to
 // the builtin staticmethod. A wildcard import from a module this file cannot
@@ -148,17 +154,212 @@ describe('Python builtin descriptor identity', () => {
       false,
     ],
     [
-      // CPython restores the builtin when reset() runs; whether a call runs is
-      // not modelled, so the resolver keeps the override (fail closed).
+      // A bare top-level call runs the helper's `global` delete at the call.
       'a global del in a called helper',
+      ['staticmethod = lambda f: f', ...resetHelper, 'reset()', 'class A:', ...method],
+      true,
+    ],
+    [
+      'a global builtins import in a called helper',
       [
         'staticmethod = lambda f: f',
         'def reset():',
         '    global staticmethod',
+        '    from builtins import staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
+      'a called helper before a deferred class body',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'reset()',
+        'def make():',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        '    return A',
+      ],
+      true,
+    ],
+    [
+      // CPython restores the builtin; a conditional call is not modelled.
+      'a called helper inside an if',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'if True:',
+        '    reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a called helper inside a boolean expression',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'flag = False',
+        'flag and reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // The target binds after the call returns.
+      'a called helper whose result rebinds the name',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        '    return lambda f: f',
+        'staticmethod = reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'an override after a called helper',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'reset()',
+        'staticmethod = lambda f: f',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // Calling a generator function does not run its body.
+      'a called generator helper',
+      ['staticmethod = lambda f: f', ...resetHelper, '    yield', 'reset()', 'class A:', ...method],
+      false,
+    ],
+    [
+      'a called helper that may return first',
+      [
+        'staticmethod = lambda f: f',
+        'def reset(flag=True):',
+        '    global staticmethod',
+        '    if flag:',
+        '        return',
         '    del staticmethod',
         'reset()',
         'class A:',
         ...method,
+      ],
+      false,
+    ],
+    [
+      'a called helper whose name is rebound',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'reset = print',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // The helper writes module globals, not the class namespace.
+      'a class-body call after a class-local override',
+      [
+        'staticmethod = lambda f: f',
+        ...resetHelper,
+        'class A:',
+        '    staticmethod = lambda f: f',
+        '    reset()',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a function-body call after a function-local override',
+      [
+        'def reset():',
+        '    global staticmethod',
+        '    from builtins import staticmethod',
+        'def make():',
+        '    staticmethod = lambda f: f',
+        '    reset()',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      false,
+    ],
+    [
+      // CPython restores the builtin; the helper's earlier `global` rebind
+      // keeps the resolver fail-closed.
+      'a called helper that rebinds before deleting',
+      [
+        'staticmethod = lambda f: f',
+        'def reset():',
+        '    global staticmethod',
+        '    staticmethod = 1',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // CPython keeps the builtin when rebind() is never called; whether it
+      // is called is not modelled, so the resolver fails closed.
+      'a global rebind helper that is never called',
+      [
+        'def rebind():',
+        '    global staticmethod',
+        '    staticmethod = lambda f: f',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      // CPython keeps the builtin; call order is not modelled (fail closed).
+      'an uncalled nonlocal rebind over an enclosing builtins import',
+      [
+        'def make():',
+        '    from builtins import staticmethod',
+        ...nonlocalRebind,
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      false,
+    ],
+    [
+      'a called nonlocal rebind over an enclosing builtins import',
+      [
+        'def make():',
+        '    from builtins import staticmethod',
+        ...nonlocalRebind,
+        '    rebind()',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      false,
+    ],
+    [
+      // CPython keeps the builtin because make() runs after the del; call
+      // order is not modelled (fail closed).
+      'a module del after a deferred class body, called afterwards',
+      [
+        'staticmethod = lambda f: f',
+        'def make():',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        '    return A',
+        'del staticmethod',
+        'make()',
       ],
       false,
     ],

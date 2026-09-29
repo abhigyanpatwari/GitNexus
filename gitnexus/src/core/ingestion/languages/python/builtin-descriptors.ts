@@ -194,8 +194,92 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
     const redirect = redirected.get(`${found.text}@${scopeOf(found)?.id}`) ?? null;
     add(found.text, { ...binding, redirect });
   }
+  addHelperCalls(tree.rootNode, bindings);
   bindingsByTree.set(tree, bindings);
   return bindings;
+}
+
+/**
+ * A bare module-level call to a same-file helper that always restores a
+ * descriptor name through `global` runs that restore at the call. Record it
+ * there as a module binding, so the call's position orders it.
+ */
+function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>): void {
+  // Helper function name -> descriptor name -> the restore its call performs.
+  const helpers = new Map<string, Map<string, BindingEffect>>();
+  for (const [name, list] of bindings) {
+    const byHelper = new Map<number, { fn: SyntaxNode; globals: NameBinding[] }>();
+    for (const binding of list) {
+      if (binding.redirect !== 'global') continue;
+      const fn = scopeOf(binding.node);
+      if (fn === null) continue;
+      const entry = byHelper.get(fn.id);
+      if (entry === undefined) byHelper.set(fn.id, { fn, globals: [binding] });
+      else entry.globals.push(binding);
+    }
+    for (const { fn, globals } of byHelper.values()) {
+      const effect = restoreOnCall(fn, globals);
+      const helper = fn.childForFieldName('name')?.text;
+      if (effect === null || helper === undefined) continue;
+      if (!helpers.has(helper)) helpers.set(helper, new Map());
+      helpers.get(helper)?.set(name, effect);
+    }
+  }
+  if (helpers.size === 0) return;
+  // A call only denotes the helper when its `def` is the name's one binding.
+  if (root.descendantsOfType('wildcard_import').length > 0) return;
+  const bindingCounts = new Map<string, number>();
+  for (const found of root.descendantsOfType('identifier')) {
+    if (!helpers.has(found.text) || bindingOf(found) === null) continue;
+    bindingCounts.set(found.text, (bindingCounts.get(found.text) ?? 0) + 1);
+  }
+  for (const [helper, count] of bindingCounts) if (count > 1) helpers.delete(helper);
+  for (const statement of root.namedChildren) {
+    // Only a call that is the whole statement surely runs when reached.
+    if (statement.type !== 'expression_statement' || statement.namedChildCount !== 1) continue;
+    const call = statement.firstNamedChild;
+    const callee = call?.type === 'call' ? call.childForFieldName('function') : null;
+    if (callee?.type !== 'identifier') continue;
+    for (const [name, effect] of helpers.get(callee.text) ?? []) {
+      const list = bindings.get(name) ?? [];
+      list.push({ node: callee, effect, redirect: null });
+      list.sort((a, b) => a.node.startIndex - b.node.startIndex);
+    }
+  }
+}
+
+/**
+ * The restore a call to `fn` always performs on a module global, or `null`.
+ * `fn` must be a plain module-level `def` whose body runs on call (not a
+ * generator or coroutine), and every `global` binding of the name in it must
+ * be a restore in a simple statement that no earlier `return` can skip.
+ */
+function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): BindingEffect | null {
+  if (fn.type !== 'function_definition' || fn.parent?.type !== 'module') return null;
+  if (fn.children.some((child) => child.type === 'async')) return null;
+  const body = fn.childForFieldName('body');
+  const [first] = globals;
+  if (body === null || first === undefined) return null;
+  let effect: BindingEffect = first.effect;
+  for (const binding of globals) {
+    const statement = statementIn(binding.node, body);
+    if (
+      binding.effect === 'shadow' ||
+      statement === null ||
+      !SIMPLE_STATEMENTS.has(statement.type)
+    ) {
+      return null;
+    }
+    effect = binding.effect;
+  }
+  const escapes = body
+    .descendantsOfType(['yield', 'return_statement'])
+    .some(
+      (node) =>
+        scopeOf(node)?.id === fn.id &&
+        (node.type === 'yield' || node.startIndex < first.node.startIndex),
+    );
+  return escapes ? null : effect;
 }
 
 /**
@@ -225,6 +309,11 @@ function statementIn(node: SyntaxNode, body: SyntaxNode): SyntaxNode | null {
   return current.parent === null ? null : current;
 }
 
+/** Does `outer` span `node`? */
+function contains(outer: SyntaxNode, node: SyntaxNode): boolean {
+  return node.startIndex >= outer.startIndex && node.endIndex <= outer.endIndex;
+}
+
 /** Can `binding` run before `use` in the same scope, including an earlier
  *  iteration of an enclosing loop? */
 function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | null): boolean {
@@ -232,8 +321,7 @@ function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | 
   for (let loop = use.parent; loop !== null && loop.id !== scope?.id; loop = loop.parent) {
     if (
       (loop.type === 'for_statement' || loop.type === 'while_statement') &&
-      binding.startIndex >= loop.startIndex &&
-      binding.endIndex <= loop.endIndex
+      contains(loop, binding)
     ) {
       return true;
     }
@@ -296,6 +384,15 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
       (binding) => binding.redirect === null && scopeOf(binding.node)?.id === fn.id,
     );
     if (!owned) continue;
+    // A nested function can rebind this cell whenever it is called; that
+    // order is not modelled, so assume it ran.
+    const rebound = bindings.some(
+      (binding) =>
+        binding.effect === 'shadow' &&
+        binding.redirect === 'nonlocal' &&
+        contains(fn, binding.node),
+    );
+    if (rebound) return 'shadow';
     // Any binding makes the name local to this function, so the class body
     // reads that cell. An unbound cell raises NameError, not the builtin.
     return namespaceState(bindings, fn, use) === 'builtin' ? 'builtin' : 'shadow';
@@ -313,16 +410,13 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
     // is called; that order is not modelled, so assume it ran.
     if (binding.redirect === 'nonlocal') {
       const outer = functions[functions.length - 1];
-      const inside =
-        outer !== undefined &&
-        binding.node.startIndex >= outer.startIndex &&
-        binding.node.endIndex <= outer.endIndex;
-      if (inside) return 'shadow';
+      if (outer !== undefined && contains(outer, binding.node)) return 'shadow';
     }
     if (binding.redirect === 'global') {
       // The function can only be called once the top-level statement that
-      // defines it has run. Whether a call happens is unknown, so a restoring
-      // `global` delete is ignored and a rebinding one is assumed.
+      // defines it has run. Whether a call happens is unknown, so a rebinding
+      // one is assumed. A restore counts only at a proven call site (see
+      // `addHelperCalls`).
       const top = statementIn(binding.node, binding.node.tree.rootNode);
       if (deferred || (top !== null && mayRunBefore(top, use, null))) return 'shadow';
     }
