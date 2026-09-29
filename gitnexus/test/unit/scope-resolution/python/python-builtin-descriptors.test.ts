@@ -23,10 +23,12 @@ const nonlocalRebind = [
   '        staticmethod = lambda f: f',
 ];
 
-// `true` means CPython's `A().t(7)` returns 7, so the decorator evaluated to
-// the builtin staticmethod. A wildcard import from a module this file cannot
-// see is expected `false` because the resolver fails closed, not because
-// CPython always shadows the builtin there.
+// `true` means the resolver proves the decorator is the builtin staticmethod,
+// and CPython's `A().t(7)` returns 7. `false` means the resolver does not
+// prove it. Usually CPython shadows the builtin there too. Where CPython keeps
+// the builtin but the resolver fails closed (an unknown wildcard module, an
+// unproven call order), the case comment says so. `true` must never hold where
+// CPython shadows, because that would be a false edge.
 describe('Python builtin descriptor identity', () => {
   it.each([
     ['a later module assignment', ['class A:', ...method, 'staticmethod = lambda f: f'], true],
