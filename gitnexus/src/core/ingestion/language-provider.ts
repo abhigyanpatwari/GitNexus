@@ -544,7 +544,8 @@ interface LanguageProviderConfig {
    * Decorators are the common case and the reason for the name, but not the only
    * shape: JS/TS uses this hook for hand-rolled dispatch guards
    * (`route-extractors/dispatch-guard.ts`), where a raw `node:http` server
-   * declares a route by comparing the request path to a literal. Anything that
+   * declares a route by comparing the request path to a literal, and Go uses it
+   * for gin/echo verb calls (`route-extractors/go-gin-echo.ts`). Anything that
    * yields a `(path, verb, handler)` triple from one file's AST belongs here —
    * set `ExtractedDecoratorRoute.source` when the provenance is not a decorator,
    * so the `HANDLES_ROUTE` edge does not claim one.
