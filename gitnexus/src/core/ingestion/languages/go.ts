@@ -27,6 +27,7 @@ import { goMethodConfig } from '../method-extractors/configs/go.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { goVariableConfig } from '../variable-extractors/configs/go.js';
 import { extractGoGinEchoRoutes } from '../route-extractors/go-gin-echo.js';
+import { resolveGoRouteHandler } from './go/route-handler.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { goCallConfig } from '../call-extractors/configs/go.js';
 import {
@@ -158,6 +159,7 @@ export const goProvider = defineLanguage({
   builtInNames: GO_BUILT_INS,
   // gin / echo verb registrations with in-function Group prefixes (#3402).
   extractDecoratorRoutes: extractGoGinEchoRoutes,
+  resolveRouteHandler: resolveGoRouteHandler,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitGoScopeCaptures,

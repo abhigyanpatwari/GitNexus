@@ -1834,9 +1834,16 @@ export async function runChunkedParseAndResolve(
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
   const routeFilePaths = new Set(allPaths);
+  // Route files whose handlers resolve through imports: data route tables, and
+  // routes of a language that resolves its own handlers (`resolveRouteHandler`).
+  // Both need the file's parsed imports and its language's resolution config.
   const dataRouteFilePaths = new Set(
     allDecoratorRoutes
-      .filter((route) => route.source === DATA_ROUTE_TABLE_SOURCE)
+      .filter(
+        (route) =>
+          route.source === DATA_ROUTE_TABLE_SOURCE ||
+          getProviderForFile(route.filePath)?.resolveRouteHandler !== undefined,
+      )
       .map((route) => route.filePath),
   );
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
@@ -1868,6 +1875,22 @@ export async function runChunkedParseAndResolve(
     if (typeof target === 'string') return target;
     return target?.length === 1 ? target[0] : null;
   };
+  const resolveRouteImportTargets = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): readonly string[] => {
+    const language = getLanguageFromFilename(fromFile);
+    if (language === null) return [];
+    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
+      parsedImport.targetRaw ?? '',
+      fromFile,
+      routeFilePaths,
+      routeResolutionConfigs.get(language),
+      { parsedFiles: routeResolutionFiles, parsedImport },
+    );
+    if (typeof target === 'string') return [target];
+    return target ?? [];
+  };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
     const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
     for (const parsed of allParsedFiles) {
@@ -1894,6 +1917,8 @@ export async function runChunkedParseAndResolve(
     {
       files: routeResolutionFiles,
       resolveImportTarget: resolveRouteImportTarget,
+      resolveImportTargets: resolveRouteImportTargets,
+      providerRouteHandler: (filePath) => getProviderForFile(filePath)?.resolveRouteHandler,
       isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
       nodeStartLine: (id) => {
         const n = graph.getNode(id);

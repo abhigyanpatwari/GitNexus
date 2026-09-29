@@ -47,6 +47,19 @@ import type {
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { SemanticModel } from './model/semantic-model.js';
+
+/** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
+export interface RouteHandlerResolutionHookContext {
+  /** The model after every file has been parsed; scope resolution has not run. */
+  readonly model: SemanticModel;
+  /**
+   * Every workspace file the import bound to `localName` in `fromFile` resolves
+   * to. `[]` when the name is not a unique import binding or the import does
+   * not resolve inside the workspace (stdlib, third-party).
+   */
+  readonly importTargetsFor: (fromFile: string, localName: string) => readonly string[];
+}
 import type { SpringNonHttpHandlerFact } from './frameworks/spring/non-http-handlers.js';
 import type { SpringMessageProducerFact } from './frameworks/spring/message-producers.js';
 
@@ -579,6 +592,24 @@ interface LanguageProviderConfig {
    * Default: undefined (no handler name from generic decorator captures).
    */
   readonly decoratorRouteHandlerName?: (decoratorNode: SyntaxNode) => string | undefined;
+
+  /**
+   * Resolve a route's `handlerName` to a symbol node id, for routes this
+   * language extracted. When defined, the routes phase asks this hook instead of
+   * looking the name up in the route's own file — for languages whose handlers
+   * routinely live elsewhere in the same module (a Go package is a directory)
+   * and whose visibility rules only the language knows.
+   *
+   * Return a node id only when exactly one definition matches; `undefined`
+   * leaves the route without `handlerSymbolId` (fail-open, never a wrong
+   * handler).
+   *
+   * Default: undefined (same-file lookup by name).
+   */
+  readonly resolveRouteHandler?: (
+    route: ExtractedDecoratorRoute,
+    context: RouteHandlerResolutionHookContext,
+  ) => string | undefined;
 
   /**
    * Collect a project-wide, language-agnostic view of route-defining

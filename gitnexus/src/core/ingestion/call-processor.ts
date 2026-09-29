@@ -22,6 +22,7 @@ import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { LanguageProvider } from './language-provider.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
   normalizeExtractedRoutePath,
@@ -48,6 +49,13 @@ interface RouteResolutionFile {
 interface RouteHandlerResolutionContext {
   readonly files: readonly RouteResolutionFile[];
   readonly resolveImportTarget: (parsedImport: ParsedImport, fromFile: string) => string | null;
+  /** Every file an import resolves to (a Go import names a whole directory). */
+  readonly resolveImportTargets?: (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ) => readonly string[];
+  /** The route file's `LanguageProvider.resolveRouteHandler`, when it defines one. */
+  readonly providerRouteHandler?: (filePath: string) => LanguageProvider['resolveRouteHandler'];
   readonly isExportedSymbol: (nodeId: string) => boolean;
   /** 0-based graph-node startLine for same-name tRPC handler disambiguation. */
   readonly nodeStartLine?: (nodeId: string) => number | undefined;
@@ -534,17 +542,32 @@ export function resolveRouteHandlerSymbols(
     dataHandlersByIdentity.set(key, state);
   }
 
+  // A language that resolves its own handlers sees only this seam: the
+  // model, and the workspace files an import local name resolves to.
+  const importTargetsFor = (fromFile: string, localName: string): readonly string[] => {
+    const parsedImport = uniqueImport(fromFile, localName);
+    if (parsedImport === undefined || routeContext?.resolveImportTargets === undefined) return [];
+    return routeContext.resolveImportTargets(parsedImport, fromFile);
+  };
+
   // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
-  // the route's own file. Data tables additionally suppress an identity when
-  // duplicate entries resolve to different handlers: recording either one
-  // would invent a single-winner dispatch that the loop does not prove.
+  // the route's own file, unless the route's language resolves its own
+  // handlers. Data tables additionally suppress an identity when duplicate
+  // entries resolve to different handlers: recording either one would invent a
+  // single-winner dispatch that the loop does not prove.
   for (const dr of decoratorRoutes) {
+    const providerHandler =
+      dr.source === DATA_ROUTE_TABLE_SOURCE
+        ? undefined
+        : routeContext?.providerRouteHandler?.(dr.filePath);
     const handlerId =
       dr.source === DATA_ROUTE_TABLE_SOURCE
         ? dataHandlerByRoute.get(dr)
-        : dr.handlerName
-          ? uniqueSymbolId(dr.filePath, dr.handlerName)
-          : undefined;
+        : providerHandler
+          ? providerHandler(dr, { model, importTargetsFor })
+          : dr.handlerName
+            ? uniqueSymbolId(dr.filePath, dr.handlerName)
+            : undefined;
     // An unproven data-table entry never becomes a Route node, so it must not
     // reserve the identity and suppress a later, valid framework declaration.
     if (dr.source === DATA_ROUTE_TABLE_SOURCE && handlerId === undefined) continue;
