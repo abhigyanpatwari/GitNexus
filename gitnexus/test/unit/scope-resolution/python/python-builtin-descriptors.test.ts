@@ -316,6 +316,33 @@ describe('Python builtin descriptor identity', () => {
       false,
     ],
     [
+      // The call raises TypeError before the helper body runs.
+      'a call missing a required helper argument',
+      [
+        'staticmethod = lambda f: f',
+        'def reset(required):',
+        '    global staticmethod',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      false,
+    ],
+    [
+      'a call to a helper whose parameters all have defaults',
+      [
+        'staticmethod = lambda f: f',
+        'def reset(flag=True, *args: int, **kw):',
+        '    global staticmethod',
+        '    del staticmethod',
+        'reset()',
+        'class A:',
+        ...method,
+      ],
+      true,
+    ],
+    [
       'a helper whose restore is conditional',
       [
         'staticmethod = lambda f: f',

@@ -246,8 +246,10 @@ function addHelperCalls(root: SyntaxNode, bindings: Map<string, NameBinding[]>):
     const call = statement.firstNamedChild;
     const callee = call?.type === 'call' ? call.childForFieldName('function') : null;
     const helper = callee?.type === 'identifier' ? helpers.get(callee.text) : undefined;
-    // The call reaches the helper only once its `def` statement has run.
+    // The call reaches the helper only once its `def` statement has run, and
+    // an argument-free call binds only when every parameter is optional.
     if (helper === undefined || statement.startIndex < helper.fn.endIndex) continue;
+    if ((call?.childForFieldName('arguments')?.namedChildCount ?? 0) > 0) continue;
     for (const [name, effect] of helper.restores) {
       const list = bindings.get(name);
       if (list === undefined) continue;
@@ -275,6 +277,14 @@ function inCasePattern(node: SyntaxNode): boolean {
 function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): BindingEffect | null {
   if (fn.type !== 'function_definition' || fn.parent?.type !== 'module') return null;
   if (fn.children.some((child) => child.type === 'async')) return null;
+  const required = fn
+    .childForFieldName('parameters')
+    ?.namedChildren.some(
+      (param) =>
+        param.type === 'identifier' ||
+        (param.type === 'typed_parameter' && param.firstNamedChild?.type === 'identifier'),
+    );
+  if (required === true) return null;
   const body = fn.childForFieldName('body');
   // `globals` is in source order, so the last restore is the one that sticks.
   const first = globals[0];
