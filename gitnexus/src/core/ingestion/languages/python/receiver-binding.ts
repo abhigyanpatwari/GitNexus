@@ -70,12 +70,10 @@ function isLocalPropertyAccessor(fnNode: SyntaxNode, expression: string): boolea
       if (child?.type === 'function_definition') candidate = child;
     }
     if (candidate?.childForFieldName('name')?.text !== methodName) return false;
-    const decorators = decoratorNames(candidate);
-    if (decorators.length !== 1) return false;
-    if (isBuiltinDescriptor(candidate, decorators[0]!, 'property')) return true;
-    if (
-      !['getter', 'setter', 'deleter'].some((kind) => decorators[0] === `${methodName}.${kind}`)
-    ) {
+    const [decorator, ...rest] = decoratorNames(candidate);
+    if (decorator === undefined || rest.length > 0) return false;
+    if (isBuiltinDescriptor(candidate, decorator, 'property')) return true;
+    if (!['getter', 'setter', 'deleter'].some((kind) => decorator === `${methodName}.${kind}`)) {
       return false;
     }
   }
@@ -97,12 +95,12 @@ export function isPythonStaticLikeMethod(fnNode: SyntaxNode): boolean {
  * uncallable: `staticmethod(classmethod(f))` yields a classmethod object.
  */
 export function hasPythonProvenCallShape(fnNode: SyntaxNode): boolean {
-  const decorators = decoratorNames(fnNode);
-  if (decorators.length === 0) return true;
+  const [decorator, ...rest] = decoratorNames(fnNode);
+  if (decorator === undefined) return true;
   return (
-    decorators.length === 1 &&
-    (isBuiltinDescriptor(fnNode, decorators[0]!, 'staticmethod') ||
-      isBuiltinDescriptor(fnNode, decorators[0]!, 'classmethod'))
+    rest.length === 0 &&
+    (isBuiltinDescriptor(fnNode, decorator, 'staticmethod') ||
+      isBuiltinDescriptor(fnNode, decorator, 'classmethod'))
   );
 }
 
@@ -230,7 +228,8 @@ export function classifyPythonUncertainReceiver(fnNode: SyntaxNode): PythonBound
   // Python applies decorators bottom-up. An outer built-in staticmethod
   // guarantees no implicit receiver even when an inner decorator is opaque.
   // The first parameter remains explicit and can keep its annotation.
-  if (decorators.length > 0 && isBuiltinDescriptor(fnNode, decorators[0]!, 'staticmethod')) {
+  const outermost = decorators[0];
+  if (outermost !== undefined && isBuiltinDescriptor(fnNode, outermost, 'staticmethod')) {
     return null;
   }
   if (decorators.every((name) => isKnownReceiverDecorator(fnNode, name))) return null;

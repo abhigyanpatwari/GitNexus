@@ -252,33 +252,35 @@ describe('Python missing-member subtype argument shapes', () => {
       requiredParameterCount: 0,
     });
     const shadowed = { ...candidate(4), nodeId: 'def:shadowed.py#4:4:Method:target' };
-    const verdict = (site: typeof positionalSite | typeof tooFewSite, target: SymbolDefinition) =>
-      pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, target);
+    const verdict = (
+      site: Parameters<typeof pythonMissingReceiverSubtypeCandidateCompatibility>[1],
+      target: SymbolDefinition,
+    ) => pythonMissingReceiverSubtypeCandidateCompatibility('caller.py', site, target);
 
-    expect([
+    expect({
       // A trailing comment is not part of the decorator expression.
-      verdict(positionalSite, candidate(4)),
-      verdict(tooFewSite, candidate(4)),
+      commentedStaticOneArg: verdict(positionalSite, candidate(4)),
+      commentedStaticNoArg: verdict(tooFewSite, candidate(4)),
       // staticmethod(classmethod(f)) yields a non-callable classmethod object.
-      verdict(positionalSite, candidate(9)),
+      stackedDescriptors: verdict(positionalSite, candidate(9)),
       // Python still passes the instance, which these signatures cannot bind.
-      verdict(tooFewSite, receiverless(12)),
-      verdict(tooFewSite, receiverless(15)),
+      receiverlessKwargs: verdict(tooFewSite, receiverless(12)),
+      receiverlessKeywordOnly: verdict(tooFewSite, receiverless(15)),
       // The module rebinds `staticmethod`, so the decorator is not the builtin.
-      verdict(positionalSite, { ...shadowed, filePath: 'shadowed.py' }),
-      verdict(positionalSite, {
+      shadowedStatic: verdict(positionalSite, { ...shadowed, filePath: 'shadowed.py' }),
+      aliasedBuiltinImport: verdict(positionalSite, {
         ...candidate(4),
         nodeId: 'def:aliased.py#4:4:Method:target',
         filePath: 'aliased.py',
       }),
-    ]).toEqual([
-      'compatible',
-      'incompatible',
-      'unknown',
-      'unknown',
-      'unknown',
-      'unknown',
-      'compatible',
-    ]);
+    }).toEqual({
+      commentedStaticOneArg: 'compatible',
+      commentedStaticNoArg: 'incompatible',
+      stackedDescriptors: 'unknown',
+      receiverlessKwargs: 'unknown',
+      receiverlessKeywordOnly: 'unknown',
+      shadowedStatic: 'unknown',
+      aliasedBuiltinImport: 'compatible',
+    });
   });
 });

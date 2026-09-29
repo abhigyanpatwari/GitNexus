@@ -11,13 +11,11 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
-export type BuiltinDescriptor = 'classmethod' | 'staticmethod' | 'property';
+const BUILTIN_DESCRIPTOR_NAMES = ['classmethod', 'staticmethod', 'property'] as const;
 
-const BUILTIN_DESCRIPTORS: ReadonlySet<string> = new Set<BuiltinDescriptor>([
-  'classmethod',
-  'staticmethod',
-  'property',
-]);
+export type BuiltinDescriptor = (typeof BUILTIN_DESCRIPTOR_NAMES)[number];
+
+const BUILTIN_DESCRIPTORS: ReadonlySet<string> = new Set(BUILTIN_DESCRIPTOR_NAMES);
 
 /** Decorator expressions, outermost first. Tree-sitter keeps a trailing
  *  comment inside the decorator node, so read the expression child only. */
@@ -278,8 +276,10 @@ function namespaceState(
  * 4.2.2): the class namespace, then module globals, then builtins.
  */
 function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingEffect {
-  const chain: (SyntaxNode | null)[] = [scopeOf(use)];
-  while (chain[chain.length - 1] !== null) chain.push(scopeOf(chain[chain.length - 1]!));
+  // Enclosing scopes, innermost first, ending with the module (`null`).
+  const chain: (SyntaxNode | null)[] = [];
+  for (let scope = scopeOf(use); scope !== null; scope = scopeOf(scope)) chain.push(scope);
+  chain.push(null);
   const functions = chain.filter((scope) => scope !== null && FUNCTION_SCOPES.has(scope.type));
   // A class body inside a function runs only when that function is called,
   // after the whole module has executed.
@@ -287,9 +287,9 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
   for (const binding of bindings) {
     // Any binding in an enclosing function makes the name local to it, so
     // the decorator reads that local instead of reaching the builtin.
-    const owner = scopeOf(binding.node);
-    if (binding.redirect === null && functions.some((scope) => scope?.id === owner?.id)) {
-      return 'shadow';
+    if (binding.redirect === null && functions.length > 0) {
+      const owner = scopeOf(binding.node);
+      if (functions.some((scope) => scope?.id === owner?.id)) return 'shadow';
     }
     // `nonlocal` needs an existing binding in an enclosing function (7.13),
     // which the check above already sees.
