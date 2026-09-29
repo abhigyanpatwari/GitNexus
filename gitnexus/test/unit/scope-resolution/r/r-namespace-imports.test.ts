@@ -27,6 +27,7 @@ import {
   rPackageDirForFile,
   rRecordedPackageTopLevelNames,
 } from '../../../../src/core/ingestion/languages/r/namespace-imports.js';
+import { compileRExportPattern } from '../../../../src/core/ingestion/languages/r/export-pattern.js';
 import { resolveRImportTarget } from '../../../../src/core/ingestion/import-resolvers/r.js';
 import { CountingSet } from '../../../helpers/counting-file-set.js';
 
@@ -598,17 +599,36 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
       expect([ask('f'), ask('hidden')]).toEqual([['R/s.R'], null]);
     });
 
-    it('characterisation: a POSIX-class exportPattern never matches in a JS RegExp, so every name is refused', () => {
-      // `exportPattern("^[[:alpha:]]+")` (the RStudio default) compiles to a RegExp that matches
-      // nothing, so the export check judges every name non-exported and the import degrades to
-      // the baseline name-guess. Existing loadRPackageConfig behaviour, not fixed here.
+    const compiled = (pattern: string): RegExp => {
+      const re = compileRExportPattern(pattern);
+      if (!re) throw new Error(`exportPattern did not compile: ${pattern}`);
+      return re;
+    };
+
+    it('resolves a name matched by a POSIX-class exportPattern (the RStudio default)', () => {
+      // `exportPattern("^[[:alpha:]]+")` used to compile to a JS RegExp that matched nothing, so
+      // every name was judged non-exported and the import degraded to the baseline name-guess.
+      // Deliberate change (#12): POSIX classes are translated by `compileRExportPattern`.
       const s = setup(
         { [F]: 'tidy_scores <- function(d) d' },
         {
-          exportPatterns: [new RegExp('^[[:alpha:]]+')],
+          exportPatterns: [compiled('^[[:alpha:]]+')],
         },
       );
-      expect(resolve(s, 'scorelib', 'tidy_scores')).toBeNull();
+      expect(resolve(s, 'scorelib', 'tidy_scores')).toEqual([F]);
+    });
+
+    it('still refuses a name the POSIX-class exportPattern does not match', () => {
+      const s = setup(
+        { [F]: 'hidden <- function(d) d' },
+        {
+          exportPatterns: [compiled('^[[:upper:]]+$')],
+        },
+      );
+      expect(resolve(s, 'scorelib', 'hidden')).toBeNull();
+      // Control: the same definition resolves when the package exports everything.
+      const t = setup({ [F]: 'hidden <- function(d) d' }, undefined);
+      expect(resolve(t, 'scorelib', 'hidden')).toEqual([F]);
     });
   });
 

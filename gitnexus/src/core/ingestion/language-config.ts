@@ -7,6 +7,7 @@ import {
   parseRNamespaceImportFrom,
   type RNamespaceImportFromEntry,
 } from './languages/r/namespace-imports.js';
+import { compileRExportPattern } from './languages/r/export-pattern.js';
 
 import { isDev } from './utils/env.js';
 import { isHardcodedIgnoredDirectoryAtPath } from '../../config/ignore-service.js';
@@ -2630,9 +2631,10 @@ export interface RNamespaceInfo {
   /** Explicit named exports from export()/exportClasses()/exportMethods()/S3method(). */
   namedExports: Set<string>;
   /** Precompiled regex patterns from exportPattern("..."), compiled once here so
-   *  `refineRExportStatus` doesn't recompile a RegExp per node it checks. Patterns
-   *  that fail to compile are dropped at this stage (invalid `exportPattern()` args
-   *  never match, same as the previous per-call `try { new RegExp(...) } catch` behavior). */
+   *  `refineRExportStatus` doesn't recompile a RegExp per node it checks. POSIX bracket
+   *  classes such as `[[:alpha:]]` are translated to JS equivalents first
+   *  (see `compileRExportPattern`). Patterns that fail to compile are dropped at this
+   *  stage (invalid `exportPattern()` args never match). */
   exportPatterns: RegExp[];
   /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
   importFrom: readonly RNamespaceImportFromEntry[];
@@ -2704,11 +2706,9 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
 
                   const exportPatternMatch = /^exportPattern\(\s*["'](.+?)["']\s*\)$/.exec(line);
                   if (exportPatternMatch) {
-                    try {
-                      exportPatterns.push(new RegExp(exportPatternMatch[1]));
-                    } catch {
-                      // Invalid regex in exportPattern() — skip it (never matches).
-                    }
+                    // POSIX classes are translated; an uncompilable pattern is skipped (never matches).
+                    const compiled = compileRExportPattern(exportPatternMatch[1]);
+                    if (compiled) exportPatterns.push(compiled);
                   }
                 }
 
