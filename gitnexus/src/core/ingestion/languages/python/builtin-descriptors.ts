@@ -108,6 +108,7 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
   }
   if (parent === null) return null;
   const shadow = { node: identifier, effect: 'shadow' as const };
+  if (inCasePattern(identifier)) return isCaseCapture(identifier) ? shadow : null;
   switch (parent.type) {
     case 'assignment':
     case 'augmented_assignment':
@@ -144,10 +145,9 @@ function bindingOf(identifier: SyntaxNode): Omit<NameBinding, 'redirect'> | null
         : null;
     case 'dotted_name': {
       const owner = parent.parent;
-      // `import a.b` binds `a`; `case name:` captures a single name.
+      // `import a.b` binds `a`.
       if (owner?.type === 'import_statement')
         return parent.firstNamedChild?.id === node.id ? shadow : null;
-      if (owner?.type === 'case_pattern') return parent.namedChildCount === 1 ? shadow : null;
       if (owner?.type !== 'import_from_statement' || !isField(parent, 'name')) return null;
       return importsFromBuiltins(owner) ? { node: identifier, effect: 'builtin' } : shadow;
     }
@@ -194,8 +194,138 @@ function descriptorBindings(node: SyntaxNode): ReadonlyMap<string, readonly Name
     const redirect = redirected.get(`${found.text}@${scopeOf(found)?.id}`) ?? null;
     add(found.text, { ...binding, redirect });
   }
+  addHelperCalls(tree.rootNode, bindings, redirected);
   bindingsByTree.set(tree, bindings);
   return bindings;
+}
+
+/**
+ * A bare module-level call to a same-file helper that always restores a
+ * descriptor name through `global` runs that restore at the call. Record it
+ * there as a module binding, so the call's position orders it.
+ */
+function addHelperCalls(
+  root: SyntaxNode,
+  bindings: Map<string, NameBinding[]>,
+  redirected: ReadonlyMap<string, 'global' | 'nonlocal'>,
+): void {
+  // Helper function name -> its `def` and, per descriptor name, the restore
+  // its call performs.
+  const helpers = new Map<string, { fn: SyntaxNode; restores: Map<string, BindingEffect> }>();
+  for (const [name, list] of bindings) {
+    const byHelper = new Map<number, { fn: SyntaxNode; globals: NameBinding[] }>();
+    for (const binding of list) {
+      if (binding.redirect !== 'global') continue;
+      const fn = scopeOf(binding.node);
+      if (fn === null) continue;
+      const entry = byHelper.get(fn.id);
+      if (entry === undefined) byHelper.set(fn.id, { fn, globals: [binding] });
+      else entry.globals.push(binding);
+    }
+    for (const { fn, globals } of byHelper.values()) {
+      const effect = restoreOnCall(fn, globals);
+      const helper = fn.childForFieldName('name')?.text;
+      if (effect === null || helper === undefined) continue;
+      const entry = helpers.get(helper) ?? { fn, restores: new Map<string, BindingEffect>() };
+      entry.restores.set(name, effect);
+      helpers.set(helper, entry);
+    }
+  }
+  if (helpers.size === 0) return;
+  // A call only denotes the helper when its `def` is the name's one module
+  // binding. A local of the same name elsewhere cannot rebind it.
+  if (root.descendantsOfType('wildcard_import').length > 0) return;
+  const bindingCounts = new Map<string, number>();
+  for (const found of root.descendantsOfType('identifier')) {
+    if (!helpers.has(found.text) || bindingOf(found) === null) continue;
+    const scope = scopeOf(found);
+    if (scope !== null && redirected.get(`${found.text}@${scope.id}`) !== 'global') continue;
+    bindingCounts.set(found.text, (bindingCounts.get(found.text) ?? 0) + 1);
+  }
+  for (const [helper, count] of bindingCounts) if (count > 1) helpers.delete(helper);
+  const touched = new Set<NameBinding[]>();
+  for (const statement of root.namedChildren) {
+    // Only a call that is the whole statement surely runs when reached.
+    if (statement.type !== 'expression_statement' || statement.namedChildCount !== 1) continue;
+    const call = statement.firstNamedChild;
+    const callee = call?.type === 'call' ? call.childForFieldName('function') : null;
+    const helper = callee?.type === 'identifier' ? helpers.get(callee.text) : undefined;
+    // The call reaches the helper only once its `def` statement has run, and
+    // an argument-free call binds only when every parameter is optional.
+    if (helper === undefined || statement.startIndex < helper.fn.endIndex) continue;
+    if ((call?.childForFieldName('arguments')?.namedChildCount ?? 0) > 0) continue;
+    for (const [name, effect] of helper.restores) {
+      const list = bindings.get(name);
+      if (list === undefined) continue;
+      list.push({ node: callee, effect, redirect: null });
+      touched.add(list);
+    }
+  }
+  for (const list of touched) list.sort((a, b) => a.node.startIndex - b.node.startIndex);
+}
+
+/**
+ * Does this name in a case pattern capture? Value patterns (`a.b`), class
+ * names and keyword keys are reads. Every other name is a capture.
+ */
+function isCaseCapture(identifier: SyntaxNode): boolean {
+  const parent = identifier.parent;
+  if (parent?.type === 'keyword_pattern') return parent.firstNamedChild?.id !== identifier.id;
+  if (parent?.type !== 'dotted_name') return true;
+  if (parent.namedChildCount > 1) return false;
+  return !(
+    parent.parent?.type === 'class_pattern' && parent.parent.firstNamedChild?.id === parent.id
+  );
+}
+
+/** Is `node` inside a `match` case pattern? */
+function inCasePattern(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'case_pattern') return true;
+  }
+  return false;
+}
+
+/**
+ * The restore a call to `fn` always performs on a module global, or `null`.
+ * `fn` must be a plain module-level `def` whose body runs on call (not a
+ * generator or coroutine), and every `global` binding of the name in it must
+ * be a restore in a simple statement that no earlier `return` can skip.
+ */
+function restoreOnCall(fn: SyntaxNode, globals: readonly NameBinding[]): BindingEffect | null {
+  if (fn.type !== 'function_definition' || fn.parent?.type !== 'module') return null;
+  if (fn.children.some((child) => child.type === 'async')) return null;
+  const required = fn
+    .childForFieldName('parameters')
+    ?.namedChildren.some(
+      (param) =>
+        param.type === 'identifier' ||
+        (param.type === 'typed_parameter' && param.firstNamedChild?.type === 'identifier'),
+    );
+  if (required === true) return null;
+  const body = fn.childForFieldName('body');
+  // `globals` is in source order, so the last restore is the one that sticks.
+  const first = globals[0];
+  const last = globals[globals.length - 1];
+  if (body === null || first === undefined || last === undefined) return null;
+  for (const binding of globals) {
+    const statement = statementIn(binding.node, body);
+    if (
+      binding.effect === 'shadow' ||
+      statement === null ||
+      !SIMPLE_STATEMENTS.has(statement.type)
+    ) {
+      return null;
+    }
+  }
+  const escapes = body
+    .descendantsOfType(['yield', 'return_statement'])
+    .some(
+      (node) =>
+        scopeOf(node)?.id === fn.id &&
+        (node.type === 'yield' || node.startIndex < first.node.startIndex),
+    );
+  return escapes ? null : last.effect;
 }
 
 /**
@@ -225,6 +355,11 @@ function statementIn(node: SyntaxNode, body: SyntaxNode): SyntaxNode | null {
   return current.parent === null ? null : current;
 }
 
+/** Does `outer` span `node`? */
+function contains(outer: SyntaxNode, node: SyntaxNode): boolean {
+  return node.startIndex >= outer.startIndex && node.endIndex <= outer.endIndex;
+}
+
 /** Can `binding` run before `use` in the same scope, including an earlier
  *  iteration of an enclosing loop? */
 function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | null): boolean {
@@ -232,8 +367,7 @@ function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | 
   for (let loop = use.parent; loop !== null && loop.id !== scope?.id; loop = loop.parent) {
     if (
       (loop.type === 'for_statement' || loop.type === 'while_statement') &&
-      binding.startIndex >= loop.startIndex &&
-      binding.endIndex <= loop.endIndex
+      contains(loop, binding)
     ) {
       return true;
     }
@@ -296,6 +430,15 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
       (binding) => binding.redirect === null && scopeOf(binding.node)?.id === fn.id,
     );
     if (!owned) continue;
+    // A nested function can rebind this cell whenever it is called; that
+    // order is not modelled, so assume it ran.
+    const rebound = bindings.some(
+      (binding) =>
+        binding.effect === 'shadow' &&
+        binding.redirect === 'nonlocal' &&
+        contains(fn, binding.node),
+    );
+    if (rebound) return 'shadow';
     // Any binding makes the name local to this function, so the class body
     // reads that cell. An unbound cell raises NameError, not the builtin.
     return namespaceState(bindings, fn, use) === 'builtin' ? 'builtin' : 'shadow';
@@ -313,16 +456,13 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
     // is called; that order is not modelled, so assume it ran.
     if (binding.redirect === 'nonlocal') {
       const outer = functions[functions.length - 1];
-      const inside =
-        outer !== undefined &&
-        binding.node.startIndex >= outer.startIndex &&
-        binding.node.endIndex <= outer.endIndex;
-      if (inside) return 'shadow';
+      if (outer !== undefined && contains(outer, binding.node)) return 'shadow';
     }
     if (binding.redirect === 'global') {
       // The function can only be called once the top-level statement that
-      // defines it has run. Whether a call happens is unknown, so a restoring
-      // `global` delete is ignored and a rebinding one is assumed.
+      // defines it has run. Whether a call happens is unknown, so a rebinding
+      // one is assumed. A restore counts only at a proven call site (see
+      // `addHelperCalls`).
       const top = statementIn(binding.node, binding.node.tree.rootNode);
       if (deferred || (top !== null && mayRunBefore(top, use, null))) return 'shadow';
     }
