@@ -2479,9 +2479,7 @@ export function emitReceiverBoundCalls(
                 if (picked === undefined) {
                   // This runtime subtype has no proven binding. Preserve
                   // partial coverage even when a sibling supplies a target.
-                  if (!incompleteInheritanceSubtypeIds.has(subtype.nodeId)) {
-                    missingMemberSubtypeIds.add(subtype.nodeId);
-                  }
+                  missingMemberSubtypeIds.add(subtype.nodeId);
                   continue;
                 }
                 subtypeTargets.set(picked.nodeId, picked);
