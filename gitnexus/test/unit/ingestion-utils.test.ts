@@ -155,6 +155,12 @@ describe('getLanguageFromFilename', () => {
     });
   });
 
+  describe('R', () => {
+    it.each(['.r', '.R'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`analysis${ext}`)).toBe(SupportedLanguages.R);
+    });
+  });
+
   describe('unsupported', () => {
     it.each(['.scala', '.lua', '.txt', '.md', '.json', '.yaml'])(
       'returns null for %s files',
