@@ -822,7 +822,14 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // `handlerReceiver` hint. Warm v123 Go worker results carry no routes.
 // v125 (#3402): Go route hints now honor lexical declarations and captured writes;
 // namespace imports retain whether their local name comes from the package clause.
-const SCHEMA_BUMP = 125;
+// v126: R scope queries now anchor a `@scope.function`
+// on every named-function assignment and named function-valued argument (the
+// same nodes the `@declaration.function`/`@declaration.method` anchors use),
+// so each def is owned by its own Function scope instead of the module/Class
+// scope. Warm ParsedFiles and durable stores hold the pre-fix scope tree, where
+// every R call is credited to the first callable in its file; both stores must
+// re-extract.
+const SCHEMA_BUMP = 126;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

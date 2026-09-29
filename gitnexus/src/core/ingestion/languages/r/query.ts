@@ -23,9 +23,25 @@
  *     graph node the legacy extractor already created.
  *
  *   - `@declaration.method` anchors on the `name = function(...)` ARGUMENT
- *     inside `public =`/`private =`/`active =`/`methods = list(...)` — a
- *     narrower range than the enclosing Class scope, so Pass 2 attaches the
- *     method as an owned def of the class scope directly (no hoist).
+ *     inside `public =`/`private =`/`active =`/`methods = list(...)`.
+ *
+ *   - A def is owned by the innermost scope whose range EQUALS its anchor
+ *     range (`scope-extractor.ts` Pass 2), and `resolveCallerGraphId` walks
+ *     from a call site up to the first scope that owns a callable def. The
+ *     blanket `(function_definition) @scope.function` is strictly narrower
+ *     than the assignment/argument anchors, so on its own it never owns a
+ *     def: every named function/method would be owned by the module or
+ *     Class scope and every call in the file would be credited to the
+ *     FIRST callable in it. So each named-callable anchor also gets a
+ *     `@scope.function` on the SAME node, placed directly beside its
+ *     `@declaration.*` pattern below (the two must stay in lockstep — a
+ *     declaration anchor without a matching scope silently reverts that
+ *     shape to first-callable attribution). The def's own binding still
+ *     hoists to the PARENT scope (anchor range == scope range), so name
+ *     lookup is unchanged. The blanket rule is kept: it still covers
+ *     anonymous functions (`lapply(x, function(z) ...)`), which own nothing.
+ *     Calls in a Class body outside any method (an R6 field default, a
+ *     `setClass(validity = function...)` body) are credited to the Class.
  *
  *   - No `@declaration.qualified_name` is emitted for `@declaration.class`
  *     — R's legacy extractor has no `classExtractor`, so a Class node's
@@ -100,6 +116,14 @@ export const R_SCOPE_QUERY = `
 (binary_operator
   lhs: (identifier) @declaration.name
   rhs: (function_definition)) @declaration.function
+
+;; Function scope on the SAME assignment node as the declaration above, so the
+;; def is owned by its own scope (and calls inside the body attribute to it).
+;; This pattern and the \`@declaration.function\` pattern above must stay in
+;; lockstep — identical structure, identical anchor node (see file header).
+(binary_operator
+  lhs: (identifier)
+  rhs: (function_definition)) @scope.function
 
 ;; ── Declarations — classes (name only; no qualified_name, see file header) ─
 
@@ -180,6 +204,18 @@ export const R_SCOPE_QUERY = `
             (argument
               name: (identifier) @declaration.name
               value: (function_definition)) @declaration.method))))))
+
+;; Function scope on the SAME \`name = function(...)\` argument node that the
+;; three \`@declaration.method\` patterns above anchor on, so each R6/R5 method
+;; def is owned by its own Function scope (a child of the Class scope) rather
+;; than by the Class scope. Deliberately generic — any named function-valued
+;; argument — so it cannot drift from the three long nesting patterns above; it
+;; is inert for non-method arguments (\`FUN = function...\`, \`error = function(e)\`
+;; own no defs, and calls inside them walk up to the enclosing callable). The
+;; declaration patterns above and this pattern must stay in lockstep.
+(argument
+  name: (identifier)
+  value: (function_definition)) @scope.function
 
 ;; ── Imports ────────────────────────────────────────────────────────────────
 

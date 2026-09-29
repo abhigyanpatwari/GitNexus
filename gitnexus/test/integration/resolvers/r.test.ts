@@ -384,7 +384,7 @@ describe('R function definitions and calls', () => {
 });
 
 /**
- * R caller attribution (R caller-attribution fix (issue TBD)).
+ * R caller attribution (R caller-attribution fix, kaybenleroll/GitNexus#5).
  *
  * Every call site's CALLS source must be the callable that lexically contains it
  * (named function, nested named function, R6/R5 method) or, when no named
@@ -392,12 +392,9 @@ describe('R function definitions and calls', () => {
  * any method (an R6 field default, an S4 `setClass(validity = function..)`
  * body) is sourced from the enclosing Class node by design.
  *
- * Step 1 of the fix lands these tests BEFORE the fix. Assertions that fail at
- * HEAD because of the misattribution are wrapped in `it.fails` (removed by the
- * fix commit); assertions that already hold at HEAD are plain `it`; each wrapped
- * case has a plain characterisation twin (the target edge exists from ANY
- * source) so a green step 1 is not merely "some throw". The step-1-only HEAD
- * pins at the end assert the defect itself and are deleted by the fix commit.
+ * These tests landed before the fix (as `it.fails`) and pass as ordinary tests
+ * with it; each attribution case has a plain characterisation twin (the target
+ * edge exists from ANY source).
  * One assertion per `it`. Process / Community / STEP_IN_PROCESS / MEMBER_OF /
  * CALLS totals are NOT asserted: they are expected to change with the fix.
  */
@@ -468,12 +465,12 @@ describe('R caller attribution', () => {
       expect(callsFrom('decoy_named', F)).toContain('leaf_a');
     });
 
-    it.fails('the decoy first function has ONLY its own edge', () => {
+    it('the decoy first function has ONLY its own edge', () => {
       expect(callsFrom('decoy_named', F)).toEqual(['leaf_a']);
     });
 
     for (const [fn, leaf] of own) {
-      it.fails(`${fn} is the sole source of ${leaf}`, () => {
+      it(`${fn} is the sole source of ${leaf}`, () => {
         expect(callsFrom(fn, F)).toEqual([leaf]);
       });
     }
@@ -484,11 +481,11 @@ describe('R caller attribution', () => {
       ).toEqual([]);
     });
 
-    it.fails('the obj$member_fn body call is sourced from the File node', () => {
+    it('the obj$member_fn body call is sourced from the File node', () => {
       expect(sourceKeys(F, 'leaf_l')).toEqual(['File:named_forms.R']);
     });
 
-    it.fails('the module-level `res <- leaf_x(1)` call is sourced from the File node', () => {
+    it('the module-level `res <- leaf_x(1)` call is sourced from the File node', () => {
       expect(sourceKeys(F, 'leaf_x')).toEqual(['File:named_forms.R']);
     });
   });
@@ -501,15 +498,15 @@ describe('R caller attribution', () => {
       expect(callsFrom('decoy_nesting', F)).toEqual(['leaf_m']);
     });
 
-    it.fails('outer calls exactly inner and its lambda / FUN= / tryCatch leaves', () => {
+    it('outer calls exactly inner and its lambda / FUN= / tryCatch leaves', () => {
       expect(callsFrom('outer', F)).toEqual(['inner', 'leaf_o', 'leaf_p', 'leaf_q', 'leaf_r']);
     });
 
-    it.fails('inner calls exactly its own leaf', () => {
+    it('inner calls exactly its own leaf', () => {
       expect(callsFrom('inner', F)).toEqual(['leaf_n']);
     });
 
-    it.fails('there is no inner -> inner self-loop', () => {
+    it('there is no inner -> inner self-loop', () => {
       expect(callsFrom('inner', F).includes('inner')).toBe(false);
     });
 
@@ -519,20 +516,20 @@ describe('R caller attribution', () => {
       ['the tryCatch expression', 'leaf_q'],
       ['the tryCatch error = function handler', 'leaf_r'],
     ]) {
-      it.fails(`${what} call to ${leaf} is sourced from outer`, () => {
+      it(`${what} call to ${leaf} is sourced from outer`, () => {
         expect(sourceKeys(F, leaf)).toEqual(['Function:outer']);
       });
     }
 
-    it.fails('level1 calls exactly level2 and leaf_u', () => {
+    it('level1 calls exactly level2 and leaf_u', () => {
       expect(callsFrom('level1', F)).toEqual(['leaf_u', 'level2']);
     });
 
-    it.fails('level2 calls exactly level3 and leaf_t', () => {
+    it('level2 calls exactly level3 and leaf_t', () => {
       expect(callsFrom('level2', F)).toEqual(['leaf_t', 'level3']);
     });
 
-    it.fails('level3 calls exactly leaf_s', () => {
+    it('level3 calls exactly leaf_s', () => {
       expect(callsFrom('level3', F)).toEqual(['leaf_s']);
     });
 
@@ -575,7 +572,7 @@ describe('R caller attribution', () => {
     });
 
     for (const [method, targets] of perMethod) {
-      it.fails(`${method} calls exactly ${targets.join(', ')}`, () => {
+      it(`${method} calls exactly ${targets.join(', ')}`, () => {
         expect(callsFrom(method, F)).toEqual(targets);
       });
     }
@@ -602,11 +599,11 @@ describe('R caller attribution', () => {
       expect(sourceKeys(F, 'peer').map((k) => k.split(':')[0])).toEqual(['Method']);
     });
 
-    it.fails('self$peer() is sourced from the method containing it, not the first method', () => {
+    it('self$peer() is sourced from the method containing it, not the first method', () => {
       expect(sourceKeys(F, 'peer')).toEqual(['Method:relay']);
     });
 
-    it.fails('the public field default `cache = leaf_w()` is sourced from the Class node', () => {
+    it('the public field default `cache = leaf_w()` is sourced from the Class node', () => {
       expect(sourceKeys(F, 'leaf_w')).toEqual(['Class:Widget']);
     });
   });
@@ -615,11 +612,11 @@ describe('R caller attribution', () => {
   describe('s4.R', () => {
     const F = 'R/s4.R';
 
-    it.fails('the decoy first function has ONLY its own edge (S4 negative)', () => {
+    it('the decoy first function has ONLY its own edge (S4 negative)', () => {
       expect(callsFrom('decoy_s4', F)).toEqual(['leaf_ag']);
     });
 
-    it.fails('the setMethod body call is not sourced from a named function', () => {
+    it('the setMethod body call is not sourced from a named function', () => {
       // Negative only: the File-source outcome is a documented limitation, not locked.
       expect(sourceKeys(F, 'leaf_ah').filter((k) => !k.startsWith('File:'))).toEqual([]);
     });
@@ -672,25 +669,5 @@ describe('R caller attribution', () => {
         expect(countRels(type)).toBe(count);
       });
     }
-  });
-
-  // ─── Step-1-only HEAD pins (delete in the fix commit) ─────────────────────
-  // These assert the DEFECT, so a green step 1 is positive proof of the bug.
-  describe('step-1-only HEAD pins (delete in the fix commit)', () => {
-    it('HEAD pin: the first function of named_forms.R is credited with a foreign leaf', () => {
-      expect(callsFrom('decoy_named', 'R/named_forms.R')).toContain('leaf_b');
-    });
-
-    it('HEAD pin: inner has a false inner -> inner self-loop', () => {
-      expect(callsFrom('inner', 'R/nesting.R')).toContain('inner');
-    });
-
-    it('HEAD pin: the R6 field-default call is credited to the first method', () => {
-      expect(sourceKeys('R/r6_methods.R', 'leaf_w')).toEqual(['Method:first']);
-    });
-
-    it('HEAD pin: the first function of s4.R is credited with the setMethod body call', () => {
-      expect(sourceKeys('R/s4.R', 'leaf_ah')).toEqual(['Function:decoy_s4']);
-    });
   });
 });
