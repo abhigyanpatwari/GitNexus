@@ -242,28 +242,28 @@ function mayRunBefore(binding: SyntaxNode, use: SyntaxNode, scope: SyntaxNode | 
 }
 
 /**
- * What a module or class namespace holds for the name when execution reaches
- * `use`. A `shadow` that may have run wins. A restoring effect (`builtin`,
- * `unbind`) counts only when it is a simple statement directly in the scope
- * body that runs before `use`, so it runs exactly once in order.
+ * What a module, class or function namespace holds for the name when
+ * execution reaches `use`. A `shadow` that may have run wins. A restoring
+ * effect (`builtin`, `unbind`) counts only when it is a simple statement
+ * directly in the scope body that runs before `use`, so it runs exactly once
+ * in order.
  */
 function namespaceState(
   bindings: readonly NameBinding[],
   scope: SyntaxNode | null,
-  use: SyntaxNode | null,
+  use: SyntaxNode,
 ): BindingEffect {
   const body = scope === null ? null : scope.childForFieldName('body');
   let state: BindingEffect = 'unbind';
   for (const binding of bindings) {
     if (binding.redirect !== null || scopeOf(binding.node)?.id !== scope?.id) continue;
-    if (use !== null && !mayRunBefore(binding.node, use, scope)) continue;
+    if (!mayRunBefore(binding.node, use, scope)) continue;
     if (binding.effect === 'shadow') {
       state = 'shadow';
       continue;
     }
-    if (state === 'shadow' && use === null) continue;
     const statement = statementIn(binding.node, body ?? binding.node.tree.rootNode);
-    const ordered = use === null || binding.node.startIndex < use.startIndex;
+    const ordered = binding.node.startIndex < use.startIndex;
     if (ordered && statement !== null && SIMPLE_STATEMENTS.has(statement.type)) {
       state = binding.effect;
     }
@@ -272,28 +272,53 @@ function namespaceState(
 }
 
 /**
- * Resolve the decorator name at `use` as LOAD_NAME does (Language Reference
- * 4.2.2): the class namespace, then module globals, then builtins.
+ * Resolve the decorator name at `use` as a class body does (Language
+ * Reference 4.2.2): the class namespace first, then the innermost enclosing
+ * function that binds the name, then module globals, then builtins.
  */
 function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingEffect {
   // Enclosing scopes, innermost first, ending with the module (`null`).
   const chain: (SyntaxNode | null)[] = [];
   for (let scope = scopeOf(use); scope !== null; scope = scopeOf(scope)) chain.push(scope);
   chain.push(null);
-  const functions = chain.filter((scope) => scope !== null && FUNCTION_SCOPES.has(scope.type));
-  // A class body inside a function runs only when that function is called,
-  // after the whole module has executed.
+
+  const classScope = chain[0]?.type === 'class_definition' ? chain[0] : null;
+  if (classScope !== null) {
+    const state = namespaceState(bindings, classScope, use);
+    if (state !== 'unbind') return state;
+  }
+
+  const functions = chain.filter(
+    (scope): scope is SyntaxNode => scope !== null && FUNCTION_SCOPES.has(scope.type),
+  );
+  for (const fn of functions) {
+    const owned = bindings.some(
+      (binding) => binding.redirect === null && scopeOf(binding.node)?.id === fn.id,
+    );
+    if (!owned) continue;
+    // Any binding makes the name local to this function, so the class body
+    // reads that cell. An unbound cell raises NameError, not the builtin.
+    return namespaceState(bindings, fn, use) === 'builtin' ? 'builtin' : 'shadow';
+  }
+
+  // A class body inside a function runs whenever that function is called,
+  // which can be any time after its top-level statement starts. Module state
+  // is therefore read at that statement, and any later module override may
+  // also have run first.
   const deferred = functions.length > 0;
+  const moduleUse = deferred ? (statementIn(use, use.tree.rootNode) ?? use) : use;
   for (const binding of bindings) {
-    // Any binding in an enclosing function makes the name local to it, so
-    // the decorator reads that local instead of reaching the builtin.
-    if (binding.redirect === null && functions.length > 0) {
-      const owner = scopeOf(binding.node);
-      if (functions.some((scope) => scope?.id === owner?.id)) return 'shadow';
-    }
-    // `nonlocal` needs an existing binding in an enclosing function (7.13),
-    // which the check above already sees.
     if (binding.effect !== 'shadow') continue;
+    // A nested function can rebind an enclosing function's cell whenever it
+    // is called; that order is not modelled, so assume it ran.
+    if (binding.redirect === 'nonlocal') {
+      const outer = functions[functions.length - 1];
+      const inside =
+        outer !== undefined &&
+        binding.node.startIndex >= outer.startIndex &&
+        binding.node.endIndex <= outer.endIndex;
+      if (inside) return 'shadow';
+    }
     if (binding.redirect === 'global') {
       // The function can only be called once the top-level statement that
       // defines it has run. Whether a call happens is unknown, so a restoring
@@ -302,10 +327,15 @@ function lookupName(bindings: readonly NameBinding[], use: SyntaxNode): BindingE
       if (deferred || (top !== null && mayRunBefore(top, use, null))) return 'shadow';
     }
   }
-  const classScope = chain[0]?.type === 'class_definition' ? chain[0] : null;
-  if (classScope !== null) {
-    const state = namespaceState(bindings, classScope, use);
-    if (state !== 'unbind') return state;
+  if (deferred) {
+    const laterOverride = bindings.some(
+      (binding) =>
+        binding.effect === 'shadow' &&
+        binding.redirect === null &&
+        scopeOf(binding.node) === null &&
+        binding.node.startIndex > moduleUse.startIndex,
+    );
+    if (laterOverride) return 'shadow';
   }
-  return namespaceState(bindings, null, deferred ? null : use);
+  return namespaceState(bindings, null, moduleUse);
 }

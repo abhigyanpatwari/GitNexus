@@ -162,6 +162,85 @@ describe('Python builtin descriptor identity', () => {
       ],
       false,
     ],
+    [
+      // Each class statement builds a fresh namespace, so the decorator runs
+      // before that iteration's own class-body assignment.
+      'a later class-body assignment inside a loop',
+      [
+        'for i in range(2):',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        '        staticmethod = 1',
+      ],
+      true,
+    ],
+    [
+      'a builtins import in the enclosing function',
+      [
+        'def make():',
+        '    from builtins import staticmethod',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        '    staticmethod = 1',
+      ],
+      true,
+    ],
+    [
+      'an enclosing-function local assigned before the class',
+      [
+        'def make():',
+        '    staticmethod = 1',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      false,
+    ],
+    [
+      'an enclosing-function local assigned only after the class',
+      [
+        'def make():',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        '    staticmethod = 1',
+      ],
+      false,
+    ],
+    [
+      'a nonlocal rebind in a nested function',
+      [
+        'def make():',
+        '    staticmethod = 1',
+        '    def rebind():',
+        '        nonlocal staticmethod',
+        '        staticmethod = 2',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      false,
+    ],
+    [
+      'a module del before a deferred class body',
+      [
+        'staticmethod = lambda f: f',
+        'del staticmethod',
+        'def make():',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+      ],
+      true,
+    ],
+    [
+      // make() may run while the override is still bound.
+      'a module del after a deferred class body',
+      [
+        'staticmethod = lambda f: f',
+        'def make():',
+        '    class A:',
+        ...method.map((line) => `    ${line}`),
+        'del staticmethod',
+      ],
+      false,
+    ],
   ])('with %s', (_case, lines, builtin) => {
     expect(decoratesWithBuiltin(lines.join('\n'))).toBe(builtin);
   });
