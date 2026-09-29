@@ -16,8 +16,11 @@
  * {@link parseRNamespaceExports} (`export`, `exportClasses`, `exportMethods`,
  * `S3method`, `exportPattern`). `useDynLib` and anything under an
  * `if (…)` / `else` conditional are ignored. Unbalanced or garbled input never
- * throws: scanning stops at the offending directive and everything parsed
- * before it is kept.
+ * throws: a malformed directive is discarded and scanning RESYNCHRONISES at the
+ * next line that begins, at column 0, with `identifier(` (see
+ * {@link resyncAfterMalformed}); everything parsed before and after is kept.
+ * Quoted strings never span lines, and a column-0 `identifier(` line ends any
+ * argument list still open, so a broken directive cannot swallow those after it.
  *
  * Runtime import direction is `language-config.ts` → this file; any type from
  * `language-config.ts` must be taken with `import type` only, so no runtime
@@ -65,15 +68,19 @@ const isQuote = (ch: string): boolean => ch === '"' || ch === "'" || ch === '`';
 /**
  * Advance past a quoted region starting at `start` (which holds the opening
  * quote). Returns the index just after the closing quote, or `-1` when the
- * quote never closes. Backslash escapes the next character (R string rules;
- * harmless inside backticks).
+ * quote does not close on the same line. Backslash escapes the next character
+ * (R string rules; harmless inside backticks). Quotes never span lines: a
+ * NAMESPACE directive argument is a one-line token, and letting a stray quote
+ * run on would pair with a later one and swallow the directives between them.
  */
 function skipQuoted(text: string, start: number): number {
   const quote = text[start];
   for (let i = start + 1; i < text.length; i++) {
     const ch = text[i];
+    if (ch === '\n') return -1;
     if (ch === '\\') {
       i++;
+      if (text[i] === '\n') return -1;
       continue;
     }
     if (ch === quote) return i + 1;
@@ -86,17 +93,47 @@ function skipLineComment(text: string, start: number): number {
   return nl === -1 ? text.length : nl + 1;
 }
 
+/** A directive-looking line start: `identifier(` (no leading whitespace, no space before `(`). */
+const DIRECTIVE_LINE_START = /[A-Za-z_.][A-Za-z0-9_.]*\(/y;
+
+/** True when `i` is the start of a line (column 0) that begins with `identifier(`. */
+function isDirectiveLineStart(text: string, i: number): boolean {
+  if (i > 0 && text[i - 1] !== '\n') return false;
+  DIRECTIVE_LINE_START.lastIndex = i;
+  return DIRECTIVE_LINE_START.test(text);
+}
+
+/**
+ * Resynchronisation point after a malformed directive that began at `from`: the
+ * start of the first line AFTER the line containing `from` that begins, at
+ * column 0, with `identifier(`; `text.length` when there is none. The result
+ * is always greater than `from` (or the end of text), so callers make forward
+ * progress and each failure costs at most one pass over the text it skips.
+ */
+function resyncAfterMalformed(text: string, from: number): number {
+  let nl = text.indexOf('\n', from);
+  while (nl !== -1) {
+    const lineStart = nl + 1;
+    if (isDirectiveLineStart(text, lineStart)) return lineStart;
+    nl = text.indexOf('\n', lineStart);
+  }
+  return text.length;
+}
+
 /**
  * Parse a balanced `( … )` group whose opening paren is at `openIdx`. Returns
  * the comma-separated top-level arguments (raw, comment-stripped, unquoted only
  * at the outer layer) and the index just after the closing paren, or `null`
- * when the group is unbalanced.
+ * when the group is unbalanced, holds an unterminated quote, or is still open
+ * when a line starting `identifier(` at column 0 begins (which bounds the scan,
+ * so an unbalanced group cannot run to the end of the file).
  */
 function parseArgs(text: string, openIdx: number): { args: string[]; end: number } | null {
   const args: string[] = [];
   let current = '';
   let depth = 0;
   for (let i = openIdx; i < text.length;) {
+    if (i > openIdx && isDirectiveLineStart(text, i)) return null;
     const ch = text[i];
     if (ch === '#') {
       i = skipLineComment(text, i);
@@ -166,6 +203,7 @@ function skipConditionalBody(text: string, from: number): number {
   while (i < text.length && /\s/.test(text[i])) i++;
   if (i >= text.length) return i;
   if (text[i] === '{') {
+    const blockStart = i;
     let depth = 0;
     for (; i < text.length;) {
       const ch = text[i];
@@ -175,7 +213,7 @@ function skipConditionalBody(text: string, from: number): number {
       }
       if (isQuote(ch)) {
         const end = skipQuoted(text, i);
-        if (end === -1) return text.length;
+        if (end === -1) return resyncAfterMalformed(text, blockStart);
         i = end;
         continue;
       }
@@ -186,7 +224,7 @@ function skipConditionalBody(text: string, from: number): number {
       }
       i++;
     }
-    return text.length;
+    return resyncAfterMalformed(text, blockStart); // unterminated `{ … }`
   }
   if (isIdentStart(text[i])) {
     let j = i + 1;
@@ -196,7 +234,7 @@ function skipConditionalBody(text: string, from: number): number {
     while (j < text.length && /\s/.test(text[j])) j++;
     if (text[j] === '(') {
       const group = parseArgs(text, j);
-      return group ? group.end : text.length;
+      return group ? group.end : resyncAfterMalformed(text, i);
     }
     return j;
   }
@@ -213,7 +251,11 @@ interface RawDirective {
  * Tokenise NAMESPACE text into the top-level directives whose head is in
  * `heads`, in file order. Conditional (`if` / `else`) bodies are skipped, and
  * directives nested inside another directive's arguments are never emitted.
- * Never throws; stops at the first unbalanced group, keeping what came before.
+ * Never throws. A malformed directive (unbalanced group, unterminated quote,
+ * unterminated `{` block) is discarded and scanning resumes at the next line
+ * starting `identifier(` at column 0 ({@link resyncAfterMalformed}); everything
+ * before and after is kept. Directives indented after a malformed one are
+ * dropped with it.
  */
 function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): RawDirective[] {
   const directives: RawDirective[] = [];
@@ -226,7 +268,10 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     }
     if (isQuote(ch)) {
       const end = skipQuoted(text, i);
-      if (end === -1) break;
+      if (end === -1) {
+        i = resyncAfterMalformed(text, i); // stray unterminated quote
+        continue;
+      }
       i = end;
       continue;
     }
@@ -252,7 +297,10 @@ function scanRNamespaceDirectives(text: string, heads: ReadonlySet<string>): Raw
     }
 
     const group = parseArgs(text, k);
-    if (!group) break; // Unbalanced: the rest of the file cannot be tokenised reliably.
+    if (!group) {
+      i = resyncAfterMalformed(text, i); // discard this directive, resume at the next one
+      continue;
+    }
     i = group.end;
 
     if (CONDITIONAL_HEADS.has(head)) {

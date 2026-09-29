@@ -178,6 +178,106 @@ describe('parseRNamespaceImportFrom', () => {
     ]);
   });
 
+  // Resynchronisation rule (fork #8 follow-up): a garbled or unbalanced directive
+  // is discarded and scanning resumes at the next line that begins at column 0
+  // with `identifier(`. Quoted strings never span lines, and a column-0
+  // `identifier(` line ends any directive still open, so a broken directive
+  // cannot swallow the ones after it.
+  describe('resynchronises after a malformed directive', () => {
+    it('keeps valid directives on both sides of an unbalanced paren', () => {
+      expect(
+        parseRNamespaceImportFrom('importFrom(a, x)\nimportFrom(b, y\nimportFrom(c, z)\n'),
+      ).toEqual([
+        { pkg: 'a', name: 'x' },
+        { pkg: 'c', name: 'z' },
+      ]);
+    });
+
+    it('keeps directives after an unterminated quote instead of swallowing them', () => {
+      const src = 'importFrom(a, x)\nimportFrom(b, "y)\nimportFrom(c, "z")\nimportFrom(d, w)\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([
+        { pkg: 'a', name: 'x' },
+        { pkg: 'c', name: 'z' },
+        { pkg: 'd', name: 'w' },
+      ]);
+    });
+
+    it('keeps directives after stray characters and a stray unterminated top-level quote', () => {
+      const src = 'importFrom(a, x)\n@@ !! importFrom(b\n"stray\nimportFrom(c, z)\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([
+        { pkg: 'a', name: 'x' },
+        { pkg: 'c', name: 'z' },
+      ]);
+    });
+
+    it('drops a garbled directive at the end of the file and keeps the rest', () => {
+      expect(parseRNamespaceImportFrom('importFrom(a, x)\nimportFrom(b, "y\n')).toEqual([
+        { pkg: 'a', name: 'x' },
+      ]);
+    });
+
+    it('drops a garbled first directive and keeps everything after it', () => {
+      expect(parseRNamespaceImportFrom('importFrom(a, "x\nimportFrom(b, y)\n')).toEqual([
+        { pkg: 'b', name: 'y' },
+      ]);
+    });
+
+    it('survives several garbled directives interleaved with valid ones', () => {
+      const src = [
+        'importFrom(a, "x',
+        'importFrom(b, y)',
+        'importFrom(c, z',
+        'importFrom(d, "w)',
+        'importFrom(e, v)',
+        'importFrom(',
+        'importFrom(f, u)',
+      ].join('\n');
+      expect(parseRNamespaceImportFrom(src)).toEqual([
+        { pkg: 'b', name: 'y' },
+        { pkg: 'e', name: 'v' },
+        { pkg: 'f', name: 'u' },
+      ]);
+    });
+
+    it('resynchronises on CRLF input', () => {
+      const src = 'importFrom(a, x)\r\nimportFrom(b, "y)\r\nimportFrom(c, z)\r\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([
+        { pkg: 'a', name: 'x' },
+        { pkg: 'c', name: 'z' },
+      ]);
+    });
+
+    it('ignores garbage inside comments and ends an open directive at a commented line boundary', () => {
+      const src = [
+        '# importFrom(x, "unterminated',
+        'importFrom(a, y, # trailing (note',
+        'importFrom(b, z)',
+      ].join('\n');
+      expect(parseRNamespaceImportFrom(src)).toEqual([{ pkg: 'b', name: 'z' }]);
+    });
+
+    it('resumes only at column 0: an indented directive after a garbled one is dropped', () => {
+      const src = 'importFrom(a, x\n  importFrom(b, y)\nimportFrom(c, z)\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([{ pkg: 'c', name: 'z' }]);
+    });
+
+    it('resynchronises after a garbled conditional body', () => {
+      const src = 'if (TRUE) importFrom(a, y\nimportFrom(b, z)\nif (x) {\nimportFrom(c, w)\n';
+      expect(parseRNamespaceImportFrom(src)).toEqual([
+        { pkg: 'b', name: 'z' },
+        { pkg: 'c', name: 'w' },
+      ]);
+    });
+
+    it('always makes forward progress on many garbled lines and still finds the tail', () => {
+      const garbled = Array.from({ length: 3000 }, () => 'importFrom(a, "x').join('\n');
+      const unbalanced = Array.from({ length: 3000 }, () => 'importFrom(a, x').join('\n');
+      const tail = '\nimportFrom(z, last)\n';
+      expect(parseRNamespaceImportFrom(garbled + tail)).toEqual([{ pkg: 'z', name: 'last' }]);
+      expect(parseRNamespaceImportFrom(unbalanced + tail)).toEqual([{ pkg: 'z', name: 'last' }]);
+    });
+  });
+
   it('skips a stray quoted string at top level without misreading its contents', () => {
     expect(parseRNamespaceImportFrom('"importFrom(a, b)"\nimportFrom(c, d)')).toEqual([
       { pkg: 'c', name: 'd' },

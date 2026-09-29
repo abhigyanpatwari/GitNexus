@@ -214,6 +214,60 @@ describe('loadRPackageConfig -> RNamespaceInfo exports (fork #8)', () => {
       expect(names).toEqual(['a']);
     });
 
+    // Resynchronisation rule: a garbled or unbalanced directive is discarded and
+    // scanning resumes at the next line that begins at column 0 with
+    // `identifier(`. Quoted strings never span lines.
+    describe('resynchronises after a malformed directive', () => {
+      it('keeps valid directives on both sides of an unbalanced paren', async () => {
+        const { names } = await load('export(a)\nexport(b, c\nexport(d)\nS3method(print, e)\n');
+        expect(names).toEqual(['a', 'd', 'print.e']);
+      });
+
+      it('keeps directives after an unterminated quote instead of swallowing them', async () => {
+        const { names, patterns } = await load(
+          'export(a)\nexport(b, "c)\nexport("d")\nexportPattern("^p_")\nexportClasses(E)\n',
+        );
+        expect(names).toEqual(['E', 'a', 'd']);
+        expect(patterns.map((p) => p.source)).toEqual(['^p_']);
+      });
+
+      it('recovers from a garbled exportPattern, S3method and stray characters', async () => {
+        const { names, patterns } = await load(
+          'export(a)\nexportPattern("^broken\n@@ ;; S3method(x\nS3method(print, ok)\nexportPattern("^good")\n',
+        );
+        expect(names).toEqual(['a', 'print.ok']);
+        expect(patterns.map((p) => p.source)).toEqual(['^good']);
+      });
+
+      it('drops a garbled directive at the end of file and a garbled first directive', async () => {
+        expect((await load('export(a)\nexport(b, "c\n')).names).toEqual(['a']);
+        expect((await load('export(a, "b\nexport(c)\n')).names).toEqual(['c']);
+      });
+
+      it('survives several garbled directives, CRLF and comments', async () => {
+        const src = [
+          '# export(hidden, "never',
+          'export(a',
+          'export(b)',
+          'export(c, "d)',
+          'exportMethods(m)',
+          'export(',
+          'export(f)',
+        ].join('\r\n');
+        expect((await load(src)).names).toEqual(['b', 'f', 'm']);
+      });
+
+      it('resumes only at column 0 and recovers after a garbled conditional body', async () => {
+        expect((await load('export(a\n  export(b)\nexport(c)\n')).names).toEqual(['c']);
+        expect((await load('if (TRUE) export(a\nexport(b)\n')).names).toEqual(['b']);
+      });
+
+      it('always makes forward progress on many garbled lines and still finds the tail', async () => {
+        const garbled = Array.from({ length: 3000 }, () => 'export(a, "x').join('\n');
+        expect((await load(garbled + '\nexport(last)\n')).names).toEqual(['last']);
+      });
+    });
+
     it('never throws on garbage input', async () => {
       for (const src of ['', ')))((( ,,, """ \'\'\' ```', 'export(', 'S3method(', '{ { {']) {
         await expect(load(src)).resolves.toEqual({ names: [], patterns: [] });
