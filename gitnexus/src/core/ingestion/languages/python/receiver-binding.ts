@@ -12,6 +12,7 @@
 
 import type { CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { decoratorNames, isBuiltinDescriptor } from './builtin-descriptors.js';
 
 /** Walk up to the enclosing `class_definition`, ignoring the immediate
  *  `decorated_definition` wrapper. Returns `null` when the function is
@@ -28,86 +29,6 @@ function findEnclosingClassDefinition(node: SyntaxNode): SyntaxNode | null {
 
 function classDefinitionName(classNode: SyntaxNode): string | null {
   return classNode.childForFieldName('name')?.text ?? null;
-}
-
-/** Decorator expressions, outermost first. Tree-sitter keeps a trailing
- *  comment inside the decorator node, so read the expression child only. */
-function decoratorNames(fnNode: SyntaxNode): string[] {
-  const parent = fnNode.parent;
-  if (parent === null || parent.type !== 'decorated_definition') return [];
-  const names: string[] = [];
-  for (const child of parent.namedChildren) {
-    if (child.type !== 'decorator') continue;
-    // An empty name matches nothing, so a malformed decorator stays unknown.
-    names.push(child.namedChildren.find((part) => part.type !== 'comment')?.text ?? '');
-  }
-  return names;
-}
-
-type BuiltinDescriptor = 'classmethod' | 'staticmethod' | 'property';
-
-// Only bare spellings: aliases, dotted tails and decorator calls have no known
-// descriptor contract without import resolution.
-const BUILTIN_DESCRIPTORS: ReadonlySet<string> = new Set<BuiltinDescriptor>([
-  'classmethod',
-  'staticmethod',
-  'property',
-]);
-
-const shadowedDescriptorsByTree = new WeakMap<object, ReadonlySet<string>>();
-
-/** Is `node` the `field` child of its parent? */
-function isField(node: SyntaxNode, field: string): boolean {
-  return node.parent?.childForFieldName(field)?.id === node.id;
-}
-
-/**
- * Name uses that cannot bind the identifier in this scope: a decorator
- * expression, an attribute member, a keyword-argument name, a `from M import`
- * module path, and the source of `import X as Y` (which binds only `Y`).
- */
-function isNonBindingNameUse(identifier: SyntaxNode): boolean {
-  const parent = identifier.parent;
-  if (parent === null) return false;
-  if (parent.type === 'decorator') return true;
-  if (parent.type === 'attribute') return isField(identifier, 'attribute');
-  if (parent.type === 'keyword_argument') return isField(identifier, 'name');
-  if (parent.type !== 'dotted_name') return false;
-  const owner = parent.parent?.type;
-  return (
-    (owner === 'import_from_statement' && isField(parent, 'module_name')) ||
-    (owner === 'aliased_import' && isField(parent, 'name'))
-  );
-}
-
-/**
- * Builtin descriptor names that the file may rebind. A decorator name resolves
- * through class, module and builtin scopes, so any binding shadows the builtin.
- * ponytail: every other identifier use counts, including plain reads such as
- * `staticmethod(f)`. That over-approximation fails closed; add full
- * binding-position analysis if it costs real recall.
- */
-function shadowedDescriptors(node: SyntaxNode): ReadonlySet<string> {
-  const tree = node.tree;
-  const cached = shadowedDescriptorsByTree.get(tree);
-  if (cached !== undefined) return cached;
-  const shadowed = new Set<string>();
-  for (const identifier of tree.rootNode.descendantsOfType('identifier')) {
-    if (!BUILTIN_DESCRIPTORS.has(identifier.text) || isNonBindingNameUse(identifier)) continue;
-    shadowed.add(identifier.text);
-  }
-  shadowedDescriptorsByTree.set(tree, shadowed);
-  return shadowed;
-}
-
-/** Does `expression` denote a builtin descriptor type (or `kind`) here? */
-function isBuiltinDescriptor(
-  fnNode: SyntaxNode,
-  expression: string,
-  kind?: BuiltinDescriptor,
-): boolean {
-  if (kind === undefined ? !BUILTIN_DESCRIPTORS.has(expression) : expression !== kind) return false;
-  return !shadowedDescriptors(fnNode).has(expression);
 }
 
 /** Accept a local `@property` accessor chain, skipping only plain unrelated
