@@ -16,6 +16,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { runPipelineFromRepo, writeFixtureRepo } from './resolvers/helpers.js';
+import { rProvider } from '../../src/core/ingestion/languages/r.js';
 
 const MANIFEST = /[\\/](DESCRIPTION|NAMESPACE)$/;
 
@@ -59,6 +60,19 @@ describe('R post-parse gating', () => {
 
     expect(manifestReads(readFile)).toEqual([]);
   }, 60000);
+
+  it('rProvider.postParse is never invoked for a non-R repo and once for an R repo', async () => {
+    const postParse = vi.spyOn(rProvider, 'postParse');
+
+    await runPipelineFromRepo(
+      makeRepo({ 'src/main.py': 'def main():\n    return 1\n', ...DECOYS }),
+      () => {},
+    );
+    expect(postParse).toHaveBeenCalledTimes(0);
+
+    await runPipelineFromRepo(makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS }), () => {});
+    expect(postParse).toHaveBeenCalledTimes(1);
+  }, 120000);
 
   it('control: an R repo with the same layout reads the root DESCRIPTION (the spy sees the loader)', async () => {
     const root = makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS });
