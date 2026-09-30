@@ -138,7 +138,7 @@ function parseArgs(text: string, openIdx: number): { args: string[]; end: number
   const args: string[] = [];
   let current = '';
   let depth = 0;
-  for (let i = openIdx; i < text.length;) {
+  for (let i = openIdx; i < text.length; ) {
     if (i > openIdx && isDirectiveLineStart(text, i)) return null;
     const ch = text[i];
     if (ch === '#') {
@@ -211,7 +211,7 @@ function skipConditionalBody(text: string, from: number): number {
   if (text[i] === '{') {
     const blockStart = i;
     let depth = 0;
-    for (; i < text.length;) {
+    for (; i < text.length; ) {
       const ch = text[i];
       if (ch === '#') {
         i = skipLineComment(text, i);
