@@ -13,7 +13,7 @@ bt_user <- function(df) {
   df |> `my fn`() |> stage_two(1)
 }
 
-# Same name defined in both other packages (fork #7).
+# Same name defined in both other packages.
 ns_amb2_user <- function(df) {
   df |> pkgother::amb_only() |> pkgthird::amb_only()
 }

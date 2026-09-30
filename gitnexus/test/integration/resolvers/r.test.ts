@@ -384,7 +384,7 @@ describe('R function definitions and calls', () => {
 });
 
 /**
- * R caller attribution (R caller-attribution fix, kaybenleroll/GitNexus#5).
+ * R caller attribution (each call is credited to the callable that lexically contains it).
  *
  * Every call site's CALLS source must be the callable that lexically contains it
  * (named function, nested named function, R6/R5 method) or, when no named
@@ -680,8 +680,8 @@ describe('R caller attribution', () => {
  * The fixture is synthetic (`r-native-pipes/`, three packages); one function per
  * scenario so each assertion is an exact `source -> targets` set.
  * magrittr `%>%` is deliberately NOT covered (no support claimed either way).
- * The `pkg::fn` stages are bound by their qualifier (fork #7); three tests were flipped
- * from the pre-#7 name-only results.
+ * The `pkg::fn` stages are bound by their qualifier; three tests were flipped
+ * from the earlier name-only results.
  */
 describe('R native pipe chains', () => {
   let result: PipelineResult;
@@ -842,7 +842,7 @@ describe('R native pipe chains', () => {
       );
     });
 
-    it('resolves it precisely from the qualifier: pkgother defines ext_fn once (fork #7 flip; was global-name-fallback:0.5)', () => {
+    it('resolves it precisely from the qualifier: pkgother defines ext_fn once (qualifier flip; was global-name-fallback:0.5)', () => {
       expect(
         callEdges('ns_user', A)
           .filter((e) => e.target === 'ext_fn')
@@ -852,7 +852,7 @@ describe('R native pipe chains', () => {
   });
 
   describe('namespaced stage whose name is also defined in the calling file', () => {
-    it('binds the qualified stage to the named package, not the local definition (fork #7 flip)', () => {
+    it('binds the qualified stage to the named package, not the local definition (qualifier flip)', () => {
       // `pkgother::amb_stage()` is qualified: the edge goes to pkgother's definition, not to the
       // same-named definition in the calling file (was a false 0.85 local-call self-file edge).
       expect(
@@ -862,7 +862,7 @@ describe('R native pipe chains', () => {
   });
 
   describe('namespaced stages whose name is defined in two other packages', () => {
-    it('binds each stage to the package its qualifier names (fork #7 flip)', () => {
+    it('binds each stage to the package its qualifier names (qualifier flip)', () => {
       // `pkgother::amb_only() |> pkgthird::amb_only()`: ambiguous by name alone, but each
       // qualifier names exactly one definition (pkgthird has no DESCRIPTION: it is local through
       // its `pkgthird/R/` path). Was: no edge.
@@ -945,7 +945,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
   const CALLER_FILES = [
     'analytics/R/decoy_first.R',
     'analytics/R/dotted_use.R',
-    'analytics/R/fork7.R',
+    'analytics/R/qualified_use.R',
     'analytics/R/nested_use.R',
     'analytics/R/own.R',
     'analytics/R/r6_use.R',
@@ -1074,7 +1074,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
 
     it('never binds tidy to print.tidy when print.tidy is defined first', () => {
       // finalize would index `print.tidy` under `tidy`; the guard refuses the import instead, so
-      // there is no 0.85 edge to the wrong def. Since #11 the fallback no longer sees `print.tidy`
+      // there is no 0.85 edge to the wrong def. Now the fallback no longer sees `print.tidy`
       // as a tail-`tidy` candidate (a bare call cannot invoke it), so the call resolves to the
       // bare def at 0.5 (was: ambiguous, no edge).
       expect(edgeSummaries('print_before_bare_user', 'analytics/R/dotted_use.R')).toEqual([
@@ -1083,7 +1083,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
     });
 
     it('also refuses the mirror layout (bare def first): the guard is order-blind', () => {
-      // Same 0.5 fallback edge to the bare def since #11 (was: no edge).
+      // Same 0.5 fallback edge to the bare def (was: no edge).
       expect(edgeSummaries('bare_before_print_user', 'analytics/R/dotted_use.R')).toEqual([
         'tally:scorelib/R/dotted.R:global-name-fallback:0.5',
       ]);
@@ -1108,7 +1108,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
 
     it('does not bind an import to an R6 method when no top-level def carries the name', () => {
       // A bare `describe_run()` cannot invoke an R6 method (`Reporter.describe_run`, reached only
-      // as `obj$describe_run()`), so since #11 the fallback offers no candidate either (was: a
+      // as `obj$describe_run()`), so the fallback offers no candidate either (was: a
       // 0.5 guess to the method).
       expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([]);
     });
@@ -1148,7 +1148,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
 
     it('keeps the 0.5 fallback edge to the own-package definition of an externally imported name', () => {
       // importFrom(dplyr, filter) and `filter` defined in analytics/R/own.R: the candidate is the
-      // caller's own package, which masks the import. Precise own-package binding is fork #10.
+      // caller's own package, which masks the import. Precise own-package binding is not implemented.
       expect(edgeSummaries('filter_user', VETO)).toEqual([
         'filter:analytics/R/own.R:global-name-fallback:0.5',
       ]);
@@ -1185,25 +1185,25 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       const refused = (result.resolutionOutcomes ?? []).filter(
         (o) => o.kind === 'fallback-refused',
       );
-      // Fork #7 flip: the qualified `legacyscore::mutate()` is no longer refused (it binds to
+      // Qualifier flip: the qualified `legacyscore::mutate()` is no longer refused (it binds to
       // legacyscore); only the bare `mutate_user()` refusal remains. Was ['dup_ext', 'mutate', 'mutate'].
       expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'mutate']);
     });
   });
 
   describe('explicitly qualified call to another local package', () => {
-    it('binds the call to the named package, not to the importFrom() provider (fork #7 flip)', () => {
+    it('binds the call to the named package, not to the importFrom() provider (qualifier flip)', () => {
       // `legacyscore::tidy_scores()` names legacyscore; the synthesised import would bind the
-      // name to scorelib (a false 0.85 edge before fork #7).
-      expect(edgeSummaries('qualified_user', 'analytics/R/fork7.R')).toEqual([
+      // name to scorelib (a false 0.85 edge before the qualifier was honoured).
+      expect(edgeSummaries('qualified_user', 'analytics/R/qualified_use.R')).toEqual([
         'tidy_scores:legacyscore/R/l.R:import-resolved:0.85',
       ]);
     });
 
-    it('keeps a correct qualified edge although the NAMESPACE imports the name from dplyr (fork #7 flip)', () => {
+    it('keeps a correct qualified edge although the NAMESPACE imports the name from dplyr (qualifier flip)', () => {
       // `legacyscore::mutate()` names the package that really defines `mutate`. The qualifier
       // outranks `importFrom(dplyr, mutate)`: the edge is precise (was vetoed: no edge).
-      expect(edgeSummaries('qualified_mutate_user', 'analytics/R/fork7.R')).toEqual([
+      expect(edgeSummaries('qualified_mutate_user', 'analytics/R/qualified_use.R')).toEqual([
         'mutate:legacyscore/R/l.R:import-resolved:0.85',
       ]);
     });
@@ -1234,7 +1234,7 @@ describe('R importFrom(pkgB, CleanData) in the shared r-packages fixture', () =>
   });
 });
 
-// Fork #6: a package whose DESCRIPTION/NAMESPACE sit at the repository root
+// A package whose DESCRIPTION/NAMESPACE sit at the repository root
 // (pkgDir === '') must get the same NAMESPACE export refinement as a nested one.
 describe('R root-level package NAMESPACE export refinement', () => {
   let result: PipelineResult;
@@ -1265,9 +1265,9 @@ describe('R root-level package NAMESPACE export refinement', () => {
   });
 });
 
-// Characterisation of the deferred-owner attach (fork #19, step 1). R classes are calls, so the worker
+// Characterisation of the deferred-owner attach. R classes are calls, so the worker
 // leaves an `ownerNameHint` that the post-parse pass resolves into `ownerId` + HAS_METHOD/HAS_PROPERTY.
-// The counts and the (source, target, type) triples below were measured at ae93f76b and must not change
+// The counts and the (source, target, type) triples below were measured before that pass moved and must not change
 // when that pass moves behind `LanguageProvider.postParse`.
 describe('R deferred-owner attach (r-packages)', () => {
   let result: PipelineResult;

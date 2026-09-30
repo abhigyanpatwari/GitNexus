@@ -4,11 +4,11 @@ import path from 'node:path';
 import { loadRPackageConfig } from '../../src/core/ingestion/languages/r/package-config.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
-// Regression tests for fork #8: export()/exportClasses()/exportMethods()/S3method()/
+// Regression tests: export()/exportClasses()/exportMethods()/S3method()/
 // exportPattern() must be read from the whole NAMESPACE text (wrapped, quoted,
 // backticked, commented, CRLF), not line by line. Everything goes through the
 // public loader, `loadRPackageConfig`, with synthetic NAMESPACE files.
-describe('loadRPackageConfig -> RNamespaceInfo exports (fork #8)', () => {
+describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
   const pool = createTempDirPool('gn-r-nsx-');
 
   const load = async (namespace: string) => {

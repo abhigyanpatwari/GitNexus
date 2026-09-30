@@ -1,5 +1,5 @@
 /**
- * Tree-sitter query for R scope captures (RFC #909 Ring 3, kaybenleroll/GitNexus#1).
+ * Tree-sitter query for R scope captures (RFC #909 Ring 3).
  *
  * R has no dedicated class syntax — R6 classes are `R6Class(...)` calls, S4/R5
  * classes are `setClass(...)`/`setRefClass(...)` calls — so this query mirrors

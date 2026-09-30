@@ -1,5 +1,5 @@
 /**
- * R `pkg::fn()` / `pkg:::fn()` qualified calls (fork #7).
+ * R `pkg::fn()` / `pkg:::fn()` qualified calls.
  *
  * Fixtures: `r-qualified-calls/` (package discovery completes: certainly-external
  * qualifiers exist), `r-qualified-calls-truncated/` (discovery stops at depth 3 and a
@@ -19,9 +19,9 @@
  *     kept: today's behaviour, unchanged;
  *   - the global-name-fallback veto allows a candidate inside the named package.
  *
- * The seven existing tests in `r.test.ts` and `r-namespace-imports.test.ts` that documented
- * the pre-#7 name-only behaviour were flipped in the same commit as the implementation
- * (each is marked "fork #7 flip"). `pkgB::CleanData` (`r.test.ts` ~:99, ~:1211) stays green:
+ * Seven tests in `r.test.ts` and `r-namespace-imports.test.ts` that once documented the
+ * earlier name-only behaviour (the qualifier discarded, the candidate guessed by name) now
+ * assert the qualifier-aware result (each is marked "qualifier flip"). `pkgB::CleanData` (`r.test.ts` ~:99, ~:1211) stays green:
  * one definition, bound by import already.
  */
 import { describe, it, expect, beforeAll } from 'vitest';

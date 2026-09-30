@@ -178,7 +178,7 @@ describe('parseRNamespaceImportFrom', () => {
     ]);
   });
 
-  // Resynchronisation rule (fork #8 follow-up): a garbled or unbalanced directive
+  // Resynchronisation rule: a garbled or unbalanced directive
   // is discarded and scanning resumes at the next line that begins at column 0
   // with `identifier(`. Quoted strings never span lines, and a column-0
   // `identifier(` line ends any directive still open, so a broken directive

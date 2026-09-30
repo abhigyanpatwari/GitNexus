@@ -1,5 +1,5 @@
 /**
- * R `pkg::name()` / `pkg:::name()` qualified calls (fork #7).
+ * R `pkg::name()` / `pkg:::name()` qualified calls.
  *
  * The scope query captures the whole `namespace_operator` as
  * `@reference.qualified-name`, so a call site carries `rawQualifiedName`

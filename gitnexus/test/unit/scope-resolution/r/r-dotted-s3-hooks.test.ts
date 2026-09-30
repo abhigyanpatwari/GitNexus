@@ -1,6 +1,6 @@
 /**
- * R dotted (S3) names vs bare names in the shared simple-name indexes
- * (kaybenleroll/GitNexus#11): the `isCallableVisibleFromCaller` hook and the
+ * R dotted (S3) names vs bare names in the shared simple-name indexes:
+ * the `isCallableVisibleFromCaller` hook and the
  * `expandRWildcardNames` tail guard. ParsedFiles come from the real R extractor.
  */
 import { describe, expect, it } from 'vitest';

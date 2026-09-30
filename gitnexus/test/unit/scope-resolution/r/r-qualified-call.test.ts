@@ -1,5 +1,5 @@
 /**
- * R qualified-call helpers (fork #7):
+ * R qualified-call helpers:
  *
  *  - `parseRQualifier(raw)`: the package named by a `@reference.qualified-name` text;
  *  - `rQualifierLocality(pkg, cfg, filePaths)`: `local` | `external` | `unknown`;

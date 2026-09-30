@@ -1,5 +1,5 @@
 /**
- * R caller-attribution fix (kaybenleroll/GitNexus#5): the R scope query must anchor
+ * R caller-attribution fix: the R scope query must anchor
  * `@scope.function` on the SAME AST node as `@declaration.function` (the whole
  * `name <- function(...)` assignment) and `@declaration.method` (the
  * `name = function(...)` argument), so a def is owned by its OWN Function scope.

@@ -1,5 +1,5 @@
 /**
- * R scope query: `@reference.qualified-name` on `pkg::fn()` / `pkg:::fn()` calls (fork #7, R1).
+ * R scope query: `@reference.qualified-name` on `pkg::fn()` / `pkg:::fn()` calls.
  *
  * The free-call qualified hook fires only when a site carries `rawQualifiedName`, which the
  * scope extractor copies from the `@reference.qualified-name` capture. Cached files cannot be

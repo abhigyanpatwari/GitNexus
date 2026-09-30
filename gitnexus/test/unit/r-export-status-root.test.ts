@@ -7,7 +7,7 @@ import type {
 } from '../../src/core/ingestion/languages/r/package-config.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 
-// Regression tests for fork #6: refineRExportStatus must treat the empty
+// Regression tests: refineRExportStatus must treat the empty
 // package dir ('' = DESCRIPTION/NAMESPACE at the repo root) as containing every path.
 const info = (over: Partial<RNamespaceInfo> = {}): RNamespaceInfo => ({
   hasNamespaceFile: true,

@@ -10,7 +10,7 @@ import type { DefinitionPropertiesContext } from '../../src/core/ingestion/langu
 import { rProvider } from '../../src/core/ingestion/languages/r.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
-// Fork #19, step 5: R's member-owner node is found through
+// R's member-owner node is found through
 // `LanguageProvider.resolveMemberOwnerNode`, not a `language === R` branch in the worker.
 // R classes are calls/assignments, not syntactic containers, so the hook returns the R6
 // `binary_operator` or the `setRefClass(...)` call that owns a member.

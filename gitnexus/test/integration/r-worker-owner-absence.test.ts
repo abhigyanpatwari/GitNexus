@@ -1,5 +1,5 @@
 /**
- * Standing invariant (fork #19): the R worker never emits an owner id.
+ * Standing invariant: the R worker never emits an owner id.
  *
  * R classes are calls (`R6::R6Class`, `setRefClass`, `setMethod`), not syntactic containers, so
  * `findEnclosingClassNodeOrFileOwner` finds no container node for any R definition and the worker
@@ -31,7 +31,7 @@ if (!hasDistWorker && process.env.CI) {
 }
 
 // fixture -> number of R Method/Property nodes carrying an ownerNameHint (== the post-parse ownerId
-// count at ae93f76b, because every hint in these fixtures resolves). 39 in total.
+// count before the attach moved behind the provider hook, because every hint in these fixtures resolves). 39 in total.
 const EXPECTED_HINTS: Record<string, number> = {
   'r-packages': 23,
   'r-root-package': 0,

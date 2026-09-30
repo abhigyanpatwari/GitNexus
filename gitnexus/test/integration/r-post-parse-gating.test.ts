@@ -1,5 +1,5 @@
 /**
- * Language gating of R's post-parse work (fork #19).
+ * Language gating of R's post-parse work.
  *
  * R's package-config walk (`DESCRIPTION`/`NAMESPACE` discovery) and its whole-graph owner attach are
  * language-specific work. Shared pipeline code must not run them for a repo that has no R files:

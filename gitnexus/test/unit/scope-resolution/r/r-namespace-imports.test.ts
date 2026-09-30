@@ -1,5 +1,5 @@
 /**
- * R NAMESPACE `importFrom()` binding (kaybenleroll/GitNexus#2, step 3):
+ * R NAMESPACE `importFrom()` binding:
  *
  *  - `rPackageDirForFile`: which package's `R/` directory a file belongs to;
  *  - `populateRNamespaceImports`: synthesised `named` imports for local
@@ -608,7 +608,7 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
     it('resolves a name matched by a POSIX-class exportPattern (the RStudio default)', () => {
       // `exportPattern("^[[:alpha:]]+")` used to compile to a JS RegExp that matched nothing, so
       // every name was judged non-exported and the import degraded to the baseline name-guess.
-      // Deliberate change (#12): POSIX classes are translated by `compileRExportPattern`.
+      // Deliberate change: POSIX classes are translated by `compileRExportPattern`.
       const s = setup(
         { [F]: 'tidy_scores <- function(d) d' },
         {
@@ -973,7 +973,7 @@ describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
     });
   });
 
-  it('T11 (fork #7 flip): allows the correct legacyscore::mutate() edge — the qualifier names the candidate package', () => {
+  it('T11 (qualifier flip): allows the correct legacyscore::mutate() edge — the qualifier names the candidate package', () => {
     expect(
       verdict({
         importFrom: [['dplyr', 'mutate']],

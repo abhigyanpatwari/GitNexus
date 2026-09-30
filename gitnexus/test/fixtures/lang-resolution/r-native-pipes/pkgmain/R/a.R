@@ -22,7 +22,7 @@ ns_user <- function(df) {
   df |> pkgother::ext_fn() |> stage_one()
 }
 
-# Namespaced stage whose name is also defined in THIS file (fork #7).
+# Namespaced stage whose name is also defined in THIS file.
 ns_amb_user <- function(df) {
   df |> pkgother::amb_stage()
 }

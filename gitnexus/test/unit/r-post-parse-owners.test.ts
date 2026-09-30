@@ -6,7 +6,7 @@ import { createSemanticModel } from '../../src/core/ingestion/model/semantic-mod
 import { attachDeferredROwners } from '../../src/core/ingestion/languages/r/post-parse.js';
 import { generateId } from '../../src/lib/utils.js';
 
-// Characterisation tests for the R deferred-owner attach (fork #19, step 1).
+// Characterisation tests for the R deferred-owner attach.
 // R classes are calls (`R6::R6Class`, `setRefClass`, `setMethod`), so the worker cannot always name
 // an owner node; it leaves an `ownerNameHint` string that `attachDeferredROwners` resolves once every
 // Class is registered. These tests pin that behaviour before it moves behind `LanguageProvider.postParse`.

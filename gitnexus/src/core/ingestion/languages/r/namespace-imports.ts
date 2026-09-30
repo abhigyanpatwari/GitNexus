@@ -445,7 +445,7 @@ const topLevelCache = new WeakMap<ParsedFile, RFileTopLevel>();
  * Top-level definitions of `parsed`, read from the Module scope's hoisted
  * bindings.
  *
- * Since the caller-attribution fix (fork #5) a top-level function def is
+ * Since R scope queries anchor a `@scope.function` on every named function, a top-level function def is
  * owned by its *own* Function scope and only its binding is hoisted into the
  * Module scope, so neither the Module scope's `ownedDefs` nor the flat
  * `localDefs` (which also lists nested functions and R6/R5 members) answers
@@ -598,7 +598,7 @@ export function populateRNamespaceImports(
   }
 }
 
-// ─── `pkg::name()` qualifier helpers (fork #7) ──────────────────────────────
+// ─── `pkg::name()` qualifier helpers ────────────────────────────────────────
 
 /**
  * The package named by the text of an `@reference.qualified-name` capture (the
@@ -686,7 +686,7 @@ export interface RGlobalNameFallbackContext {
  * `R/` — answers `true`, so `source()`/`library()` script flows are untouched.
  *
  * A qualified call `pkg::name()` (site carries `rawQualifiedName`) is judged
- * by its qualifier first (fork #7): with `pkg` a local package, a candidate
+ * by its qualifier first: with `pkg` a local package, a candidate
  * inside `pkg` is plausible whatever the NAMESPACE says, and a candidate
  * elsewhere is vetoed when `pkg` itself defines `name`. A `pkg` that defines
  * nothing of that name (re-export), or that is not a local package, falls

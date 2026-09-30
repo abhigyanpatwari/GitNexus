@@ -1,6 +1,6 @@
 /**
  * R: dotted (S3 method) names must not collide with same-tailed bare names
- * in the shared simple-name indexes (kaybenleroll/GitNexus#11).
+ * in the shared simple-name indexes.
  *
  * The shared indexes key every def by the text after the last `.` of its
  * qualifiedName, so `print.foo` is indexed under `foo` next to a bare `foo`.

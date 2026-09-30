@@ -53,7 +53,7 @@ const VIRTUAL_CLASS_NAME = 'VIRTUAL';
  * every S4 class whose `contains=` names it, exactly the literal fixture
  * string `"VIRTUAL"` (§12 Q1) — not a general policy for arbitrary S4
  * base-type sentinels (`"numeric"`, `"list"`, …), which is a distinct,
- * out-of-scope design question (kaybenleroll/GitNexus, Issues To File #2).
+ * out-of-scope design question.
  *
  * Idempotent: re-seeds its dedup set from any `EXTENDS` edge already
  * targeting a node named `VIRTUAL` before emitting, and re-uses the graph's
@@ -205,7 +205,7 @@ export const rScopeResolver: ScopeResolver = {
   // synthesised `named` imports (`resolveRImportTarget`'s named branch binds
   // them). Runs before finalize and over warm-cache ParsedFiles too.
   //
-  // Followed by `populateRQualifiedCalls` (fork #7): it decides each
+  // Followed by `populateRQualifiedCalls`: it decides each
   // `pkg::name()` site by the qualifier — drops external / ambiguous ones and
   // records the single definition a local one names for
   // `resolveQualifiedFreeCall` below. Import synthesis is unchanged and first.
