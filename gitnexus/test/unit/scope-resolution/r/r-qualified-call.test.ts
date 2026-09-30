@@ -186,6 +186,48 @@ describe('loadRPackageConfig: discovery completeness on the qualified-call fixtu
   });
 });
 
+describe('loadRPackageConfig: zero packages found', () => {
+  async function withTree(build: (root: string) => Promise<void>) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-no-description-'));
+    try {
+      await build(root);
+      return await loadRPackageConfig(root);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  it('returns a complete empty config when discovery finds no package', async () => {
+    const cfg = await loadRPackageConfig(path.join(FIXTURES, 'r-no-description'));
+    expect(cfg).not.toBeNull();
+    expect(cfg?.packages.size).toBe(0);
+    expect(cfg?.truncated).toBe(false);
+  });
+
+  it('keeps truncated set when no package is found but a skipped subtree hides one', async () => {
+    const cfg = await loadRPackageConfig(path.join(FIXTURES, 'r-no-description-truncated'));
+    expect(cfg?.packages.size).toBe(0);
+    expect(cfg?.truncated).toBe(true);
+  });
+
+  it('returns a complete empty config for an R-only temporary tree without DESCRIPTION', async () => {
+    const cfg = await withTree(async (root) => {
+      await fs.mkdir(path.join(root, 'R'));
+      await fs.writeFile(path.join(root, 'R', 'a.R'), 'f <- function() 1\n');
+    });
+    expect(cfg?.truncated).toBe(false);
+  });
+
+  it('rQualifierLocality: complete empty config proves external; truncated stays unknown', () => {
+    const empty = config({}, false);
+    expect(rQualifierLocality('dplyr', empty, new Set(['R/a.R']))).toBe('external');
+    expect(rQualifierLocality('dplyr', config({}, true), new Set(['R/a.R']))).toBe('unknown');
+    expect(rQualifierLocality('dplyr', null, new Set(['R/a.R']))).toBe('unknown');
+    // a <pkg>/R/ path still makes the package local without a DESCRIPTION
+    expect(rQualifierLocality('pathpkg', empty, new Set(['pathpkg/R/a.R']))).toBe('local');
+  });
+});
+
 describe('loadRPackageConfig: truncation only when a skipped subtree hides an undiscovered package', () => {
   // Layout: root/DESCRIPTION (rootpkg). `skipDir` is the first directory below the depth-3
   // limit: root(0) > a(1) > b(2) > c(3) lists d, which is skipped.

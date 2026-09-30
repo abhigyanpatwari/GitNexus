@@ -64,9 +64,11 @@ function isUnderPackageRDir(pkg: string, filePath: string): boolean {
  *    `<pkg>/R/` directory (a package whose `DESCRIPTION` discovery missed or
  *    that has none; root-level packages are found through `cfg` only);
  *  - `external`: not local, and `cfg` exists and its discovery was complete
- *    (`!cfg.truncated`), so `pkg` provably is not part of the repo;
- *  - `unknown`: not found, but discovery was truncated or no config could be
- *    built, so `pkg` may still be a local package that was not seen.
+ *    (`!cfg.truncated`), so `pkg` provably is not part of the repo. This
+ *    includes a complete scan that found no package at all (no `DESCRIPTION`
+ *    anywhere): the config is then empty, not absent;
+ *  - `unknown`: not found, but discovery was truncated or there is no config
+ *    (hand-built callers), so `pkg` may still be a local package that was not seen.
  *
  * One predicate, so the populate step and the veto cannot disagree on "local".
  */

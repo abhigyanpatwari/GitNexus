@@ -27,6 +27,8 @@ export interface RPackageConfig {
    * only a same-name copy of an already-discovered package does NOT truncate.
    * A package missing from {@link packages} is then not proven absent from the
    * repo, so `rQualifierLocality` answers `unknown` rather than `external`.
+   * This holds for an empty {@link packages} map too: a complete scan that found
+   * no package at all proves every qualifier external.
    * Optional so that hand-built configs (tests, callers that never scan) read
    * as "complete".
    */
@@ -96,7 +98,14 @@ export async function hidesUndiscoveredPackage(
   return false;
 }
 
-export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig | null> {
+/**
+ * Discover the R packages of a repo. Always returns a config: a scan that finds
+ * no package yields an empty {@link RPackageConfig.packages} map, and its
+ * {@link RPackageConfig.truncated} flag says whether that result is complete
+ * (no `DESCRIPTION` anywhere, so no `pkg::fn()` qualifier names a local package)
+ * or merely what the bounded scan managed to see.
+ */
+export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig> {
   const packages = new Map<string, string>();
   const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
@@ -176,6 +185,5 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   ) {
     truncated = true;
   }
-  if (packages.size === 0) return null;
   return { packages, namespaceInfoByPackageDir, truncated };
 }

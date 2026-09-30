@@ -5,7 +5,10 @@
  * qualifiers exist), `r-qualified-calls-truncated/` (discovery stops at depth 3 and a
  * package nested deeper is invisible, so its locality is UNKNOWN) and
  * `r-qualified-calls-deep-fixtures/` (a `tests/testthat/fixtures` directory below the depth
- * limit holds no package, so discovery still counts as complete).
+ * limit holds no package, so discovery still counts as complete), `r-no-description/` (a
+ * repo with no DESCRIPTION: discovery completes with zero packages, so every qualifier is
+ * external) and `r-no-description-truncated/` (zero packages found, but a skipped subtree
+ * hides one, so locality is UNKNOWN).
  *
  * The qualifier names the package:
  *   - exactly one definition of the name in a local package  -> precise binding (0.85);
@@ -226,6 +229,43 @@ describe('R qualified calls: skipped directory without a package (r-qualified-ca
   it('still binds a qualifier naming the discovered package precisely', () => {
     expect(summaries(result, 'own_user', F)).toEqual([
       'own_fn:caller/R/util.R:import-resolved:0.85',
+    ]);
+  });
+});
+
+describe('R qualified calls: no DESCRIPTION anywhere (r-no-description)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-no-description'), () => {});
+  }, 60000);
+
+  // Discovery completed and found zero packages, so no qualifier can name a local package.
+  it('drops dplyr::filter() instead of binding it to a same-named function elsewhere', () => {
+    expect(summaries(result, 'run_ext', 'R/b.R')).toEqual([]);
+  });
+
+  it('drops dplyr::mutate() called from a script instead of binding it to R/a.R', () => {
+    expect(summaries(result, 'run_same', 'scripts/run.R')).toEqual([]);
+  });
+
+  it('drops dplyr::select() instead of binding it to the same-file decoy', () => {
+    expect(summaries(result, 'run_decoy', 'scripts/run.R')).toEqual([]);
+  });
+});
+
+describe('R qualified calls: no package found and discovery truncated (r-no-description-truncated)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-no-description-truncated'), () => {});
+  }, 60000);
+
+  // Permanent guard: zero packages found, but a skipped subtree hides one, so the
+  // qualifier is not provably external and today's name guess must stay.
+  it('keeps the name-guess edge while discovery is truncated', () => {
+    expect(summaries(result, 'run_ext', 'R/b.R')).toEqual([
+      'filter:R/a.R:global-name-fallback:0.5',
     ]);
   });
 });
