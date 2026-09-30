@@ -9,7 +9,7 @@ import { generateId } from '../../src/lib/utils.js';
 // Characterisation tests for the R deferred-owner attach.
 // R classes are calls (`R6::R6Class`, `setRefClass`, `setMethod`), so the worker cannot always name
 // an owner node; it leaves an `ownerNameHint` string that `attachDeferredROwners` resolves once every
-// Class is registered. These tests pin that behaviour before it moves behind `LanguageProvider.postParse`.
+// Class is registered. These tests pin that behaviour.
 
 const FILE = 'R/a.R';
 

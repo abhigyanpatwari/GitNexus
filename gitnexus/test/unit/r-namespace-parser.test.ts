@@ -7,7 +7,7 @@ import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 
 // `parseRNamespaceImportFrom` is pure and package-blind: it returns every
 // `importFrom()` pair in file order. Own-package drop, last-wins and external
-// skipping are consumer policy (C4), not parser behaviour.
+// skipping are consumer policy (`populateRNamespaceImports`), not parser behaviour.
 describe('parseRNamespaceImportFrom', () => {
   it('parses a single-line directive with several names', () => {
     expect(parseRNamespaceImportFrom('importFrom(dplyr, mutate, filter)\n')).toEqual([

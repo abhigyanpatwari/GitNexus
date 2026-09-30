@@ -52,7 +52,7 @@ describe('R query: qualified-name capture on namespace_operator calls', () => {
     });
   }
 
-  describe('unqualified and non-namespace calls carry no qualified name (stay green after R1)', () => {
+  describe('unqualified and non-namespace calls carry no qualified name (qualified-name capture leaves them untouched)', () => {
     it('a bare call f(x)', () => {
       const t = only('run <- function(d) f(d)', 'f');
       expect(t['@reference.qualified-name']).toBeUndefined();

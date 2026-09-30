@@ -392,11 +392,10 @@ describe('R function definitions and calls', () => {
  * any method (an R6 field default, an S4 `setClass(validity = function..)`
  * body) is sourced from the enclosing Class node by design.
  *
- * These tests landed before the fix (as `it.fails`) and pass as ordinary tests
- * with it; each attribution case has a plain characterisation twin (the target
+ * Each attribution case has a plain characterisation twin (the target
  * edge exists from ANY source).
  * One assertion per `it`. Process / Community / STEP_IN_PROCESS / MEMBER_OF /
- * CALLS totals are NOT asserted: they are expected to change with the fix.
+ * CALLS totals are NOT asserted: they shift whenever attribution changes.
  */
 describe('R caller attribution', () => {
   let result: PipelineResult;
@@ -673,15 +672,12 @@ describe('R caller attribution', () => {
 });
 
 /**
- * R native pipe (`|>`) chains: baseline characterisation at the landed
- * caller-attribution fix. Every assertion here passes without any pipe-specific
- * production support; the tests lock the current behaviour before NAMESPACE /
- * importFrom resolution work touches the resolver.
+ * R native pipe (`|>`) chains: characterisation of the current behaviour. Every
+ * assertion here passes without any pipe-specific production support.
  * The fixture is synthetic (`r-native-pipes/`, three packages); one function per
  * scenario so each assertion is an exact `source -> targets` set.
  * magrittr `%>%` is deliberately NOT covered (no support claimed either way).
- * The `pkg::fn` stages are bound by their qualifier; three tests were flipped
- * from the earlier name-only results.
+ * The `pkg::fn` stages are bound by their qualifier, not guessed by name.
  */
 describe('R native pipe chains', () => {
   let result: PipelineResult;

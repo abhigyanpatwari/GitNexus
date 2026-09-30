@@ -511,7 +511,7 @@ interface CallerPlan {
  * synthesised imports are never persisted stale. If this is ever upstreamed,
  * propose widening that contract's doc string.
  *
- * Order of operations per caller package (decided rules):
+ * Order of operations per caller package:
  *  1. last-wins over ALL entries for a name, in file order, external
  *     packages included (R replaces the earlier `importFrom` binding);
  *  2. drop the surviving entry when its `pkg` is the caller itself;
@@ -539,7 +539,7 @@ export function populateRNamespaceImports(
     for (const entry of info.importFrom) last.set(entry.name, entry.pkg);
     const bindable = new Map<string, string>();
     for (const [name, pkg] of last) {
-      if (cfg.packages.has(pkg)) needNamesFor.add(pkg); // C5 reads the provider's names too
+      if (cfg.packages.has(pkg)) needNamesFor.add(pkg); // the fallback veto reads the provider's names too
       if (pkg === callerName || !cfg.packages.has(pkg)) continue;
       bindable.set(name, pkg);
     }
@@ -672,7 +672,7 @@ export interface RGlobalNameFallbackContext {
  *
  *  - the caller file lives under `<pkgDir>/R/**` of a package with a NAMESPACE
  *    that has an `importFrom(P, <site.name>)` entry (the LAST such entry over
- *    all entries, external packages included — the same rule C4 applies);
+ *    all entries, external packages included — the same last-wins rule the synthesised imports follow);
  *  - `P` is not the caller's own package (a self-import binds nothing);
  *  - the candidate lives under some package's `R/**`, and that package is
  *    neither the caller's own (own namespace masks; a plain 0.5 fallback edge

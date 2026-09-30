@@ -1,14 +1,13 @@
 /**
- * R caller-attribution fix: the R scope query must anchor
+ * R caller attribution: the R scope query must anchor
  * `@scope.function` on the SAME AST node as `@declaration.function` (the whole
  * `name <- function(...)` assignment) and `@declaration.method` (the
  * `name = function(...)` argument), so a def is owned by its OWN Function scope.
- * Before the fix the two anchors differ, the def is owned by the enclosing
+ * If the two anchors differ, the def is owned by the enclosing
  * Module / outer-function / Class scope, and `resolveCallerGraphId` credits every
  * call in a body to the FIRST callable that scope owns.
  *
- * These tests landed before the fix (as `it.fails`) and pass as ordinary tests
- * with it. Every `it` holds ONE assertion that compares a value, and the
+ * Every `it` holds ONE assertion that compares a value, and the
  * lookups never dereference a possibly-missing scope/def, so a failure is
  * always a wrong VALUE, never a thrown TypeError.
  *

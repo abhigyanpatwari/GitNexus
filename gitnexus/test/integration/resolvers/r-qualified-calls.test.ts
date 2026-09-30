@@ -19,9 +19,8 @@
  *     kept: today's behaviour, unchanged;
  *   - the global-name-fallback veto allows a candidate inside the named package.
  *
- * Seven tests in `r.test.ts` and `r-namespace-imports.test.ts` that once documented the
- * earlier name-only behaviour (the qualifier discarded, the candidate guessed by name) now
- * assert the qualifier-aware result (each is marked "qualifier flip"). `pkgB::CleanData` (`r.test.ts` ~:99, ~:1211) stays green:
+ * Seven tests in `r.test.ts` and `r-namespace-imports.test.ts` assert the qualifier-aware
+ * result rather than a name-only guess (each is marked "qualifier flip"). `pkgB::CleanData` (`r.test.ts` ~:99, ~:1211) stays green:
  * one definition, bound by import already.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -148,7 +147,7 @@ describe('R qualified calls: discovery completes (r-qualified-calls)', () => {
   }
 
   describe('local package with zero definitions of the name (re-export): site kept', () => {
-    // locallib re-exports reexp_fn from provlib. The design keeps the site, and the R4 veto
+    // locallib re-exports reexp_fn from provlib. The design keeps the site, and the global-name-fallback veto
     // must keep allowing a candidate outside the named package when that package defines
     // nothing of that name (same allowance the importFrom veto already has). Permanent.
     it('keeps the 0.5 fallback edge to the origin package', () => {
