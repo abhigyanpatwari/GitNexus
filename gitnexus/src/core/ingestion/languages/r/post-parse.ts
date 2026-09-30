@@ -23,7 +23,11 @@
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { MutableSemanticModel } from '../../model/semantic-model.js';
 import type { PostParseContext } from '../../language-provider.js';
-import { loadRPackageConfig, type RPackageConfig } from './package-config.js';
+import {
+  loadRPackageConfig,
+  reportRExportPatternProblems,
+  type RPackageConfig,
+} from './package-config.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
@@ -151,5 +155,7 @@ export const refineRExportStatus = (
 export const rPostParse = async (ctx: PostParseContext): Promise<void> => {
   attachDeferredROwners(ctx.graph, ctx.model, 'Method', 'HAS_METHOD');
   attachDeferredROwners(ctx.graph, ctx.model, 'Property', 'HAS_PROPERTY');
-  refineRExportStatus(ctx.graph, await loadRPackageConfig(ctx.repoPath));
+  const config = await loadRPackageConfig(ctx.repoPath);
+  refineRExportStatus(ctx.graph, config);
+  reportRExportPatternProblems(config);
 };

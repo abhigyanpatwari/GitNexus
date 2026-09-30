@@ -1,4 +1,4 @@
-import { compileLinearRegex } from './linear-regex.js';
+import { compileLinearRegexDetailed } from './linear-regex.js';
 
 /**
  * `exportPattern("...")` compilation for R NAMESPACE files.
@@ -19,7 +19,9 @@ import { compileLinearRegex } from './linear-regex.js';
  * from the repository being analysed, and a backtracking engine lets a hostile
  * pattern such as `^(a+)+$` hang the analyzer (R itself uses the non-backtracking
  * TRE). See `linear-regex.ts` for the supported subset; a pattern outside it
- * compiles to null and therefore matches nothing.
+ * compiles to null and therefore matches nothing. Callers that care why use
+ * {@link compileRExportPatternDetailed}, so that a dropped pattern is reported
+ * rather than silently treated as an empty export list.
  *
  * The argument reaches {@link compileRExportPattern} as an R string *value*:
  * {@link unescapeRString} first turns the NAMESPACE source text `"\\."` (the
@@ -109,17 +111,45 @@ export interface RExportMatcher {
   /** The pattern text that was compiled (after POSIX-class translation). */
   readonly source: string;
   test(name: string): boolean;
+  /**
+   * True once the matcher stopped answering because it spent its work budget; names it
+   * had not yet decided were then treated as not matching. Absent on matchers that
+   * cannot run out (a plain `RegExp`).
+   */
+  readonly exhausted?: boolean;
+}
+
+/** The outcome of {@link compileRExportPatternDetailed}: a matcher, or why there is none. */
+export type RExportPatternResult =
+  | { readonly matcher: RExportMatcher }
+  | { readonly matcher: null; readonly reason: string };
+
+/** Compile an `exportPattern()` argument, saying why when it cannot be compiled safely. */
+export function compileRExportPatternDetailed(source: string): RExportPatternResult {
+  try {
+    let translated = source;
+    if (source.includes('[:')) {
+      const posix = translatePosixClasses(source);
+      if (posix === null) {
+        return {
+          matcher: null,
+          reason: 'unterminated bracket expression or unknown POSIX class',
+        };
+      }
+      translated = posix;
+    }
+    const result = compileLinearRegexDetailed(translated);
+    return 'reason' in result
+      ? { matcher: null, reason: result.reason }
+      : { matcher: result.regex };
+  } catch {
+    return { matcher: null, reason: 'pattern could not be compiled' };
+  }
 }
 
 /** Compile an `exportPattern()` argument; null when it cannot be compiled safely. */
 export function compileRExportPattern(source: string): RExportMatcher | null {
-  try {
-    if (!source.includes('[:')) return compileLinearRegex(source);
-    const translated = translatePosixClasses(source);
-    return translated === null ? null : compileLinearRegex(translated);
-  } catch {
-    return null;
-  }
+  return compileRExportPatternDetailed(source).matcher;
 }
 
 const SIMPLE_R_ESCAPES: Readonly<Record<string, string>> = {

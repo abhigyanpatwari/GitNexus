@@ -8,7 +8,8 @@
  * evaluates the same text with TRE, which does not backtrack. {@link compileLinearRegex}
  * parses the pattern (JavaScript syntax, non-Unicode mode, the dialect `RegExp`
  * accepted before) into a Thompson NFA and simulates it with a set of active states.
- * A match attempt costs O(name length x NFA size) whatever the pattern says.
+ * A match attempt costs O(name length x NFA size) whatever the pattern says, and the
+ * total work one matcher may do is capped (see the cost model below).
  *
  * Supported: literals, `.`, bracket expressions, `\d \D \w \W \s \S \b \B`, the
  * single-character escapes, `^ $`, groups (capturing and `(?:)`), alternation and the
@@ -17,23 +18,54 @@
  * linear-time algorithm), named groups, legacy octal escapes, patterns longer than
  * {@link MAX_PATTERN_LENGTH} and patterns whose expansion exceeds {@link MAX_STATES}.
  * A syntax error also yields `null`. Matching is over UTF-16 code units, as
- * `RegExp` without the `u` flag does.
+ * `RegExp` without the `u` flag does. {@link compileLinearRegexDetailed} reports why a
+ * pattern was refused.
+ *
+ * Cost model. Compiling is O(pattern length + states). Matching one name is
+ * O(name length x active states), and a state count alone does not make a pattern
+ * slow: `[[:alpha:]]{1,2000}` has 4,000 states but one of them is active at a time,
+ * and an alternation of literals keeps only the ones whose next character matches.
+ * What is slow is many active states on a long name, and a repository controls both.
+ * So the caps are sized for legitimate patterns and the hostile case is bounded
+ * separately, by {@link MAX_TOTAL_WORK}: each matcher counts every state it visits
+ * and, once the budget is spent, answers false for names it has not already decided
+ * and reports `exhausted`. A visit costs 10-20 ns, so the budget is 0.4-0.8 s per
+ * package however many names are tested: measured on the development machine, `a?`
+ * repeated 500 or 8,000 times then `c`, `[A-Za-z]{1,2000}c`, and a 120-way alternation
+ * of `a...ab` each exhaust it in ~0.4 s against 50,000 distinct 100-character names.
+ * Realistic patterns stay far below it: 500 alternated identifiers, anchored or not,
+ * cost about 20 visits per name, because alternatives that share a prefix share
+ * states. Verdicts are memoised per distinct name, so a repeated name costs one lookup.
  */
 
-/** Longest pattern accepted; also bounds the parser's recursion depth. */
-export const MAX_PATTERN_LENGTH = 4096;
+/** Longest pattern accepted: room for an alternation of ~1,000 identifiers. */
+export const MAX_PATTERN_LENGTH = 16384;
 
 /**
  * Most NFA states a pattern may expand to. Bounded repetition such as `a{1000}` is
- * expanded copy by copy, so this caps both memory and the per-character cost.
+ * expanded copy by copy, so this caps memory and compile time; the matching cost is
+ * bounded by {@link MAX_TOTAL_WORK}. Room for ~1,000 alternated identifiers of 15
+ * characters, or `[[:alpha:]]{1,2000}`.
  */
-export const MAX_STATES = 1024;
+export const MAX_STATES = 16384;
+
+/** Deepest group nesting accepted; bounds the parser's and the builder's recursion. */
+const MAX_NESTING = 2048;
 
 /**
  * Most `build` calls for one pattern. States are capped separately, but a body that
  * creates no states (`(){1000}`) can still be repeated exponentially when nested.
  */
-const MAX_BUILD_STEPS = 20000;
+const MAX_BUILD_STEPS = 4 * MAX_STATES;
+
+/**
+ * State visits one matcher may spend across all the names it is asked about (see the
+ * cost model above).
+ */
+export const MAX_TOTAL_WORK = 40_000_000;
+
+/** Most distinct names whose verdict a matcher remembers. */
+const MAX_MEMO_ENTRIES = 100_000;
 
 /** Thrown internally for unsupported or invalid input; never escapes this module. */
 class Reject extends Error {}
@@ -56,6 +88,45 @@ type Node =
   | { readonly kind: 'seq'; readonly items: readonly Node[] }
   | { readonly kind: 'alt'; readonly items: readonly Node[] }
   | { readonly kind: 'repeat'; readonly min: number; readonly max: number; readonly node: Node };
+
+/**
+ * The code units of `node` when it matches exactly one fixed string (a literal, or a
+ * sequence of literals), else null.
+ */
+function literalWord(node: Node): number[] | null {
+  switch (node.kind) {
+    case 'empty':
+      return [];
+    case 'set': {
+      const { ranges, negated } = node.set;
+      return !negated && ranges.length === 1 && ranges[0][0] === ranges[0][1]
+        ? [ranges[0][0]]
+        : null;
+    }
+    case 'seq': {
+      const word: number[] = [];
+      for (const item of node.items) {
+        const part = literalWord(item);
+        if (part === null) return null;
+        for (const code of part) word.push(code);
+      }
+      return word;
+    }
+    default:
+      return null;
+  }
+}
+
+/** The strings of an alternation whose every alternative is a fixed string, else null. */
+function literalWords(items: readonly Node[]): number[][] | null {
+  const words: number[][] = [];
+  for (const item of items) {
+    const word = literalWord(item);
+    if (word === null) return null;
+    words.push(word);
+  }
+  return words;
+}
 
 const MAX_CODE_UNIT = 0xffff;
 
@@ -114,6 +185,7 @@ const BRACES = /\{(\d+)(?:(,)(\d*))?\}/y;
 
 class Parser {
   private pos = 0;
+  private depth = 0;
   /** `\k` is an identity escape only when the pattern has no named group. */
   private readonly hasNamedGroup: boolean;
 
@@ -206,7 +278,9 @@ class Parser {
       if (this.peek(1) !== ':') reject('look-around and group modifiers are unsupported');
       this.pos += 2;
     }
+    if (++this.depth > MAX_NESTING) reject('groups are nested too deeply');
     const inner = this.parseDisjunction();
+    this.depth--;
     if (this.peek() !== ')') reject('unterminated group');
     this.pos++;
     // Wrapped so that `(?:$)*` and `(\b)+` stay quantifiable, unlike a bare assertion.
@@ -460,6 +534,8 @@ class Nfa {
         return cont;
       }
       case 'alt': {
+        const words = literalWords(node.items);
+        if (words !== null) return this.buildWords(words, next);
         let entry = this.build(node.items[node.items.length - 1], next);
         for (let i = node.items.length - 2; i >= 0; i--) {
           entry = this.add(K_SPLIT, this.build(node.items[i], next), entry, null);
@@ -469,6 +545,57 @@ class Nfa {
       case 'repeat':
         return this.buildRepeat(node, next);
     }
+  }
+
+  /**
+   * Build an alternation of literal strings as a trie, so that alternatives sharing a
+   * prefix share states (`my_function_0|my_function_1|...` keeps one state active on
+   * the common prefix instead of one per alternative). Matches the same strings as the
+   * plain alternation. Iterative: a literal may be thousands of characters long.
+   */
+  private buildWords(words: readonly (readonly number[])[], next: number): number {
+    interface TrieNode {
+      readonly children: Map<number, TrieNode>;
+      terminal: boolean;
+    }
+    const root: TrieNode = { children: new Map(), terminal: false };
+    for (const word of words) {
+      let at = root;
+      for (const code of word) {
+        let child = at.children.get(code);
+        if (child === undefined) {
+          child = { children: new Map(), terminal: false };
+          at.children.set(code, child);
+        }
+        at = child;
+      }
+      at.terminal = true;
+    }
+    // Each entry: a trie node, and the character state whose `out` is that node's entry
+    // (-1 for the root, whose entry is the result).
+    let rootEntry = next;
+    const pending: Array<{ node: TrieNode; via: number }> = [{ node: root, via: -1 }];
+    for (let task = pending.pop(); task !== undefined; task = pending.pop()) {
+      if (++this.steps > MAX_BUILD_STEPS) reject('pattern expands beyond the work cap');
+      const branches: number[] = [];
+      if (task.node.terminal) branches.push(next);
+      for (const [code, child] of task.node.children) {
+        const state = this.add(K_CHAR, -1, -1, {
+          ranges: [[code, code]],
+          negated: false,
+        });
+        branches.push(state);
+        pending.push({ node: child, via: state });
+      }
+      let entry = branches[branches.length - 1];
+      for (let i = branches.length - 2; i >= 0; i--) {
+        entry = this.add(K_SPLIT, branches[i], entry, null);
+      }
+      if (branches.length === 0) entry = next;
+      if (task.via === -1) rootEntry = entry;
+      else this.out[task.via] = entry;
+    }
+    return rootEntry;
   }
 
   private buildRepeat(node: Extract<Node, { kind: 'repeat' }>, next: number): number {
@@ -491,17 +618,38 @@ class Nfa {
   }
 }
 
+/** Shared by {@link LinearRegex.startStates} entries that reach the match state. */
+const NO_STATES: readonly number[] = [];
+
+/** Empty-transition closure of the start state under one assertion context. */
+interface StartClosure {
+  /** True when the match state is reachable without consuming a character. */
+  readonly matches: boolean;
+  /** Character states reachable without consuming a character. */
+  readonly chars: readonly number[];
+}
+
 /** A compiled pattern. `test` has the same yes/no contract as `RegExp.prototype.test`. */
 export class LinearRegex {
   /** Number of NFA states, exposed so tests can assert the structural bound. */
   readonly stateCount: number;
+  /** True once the work budget ran out; later unseen names are answered false. */
+  exhausted = false;
+  /** State visits spent so far, against {@link MAX_TOTAL_WORK}. */
+  work = 0;
   private readonly kind: readonly number[];
   private readonly out: readonly number[];
   private readonly out1: readonly number[];
   private readonly arg: ReadonlyArray<CharSet | number | null>;
   private readonly start: number;
   private readonly mark: Int32Array;
+  private readonly stack: number[] = [];
   private stamp = 0;
+  /** Start closures by assertion context (see {@link contextAt}). */
+  private readonly startClosures: Array<StartClosure | undefined> = new Array(16);
+  /** Character states of a start closure that accept one code unit, by context and unit. */
+  private readonly startStates = new Map<number, readonly number[]>();
+  private readonly verdicts = new Map<string, boolean>();
 
   constructor(
     /** The pattern text this matcher was compiled from (after any POSIX-class translation). */
@@ -520,15 +668,33 @@ export class LinearRegex {
 
   /** True when the pattern matches anywhere in `name` (an unanchored search). */
   test(name: string): boolean {
+    const known = this.verdicts.get(name);
+    if (known !== undefined) return known;
+    if (this.work >= MAX_TOTAL_WORK) {
+      this.exhausted = true;
+      return false;
+    }
+    const verdict = this.search(name);
+    // A search the budget cut short has no verdict; do not remember it.
+    if (!this.exhausted && this.verdicts.size < MAX_MEMO_ENTRIES) this.verdicts.set(name, verdict);
+    return verdict;
+  }
+
+  private search(name: string): boolean {
     const length = name.length;
     let current: number[] = [];
     let following: number[] = [];
     this.stamp++;
-    if (this.add(current, this.start, name, 0)) return true;
+    if (this.seed(current, name, 0)) return true;
     for (let p = 0; p < length; p++) {
+      if (this.work > MAX_TOTAL_WORK) {
+        this.exhausted = true;
+        return false;
+      }
       const c = name.charCodeAt(p);
       this.stamp++;
       following.length = 0;
+      this.work += current.length;
       for (let i = 0; i < current.length; i++) {
         const s = current[i];
         if (inSet(this.arg[s] as CharSet, c) && this.add(following, this.out[s], name, p + 1)) {
@@ -536,7 +702,7 @@ export class LinearRegex {
         }
       }
       // Unanchored search: a match may also begin at the next position.
-      if (this.add(following, this.start, name, p + 1)) return true;
+      if (this.seed(following, name, p + 1)) return true;
       const swap = current;
       current = following;
       following = swap;
@@ -545,41 +711,117 @@ export class LinearRegex {
   }
 
   /**
+   * Start a match attempt at position `p`: true when the pattern matches there without
+   * consuming anything, otherwise the states that can consume `name[p]` are added to
+   * `list`. Those are the only start states worth keeping (the rest die on the next
+   * step), and looking them up by code unit keeps a long alternation from costing
+   * one visit per alternative at every position.
+   */
+  private seed(list: number[], name: string, p: number): boolean {
+    const context = contextAt(name, p);
+    const closure = (this.startClosures[context] ??= this.closeStart(context));
+    if (closure.matches) return true;
+    if (p === name.length) return false;
+    const c = name.charCodeAt(p);
+    const key = context * 0x10000 + c;
+    let states = this.startStates.get(key);
+    if (states === undefined) {
+      states = closure.chars.filter((s) => inSet(this.arg[s] as CharSet, c));
+      if (this.startStates.size < 4096) this.startStates.set(key, states);
+    }
+    this.work += 1 + states.length;
+    for (let i = 0; i < states.length; i++) {
+      const s = states[i];
+      if (this.mark[s] !== this.stamp) {
+        this.mark[s] = this.stamp;
+        list.push(s);
+      }
+    }
+    return false;
+  }
+
+  /** Closure of the start state where the assertion outcomes are those of `context`. */
+  private closeStart(context: number): StartClosure {
+    const seen = new Uint8Array(this.stateCount);
+    const chars: number[] = [];
+    const stack = [this.start];
+    while (stack.length > 0) {
+      const s = stack.pop() as number;
+      if (seen[s] === 1) continue;
+      seen[s] = 1;
+      switch (this.kind[s]) {
+        case K_MATCH:
+          return { matches: true, chars: NO_STATES };
+        case K_CHAR:
+          chars.push(s);
+          break;
+        case K_SPLIT:
+          stack.push(this.out1[s], this.out[s]);
+          break;
+        default:
+          if (holdsIn(this.arg[s] as number, context)) stack.push(this.out[s]);
+      }
+    }
+    return { matches: false, chars };
+  }
+
+  /**
    * Follow empty transitions from `state` at position `p`, pushing character states
    * onto `list`. Returns true on reaching the match state. A state is entered at most
    * once per list (the stamp), which also stops empty-loop cycles such as `(a*)*`.
+   * Iterative: a long alternation is a long chain of splits.
    */
   private add(list: number[], state: number, name: string, p: number): boolean {
-    if (this.mark[state] === this.stamp) return false;
-    this.mark[state] = this.stamp;
-    switch (this.kind[state]) {
-      case K_MATCH:
-        return true;
-      case K_CHAR:
-        list.push(state);
-        return false;
-      case K_SPLIT:
-        return (
-          this.add(list, this.out[state], name, p) || this.add(list, this.out1[state], name, p)
-        );
-      default:
-        return this.holds(this.arg[state] as number, name, p)
-          ? this.add(list, this.out[state], name, p)
-          : false;
-    }
-  }
-
-  private holds(assertion: number, name: string, p: number): boolean {
-    switch (assertion) {
-      case A_BOL:
-        return p === 0;
-      case A_EOL:
-        return p === name.length;
-      default: {
-        const before = p > 0 && isWordUnit(name.charCodeAt(p - 1));
-        const after = p < name.length && isWordUnit(name.charCodeAt(p));
-        return assertion === A_WORDB ? before !== after : before === after;
+    const stack = this.stack;
+    stack.length = 0;
+    stack.push(state);
+    while (stack.length > 0) {
+      const s = stack.pop() as number;
+      if (this.mark[s] === this.stamp) continue;
+      this.mark[s] = this.stamp;
+      this.work++;
+      switch (this.kind[s]) {
+        case K_MATCH:
+          return true;
+        case K_CHAR:
+          list.push(s);
+          break;
+        case K_SPLIT:
+          stack.push(this.out1[s], this.out[s]);
+          break;
+        default:
+          if (holdsIn(this.arg[s] as number, contextAt(name, p))) stack.push(this.out[s]);
       }
+    }
+    return false;
+  }
+}
+
+const CTX_BOL = 1;
+const CTX_EOL = 2;
+const CTX_WORD_BEFORE = 4;
+const CTX_WORD_AFTER = 8;
+
+/** What the assertions can observe at position `p`: the two ends and word-ness either side. */
+function contextAt(name: string, p: number): number {
+  let context = 0;
+  if (p === 0) context |= CTX_BOL;
+  else if (isWordUnit(name.charCodeAt(p - 1))) context |= CTX_WORD_BEFORE;
+  if (p === name.length) context |= CTX_EOL;
+  else if (isWordUnit(name.charCodeAt(p))) context |= CTX_WORD_AFTER;
+  return context;
+}
+
+function holdsIn(assertion: number, context: number): boolean {
+  switch (assertion) {
+    case A_BOL:
+      return (context & CTX_BOL) !== 0;
+    case A_EOL:
+      return (context & CTX_EOL) !== 0;
+    default: {
+      const before = (context & CTX_WORD_BEFORE) !== 0;
+      const after = (context & CTX_WORD_AFTER) !== 0;
+      return assertion === A_WORDB ? before !== after : before === after;
     }
   }
 }
@@ -598,21 +840,36 @@ function inSet(set: CharSet, c: number): boolean {
   return hit !== set.negated;
 }
 
+/** The outcome of {@link compileLinearRegexDetailed}: a matcher, or why there is none. */
+export type LinearRegexResult =
+  | { readonly regex: LinearRegex }
+  | { readonly regex: null; readonly reason: string };
+
 /**
- * Compile a JavaScript-syntax pattern to a linear-time matcher, or null when it is
- * invalid, unsupported or too large. Never throws.
+ * Compile a JavaScript-syntax pattern to a linear-time matcher. When the pattern is
+ * invalid, unsupported or too large the result carries the reason instead. Never throws.
  */
-export function compileLinearRegex(source: string): LinearRegex | null {
-  if (source.length > MAX_PATTERN_LENGTH) return null;
+export function compileLinearRegexDetailed(source: string): LinearRegexResult {
+  if (source.length > MAX_PATTERN_LENGTH) {
+    return { regex: null, reason: `pattern is longer than ${MAX_PATTERN_LENGTH} characters` };
+  }
   try {
     const ast = new Parser(source).parse();
     const nfa = new Nfa();
     const match = nfa.add(K_MATCH, -1, -1, null);
     const start = nfa.build(ast, match);
-    return new LinearRegex(source, nfa, start);
-  } catch {
+    return { regex: new LinearRegex(source, nfa, start) };
+  } catch (err) {
     // `Reject` is the expected path; a stack overflow or any other failure also means
     // "cannot match safely", which for an exportPattern is the same as never matching.
-    return null;
+    return {
+      regex: null,
+      reason: err instanceof Reject ? err.message : 'pattern could not be compiled',
+    };
   }
+}
+
+/** {@link compileLinearRegexDetailed} without the reason: null when there is no matcher. */
+export function compileLinearRegex(source: string): LinearRegex | null {
+  return compileLinearRegexDetailed(source).regex;
 }

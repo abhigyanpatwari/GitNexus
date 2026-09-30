@@ -5,9 +5,16 @@ import {
   parseRNamespaceImportFrom,
   type RNamespaceImportFromEntry,
 } from './namespace-imports.js';
-import { compileRExportPattern, type RExportMatcher } from './export-pattern.js';
+import { compileRExportPatternDetailed, type RExportMatcher } from './export-pattern.js';
 import { isDev } from '../../utils/env.js';
 import { logger } from '../../../logger.js';
+
+/** An `exportPattern()` argument that was not compiled, and why. */
+export interface RDroppedExportPattern {
+  /** The pattern text as R would see it (the string value, after unescaping). */
+  readonly pattern: string;
+  readonly reason: string;
+}
 
 /** R package config parsed from DESCRIPTION files in a multi-package repo */
 export interface RPackageConfig {
@@ -45,10 +52,54 @@ export interface RNamespaceInfo {
    *  classes such as `[[:alpha:]]` are translated to JS equivalents first
    *  (see `compileRExportPattern`). The matchers run in linear time, so a hostile
    *  pattern cannot stall analysis. Patterns that fail to compile, or that the
-   *  linear-time matcher cannot handle, are dropped at this stage (they never match). */
+   *  linear-time matcher cannot handle, are dropped at this stage (they never match)
+   *  and listed in {@link droppedExportPatterns}. */
   exportPatterns: RExportMatcher[];
+  /**
+   * Non-empty `exportPattern()` arguments that could not be compiled, with the reason.
+   * A dropped pattern exports nothing, so every name the pattern was meant to cover
+   * reads as unexported; `reportDroppedRExportPatterns` turns these into warnings.
+   * Optional so that hand-built configs read as "nothing dropped".
+   */
+  droppedExportPatterns?: readonly RDroppedExportPattern[];
   /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
   importFrom: readonly RNamespaceImportFromEntry[];
+}
+
+/** Longest pattern prefix quoted in a warning. */
+const QUOTED_PATTERN_LENGTH = 60;
+
+const quotePattern = (pattern: string): string =>
+  JSON.stringify(
+    pattern.length > QUOTED_PATTERN_LENGTH
+      ? `${pattern.slice(0, QUOTED_PATTERN_LENGTH)}...`
+      : pattern,
+  );
+
+/**
+ * Warn, once per pattern per package, about every `exportPattern()` that is not in
+ * effect: one dropped at load ({@link RNamespaceInfo.droppedExportPatterns}) or one
+ * whose matcher ran out of work budget since (names it had not yet decided were read as
+ * unexported). Call after the matchers have been used. A dropped pattern exports
+ * nothing, which would otherwise look exactly like a package that exports few names.
+ */
+export function reportRExportPatternProblems(config: RPackageConfig): void {
+  for (const [pkgDir, info] of config.namespaceInfoByPackageDir) {
+    const where = pkgDir === '' ? '.' : pkgDir;
+    for (const { pattern, reason } of info.droppedExportPatterns ?? []) {
+      logger.warn(
+        `R package ${where}: exportPattern(${quotePattern(pattern)}) was ignored (${reason}); ` +
+          `names it would export are treated as not exported`,
+      );
+    }
+    for (const matcher of info.exportPatterns) {
+      if (matcher.exhausted !== true) continue;
+      logger.warn(
+        `R package ${where}: exportPattern(${quotePattern(matcher.source)}) exceeded its work ` +
+          `budget; names it had not yet been tested against are treated as not exported`,
+      );
+    }
+  }
 }
 
 /** Directories never descended into, by the main walk and the hidden-package scan alike. */
@@ -151,15 +202,24 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                 const nsContent = await fs.readFile(nsPath, 'utf-8');
                 const parsedExports = parseRNamespaceExports(nsContent);
                 const namedExports = new Set<string>(parsedExports.namedExports);
-                // POSIX classes are translated; an uncompilable pattern is skipped (never matches).
-                const exportPatterns = parsedExports.exportPatterns
-                  .map(compileRExportPattern)
-                  .filter((re): re is RExportMatcher => re !== null);
+                // POSIX classes are translated; an uncompilable pattern is skipped (never
+                // matches) and recorded so the caller can say so.
+                const exportPatterns: RExportMatcher[] = [];
+                const droppedExportPatterns: RDroppedExportPattern[] = [];
+                for (const pattern of new Set(parsedExports.exportPatterns)) {
+                  const compiled = compileRExportPatternDetailed(pattern);
+                  if ('reason' in compiled) {
+                    droppedExportPatterns.push({ pattern, reason: compiled.reason });
+                  } else {
+                    exportPatterns.push(compiled.matcher);
+                  }
+                }
 
                 namespaceInfoByPackageDir.set(pkgDir, {
                   hasNamespaceFile: true,
                   namedExports,
                   exportPatterns,
+                  droppedExportPatterns,
                   importFrom: parseRNamespaceImportFrom(nsContent),
                 });
               } catch {
