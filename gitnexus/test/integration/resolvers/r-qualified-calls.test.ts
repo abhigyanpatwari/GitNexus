@@ -2,8 +2,10 @@
  * R `pkg::fn()` / `pkg:::fn()` qualified calls (fork #7).
  *
  * Fixtures: `r-qualified-calls/` (package discovery completes: certainly-external
- * qualifiers exist) and `r-qualified-calls-truncated/` (discovery stops at depth 3, so a
- * package nested deeper is invisible and its locality is UNKNOWN).
+ * qualifiers exist), `r-qualified-calls-truncated/` (discovery stops at depth 3 and a
+ * package nested deeper is invisible, so its locality is UNKNOWN) and
+ * `r-qualified-calls-deep-fixtures/` (a `tests/testthat/fixtures` directory below the depth
+ * limit holds no package, so discovery still counts as complete).
  *
  * The qualifier names the package:
  *   - exactly one definition of the name in a local package  -> precise binding (0.85);
@@ -201,5 +203,29 @@ describe('R qualified calls: discovery truncated (r-qualified-calls-truncated)',
         `path_fn:${PATH_FN}:import-resolved:0.85`,
       ]);
     });
+  });
+});
+
+describe('R qualified calls: skipped directory without a package (r-qualified-calls-deep-fixtures)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'r-qualified-calls-deep-fixtures'),
+      () => {},
+    );
+  }, 60000);
+
+  const F = 'caller/R/calls.R';
+
+  // Headline case: the depth-3 skip of tests/testthat/fixtures must not make `dplyr` unknown.
+  it('drops dplyr::filter() instead of binding it to the same-file decoy filter()', () => {
+    expect(summaries(result, 'external_user', F)).toEqual([]);
+  });
+
+  it('still binds a qualifier naming the discovered package precisely', () => {
+    expect(summaries(result, 'own_user', F)).toEqual([
+      'own_fn:caller/R/util.R:import-resolved:0.85',
+    ]);
   });
 });

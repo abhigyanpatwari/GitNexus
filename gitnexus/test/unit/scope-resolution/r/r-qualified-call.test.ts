@@ -3,8 +3,9 @@
  *
  *  - `parseRQualifier(raw)`: the package named by a `@reference.qualified-name` text;
  *  - `rQualifierLocality(pkg, cfg, filePaths)`: `local` | `external` | `unknown`;
- *  - `loadRPackageConfig` sets `RPackageConfig.truncated` when its depth-3 / 200-directory
- *    walk (or an unreadable directory) left part of the repo unvisited;
+ *  - `loadRPackageConfig` sets `RPackageConfig.truncated` only when a subtree its depth-3 /
+ *    200-directory walk skipped may hide an undiscovered package (or a directory of the walk
+ *    is unreadable); skipped subtrees without a package do not truncate;
  *  - the global-name-fallback veto's qualifier rule (`isRGlobalNameFallbackPlausible`).
  */
 import { describe, expect, it } from 'vitest';
@@ -12,7 +13,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { RPackageConfig } from '../../../../src/core/ingestion/languages/r/package-config.js';
-import { loadRPackageConfig } from '../../../../src/core/ingestion/languages/r/package-config.js';
+import {
+  hidesUndiscoveredPackage,
+  loadRPackageConfig,
+} from '../../../../src/core/ingestion/languages/r/package-config.js';
 import {
   parseRQualifier,
   rQualifierLocality,
@@ -170,20 +174,148 @@ describe('loadRPackageConfig: discovery completeness on the qualified-call fixtu
     expect((await load2('r-qualified-calls'))?.truncated).toBe(false);
   });
 
-  it('truncated is true when a directory below depth 3 was skipped', async () => {
+  it('truncated is true when a skipped directory hides an undiscovered package', async () => {
+    // deep/a/b/c/impl holds `Package: invisiblepkg`, below the depth limit.
     expect((await load2('r-qualified-calls-truncated'))?.truncated).toBe(true);
+  });
+
+  it('truncated is false when the skipped directories (tests/testthat/fixtures) hold no package', async () => {
+    const cfg = await load2('r-qualified-calls-deep-fixtures');
+    expect([...(cfg?.packages ?? [])]).toEqual([['deepcaller', 'caller']]);
+    expect(cfg?.truncated).toBe(false);
   });
 });
 
-describe('loadRPackageConfig: truncation by the directory cap', () => {
-  it('truncated is true when the 200-directory cap stops the walk with directories queued', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-truncated-cap-'));
+describe('loadRPackageConfig: truncation only when a skipped subtree hides an undiscovered package', () => {
+  // Layout: root/DESCRIPTION (rootpkg). `skipDir` is the first directory below the depth-3
+  // limit: root(0) > a(1) > b(2) > c(3) lists d, which is skipped.
+  const SKIP = ['a', 'b', 'c', 'd'];
+
+  async function withRepo(
+    build: (root: string) => Promise<void>,
+  ): Promise<Awaited<ReturnType<typeof loadRPackageConfig>>> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-truncated-hidden-'));
+    try {
+      await fs.writeFile(path.join(root, 'DESCRIPTION'), 'Package: rootpkg\n');
+      await build(root);
+      return await loadRPackageConfig(root);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  }
+
+  const writePkg = async (dir: string, name: string): Promise<void> => {
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'DESCRIPTION'), `Package: ${name}\n`);
+  };
+
+  it('a skipped directory with no package inside is not truncated', async () => {
+    const cfg = await withRepo(async (root) => {
+      await fs.mkdir(path.join(root, ...SKIP, 'data', 'raw'), { recursive: true });
+      await fs.writeFile(path.join(root, ...SKIP, 'data', 'raw', 'x.csv'), 'a,b\n');
+    });
+    expect(cfg?.truncated).toBe(false);
+  });
+
+  it('a skipped subtree with a real package of an undiscovered name is truncated', async () => {
+    const cfg = await withRepo((root) => writePkg(path.join(root, ...SKIP, 'realpkg'), 'realpkg'));
+    expect(cfg?.truncated).toBe(true);
+  });
+
+  it('a skipped subtree with only a same-name copy of a discovered package is not truncated', async () => {
+    const cfg = await withRepo((root) => writePkg(path.join(root, ...SKIP, 'copy'), 'rootpkg'));
+    expect(cfg?.truncated).toBe(false);
+  });
+
+  it('a package at depth 5 (hidden below the skipped directory itself) is truncated', async () => {
+    const cfg = await withRepo((root) =>
+      writePkg(path.join(root, ...SKIP, 'e', 'deeppkg'), 'deeppkg'),
+    );
+    expect(cfg?.truncated).toBe(true);
+  });
+
+  it('a DESCRIPTION under node_modules, .git or .Rproj.user of a skipped subtree is ignored', async () => {
+    const cfg = await withRepo(async (root) => {
+      await writePkg(path.join(root, ...SKIP, 'node_modules', 'jspkg'), 'jspkg');
+      await writePkg(path.join(root, ...SKIP, '.git', 'gitpkg'), 'gitpkg');
+      await writePkg(path.join(root, ...SKIP, '.Rproj.user', 'rprojpkg'), 'rprojpkg');
+    });
+    expect(cfg?.truncated).toBe(false);
+  });
+
+  it('a package left in the queue when the 200-directory cap stops the walk is truncated', async () => {
+    const cfg = await withRepo(async (root) => {
+      for (let i = 0; i < 210; i++) await fs.mkdir(path.join(root, `filler${String(i)}`));
+      // Sorts last, so it is still queued when the cap is hit.
+      await writePkg(path.join(root, 'zz_hidden'), 'zzhidden');
+    });
+    expect(cfg?.truncated).toBe(true);
+  });
+
+  it('a skipped subtree larger than the 5000-directory budget is truncated', async () => {
+    const cfg = await withRepo(async (root) => {
+      const big = path.join(root, ...SKIP);
+      await fs.mkdir(big, { recursive: true });
+      await Promise.all(
+        Array.from({ length: 5001 }, (_, i) => fs.mkdir(path.join(big, `d${String(i)}`))),
+      );
+    });
+    expect(cfg?.truncated).toBe(true);
+  }, 30000);
+
+  it('an unreadable skipped directory is truncated', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // root reads anything
+    let locked = '';
+    try {
+      const cfg = await withRepo(async (root) => {
+        locked = path.join(root, ...SKIP, 'locked');
+        await fs.mkdir(locked, { recursive: true });
+        await fs.chmod(locked, 0o000);
+      });
+      expect(cfg?.truncated).toBe(true);
+    } finally {
+      if (locked) await fs.chmod(locked, 0o755).catch(() => undefined);
+    }
+  });
+});
+
+describe('hidesUndiscoveredPackage', () => {
+  it('shares one budget across all roots (exceeded on the second root)', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-hidden-budget-'));
+    try {
+      const a = path.join(root, 'a');
+      const b = path.join(root, 'b');
+      for (const d of [a, b]) {
+        await fs.mkdir(path.join(d, 'x'), { recursive: true });
+      }
+      // Each root costs 2 directories (itself + x): 4 in total.
+      expect(await hidesUndiscoveredPackage([a, b], new Set(), 4)).toBe(false);
+      expect(await hidesUndiscoveredPackage([a, b], new Set(), 3)).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a nonexistent root cannot be read: true', async () => {
+    expect(
+      await hidesUndiscoveredPackage([path.join(os.tmpdir(), 'r-no-such-dir-x9')], new Set()),
+    ).toBe(true);
+  });
+
+  it('no roots: false', async () => {
+    expect(await hidesUndiscoveredPackage([], new Set())).toBe(false);
+  });
+});
+
+describe('loadRPackageConfig: directory cap', () => {
+  it('truncated is false when the directories left queued by the 200-directory cap hold no package', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-cap-empty-'));
     try {
       await fs.writeFile(path.join(root, 'DESCRIPTION'), 'Package: rootpkg\n');
       for (let i = 0; i < 210; i++) await fs.mkdir(path.join(root, `filler${String(i)}`));
       const cfg = await loadRPackageConfig(root);
       expect([...(cfg?.packages ?? [])]).toEqual([['rootpkg', '']]);
-      expect(cfg?.truncated).toBe(true);
+      expect(cfg?.truncated).toBe(false);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

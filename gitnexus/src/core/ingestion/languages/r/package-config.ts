@@ -16,10 +16,16 @@ export interface RPackageConfig {
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
   namespaceInfoByPackageDir: Map<string, RNamespaceInfo>;
   /**
-   * True when discovery did NOT visit every directory of the repo: the
-   * directory cap stopped the walk with directories still queued, the depth
-   * limit skipped directories, or a directory could not be read. A package
-   * missing from {@link packages} is then not proven to be absent from the
+   * True when discovery cannot rule out an undiscovered package: a directory
+   * of the main walk could not be read, or a subtree the walk skipped (below
+   * the depth limit, or still queued when the directory cap stopped it) may
+   * hide a package. Skipped subtrees are scanned once more for `DESCRIPTION`
+   * files (see {@link hidesUndiscoveredPackage}); the flag is set only when
+   * that scan finds a `Package:` name absent from {@link packages}, exceeds
+   * its directory budget, or hits an unreadable path. A skipped subtree with
+   * no package inside (`tests/testthat/fixtures/...`, `inst/extdata/...`) or
+   * only a same-name copy of an already-discovered package does NOT truncate.
+   * A package missing from {@link packages} is then not proven absent from the
    * repo, so `rQualifierLocality` answers `unknown` rather than `external`.
    * Optional so that hand-built configs (tests, callers that never scan) read
    * as "complete".
@@ -42,6 +48,54 @@ export interface RNamespaceInfo {
   importFrom: readonly RNamespaceImportFromEntry[];
 }
 
+/** Directories never descended into, by the main walk and the hidden-package scan alike. */
+const SKIPPED_DIR_NAMES: ReadonlySet<string> = new Set(['node_modules', '.git', '.Rproj.user']);
+
+/** Global directory budget for {@link hidesUndiscoveredPackage} across all its roots. */
+const HIDDEN_SCAN_BUDGET = 5000;
+
+/**
+ * Scan the subtrees the main walk skipped for a package it never discovered.
+ *
+ * Iterative DFS over `roots` under one global `budget` of directories (skipping
+ * `node_modules`, `.git` and `.Rproj.user`, as the main walk does). Returns
+ * `true` (cannot rule a hidden package out) when the budget is exceeded, when a
+ * directory or `DESCRIPTION` cannot be read, or when a `DESCRIPTION` declares a
+ * `Package:` name that is not in `knownPackageNames`. Returns `false` when every
+ * subtree was scanned and holds no such package. Deterministic and read-only.
+ */
+export async function hidesUndiscoveredPackage(
+  roots: readonly string[],
+  knownPackageNames: ReadonlySet<string>,
+  budget: number = HIDDEN_SCAN_BUDGET,
+): Promise<boolean> {
+  const stack = [...roots];
+  let remaining = budget;
+  for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
+    if (--remaining < 0) return true;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!SKIPPED_DIR_NAMES.has(entry.name)) stack.push(path.join(dir, entry.name));
+      } else if (entry.isFile() && entry.name === 'DESCRIPTION') {
+        try {
+          const content = await fs.readFile(path.join(dir, entry.name), 'utf-8');
+          const pkgMatch = content.match(/^Package:\s*(\S+)/m);
+          if (pkgMatch && !knownPackageNames.has(pkgMatch[1])) return true;
+        } catch {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig | null> {
   const packages = new Map<string, string>();
   const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
@@ -50,6 +104,8 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   const maxDirs = 200;
   let dirsScanned = 0;
   let truncated = false;
+  // Directories the walk never visits (depth limit, cap leftovers): scanned at the end.
+  const unvisited: string[] = [];
 
   while (scanQueue.length > 0 && dirsScanned < maxDirs) {
     const { dir, depth } = scanQueue.shift()!;
@@ -58,17 +114,14 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
       const entries = await fs.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          if (
-            entry.name === 'node_modules' ||
-            entry.name === '.git' ||
-            entry.name === '.Rproj.user'
-          )
-            continue;
-          // Below the depth limit: never visited, so a package could hide there.
-          if (depth >= maxDepth) truncated = true;
-        }
-        if (entry.isDirectory() && depth < maxDepth) {
-          scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
+          const child = path.join(dir, entry.name);
+          if (depth < maxDepth) {
+            scanQueue.push({ dir: child, depth: depth + 1 });
+          } else {
+            // Below the depth limit: not visited by the walk; scanned below.
+            unvisited.push(child);
+          }
         }
         if (entry.isFile() && entry.name === 'DESCRIPTION') {
           try {
@@ -114,8 +167,15 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
     }
   }
 
-  // The directory cap stopped the walk with directories still queued.
-  if (scanQueue.length > 0) truncated = true;
+  // Directories still queued when the cap stopped the walk were never visited either.
+  for (const { dir } of scanQueue) unvisited.push(dir);
+  if (
+    !truncated &&
+    unvisited.length > 0 &&
+    (await hidesUndiscoveredPackage(unvisited, new Set(packages.keys())))
+  ) {
+    truncated = true;
+  }
   if (packages.size === 0) return null;
   return { packages, namespaceInfoByPackageDir, truncated };
 }
