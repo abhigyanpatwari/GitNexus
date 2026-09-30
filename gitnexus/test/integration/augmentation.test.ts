@@ -21,6 +21,11 @@ const AUGMENT_SEED_DATA = [
   `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 15, isExported: true, content: 'function login authenticates user credentials', description: 'user login'})`,
   `CREATE (n:Function {id: 'func:validate', name: 'validate', filePath: 'src/auth.ts', startLine: 17, endLine: 25, isExported: true, content: 'function validate checks user input', description: 'input validation'})`,
   `CREATE (n:Function {id: 'func:hash', name: 'hash', filePath: 'src/utils.ts', startLine: 1, endLine: 8, isExported: true, content: 'function hash computes bcrypt hash', description: 'password hashing'})`,
+  ...Array.from(
+    { length: 5 },
+    (_, i) =>
+      `CREATE (n:Function {id: 'a:login-${i}', name: 'loginPartial${i}', filePath: 'src/login-partial-${i}.ts', startLine: 1, endLine: 2, isExported: true, content: 'partial login match ${i}', description: 'login partial'})`,
+  ),
 
   // Class / Method / Interface nodes
   `CREATE (n:Class {id: 'class:AuthService', name: 'AuthService', filePath: 'src/auth.ts', startLine: 30, endLine: 60, isExported: true, content: 'class AuthService handles authentication', description: 'auth service'})`,
@@ -157,8 +162,9 @@ withTestLbugDB(
           ftsAvailable: true,
         });
         try {
-          // The graph contains func:login in src/auth.ts, but none of the
-          // FTS-ranked files defines it. Exact-name lookup must still recover it.
+          // Five partial login matches have IDs that sort before func:login, so
+          // the five-row fallback only retains the exact node when exact names
+          // rank ahead of partial matches.
           const result = await augment('login', handle.dbPath);
           expect(result).toContain('[GitNexus]');
           expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
