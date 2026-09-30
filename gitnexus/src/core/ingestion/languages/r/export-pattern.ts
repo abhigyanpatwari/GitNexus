@@ -1,3 +1,5 @@
+import { compileLinearRegex } from './linear-regex.js';
+
 /**
  * `exportPattern("...")` compilation for R NAMESPACE files.
  *
@@ -12,6 +14,12 @@
  * expressions to ASCII JS equivalents (the C-locale meaning of each class) and
  * compiles the result once. Patterns without `[:` are compiled verbatim, so
  * their behaviour is unchanged. It never throws.
+ *
+ * The compiled form is a linear-time matcher, not a `RegExp`: the pattern text comes
+ * from the repository being analysed, and a backtracking engine lets a hostile
+ * pattern such as `^(a+)+$` hang the analyzer (R itself uses the non-backtracking
+ * TRE). See `linear-regex.ts` for the supported subset; a pattern outside it
+ * compiles to null and therefore matches nothing.
  *
  * The argument reaches {@link compileRExportPattern} as an R string *value*:
  * {@link unescapeRString} first turns the NAMESPACE source text `"\\."` (the
@@ -96,12 +104,19 @@ function translatePosixClasses(src: string): string | null {
   return out;
 }
 
-/** Compile an `exportPattern()` argument; null when it cannot be compiled. */
-export function compileRExportPattern(source: string): RegExp | null {
+/** A compiled `exportPattern()`; `test` answers whether the pattern matches anywhere in `name`. */
+export interface RExportMatcher {
+  /** The pattern text that was compiled (after POSIX-class translation). */
+  readonly source: string;
+  test(name: string): boolean;
+}
+
+/** Compile an `exportPattern()` argument; null when it cannot be compiled safely. */
+export function compileRExportPattern(source: string): RExportMatcher | null {
   try {
-    if (!source.includes('[:')) return new RegExp(source);
+    if (!source.includes('[:')) return compileLinearRegex(source);
     const translated = translatePosixClasses(source);
-    return translated === null ? null : new RegExp(translated);
+    return translated === null ? null : compileLinearRegex(translated);
   } catch {
     return null;
   }

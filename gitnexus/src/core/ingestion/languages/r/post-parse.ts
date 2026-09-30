@@ -134,7 +134,7 @@ export const refineRExportStatus = (
     if (!name) return;
 
     if (nsInfo.namedExports.has(name)) return; // explicit export — keep public
-    // exportPatterns are precompiled RegExp[] (see loadRPackageConfig) — no per-node recompile.
+    // exportPatterns are precompiled linear-time matchers (see loadRPackageConfig) — no per-node recompile.
     const matched = nsInfo.exportPatterns.some((pattern) => pattern.test(name));
     if (matched) return;
 

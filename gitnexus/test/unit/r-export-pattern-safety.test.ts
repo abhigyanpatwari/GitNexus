@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { compileRExportPattern } from '../../src/core/ingestion/languages/r/export-pattern.js';
+import {
+  compileLinearRegex,
+  MAX_STATES,
+} from '../../src/core/ingestion/languages/r/linear-regex.js';
 
 // Names every characterisation row is evaluated against.
 const NAMES: readonly string[] = [
@@ -640,5 +647,115 @@ describe('compileRExportPattern agrees with RegExp on generated patterns', () =>
     // The corpus must exercise both branches, or the comparison proves nothing.
     expect(compiled).toBeGreaterThan(500);
     expect(rejected).toBeGreaterThan(500);
+  });
+});
+
+// A hostile pattern must not be able to stall the analyzer. The matching runs in a child
+// process with a hard timeout so that a regression fails the test instead of hanging the
+// whole suite for minutes.
+describe('compileRExportPattern is linear-time on catastrophic patterns', () => {
+  const modulePath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../../src/core/ingestion/languages/r/export-pattern.ts',
+  );
+  const HOSTILE = [
+    '^(a+)+$',
+    '^(a|a)+$',
+    '^(a*)*b',
+    '(a|aa)+$',
+    '^(.*a){20}$',
+    '(x+x+)+y',
+    '^([a-z]+)*$',
+    '^(a?){30}a{30}$',
+  ];
+
+  it('completes every hostile pattern in under 100 ms on 40 and 10,000 character names', () => {
+    const script = `
+      const { compileRExportPattern } = await import(${JSON.stringify(modulePath)});
+      const out = [];
+      for (const p of ${JSON.stringify(HOSTILE)}) {
+        for (const len of [40, 10000]) {
+          const name = 'a'.repeat(len - 1) + '!';
+          const t0 = performance.now();
+          const m = compileRExportPattern(p);
+          const r = m ? m.test(name) : false;
+          out.push({ p, len, r, ms: performance.now() - t0 });
+        }
+      }
+      console.log('RESULT' + JSON.stringify(out));
+    `;
+    const res = spawnSync(
+      process.execPath,
+      ['--import', 'tsx', '--input-type=module', '-e', script],
+      {
+        encoding: 'utf-8',
+        timeout: 30_000,
+      },
+    );
+    expect(res.error, 'hostile pattern stalled past the 30 s guard').toBeUndefined();
+    expect(res.status, res.stderr).toBe(0);
+    const line = res.stdout.split('\n').find((l) => l.startsWith('RESULT'));
+    expect(line).toBeDefined();
+    const rows = JSON.parse((line ?? '').slice('RESULT'.length)) as Array<{
+      p: string;
+      len: number;
+      r: boolean;
+      ms: number;
+    }>;
+    expect(rows).toHaveLength(HOSTILE.length * 2);
+    for (const row of rows) {
+      expect(row.ms, `${row.p} on ${row.len} characters`).toBeLessThan(100);
+      expect(row.r, `${row.p} must not match`).toBe(false);
+    }
+  }, 60_000);
+
+  it('still reports a true match for a hostile-shaped pattern', () => {
+    expect(compileRExportPattern('^(a+)+$')?.test('a'.repeat(10_000))).toBe(true);
+    expect(compileRExportPattern('^(a|a)+$')?.test('aaaa')).toBe(true);
+    expect(compileRExportPattern('^(a*)*b')?.test('aab')).toBe(true);
+  });
+
+  it('no longer hands back a backtracking RegExp', () => {
+    expect(compileRExportPattern('^(a+)+$')).not.toBeInstanceOf(RegExp);
+    expect(compileRExportPattern('^[[:alpha:]]+')).not.toBeInstanceOf(RegExp);
+  });
+
+  it('drops constructs it cannot match in linear time, like an uncompilable pattern', () => {
+    for (const unsupported of [
+      '(a)\\1',
+      '(?=a)a',
+      '(?!a)a',
+      '(?<=a)b',
+      '(?<!a)b',
+      '(?<n>a)\\k<n>',
+    ]) {
+      expect(compileRExportPattern(unsupported), unsupported).toBeNull();
+    }
+  });
+
+  it('bounds the matcher by pattern size, not by the name it is run against', () => {
+    // The state count is fixed at compile time and capped, so the work per tested name
+    // is at most name length x MAX_STATES whatever the pattern says.
+    const nested = compileLinearRegex('^(a+)+$');
+    expect(nested).not.toBeNull();
+    expect(nested?.stateCount).toBeLessThanOrEqual(16);
+    const widest = compileLinearRegex('a{' + (MAX_STATES - 2) + '}');
+    expect(widest).not.toBeNull();
+    expect(widest?.stateCount).toBeLessThanOrEqual(MAX_STATES);
+    expect(compileLinearRegex('a{' + (MAX_STATES + 1) + '}')).toBeNull();
+  });
+
+  it('rejects nested empty repetition that would expand exponentially', () => {
+    expect(
+      compileRExportPattern(
+        '((((((((((){1000}){1000}){1000}){1000}){1000}){1000}){1000}){1000}){1000}){1000}',
+      ),
+    ).toBeNull();
+  });
+
+  it('drops a pattern whose repetition expands beyond the size cap', () => {
+    expect(compileRExportPattern('(a{1000}){1000}')).toBeNull();
+    expect(compileRExportPattern('a{100000}')).toBeNull();
+    expect(compileRExportPattern('a{3}')).not.toBeNull();
   });
 });

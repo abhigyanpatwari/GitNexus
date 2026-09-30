@@ -5,7 +5,7 @@ import {
   parseRNamespaceImportFrom,
   type RNamespaceImportFromEntry,
 } from './namespace-imports.js';
-import { compileRExportPattern } from './export-pattern.js';
+import { compileRExportPattern, type RExportMatcher } from './export-pattern.js';
 import { isDev } from '../../utils/env.js';
 import { logger } from '../../../logger.js';
 
@@ -40,12 +40,13 @@ export interface RNamespaceInfo {
   hasNamespaceFile: boolean;
   /** Explicit named exports from export()/exportClasses()/exportMethods()/S3method(). */
   namedExports: Set<string>;
-  /** Precompiled regex patterns from exportPattern("..."), compiled once here so
-   *  `refineRExportStatus` doesn't recompile a RegExp per node it checks. POSIX bracket
+  /** Precompiled matchers from exportPattern("..."), compiled once here so
+   *  `refineRExportStatus` doesn't recompile per node it checks. POSIX bracket
    *  classes such as `[[:alpha:]]` are translated to JS equivalents first
-   *  (see `compileRExportPattern`). Patterns that fail to compile are dropped at this
-   *  stage (invalid `exportPattern()` args never match). */
-  exportPatterns: RegExp[];
+   *  (see `compileRExportPattern`). The matchers run in linear time, so a hostile
+   *  pattern cannot stall analysis. Patterns that fail to compile, or that the
+   *  linear-time matcher cannot handle, are dropped at this stage (they never match). */
+  exportPatterns: RExportMatcher[];
   /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
   importFrom: readonly RNamespaceImportFromEntry[];
 }
@@ -153,7 +154,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                 // POSIX classes are translated; an uncompilable pattern is skipped (never matches).
                 const exportPatterns = parsedExports.exportPatterns
                   .map(compileRExportPattern)
-                  .filter((re): re is RegExp => re !== null);
+                  .filter((re): re is RExportMatcher => re !== null);
 
                 namespaceInfoByPackageDir.set(pkgDir, {
                   hasNamespaceFile: true,
