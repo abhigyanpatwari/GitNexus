@@ -1383,6 +1383,11 @@ export interface ScopeResolver {
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
 
+  /** Suppress all receiver dispatch when a captured type cannot prove its
+   * runtime binding. Runs before compound and simple receiver lookup; the
+   * caller records a receiver-unresolved outcome. */
+  readonly suppressReceiverLookup?: (typeRef: TypeRef) => boolean;
+
   /**
    * Enable the receiver-bound Case 0.5 fallback for explicit `this`
    * receivers (`this->m()` / `this.m()`) that resolves against the

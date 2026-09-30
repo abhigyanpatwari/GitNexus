@@ -8,6 +8,17 @@ import {
 } from '../tree-sitter-scanner.js';
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import {
+  extractFastAPIRouterBindings,
+  type ExtractedRouterConstructorPrefix,
+  type ExtractedRouterImport,
+  type ExtractedRouterInclude,
+  type ExtractedRouterModuleAlias,
+} from '../../../ingestion/route-extractors/fastapi-router-bindings.js';
+import {
+  mergeMountPrefixes,
+  resolveFastAPIRouterPrefixes,
+} from '../../../ingestion/route-extractors/fastapi-router-prefixes.js';
+import {
   extractPythonModuleConstants,
   parseConstOperands,
   resolveOperands,
@@ -892,15 +903,12 @@ const HTTPX_ASYNC_CLIENT_GENERIC_PATTERNS = compilePatterns({
 // files in different packages (e.g. `api/users.py` vs `admin/users.py`):
 //   • short key — file basename without `.py`           (`users`)
 //   • long  key — `<parent-dir>/<basename>`             (`api/users`)
-// The pre-pass records prefixes against the long key whenever the import
-// site supplies enough context (`from api.users import router as ...` →
-// long key `api/users`); otherwise it falls back to the short key.
-// At scan time the file's own long key is consulted first; only when no
-// long-key entry targets this file do we look up the short key. This
-// preserves the previous coarse-grained behaviour where context is
-// missing while delivering precision wherever the import statement
-// gives us a multi-segment module path.
+// Import-resolved mounts use exact file paths, including package
+// `__init__.py` routers and nested child includes. Long/short keys remain
+// fallback-only for unresolved imports.
 interface PythonRepoContext {
+  /** Exact source-file paths for import-resolved direct and nested router mounts. */
+  prefixesByFile: Map<string, Set<string>>;
   /** `<parent>/<stem>` → set of prefixes (precise, package-aware) */
   prefixesByLongKey: Map<string, Set<string>>;
   /** stem only → set of prefixes (basename fallback, may collide) */
@@ -992,6 +1000,10 @@ function buildPythonRepoContext(
 ): PythonRepoContext {
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
+  const routerIncludes: ExtractedRouterInclude[] = [];
+  const routerImports: ExtractedRouterImport[] = [];
+  const routerModuleAliases: ExtractedRouterModuleAlias[] = [];
+  const routerConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
 
   // Single read pass (#2393): slurp every `.py` file's content ONCE. This used to
   // be two passes — the include_router pre-pass below and the #2391 constant cost
@@ -1007,6 +1019,31 @@ function buildPythonRepoContext(
     pyContents.set(rel, src);
     if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
   }
+
+  for (const [rel, src] of pyContents) {
+    if (src.includes('include_router')) {
+      extractFastAPIRouterBindings(
+        rel,
+        src,
+        routerIncludes,
+        routerImports,
+        routerModuleAliases,
+        routerConstructorPrefixes,
+      );
+    }
+  }
+  // Resolve against every repo path, empty files included, so module
+  // ambiguity matches ingestion (which passes all scanned paths).
+  const { prefixesByFile, resolvedIncludes } = resolveFastAPIRouterPrefixes(
+    files,
+    routerIncludes,
+    routerImports,
+    routerModuleAliases,
+    routerConstructorPrefixes,
+  );
+  const resolvedIncludeKeys = new Set(
+    [...resolvedIncludes].map((inc) => JSON.stringify([inc.filePath, inc.routerExpr, inc.prefix])),
+  );
 
   // Single PARSE pass (#2391): parse each `.py` at most once and feed BOTH the
   // include_router prefix pre-pass and the composed-constant map below. This used
@@ -1078,6 +1115,8 @@ function buildPythonRepoContext(
         const prefix = unquoteLiteral(prefixNode.text);
         if (prefix === null) continue;
         const moduleShort = modNode.text;
+        if (resolvedIncludeKeys.has(JSON.stringify([rel, `${moduleShort}.router`, prefix])))
+          continue;
         const aliasLong = localNameToModuleAlias.get(moduleShort);
         const sameFileImport = localNameToModule.get(moduleShort);
         const longKey = aliasLong ?? sameFileImport?.moduleLong;
@@ -1100,6 +1139,7 @@ function buildPythonRepoContext(
         if (!localImp) continue;
         const prefix = unquoteLiteral(prefixNode.text);
         if (prefix === null) continue;
+        if (resolvedIncludeKeys.has(JSON.stringify([rel, nameNode.text, prefix]))) continue;
         if (localImp.moduleLong) {
           recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
         } else {
@@ -1121,6 +1161,7 @@ function buildPythonRepoContext(
   }
 
   return {
+    prefixesByFile,
     prefixesByLongKey,
     prefixesByShortKey,
     constantsByFile,
@@ -1253,15 +1294,17 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // by the literal and the #2391 non-literal (resolved) router loops so both
     // stack prefixes identically.
     const emitRouterProvider = (httpMethod: string, rawPath: string, line: number): void => {
-      // Long key first (precise, package-aware), short key as fallback.
-      // Mirrors the ingestion-side resolution in parse-impl.ts so the
-      // graph nodes and group contracts agree on which prefix applies.
+      // Exact file matches plus the legacy long/short fallback. This mirrors
+      // ingestion so graph Route nodes and contracts agree on mounted paths.
       const longKey = fileRel ? fileLongKey(fileRel) : '';
       const longPrefixes = longKey ? ctx?.prefixesByLongKey.get(longKey) : undefined;
       const shortKey = fileRel ? fileShortKey(fileRel) : '';
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
-      const prefixSet = longPrefixes ?? shortPrefixes;
+      const prefixSet = mergeMountPrefixes(
+        fileRel ? ctx?.prefixesByFile.get(fileRel.replace(/\\/g, '/')) : undefined,
+        longPrefixes ?? shortPrefixes,
+      );
       // Stack the same-file APIRouter(prefix=...) under any cross-file
       // include_router prefix.
       const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;

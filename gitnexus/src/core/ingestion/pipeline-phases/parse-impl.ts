@@ -98,6 +98,10 @@ import type {
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  mergeMountPrefixes,
+  resolveFastAPIRouterPrefixes,
+} from '../route-extractors/fastapi-router-prefixes.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
@@ -1667,11 +1671,9 @@ export async function runChunkedParseAndResolve(
       m.set(alias.localName, alias.moduleKeyLong);
     }
 
-    // Two parallel maps: long-key (precise) and short-key (basename
-    // fallback). Long-key entries are preferred when the file's own long
-    // key matches; short-key entries match any file with that basename and
-    // remain the fallback when no long key is known (e.g. Shape A includes
-    // without a corresponding import statement).
+    // Exact-file matches handle import-resolved mounts (including nested
+    // routers). These long/short maps preserve the older fallback for mounts
+    // whose import cannot be resolved to one file.
     const prefixesByLongKey = new Map<string, Set<string>>();
     const prefixesByShortKey = new Map<string, Set<string>>();
     // Constructor prefixes are `router`-only (the apply gate below and the
@@ -1679,6 +1681,13 @@ export async function runChunkedParseAndResolve(
     // flat file-key → prefix map suffices — mirrors the group layer's shape.
     const constructorPrefixesByLongKey = new Map<string, string>();
     const constructorPrefixesByShortKey = new Map<string, string>();
+    const { prefixesByFile, resolvedIncludes } = resolveFastAPIRouterPrefixes(
+      allPaths,
+      allRouterIncludes,
+      allRouterImports,
+      allRouterModuleAliases,
+      allRouterConstructorPrefixes,
+    );
 
     const recordPrefix = (target: Map<string, Set<string>>, key: string, prefix: string): void => {
       let set = target.get(key);
@@ -1690,6 +1699,9 @@ export async function runChunkedParseAndResolve(
     };
 
     for (const inc of allRouterIncludes) {
+      // Unprefixed includes only exist as propagation edges; recording `''`
+      // here would shadow a real short-key prefix for the same module.
+      if (resolvedIncludes.has(inc) || !inc.prefix) continue;
       // Shape A: `<module>.router`. The worker emits `routerExpr` already
       // including `.router`, so split it back. We only know a short module
       // key here — the call site doesn't carry the dotted package path. If
@@ -1720,6 +1732,7 @@ export async function runChunkedParseAndResolve(
     }
 
     if (
+      prefixesByFile.size > 0 ||
       prefixesByLongKey.size > 0 ||
       prefixesByShortKey.size > 0 ||
       allRouterConstructorPrefixes.length > 0
@@ -1760,15 +1773,17 @@ export async function runChunkedParseAndResolve(
           expanded.push(dr);
           continue;
         }
-        // Long-key lookup first; only fall back to the short key when no
-        // long-key prefix targets this file. This avoids prefix leakage
-        // between e.g. `api/users.py` and `admin/users.py`.
+        // Exact file matches plus the legacy long/short fallback for mounts
+        // whose import could not be resolved.
         const longKey = fileLongKey(dr.filePath);
         const longPrefixes = longKey ? prefixesByLongKey.get(longKey) : undefined;
         const shortPrefixes = longPrefixes
           ? undefined
           : prefixesByShortKey.get(fileShortKey(dr.filePath));
-        const prefixes = longPrefixes ?? shortPrefixes;
+        const prefixes = mergeMountPrefixes(
+          prefixesByFile.get(dr.filePath.replace(/\\/g, '/')),
+          longPrefixes ?? shortPrefixes,
+        );
         // Constructor prefixes are keyed like include_router prefixes:
         // long-key entries are precise, while short-key entries are only
         // valid for repo-root/single-segment files where `fileLongKey`

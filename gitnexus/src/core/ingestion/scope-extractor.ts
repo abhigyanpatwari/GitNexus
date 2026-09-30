@@ -1284,6 +1284,11 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
  */
 function typeBindingStrength(source: TypeRef['source']): number {
   switch (source) {
+    // A method decorator may change what the first parameter receives. An
+    // annotation describes intent, not descriptor binding, so it cannot
+    // override this uncertainty for that parameter.
+    case 'decorator-unknown':
+      return 4;
     case 'annotation':
       return 3;
     case 'parameter-annotation':

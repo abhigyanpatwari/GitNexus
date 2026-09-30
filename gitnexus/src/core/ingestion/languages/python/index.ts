@@ -43,13 +43,11 @@
  *      and emit a single edge rather than branching. `List[T]` /
  *      `Dict[K, V]` strip the outer generic for receiver typing (see
  *      `interpret.ts`).
- *   5. **Decorators that rewrite signatures** — `@dataclass`,
- *      `@property`, `@classmethod`, `@staticmethod` are recognized
- *      by `receiver-binding.ts`. Arbitrary decorators (e.g.
- *      `functools.wraps`, custom retry wrappers) preserve the wrapped
- *      function's declared signature; a decorator that returns a
- *      different callable is followed only through the declared
- *      return type.
+ *   5. **Decorators that rewrite signatures** — Known descriptor
+ *      spellings (`@property`, `@classmethod`, `@staticmethod`) are
+ *      recognized by `receiver-binding.ts`. Unknown decorator expressions
+ *      leave implicit receiver binding unresolved. Calls through wrappers
+ *      are followed only through their declared return type.
  *   6. **`typing.TYPE_CHECKING`-guarded imports** — treated like any
  *      other `import` for reference resolution. We do not distinguish
  *      runtime-visible from type-checker-only imports; this is

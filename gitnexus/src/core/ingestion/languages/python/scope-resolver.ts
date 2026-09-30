@@ -77,6 +77,7 @@ const pythonScopeResolver: ScopeResolver = {
   // A free call naming a class constructs it: `Service(db).do_work()` (#2708).
   constructionSyntax: { bare: true },
   language: SupportedLanguages.Python,
+  suppressReceiverLookup: (typeRef) => typeRef.source === 'decorator-unknown',
   languageProvider: pythonProvider,
   importEdgeReason: 'python-scope: import',
 

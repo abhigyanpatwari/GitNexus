@@ -13,17 +13,19 @@
  * extraction here lets unit tests import the function directly without
  * booting a worker, satisfying DoD §2.7.
  *
- * Worker phase is per-file, so the heavy cross-file resolution lives in
- * `pipeline-phases/parse-impl.ts`. Here we only extract two raw record
+ * Worker phase is per-file, so the cross-file resolution lives in
+ * `fastapi-router-prefixes.ts` and `pipeline-phases/parse-impl.ts`. Here we extract raw record
  * kinds and let the pipeline aggregate them across files:
  *
  *   • {@link ExtractedRouterInclude} — every
- *     `<host>.include_router(<routerExpr>, prefix='/x')` site, where
- *     `<routerExpr>` is either `<module>.router` (Shape A) or a bare
- *     local name (Shape B). `<host>` is intentionally unconstrained:
- *     production code uses `app`, `api`, `application`, `asgi_app`,
- *     etc., and the call shape (`include_router` invoked with a
- *     `prefix=` keyword) is specific enough on its own.
+ *     `<host>.include_router(<routerExpr>, prefix='/x')` mount, plus
+ *     unprefixed `<host>.include_router(<routerExpr>[, <other kwargs>])`
+ *     calls recorded with `prefix: ''`. `<routerExpr>` is either
+ *     `<module>.router` (Shape A) or a bare local name (Shape B). The
+ *     extractor leaves `<host>` unconstrained (production code uses `app`,
+ *     `api`, `application`, `asgi_app`, …); unprefixed records are only
+ *     propagation edges, and `fastapi-router-prefixes.ts` passes a parent
+ *     prefix through them only when the host is `router`.
  *
  *   • {@link ExtractedRouterImport} — every
  *     `from <module> import router [as <alias>]`, captured for both
@@ -37,10 +39,8 @@
  *   • short key — basename without `.py`                  (`users`)
  *   • long  key — `<parent-dir>/<basename>`               (`api/users`)
  *
- * Imports always carry the short key and, when the module path was
- * multi-segment, also the long key. parse-impl matches against the
- * long key first and falls back to the short key, so cross-package
- * collisions are eliminated for Shape B and minimised for Shape A.
+ * Imports retain their module path for exact-file resolution. The short and
+ * long keys remain for the conservative fallback when that resolution fails.
  *
  * The functions in this module are pure (no Worker / parentPort
  * dependency) so they can be unit-tested directly without booting a
@@ -48,15 +48,17 @@
  */
 
 /**
- * One `<host>.include_router(<routerExpr>, prefix='/x')` site.
+ * One `<host>.include_router(<routerExpr>, prefix='/x')` site, or a
+ * simple child include without a local prefix.
  *
  * `routerExpr` is the raw text of the first argument — either
  * `<module>.router` (Shape A) or a bare local name (Shape B).
- * parse-impl resolves Shape B against {@link ExtractedRouterImport}
- * records emitted by the same file.
+ * Cross-file resolution uses {@link ExtractedRouterImport} records
+ * emitted by the same file.
  */
 export interface ExtractedRouterInclude {
   filePath: string;
+  host: string;
   routerExpr: string;
   prefix: string;
   lineNumber: number;
@@ -78,6 +80,7 @@ export interface ExtractedRouterInclude {
 export interface ExtractedRouterImport {
   filePath: string;
   localName: string;
+  modulePath: string;
   moduleKey: string;
   moduleKeyLong?: string;
 }
@@ -101,6 +104,7 @@ export interface ExtractedRouterModuleAlias {
   filePath: string;
   /** Local name in the importing file (== imported name or its alias). */
   localName: string;
+  modulePath: string;
   /** Long key (`<parent>/<stem>`) — non-empty for every emitted record. */
   moduleKeyLong: string;
 }
@@ -113,13 +117,23 @@ export interface ExtractedRouterConstructorPrefix {
 // `<host>.include_router(<module>.router, ..., prefix='/x')` (Shape A).
 // `<host>` is left unrestricted — common production names include
 // `app`, `api`, `application`, `asgi_app`. Pinning to the literal
-// `app` would silently drop these.
+// `app` would silently drop these. Arguments before `prefix=` may hold one
+// level of nested calls (`dependencies=[Depends(auth)]`); the two
+// alternatives start on disjoint characters, so matching stays linear.
 const INCLUDE_ROUTER_ATTR_RE =
-  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\.router\b(?:[^()]|\([^()]*\))*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
 
 // `<host>.include_router(<local_name>, ..., prefix='/x')` (Shape B).
 const INCLUDE_ROUTER_NAME_RE =
-  /\b(?:[A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b[^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_][\w]*)\b(?:[^()]|\([^()]*\))*?\bprefix\s*=\s*(['"])([^'"]*)\3/g;
+
+// A child router may be included without a local prefix and inherit the
+// prefix of its parent router when that parent is mounted elsewhere. Other
+// keyword arguments (with one level of nested calls, like the prefixed
+// patterns) and a trailing comma are allowed; a `prefix=` anywhere in the
+// call declines the match so it never double-fires with those patterns.
+const INCLUDE_ROUTER_UNPREFIXED_RE =
+  /\b([A-Za-z_][\w.]*)\.include_router\s*\(\s*([A-Za-z_]\w*(?:\.router)?)\s*(?:,(?!(?:[^()]|\([^()]*\))*?\bprefix\s*=)(?:[^()]|\([^()]*\))*)?\)/g;
 
 // Module path: a sequence of dots (`.`, `..`, `...`) for "current
 // package" imports, OR an optional leading-dot prefix followed by a
@@ -248,6 +262,7 @@ export function extractFastAPIRouterBindings(
           outImports.push({
             filePath,
             localName,
+            modulePath: moduleText,
             moduleKey: moduleShort,
             ...(moduleLong ? { moduleKeyLong: moduleLong } : {}),
           });
@@ -270,6 +285,7 @@ export function extractFastAPIRouterBindings(
         outModuleAliases.push({
           filePath,
           localName,
+          modulePath: `${moduleText}.${importedName}`,
           moduleKeyLong: aliasLong,
         });
       }
@@ -302,8 +318,9 @@ export function extractFastAPIRouterBindings(
   while ((m = INCLUDE_ROUTER_ATTR_RE.exec(content)) !== null) {
     outIncludes.push({
       filePath,
-      routerExpr: `${m[1]}.router`,
-      prefix: m[3],
+      host: m[1],
+      routerExpr: `${m[2]}.router`,
+      prefix: m[4],
       lineNumber: content.substring(0, m.index).split('\n').length,
     });
   }
@@ -317,13 +334,25 @@ export function extractFastAPIRouterBindings(
     // is intentionally permissive and would re-capture `<mod>.router`
     // as the bare name `mod`. Discriminate by re-checking the
     // immediate source around the captured argument position.
-    const argStart = m.index + m[0].indexOf(m[1]);
-    const dotProbe = content.slice(argStart + m[1].length, argStart + m[1].length + 8);
+    const argStart = m.index + m[0].indexOf(m[2], m[0].indexOf('(') + 1);
+    const dotProbe = content.slice(argStart + m[2].length, argStart + m[2].length + 8);
     if (/^\s*\.\s*router/.test(dotProbe)) continue;
     outIncludes.push({
       filePath,
-      routerExpr: m[1],
-      prefix: m[3],
+      host: m[1],
+      routerExpr: m[2],
+      prefix: m[4],
+      lineNumber: content.substring(0, m.index).split('\n').length,
+    });
+  }
+
+  INCLUDE_ROUTER_UNPREFIXED_RE.lastIndex = 0;
+  while ((m = INCLUDE_ROUTER_UNPREFIXED_RE.exec(content)) !== null) {
+    outIncludes.push({
+      filePath,
+      host: m[1],
+      routerExpr: m[2],
+      prefix: '',
       lineNumber: content.substring(0, m.index).split('\n').length,
     });
   }

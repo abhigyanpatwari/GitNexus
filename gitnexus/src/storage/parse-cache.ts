@@ -800,7 +800,25 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v117 (#3390 private-only successor): simple-positional call entries now carry
 // their count privately, while ordinary Python references no longer receive
 // synthetic arity. Warm v116 ParsedFiles have neither equivalent fact.
-const SCHEMA_BUMP = 117;
+// v118 (#3398): decorated Python methods with unproven decorator identity no
+// longer publish subtype positional capacity. Warm v117 side-channel snapshots
+// would retain that capacity and could emit a false concrete call target.
+// v119 (#3396): Python subtype method capacities now omit receiverless ordinary
+// methods. Warm v118 ParsedFiles would replay a false compatible target.
+// v120 (#3394): decorated Python method receiver bindings now distinguish
+// unproven decorators from instance receivers. Warm v119 ParsedFiles would
+// replay a fabricated `self` binding or lack the uncertainty marker entirely.
+// v121 (#3399 follow-up): Python decorator identity now ignores trailing
+// comments, honors rebinding of builtin descriptor names visible where the
+// decorator is evaluated, and withholds subtype capacity from descriptor
+// stacks. Warm v120 captures carry the old verdicts.
+// v122 (#3414): Python decorator identity models restoring helper calls and
+// treats match-pattern captures and nested nonlocal rebinds as shadowing.
+// Warm v121 captures carry the old verdicts.
+// v123 (#3408): FastAPI include records now carry `host`, router imports carry
+// `modulePath`, and unprefixed child includes are emitted. Warm v122 records
+// lack them, so nested router-prefix propagation would stay inert.
+const SCHEMA_BUMP = 123;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

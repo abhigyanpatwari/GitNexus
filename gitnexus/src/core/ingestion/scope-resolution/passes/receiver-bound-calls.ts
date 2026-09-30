@@ -185,6 +185,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedReceiverMember'
   | 'namespaceReceiverPaths'
   | 'resolveReceiverMember'
+  | 'suppressReceiverLookup'
   | 'resolveThisViaEnclosingClass'
   | 'resolveMissingReceiverMembersFromSubtypes'
   | 'missingReceiverSubtypeCandidateCompatibility'
@@ -1061,6 +1062,30 @@ export function emitReceiverBoundCalls(
       const receiverName = site.explicitReceiver.name;
       const memberName = site.name;
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
+
+      if (provider.suppressReceiverLookup !== undefined) {
+        const baseName =
+          decodeReceiverChain(site.receiverChain)?.baseReceiverName ??
+          receiverName.split(/[.([\s]/, 1)[0];
+        const baseTypeRef =
+          baseName === undefined
+            ? undefined
+            : findReceiverTypeBinding(site.inScope, baseName, scopes);
+        if (baseTypeRef !== undefined && provider.suppressReceiverLookup(baseTypeRef)) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
+        }
+      }
 
       // ── owned-but-unbound receiver ───────────────────────────────
       // The language declared this scope REBINDS the receiver and gave
@@ -2344,6 +2369,7 @@ export function emitReceiverBoundCalls(
             const ambiguousCandidateIds = new Set<string>();
             const unknownCompatibilityCandidateIds = new Set<string>();
             const incompleteInheritanceSubtypeIds = new Set<string>();
+            const missingMemberSubtypeIds = new Set<string>();
             const visitedSubtypeIds = new Set<string>([ownerDef.nodeId]);
             const subtypeQueue = [ownerDef.nodeId];
             let subtypeHead = 0;
@@ -2449,7 +2475,13 @@ export function emitReceiverBoundCalls(
                   // indexed MRO, leaving this subtype's target unproven.
                   incompleteInheritanceSubtypeIds.add(subtype.nodeId);
                 }
-                if (subtypeAmbiguous || picked === undefined) continue;
+                if (subtypeAmbiguous) continue;
+                if (picked === undefined) {
+                  // This runtime subtype has no proven binding. Preserve
+                  // partial coverage even when a sibling supplies a target.
+                  missingMemberSubtypeIds.add(subtype.nodeId);
+                  continue;
+                }
                 subtypeTargets.set(picked.nodeId, picked);
               }
             }
@@ -2473,6 +2505,7 @@ export function emitReceiverBoundCalls(
                 ...ambiguousCandidateIds,
                 ...unknownCompatibilityCandidateIds,
                 ...incompleteInheritanceSubtypeIds,
+                ...missingMemberSubtypeIds,
               ]),
               MAX_INTERFACE_DISPATCH_FANOUT,
             );
