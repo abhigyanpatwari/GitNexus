@@ -31,6 +31,12 @@
  * `importFrom()` names that a *local* package provides, and
  * {@link resolveRImportTarget}'s `named` branch (`import-resolvers/r.ts`)
  * resolves them using {@link rFileTopLevel} / {@link rPackageDirForFile}.
+ *
+ * The file also hosts the pieces of `pkg::name()` qualifier handling that the
+ * global-name-fallback veto ({@link isRGlobalNameFallbackPlausible}) shares
+ * with `qualified-call.ts`: {@link parseRQualifier} and the per-package
+ * definition-count registry. The qualified-call decisions themselves live in
+ * `qualified-call.ts`.
  */
 
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';

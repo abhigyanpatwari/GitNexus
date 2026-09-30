@@ -215,15 +215,16 @@ export const rScopeResolver: ScopeResolver = {
   },
   resolveQualifiedFreeCall: resolveRQualifiedFreeCall,
 
-  // `populateRNamespaceImports` reads only ParsedFile scopes, never source
+  // `populateRNamespaceImports` and `populateRQualifiedCalls` read only ParsedFile scopes, never source
   // text: without this, merely declaring the hook makes the pipeline read the
   // text of every R file on the main thread.
   postExtractSourceTextPolicy: 'uncached-files',
 
   // A bare call whose name the caller package's NAMESPACE imports from a
   // package other than the one the unique-name guess landed in is impossible
-  // in R (see `isRGlobalNameFallbackPlausible` for the exact rule and the
-  // documented `pkg::name()` / `import()` limitations).
+  // in R (see `isRGlobalNameFallbackPlausible` for the exact rule, the
+  // qualifier-first handling of `pkg::name()` calls and the documented
+  // `import()` limitation).
   isGlobalNameFallbackPlausible: isRGlobalNameFallbackPlausible,
 
   // The free-call fallback keys defs by the text after the last `.` of their

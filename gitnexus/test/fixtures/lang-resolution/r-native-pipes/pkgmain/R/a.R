@@ -17,7 +17,7 @@ lambda_user <- function(df) {
   df |> (\(d) uniq_helper(d))()
 }
 
-# Namespaced stage, unique name in another package (qualifier is unused).
+# Namespaced stage, unique name in another package (bound precisely by its qualifier).
 ns_user <- function(df) {
   df |> pkgother::ext_fn() |> stage_one()
 }
