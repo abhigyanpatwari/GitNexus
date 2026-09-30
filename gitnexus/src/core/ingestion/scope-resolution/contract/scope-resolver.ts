@@ -422,8 +422,9 @@ export interface ScopeResolver {
   ): string | readonly string[] | null;
 
   /** Resolve names declared by the imported module after its files are known.
-   * Shared by route handlers and ordinary scope bindings. The result is a copy;
-   * extraction output and parse-cache entries remain unchanged. */
+   * Shared by route handlers and ordinary scope bindings. May return the input
+   * unchanged; changed bindings must be copies so extraction output and
+   * parse-cache entries remain unchanged. */
   readonly resolveImportBinding?: (
     parsedImport: ParsedImport,
     resolveTargetFiles: () => readonly string[],

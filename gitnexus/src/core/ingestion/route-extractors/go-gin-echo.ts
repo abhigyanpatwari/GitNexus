@@ -293,10 +293,12 @@ class RouterPrefixes {
 function receiverHint(
   node: SyntaxNode,
   bindings: GoRouteBindings,
+  memo: Map<GoRouteBinding, RouteHandlerReceiver | undefined>,
 ): RouteHandlerReceiver | undefined {
   const binding = bindings.lookup(node);
   // Workspace resolution checks the actual imported package's declared name.
   if (!binding) return { kind: 'module', qualifier: node.text };
+  if (memo.has(binding)) return memo.get(binding);
   if (binding.capturedWrite) return undefined;
   const hints = binding.values.map((value) =>
     value === null ? undefined : valueHint(value, bindings),
@@ -305,9 +307,10 @@ function receiverHint(
     hints.push(typeHint(binding.type, bindings));
   }
   const first = hints[0];
-  return first && hints.every((hint) => hint !== undefined && sameHint(hint, first))
-    ? first
-    : undefined;
+  const result =
+    first && hints.every((hint) => hint !== undefined && sameHint(hint, first)) ? first : undefined;
+  memo.set(binding, result);
+  return result;
 }
 
 interface VerbRegistration {
@@ -342,6 +345,7 @@ export function extractGoGinEchoRoutes(
   if (framework === null) return [];
 
   const out: ExtractedDecoratorRoute[] = [];
+  const handlerHints = new Map<GoRouteBinding, RouteHandlerReceiver | undefined>();
   let bindings: GoRouteBindings | undefined;
   for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
     const body = fn.childForFieldName('body');
@@ -377,7 +381,7 @@ export function extractGoGinEchoRoutes(
         const field = handler.childForFieldName('field');
         if (operand?.type === 'identifier' && field) {
           route.handlerName = `${operand.text}.${field.text}`;
-          const hint = receiverHint(operand, bindings);
+          const hint = receiverHint(operand, bindings, handlerHints);
           if (hint) route.handlerReceiver = hint;
         }
       }

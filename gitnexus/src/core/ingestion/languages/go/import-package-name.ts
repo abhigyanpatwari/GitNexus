@@ -2,5 +2,6 @@
 export function goImportPackageName(importPath: string): string {
   const segments = importPath.split('/').filter(Boolean);
   const leaf = segments.at(-1) ?? importPath;
-  return /^v\d+$/.test(leaf) && segments.length > 1 ? segments[segments.length - 2] : leaf;
+  const name = /^v\d+$/.test(leaf) && segments.length > 1 ? segments[segments.length - 2] : leaf;
+  return name.replace(/\.v\d+$/, '');
 }

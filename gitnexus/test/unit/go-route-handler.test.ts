@@ -49,6 +49,34 @@ const resolve = (
   });
 
 describe('resolveGoRouteHandler', () => {
+  it('deduplicates a method indexed by both its canonical owner and receiver name', () => {
+    const model = createSemanticModel();
+    struct(model, 'app/router/h.go', 'H');
+    method(model, 'app/router/h.go', 'H', 'Do');
+    const context = { model, importTargetsFor: () => [] };
+    const registration = route({
+      handlerName: 'h.Do',
+      handlerReceiver: { kind: 'type', name: 'H' },
+    });
+
+    expect(resolveGoRouteHandler(registration, context)).toBe('Method:app/router/h.go:H.Do');
+    expect(resolveGoRouteHandler(registration, context)).toBe('Method:app/router/h.go:H.Do');
+  });
+
+  it('rebuilds package indexes for a new resolution pass over a changed model', () => {
+    const model = createSemanticModel();
+    struct(model, 'app/router/types.go', 'H');
+    method(model, 'app/router/h.go', 'H', 'Do');
+    const registration = {
+      handlerName: 'h.Do',
+      handlerReceiver: { kind: 'type', name: 'H' },
+    } as const;
+    expect(resolve(model, registration)).toBe('Method:app/router/h.go:H.Do');
+
+    method(model, 'app/router/other.go', 'H', 'Do');
+    expect(resolve(model, registration)).toBeUndefined();
+  });
+
   it('resolves a constructor-built receiver to a method declared in a sibling file (issue #3402)', () => {
     const model = createSemanticModel();
     struct(model, 'app/router/types.go', 'MatchHandler');

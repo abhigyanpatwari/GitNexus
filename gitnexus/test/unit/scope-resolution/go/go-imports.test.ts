@@ -36,6 +36,9 @@ describe('Go import decomposition', () => {
     ['h "example.com/app/handlers/v2"', 'h'],
     ['"example.com/app/v2/handlers"', 'handlers'],
     ['"example.com/app/v2beta"', 'v2beta'],
+    ['"gopkg.in/yaml.v3"', 'yaml'],
+    ['yamlv3 "gopkg.in/yaml.v3"', 'yamlv3'],
+    ['"gopkg.in/yaml.v3beta"', 'yaml.v3beta'],
   ])('uses the same package qualifier for %s as route extraction', (spec, expected) => {
     const matches = parseThenSplit(`import ${spec}`);
     expect(matches[0]['@import.name']?.text).toBe(expected);
