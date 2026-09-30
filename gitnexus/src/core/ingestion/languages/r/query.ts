@@ -14,7 +14,7 @@
  *     (the whole `binary_operator` for the `name <- R6Class(...)` shape),
  *     not just `public = list(...)` — the `inherit=`/`contains=` argument
  *     must fall inside the scope's range so the `@reference.inherits` sites
- *     resolve against the deriving class's own scope (§6/stress-test).
+ *     resolve against the deriving class's own scope.
  *
  *   - `@declaration.function`/`@declaration.class` anchor on the WHOLE
  *     `name <- <rhs>` assignment (matching the legacy `@definition.*`

@@ -643,7 +643,7 @@ describe('R caller attribution', () => {
     });
   });
 
-  // ─── Invariance (named types; step-0 literals measured at HEAD) ───────────
+  // ─── Invariance (named types; literal counts measured before the change) ───────────
   describe('graph structure is unchanged by attribution', () => {
     for (const [label, count] of [
       ['Function', 58],
@@ -882,8 +882,8 @@ describe('R native pipe chains', () => {
     });
   });
 
-  // ─── O1: nested function sharing a name with a later top-level function ─
-  describe('nested function sharing a name with a top-level function (plan O1)', () => {
+  // ─── Nested function sharing a name with a later top-level function ─
+  describe('nested function sharing a name with a top-level function', () => {
     const N = 'pkgmain/R/nested.R';
     const targetStartLine = (fn: string): number | undefined => {
       const edge = callEdges(fn, N).find((e) => e.target === 'nest_fn');
@@ -1113,7 +1113,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       expect(edgeSummaries('r6_method_only_user', 'analytics/R/r6_use.R')).toEqual([]);
     });
 
-    it('documents residual O1: a nested function defined before the top-level one still wins the binding', () => {
+    it('documents a known limitation: a nested function defined before the top-level one still wins the binding', () => {
       // The named branch can only choose FILES; finalize's first-callable rule then picks the
       // nested def. Fixing it needs an `isExported` capture (query change): out of scope here.
       const edges = callEdges('nested_user', 'analytics/R/nested_use.R');

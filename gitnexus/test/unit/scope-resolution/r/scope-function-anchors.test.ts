@@ -183,14 +183,14 @@ describe('R scope function anchors', () => {
     expect(parsed).toEqual([true, true, true, true, true, true, true, true]);
   });
 
-  // ─── Scenario 1 / U1, U2: named forms ─────────────────────────────────────
-  describe('named assignment forms (scenario 1)', () => {
+  // ─── named forms ─────────────────────────────────────
+  describe('named assignment forms', () => {
     const scopes = scopesOf(FORMS_SRC);
 
-    // U1 (HEAD-failing): the def is owned by a Function scope whose range is
+    // HEAD-failing: the def is owned by a Function scope whose range is
     // the assignment (the def's anchor) and whose parent is the Module.
     for (const form of FORMS) {
-      it(`U1 ${form.label}: the def is owned by its own assignment-anchored Function scope`, () => {
+      it(`${form.label}: the def is owned by its own assignment-anchored Function scope`, () => {
         expect(ownerInfo(scopes, 'Function', form.name)).toEqual({
           kind: 'Function',
           parentKind: 'Module',
@@ -199,8 +199,8 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // U2 (HEAD-failing): the Module scope no longer owns any callable.
-    it('U2 the Module scope owns no callable def', () => {
+    // HEAD-failing: the Module scope no longer owns any callable.
+    it('the Module scope owns no callable def', () => {
       const callables = (moduleOf(scopes)?.ownedDefs ?? []).filter((d) => d.type === 'Function');
       expect(defNames(callables)).toEqual([]);
     });
@@ -213,12 +213,12 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // HEAD-passing (P1e): scope ids stay unique per file.
+    // HEAD-passing: scope ids stay unique per file.
     it('keeps scope ids unique', () => {
       expect(new Set(scopes.map((s) => s.id)).size).toBe(scopes.length);
     });
 
-    // HEAD-passing (scenario 7 / P1d): the def id still encodes the assignment start.
+    // HEAD-passing: the def id still encodes the assignment start.
     it('keeps the def node ids anchored at the assignment start', () => {
       const expected = FORMS.map((f) => `def:${FILE}#${f.row}:0:Function:${f.name}`).sort();
       expect(
@@ -229,12 +229,12 @@ describe('R scope function anchors', () => {
     });
   });
 
-  // ─── Scenario 2 / U3: nested functions ────────────────────────────────────
-  describe('nested functions (scenario 2, scenario 3)', () => {
+  // ─── nested functions ────────────────────────────────────
+  describe('nested functions', () => {
     const scopes = scopesOf(NESTED_SRC);
 
-    // U3 (HEAD-failing)
-    it("U3 the inner def is owned by inner's own assignment-anchored Function scope", () => {
+    // HEAD-failing
+    it("the inner def is owned by inner's own assignment-anchored Function scope", () => {
       expect(ownerInfo(scopes, 'Function', 'inner')).toEqual({
         kind: 'Function',
         parentKind: 'Function',
@@ -242,7 +242,7 @@ describe('R scope function anchors', () => {
       });
     });
 
-    it("U3 outer's function_definition scope owns nothing", () => {
+    it("outer's function_definition scope owns nothing", () => {
       expect(
         defNames(
           scopeByRange(scopes, 'Function', OUTER_FN)?.ownedDefs ?? [
@@ -258,7 +258,7 @@ describe('R scope function anchors', () => {
       expect(refs.map((r) => r.origin)).toEqual(['local']);
     });
 
-    // HEAD-passing (scenario 3): anonymous / named-argument lambdas own nothing
+    // HEAD-passing: anonymous / named-argument lambdas own nothing
     // and hang (transitively) under outer's function_definition scope.
     for (const snippet of ['function(z) h(z)', 'function(z) h2(z)', 'function(e) h3(e)']) {
       const anonymous = scopeByRange(scopes, 'Function', spanOf(NESTED_SRC, snippet));
@@ -273,15 +273,15 @@ describe('R scope function anchors', () => {
     }
   });
 
-  // ─── Scenario 4 / U4: R6 and R5 methods, P2 ───────────────────────────────
-  describe('R6 / R5 methods (scenario 4)', () => {
+  // ─── R6 and R5 methods ───────────────────────────────
+  describe('R6 / R5 methods', () => {
     const r6 = scopesOf(R6_SRC);
     const bare = scopesOf(BARE_R6_SRC);
     const r5 = scopesOf(R5_SRC);
     const classOwns = (scopes: readonly Scope[]): string[] =>
       (scopes.find((s) => s.kind === 'Class')?.ownedDefs ?? []).map((d) => d.type);
 
-    // U4 (HEAD-failing): one test each.
+    // HEAD-failing: one test each.
     const cases = [
       {
         label: 'R6 public',
@@ -320,7 +320,7 @@ describe('R scope function anchors', () => {
       },
     ];
     for (const c of cases) {
-      it(`U4 ${c.label}: the method is owned by a Function scope under the Class, which owns only the class def`, () => {
+      it(`${c.label}: the method is owned by a Function scope under the Class, which owns only the class def`, () => {
         expect({
           owner: ownerInfo(c.scopes, 'Method', c.name),
           classOwns: classOwns(c.scopes),
@@ -331,7 +331,7 @@ describe('R scope function anchors', () => {
       });
     }
 
-    // HEAD-passing (P2): ownerId + qualifiedName after populateClassOwnedMembers.
+    // HEAD-passing: ownerId + qualifiedName after populateClassOwnedMembers.
     // HEAD reaches this through branch 2 (defs owned by the Class scope); after
     // the fix through branch 1 (Function scope under Class): the invariant must
     // survive the mechanism swap.
@@ -342,22 +342,24 @@ describe('R scope function anchors', () => {
     it('qualifies a method as Class.method', () => {
       expect(findDef(r6, 'Method', 'deposit')?.qualifiedName).toBe('Acct.deposit');
     });
-    it('gives the class def a resolvable id (guards the two P2 assertions above)', () => {
+    it('gives the class def a resolvable id (guards the two ownerId/qualifiedName assertions above)', () => {
       expect(findDef(r6, 'Class', 'Acct')?.nodeId).toBe(`def:${FILE}#1:0:Class:Acct`);
     });
 
-    // ─── Scenario 8 / U6: nested named helper inside an R6 method ────────────
+    // ─── nested named helper inside an R6 method ────────────
     // HEAD stamps ownerId = class and qualifiedName `Acct.helper` on it (branch 1
     // matches its method's Function scope, whose parent is the Class). After the
     // fix its scope parent is a Function scope and nothing is stamped
-    // (walkers.ts depth invariant); the residual is accepted in the plan.
-    it('U6 a nested helper in an R6 method gets no ownerId', () => {
+    // (walkers.ts depth invariant). Losing the class attribution for such a
+    // helper is an accepted trade-off: it is a local function inside a method,
+    // not a class member, and keeps a bare qualifiedName.
+    it('a nested helper in an R6 method gets no ownerId', () => {
       expect(findDef(r6, 'Function', 'helper')?.ownerId).toBeUndefined();
     });
-    it('U6 a nested helper in an R6 method keeps a bare qualifiedName', () => {
+    it('a nested helper in an R6 method keeps a bare qualifiedName', () => {
       expect(findDef(r6, 'Function', 'helper')?.qualifiedName).toBe('helper');
     });
-    it('U6 the method itself keeps ownerId = class and Class.method', () => {
+    it('the method itself keeps ownerId = class and Class.method', () => {
       const run = findDef(r6, 'Method', 'run');
       expect({ ownerId: run?.ownerId, qualifiedName: run?.qualifiedName }).toEqual({
         ownerId: `def:${FILE}#1:0:Class:Acct`,
@@ -366,12 +368,12 @@ describe('R scope function anchors', () => {
     });
   });
 
-  // ─── Scenario 9 / U7: class body outside any method ───────────────────────
-  describe('class-body field default (scenario 9)', () => {
+  // ─── class body outside any method ───────────────────────
+  describe('class-body field default', () => {
     const scopes = scopesOf(FIELD_SRC);
 
-    // U7 (HEAD-failing): the Class scope owns ONLY the class def.
-    it('U7 the Class scope owns only the class def', () => {
+    // HEAD-failing: the Class scope owns ONLY the class def.
+    it('the Class scope owns only the class def', () => {
       const owned = scopes.find((s) => s.kind === 'Class')?.ownedDefs ?? [];
       expect(owned.map((d) => d.type)).toEqual(['Class']);
     });
@@ -392,16 +394,16 @@ describe('R scope function anchors', () => {
     });
   });
 
-  // ─── Scenario 5 / U5: single-function file, no trailing newline ───────────
-  describe('single-function file without a trailing newline (scenario 5)', () => {
+  // ─── single-function file, no trailing newline ───────────
+  describe('single-function file without a trailing newline', () => {
     const scopes = scopesOf(SOLO_SRC);
 
     it('keeps scope ids unique when the assignment range equals the program range', () => {
       expect(new Set(scopes.map((s) => s.id)).size).toBe(scopes.length);
     });
 
-    // U5 (HEAD-failing)
-    it('U5 the def is owned by a Function scope whose parent is the Module', () => {
+    // HEAD-failing
+    it('the def is owned by a Function scope whose parent is the Module', () => {
       expect(ownerInfo(scopes, 'Function', 'solo')).toEqual({
         kind: 'Function',
         parentKind: 'Module',
@@ -410,8 +412,8 @@ describe('R scope function anchors', () => {
     });
   });
 
-  // ─── Scenario 6: member-assigned functions ────────────────────────────────
-  describe('member-assigned functions (scenario 6)', () => {
+  // ─── Member-assigned functions ────────────────────────────────
+  describe('member-assigned functions', () => {
     const scopes = scopesOf(MEMBER_SRC);
 
     it('declares no def for obj$f <- function / x[["k"]] <- function', () => {

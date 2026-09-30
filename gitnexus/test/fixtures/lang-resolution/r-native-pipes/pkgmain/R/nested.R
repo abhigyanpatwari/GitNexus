@@ -1,4 +1,4 @@
-# Nested function sharing a name with a later top-level function (plan O1).
+# Nested function sharing a name with a later top-level function.
 nested_outer <- function(d) {
   nest_fn <- function(x) x
   d |> nest_fn() |> stage_two(1)

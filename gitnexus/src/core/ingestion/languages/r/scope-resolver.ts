@@ -3,8 +3,8 @@
  * generic `runScopeResolution` orchestrator.
  *
  * Thin wiring: import resolution reuses `resolveRImportTarget`
- * (`import-resolvers/r.ts`), the adapter step 2 of this plan added over the
- * existing `resolveRImportInternal`, with the repo's local R packages
+ * (`import-resolvers/r.ts`), an adapter over the existing
+ * `resolveRImportInternal`, with the repo's local R packages
  * threaded through `loadRPackageConfig`. Heritage (R6 `inherit=`, S4
  * `contains=`) mostly rides the generic `@reference.inherits` mechanism —
  * R6/S4 base names are ordinary scope-bound class names, unlike Ruby's
@@ -17,7 +17,7 @@
  * consults graph nodes directly. `emitRVirtualHeritageEdges` below mints
  * the placeholder `VIRTUAL` graph node and its EXTENDS edge directly,
  * mirroring Ruby's `emitRubyMixinEdges` shape for the same reason: a
- * heritage target this plan's fixtures name but never declare.
+ * heritage target that R code names but never declares.
  */
 
 import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
@@ -50,10 +50,10 @@ const VIRTUAL_CLASS_NAME = 'VIRTUAL';
 
 /**
  * Mint the `VIRTUAL` placeholder Class node (once) and an EXTENDS edge from
- * every S4 class whose `contains=` names it, exactly the literal fixture
- * string `"VIRTUAL"` (§12 Q1) — not a general policy for arbitrary S4
- * base-type sentinels (`"numeric"`, `"list"`, …), which is a distinct,
- * out-of-scope design question.
+ * every S4 class whose `contains=` names it. Scope is deliberately limited to
+ * the literal string `"VIRTUAL"`: other S4 base-type sentinels (`"numeric"`,
+ * `"list"`, …) are not treated as placeholder classes, which would be a
+ * separate design decision.
  *
  * Idempotent: re-seeds its dedup set from any `EXTENDS` edge already
  * targeting a node named `VIRTUAL` before emitting, and re-uses the graph's
@@ -108,9 +108,9 @@ function emitRVirtualHeritageEdges(
  * `library()`/`require()` are R's wildcard imports — every top-level name of
  * the named local package becomes visible, UNFILTERED by NAMESPACE (a
  * `library()`/`require()` call brings the whole package's namespace into
- * scope regardless of what NAMESPACE declares as exported — verified during
- * the plan's stress-test round: `pkgA/NAMESPACE` does not export `ResultSet`,
- * yet `require("pkgA")` must still resolve it).
+ * scope regardless of what NAMESPACE declares as exported — confirmed by a
+ * fixture where `pkgA/NAMESPACE` does not export `ResultSet`, yet
+ * `require("pkgA")` must still resolve it).
  *
  * A bare name is dropped when the same file also defines a dotted top-level
  * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
