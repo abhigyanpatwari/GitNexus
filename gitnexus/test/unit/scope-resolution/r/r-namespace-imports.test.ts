@@ -973,7 +973,7 @@ describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
     });
   });
 
-  it('T11 (known limitation, fork #7): vetoes the correct legacyscore::mutate() edge — the qualifier is not consulted', () => {
+  it('T11 (fork #7 flip): allows the correct legacyscore::mutate() edge — the qualifier names the candidate package', () => {
     expect(
       verdict({
         importFrom: [['dplyr', 'mutate']],
@@ -982,7 +982,7 @@ describe('isRGlobalNameFallbackPlausible — global-name guess veto', () => {
         name: 'mutate',
         rawQualifiedName: 'legacyscore::mutate',
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('handles a root-level caller package (dir "")', () => {

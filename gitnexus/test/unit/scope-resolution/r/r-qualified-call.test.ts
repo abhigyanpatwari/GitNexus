@@ -1,38 +1,29 @@
 /**
- * R qualified-call helpers (fork #7, plan step 3):
+ * R qualified-call helpers (fork #7):
  *
  *  - `parseRQualifier(raw)`: the package named by a `@reference.qualified-name` text;
  *  - `rQualifierLocality(pkg, cfg, filePaths)`: `local` | `external` | `unknown`;
- *  - `RPackageConfig.truncated`: set by `loadRPackageConfig` when its depth-3 / 200-directory
- *    walk stopped with directories unvisited.
- *
- * The helpers live in `languages/r/qualified-call.ts`, which does not exist at this commit.
- * Decision: the helper tests are `it.fails`, importing the module through a non-literal
- * dynamic specifier. Today the import rejects, so each test fails and `it.fails` passes; at
- * step 3 the module exists, the tests pass, `it.fails` turns red, and that forces the flip to
- * `it`. (`describe.skip` would keep the suite green too, but nothing would ever prompt the
- * un-skip; a literal `import` of the missing file would break the whole file at transform time.)
- * The assertions themselves were checked against a temporary spike implementation.
- * TODO step 3: change `it.fails` to `it`, delete the TEMPORARY-PIN, make the import static.
+ *  - `loadRPackageConfig` sets `RPackageConfig.truncated` when its depth-3 / 200-directory
+ *    walk (or an unreadable directory) left part of the repo unvisited;
+ *  - the global-name-fallback veto's qualifier rule (`isRGlobalNameFallbackPlausible`).
  */
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import type { RPackageConfig } from '../../../../src/core/ingestion/languages/r/package-config.js';
 import { loadRPackageConfig } from '../../../../src/core/ingestion/languages/r/package-config.js';
+import {
+  parseRQualifier,
+  rQualifierLocality,
+  type RQualifierLocality,
+} from '../../../../src/core/ingestion/languages/r/qualified-call.js';
+import {
+  isRGlobalNameFallbackPlausible,
+  rRecordQualifiedDefinitionCounts,
+} from '../../../../src/core/ingestion/languages/r/namespace-imports.js';
 
-// Non-literal specifier: vite must not resolve it at transform time (the file does not exist yet).
-const QUALIFIED_CALL_MODULE = '../../../../src/core/ingestion/languages/r/qualified-call.js';
-
-type Locality = 'local' | 'external' | 'unknown';
-interface QualifiedCallModule {
-  parseRQualifier(raw: string): string | undefined;
-  rQualifierLocality(
-    pkg: string,
-    cfg: RPackageConfig | null,
-    filePaths: ReadonlySet<string>,
-  ): Locality;
-}
-const load = (): Promise<QualifiedCallModule> => import(/* @vite-ignore */ QUALIFIED_CALL_MODULE);
+type Locality = RQualifierLocality;
 
 const FIXTURES = path.resolve(__dirname, '..', '..', '..', 'fixtures', 'lang-resolution');
 
@@ -41,8 +32,7 @@ function config(packages: Record<string, string>, truncated?: boolean): RPackage
     packages: new Map(Object.entries(packages)),
     namespaceInfoByPackageDir: new Map(),
   };
-  // `truncated` is added to RPackageConfig at step 3; the cast keeps this file compiling now.
-  return truncated === undefined ? cfg : Object.assign(cfg, { truncated });
+  return truncated === undefined ? cfg : { ...cfg, truncated };
 }
 
 describe('parseRQualifier', () => {
@@ -59,15 +49,9 @@ describe('parseRQualifier', () => {
     ['::f', undefined],
   ];
 
-  // TEMPORARY-PIN (remove at step 3): the module is absent, so the failures above are the
-  // intended "not implemented yet" and not a typo in the specifier.
-  it('TEMPORARY-PIN: languages/r/qualified-call.ts does not exist yet', async () => {
-    await expect(load()).rejects.toThrow();
-  });
-
   for (const [raw, expected] of cases) {
-    it.fails(`TODO step 3: ${JSON.stringify(raw)} -> ${JSON.stringify(expected)}`, async () => {
-      expect((await load()).parseRQualifier(raw)).toBe(expected);
+    it(`${JSON.stringify(raw)} -> ${JSON.stringify(expected)}`, () => {
+      expect(parseRQualifier(raw)).toBe(expected);
     });
   }
 });
@@ -155,8 +139,8 @@ describe('rQualifierLocality', () => {
   ];
 
   for (const c of cases) {
-    it.fails(`TODO step 3: ${c.title}`, async () => {
-      expect((await load()).rQualifierLocality(c.pkg, c.cfg, c.files)).toBe(c.expected);
+    it(c.title, () => {
+      expect(rQualifierLocality(c.pkg, c.cfg, c.files)).toBe(c.expected);
     });
   }
 });
@@ -182,26 +166,86 @@ describe('loadRPackageConfig: discovery completeness on the qualified-call fixtu
     expect([...(cfg?.packages ?? [])]).toEqual([['caller', 'caller']]);
   });
 
-  // TEMPORARY-PIN (remove at step 3): the flag does not exist yet.
-  it('TEMPORARY-PIN: RPackageConfig carries no truncated flag today', async () => {
-    for (const fixture of ['r-qualified-calls', 'r-qualified-calls-truncated']) {
-      const cfg = await load2(fixture);
-      expect((cfg as { truncated?: boolean } | null)?.truncated).toBeUndefined();
+  it('truncated is false when the walk completed', async () => {
+    expect((await load2('r-qualified-calls'))?.truncated).toBe(false);
+  });
+
+  it('truncated is true when a directory below depth 3 was skipped', async () => {
+    expect((await load2('r-qualified-calls-truncated'))?.truncated).toBe(true);
+  });
+});
+
+describe('loadRPackageConfig: truncation by the directory cap', () => {
+  it('truncated is true when the 200-directory cap stops the walk with directories queued', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-truncated-cap-'));
+    try {
+      await fs.writeFile(path.join(root, 'DESCRIPTION'), 'Package: rootpkg\n');
+      for (let i = 0; i < 210; i++) await fs.mkdir(path.join(root, `filler${String(i)}`));
+      const cfg = await loadRPackageConfig(root);
+      expect([...(cfg?.packages ?? [])]).toEqual([['rootpkg', '']]);
+      expect(cfg?.truncated).toBe(true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
+});
 
-  it.fails('TODO step 3: truncated is false when the walk completed', async () => {
-    expect(((await load2('r-qualified-calls')) as { truncated?: boolean } | null)?.truncated).toBe(
-      false,
-    );
+describe('isRGlobalNameFallbackPlausible: qualifier rule', () => {
+  const cfg: RPackageConfig = {
+    packages: new Map([
+      ['caller', 'caller'],
+      ['named', 'named'],
+      ['other', 'other'],
+    ]),
+    namespaceInfoByPackageDir: new Map([
+      [
+        'caller',
+        {
+          hasNamespaceFile: true,
+          namedExports: new Set(),
+          exportPatterns: [],
+          importFrom: [{ pkg: 'ext', name: 'mutate' }],
+        },
+      ],
+    ]),
+  };
+  const verdict = (qualified: string | undefined, candidate: string, config = cfg): boolean =>
+    isRGlobalNameFallbackPlausible({
+      callerParsed: { filePath: 'caller/R/a.R' },
+      candidate: { filePath: candidate },
+      resolutionConfig: config,
+      site: { name: 'mutate', rawQualifiedName: qualified },
+    });
+
+  it('allows a candidate inside the named local package (whatever importFrom says)', () => {
+    expect(verdict('named::mutate', 'named/R/m.R')).toBe(true);
   });
 
-  it.fails(
-    'TODO step 3: truncated is true when a directory below depth 3 was skipped',
-    async () => {
-      expect(
-        ((await load2('r-qualified-calls-truncated')) as { truncated?: boolean } | null)?.truncated,
-      ).toBe(true);
-    },
-  );
+  it('vetoes a candidate elsewhere when the named package defines the name', () => {
+    rRecordQualifiedDefinitionCounts(cfg, new Map([['named', new Map([['mutate', 1]])]]));
+    expect(verdict('named::mutate', 'other/R/o.R')).toBe(false);
+  });
+
+  it('falls through to the NAMESPACE rules when the named package defines none (re-export)', () => {
+    rRecordQualifiedDefinitionCounts(cfg, new Map([['named', new Map()]]));
+    // importFrom(ext, mutate) + a candidate in a third package: today's importFrom veto.
+    expect(verdict('named::mutate', 'other/R/o.R')).toBe(false);
+    const noImportFrom: RPackageConfig = { ...cfg, namespaceInfoByPackageDir: new Map() };
+    rRecordQualifiedDefinitionCounts(noImportFrom, new Map([['named', new Map()]]));
+    expect(verdict('named::mutate', 'other/R/o.R', noImportFrom)).toBe(true);
+  });
+
+  it('falls through when no counts were recorded for the config', () => {
+    const fresh: RPackageConfig = { ...cfg };
+    expect(verdict('named::mutate', 'other/R/o.R', fresh)).toBe(false); // importFrom rule, as before
+  });
+
+  it('ignores a qualifier naming a package outside the config', () => {
+    expect(verdict('elsewhere::mutate', 'other/R/o.R')).toBe(false); // importFrom rule, as before
+  });
+
+  it('a site without a qualifier is judged by the NAMESPACE rules only', () => {
+    expect(verdict(undefined, 'other/R/o.R')).toBe(false);
+    expect(verdict(undefined, 'caller/R/c.R')).toBe(true);
+  });
 });

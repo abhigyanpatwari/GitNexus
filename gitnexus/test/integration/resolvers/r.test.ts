@@ -680,7 +680,8 @@ describe('R caller attribution', () => {
  * The fixture is synthetic (`r-native-pipes/`, three packages); one function per
  * scenario so each assertion is an exact `source -> targets` set.
  * magrittr `%>%` is deliberately NOT covered (no support claimed either way).
- * Two tests pin known-wrong name-only results for `pkg::fn` stages (fork #7).
+ * The `pkg::fn` stages are bound by their qualifier (fork #7); three tests were flipped
+ * from the pre-#7 name-only results.
  */
 describe('R native pipe chains', () => {
   let result: PipelineResult;
@@ -841,30 +842,36 @@ describe('R native pipe chains', () => {
       );
     });
 
-    it('resolves it by the 0.5 global-name-fallback (the qualifier is unused)', () => {
+    it('resolves it precisely from the qualifier: pkgother defines ext_fn once (fork #7 flip; was global-name-fallback:0.5)', () => {
       expect(
         callEdges('ns_user', A)
           .filter((e) => e.target === 'ext_fn')
           .map((e) => `${e.rel.reason}:${e.rel.confidence}`),
-      ).toEqual(['global-name-fallback:0.5']);
+      ).toEqual(['import-resolved:0.85']);
     });
   });
 
   describe('namespaced stage whose name is also defined in the calling file', () => {
-    it('documents current name-only behaviour (fork #7)', () => {
-      // `pkgother::amb_stage()` is qualified, yet the edge goes to the LOCAL definition
-      // (0.85 local-call): the qualifier is discarded. A false edge; fork #7 should flip this.
+    it('binds the qualified stage to the named package, not the local definition (fork #7 flip)', () => {
+      // `pkgother::amb_stage()` is qualified: the edge goes to pkgother's definition, not to the
+      // same-named definition in the calling file (was a false 0.85 local-call self-file edge).
       expect(
         callEdges('ns_amb_user', A).map((e) => `${e.target}:${e.targetFilePath}:${e.rel.reason}`),
-      ).toEqual(['amb_stage:pkgmain/R/a.R:local-call']);
+      ).toEqual(['amb_stage:pkgother/R/e.R:import-resolved']);
     });
   });
 
   describe('namespaced stages whose name is defined in two other packages', () => {
-    it('documents current name-only behaviour (fork #7)', () => {
-      // `pkgother::amb_only() |> pkgthird::amb_only()`: ambiguous by name alone, so no edge
-      // even though each qualifier names exactly one definition. Fork #7 should flip this.
-      expect(callsFrom('ns_amb2_user', B)).toEqual([]);
+    it('binds each stage to the package its qualifier names (fork #7 flip)', () => {
+      // `pkgother::amb_only() |> pkgthird::amb_only()`: ambiguous by name alone, but each
+      // qualifier names exactly one definition (pkgthird has no DESCRIPTION: it is local through
+      // its `pkgthird/R/` path). Was: no edge.
+      expect(callsFrom('ns_amb2_user', B)).toEqual(['amb_only']);
+      expect(
+        callEdges('ns_amb2_user', B)
+          .map((e) => e.targetFilePath)
+          .sort(),
+      ).toEqual(['pkgother/R/e.R', 'pkgthird/R/t.R']);
     });
   });
 
@@ -1178,25 +1185,27 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       const refused = (result.resolutionOutcomes ?? []).filter(
         (o) => o.kind === 'fallback-refused',
       );
-      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'mutate', 'mutate']);
+      // Fork #7 flip: the qualified `legacyscore::mutate()` is no longer refused (it binds to
+      // legacyscore); only the bare `mutate_user()` refusal remains. Was ['dup_ext', 'mutate', 'mutate'].
+      expect(refused.map((o) => o.name).sort()).toEqual(['dup_ext', 'mutate']);
     });
   });
 
   describe('explicitly qualified call to another local package', () => {
-    it('documents current name-only behaviour after importFrom() binding (fork #7)', () => {
-      // `legacyscore::tidy_scores()` names legacyscore, yet the qualifier is discarded and the
-      // synthesised import (scorelib) binds it: a FALSE 0.85 edge (baseline: ambiguous, no edge).
-      // Fork #7 should flip this.
+    it('binds the call to the named package, not to the importFrom() provider (fork #7 flip)', () => {
+      // `legacyscore::tidy_scores()` names legacyscore; the synthesised import would bind the
+      // name to scorelib (a false 0.85 edge before fork #7).
       expect(edgeSummaries('qualified_user', 'analytics/R/fork7.R')).toEqual([
-        'tidy_scores:scorelib/R/s.R:import-resolved:0.85',
+        'tidy_scores:legacyscore/R/l.R:import-resolved:0.85',
       ]);
     });
 
-    it('documents current name-only behaviour (fork #7): a correct qualified edge is refused by the veto', () => {
-      // `legacyscore::mutate()` names the package that really defines `mutate`, but the qualifier
-      // is discarded and the NAMESPACE imports `mutate` from dplyr, so the guess is vetoed
-      // (baseline before the veto: a correct 0.5 edge to legacyscore). Fork #7 should flip this.
-      expect(edgeSummaries('qualified_mutate_user', 'analytics/R/fork7.R')).toEqual([]);
+    it('keeps a correct qualified edge although the NAMESPACE imports the name from dplyr (fork #7 flip)', () => {
+      // `legacyscore::mutate()` names the package that really defines `mutate`. The qualifier
+      // outranks `importFrom(dplyr, mutate)`: the edge is precise (was vetoed: no edge).
+      expect(edgeSummaries('qualified_mutate_user', 'analytics/R/fork7.R')).toEqual([
+        'mutate:legacyscore/R/l.R:import-resolved:0.85',
+      ]);
     });
   });
 });

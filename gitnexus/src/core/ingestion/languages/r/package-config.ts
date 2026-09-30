@@ -15,6 +15,16 @@ export interface RPackageConfig {
   packages: Map<string, string>;
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
   namespaceInfoByPackageDir: Map<string, RNamespaceInfo>;
+  /**
+   * True when discovery did NOT visit every directory of the repo: the
+   * directory cap stopped the walk with directories still queued, the depth
+   * limit skipped directories, or a directory could not be read. A package
+   * missing from {@link packages} is then not proven to be absent from the
+   * repo, so `rQualifierLocality` answers `unknown` rather than `external`.
+   * Optional so that hand-built configs (tests, callers that never scan) read
+   * as "complete".
+   */
+  truncated?: boolean;
 }
 
 export interface RNamespaceInfo {
@@ -39,6 +49,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   const maxDepth = 3;
   const maxDirs = 200;
   let dirsScanned = 0;
+  let truncated = false;
 
   while (scanQueue.length > 0 && dirsScanned < maxDirs) {
     const { dir, depth } = scanQueue.shift()!;
@@ -46,13 +57,17 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory() && depth < maxDepth) {
+        if (entry.isDirectory()) {
           if (
             entry.name === 'node_modules' ||
             entry.name === '.git' ||
             entry.name === '.Rproj.user'
           )
             continue;
+          // Below the depth limit: never visited, so a package could hide there.
+          if (depth >= maxDepth) truncated = true;
+        }
+        if (entry.isDirectory() && depth < maxDepth) {
           scanQueue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
         }
         if (entry.isFile() && entry.name === 'DESCRIPTION') {
@@ -94,10 +109,13 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
         }
       }
     } catch {
-      // Can't read directory
+      // Can't read directory: whatever it holds was not discovered.
+      truncated = true;
     }
   }
 
+  // The directory cap stopped the walk with directories still queued.
+  if (scanQueue.length > 0) truncated = true;
   if (packages.size === 0) return null;
-  return { packages, namespaceInfoByPackageDir };
+  return { packages, namespaceInfoByPackageDir, truncated };
 }

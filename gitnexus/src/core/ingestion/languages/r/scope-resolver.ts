@@ -41,6 +41,7 @@ import {
   rFileTopLevel,
 } from './namespace-imports.js';
 import { rProvider } from '../r.js';
+import { populateRQualifiedCalls, resolveRQualifiedFreeCall } from './qualified-call.js';
 import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 
 /** Literal string `"VIRTUAL"` graph id — one node shared by every S4 class
@@ -203,7 +204,16 @@ export const rScopeResolver: ScopeResolver = {
   // NAMESPACE `importFrom()` names provided by a LOCAL package become
   // synthesised `named` imports (`resolveRImportTarget`'s named branch binds
   // them). Runs before finalize and over warm-cache ParsedFiles too.
-  populateWorkspaceReferences: populateRNamespaceImports,
+  //
+  // Followed by `populateRQualifiedCalls` (fork #7): it decides each
+  // `pkg::name()` site by the qualifier — drops external / ambiguous ones and
+  // records the single definition a local one names for
+  // `resolveQualifiedFreeCall` below. Import synthesis is unchanged and first.
+  populateWorkspaceReferences: (parsedFiles, ctx) => {
+    populateRNamespaceImports(parsedFiles, ctx);
+    populateRQualifiedCalls(parsedFiles, ctx);
+  },
+  resolveQualifiedFreeCall: resolveRQualifiedFreeCall,
 
   // `populateRNamespaceImports` reads only ParsedFile scopes, never source
   // text: without this, merely declaring the hook makes the pipeline read the

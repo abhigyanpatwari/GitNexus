@@ -421,8 +421,8 @@ export function rPackageDirForFile(
 
 // ─── Top-level definitions of a parsed file ────────────────────────────────
 
-/** Def kinds an R `importFrom()` can bind to (functions and R6/R5/S4 classes). */
-const TOP_LEVEL_BINDABLE_TYPES: ReadonlySet<string> = new Set(['Function', 'Class']);
+/** Def kinds an R `importFrom()` (or a `pkg::name()` call) can bind to (functions and R6/R5/S4 classes). */
+export const TOP_LEVEL_BINDABLE_TYPES: ReadonlySet<string> = new Set(['Function', 'Class']);
 
 /** What one R file defines at top level, read from its Module scope. */
 export interface RFileTopLevel {
@@ -592,6 +592,60 @@ export function populateRNamespaceImports(
   }
 }
 
+// ─── `pkg::name()` qualifier helpers (fork #7) ──────────────────────────────
+
+/**
+ * The package named by the text of an `@reference.qualified-name` capture (the
+ * whole `namespace_operator`, e.g. `pkg::f`, `pkg:::f`, `pkg ::: f`,
+ * `"pkg"::f`, `` `pkg`::f ``): the text before the first `::` / `:::`,
+ * trimmed, with one pair of surrounding `"`, `'` or backticks removed.
+ * `undefined` when there is no `::` or the package part is empty. The
+ * function name is not parsed here: it is the site's own `name`.
+ *
+ * Lives here (not in `qualified-call.ts`, which re-exports it) because the
+ * veto below needs it and `qualified-call.ts` imports this file.
+ */
+export function parseRQualifier(raw: string): string | undefined {
+  const match = /^([\s\S]*?)\s*:::?/.exec(raw);
+  if (match === null) return undefined;
+  let pkg = match[1].trim();
+  if (pkg.length >= 2 && /^(["'`])[\s\S]*\1$/.test(pkg)) pkg = pkg.slice(1, -1);
+  return pkg.length === 0 ? undefined : pkg;
+}
+
+/**
+ * Per local package, how many top-level definitions of each name it has in its
+ * `R/` files, recorded by `populateRQualifiedCalls` for the packages that some
+ * `pkg::name()` call in the workspace names. Keyed by the `resolutionConfig`
+ * object (like {@link packageTopLevelNames}), which reaches both that hook and
+ * the free-call-fallback veto. A missing entry means "cannot decide".
+ */
+const qualifiedDefinitionCounts = new WeakMap<
+  object,
+  ReadonlyMap<string, ReadonlyMap<string, number>>
+>();
+
+/** Record (replacing any earlier record) the per-package definition counts for `resolutionConfig`. */
+export function rRecordQualifiedDefinitionCounts(
+  resolutionConfig: object,
+  counts: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): void {
+  qualifiedDefinitionCounts.set(resolutionConfig, counts);
+}
+
+/**
+ * Number of top-level definitions of `name` recorded for local package `pkg`,
+ * or `undefined` when nothing was recorded (hook did not run for that package).
+ */
+export function rQualifiedDefinitionCount(
+  resolutionConfig: object,
+  pkg: string,
+  name: string,
+): number | undefined {
+  const byName = qualifiedDefinitionCounts.get(resolutionConfig)?.get(pkg);
+  return byName === undefined ? undefined : (byName.get(name) ?? 0);
+}
+
 // ─── Global-name fallback veto (isGlobalNameFallbackPlausible) ──────────────
 
 /**
@@ -603,7 +657,7 @@ export interface RGlobalNameFallbackContext {
   readonly candidate: { readonly filePath: string };
   /** Opaque `loadResolutionConfig` result; an {@link RPackageConfig} for R. */
   readonly resolutionConfig?: unknown;
-  readonly site: { readonly name: string };
+  readonly site: { readonly name: string; readonly rawQualifiedName?: string };
 }
 
 /**
@@ -625,10 +679,15 @@ export interface RGlobalNameFallbackContext {
  * `scripts/`, root `plumber.R`), no entry, candidate outside any package
  * `R/` — answers `true`, so `source()`/`library()` script flows are untouched.
  *
- * Known unsound shapes, pinned by characterisation tests (fork #7): the
- * qualifier of `pkg::name()` is discarded, so a correct `legacyscore::mutate()`
- * edge is refused when `importFrom(dplyr, mutate)` exists; and `import(pkg)`
- * is not tokenised, so a later `import(pkg)` that R would prefer is invisible.
+ * A qualified call `pkg::name()` (site carries `rawQualifiedName`) is judged
+ * by its qualifier first (fork #7): with `pkg` a local package, a candidate
+ * inside `pkg` is plausible whatever the NAMESPACE says, and a candidate
+ * elsewhere is vetoed when `pkg` itself defines `name`. A `pkg` that defines
+ * nothing of that name (re-export), or that is not a local package, falls
+ * through to the NAMESPACE rules above.
+ *
+ * Known unsound shape, pinned by a characterisation test: `import(pkg)` is not
+ * tokenised, so a later `import(pkg)` that R would prefer is invisible.
  */
 export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext): boolean {
   const cfg = ctx.resolutionConfig as RPackageConfig | null | undefined;
@@ -639,6 +698,22 @@ export function isRGlobalNameFallbackPlausible(ctx: RGlobalNameFallbackContext):
     !(cfg.namespaceInfoByPackageDir instanceof Map)
   ) {
     return true;
+  }
+
+  // Qualified call `pkg::name()`: the source named the package, so the package
+  // outranks the caller's NAMESPACE. A candidate inside a local `pkg` is right;
+  // a candidate elsewhere contradicts the qualifier when `pkg` defines `name`
+  // itself. A `pkg` that defines nothing of that name (a re-export) or that has
+  // no recorded counts cannot be judged from here: fall through to the rules
+  // below, i.e. today's behaviour. An unknown or external `pkg` falls through
+  // too (external sites are dropped upstream, before any fallback tier).
+  const qualifier =
+    ctx.site.rawQualifiedName === undefined
+      ? undefined
+      : parseRQualifier(ctx.site.rawQualifiedName);
+  if (qualifier !== undefined && cfg.packages.has(qualifier)) {
+    if (rPackageDirForFile(ctx.candidate.filePath, cfg)?.name === qualifier) return true;
+    if ((rQualifiedDefinitionCount(cfg, qualifier, ctx.site.name) ?? 0) > 0) return false;
   }
 
   const caller = rPackageDirForFile(ctx.callerParsed.filePath, cfg);
