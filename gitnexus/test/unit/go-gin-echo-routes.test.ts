@@ -78,6 +78,69 @@ func Setup() {
     ).toEqual(['PUT /raw -> H']);
   });
 
+  describe('Go string literals', () => {
+    it.each([
+      [String.raw`"\x2fapi"`, String.raw`"\057users"`, '/api/users'],
+      [String.raw`"\u002fapi"`, String.raw`"/\U0001F600"`, '/api/😀'],
+      [String.raw`"/caf\xc3\xa9"`, String.raw`"/\303\251"`, '/café/é'],
+      [String.raw`"/a\"b"`, String.raw`"/c\\d"`, '/a"b/c\\d'],
+      ['`/a\rb`', '`/c\rd`', '/ab/cd'],
+    ])('decodes group %s and route %s', (group, route, expected) => {
+      expect(summary(`func S(r *gin.Engine) { r.Group(${group}).GET(${route}, H) }`)).toEqual([
+        `GET ${expected} -> H`,
+      ]);
+    });
+
+    it.each([
+      String.raw`"/\q"`,
+      String.raw`"/\400"`,
+      String.raw`"/\uD800"`,
+      String.raw`"/\U00110000"`,
+      String.raw`"/\x2"`,
+      String.raw`"/\'"`,
+      // Go permits arbitrary byte strings, but these have no lossless UTF-8 URL.
+      String.raw`"/\xff"`,
+    ])('declines invalid or unrepresentable path %s', (route) => {
+      expect(summary(`func S(r *gin.Engine) { r.GET(${route}, H) }`)).toEqual([]);
+    });
+  });
+
+  describe('framework alias shadowing', () => {
+    it.each([
+      'func S(gin Factory) { gin.New().GET("/x", H) }',
+      'func (gin Factory) S() { gin.New().GET("/x", H) }',
+      'func S() (gin Factory) { gin.New().GET("/x", H); return }',
+      'func S() { gin := Factory{}; gin.New().GET("/x", H) }',
+      'func S() { var gin Factory; gin.New().GET("/x", H) }',
+      'func S() { const gin = Factory(1); gin.New().GET("/x", H) }',
+      'func S() { type gin = Factory; gin.New(value).GET("/x", H) }',
+      'func S() { for gin := range factories { gin.New().GET("/x", H) } }',
+      'func S() { select { case gin := <-factories: gin.New().GET("/x", H) } }',
+      'func S(x any) { switch gin := x.(type) { case Factory: gin.New().GET("/x", H) } }',
+      'func S(gin Factory) { func() { gin.New().GET("/x", H) }() }',
+    ])('does not trust a shadowed constructor: %s', (body) => {
+      expect(summary(body)).toEqual([]);
+    });
+
+    it('also checks an explicitly aliased echo import', () => {
+      expect(
+        summary(
+          'func S(e Factory) { r := e.New(); r.GET("/x", H) }',
+          'import e "github.com/labstack/echo/v4"\n',
+        ),
+      ).toEqual([]);
+    });
+
+    it('keeps independent functions using the real package', () => {
+      expect(
+        summary(`
+func S(gin Factory) { gin.New().GET("/wrong", H) }
+func T() { gin.New().GET("/right", H) }
+`),
+      ).toEqual(['GET /right -> H']);
+    });
+  });
+
   describe('fails closed on unproven prefixes', () => {
     it('drops routes on a RouterGroup parameter', () => {
       expect(summary(`func registerAdmin(g *gin.RouterGroup) { g.GET("/x", h) }`)).toEqual([]);

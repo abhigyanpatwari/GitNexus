@@ -30,6 +30,17 @@ describe('Go import decomposition', () => {
     expect(matches[0]['@import.name']?.text).toBe('fmt');
   });
 
+  it.each([
+    ['"example.com/app/handlers/v2"', 'handlers'],
+    ['h "example.com/app/handlers/v2"', 'h'],
+    ['"example.com/app/v2/handlers"', 'handlers'],
+    ['"example.com/app/v2beta"', 'v2beta'],
+  ])('uses the same package qualifier for %s as route extraction', (spec, expected) => {
+    const matches = parseThenSplit(`import ${spec}`);
+    expect(matches[0]['@import.name']?.text).toBe(expected);
+    expect(interpretGoImport(matches[0])?.localName).toBe(expected);
+  });
+
   it('decomposes grouped imports', () => {
     const src = `import (
   "fmt"

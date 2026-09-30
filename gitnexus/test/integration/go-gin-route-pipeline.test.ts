@@ -88,6 +88,14 @@ describe('gin / echo route ingestion pipeline', () => {
         handlerFile: 'undefined',
       },
       {
+        // A version suffix belongs to the path, not the package qualifier.
+        identity: 'GET /api/v1/status',
+        routeFile: 'router/router.go',
+        handler: 'Status',
+        handlerLabel: 'Function',
+        handlerFile: 'status/v2/status.go',
+      },
+      {
         identity: 'GET /api/v1/version',
         routeFile: 'router/router.go',
         handler: 'Version',
@@ -147,6 +155,18 @@ describe('gin / echo route ingestion pipeline', () => {
       handler: result.graph.getNode(String(edge?.sourceId))?.properties.name,
       reason: edge?.reason,
     }).toEqual({ handler: 'UnfinalizeRoundHandle', reason: 'gin-route' });
+  });
+
+  it('draws HANDLES_ROUTE for an unaliased versioned handler package', () => {
+    const edge = relationships().find(
+      (rel) =>
+        rel.type === 'HANDLES_ROUTE' &&
+        rel.targetId === 'Route:GET /api/v1/status' &&
+        result.graph.getNode(rel.sourceId)?.label === 'Function',
+    );
+    expect(result.graph.getNode(String(edge?.sourceId))?.properties.filePath).toBe(
+      'status/v2/status.go',
+    );
   });
 
   it('links the handler to the service method it calls', () => {

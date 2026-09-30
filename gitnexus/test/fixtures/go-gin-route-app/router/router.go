@@ -5,6 +5,7 @@ import (
 
 	"example.com/ginapp/handlers"
 	"example.com/ginapp/service"
+	"example.com/ginapp/status/v2"
 )
 
 func RegisterRoutes(r *gin.Engine, svc *service.Service) {
@@ -19,6 +20,7 @@ func RegisterRoutes(r *gin.Engine, svc *service.Service) {
 	}
 	v1.POST("/login", auth.Login)
 	v1.GET("/health", handlers.Health)
+	v1.GET("/status", status.Status)
 	v1.GET("/version", Version)
 	v1.GET("/ping", func(c *gin.Context) { c.String(200, "pong") })
 	registerLegacy(v1)

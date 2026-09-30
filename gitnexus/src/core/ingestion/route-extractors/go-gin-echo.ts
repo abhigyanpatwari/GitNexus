@@ -24,6 +24,7 @@
  */
 
 import type Parser from 'tree-sitter';
+import { goImportPackageName } from '../languages/go/import-package-name.js';
 import { normalizeExtractedRoutePath } from './route-path.js';
 import type { SyntaxNode } from 'tree-sitter';
 import type { ExtractedDecoratorRoute, RouteHandlerReceiver } from '../workers/parse-worker.js';
@@ -57,14 +58,56 @@ const FUNCTION_TYPE_LIST = ['function_declaration', 'method_declaration', 'func_
 const FUNCTION_TYPES: ReadonlySet<string> = new Set(FUNCTION_TYPE_LIST);
 
 function stringLiteral(node: SyntaxNode | null | undefined): string | null {
-  if (!node) return null;
-  if (node.type === 'interpreted_string_literal') {
-    // An escape sequence would need decoding; a route path never carries one.
-    if (node.namedChildren.some((c) => c.type === 'escape_sequence')) return null;
-    return node.text.slice(1, -1);
+  if (!node || node.hasError) return null;
+  const body = node.text.slice(1, -1);
+  // Go discards carriage returns in raw strings, including CRLF source files.
+  if (node.type === 'raw_string_literal') return body.replace(/\r/g, '');
+  if (node.type !== 'interpreted_string_literal') return null;
+  if (!body.includes('\\')) return body;
+
+  const simple: Readonly<Record<string, string>> = {
+    a: '\x07',
+    b: '\b',
+    f: '\f',
+    n: '\n',
+    r: '\r',
+    t: '\t',
+    v: '\v',
+    '\\': '\\',
+    '"': '"',
+  };
+  const chunks: Buffer[] = [];
+  const tokens =
+    /\\(?:[abfnrtv\\"]|[0-7]{3}|x[\da-fA-F]{2}|u[\da-fA-F]{4}|U[\da-fA-F]{8})|[^\\"\n]+/g;
+  let consumed = 0;
+  for (const match of body.matchAll(tokens)) {
+    if (match.index !== consumed) return null;
+    const token = match[0];
+    consumed += token.length;
+    if (!token.startsWith('\\')) {
+      chunks.push(Buffer.from(token));
+    } else if (simple[token[1]] !== undefined) {
+      chunks.push(Buffer.from(simple[token[1]]));
+    } else {
+      const octal = /[0-7]/.test(token[1]);
+      const value = Number.parseInt(token.slice(octal ? 1 : 2), octal ? 8 : 16);
+      if (octal || token[1] === 'x') {
+        // Octal and hex escapes encode bytes, not Unicode code points.
+        if (value > 255) return null;
+        chunks.push(Buffer.from([value]));
+      } else {
+        if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return null;
+        chunks.push(Buffer.from(String.fromCodePoint(value)));
+      }
+    }
   }
-  if (node.type === 'raw_string_literal') return node.text.slice(1, -1);
-  return null;
+  if (consumed !== body.length) return null;
+  try {
+    // Arbitrary non-UTF-8 Go byte strings cannot be represented losslessly in a URL.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
+  } catch {
+    return null;
+  }
 }
 
 /** Local import names, and the framework this file routes with (if exactly one). */
@@ -85,10 +128,7 @@ function readImports(root: SyntaxNode): {
     const explicit = spec.childForFieldName('name')?.text;
     // `_` and `.` imports bind no qualifier this file can call through.
     if (explicit === '_' || explicit === '.') continue;
-    const segments = importPath.split('/');
-    const last = segments[segments.length - 1] ?? '';
-    const isVersionSuffix = /^v\d+$/.test(last) && segments.length > 1;
-    const local = explicit ?? (isVersionSuffix ? segments[segments.length - 2] : last);
+    const local = explicit ?? goImportPackageName(importPath);
     if (!local) continue;
     localNames.add(local);
     if (importPath === 'github.com/gin-gonic/gin') gin = local;
@@ -195,16 +235,23 @@ function collectBindings(fn: SyntaxNode, nodes: readonly SyntaxNode[], fw: Frame
     else map.set(key, [value]);
   };
 
-  const params = [fn.childForFieldName('receiver'), fn.childForFieldName('parameters')].filter(
-    (n): n is SyntaxNode => n !== null,
-  );
+  const params = [
+    fn.childForFieldName('receiver'),
+    fn.childForFieldName('parameters'),
+    fn.childForFieldName('result'),
+  ].filter((n): n is SyntaxNode => n !== null);
   for (const list of params) {
     for (const decl of list.namedChildren) {
-      if (decl.type !== 'parameter_declaration') continue;
+      if (decl.type !== 'parameter_declaration' && decl.type !== 'variadic_parameter_declaration')
+        continue;
       const type = decl.childForFieldName('type');
       const hint = typeHint(type);
       const isEngine =
-        hint?.kind === 'type' && hint.qualifier === fw.alias && hint.name === fw.engineType;
+        decl.type === 'parameter_declaration' &&
+        list.id !== fn.childForFieldName('result')?.id &&
+        hint?.kind === 'type' &&
+        hint.qualifier === fw.alias &&
+        hint.name === fw.engineType;
       for (const name of decl.childrenForFieldName('name')) {
         if (isEngine) engineParams.add(name.text);
         push(declared, name.text, hint ?? null);
@@ -222,7 +269,7 @@ function collectBindings(fn: SyntaxNode, nodes: readonly SyntaxNode[], fw: Frame
         const value = right.length === left.length ? right[i] : i === 0 ? right[0] : undefined;
         push(values, lhs.text, value ?? null);
       });
-    } else if (node.type === 'var_spec') {
+    } else if (node.type === 'var_spec' || node.type === 'const_spec') {
       const names = node.childrenForFieldName('name');
       const right = node.childForFieldName('value')?.namedChildren ?? [];
       const hint = typeHint(node.childForFieldName('type'));
@@ -233,6 +280,18 @@ function collectBindings(fn: SyntaxNode, nodes: readonly SyntaxNode[], fw: Frame
           push(declared, name.text, hint ?? null);
         }
       });
+    } else if (
+      node.type === 'range_clause' ||
+      node.type === 'receive_statement' ||
+      node.type === 'type_switch_statement'
+    ) {
+      const left = node.childForFieldName(node.type === 'type_switch_statement' ? 'alias' : 'left');
+      for (const name of left?.namedChildren ?? []) {
+        if (name.type === 'identifier' && name.text !== '_') push(values, name.text, null);
+      }
+    } else if (node.type === 'type_spec' || node.type === 'type_alias') {
+      const name = node.childForFieldName('name');
+      if (name) push(declared, name.text, null);
     }
   }
   return { values, declared, engineParams };
@@ -245,6 +304,7 @@ class RouterPrefixes {
   constructor(
     private readonly bindings: Bindings,
     private readonly fw: Framework,
+    private readonly frameworkAliasShadowed: boolean,
   ) {}
 
   /** Proven prefix of a router expression, or null when it cannot be proven. */
@@ -261,7 +321,7 @@ class RouterPrefixes {
     const field = fn.childForFieldName('field')?.text;
     if (!operand || !field) return null;
     if (operand.type === 'identifier' && operand.text === this.fw.alias) {
-      return this.fw.constructors.has(field) ? '' : null;
+      return !this.frameworkAliasShadowed && this.fw.constructors.has(field) ? '' : null;
     }
     if (field !== 'Group') return null;
     const path = stringLiteral(node.childForFieldName('arguments')?.namedChild(0));
@@ -344,6 +404,19 @@ export function extractGoGinEchoRoutes(
   if (framework === null) return [];
 
   const out: ExtractedDecoratorRoute[] = [];
+  const bindingsByFunction = new Map<number, Bindings>();
+  const bindingsFor = (
+    fn: SyntaxNode,
+    body: SyntaxNode,
+    nodes?: readonly SyntaxNode[],
+  ): Bindings => {
+    let bindings = bindingsByFunction.get(fn.id);
+    if (!bindings) {
+      bindings = collectBindings(fn, nodes ?? bodyNodes(body), framework);
+      bindingsByFunction.set(fn.id, bindings);
+    }
+    return bindings;
+  };
   for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
     const body = fn.childForFieldName('body');
     if (!body) continue;
@@ -354,8 +427,20 @@ export function extractGoGinEchoRoutes(
     });
     // Most functions in a gin-importing file register nothing; skip their bindings.
     if (registrations.length === 0) continue;
-    const bindings = collectBindings(fn, nodes, framework);
-    const prefixes = new RouterPrefixes(bindings, framework);
+    const bindings = bindingsFor(fn, body, nodes);
+    let aliasShadowed =
+      bindings.values.has(framework.alias) || bindings.declared.has(framework.alias);
+    // A closure can capture a shadowing name even when it declares no locals itself.
+    // Like router assignments, shadowing is conservatively checked across each body.
+    for (let outer = fn.parent; outer && !aliasShadowed; outer = outer.parent) {
+      if (!FUNCTION_TYPES.has(outer.type)) continue;
+      const outerBody = outer.childForFieldName('body');
+      if (!outerBody) continue;
+      const outerBindings = bindingsFor(outer, outerBody);
+      aliasShadowed =
+        outerBindings.values.has(framework.alias) || outerBindings.declared.has(framework.alias);
+    }
+    const prefixes = new RouterPrefixes(bindings, framework, aliasShadowed);
 
     for (const { call, verb, receiver, args, path } of registrations) {
       const prefix = prefixes.of(receiver);
