@@ -20,12 +20,13 @@
  * for symbols that aren't in the NAMESPACE exports.
  */
 
-import type { KnowledgeGraph } from '../graph/types.js';
-import type { MutableSemanticModel } from './model/semantic-model.js';
-import type { RPackageConfig } from './languages/r/package-config.js';
+import type { KnowledgeGraph } from '../../../graph/types.js';
+import type { MutableSemanticModel } from '../../model/semantic-model.js';
+import type { PostParseContext } from '../../language-provider.js';
+import { loadRPackageConfig, type RPackageConfig } from './package-config.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { generateId } from '../../lib/utils.js';
+import { generateId } from '../../../../lib/utils.js';
 
 type EdgeLabel = 'HAS_METHOD' | 'HAS_PROPERTY';
 
@@ -140,4 +141,15 @@ export const refineRExportStatus = (
     // Not in NAMESPACE → not exported.
     node.properties.isExported = false;
   });
+};
+
+/**
+ * R's `LanguageProvider.postParse` hook: deferred owner attach for methods and
+ * properties, then NAMESPACE-driven export refinement. Runs once per analyze,
+ * after every chunk is merged and before scope resolution.
+ */
+export const rPostParse = async (ctx: PostParseContext): Promise<void> => {
+  attachDeferredROwners(ctx.graph, ctx.model, 'Method', 'HAS_METHOD');
+  attachDeferredROwners(ctx.graph, ctx.model, 'Property', 'HAS_PROPERTY');
+  refineRExportStatus(ctx.graph, await loadRPackageConfig(ctx.repoPath));
 };

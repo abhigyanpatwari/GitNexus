@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { refineRExportStatus } from '../../src/core/ingestion/r-post-parse.js';
+import { refineRExportStatus } from '../../src/core/ingestion/languages/r/post-parse.js';
 import type {
   RNamespaceInfo,
   RPackageConfig,

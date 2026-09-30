@@ -16,6 +16,7 @@ import { RFieldExtractor } from '../field-extractors/r.js';
 import { rMethodExtractor } from '../method-extractors/r.js';
 import { emitRScopeCaptures } from './r/captures.js';
 import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
+import { rPostParse } from './r/post-parse.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -183,4 +184,5 @@ export const rProvider = defineLanguage({
   emitScopeCaptures: emitRScopeCaptures,
   interpretImport: interpretRImport,
   interpretTypeBinding: interpretRTypeBinding,
+  postParse: rPostParse,
 });

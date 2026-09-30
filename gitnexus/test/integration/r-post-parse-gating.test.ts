@@ -49,21 +49,16 @@ afterAll(() => {
 });
 
 describe('R post-parse gating', () => {
-  // FAILS TODAY: `runChunkedParseAndResolve` calls `loadRPackageConfig` for every repo. Step 4 of the
-  // fork-#19 plan moves that work behind `LanguageProvider.postParse` (run only for languages with
-  // parsed files) and flips this `it.fails` to `it`.
-  it.fails(
-    'a non-R repo with DESCRIPTION/NAMESPACE decoys never reads a manifest',
-    async () => {
-      const root = makeRepo({ 'src/main.py': 'def main():\n    return 1\n', ...DECOYS });
-      const readFile = vi.spyOn(fsp, 'readFile');
+  // R's package-config walk runs inside `LanguageProvider.postParse`, which the parse phase calls only
+  // for languages with parsed files, so a repo with no R files never reads a manifest.
+  it('a non-R repo with DESCRIPTION/NAMESPACE decoys never reads a manifest', async () => {
+    const root = makeRepo({ 'src/main.py': 'def main():\n    return 1\n', ...DECOYS });
+    const readFile = vi.spyOn(fsp, 'readFile');
 
-      await runPipelineFromRepo(root, () => {});
+    await runPipelineFromRepo(root, () => {});
 
-      expect(manifestReads(readFile)).toEqual([]);
-    },
-    60000,
-  );
+    expect(manifestReads(readFile)).toEqual([]);
+  }, 60000);
 
   it('control: an R repo with the same layout reads the root DESCRIPTION (the spy sees the loader)', async () => {
     const root = makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS });

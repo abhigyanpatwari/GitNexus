@@ -3,7 +3,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { GraphRelationship, NodeLabel } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
-import { attachDeferredROwners } from '../../src/core/ingestion/r-post-parse.js';
+import { attachDeferredROwners } from '../../src/core/ingestion/languages/r/post-parse.js';
 import { generateId } from '../../src/lib/utils.js';
 
 // Characterisation tests for the R deferred-owner attach (fork #19, step 1).
