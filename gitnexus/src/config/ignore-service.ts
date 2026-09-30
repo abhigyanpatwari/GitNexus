@@ -1,5 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
-import { existsSync } from 'fs';
+import { existsSync, lstatSync, readFileSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
@@ -532,8 +532,65 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
 };
 
 /**
+ * Resolve `.gitignore` files below the repository root (#2675).
+ *
+ * `loadIgnoreRules` only reads the root `.gitignore`, so a monorepo package
+ * or checked-out submodule with its own `.gitignore` had its generated
+ * output indexed anyway. Each nested file is read lazily (glob's filter is
+ * synchronous) and cached per directory, and its patterns are matched
+ * against the path relative to that directory, like git does.
+ *
+ * Returns `true` when the deepest nested file with a matching rule ignores
+ * the path, `false` when that rule is a negation, and `undefined` when no
+ * nested file has an opinion. The root rules are left to the caller, so
+ * `.gitnexusignore` keeps its current precedence.
+ */
+const createNestedGitignoreMatcher = (
+  repoPath: string,
+): ((rel: string, isDirectory: boolean) => boolean | undefined) => {
+  const cache = new Map<string, Ignore | null>();
+
+  const rulesFor = (dirRel: string): Ignore | null => {
+    const cached = cache.get(dirRel);
+    if (cached !== undefined) return cached;
+    let rules: Ignore | null = null;
+    const filePath = nodePath.join(repoPath, dirRel, '.gitignore');
+    try {
+      // git does not follow a symlinked .gitignore in the working tree, and
+      // reading one here could pull rules from outside the repository.
+      if (lstatSync(filePath).isFile()) {
+        rules = ignore().add(readFileSync(filePath, 'utf-8'));
+      }
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+        logger.warn(`  Warning: could not read ${filePath}: ${(err as Error).message}`);
+      }
+    }
+    cache.set(dirRel, rules);
+    return rules;
+  };
+
+  return (rel: string, isDirectory: boolean): boolean | undefined => {
+    const parts = rel.split('/');
+    // Deepest directory first: a deeper .gitignore overrides a shallower one.
+    // The root (i === 0) is covered by loadIgnoreRules.
+    for (let i = parts.length - 1; i > 0; i--) {
+      const rules = rulesFor(parts.slice(0, i).join('/'));
+      if (!rules) continue;
+      const sub = parts.slice(i).join('/');
+      const result = rules.test(isDirectory ? `${sub}/` : sub);
+      if (result.ignored) return true;
+      if (result.unignored) return false;
+    }
+    return undefined;
+  };
+};
+
+/**
  * Create a glob-compatible ignore filter combining:
  * - .gitignore / .gitnexusignore patterns (via `ignore` package)
+ * - nested .gitignore files, scoped to their own directory (#2675)
  * - Hardcoded DEFAULT_IGNORE_LIST, IGNORED_EXTENSIONS, IGNORED_FILES
  *
  * Returns an IgnoreLike object for glob's `ignore` option,
@@ -550,6 +607,8 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
  */
 export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptions) => {
   const ig = await loadIgnoreRules(repoPath, options);
+  const skipGitignore = options?.noGitignore ?? !!process.env.GITNEXUS_NO_GITIGNORE;
+  const nestedIgnores = skipGitignore ? null : createNestedGitignoreMatcher(repoPath);
 
   return {
     ignored(p: Path): boolean {
@@ -565,6 +624,8 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // by `__tests__/generated/` negates the parent but still blocks
       // the re-ignored child.
       if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel)) return false;
+      // Nested .gitignore files below the root (#2675)
+      if (nestedIgnores?.(rel, false)) return true;
       // Check .gitignore / .gitnexusignore patterns
       if (ig && ig.ignores(rel)) return true;
       // Fall back to hardcoded rules
@@ -596,6 +657,8 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // the `ignore` package normalizes `dir` and `dir/` to match directories.
       // See: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames
       if (ig && rel && ig.ignores(rel + '/')) return true;
+      // Nested .gitignore files below the root (#2675)
+      if (rel && nestedIgnores?.(rel, true)) return true;
       return false;
     },
   };
