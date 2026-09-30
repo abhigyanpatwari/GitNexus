@@ -140,7 +140,7 @@ withTestLbugDB(
           // definition. The graph-name fallback must recover the exact node.
           const result = await augment('login', handle.dbPath);
           expect(result).toContain('[GitNexus]');
-          expect(result).toContain('login');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
         } finally {
           spy.mockRestore();
         }
@@ -161,7 +161,7 @@ withTestLbugDB(
           // FTS-ranked files defines it. Exact-name lookup must still recover it.
           const result = await augment('login', handle.dbPath);
           expect(result).toContain('[GitNexus]');
-          expect(result).toContain('login');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
         } finally {
           spy.mockRestore();
         }
