@@ -130,23 +130,38 @@ withTestLbugDB(
         expect(result).toBe('');
       });
 
-      // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
-      //
-      // When FTS is available but happens to return zero BM25 hits, the
-      // CONTAINS fallback must NOT fire — preserving the original early-return
-      // semantics. If anyone later loosens the gate to `symbolMatches.length
-      // === 0` alone, this test fails.
-
-      it('does NOT fire CONTAINS fallback when FTS is available but BM25 returns empty', async () => {
+      it('falls back to graph names when FTS is available but BM25 returns empty', async () => {
         const bm25 = await import('../../src/core/search/bm25-index.js');
         const spy = vi
           .spyOn(bm25, 'searchFTSFromLbug')
           .mockResolvedValue({ results: [], ftsAvailable: true });
         try {
-          // 'login' WOULD match a graph node via CONTAINS, but FTS is available
-          // and empty → fallback gate must hold → result must be ''.
+          // FTS health does not imply its top file results contain the symbol's
+          // definition. The graph-name fallback must recover the exact node.
           const result = await augment('login', handle.dbPath);
-          expect(result).toBe('');
+          expect(result).toContain('[GitNexus]');
+          expect(result).toContain('login');
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('finds an exact-name symbol when FTS ranks only mentioning files', async () => {
+        const bm25 = await import('../../src/core/search/bm25-index.js');
+        const spy = vi.spyOn(bm25, 'searchFTSFromLbug').mockResolvedValue({
+          results: Array.from({ length: 5 }, (_, i) => ({
+            filePath: `src/caller-${i}.ts`,
+            score: 100 - i,
+            nodeIds: [`file:caller-${i}`],
+          })),
+          ftsAvailable: true,
+        });
+        try {
+          // The graph contains func:login in src/auth.ts, but none of the
+          // FTS-ranked files defines it. Exact-name lookup must still recover it.
+          const result = await augment('login', handle.dbPath);
+          expect(result).toContain('[GitNexus]');
+          expect(result).toContain('login');
         } finally {
           spy.mockRestore();
         }
