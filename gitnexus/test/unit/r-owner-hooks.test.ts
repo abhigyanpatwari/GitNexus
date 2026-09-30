@@ -2,7 +2,11 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
-import { rResolveMemberOwnerNode } from '../../src/core/ingestion/languages/r/owner-hooks.js';
+import {
+  rDefinitionProperties,
+  rResolveMemberOwnerNode,
+} from '../../src/core/ingestion/languages/r/owner-hooks.js';
+import type { DefinitionPropertiesContext } from '../../src/core/ingestion/language-provider.js';
 import { rProvider } from '../../src/core/ingestion/languages/r.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
@@ -92,5 +96,51 @@ describe('resolveMemberOwnerNode provider wiring', () => {
     ]) {
       expect(getProvider(lang).resolveMemberOwnerNode).toBeUndefined();
     }
+  });
+});
+
+describe('rDefinitionProperties (ownerNameHint)', () => {
+  const ctxFor = (
+    nodeLabel: DefinitionPropertiesContext['nodeLabel'],
+    definitionNode: SyntaxNode,
+  ): DefinitionPropertiesContext => ({
+    nodeLabel,
+    nodeName: 'x',
+    filePath: 'R/x.R',
+    definitionNode,
+    parsedImports: [],
+    isExported: true,
+  });
+  const setMethodCall = (): SyntaxNode =>
+    find((n) => n.type === 'call' && n.childForFieldName('function')?.text === 'setMethod');
+
+  it('hints the string class of a setMethod(...) Method', () => {
+    expect(rDefinitionProperties(ctxFor('Method', setMethodCall()))).toEqual({
+      ownerNameHint: 'Circle',
+    });
+  });
+
+  it('hints the R6 class of an R6 Method', () => {
+    expect(rDefinitionProperties(ctxFor('Method', fnDefinitionOn(0)))).toEqual({
+      ownerNameHint: 'Foo',
+    });
+  });
+
+  it('hints the R6 class of an R6 Property', () => {
+    const field = find((n) => n.type === 'argument' && n.childForFieldName('name')?.text === 'n');
+    expect(rDefinitionProperties(ctxFor('Property', field))).toEqual({ ownerNameHint: 'Foo' });
+  });
+
+  it('returns undefined for a Function label or a plain function', () => {
+    expect(rDefinitionProperties(ctxFor('Function', fnDefinitionOn(3)))).toBeUndefined();
+    expect(rDefinitionProperties(ctxFor('Method', fnDefinitionOn(3)))).toBeUndefined();
+    expect(rDefinitionProperties(ctxFor('Function', setMethodCall()))).toBeUndefined();
+  });
+
+  it('is registered as the R definitionPropertiesExtractor only', () => {
+    expect(rProvider.definitionPropertiesExtractor).toBe(rDefinitionProperties);
+    expect(getProvider(SupportedLanguages.Python).definitionPropertiesExtractor).not.toBe(
+      rDefinitionProperties,
+    );
   });
 });

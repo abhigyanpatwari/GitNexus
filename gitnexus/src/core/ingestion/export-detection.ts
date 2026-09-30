@@ -276,20 +276,6 @@ export const zigExportChecker: ExportChecker = (node, _name) => {
   return false;
 };
 
-/** Check for `#' @export` in preceding roxygen2 comment block */
-const hasRoxygenExport = (node: SyntaxNode): boolean => {
-  let sibling = node.previousSibling;
-  while (sibling) {
-    if (sibling.type === 'comment' && sibling.text.startsWith("#'")) {
-      if (/#'\s*@export\b/.test(sibling.text)) return true;
-    } else if (sibling.type !== 'comment' && sibling.isNamed) {
-      break;
-    }
-    sibling = sibling.previousSibling;
-  }
-  return false;
-};
-
 /**
  * Does this Zig declaration carry a `pub` or `export` keyword child? Feeds
  * `isExported` (visible outside the compilation unit — to Zig importers OR to
@@ -319,11 +305,8 @@ export function hasZigPubKeyword(declNode: SyntaxNode): boolean {
 }
 
 /**
- * R: roxygen2 @export detection with default-public fallback.
- * NAMESPACE-aware refinement runs as a post-processing step in parse-impl.ts
- * (ExportChecker has no file-path context; NAMESPACE detection needs it).
+ * R: every definition is exported by default. NAMESPACE-driven export
+ * refinement lives in R's `postParse` hook (ExportChecker has no file-path
+ * context; NAMESPACE detection needs it).
  */
-export const rExportChecker: ExportChecker = (node, _name) => {
-  if (hasRoxygenExport(node)) return true;
-  return true; // Default: public (refined by post-processing for packages)
-};
+export const rExportChecker: ExportChecker = (_node, _name) => true;

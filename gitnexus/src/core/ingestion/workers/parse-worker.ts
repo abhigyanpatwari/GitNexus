@@ -179,8 +179,6 @@ import {
   DEFAULT_PDG_MAX_FUNCTION_LINES,
   type CfgSkipCounts,
 } from '../cfg/collect.js';
-import { getRTopLevelPropertyOwnerName } from '../field-extractors/r.js';
-import { getRTopLevelMethodOwnerName } from '../method-extractors/r.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -285,11 +283,6 @@ interface ParsedSymbol {
   declaredType?: string;
   templateArguments?: string[];
   ownerId?: string;
-  /** R-specific: deferred owner name hint when enclosingClassId cannot be found
-   *  via AST walk (e.g., setMethod("foo", "ClassName", fn) where ClassName is
-   *  a string argument, not a syntactic parent). Resolved to ownerId in parse-impl.ts
-   *  after all Class symbols are registered in the TypeRegistry. */
-  ownerNameHint?: string;
   visibility?: string;
   isStatic?: boolean;
   isReadonly?: boolean;
@@ -3102,19 +3095,6 @@ const processFileGroup = (
         if (definitionProperties !== undefined) Object.assign(methodProps, definitionProperties);
       }
 
-      // R-specific deferred owner hints for setMethod/property nodes whose parent
-      // AST is a function call (R6Class/setClass/setRefClass/setMethod).
-      // Resolved to an ownerId in parse-impl.ts after all Class symbols are registered.
-      const ownerNameHint =
-        language === SupportedLanguages.R && definitionNode && !enclosingClassId
-          ? nodeLabel === 'Method'
-            ? (getRTopLevelMethodOwnerName(definitionNode) ??
-              getRTopLevelPropertyOwnerName(definitionNode))
-            : nodeLabel === 'Property'
-              ? getRTopLevelPropertyOwnerName(definitionNode)
-              : null
-          : null;
-
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -3146,7 +3126,6 @@ const processFileGroup = (
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
           ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
-          ...(ownerNameHint ? { ownerNameHint } : {}),
         }),
       });
 
@@ -3169,7 +3148,6 @@ const processFileGroup = (
           ? { templateArguments: classTemplateArguments }
           : {}),
         ...(ownerId !== undefined ? { ownerId } : {}),
-        ...(ownerNameHint ? { ownerNameHint } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
