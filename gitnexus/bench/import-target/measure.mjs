@@ -5,8 +5,8 @@
  * — over ONE shared corpus so the arms are directly comparable. One arm per
  * registered language, plus a second `csharp` arm carrying csproj configs
  * (#2902), so there is one more arm than there are languages. The newest row
- * is `zig` (PR #1432), added the day its resolver registered — the inventory
- * arm below is what noticed it missing, which is the arm doing its job.
+ * is `r`, which registered without a row and was reported by the inventory arm
+ * below — the arm doing its job — after `zig` (PR #1432), which did the same.
  *
  * NO LANGUAGE IS OMITTED, and that is the point of the list rather than an
  * accident of it. Nine of these arms (go, csharp, csharp_csproj, dart, ruby,
@@ -126,6 +126,19 @@
  *     `test/unit/zig-import-resolver.test.ts`, so this fingerprint pins the
  *     path-walking resolver alone and does not move when that config parsing
  *     changes.
+ *
+ *   - r: one resolver behind three import forms, and the arm builds all three
+ *     (see `uniqueTarget`): `library(pkg)` (a wildcard that resolves to every
+ *     file of the package's `R/`), `source("R/file.R")` (a side-effect import
+ *     answered by the suffix index after an exact-join miss) and a NAMESPACE
+ *     `importFrom(pkg, name)` (a named import that reads the parsed workspace,
+ *     spelled `pkg::name` in the corpus). It passes the package map a
+ *     `DESCRIPTION` scan yields and is a `CONTEXT_LANGS` member. Two of its
+ *     legs are O(files) per import rather than keyed (a local `library()` scans
+ *     the file list for the `R/` prefix; every `source()` path runs
+ *     `normalizedFileList.indexOf` before the index), which is why R reads the
+ *     highest scaling of the linear-budget languages; `_r_arm` in
+ *     baselines.json has the per-leg numbers.
  *
  * Two properties of the corpus are load-bearing and must not be "simplified":
  *
@@ -495,6 +508,7 @@ import { typescriptScopeResolver } from '../../src/core/ingestion/languages/type
 import { cScopeResolver } from '../../src/core/ingestion/languages/c/scope-resolver.ts';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.ts';
 import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.ts';
+import { rScopeResolver } from '../../src/core/ingestion/languages/r/scope-resolver.ts';
 // `SCOPE_RESOLVERS` is NOT imported here — see the inventory arm at the bottom,
 // which loads it dynamically. Statically it costs 6-10 s of module load
 // depending on the box (measured both ways there), because reaching the
@@ -604,6 +618,9 @@ const HEAP_BUDGETED = [
   'go',
   'cpp',
   'objc',
+  // R retains the shared workspace file index (57.26 MiB at 32000 files, ratio
+  // 0.970 against the 1.25 budget), so it takes the full ceiling + floor + ratio.
+  'r',
 ];
 // javascript, typescript and vue were budgeted here until #2953 and are now
 // BOUNDED, which is a demotion in gate strength and a promotion in what the
@@ -632,7 +649,7 @@ const HEAP_BUDGETED = [
  * parameters cannot observe a context and are not listed, so their timed
  * numbers stay on the three-argument shape.
  */
-const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python', 'swift', 'c', 'cpp', 'r'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -765,6 +782,7 @@ const EXTENSION = {
   cpp: '.cpp',
   objc: '.m',
   zig: '.zig',
+  r: '.R',
 };
 /** C and C++ resolve `#include` against HEADERS, which reach the resolver
  *  through `resolutionConfig` rather than through `allFilePaths` — see
@@ -897,6 +915,12 @@ function uniqueDir(lang, d, i) {
   // share the other unique arms take from a nested directory comes from the
   // target instead (see `uniqueTarget`).
   if (lang === 'zig') return `src/mod${d}`;
+  // An R package keeps its sources in `<pkg>/R/` and nothing else in the
+  // namespace, so one package per index with its files flat under `R/` is the
+  // layout `library()` (every file of `<pkg>/R/`) and `importFrom()` (the file
+  // defining one name) both address. Flat on purpose: R has no nested source
+  // directories inside `R/`, so there is no `d % 7` nested slice to mint.
+  if (lang === 'r') return `pkg${d}/R`;
   throw unwiredLanguage('uniqueDir', lang);
 }
 
@@ -992,6 +1016,11 @@ function collideDir(lang, d, i) {
   // axis that CAN grow — `collideTarget` spells its imports up through the
   // tree and back down, ~4x the components of the unique arm.
   if (lang === 'zig') return `src/l0/l1/l2/l3/l4/mod${d}`;
+  // `svc{d}/R/mod{k}.R` in every package: the conventional flat `R/` directory
+  // with a repeated basename per package, so the `source("R/mod{k}.R")` spelling
+  // below is ambiguous across every package and its suffix lookup answers from
+  // a bucket that grows with the corpus.
+  if (lang === 'r') return `svc${d}/R`;
   throw unwiredLanguage('collideDir', lang);
 }
 
@@ -1046,7 +1075,8 @@ function buildFiles(lang, fileCount, pad, shape) {
       layout === 'vue' ||
       layout === 'python' ||
       layout === 'c' ||
-      layout === 'cpp';
+      layout === 'cpp' ||
+      layout === 'r';
     const [fileStem, modStem] = PASCAL_CASE_FILES.has(layout) ? ['File', 'Mod'] : ['file', 'mod'];
     let stem =
       shape === 'collide' && collideStem ? `${modStem}${Math.floor(i / dirs)}` : `${fileStem}${i}`;
@@ -1167,6 +1197,58 @@ const kotlinProbeFile = (filePath, packageName, exportName) => {
   };
 };
 
+/**
+ * An R file whose Module scope binds each of `names` to a top-level function,
+ * which is exactly what `rFileTopLevel` reads — and ONLY that, because
+ * `localDefs` also lists nested functions and R6 members and cannot answer "is
+ * this defined at top level". The resolver reads the bindings, never the def's
+ * other fields, so the rest of the shape is the inert `probeFile` one.
+ */
+const rProbeFile = (filePath, names) => {
+  const base = probeFile(
+    filePath,
+    names.map((name) => ['Function', name]),
+  );
+  const moduleScope = `module:${filePath}`;
+  return {
+    ...base,
+    moduleScope,
+    scopes: [
+      {
+        id: moduleScope,
+        parent: null,
+        kind: 'Module',
+        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+        filePath,
+        bindings: new Map(
+          base.localDefs.map((def) => [def.qualifiedName, [{ def, origin: 'local' }]]),
+        ),
+        ownedDefs: base.localDefs,
+        imports: [],
+        typeBindings: new Map(),
+      },
+    ],
+  };
+};
+
+/**
+ * What `loadRPackageConfig` reads from disk (one `DESCRIPTION` per package),
+ * rebuilt from the corpus paths: every `<dir>/R/` is the `R/` directory of the
+ * package named after its last component. `namespaceInfoByPackageDir` is empty
+ * — no NAMESPACE file — so `importFrom()` exports are not filtered, which is
+ * the leg that reads `parsedFiles` and is the one this arm exists to measure.
+ */
+const rPackageConfigFor = (files) => {
+  const packages = new Map();
+  for (const file of files) {
+    const at = file.indexOf('/R/');
+    if (at < 0) continue;
+    const dir = file.slice(0, at);
+    packages.set(dir.slice(dir.lastIndexOf('/') + 1), dir);
+  }
+  return { packages, namespaceInfoByPackageDir: new Map() };
+};
+
 function javaBenchmarkPackage(filePath) {
   const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(`/${filePath}`)?.[1];
   if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
@@ -1213,6 +1295,17 @@ function buildParsedFiles(lang, files) {
       const slash = filePath.lastIndexOf('/');
       const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
       parsedFiles.push(kotlinProbeFile(filePath, kotlinBenchmarkPackage(filePath), stem));
+      continue;
+    }
+    if (lang === 'r') {
+      // One top-level function named for the file, plus an S3 method on it
+      // (`file7.print`), which is a dotted top-level name: the resolver's
+      // `dottedTails` guard reads it, and its tail (`print`) never equals a
+      // name an import asks for, so the guard runs on every lookup and refuses
+      // none.
+      const slash = filePath.lastIndexOf('/');
+      const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
+      parsedFiles.push(rProbeFile(filePath, [stem, `${stem}.print`]));
       continue;
     }
     const slash = filePath.lastIndexOf('/');
@@ -1443,6 +1536,32 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
     if (miss === 0) return ['std', 'builtin', 'root'][(r >>> 4) % 3];
     if (miss === 1) return `ghost${(r >>> 4) % 97}`;
     return `../vendor${(r >>> 4) % 97}/missing.zig`;
+  }
+  if (lang === 'r') {
+    // Three import forms, one per leg of the resolver, in the shares R code
+    // actually has them:
+    //   - `library(pkg)` — `pkg{d}` is a LOCAL package and resolves to every
+    //     file of its `R/` directory (a list); an external one (`dplyr`) is
+    //     refused by the wildcard guard before any lookup;
+    //   - `source("R/file{j}.R")` — the project-root spelling. The importer's
+    //     own directory does not hold `R/R/…`, so the exact-join probe misses
+    //     and the suffix index answers; an external one is a vendored path in
+    //     no package, which runs the whole cascade to null;
+    //   - `importFrom(pkg, name)` — spelled `pkg::name` in this corpus because
+    //     the import list is `[from, target]` pairs and `resolveOne` splits it
+    //     back (`::` is not legal in a package name, so the split is exact).
+    //     Resolves through the parsed workspace's top-level definitions; an
+    //     external package is not in the config and answers null.
+    if (local) {
+      const leg = (r >>> 3) % 3;
+      if (leg === 0) return `pkg${d}`;
+      if (leg === 1) return `R/file${j}.R`;
+      return `pkg${j % dirs}::file${j}`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['dplyr', 'ggplot2', 'data.table', 'stringr'][(r >>> 4) % 4];
+    if (miss === 1) return `vendor${(r >>> 4) % 97}/R/missing.R`;
+    return `ext${(r >>> 4) % 97}::tidy`;
   }
   throw unwiredLanguage('uniqueTarget', lang);
 }
@@ -1677,6 +1796,27 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
     if (miss === 1) return `ghost${(r >>> 4) % 97}`;
     return `${up}/vendor${(r >>> 4) % 97}/missing.zig`;
   }
+  if (lang === 'r') {
+    // The same three forms in the same proportions as the unique arm, so the
+    // resolved count is identical by construction (asserted). The source
+    // spelling is the one that collides: `R/mod{k}.R` matches the file of that
+    // name in EVERY package, so the suffix lookup is ambiguous across `dirs`
+    // packages — the project-root `source("R/utils.R")` shape a multi-package
+    // repo really has. The external spellings are unchanged and deliberately
+    // share no stem with a real file, or they would suffix-match and stop
+    // being misses.
+    const k = Math.floor(j / dirs);
+    if (local) {
+      const leg = (r >>> 3) % 3;
+      if (leg === 0) return `svc${d}`;
+      if (leg === 1) return `R/mod${k}.R`;
+      return `svc${j % dirs}::mod${k}`;
+    }
+    const miss = (r >>> 3) % 3;
+    if (miss === 0) return ['dplyr', 'ggplot2', 'data.table', 'stringr'][(r >>> 4) % 4];
+    if (miss === 1) return `vendor${(r >>> 4) % 97}/R/missing.R`;
+    return `ext${(r >>> 4) % 97}::tidy`;
+  }
   throw unwiredLanguage('collideTarget', lang);
 }
 
@@ -1778,7 +1918,12 @@ function newPass(lang, files, pad = 0) {
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
+      config:
+        lang === 'php'
+          ? phpComposerConfigFor(pad)
+          : lang === 'r'
+            ? rPackageConfigFor(files)
+            : undefined,
       parsedFiles,
     };
   }
@@ -1955,6 +2100,33 @@ function resolveOne(lang, from, target, pass) {
   }
   if (lang === 'objc') {
     return objectiveCScopeResolver.resolveImportTarget(target, from, allFilePaths, pass.config);
+  }
+  // The registered hook, because R's adapter is where its per-pass file index,
+  // the wildcard guard and the `importFrom` branch all live. `parsedImport` is
+  // rebuilt from the target's spelling exactly the way `interpretRImport` and
+  // `populateRNamespaceImports` mint it: `library()` is a `wildcard`, `source()`
+  // a `side-effect`, and a NAMESPACE `importFrom()` a `named` import whose
+  // `targetRaw` is the package. Only the named form reads `parsedFiles`.
+  if (lang === 'r') {
+    const sep = target.indexOf('::');
+    const parsedImport =
+      sep >= 0
+        ? {
+            kind: 'named',
+            localName: target.slice(sep + 2),
+            importedName: target.slice(sep + 2),
+            targetRaw: target.slice(0, sep),
+          }
+        : target.endsWith('.R')
+          ? { kind: 'side-effect', targetRaw: target }
+          : { kind: 'wildcard', targetRaw: target };
+    return rScopeResolver.resolveImportTarget(
+      parsedImport.targetRaw,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, parsedImport),
+    );
   }
   if (lang === 'csharp' || lang === 'csharp_csproj') {
     return resolveCsharpImportTarget(
@@ -2213,6 +2385,9 @@ const HEAP_PROBE_TARGET = {
   typescript: 'vendor0/lib/missing',
   vue: 'vendor0/lib/Missing.vue',
   cpp: 'vendor0/missing.hpp',
+  // A vendored `source()` path in no package: the exact-join probe misses and
+  // the suffix cascade runs to the end, forcing the workspace file index.
+  r: 'vendor0/R/missing.R',
 };
 
 /**
@@ -2406,6 +2581,24 @@ const CONTEXT_PROBE = {
       probeFile('include/util.hpp', []),
     ],
   },
+  /**
+   * `importFrom(pkgA, f)` where `pkgA` holds `a.R` (defining `f`) and `b.R`
+   * (defining `g`). With the parsed workspace the named import resolves to the
+   * one file that defines `f`; without it the call is the context-free one,
+   * which cannot tell a named import from `library(pkgA)` and answers every
+   * file of the package's `R/`. Two distinct non-null answers, so a dropped
+   * `parsedFiles` cannot look like a miss. `f` is spelled with the `pkg::name`
+   * convention `resolveOne` splits.
+   */
+  r: {
+    from: 'app/R/main.R',
+    target: 'pkgA::f',
+    parsedFiles: [
+      rProbeFile('app/R/main.R', ['main']),
+      rProbeFile('pkgA/R/a.R', ['f']),
+      rProbeFile('pkgA/R/b.R', ['g']),
+    ],
+  },
 };
 
 /** Resolve the probe twice through `resolveOne` — once with the pass's parsed
@@ -2414,7 +2607,12 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
+  const config =
+    lang === 'php'
+      ? phpComposerConfigFor(0)
+      : lang === 'r'
+        ? rPackageConfigFor(parsedFiles.map((f) => f.filePath))
+        : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
     const pass = { allFilePaths, config, parsedFiles: files };
@@ -2575,6 +2773,7 @@ const LANG_REGISTRY = {
   cpp: SupportedLanguages.CPlusPlus,
   objc: SupportedLanguages.ObjectiveC,
   zig: SupportedLanguages.Zig,
+  r: SupportedLanguages.R,
 };
 const LANGS = Object.keys(LANG_REGISTRY);
 /**
