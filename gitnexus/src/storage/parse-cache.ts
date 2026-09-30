@@ -820,7 +820,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // lack them, so nested router-prefix propagation would stay inert.
 // v124 (#3402): Go files now emit gin/echo `decoratorRoutes` carrying a
 // `handlerReceiver` hint. Warm v123 Go worker results carry no routes.
-const SCHEMA_BUMP = 124;
+// v125 (#3402): Go route hints now honor lexical declarations and captured writes;
+// namespace imports retain whether their local name comes from the package clause.
+const SCHEMA_BUMP = 125;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

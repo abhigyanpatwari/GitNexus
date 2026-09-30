@@ -69,7 +69,7 @@ describe('Go external vs internal test packages — qualified vs bare NewThing (
       'pkg/a_ext_test.go': [
         'package a_test',
         '',
-        'import "example.com/extpkg/pkg"',
+        'import pkg "example.com/extpkg/pkg"',
         '',
         'func CallQualifiedFromExternalTest() int {',
         '\treturn pkg.NewThing()',

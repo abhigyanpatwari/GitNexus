@@ -117,11 +117,11 @@
   },
   "go-extern-qualified-signatures/memory/memory.go": {
     "captureGroups": 47,
-    "digest": "f079bb9c78b2e38473d0fb7e88ad7b3017abdb5716405ac69929ee40afd5e316"
+    "digest": "34443b5a335baf160b5bc1f36a4009f4a8f544644087663db1049a7574ea7c89"
   },
   "go-extern-qualified-signatures/store/store.go": {
     "captureGroups": 8,
-    "digest": "6b5ed1163020250ec52ae6b67cad03c68a5247971fc10c7b6281821434badfe3"
+    "digest": "974b077f60e3c65330aa6c5f74b9ae224c8c10e10c95bd578456816ae4134536"
   },
   "go-field-types/cmd/main.go": {
     "captureGroups": 10,

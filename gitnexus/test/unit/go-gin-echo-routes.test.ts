@@ -146,6 +146,15 @@ func T() { gin.New().GET("/right", H) }
       expect(summary(`func registerAdmin(g *gin.RouterGroup) { g.GET("/x", h) }`)).toEqual([]);
     });
 
+    it('preserves an incoming group prefix as unknown after a later assignment', () => {
+      expect(
+        summary(`func S(r *gin.Engine, g *gin.RouterGroup) {
+          g.GET("/before", H)
+          g = r.Group("/api")
+        }`),
+      ).toEqual([]);
+    });
+
     it('drops routes beneath a non-literal group path', () => {
       expect(
         summary(
@@ -233,6 +242,18 @@ func T() { gin.New().GET("/right", H) }
       expect(hintFor('', ', h *pkg.T')).toEqual({ kind: 'type', name: 'T', qualifier: 'pkg' });
     });
 
+    it('preserves incoming interface evidence alongside a later concrete assignment', () => {
+      const routes = extract(`
+type Handler interface{ Do(*gin.Context) }
+func S(r *gin.Engine, h Handler) {
+  r.GET("/before", h.Do)
+  h = &A{}
+}`);
+      expect(routes).toHaveLength(1);
+      expect(routes[0]).toMatchObject({ routePath: '/before', handlerName: 'h.Do' });
+      expect(routes[0].handlerReceiver).toBeUndefined();
+    });
+
     it('marks an import qualifier as a module handler', () => {
       const routes = extract(
         `func S(r *gin.Engine) { r.GET("/health", handlers.Health) }`,
@@ -252,5 +273,124 @@ func T() { gin.New().GET("/right", H) }
       const routes = extract(`func S(r *gin.Engine) { r.GET("/x", func(c *gin.Context) {}) }`);
       expect(routes.map((r) => [r.routePath, r.handlerName])).toEqual([['/x', undefined]]);
     });
+  });
+});
+
+describe('Go lexical binding identity', () => {
+  it('does not attach shadowed bare handlers or constructors to package names', () => {
+    const routes = extract(`
+func Handle(c *gin.Context) {}
+func NewH() *A { return nil }
+func S(r *gin.Engine, Handle gin.HandlerFunc, NewH func() *B) {
+  r.GET("/bare", Handle)
+  h := NewH()
+  r.GET("/constructor", h.Do)
+}`);
+    expect(routes[0]?.handlerName).toBeUndefined();
+    expect(routes[1]?.handlerReceiver).toBeUndefined();
+  });
+
+  it('keeps inner and outer router declarations separate', () => {
+    expect(
+      summary(`func S(r *gin.Engine) {
+      { var r FakeRouter; r.GET("/fake", H) }
+      r.GET("/real", H)
+    }`),
+    ).toEqual(['GET /real -> H']);
+  });
+
+  it.each([
+    ['switch', 'switch x { default: r := gin.New(); _ = r; case 1: r.GET("/fake", H) }'],
+    ['select', 'select { default: r := gin.New(); _ = r; case <-ready: r.GET("/fake", H) }'],
+  ])('keeps a %s default declaration inside its clause', (_kind, statement) => {
+    expect(summary(`func S(r FakeRouter, x int, ready chan bool) { ${statement} }`)).toEqual([]);
+  });
+
+  it('resolves a captured local before an imported qualifier', () => {
+    const routes = extract(
+      `func S(handlers *B) {
+      func() { r := gin.New(); r.GET("/captured", handlers.Do) }()
+    }`,
+      GIN + 'import "example.com/app/handlers"\n',
+    );
+    expect(routes[0]?.handlerReceiver).toEqual({ kind: 'type', name: 'B' });
+  });
+
+  it('declines local type names that shadow package types', () => {
+    const routes = extract(`func S(r *gin.Engine) {
+      type A = B
+      h := &A{}
+      r.GET("/type", h.Do)
+    }`);
+    expect(routes[0]?.handlerReceiver).toBeUndefined();
+  });
+
+  it('invalidates handler and router facts after captured writes', () => {
+    const routes = extract(`func S(r *gin.Engine) {
+      var h interface{ Do(*gin.Context) } = &A{}
+      g := r.Group("/a")
+      func() { h = &B{}; g = r.Group("/b") }()
+      r.GET("/handler", h.Do)
+      g.GET("/group", H)
+    }`);
+    expect(routes.map((r) => r.routePath)).toEqual(['/handler']);
+    expect(routes[0]?.handlerReceiver).toBeUndefined();
+  });
+
+  it.each([
+    ['range', '[]', 'for _, h = range handlers {}; for _, g = range groups {}'],
+    ['receive', 'chan ', 'select { case h = <-handlers: }; select { case g = <-groups: }'],
+  ])(
+    'invalidates handler and router facts after captured %s assignments',
+    (_kind, container, writes) => {
+      const routes = extract(`
+type Handler interface{ Do(*gin.Context) }
+func S(r *gin.Engine, handlers ${container}Handler, groups ${container}*gin.RouterGroup) {
+  var h Handler = &A{}
+  g := r.Group("/a")
+  func() { ${writes} }()
+  r.GET("/handler", h.Do)
+  g.GET("/group", H)
+}`);
+      expect(routes.map((r) => r.routePath)).toEqual(['/handler']);
+      expect(routes[0].handlerReceiver).toBeUndefined();
+    },
+  );
+
+  it('does not confuse nested declarations with captured writes', () => {
+    const routes = extract(`func S(r *gin.Engine) {
+      h := &A{}
+      func() { h := &B{}; _ = h }()
+      r.GET("/handler", h.Do)
+    }`);
+    expect(routes[0]?.handlerReceiver).toEqual({ kind: 'type', name: 'A' });
+  });
+
+  it('honors declaration order and independent block scopes', () => {
+    expect(
+      summary(`func S() {
+      gin.New().GET("/before", H)
+      { gin := Factory{}; gin.New().GET("/fake", H) }
+      gin := Factory{}
+      gin.New().GET("/after", H)
+    }`),
+    ).toEqual(['GET /before -> H']);
+  });
+
+  it('does not shadow package names in a short declaration initializer', () => {
+    expect(summary(`func S() { gin := gin.New(); gin.GET("/real", H) }`)).toEqual([
+      'GET /real -> H',
+    ]);
+  });
+});
+
+describe('Go route type-parameter shadowing', () => {
+  it('does not treat a type parameter as a same-named package type', () => {
+    const routes = extract(`func S[T interface{ Do(*gin.Context) }](r *gin.Engine, h T) {
+      r.GET("/generic", h.Do)
+    }`);
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({ routePath: '/generic', handlerName: 'h.Do' });
+    expect(routes[0].handlerReceiver).toBeUndefined();
   });
 });

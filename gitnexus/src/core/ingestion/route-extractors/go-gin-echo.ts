@@ -25,6 +25,7 @@
 
 import type Parser from 'tree-sitter';
 import { goImportPackageName } from '../languages/go/import-package-name.js';
+import { GoRouteBindings, type GoRouteBinding } from '../languages/go/route-bindings.js';
 import { normalizeExtractedRoutePath } from './route-path.js';
 import type { SyntaxNode } from 'tree-sitter';
 import type { ExtractedDecoratorRoute, RouteHandlerReceiver } from '../workers/parse-worker.js';
@@ -110,12 +111,10 @@ function stringLiteral(node: SyntaxNode | null | undefined): string | null {
   }
 }
 
-/** Local import names, and the framework this file routes with (if exactly one). */
+/** The framework this file routes with, when exactly one is imported. */
 function readImports(root: SyntaxNode): {
-  readonly localNames: ReadonlySet<string>;
   readonly framework: Framework | null;
 } {
-  const localNames = new Set<string>();
   let gin: string | null = null;
   let echo: string | null = null;
   // Imports sit only at file scope; this runs on every Go file, so skip bodies.
@@ -130,14 +129,12 @@ function readImports(root: SyntaxNode): {
     if (explicit === '_' || explicit === '.') continue;
     const local = explicit ?? goImportPackageName(importPath);
     if (!local) continue;
-    localNames.add(local);
     if (importPath === 'github.com/gin-gonic/gin') gin = local;
     if (/^github\.com\/labstack\/echo(\/v\d+)?$/.test(importPath)) echo = local;
   }
   // Both, or neither: no way to tell which argument is the handler.
   if (gin !== null && echo === null) {
     return {
-      localNames,
       framework: {
         source: GIN_ROUTE_SOURCE,
         alias: gin,
@@ -149,7 +146,6 @@ function readImports(root: SyntaxNode): {
   }
   if (echo !== null && gin === null) {
     return {
-      localNames,
       framework: {
         source: ECHO_ROUTE_SOURCE,
         alias: echo,
@@ -159,7 +155,7 @@ function readImports(root: SyntaxNode): {
       },
     };
   }
-  return { localNames, framework: null };
+  return { framework: null };
 }
 
 /** Named descendants of a function body, not descending into nested functions. */
@@ -179,12 +175,19 @@ function bodyNodes(body: SyntaxNode): SyntaxNode[] {
 }
 
 /** `T`, `*T`, `pkg.T`, `*pkg.T` → type hint; anything else → undefined. */
-function typeHint(typeNode: SyntaxNode | null | undefined): RouteHandlerReceiver | undefined {
+function typeHint(
+  typeNode: SyntaxNode | null | undefined,
+  bindings: GoRouteBindings,
+): RouteHandlerReceiver | undefined {
   if (!typeNode) return undefined;
-  if (typeNode.type === 'pointer_type') return typeHint(typeNode.namedChild(0));
-  if (typeNode.type === 'type_identifier') return { kind: 'type', name: typeNode.text };
+  if (typeNode.type === 'pointer_type') return typeHint(typeNode.namedChild(0), bindings);
+  if (typeNode.type === 'type_identifier') {
+    return bindings.lookup(typeNode) ? undefined : { kind: 'type', name: typeNode.text };
+  }
   if (typeNode.type === 'qualified_type') {
-    const pkg = typeNode.childForFieldName('package')?.text;
+    const packageNode = typeNode.childForFieldName('package');
+    if (packageNode && bindings.lookup(packageNode)) return undefined;
+    const pkg = packageNode?.text;
     const name = typeNode.childForFieldName('name')?.text;
     return pkg && name ? { kind: 'type', name, qualifier: pkg } : undefined;
   }
@@ -192,19 +195,22 @@ function typeHint(typeNode: SyntaxNode | null | undefined): RouteHandlerReceiver
 }
 
 /** Receiver hint for the value a name was assigned. */
-function valueHint(value: SyntaxNode): RouteHandlerReceiver | undefined {
+function valueHint(value: SyntaxNode, bindings: GoRouteBindings): RouteHandlerReceiver | undefined {
   if (value.type === 'unary_expression' && value.childForFieldName('operator')?.text === '&') {
     const operand = value.childForFieldName('operand');
-    return operand ? valueHint(operand) : undefined;
+    return operand ? valueHint(operand, bindings) : undefined;
   }
-  if (value.type === 'composite_literal') return typeHint(value.childForFieldName('type'));
+  if (value.type === 'composite_literal')
+    return typeHint(value.childForFieldName('type'), bindings);
   if (value.type === 'call_expression') {
     const fn = value.childForFieldName('function');
-    if (fn?.type === 'identifier') return { kind: 'constructor', name: fn.text };
+    if (fn?.type === 'identifier') {
+      return bindings.lookup(fn) ? undefined : { kind: 'constructor', name: fn.text };
+    }
     if (fn?.type === 'selector_expression') {
       const operand = fn.childForFieldName('operand');
       const field = fn.childForFieldName('field');
-      if (operand?.type === 'identifier' && field) {
+      if (operand?.type === 'identifier' && field && !bindings.lookup(operand)) {
         return { kind: 'constructor', name: field.text, qualifier: operand.text };
       }
     }
@@ -215,96 +221,14 @@ function valueHint(value: SyntaxNode): RouteHandlerReceiver | undefined {
 const sameHint = (a: RouteHandlerReceiver, b: RouteHandlerReceiver): boolean =>
   a.kind === b.kind && a.name === b.name && a.qualifier === b.qualifier;
 
-/** One function body's bindings: what each local name was assigned, in any order. */
-interface Bindings {
-  /** name → every value expression assigned to it (null = unreadable write). */
-  readonly values: Map<string, (SyntaxNode | null)[]>;
-  /** name → declared type hints from parameters and `var x T`. */
-  readonly declared: Map<string, (RouteHandlerReceiver | null)[]>;
-  /** parameters declared as the framework engine. */
-  readonly engineParams: Set<string>;
-}
-
-function collectBindings(fn: SyntaxNode, nodes: readonly SyntaxNode[], fw: Framework): Bindings {
-  const values = new Map<string, (SyntaxNode | null)[]>();
-  const declared = new Map<string, (RouteHandlerReceiver | null)[]>();
-  const engineParams = new Set<string>();
-  const push = <T>(map: Map<string, T[]>, key: string, value: T) => {
-    const list = map.get(key);
-    if (list) list.push(value);
-    else map.set(key, [value]);
-  };
-
-  const params = [
-    fn.childForFieldName('receiver'),
-    fn.childForFieldName('parameters'),
-    fn.childForFieldName('result'),
-  ].filter((n): n is SyntaxNode => n !== null);
-  for (const list of params) {
-    for (const decl of list.namedChildren) {
-      if (decl.type !== 'parameter_declaration' && decl.type !== 'variadic_parameter_declaration')
-        continue;
-      const type = decl.childForFieldName('type');
-      const hint = typeHint(type);
-      const isEngine =
-        decl.type === 'parameter_declaration' &&
-        list.id !== fn.childForFieldName('result')?.id &&
-        hint?.kind === 'type' &&
-        hint.qualifier === fw.alias &&
-        hint.name === fw.engineType;
-      for (const name of decl.childrenForFieldName('name')) {
-        if (isEngine) engineParams.add(name.text);
-        push(declared, name.text, hint ?? null);
-      }
-    }
-  }
-
-  for (const node of nodes) {
-    if (node.type === 'short_var_declaration' || node.type === 'assignment_statement') {
-      const left = node.childForFieldName('left')?.namedChildren ?? [];
-      const right = node.childForFieldName('right')?.namedChildren ?? [];
-      left.forEach((lhs, i) => {
-        if (lhs.type !== 'identifier' || lhs.text === '_') return;
-        // `a, b := f()` pairs only the first name with the call's value.
-        const value = right.length === left.length ? right[i] : i === 0 ? right[0] : undefined;
-        push(values, lhs.text, value ?? null);
-      });
-    } else if (node.type === 'var_spec' || node.type === 'const_spec') {
-      const names = node.childrenForFieldName('name');
-      const right = node.childForFieldName('value')?.namedChildren ?? [];
-      const hint = typeHint(node.childForFieldName('type'));
-      names.forEach((name, i) => {
-        if (right.length > 0) {
-          push(values, name.text, (right.length === names.length ? right[i] : null) ?? null);
-        } else {
-          push(declared, name.text, hint ?? null);
-        }
-      });
-    } else if (
-      node.type === 'range_clause' ||
-      node.type === 'receive_statement' ||
-      node.type === 'type_switch_statement'
-    ) {
-      const left = node.childForFieldName(node.type === 'type_switch_statement' ? 'alias' : 'left');
-      for (const name of left?.namedChildren ?? []) {
-        if (name.type === 'identifier' && name.text !== '_') push(values, name.text, null);
-      }
-    } else if (node.type === 'type_spec' || node.type === 'type_alias') {
-      const name = node.childForFieldName('name');
-      if (name) push(declared, name.text, null);
-    }
-  }
-  return { values, declared, engineParams };
-}
-
 class RouterPrefixes {
-  private readonly memo = new Map<string, string | null>();
-  private readonly visiting = new Set<string>();
+  private readonly memo = new Map<GoRouteBinding, string | null>();
+  private readonly visiting = new Set<GoRouteBinding>();
 
   constructor(
-    private readonly bindings: Bindings,
+    private readonly bindings: GoRouteBindings,
     private readonly fw: Framework,
-    private readonly frameworkAliasShadowed: boolean,
+    private readonly fn: SyntaxNode,
   ) {}
 
   /** Proven prefix of a router expression, or null when it cannot be proven. */
@@ -313,15 +237,22 @@ class RouterPrefixes {
       const inner = node.namedChild(0);
       return inner ? this.of(inner) : null;
     }
-    if (node.type === 'identifier') return this.ofName(node.text);
+    if (node.type === 'identifier') {
+      const binding = this.bindings.lookup(node);
+      return binding ? this.ofBinding(binding) : null;
+    }
     if (node.type !== 'call_expression') return null;
     const fn = node.childForFieldName('function');
     if (fn?.type !== 'selector_expression') return null;
     const operand = fn.childForFieldName('operand');
     const field = fn.childForFieldName('field')?.text;
     if (!operand || !field) return null;
-    if (operand.type === 'identifier' && operand.text === this.fw.alias) {
-      return !this.frameworkAliasShadowed && this.fw.constructors.has(field) ? '' : null;
+    if (
+      operand.type === 'identifier' &&
+      operand.text === this.fw.alias &&
+      !this.bindings.lookup(operand)
+    ) {
+      return this.fw.constructors.has(field) ? '' : null;
     }
     if (field !== 'Group') return null;
     const path = stringLiteral(node.childForFieldName('arguments')?.namedChild(0));
@@ -330,46 +261,53 @@ class RouterPrefixes {
     return base === null ? null : normalizeExtractedRoutePath(path, base);
   }
 
-  private ofName(name: string): string | null {
-    const cached = this.memo.get(name);
+  private ofBinding(binding: GoRouteBinding): string | null {
+    // Captured routers remain outside this extractor's supported route forms.
+    if (binding.ownerFunction.id !== this.fn.id || binding.capturedWrite) return null;
+    const cached = this.memo.get(binding);
     if (cached !== undefined) return cached;
-    if (this.visiting.has(name)) return null;
-    this.visiting.add(name);
-    const result = this.compute(name);
-    this.visiting.delete(name);
-    this.memo.set(name, result);
-    return result;
-  }
-
-  private compute(name: string): string | null {
+    if (this.visiting.has(binding)) return null;
+    this.visiting.add(binding);
+    const hint = typeHint(binding.type, this.bindings);
     const candidates: (string | null)[] = [];
-    if (this.bindings.engineParams.has(name)) candidates.push('');
-    else if (this.bindings.declared.has(name)) candidates.push(null);
-    for (const value of this.bindings.values.get(name) ?? []) {
-      candidates.push(value === null ? null : this.of(value));
+    if (
+      binding.isInputParameter &&
+      hint?.kind === 'type' &&
+      hint.qualifier === this.fw.alias &&
+      hint.name === this.fw.engineType
+    ) {
+      candidates.push('');
+    } else if (binding.isInputParameter || binding.values.length === 0) {
+      candidates.push(null);
     }
-    if (candidates.length === 0) return null;
-    const first = candidates[0];
-    if (first === null || first === undefined) return null;
-    return candidates.every((c) => c === first) ? first : null;
+    for (const value of binding.values) candidates.push(value === null ? null : this.of(value));
+    const first = candidates[0] ?? null;
+    const result = candidates.every((candidate) => candidate === first) ? first : null;
+    this.visiting.delete(binding);
+    this.memo.set(binding, result);
+    return result;
   }
 }
 
-/** Receiver hint for the local name a selector handler (`h.Method`) goes through. */
+/** Hints refer only to visible declarations; unsupported local types decline. */
 function receiverHint(
-  name: string,
-  bindings: Bindings,
-  importNames: ReadonlySet<string>,
+  node: SyntaxNode,
+  bindings: GoRouteBindings,
 ): RouteHandlerReceiver | undefined {
-  const declared = bindings.declared.get(name) ?? [];
-  const assigned = bindings.values.get(name) ?? [];
-  if (declared.length === 0 && assigned.length === 0) {
-    return importNames.has(name) ? { kind: 'module', qualifier: name } : undefined;
+  const binding = bindings.lookup(node);
+  // Workspace resolution checks the actual imported package's declared name.
+  if (!binding) return { kind: 'module', qualifier: node.text };
+  if (binding.capturedWrite) return undefined;
+  const hints = binding.values.map((value) =>
+    value === null ? undefined : valueHint(value, bindings),
+  );
+  if (binding.isInputParameter || binding.values.length === 0) {
+    hints.push(typeHint(binding.type, bindings));
   }
-  const hints = [...declared, ...assigned.map((v) => (v === null ? null : (valueHint(v) ?? null)))];
   const first = hints[0];
-  if (!first) return undefined;
-  return hints.every((h) => h !== null && sameHint(h, first)) ? first : undefined;
+  return first && hints.every((hint) => hint !== undefined && sameHint(hint, first))
+    ? first
+    : undefined;
 }
 
 interface VerbRegistration {
@@ -400,23 +338,11 @@ export function extractGoGinEchoRoutes(
   lineOffset = 0,
 ): ExtractedDecoratorRoute[] {
   const root = tree.rootNode;
-  const { localNames, framework } = readImports(root);
+  const { framework } = readImports(root);
   if (framework === null) return [];
 
   const out: ExtractedDecoratorRoute[] = [];
-  const bindingsByFunction = new Map<number, Bindings>();
-  const bindingsFor = (
-    fn: SyntaxNode,
-    body: SyntaxNode,
-    nodes?: readonly SyntaxNode[],
-  ): Bindings => {
-    let bindings = bindingsByFunction.get(fn.id);
-    if (!bindings) {
-      bindings = collectBindings(fn, nodes ?? bodyNodes(body), framework);
-      bindingsByFunction.set(fn.id, bindings);
-    }
-    return bindings;
-  };
+  let bindings: GoRouteBindings | undefined;
   for (const fn of root.descendantsOfType(FUNCTION_TYPE_LIST)) {
     const body = fn.childForFieldName('body');
     if (!body) continue;
@@ -427,20 +353,8 @@ export function extractGoGinEchoRoutes(
     });
     // Most functions in a gin-importing file register nothing; skip their bindings.
     if (registrations.length === 0) continue;
-    const bindings = bindingsFor(fn, body, nodes);
-    let aliasShadowed =
-      bindings.values.has(framework.alias) || bindings.declared.has(framework.alias);
-    // A closure can capture a shadowing name even when it declares no locals itself.
-    // Like router assignments, shadowing is conservatively checked across each body.
-    for (let outer = fn.parent; outer && !aliasShadowed; outer = outer.parent) {
-      if (!FUNCTION_TYPES.has(outer.type)) continue;
-      const outerBody = outer.childForFieldName('body');
-      if (!outerBody) continue;
-      const outerBindings = bindingsFor(outer, outerBody);
-      aliasShadowed =
-        outerBindings.values.has(framework.alias) || outerBindings.declared.has(framework.alias);
-    }
-    const prefixes = new RouterPrefixes(bindings, framework, aliasShadowed);
+    bindings ??= new GoRouteBindings(root);
+    const prefixes = new RouterPrefixes(bindings, framework, fn);
 
     for (const { call, verb, receiver, args, path } of registrations) {
       const prefix = prefixes.of(receiver);
@@ -456,14 +370,14 @@ export function extractGoGinEchoRoutes(
         prefix: null,
         source: framework.source,
       };
-      if (handler.type === 'identifier') {
+      if (handler.type === 'identifier' && !bindings.lookup(handler)) {
         route.handlerName = handler.text;
       } else if (handler.type === 'selector_expression') {
         const operand = handler.childForFieldName('operand');
         const field = handler.childForFieldName('field');
         if (operand?.type === 'identifier' && field) {
           route.handlerName = `${operand.text}.${field.text}`;
-          const hint = receiverHint(operand.text, bindings, localNames);
+          const hint = receiverHint(operand, bindings);
           if (hint) route.handlerReceiver = hint;
         }
       }

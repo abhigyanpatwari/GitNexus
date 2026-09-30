@@ -6,6 +6,7 @@ import {
 } from '../../../../src/core/ingestion/languages/go/index.js';
 import { getGoParser } from '../../../../src/core/ingestion/languages/go/query.js';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { resolveGoImportBinding } from '../../../../src/core/ingestion/languages/go/import-binding.js';
 
 function parseThenSplit(src: string): CaptureMatch[] {
   const tree = getGoParser().parse(src);
@@ -82,6 +83,7 @@ describe('Go import interpretation', () => {
       localName: 'models',
       importedName: 'models',
       targetRaw: 'example.com/app/models',
+      implicitLocalName: true,
     });
   });
 
@@ -107,6 +109,51 @@ describe('Go import interpretation', () => {
       '@import.source': capt('@import.source', 'example.com/dsl'),
     });
     expect(result).toEqual({ kind: 'wildcard', targetRaw: 'example.com/dsl' });
+  });
+});
+
+describe('Go import binding names', () => {
+  it.each([
+    ['"example.com/app/api/v2"', 'v2'],
+    ['"example.com/app/storage"', 'endpoints'],
+    ['alias "example.com/app/storage"', 'alias'],
+    ['storage "example.com/app/storage"', 'storage'],
+  ])('resolves %s from the package clause while preserving aliases', (spec, expected) => {
+    const parsed = interpretGoImport(parseThenSplit(`import ${spec}`)[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    const result = resolveGoImportBinding(
+      parsed,
+      () => ['pkg/one.go', 'pkg/two.go'],
+      () => `package ${expected === 'v2' ? 'v2' : 'endpoints'}\n`,
+    );
+    expect(result).toMatchObject({ kind: 'namespace', localName: expected });
+  });
+
+  it('retains only the dependency if package clauses conflict', () => {
+    const parsed = interpretGoImport(parseThenSplit('import "example.com/app/pkg"')[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    expect(
+      resolveGoImportBinding(
+        parsed,
+        () => ['a.go', 'b.go'],
+        (file) => (file === 'a.go' ? 'package a' : 'package b'),
+      ),
+    ).toEqual({ kind: 'side-effect', targetRaw: 'example.com/app/pkg' });
+  });
+
+  it('does not guess a binding from an unreadable target', () => {
+    const parsed = interpretGoImport(parseThenSplit('import "example.com/app/pkg"')[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    expect(
+      resolveGoImportBinding(
+        parsed,
+        () => ['missing.go'],
+        () => undefined,
+      ),
+    ).toEqual({
+      kind: 'side-effect',
+      targetRaw: 'example.com/app/pkg',
+    });
   });
 });
 

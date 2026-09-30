@@ -1901,6 +1901,34 @@ export async function runChunkedParseAndResolve(
   }
   // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
   // the model is fully populated and decorator-route prefixes are finalized.
+  const routeSourceTexts = new Map<string, string | undefined>();
+  const routeSourceTextFor = (filePath: string): string | undefined => {
+    if (!routeSourceTexts.has(filePath)) {
+      try {
+        routeSourceTexts.set(filePath, fs.readFileSync(path.join(repoPath, filePath), 'utf-8'));
+      } catch {
+        routeSourceTexts.set(filePath, undefined);
+      }
+    }
+    return routeSourceTexts.get(filePath);
+  };
+  routeResolutionFiles = routeResolutionFiles.map((parsed) => {
+    if (!dataRouteFilePaths.has(parsed.filePath)) return parsed;
+    const language = getLanguageFromFilename(parsed.filePath);
+    const resolveBinding =
+      language === null ? undefined : SCOPE_RESOLVERS.get(language)?.resolveImportBinding;
+    if (!resolveBinding) return parsed;
+    return {
+      ...parsed,
+      parsedImports: parsed.parsedImports.map((parsedImport) =>
+        resolveBinding(
+          parsedImport,
+          () => resolveRouteImportTargets(parsedImport, parsed.filePath),
+          routeSourceTextFor,
+        ),
+      ),
+    };
+  });
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
