@@ -3125,7 +3125,6 @@ const processFileGroup = (
           ...(description !== undefined ? { description } : {}),
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
-          ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
         }),
       });
 
