@@ -179,7 +179,7 @@ import {
   DEFAULT_PDG_MAX_FUNCTION_LINES,
   type CfgSkipCounts,
 } from '../cfg/collect.js';
-import { findRFieldOwnerNode, getRTopLevelPropertyOwnerName } from '../field-extractors/r.js';
+import { getRTopLevelPropertyOwnerName } from '../field-extractors/r.js';
 import { getRTopLevelMethodOwnerName } from '../method-extractors/r.js';
 
 import { logger } from '../../logger.js';
@@ -685,7 +685,9 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
  * a type (`resolveFileTypeOwner`, e.g. a Zig file-struct), the tree root is
  * the owner node the method/field extractors should read members from. Same
  * root, same name as `findEnclosingClassInfo`'s root branch, so member ids and
- * owner ids agree.
+ * owner ids agree. Failing both, the provider's `resolveMemberOwnerNode` gets
+ * the last word (languages whose members belong to a call/assignment rather
+ * than an enclosing container node, e.g. R's `R6Class(...)`).
  */
 function findEnclosingClassNodeOrFileOwner(
   node: SyntaxNode,
@@ -694,10 +696,12 @@ function findEnclosingClassNodeOrFileOwner(
 ): SyntaxNode | null {
   const container = findEnclosingClassNode(node);
   if (container !== null) return container;
-  if (provider.resolveFileTypeOwner === undefined) return null;
-  let root: SyntaxNode = node;
-  while (root.parent) root = root.parent;
-  return provider.resolveFileTypeOwner(root, filePath) !== null ? root : null;
+  if (provider.resolveFileTypeOwner !== undefined) {
+    let root: SyntaxNode = node;
+    while (root.parent) root = root.parent;
+    if (provider.resolveFileTypeOwner(root, filePath) !== null) return root;
+  }
+  return provider.resolveMemberOwnerNode?.(node) ?? null;
 }
 
 /**
@@ -2816,13 +2820,9 @@ const processFileGroup = (
         // returnType, isAbstract/isFinal/annotations, visibility, and more.
         let enrichedByMethodExtractor = false;
         if (provider.methodExtractor && definitionNode) {
-          // R6/R5 classes are defined via function calls (R6::R6Class(), setRefClass()),
-          // not tree-sitter class syntax, so findEnclosingClassNode can't find them.
-          // findRFieldOwnerNode walks up looking for those function-call patterns.
           const classNode =
             findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path) ??
-            findClassNodeByQualifiedName(definitionNode) ??
-            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
+            findClassNodeByQualifiedName(definitionNode);
           if (classNode) {
             const methodMap = getMethodInfo(classNode, provider, {
               filePath: file.path,
@@ -3021,9 +3021,7 @@ const processFileGroup = (
       if (nodeLabel === 'Property' && definitionNode) {
         // FieldExtractor is the single source of truth when available
         if (provider.fieldExtractor && typeEnv) {
-          const classNode =
-            findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path) ??
-            (language === SupportedLanguages.R ? findRFieldOwnerNode(definitionNode) : null);
+          const classNode = findEnclosingClassNodeOrFileOwner(definitionNode, provider, file.path);
           if (classNode) {
             const fieldMap = getFieldInfo(classNode, provider, {
               typeEnv,

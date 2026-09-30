@@ -17,6 +17,7 @@ import { rMethodExtractor } from '../method-extractors/r.js';
 import { emitRScopeCaptures } from './r/captures.js';
 import { interpretRImport, interpretRTypeBinding } from './r/interpret.js';
 import { rPostParse } from './r/post-parse.js';
+import { rResolveMemberOwnerNode } from './r/owner-hooks.js';
 
 const R_BUILT_INS: ReadonlySet<string> = new Set([
   // Base R
@@ -185,4 +186,5 @@ export const rProvider = defineLanguage({
   interpretImport: interpretRImport,
   interpretTypeBinding: interpretRTypeBinding,
   postParse: rPostParse,
+  resolveMemberOwnerNode: rResolveMemberOwnerNode,
 });

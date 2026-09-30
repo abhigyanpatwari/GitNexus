@@ -386,6 +386,16 @@ interface LanguageProviderConfig {
   ) => { readonly name: string; readonly label: NodeLabel } | null;
 
   /**
+   * For languages whose member owner is not a syntactic ancestor container
+   * (R: `R6Class(...)` / `setRefClass(...)` calls): return the node the
+   * method/field extractors read members from, or `null`.
+   *
+   * Consulted by the enclosing-owner slot after the container walk and
+   * `resolveFileTypeOwner` (same slot as the Zig file-owner).
+   * Default: undefined. */
+  readonly resolveMemberOwnerNode?: (definitionNode: SyntaxNode) => SyntaxNode | null;
+
+  /**
    * The type a CONTAINER node declares, when the language names it from its
    * context rather than from a name child of the node — a binding wrapper,
    * an enclosing callable, an ordinal among anonymous siblings (Zig:
