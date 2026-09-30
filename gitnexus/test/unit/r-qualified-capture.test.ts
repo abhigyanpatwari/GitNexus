@@ -5,10 +5,8 @@
  * scope extractor copies from the `@reference.qualified-name` capture. Cached files cannot be
  * re-read, hence the capture (and a SCHEMA_BUMP) rather than re-parsing at resolve time.
  *
- * Before R1 the query captures the call and its name but never the qualifier, so the
- * positive tests are `it.fails` (flip to `it` at step 2/3 when the capture lands) and the
- * TEMPORARY-PIN tests assert today's actual captures for the same sources (they stop an
- * `it.fails` from passing because a form failed to parse, or lost its name capture).
+ * Each form asserts the call, its name and the whole `namespace_operator` text together,
+ * so a form that fails to parse or loses its name capture cannot pass.
  */
 import { describe, expect, it } from 'vitest';
 import { emitRScopeCaptures } from '../../src/core/ingestion/languages/r/captures.js';
@@ -45,18 +43,11 @@ const FORMS: readonly {
 describe('R query: qualified-name capture on namespace_operator calls', () => {
   for (const form of FORMS) {
     describe(form.label, () => {
-      // TEMPORARY-PIN (remove at step 2): the call and its name are captured today, the
-      // qualifier is not.
-      it('TEMPORARY-PIN: captures the call and its name but no qualified name', () => {
+      it('captures the whole namespace_operator text as @reference.qualified-name', () => {
         const t = only(form.source, 'f');
         expect(t['@reference.name']).toBe('f');
         expect(t['@reference.call.free']).toBe(form.written + '(d)');
-        expect(t['@reference.qualified-name']).toBeUndefined();
-      });
-
-      // TARGET (R1): flip to `it`.
-      it.fails('captures the whole namespace_operator text as @reference.qualified-name', () => {
-        expect(only(form.source, 'f')['@reference.qualified-name']).toBe(form.written);
+        expect(t['@reference.qualified-name']).toBe(form.written);
       });
     });
   }

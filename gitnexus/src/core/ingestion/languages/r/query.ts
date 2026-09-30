@@ -306,10 +306,11 @@ export const R_SCOPE_QUERY = `
 (call
   function: (identifier) @reference.name) @reference.call.free
 
-;; Namespaced calls: pkg::func()
+;; Namespaced calls: pkg::func() and pkg:::func(). The whole namespace_operator
+;; is captured as the qualified name so the qualifier survives the parse cache.
 (call
   function: (namespace_operator
-    rhs: (identifier) @reference.name)) @reference.call.free
+    rhs: (identifier) @reference.name) @reference.qualified-name) @reference.call.free
 
 ;; Member calls via $: obj$method()
 (call

@@ -829,7 +829,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // scope. Warm ParsedFiles and durable stores hold the pre-fix scope tree, where
 // every R call is credited to the first callable in its file; both stores must
 // re-extract.
-const SCHEMA_BUMP = 126;
+// v127: R scope queries now capture the `pkg::`/`pkg:::`
+// qualifier of namespaced calls as `@reference.qualified-name`, so it reaches
+// `site.rawQualifiedName`. Warm ParsedFiles hold the pre-capture site shape without the
+// qualifier, so both stores must re-extract.
+const SCHEMA_BUMP = 127;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
