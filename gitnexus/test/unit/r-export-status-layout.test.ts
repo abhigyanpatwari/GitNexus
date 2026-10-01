@@ -104,20 +104,6 @@ describe('refineRExportStatus: nested packages', () => {
     expect(out.get('pkgs/inner/tests/testthat/t.R:inner_test_helper')).toBe(true);
   });
 
-  it('a same-name copy of a package that discovery did not register by name still owns its own R/ files', () => {
-    const config: RPackageConfig = {
-      packages: new Map([['outer', '']]),
-      namespaceInfoByPackageDir: new Map([['', info({ namedExports: new Set(['outer_pub']) })]]),
-      packageDirs: new Set(['', 'vendor/copy']),
-    };
-    const out = run(config, [
-      { name: 'copy_fn', filePath: 'vendor/copy/R/c.R' },
-      { name: 'outer_hidden', filePath: 'R/o.R' },
-    ]);
-    expect(out.get('vendor/copy/R/c.R:copy_fn')).toBe(true);
-    expect(out.get('R/o.R:outer_hidden')).toBe(false);
-  });
-
   it('honours each package NAMESPACE, deepest package first', () => {
     const config: RPackageConfig = {
       packages: new Map([

@@ -35,9 +35,10 @@ export interface RPackageConfig {
   /**
    * Every directory (relative to the repo root, `''` for the root) in which discovery read a
    * `DESCRIPTION` with a `Package:` line: the directories of {@link packages} plus the
-   * directories of same-name copies that lost to them, with or without a NAMESPACE. It decides
-   * which package owns a file. Optional so that hand-built configs read as "the directories of
-   * {@link packages} and {@link namespaceInfoByPackageDir}".
+   * directories of same-name copies that lost to them, with or without a NAMESPACE. The
+   * qualifier-locality decision reads it, so that a file under such a directory's `R/` is not
+   * taken as evidence for a package named after its directory. Optional so that hand-built
+   * configs read as "the directories of {@link packages} and {@link namespaceInfoByPackageDir}".
    */
   packageDirs?: ReadonlySet<string>;
   /**

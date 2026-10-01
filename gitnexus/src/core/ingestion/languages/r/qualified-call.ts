@@ -37,7 +37,7 @@ import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-share
 import type { RPackageConfig } from './package-config.js';
 import {
   parseRQualifier,
-  rOwningPackageDir,
+  rFileBelongsToDiscoveredPackage,
   rPackageDirForFile,
   rRecordQualifiedDefinitionCounts,
   TOP_LEVEL_BINDABLE_TYPES,
@@ -65,7 +65,7 @@ function isUnderPackageRDir(
 ): boolean {
   const normalized = filePath.replace(/\\/g, '/');
   if (!normalized.startsWith(`${pkg}/R/`) && !normalized.includes(`/${pkg}/R/`)) return false;
-  return rOwningPackageDir(normalized, cfg) === undefined;
+  return !rFileBelongsToDiscoveredPackage(normalized, cfg);
 }
 
 /**

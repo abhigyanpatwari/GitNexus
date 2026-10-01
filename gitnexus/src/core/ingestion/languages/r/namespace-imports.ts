@@ -428,11 +428,9 @@ export function rPackageDirForFile(
 /**
  * The directory of the package whose `R/` sources contain `filePath`, or `undefined`.
  *
- * Unlike {@link rPackageDirForFile} this considers every directory discovery found a package
- * in ({@link RPackageConfig.packageDirs}, the directories of `packages` and
- * `namespaceInfoByPackageDir`), including a same-name copy that is not registered under its
- * name and a package without a NAMESPACE, so the nearest enclosing package owns a file and a
- * nested package never inherits the enclosing package's NAMESPACE. The longest matching
+ * Unlike {@link rPackageDirForFile} this considers every directory that has a NAMESPACE as
+ * well as every registered package, so the nearest enclosing package owns a file and a nested
+ * package without a NAMESPACE never inherits the enclosing package's. The longest matching
  * directory wins; the root package (`''`) is matched without building a `'' + '/'` prefix.
  */
 export function rOwningPackageDir(
@@ -448,8 +446,25 @@ export function rOwningPackageDir(
   };
   for (const dir of cfg.packages.values()) consider(dir);
   for (const dir of cfg.namespaceInfoByPackageDir.keys()) consider(dir);
-  if (cfg.packageDirs !== undefined) for (const dir of cfg.packageDirs) consider(dir);
   return best;
+}
+
+/**
+ * True when `filePath` sits under the `R/` directory of any package discovery read a
+ * `DESCRIPTION` for: a registered package, a directory with a NAMESPACE, or a same-name copy
+ * recorded only in {@link RPackageConfig.packageDirs}. Such a file belongs to the package its
+ * `DESCRIPTION` names, whatever its directory is called.
+ */
+export function rFileBelongsToDiscoveredPackage(
+  filePath: string,
+  cfg: RPackageConfig | null | undefined,
+): boolean {
+  if (cfg === null || cfg === undefined) return false;
+  if (rOwningPackageDir(filePath, cfg) !== undefined) return true;
+  if (cfg.packageDirs === undefined) return false;
+  const normalized = filePath.replace(/\\/g, '/');
+  for (const dir of cfg.packageDirs) if (normalized.startsWith(rRDirPrefix(dir))) return true;
+  return false;
 }
 
 // ─── Top-level definitions of a parsed file ────────────────────────────────

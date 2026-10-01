@@ -228,6 +228,32 @@ describe('loadRPackageConfig: zero packages found', () => {
   });
 });
 
+describe('loadRPackageConfig: packageDirs', () => {
+  it('lists every directory with a Package: DESCRIPTION, including same-name copies and packages without a NAMESPACE', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'r-package-dirs-'));
+    try {
+      const write = async (rel: string, text: string): Promise<void> => {
+        await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+        await fs.writeFile(path.join(root, rel), text);
+      };
+      await write('DESCRIPTION', 'Package: top\nVersion: 1.0\n');
+      await write('NAMESPACE', 'export(f)\n');
+      await write('a/dup/DESCRIPTION', 'Package: dup\nVersion: 1.0\n'); // wins the name, no NAMESPACE
+      await write('b/dup/DESCRIPTION', 'Package: dup\nVersion: 1.0\n'); // same-name copy that loses
+      await write('c/nodesc/README', 'not a package\n');
+      await write('d/nopkg/DESCRIPTION', 'Version: 1.0\n'); // no Package: line
+      const cfg = await loadRPackageConfig(root);
+      expect([...(cfg.packageDirs ?? [])].sort()).toEqual(['', 'a/dup', 'b/dup']);
+      expect([...cfg.packages].sort()).toEqual([
+        ['dup', 'a/dup'],
+        ['top', ''],
+      ]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('rQualifierLocality: a <name>/R/ directory is not evidence for a file a discovered package owns', () => {
   it('does not make `foo` local from pkgs/foo/R/ when that directory is the package `bar`', () => {
     const cfg = config({ bar: 'pkgs/foo' }, false);
