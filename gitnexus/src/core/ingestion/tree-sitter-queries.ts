@@ -3058,6 +3058,11 @@ export const R_QUERIES = `
   rhs: (function_definition)) @definition.function
 
 ; ── S4 Classes (setClass("ClassName", ...)) ──────────────────────────────────
+; The S4 patterns below capture EVERY string argument of the call on purpose.
+; Which argument names the definition is decided by the provider's
+; \`shouldSkipDefinitionCapture\` (languages/r/naming-argument.ts): a query cannot skip an
+; unbounded run of leading comments and named arguments without a repeated
+; sibling group, which is quadratic in the argument count.
 (call
   function: (identifier) @_fn
   (#match? @_fn "^(setClass|setRefClass)$")

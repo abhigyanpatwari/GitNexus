@@ -266,6 +266,14 @@ describe('R function definitions and calls', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const edge = extends_.find((e) => e.source === 'DataModel' && e.target === 'VIRTUAL');
     expect(edge).toBeDefined();
+    // The target is the single placeholder minted for the `"VIRTUAL"` sentinel, not
+    // a file-scoped Class from the `contains = "VIRTUAL"` string.
+    expect(edge?.rel.targetId).toBe('Class:VIRTUAL');
+    const virtualIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Class' && n.properties.name === 'VIRTUAL') virtualIds.push(n.id);
+    });
+    expect(virtualIds).toEqual(['Class:VIRTUAL']);
   });
 
   it('emits EXTENDS edge from R6 class defined with bare R6Class() via inherit=', () => {
@@ -646,7 +654,7 @@ describe('R caller attribution', () => {
   describe('graph structure is unchanged by attribution', () => {
     for (const [label, count] of [
       ['Function', 58],
-      ['Method', 10],
+      ['Method', 9],
       ['Class', 4],
       ['Property', 1],
       ['File', 6],
@@ -657,9 +665,9 @@ describe('R caller attribution', () => {
     }
 
     for (const [type, count] of [
-      ['DEFINES', 73],
+      ['DEFINES', 72],
       ['CONTAINS', 6],
-      ['HAS_METHOD', 10],
+      ['HAS_METHOD', 9],
       ['HAS_PROPERTY', 1],
       ['IMPORTS', 0],
       ['EXTENDS', 0],
@@ -1328,7 +1336,6 @@ describe('R deferred-owner attach (r-packages)', () => {
     'BareR6|value|HAS_PROPERTY',
     'BaseA|a_field|HAS_PROPERTY',
     'BaseB|b_field|HAS_PROPERTY',
-    'DataModel|DataModel|HAS_METHOD',
     'DataModel|name|HAS_PROPERTY',
     'DataModel|validate|HAS_METHOD',
     'DataModel|value|HAS_PROPERTY',
@@ -1341,8 +1348,8 @@ describe('R deferred-owner attach (r-packages)', () => {
     'ResultSet|items|HAS_PROPERTY',
   ];
 
-  it('emits exactly 11 HAS_METHOD and 12 HAS_PROPERTY edges', () => {
-    expect(getRelationships(result, 'HAS_METHOD')).toHaveLength(11);
+  it('emits exactly 10 HAS_METHOD and 12 HAS_PROPERTY edges', () => {
+    expect(getRelationships(result, 'HAS_METHOD')).toHaveLength(10);
     expect(getRelationships(result, 'HAS_PROPERTY')).toHaveLength(12);
   });
 
@@ -1356,7 +1363,7 @@ describe('R deferred-owner attach (r-packages)', () => {
     expect(triples).toEqual(ownedTriples);
   });
 
-  it('gives exactly the 23 attached R Method/Property nodes a string ownerId', () => {
+  it('gives exactly the 22 attached R Method/Property nodes a string ownerId', () => {
     const owned: string[] = [];
     result.graph.forEachNode((n) => {
       if (
@@ -1367,7 +1374,7 @@ describe('R deferred-owner attach (r-packages)', () => {
         owned.push(n.id);
       }
     });
-    expect(owned).toHaveLength(23);
+    expect(owned).toHaveLength(22);
   });
 
   it('leaves no R node with an unresolved ownerNameHint', () => {

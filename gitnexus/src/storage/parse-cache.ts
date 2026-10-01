@@ -833,7 +833,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // qualifier of namespaced calls as `@reference.qualified-name`, so it reaches
 // `site.rawQualifiedName`. Warm ParsedFiles hold the pre-capture site shape without the
 // qualifier, so both stores must re-extract.
-const SCHEMA_BUMP = 127;
+// v128: the R provider keeps only the argument that names an S4 definition
+// (shouldSkipDefinitionCapture), so `setClass("A", contains = "VIRTUAL")` no
+// longer defines a Class `VIRTUAL`, `setGeneric(..., valueClass = "numeric")` a
+// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`.
+// Definitions are parse-time captures replayed verbatim from the warm cache, so
+// the spurious nodes would persist on unchanged files.
+const SCHEMA_BUMP = 128;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
