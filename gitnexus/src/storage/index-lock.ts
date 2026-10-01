@@ -590,7 +590,13 @@ const acquireViaFile = async (
             `Reclaiming stale index lock from dead analyze (pid ${holder.pid}, ` +
               `invocation ${holder.invocationId}).`,
           );
-          unlinkSync(lockPath);
+          try {
+            unlinkSync(lockPath);
+          } catch (error) {
+            // The holder may release and exit after our read. The guard still
+            // excludes new owners, so an already-removed file is safe to create.
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          }
           tryCreate = true;
           holder = null;
         }
