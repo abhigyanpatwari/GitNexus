@@ -471,6 +471,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  /** Repo-relative replacement for the default generated context files. */
+  contextFile?: string;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
@@ -2466,6 +2468,7 @@ async function runFullAnalysisInner(
                 undefined,
                 {
                   skipAgentsMd: options.skipAgentsMd,
+                  contextFile: options.contextFile,
                   skipSkills: options.skipSkills,
                   noStats: options.noStats,
                   defaultBranch: options.defaultBranch,
@@ -5034,6 +5037,7 @@ async function runFullAnalysisInner(
           undefined,
           {
             skipAgentsMd: options.skipAgentsMd,
+            contextFile: options.contextFile,
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
