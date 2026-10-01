@@ -151,12 +151,22 @@ describe('vendored grammar prebuild coverage (toolchain-free on every supported 
 
 describe('npm-dependency grammar prebuild coverage', () => {
   const pkg = JSON.parse(readFileSync(path.join(GITNEXUS_ROOT, 'package.json'), 'utf8'));
+  // A grammar is recognised by its package basename so a scoped package
+  // (`@scope/tree-sitter-x`) is included; the `tree-sitter` runtime and
+  // non-grammar packages are not.
   const npmGrammars = Object.keys(pkg.dependencies ?? {})
-    .filter((d) => /^tree-sitter-/.test(d))
+    .filter((d) => /^tree-sitter-/.test(d.split('/').pop() ?? ''))
     .sort();
 
   it('discovers the npm grammar dependencies', () => {
     expect(npmGrammars.length).toBeGreaterThan(0);
+  });
+
+  it('enumerates scoped and unscoped grammars but not the runtime or other packages', () => {
+    expect(npmGrammars).toContain('@eagleoutice/tree-sitter-r');
+    expect(npmGrammars).toContain('tree-sitter-go');
+    expect(npmGrammars).not.toContain('tree-sitter');
+    expect(npmGrammars).not.toContain('@ladybugdb/core');
   });
 
   for (const grammar of npmGrammars) {
