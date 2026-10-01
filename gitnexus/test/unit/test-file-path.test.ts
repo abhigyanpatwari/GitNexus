@@ -14,6 +14,7 @@ describe('isTestFilePath — shared predicate', () => {
   it('normalizes Windows separators and casing', () => {
     expect(isTestFilePath('SRC\\Test\\FooTests.cs')).toBe(true);
     expect(isTestFilePath('pkg\\thing_test.go')).toBe(true);
+    expect(isTestFilePath('PKG\\thing_test.dart')).toBe(true);
     expect(isTestFilePath('src\\Widgets.Tests\\WidgetTests.cs')).toBe(true);
   });
 
@@ -31,6 +32,8 @@ describe('isTestFilePath — shared predicate', () => {
     'tests/Feature/LoginTest.php',
     'tests/Unit/ThingSpec.php',
     'tests/Feature/Support/FakeGateway.php',
+    'test/pages/dashboard_page_test.dart',
+    'lib/widgets/dashboard_test.dart',
   ]) {
     it(`detects a test path the MCP copy used to miss: ${p}`, () => {
       expect(isTestFilePath(p)).toBe(true);
@@ -56,6 +59,8 @@ describe('isTestFilePath — shared predicate', () => {
     'Latest.php',
     'src/fixtures/schema.ts',
     'src/fruitests/helpers.swift',
+    'lib/widgets/dashboard.dart',
+    'lib/widgets/dashboard_test.dart.backup',
   ]) {
     it(`does not classify production code as test: ${p}`, () => {
       expect(isTestFilePath(p)).toBe(false);
@@ -77,6 +82,7 @@ describe('test-file classification has exactly one implementation', () => {
     'Contest.swift',
     'spec/models/user_spec.rb',
     'pkg/thing_test.go',
+    'lib/widgets/dashboard_test.dart',
     'tests/Feature/LoginTest.php',
   ];
 

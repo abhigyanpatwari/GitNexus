@@ -5,7 +5,7 @@
   },
   "python-abstract-dispatch/base.py": {
     "captureGroups": 22,
-    "digest": "94900994d4bae8c55660e21694afba50d0edd6e22b71bcc897982aa860bbb07e"
+    "digest": "96d3ad96798ff20036cca85bcedf2eb64cc7636143d30a5af8bab65e03b08dc2"
   },
   "python-abstract-dispatch/impl.py": {
     "captureGroups": 19,
@@ -517,7 +517,7 @@
   },
   "python-method-enrichment/models.py": {
     "captureGroups": 31,
-    "digest": "9e3f359187a82e936cd74c59848a296d19f138865a71882e3bbd3842bb4f0704"
+    "digest": "ae9408b9692b231a2fcd09ec2f82097f7fca76c677a7cb66c02f84ec91f7198e"
   },
   "python-mixin-self-dispatch/ambiguous_a.py": {
     "captureGroups": 10,
@@ -549,7 +549,7 @@
   },
   "python-mixin-self-dispatch/worker.py": {
     "captureGroups": 211,
-    "digest": "82b087675071c005a6a58c84659009d180e71297f0ed7c915a1d8f745883730e"
+    "digest": "729328fa43d852b4da8b040a87a23d49e95ce87639a36146529041161cb62693"
   },
   "python-mixin-self-dispatch/wrong_arity.py": {
     "captureGroups": 23,

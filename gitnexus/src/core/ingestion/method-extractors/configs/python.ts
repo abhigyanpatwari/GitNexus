@@ -8,7 +8,11 @@ import type {
   MethodVisibility,
 } from '../../method-types.js';
 import { hasKeyword } from '../../field-extractors/configs/helpers.js';
-import { classifyPythonBoundReceiver } from '../../languages/python/receiver-binding.js';
+import {
+  classifyPythonBoundReceiver,
+  classifyPythonUncertainReceiver,
+  isPythonStaticLikeMethod,
+} from '../../languages/python/receiver-binding.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -100,7 +104,12 @@ function extractPythonParameters(node: SyntaxNode): ParameterInfo[] {
 
   const params: ParameterInfo[] = [];
   let isFirst = true;
-  const boundReceiverId = classifyPythonBoundReceiver(funcNode)?.parameter.id;
+  // An opaque decorator leaves the receiver kind unproven, not the slot: keep
+  // stripping it so arity matches ordinary bound calls.
+  const boundReceiverId = (
+    classifyPythonBoundReceiver(funcNode) ??
+    (isPythonStaticLikeMethod(funcNode) ? null : classifyPythonUncertainReceiver(funcNode))
+  )?.parameter.id;
 
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);

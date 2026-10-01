@@ -98,6 +98,10 @@ import type {
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  mergeMountPrefixes,
+  resolveFastAPIRouterPrefixes,
+} from '../route-extractors/fastapi-router-prefixes.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
@@ -1667,11 +1671,9 @@ export async function runChunkedParseAndResolve(
       m.set(alias.localName, alias.moduleKeyLong);
     }
 
-    // Two parallel maps: long-key (precise) and short-key (basename
-    // fallback). Long-key entries are preferred when the file's own long
-    // key matches; short-key entries match any file with that basename and
-    // remain the fallback when no long key is known (e.g. Shape A includes
-    // without a corresponding import statement).
+    // Exact-file matches handle import-resolved mounts (including nested
+    // routers). These long/short maps preserve the older fallback for mounts
+    // whose import cannot be resolved to one file.
     const prefixesByLongKey = new Map<string, Set<string>>();
     const prefixesByShortKey = new Map<string, Set<string>>();
     // Constructor prefixes are `router`-only (the apply gate below and the
@@ -1679,6 +1681,13 @@ export async function runChunkedParseAndResolve(
     // flat file-key → prefix map suffices — mirrors the group layer's shape.
     const constructorPrefixesByLongKey = new Map<string, string>();
     const constructorPrefixesByShortKey = new Map<string, string>();
+    const { prefixesByFile, resolvedIncludes } = resolveFastAPIRouterPrefixes(
+      allPaths,
+      allRouterIncludes,
+      allRouterImports,
+      allRouterModuleAliases,
+      allRouterConstructorPrefixes,
+    );
 
     const recordPrefix = (target: Map<string, Set<string>>, key: string, prefix: string): void => {
       let set = target.get(key);
@@ -1690,6 +1699,9 @@ export async function runChunkedParseAndResolve(
     };
 
     for (const inc of allRouterIncludes) {
+      // Unprefixed includes only exist as propagation edges; recording `''`
+      // here would shadow a real short-key prefix for the same module.
+      if (resolvedIncludes.has(inc) || !inc.prefix) continue;
       // Shape A: `<module>.router`. The worker emits `routerExpr` already
       // including `.router`, so split it back. We only know a short module
       // key here — the call site doesn't carry the dotted package path. If
@@ -1720,6 +1732,7 @@ export async function runChunkedParseAndResolve(
     }
 
     if (
+      prefixesByFile.size > 0 ||
       prefixesByLongKey.size > 0 ||
       prefixesByShortKey.size > 0 ||
       allRouterConstructorPrefixes.length > 0
@@ -1760,15 +1773,17 @@ export async function runChunkedParseAndResolve(
           expanded.push(dr);
           continue;
         }
-        // Long-key lookup first; only fall back to the short key when no
-        // long-key prefix targets this file. This avoids prefix leakage
-        // between e.g. `api/users.py` and `admin/users.py`.
+        // Exact file matches plus the legacy long/short fallback for mounts
+        // whose import could not be resolved.
         const longKey = fileLongKey(dr.filePath);
         const longPrefixes = longKey ? prefixesByLongKey.get(longKey) : undefined;
         const shortPrefixes = longPrefixes
           ? undefined
           : prefixesByShortKey.get(fileShortKey(dr.filePath));
-        const prefixes = longPrefixes ?? shortPrefixes;
+        const prefixes = mergeMountPrefixes(
+          prefixesByFile.get(dr.filePath.replace(/\\/g, '/')),
+          longPrefixes ?? shortPrefixes,
+        );
         // Constructor prefixes are keyed like include_router prefixes:
         // long-key entries are precise, while short-key entries are only
         // valid for repo-root/single-segment files where `fileLongKey`
@@ -1819,9 +1834,16 @@ export async function runChunkedParseAndResolve(
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
   const routeFilePaths = new Set(allPaths);
+  // Route files whose handlers resolve through imports: data route tables, and
+  // routes of a language that resolves its own handlers (`resolveRouteHandler`).
+  // Both need the file's parsed imports and its language's resolution config.
   const dataRouteFilePaths = new Set(
     allDecoratorRoutes
-      .filter((route) => route.source === DATA_ROUTE_TABLE_SOURCE)
+      .filter(
+        (route) =>
+          route.source === DATA_ROUTE_TABLE_SOURCE ||
+          getProviderForFile(route.filePath)?.resolveRouteHandler !== undefined,
+      )
       .map((route) => route.filePath),
   );
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
@@ -1837,12 +1859,12 @@ export async function runChunkedParseAndResolve(
     );
   }
   let routeResolutionFiles = allParsedFiles;
-  const resolveRouteImportTarget = (
+  const resolveRouteImportTargets = (
     parsedImport: ParsedImport,
     fromFile: string,
-  ): string | null => {
+  ): readonly string[] => {
     const language = getLanguageFromFilename(fromFile);
-    if (language === null) return null;
+    if (language === null) return [];
     const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
       parsedImport.targetRaw ?? '',
       fromFile,
@@ -1850,8 +1872,15 @@ export async function runChunkedParseAndResolve(
       routeResolutionConfigs.get(language),
       { parsedFiles: routeResolutionFiles, parsedImport },
     );
-    if (typeof target === 'string') return target;
-    return target?.length === 1 ? target[0] : null;
+    if (typeof target === 'string') return [target];
+    return target ?? [];
+  };
+  const resolveRouteImportTarget = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): string | null => {
+    const targets = resolveRouteImportTargets(parsedImport, fromFile);
+    return targets.length === 1 ? targets[0] : null;
   };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
     const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
@@ -1872,6 +1901,34 @@ export async function runChunkedParseAndResolve(
   }
   // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
   // the model is fully populated and decorator-route prefixes are finalized.
+  const routeSourceTexts = new Map<string, string | undefined>();
+  const routeSourceTextFor = (filePath: string): string | undefined => {
+    if (!routeSourceTexts.has(filePath)) {
+      try {
+        routeSourceTexts.set(filePath, fs.readFileSync(path.join(repoPath, filePath), 'utf-8'));
+      } catch {
+        routeSourceTexts.set(filePath, undefined);
+      }
+    }
+    return routeSourceTexts.get(filePath);
+  };
+  routeResolutionFiles = routeResolutionFiles.map((parsed) => {
+    if (!dataRouteFilePaths.has(parsed.filePath)) return parsed;
+    const language = getLanguageFromFilename(parsed.filePath);
+    const resolveBinding =
+      language === null ? undefined : SCOPE_RESOLVERS.get(language)?.resolveImportBinding;
+    if (!resolveBinding) return parsed;
+    return {
+      ...parsed,
+      parsedImports: parsed.parsedImports.map((parsedImport) =>
+        resolveBinding(
+          parsedImport,
+          () => resolveRouteImportTargets(parsedImport, parsed.filePath),
+          routeSourceTextFor,
+        ),
+      ),
+    };
+  });
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
@@ -1879,6 +1936,8 @@ export async function runChunkedParseAndResolve(
     {
       files: routeResolutionFiles,
       resolveImportTarget: resolveRouteImportTarget,
+      resolveImportTargets: resolveRouteImportTargets,
+      providerRouteHandler: (filePath) => getProviderForFile(filePath)?.resolveRouteHandler,
       isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
       nodeStartLine: (id) => {
         const n = graph.getNode(id);

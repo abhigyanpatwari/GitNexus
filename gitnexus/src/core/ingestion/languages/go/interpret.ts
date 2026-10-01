@@ -14,7 +14,13 @@ export function interpretGoImport(captures: CaptureMatch): ParsedImport | null {
   }
   if (kind === 'namespace') {
     if (name === undefined) return null;
-    return { kind: 'namespace', localName: name, importedName: name, targetRaw: source };
+    return {
+      kind: 'namespace',
+      localName: name,
+      importedName: name,
+      targetRaw: source,
+      implicitLocalName: true,
+    };
   }
   return null;
 }

@@ -303,6 +303,8 @@ type ParsedImportSyntax =
    */
   | {
       readonly kind: 'namespace';
+      /** The source omitted a local alias; the imported module declares its binding name. */
+      readonly implicitLocalName?: boolean;
       /** Scope-visible handle (e.g. `np` in `import numpy as np`; `numpy` when unaliased). */
       readonly localName: string;
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
@@ -649,6 +651,7 @@ export interface TypeRef {
     | 'parameter-annotation'
     | 'return-annotation'
     | 'self'
+    | 'decorator-unknown'
     | 'assignment-inferred'
     | 'constructor-inferred'
     | 'receiver-propagated';
