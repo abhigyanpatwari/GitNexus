@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { buildTypeEnv } from '../../src/core/ingestion/type-env.js';
-import { extractReturnType as rExtractReturnType } from '../../src/core/ingestion/type-extractors/r.js';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 
@@ -29,8 +28,10 @@ describe('buildTypeEnv', () => {
   describe('R roxygen2 annotations', () => {
     it('extracts @param type bindings from roxygen2 comments', () => {
       const tree = parse(`
-#' @param data DataFrame the input data
-#' @param outliers DataFrame outlier records
+DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
+
+#' @param data DataFrame
+#' @param outliers DataFrame
 AddOutlierStatuses <- function(data, outliers) {
   data
 }
@@ -42,15 +43,15 @@ AddOutlierStatuses <- function(data, outliers) {
 
     it('skips lowercase type names (primitive types)', () => {
       const tree = parse(`
-#' @param x numeric input value
-#' @param name Character the name
+#' @param x numeric
+#' @param name Character
 process <- function(x, name) {
   x
 }
 `);
       const typeEnv = buildTypeEnv(tree, 'r');
       expect(flatGet(typeEnv, 'x')).toBeUndefined();
-      expect(flatGet(typeEnv, 'name')).toBe('Character');
+      expect(flatGet(typeEnv, 'name')).toBeUndefined();
     });
 
     it('extracts no types when no roxygen2 comments present', () => {
@@ -63,12 +64,16 @@ process <- function(x, y) {
       expect(flatSize(typeEnv)).toBe(0);
     });
 
-    it('extracts types from = assignment function definitions', () => {
+    it.each([
+      ['<-', 'helper <- function(repo) {\n  repo\n}'],
+      ['=', 'helper = function(repo) {\n  repo\n}'],
+      ['<<-', 'helper <<- function(repo) {\n  repo\n}'],
+    ])('extracts types from %s function definitions', (_op, definition) => {
       const tree = parse(`
-#' @param repo UserRepo the repository
-helper = function(repo) {
-  repo
-}
+UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
+
+#' @param repo UserRepo
+${definition}
 `);
       const typeEnv = buildTypeEnv(tree, 'r');
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
@@ -84,45 +89,6 @@ rs <- ResultSet$new(items)
       expect(binding!.calleeName).toBe('ResultSet');
     });
 
-    it('extractReturnType extracts @return type from roxygen2 comment', () => {
-      const tree = parse(`
-#' @param name Character the user name
-#' @return User
-create <- function(name) {
-  name
-}
-`);
-      let defNode: any = null;
-      for (let i = 0; i < tree.rootNode.childCount; i++) {
-        const child = tree.rootNode.child(i);
-        if (child?.type === 'binary_operator') {
-          defNode = child;
-          break;
-        }
-      }
-      expect(defNode).not.toBeNull();
-      const returnType = rExtractReturnType(defNode);
-      expect(returnType).toBe('User');
-    });
-
-    it('extractReturnType skips lowercase @return types', () => {
-      const tree = parse(`
-#' @return numeric
-compute <- function() { 42 }
-`);
-      let defNode: any = null;
-      for (let i = 0; i < tree.rootNode.childCount; i++) {
-        const child = tree.rootNode.child(i);
-        if (child?.type === 'binary_operator') {
-          defNode = child;
-          break;
-        }
-      }
-      expect(defNode).not.toBeNull();
-      const returnType = rExtractReturnType(defNode);
-      expect(returnType).toBeUndefined();
-    });
-
     it('returns constructor binding for S4 obj <- new("ClassName")', () => {
       const tree = parse(`
 model <- new("DataModel", name = "test")
@@ -135,8 +101,11 @@ model <- new("DataModel", name = "test")
 
     it('extracts @param types when @examples block is present', () => {
       const tree = parse(`
-#' @param data DataFrame the input data
-#' @param config Config configuration object
+DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
+Config <- R6::R6Class("Config", public = list(get = function() 1))
+
+#' @param data DataFrame
+#' @param config {Config} configuration object
 #' @return Result
 #' @examples
 #' result <- process(my_data, my_config)
@@ -152,12 +121,177 @@ process <- function(data, config) {
 
     it('extracts @param types when regular comments appear before function', () => {
       const tree = parse(`
-#' @param x DataFrame the input
+DataFrame <- R6::R6Class("DataFrame", public = list(rows = function() 1))
+
+#' @param x DataFrame
 # TODO: refactor this later
 compute <- function(x) { x }
 `);
       const typeEnv = buildTypeEnv(tree, 'r');
       expect(flatGet(typeEnv, 'x')).toBe('DataFrame');
+    });
+
+    it('binds a parameter only when the tag names a class the file defines', () => {
+      const tree = parse(`
+#' @param data DataFrame
+#' @param name Character
+process <- function(data, name) {
+  data
+}
+`);
+      const typeEnv = buildTypeEnv(tree, 'r');
+      expect(flatGet(typeEnv, 'data')).toBeUndefined();
+      expect(flatGet(typeEnv, 'name')).toBeUndefined();
+    });
+
+    it('does not bind a lowercase word even when the file defines a class of that name', () => {
+      const tree = parse(`
+setClass("repo", representation(name = "character"))
+
+#' @param r repo
+save <- function(r) { r }
+`);
+      const typeEnv = buildTypeEnv(tree, 'r');
+      expect(flatGet(typeEnv, 'r')).toBeUndefined();
+    });
+
+    describe('description prose is not a type', () => {
+      it('does not bind the first word of a description that names an R6 class', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param df Data frame of observations
+run <- function(df) {
+  df$fit()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'df')).toBeUndefined();
+      });
+
+      it('does not bind the first word of a description that names an S4 class', () => {
+        const tree = parse(`
+setClass("Config", representation(path = "character"))
+
+#' @param cfg Config object to read from
+load <- function(cfg) {
+  cfg
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'cfg')).toBeUndefined();
+      });
+
+      it('does not bind an article or determiner that happens to be a class name', () => {
+        const tree = parse(`
+A <- R6::R6Class("A", public = list(go = function() 1))
+
+#' @param x A numeric vector
+f <- function(x) { x }
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'x')).toBeUndefined();
+      });
+
+      it('does not bind from the first line of a description that continues on the next line', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param df Data
+#'   frame of observations
+run <- function(df) {
+  df$fit()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'df')).toBeUndefined();
+      });
+
+      it('binds a braced type whose prose continues on the next line', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+#' @param df {Data} the observations,
+#'   one row per case
+run <- function(df) {
+  df$fit()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'df')).toBe('Data');
+      });
+    });
+
+    it('reads a tag only at the start of a roxygen line', () => {
+      const tree = parse(`
+UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
+
+#' Write the tag as #' @param repo UserRepo in your own comments.
+save <- function(repo) {
+  repo
+}
+`);
+      const typeEnv = buildTypeEnv(tree, 'r');
+      expect(flatGet(typeEnv, 'repo')).toBeUndefined();
+    });
+
+    describe('class definition forms', () => {
+      it.each([
+        ['bare R6Class', 'UserRepo <- R6Class("UserRepo", public = list(save = function() 1))'],
+        [
+          'namespaced R6::R6Class',
+          'UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))',
+        ],
+        ['setClass', 'setClass("UserRepo", representation(name = "character"))'],
+        ['setRefClass', 'setRefClass("UserRepo", fields = list(name = "character"))'],
+      ])('binds a type defined with %s', (_form, definition) => {
+        const tree = parse(`
+#' @param repo UserRepo
+save <- function(repo) {
+  repo
+}
+
+${definition}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
+      });
+
+      it('binds the braced form, with or without prose after it', () => {
+        const tree = parse(`
+UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
+
+#' @param repo {UserRepo} the repository
+#' @param backup {UserRepo}
+save <- function(repo, backup) {
+  repo
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
+        expect(flatGet(typeEnv, 'backup')).toBe('UserRepo');
+      });
+    });
+
+    describe('forms that are not bound (guards)', () => {
+      it.each([
+        ['\\code{Data} markup', "#' @param df \\code{Data}", ['df']],
+        ['\\linkS4class{Data} markup', "#' @param df \\linkS4class{Data}", ['df']],
+        ['a comma-separated name list', "#' @param x,y Data", ['x', 'y']],
+        ['the dots parameter', "#' @param ... Data", ['...']],
+        ['a dotted parameter name', "#' @param na.rm Data", ['na.rm']],
+      ])('does not bind %s', (_label, tag, names) => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+${tag}
+run <- function(x, y, df, ..., na.rm = FALSE) {
+  x
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        for (const name of names) expect(flatGet(typeEnv, name)).toBeUndefined();
+      });
     });
   });
 });

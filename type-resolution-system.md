@@ -388,7 +388,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 | Assignment chains | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | No | Yes | Yes | Yes | Yes | No |
 | Field/property type resolution | Yes | No† | Yes | Yes | Yes | Yes | Yes | Yes* | Yes | YARD | No | Yes | No‡ | No | Partial‖‖‖ |
 | Comment-based types | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No | Roxygen2 |
-| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No | Roxygen2 |
+| Return type extraction | JSDoc | JSDoc | No | No | No | No | No | No | PHPDoc | YARD | No | No | No | No | No |
 | Call-result variable binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | Yes |
 | Field access binding | Yes | No† | Yes | Yes | Yes | Yes | Yes | No‖ | Yes | N/A | Yes††† | Yes | No | Yes | No |
 | Method-call-result binding | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes¶ | Yes††† | Yes | No | Yes | Yes |
@@ -431,7 +431,7 @@ So return-type-aware receiver inference already exists in a constrained downstre
 
 \*\*\* Whole-module-import languages (Go, Ruby, C/C++, Swift, R): namedImportMap entries synthesized from graph-exported symbols via `synthesizeWildcardImportBindings()`. Not from import AST node extraction.
 
-‖‖‖ R has no inline type annotations. Parameter types are extracted from roxygen2 `#' @param name Type` comments. Field/property types for S4 slots come from `representation(name = "character")` string literals; R6 fields infer types from default values (`NULL`, `TRUE`, `0L`, `"str"`).
+‖‖‖ R has no inline type annotations. Parameter types are extracted from roxygen2 `@param` tags only when the description is the type alone (`#' @param name Type`) or starts with it in braces (`#' @param name {Type} prose`) and `Type` is an R6, S4 or RefClass class defined in the same file; prose that merely begins with a capitalised word binds nothing. Roxygen `@return` is not read. Field/property types for S4 slots come from `representation(name = "character")` string literals; R6 fields infer types from default values (`NULL`, `TRUE`, `0L`, `"str"`).
 
 ---
 
