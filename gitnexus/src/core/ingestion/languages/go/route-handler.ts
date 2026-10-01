@@ -171,7 +171,7 @@ function ownerTypeName(returnType: string | undefined): string | undefined {
   if (returnType === undefined) return undefined;
   const first = returnType.replace(/^\(/, '').split(',')[0]?.trim() ?? '';
   const name = first.replace(/^\*/, '');
-  return /^[A-Za-z_]\w*$/.test(name) ? name : undefined;
+  return /^[_\p{L}][_\p{L}\p{Nd}]*$/u.test(name) ? name : undefined;
 }
 
 function methodOfType(

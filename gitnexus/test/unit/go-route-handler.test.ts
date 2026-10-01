@@ -118,6 +118,51 @@ describe('resolveGoRouteHandler', () => {
     ).toBeUndefined();
   });
 
+  describe.each(['Händler', '处理器', '𐐀Handler', '_Händler_١'])(
+    'a constructor returning the Go identifier %s',
+    (owner) => {
+      it.each(['%s', '*%s', '(*%s, error)'])(
+        'resolves its sibling-file method for result %s',
+        (result) => {
+          const model = createSemanticModel();
+          struct(model, 'app/router/types.go', owner);
+          fn(model, 'app/router/constructor.go', 'NewHandler', result.replace('%s', owner));
+          method(model, 'app/router/handler.go', owner, 'Do');
+
+          expect(
+            resolve(model, {
+              handlerName: 'h.Do',
+              handlerReceiver: { kind: 'constructor', name: 'NewHandler' },
+            }),
+          ).toBe(`Method:app/router/handler.go:${owner}.Do`);
+        },
+      );
+    },
+  );
+
+  it.each([
+    '1Handler',
+    '١Handler',
+    'Ha\u0308ndler',
+    'Handler²',
+    'HandlerⅣ',
+    'other.Handler',
+    '[]Handler',
+    'map[string]Handler',
+  ])('declines the unsupported constructor result %s even with matching metadata', (result) => {
+    const model = createSemanticModel();
+    struct(model, 'app/router/types.go', result);
+    fn(model, 'app/router/constructor.go', 'NewHandler', result);
+    method(model, 'app/router/handler.go', result, 'Do');
+
+    expect(
+      resolve(model, {
+        handlerName: 'h.Do',
+        handlerReceiver: { kind: 'constructor', name: 'NewHandler' },
+      }),
+    ).toBeUndefined();
+  });
+
   it('resolves a type hint through an import qualifier', () => {
     const model = createSemanticModel();
     struct(model, 'app/handlers/auth.go', 'Auth');
