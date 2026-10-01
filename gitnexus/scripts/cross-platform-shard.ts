@@ -47,6 +47,10 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   // Re-measured after the analyze --watch e2e landed in #3072. The previous
   // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
   'test/integration/cli-e2e.test.ts': 621,
+  // Measured on windows-latest run 35636340549 (#3210): all 11 assertions
+  // passed, but the previously unweighted suite consumed 593 s and pushed
+  // shard 3 past the unchanged 20-minute watchdog.
+  'test/integration/xaml-search.test.ts': 593,
   'test/integration/worker-pool.test.ts': 222,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
   // Measured on Windows in run 34014266125 (#3190, 2026-09-06). These DB

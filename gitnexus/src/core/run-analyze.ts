@@ -3851,6 +3851,18 @@ async function runFullAnalysisInner(
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
         });
+        // PARALLEL=false serializes CSV reading, not native COPY worker state.
+        // On a 32-thread host that scratch allocation exhausts the 256 MiB pool
+        // alongside retained FTS indexes, even for a one-row incremental write.
+        // Bound COPY only; restore the caller's setting before FTS construction.
+        // A failed COPY goes through the outer connection-cleanup handler.
+        const copyThreads = Number(
+          (await executeQuery("CALL current_setting('threads') RETURN *"))[0]?.threads,
+        );
+        if (!Number.isSafeInteger(copyThreads) || copyThreads < 1) {
+          throw new Error('Could not read the LadybugDB execution thread count before COPY');
+        }
+        await executeQuery('CALL threads=1');
         await loadGraphToLbug(
           subgraph,
           pipelineResult.repoPath,
@@ -3864,6 +3876,7 @@ async function runFullAnalysisInner(
           undefined,
           contentRetention,
         );
+        await executeQuery(`CALL threads=${copyThreads}`);
         if (preserveDerivedLayer && derivedSnapshot.length > 0) {
           await restoreDerivedRels(derivedSnapshot);
         }

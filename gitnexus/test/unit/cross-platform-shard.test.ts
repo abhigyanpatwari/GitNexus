@@ -22,7 +22,7 @@ import {
 } from '../../scripts/cross-platform-shard.js';
 import { ALL_CROSS_PLATFORM } from '../../scripts/cross-platform-tests.js';
 
-const SHARD_TOTAL = 3;
+const SHARD_TOTAL = 4;
 
 /** Every shard of a split, as file lists. */
 const allShards = (files: readonly string[], total: number): readonly (readonly string[])[] =>
@@ -34,6 +34,9 @@ describe('cross-platform shard partition', () => {
     // in the scheduling table. Keep the observed profile independent of the
     // table so deleting a weight cannot make this regression pass again.
     const observed: Readonly<Record<string, number>> = {
+      // Run 35636340549: all 11 tests passed in 593 s, but the missing weight
+      // packed this suite into a shard that reached the 20-minute watchdog.
+      'test/integration/xaml-search.test.ts': 593,
       'test/integration/skills-e2e.test.ts': 550,
       'test/unit/incremental-index-extension-dml-gate.test.ts': 414,
       'test/integration/fts-extension-e2e.test.ts': 380,
@@ -50,6 +53,7 @@ describe('cross-platform shard partition', () => {
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);
     const heavyweightLocations = [
       'test/integration/cli-e2e.test.ts',
+      'test/integration/xaml-search.test.ts',
       'test/integration/skills-e2e.test.ts',
       'test/unit/incremental-index-extension-dml-gate.test.ts',
     ].map((file) => shards.findIndex((files) => files.includes(file)));

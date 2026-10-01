@@ -9,7 +9,7 @@
  * from the original pipeline. The chunk loop is a memory optimization
  * internal to this phase, not a phase boundary.
  *
- * @deps    structure, markdown, cobol
+ * @deps    structure, markdown, documents, cobol
  * @reads   scannedFiles, allPaths, totalFiles (from structure)
  * @writes  graph (Symbol nodes, IMPORTS/CALLS/EXTENDS/IMPLEMENTS/ACCESSES edges)
  * @output  exportedTypeMap, allFetchCalls, allExtractedRoutes, allDecoratorRoutes,
@@ -113,7 +113,7 @@ export interface ParseOutput {
 
 export const parsePhase: PipelinePhase<ParseOutput> = {
   name: 'parse',
-  deps: ['structure', 'markdown', 'cobol'],
+  deps: ['structure', 'markdown', 'documents', 'cobol'],
 
   async execute(
     ctx: PipelineContext,
