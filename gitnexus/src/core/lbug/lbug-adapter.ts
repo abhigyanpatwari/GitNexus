@@ -3989,6 +3989,7 @@ export const buildFtsQueryCypher = (
  * @param query - Search query string
  * @param limit - Maximum results
  * @param conjunctive - If true, all terms must match (AND); if false, any term matches (OR)
+ * @param missingIndex - Preserve the empty-result default, or propagate missing indexes for diagnostics
  * @returns Array of { node properties, score }
  */
 export const queryFTS = async (
@@ -3997,6 +3998,7 @@ export const queryFTS = async (
   query: string,
   limit: number = 20,
   conjunctive: boolean = false,
+  missingIndex: 'empty' | 'throw' = 'empty',
 ): Promise<
   Array<{ nodeId: string; name: string; filePath: string; score: number; [key: string]: any }>
 > => {
@@ -4027,7 +4029,7 @@ export const queryFTS = async (
     // NEW-6 — this used to be a bare `.includes('does not exist')` check
     // that could not tell the two apart).
     const message = e instanceof Error ? e.message : String(e);
-    if (classifyFtsQueryError(message) === 'missing-index') {
+    if (missingIndex === 'empty' && classifyFtsQueryError(message) === 'missing-index') {
       return [];
     }
     throw e;

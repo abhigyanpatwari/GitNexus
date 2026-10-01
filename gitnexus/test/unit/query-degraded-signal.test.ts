@@ -415,3 +415,69 @@ describe('query: degraded-enrichment signal', () => {
     }
   });
 });
+
+describe('query: partial missing FTS indexes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadMetaMock.mockResolvedValue(null);
+    executeParameterizedMock.mockResolvedValue([]);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('returns successful symbols with a repair hint and partial flag when another index is missing', async () => {
+    const b = makeBackend(true) as any;
+    const resultWithMissing = await b.backend.bm25Search();
+    b.backend.bm25Search.mockResolvedValue({
+      ...resultWithMissing,
+      missingIndexes: ['Function.function_fts'],
+    });
+
+    const result = await runQuery(b);
+
+    expect(result.definitions.map((d: any) => d.id)).toContain('func:x');
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+    expect(result.warning).toContain('repair-fts');
+  });
+
+  it('composes missing indexes with real FTS errors and enrichment failures', async () => {
+    const b = makeBackend(true, ['connection reset']) as any;
+    const resultWithMissing = await b.backend.bm25Search();
+    b.backend.bm25Search.mockResolvedValue({
+      ...resultWithMissing,
+      missingIndexes: ['Function.function_fts'],
+    });
+    executeParameterizedMock.mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes('STEP_IN_PROCESS')) throw new Error('timed out');
+      return [];
+    });
+
+    const result = await runQuery(b);
+
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+    expect(result.warning).toContain('FTS keyword search partially failed');
+    expect(result.warning).toContain('enrichment');
+  });
+});
+
+it('propagates missing-index diagnostics through the real bm25Search helper into query', async () => {
+  vi.clearAllMocks();
+  loadMetaMock.mockResolvedValue(null);
+  executeParameterizedMock.mockResolvedValue([]);
+  const search = await import('../../src/core/search/bm25-index.js');
+  const spy = vi.spyOn(search, 'searchFTSFromLbug').mockResolvedValue({
+    results: [],
+    ftsAvailable: true,
+    missingIndexes: ['Function.function_fts'],
+  });
+  try {
+    const b = makeBackend(true) as any;
+    b.backend.bm25Search = (LocalBackend.prototype as any).bm25Search;
+    const result = await runQuery(b);
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+  } finally {
+    spy.mockRestore();
+  }
+});
