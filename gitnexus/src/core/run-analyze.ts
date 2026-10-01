@@ -51,6 +51,7 @@ import {
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -60,6 +61,7 @@ import {
   executeWithReusedStatement,
   closeLbug,
   closeLbugBeforeExit,
+  tryFlushWAL,
   loadCachedEmbeddings,
   deleteNodesForFiles,
   nodeTablesWithRowsForFiles,
@@ -3112,6 +3114,24 @@ async function runFullAnalysisInner(
     // collapse check compares the whole in-memory graph against the whole DB,
     // which is only a like-for-like comparison on a full rebuild.
     let wroteChangedSubgraphOnly = false;
+    const markIncrementalGraphVerification = async (): Promise<void> => {
+      if (buildPath !== lbugPath) return;
+      const latest = await loadMeta(metaDir);
+      if (!latest?.incrementalInProgress) {
+        throw new Error('Cannot certify incremental graph without its dirty metadata marker.');
+      }
+      // A failed or aborted identity scan is a graph failure. FTS-only repair
+      // and FTS crash recovery must not clear it while retaining these rows.
+      await saveMeta(metaDir, {
+        ...latest,
+        incrementalInProgress: {
+          ...latest.incrementalInProgress,
+          phase: 'graph-reconciliation',
+          updatedAt: Date.now(),
+          checkpointSucceeded: false,
+        },
+      });
+    };
     let incrementalFtsRebuildTables: Set<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
@@ -3163,6 +3183,8 @@ async function runFullAnalysisInner(
         phase: string,
         extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
       ): Promise<void> => {
+        // Do not stamp live metadata while writing a staging database.
+        if (buildPath !== lbugPath) return;
         await saveMeta(metaDir, {
           ...existingMeta!,
           incrementalInProgress: {
@@ -3906,6 +3928,14 @@ async function runFullAnalysisInner(
           'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
       );
     }
+    if (wroteChangedSubgraphOnly) {
+      await markIncrementalGraphVerification();
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'post-COPY/checkpoint',
+      );
+    }
     if (shouldStampFtsDirtyPhase(ftsWritePlan)) {
       // Lift the prior-meta precondition: a first-ever in-place run (Windows
       // full rebuild, or any in-place incremental) must stamp too. Staging
@@ -4002,6 +4032,7 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
+      if (wroteChangedSubgraphOnly) await markIncrementalGraphVerification();
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
       } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
@@ -4052,6 +4083,12 @@ async function runFullAnalysisInner(
           : FTS_UNAVAILABLE_MESSAGE,
       );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
+    }
+
+    if (wroteChangedSubgraphOnly) {
+      // FTS has returned. Later embedding/finalization failures must require
+      // graph recovery, since post-FTS node identities are not yet certified.
+      await markIncrementalGraphVerification();
     }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
@@ -4965,6 +5002,22 @@ async function runFullAnalysisInner(
     // (after applying the precedence chain in registerRepo) — reuse it
     // so AGENTS.md / skill files reference the same name MCP clients
     // will look up (#979).
+    if (wroteChangedSubgraphOnly) {
+      // Registry freshness must not advance either. Include FTS, embedding
+      // restoration and the final WAL drain in the certified boundary.
+      await markIncrementalGraphVerification();
+      await walCheckpointDriver.stop();
+      if (!(await tryFlushWAL())) {
+        throw new Error(
+          'Graph identity reconciliation failed: final checkpoint could not be verified; run `gitnexus analyze --force`.',
+        );
+      }
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'pre-publish/checkpoint',
+      );
+    }
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
       onRename: (previousName, nextName) =>

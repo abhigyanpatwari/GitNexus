@@ -113,7 +113,13 @@ const mockLbugAdapter = async () => {
     initLbug: vi.fn(async () => undefined),
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
-    executeQuery: vi.fn(async () => []),
+    // The policy fixture has one stored File row. Publication now reconciles
+    // that identity instead of trusting the synthetic node count alone.
+    executeQuery: vi.fn(async (query: string) =>
+      query.startsWith('MATCH (n:`File`) RETURN n.id AS id')
+        ? [{ id: 'file:src/a.ts', name: '', filePath: REL_FILE }]
+        : [],
+    ),
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),

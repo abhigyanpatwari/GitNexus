@@ -10,7 +10,12 @@ import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskResult } from 'gitnexus-shared';
+import {
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+  getLanguageFromFilename,
+  type ImpactRiskResult,
+} from 'gitnexus-shared';
 import {
   initLbug,
   executeQuery,
@@ -6445,6 +6450,7 @@ export class LocalBackend {
     // throwaway arrays the size of the row set (40k rows 11.4ms → 4.5ms, 200k
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
+    const mappedPaths = new Set<string>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
     }
@@ -6454,6 +6460,7 @@ export class LocalBackend {
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+      mappedPaths.add(diffPath);
       if (changedSymbols.has(sym.id)) continue;
 
       changedSymbols.set(sym.id, {
@@ -6464,6 +6471,14 @@ export class LocalBackend {
         change_type: 'touched',
       });
     }
+
+    // An empty successful query cannot prove a source diff is safe: its rows
+    // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
+    // docs/config diffs measurable, but withhold a ranked source-risk verdict.
+    const unmappedFiles = [...new Set(fileDiffs.map((file) => file.filePath))].filter(
+      (file) => !mappedPaths.has(file) && getLanguageFromFilename(file) !== null,
+    );
+    if (unmappedFiles.length > 0) queryDegraded = true;
 
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
@@ -6565,8 +6580,9 @@ export class LocalBackend {
       },
       changed_symbols: listedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
-      // A swallowed query failure makes the counts/risk above incomplete — tell
-      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
+      // Failed queries or unmapped source files leave counts/risk incomplete;
+      // the safety gate must not treat that as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
       ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
     };

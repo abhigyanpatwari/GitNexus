@@ -62,6 +62,18 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).toBe('No changes detected.');
   });
 
+  it('explains unmapped source files without claiming a query failed or retry will repair the index', () => {
+    const text = formatDetectChangesResult({
+      partial: true,
+      unmapped_files: ['src/index-lock.ts'],
+      summary: { changed_count: 0, affected_count: 0, changed_files: 1, risk_level: 'unknown' },
+    });
+    expect(text).toContain('PARTIAL RESULT');
+    expect(text).toContain('src/index-lock.ts');
+    expect(text).toMatch(/rebuild/i);
+    expect(text).not.toMatch(/queries failed|No changes detected|no indexed symbols overlap/i);
+  });
+
   it('localizes the production clean-tree payload that carries English summary.message', () => {
     setCliLanguage('zh-CN');
     const text = formatDetectChangesResult({

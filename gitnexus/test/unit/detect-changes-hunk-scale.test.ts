@@ -133,11 +133,11 @@ interface DetectChangesResult {
   partial?: boolean;
 }
 
-async function runDetectChanges(): Promise<DetectChangesResult> {
+async function runDetectChanges(scope = 'unstaged'): Promise<DetectChangesResult> {
   const backend = new LocalBackend();
   await backend.init();
   return (await backend.callTool('detect_changes', {
-    scope: 'unstaged',
+    scope,
     repo: 'hunk-scale-repo',
   })) as DetectChangesResult;
 }
@@ -238,6 +238,35 @@ beforeEach(() => {
 });
 
 describe('#2915 detect_changes hunk scaling', () => {
+  it('withholds a low-risk verdict when a changed source file maps to no symbols', async () => {
+    const result = await detectChangesForCodePy('def vanished():\n    return 2\n');
+    expect(result.summary.changed_files).toBe(1);
+    expect(result.summary.changed_count).toBe(0);
+    expect(result.summary.risk_level).toBe('unknown');
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['code.py']);
+  });
+
+  it('keeps ordinary non-source changes measurable with zero symbols', async () => {
+    const repoDir = makeRepo(['notes.txt'], 2);
+    writeFileSync(path.join(repoDir, 'notes.txt'), 'changed\nline 2\n');
+    registerRepo(repoDir);
+    const result = await runDetectChanges();
+    expect(result.summary.risk_level).toBe('low');
+    expect(result.partial).toBeUndefined();
+  });
+
+  it('withholds a low-risk verdict for an unmapped source rename without hunks', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    execFileSync('git', ['mv', 'code.py', 'renamed.py'], { cwd: repoDir });
+    registerRepo(repoDir);
+    const result = await runDetectChanges('staged');
+    expect(result.summary.changed_files).toBe(1);
+    expect(result.summary.risk_level).toBe('unknown');
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['renamed.py']);
+  });
+
   it('sends the same query for a 3,000-hunk diff as for a 1-hunk diff', async () => {
     const oneHunkRepo = makeRepo(['big.txt'], 12000);
     editEveryNthLine(oneHunkRepo, 'big.txt', 12000, 12000);
