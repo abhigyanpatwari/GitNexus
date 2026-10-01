@@ -344,6 +344,13 @@ export interface FetchWrapperDef {
   functionName: string;
 }
 
+/** See {@link ExtractedDecoratorRoute.handlerReceiver}. */
+export interface RouteHandlerReceiver {
+  kind: 'type' | 'constructor' | 'module';
+  name?: string;
+  qualifier?: string;
+}
+
 export interface ExtractedDecoratorRoute {
   filePath: string;
   routePath: string;
@@ -388,6 +395,20 @@ export interface ExtractedDecoratorRoute {
    * resolution then falls back (the Route node simply carries no handlerSymbolId).
    */
   handlerName?: string;
+  /**
+   * Static hint for what the receiver of a qualified {@link handlerName}
+   * (`h.Method`, `pkg.Func`) is, read from the registering file's own syntax.
+   * The worker sees one file, so it records only what that file says:
+   *   - `type` — the receiver was declared or built as `name` (`h := &T{}`,
+   *     `var h *T`, a `h *pkg.T` parameter);
+   *   - `constructor` — the receiver was returned by the function `name`
+   *     (`h := NewT(...)`), whose declared result type names the owner;
+   *   - `module` — the receiver is the import `qualifier` (`pkg.Func`).
+   * `qualifier` is the import local name the type or constructor was reached
+   * through, when there is one. Only the route file's provider reads this, via
+   * `LanguageProvider.resolveRouteHandler`; absent when nothing was inferred.
+   */
+  handlerReceiver?: RouteHandlerReceiver;
   /**
    * Provenance for the `HANDLES_ROUTE` edge, overriding the default
    * `decorator-<decoratorName>`. Present when the route was extracted from a
