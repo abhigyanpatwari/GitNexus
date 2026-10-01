@@ -267,12 +267,16 @@ export const processCommunities = async (
 
   onProgress?.('Creating membership edges...', 80);
 
-  // Step 4: Create membership mappings
+  // Step 4: Create memberships only for communities that were retained.
+  // Singleton communities have no emitted node and must not receive edges.
+  const retainedCommunityIds = new Set(communityNodes.map((community) => community.id));
   const memberships: CommunityMembership[] = [];
   Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
+    const communityId = `comm_${communityNum}`;
+    if (!retainedCommunityIds.has(communityId)) return;
     memberships.push({
       nodeId,
-      communityId: `comm_${communityNum}`,
+      communityId,
     });
   });
 
