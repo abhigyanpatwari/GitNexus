@@ -1,4 +1,5 @@
 import type { CaptureMatch } from 'gitnexus-shared';
+import { goImportPackageName } from './import-package-name.js';
 import { syntheticCapture } from '../../utils/ast-helpers.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
@@ -25,7 +26,7 @@ export function splitGoImportStatement(node: SyntaxNode): CaptureMatch[] {
   const rawPath = pathNode.text.replace(/^"|"$/g, '').replace(/^`|`$/g, '');
   const nameNode = node.childForFieldName('name');
   const alias = nameNode?.text;
-  const leaf = rawPath.split('/').filter(Boolean).pop() ?? rawPath;
+  const leaf = goImportPackageName(rawPath);
   const kind =
     alias === '.' ? 'dot' : alias === '_' ? 'blank' : alias === undefined ? 'namespace' : 'alias';
 
