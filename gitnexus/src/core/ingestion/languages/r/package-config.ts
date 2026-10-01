@@ -25,7 +25,9 @@ export interface RPackageConfig {
    * and, among equal depths, the one whose whole path string sorts first by
    * code unit (so `a-b/x` beats `a/x`: `-` sorts before `/`); the others are
    * not entries here (their NAMESPACE is still recorded in
-   * {@link namespaceInfoByPackageDir}, which is keyed by directory).
+   * {@link namespaceInfoByPackageDir}, which is keyed by directory). Installed
+   * libraries and check output (`renv`, `packrat`, `revdep`, `<name>.Rcheck`) are
+   * not searched, so their packages are not entries here.
    */
   packages: Map<string, string>;
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
@@ -114,6 +116,30 @@ export function reportRExportPatternProblems(config: RPackageConfig): void {
 const SKIPPED_DIR_NAMES: ReadonlySet<string> = new Set(['node_modules', '.git', '.Rproj.user']);
 
 /**
+ * Directories R tooling fills with installed packages or check output: the renv project
+ * library, the packrat private library and the revdepcheck workspace. Each holds one
+ * `DESCRIPTION` per third-party package, none of which is part of the repository.
+ */
+const VENDORED_LIBRARY_DIR_NAMES: ReadonlySet<string> = new Set(['renv', 'packrat', 'revdep']);
+
+/** Suffix of the `<pkg>.Rcheck` directories `R CMD check` writes. */
+const RCHECK_SUFFIX = '.Rcheck';
+
+/**
+ * True for a directory that discovery must not enter. The match is on the directory's own
+ * name, exact and case-sensitive: `renv`, `packrat` or `revdep`, or `<something>.Rcheck`
+ * (a name that is only the suffix is not one). Look-alikes such as `renv-tools`, `Renv`,
+ * `revdeps` or `pkg.rcheck` are ordinary directories and may hold a real package.
+ */
+function isSkippedDirName(name: string): boolean {
+  return (
+    SKIPPED_DIR_NAMES.has(name) ||
+    VENDORED_LIBRARY_DIR_NAMES.has(name) ||
+    (name.length > RCHECK_SUFFIX.length && name.endsWith(RCHECK_SUFFIX))
+  );
+}
+
+/**
  * Directory entries in code-unit name order. `readdir` order is filesystem-dependent
  * (and `localeCompare` is locale-dependent), so every walk below reads through this to
  * make what it visits, and what it finds first, the same on every machine.
@@ -141,7 +167,7 @@ const HIDDEN_SCAN_BUDGET = 5000;
  * Scan the subtrees the main walk skipped for a package it never discovered.
  *
  * Iterative DFS over `roots` under one global `budget` of directories (skipping
- * `node_modules`, `.git` and `.Rproj.user`, as the main walk does). Returns
+ * the directories {@link isSkippedDirName} names, as the main walk does). Returns
  * `true` (cannot rule a hidden package out) when the budget is exceeded, when a
  * directory or `DESCRIPTION` cannot be read, or when a `DESCRIPTION` declares a
  * `Package:` name that is not in `knownPackageNames`. Returns `false` when every
@@ -167,7 +193,7 @@ export async function hidesUndiscoveredPackage(
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (!SKIPPED_DIR_NAMES.has(entry.name)) stack.push(path.join(dir, entry.name));
+        if (!isSkippedDirName(entry.name)) stack.push(path.join(dir, entry.name));
       } else if (entry.isFile() && entry.name === 'DESCRIPTION') {
         try {
           const content = await fs.readFile(path.join(dir, entry.name), 'utf-8');
@@ -207,7 +233,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
       const entries = await readDirSorted(dir);
       for (const entry of entries) {
         if (entry.isDirectory()) {
-          if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
+          if (isSkippedDirName(entry.name)) continue;
           const child = path.join(dir, entry.name);
           if (depth < maxDepth) {
             scanQueue.push({ dir: child, depth: depth + 1 });
