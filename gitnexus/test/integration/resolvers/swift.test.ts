@@ -384,11 +384,24 @@ describe.skipIf(!swiftAvailable)('Swift injected closure property call (#3425)',
     expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
   });
 
+  it('does not resolve an inherited closure property call to the unrelated method', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS');
+    expect(
+      extendsEdges.some(
+        (edge) => edge.source === 'DerivedService' && edge.target === 'BaseService',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshInheritedValue',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
   it('still resolves the concrete-type extension call', () => {
     const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'runScenario');
-    expect(
-      calls.some((c) => c.target === 'makeValue' && c.targetFilePath === 'Helpers.swift'),
-    ).toBe(true);
+    expect(calls.map((c) => c.rel.targetId)).toEqual([
+      'Function:Helpers.swift:Example.makeValue#1',
+    ]);
   });
 });
 

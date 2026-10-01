@@ -128,8 +128,8 @@
     "digest": "c4d442b67247406de3b1158b958f6f3e294f11c0bbb360ed32489582769a1187"
   },
   "swift-injected-closure-call/Caller.swift": {
-    "captureGroups": 22,
-    "digest": "f6b765b70263b0d8d691bd3340b84d229c7895888a190f2b93d9fa62a7b7208e"
+    "captureGroups": 40,
+    "digest": "dc368e82e4d72aaa23e0f37bad35564d8908ae40d18059942ac80a19464f6037"
   },
   "swift-injected-closure-call/Helpers.swift": {
     "captureGroups": 20,

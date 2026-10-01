@@ -17,3 +17,17 @@ final class Service {
         clock()
     }
 }
+
+class BaseService {
+    let clock: () -> Date
+
+    init(clock: @escaping () -> Date) {
+        self.clock = clock
+    }
+}
+
+final class DerivedService: BaseService {
+    func refreshInheritedValue() -> Date {
+        clock()
+    }
+}
