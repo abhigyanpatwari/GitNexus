@@ -15,3 +15,9 @@ enum Other {
         Date.distantPast
     }
 }
+
+extension DerivedService {
+    func refreshInheritedFromExtension() -> Date {
+        clock()
+    }
+}

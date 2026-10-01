@@ -1,5 +1,6 @@
-import type { ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { findClassBindingInScope } from '../../scope-resolution/scope/walkers.js';
 
 export function swiftIsCallableVisibleFromCaller(ctx: {
   readonly candidate: SymbolDefinition;
@@ -12,9 +13,11 @@ export function swiftIsCallableVisibleFromCaller(ctx: {
   if (name === undefined) return true;
 
   let scopeId: ScopeId | null = ctx.callerScope;
+  let selfType: TypeRef | undefined;
   while (scopeId !== null) {
     const scope = ctx.scopes.scopeTree.getScope(scopeId);
     if (scope === undefined) break;
+    selfType ??= scope.typeBindings.get('self');
     if (scope.kind === 'Class') {
       // An unqualified call binds the nearest type's stored property before
       // any same-named method found elsewhere in the module.
@@ -25,7 +28,13 @@ export function swiftIsCallableVisibleFromCaller(ctx: {
       )
         return false;
 
-      const classDef = scope.ownedDefs.find((def) => def.type === 'Class');
+      const classDef =
+        scope.ownedDefs.find((def) => def.type === 'Class') ??
+        (selfType === undefined
+          ? undefined
+          : findClassBindingInScope(ctx.callerScope, selfType.rawName, ctx.scopes, undefined, {
+              uniqueQualifiedNameFallback: false,
+            }));
       if (classDef === undefined) return true;
       for (const ownerId of ctx.scopes.methodDispatch.mroFor(classDef.nodeId)) {
         const ownerName = ctx.scopes.defs.get(ownerId)?.qualifiedName;

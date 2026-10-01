@@ -132,8 +132,8 @@
     "digest": "dc368e82e4d72aaa23e0f37bad35564d8908ae40d18059942ac80a19464f6037"
   },
   "swift-injected-closure-call/Helpers.swift": {
-    "captureGroups": 20,
-    "digest": "2cbb8f2063f6e08e414fddb729a0ea77ce8f3cd9d42920917bd424bd170884d5"
+    "captureGroups": 27,
+    "digest": "0d72efde56a0d1039548e832097061390793ffd020669ca3cfb74794f4eae877"
   },
   "swift-member-write-access/App.swift": {
     "captureGroups": 14,

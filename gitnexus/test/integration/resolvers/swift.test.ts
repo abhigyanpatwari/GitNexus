@@ -397,6 +397,20 @@ describe.skipIf(!swiftAvailable)('Swift injected closure property call (#3425)',
     expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
   });
 
+  it('keeps inherited closure calls in extensions unlinked', () => {
+    expect(
+      getNodesByLabelFull(result, 'Function').some(
+        (node) =>
+          node.name === 'refreshInheritedFromExtension' &&
+          node.properties.filePath === 'Helpers.swift',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshInheritedFromExtension',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
   it('still resolves the concrete-type extension call', () => {
     const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'runScenario');
     expect(calls.map((c) => c.rel.targetId)).toEqual([

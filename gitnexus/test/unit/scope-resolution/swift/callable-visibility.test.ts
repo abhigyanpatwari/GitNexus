@@ -147,5 +147,41 @@ describe('Swift caller-side callable visibility', () => {
         scopes: inheritedScopes,
       }),
     ).toBe(false);
+
+    const extensionScopes = {
+      ...inheritedScopes,
+      bindings: new Map([
+        [
+          'extensionModule',
+          new Map([['DerivedService', [{ def: derived, origin: 'local' as const }]]]),
+        ],
+      ]),
+      bindingAugmentations: new Map(),
+      scopeTree: buildScopeTree([
+        scope('extensionModule', null, 'Module', [], moduleRange),
+        scope('extensionClass', 'extensionModule', 'Class', [], classRange),
+        {
+          ...scope('extensionFunction', 'extensionClass', 'Function', [method], functionRange),
+          typeBindings: new Map([
+            [
+              'self',
+              { rawName: 'DerivedService', declaredAtScope: 'extensionFunction', source: 'self' },
+            ],
+          ]),
+        },
+      ]),
+    } as ScopeResolutionIndexes;
+    expect(
+      swiftIsCallableVisibleFromCaller({
+        candidate: {
+          nodeId: 'Other.clock',
+          filePath: 'Other.swift',
+          type: 'Method',
+          qualifiedName: 'Other.clock',
+        },
+        callerScope: 'extensionFunction',
+        scopes: extensionScopes,
+      }),
+    ).toBe(false);
   });
 });
