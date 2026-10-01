@@ -609,6 +609,11 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
   const ig = await loadIgnoreRules(repoPath, options);
   const skipGitignore = options?.noGitignore ?? !!process.env.GITNEXUS_NO_GITIGNORE;
   const nestedIgnores = skipGitignore ? null : createNestedGitignoreMatcher(repoPath);
+  // A nested negation outranks the root .gitignore, as in git, but not the
+  // user's .gitnexusignore, so keep a matcher for that file on its own.
+  const nexusIgnore = nestedIgnores
+    ? await loadIgnoreRules(repoPath, { ...options, noGitignore: true, noGlobalIgnore: true })
+    : null;
 
   return {
     ignored(p: Path): boolean {
@@ -624,8 +629,11 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // by `__tests__/generated/` negates the parent but still blocks
       // the re-ignored child.
       if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel)) return false;
-      // Nested .gitignore files below the root (#2675)
-      if (nestedIgnores?.(rel, false)) return true;
+      // Nested .gitignore files below the root (#2675). A deeper file wins
+      // over the root .gitignore either way; .gitnexusignore still applies.
+      const nested = nestedIgnores?.(rel, false);
+      if (nested === true) return true;
+      if (nested === false) return !!nexusIgnore?.ignores(rel);
       // Check .gitignore / .gitnexusignore patterns
       if (ig && ig.ignores(rel)) return true;
       // Fall back to hardcoded rules
@@ -656,9 +664,12 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // Bare-name patterns (e.g. `local`) still match `local/` per gitignore spec:
       // the `ignore` package normalizes `dir` and `dir/` to match directories.
       // See: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames
+      // Nested .gitignore files below the root (#2675), same precedence as in
+      // `ignored` above.
+      const nested = rel ? nestedIgnores?.(rel, true) : undefined;
+      if (nested === true) return true;
+      if (nested === false) return !!nexusIgnore?.ignores(rel + '/');
       if (ig && rel && ig.ignores(rel + '/')) return true;
-      // Nested .gitignore files below the root (#2675)
-      if (rel && nestedIgnores?.(rel, true)) return true;
       return false;
     },
   };

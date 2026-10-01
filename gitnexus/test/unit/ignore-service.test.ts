@@ -689,16 +689,22 @@ describe('createIgnoreFilter', () => {
 
 describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
   let tmpDir: string;
+  let originalNoGitignore: string | undefined;
 
   const asPath = (rel: string) => ({ name: path.basename(rel), relative: () => rel }) as any;
 
   beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-nested-ignore-test-'));
+    originalNoGitignore = process.env.GITNEXUS_NO_GITIGNORE;
   });
 
   afterEach(async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
-    delete process.env.GITNEXUS_NO_GITIGNORE;
+    if (originalNoGitignore === undefined) {
+      delete process.env.GITNEXUS_NO_GITIGNORE;
+    } else {
+      process.env.GITNEXUS_NO_GITIGNORE = originalNoGitignore;
+    }
   });
 
   it('applies a nested .gitignore relative to its own directory', async () => {
@@ -726,6 +732,27 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
 
     expect(filter.ignored(asPath('app/lib/keep.gen.ts'))).toBe(false);
     expect(filter.ignored(asPath('app/lib/other.gen.ts'))).toBe(true);
+  });
+
+  it('lets a nested negation re-include what the root .gitignore ignored', async () => {
+    await fs.mkdir(path.join(tmpDir, 'pkg', 'reports'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '*.log\nreports/\n');
+    await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!keep.log\n!reports/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(asPath('pkg/keep.log'))).toBe(false);
+    expect(filter.ignored(asPath('pkg/other.log'))).toBe(true);
+    expect(filter.childrenIgnored(asPath('pkg/reports'))).toBe(false);
+    expect(filter.childrenIgnored(asPath('reports'))).toBe(true);
+  });
+
+  it('keeps .gitnexusignore above a nested negation', async () => {
+    await fs.mkdir(path.join(tmpDir, 'pkg'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!keep.log\n');
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'pkg/keep.log\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(asPath('pkg/keep.log'))).toBe(true);
   });
 
   it('keeps an explicit root .gitnexusignore negation in charge', async () => {
