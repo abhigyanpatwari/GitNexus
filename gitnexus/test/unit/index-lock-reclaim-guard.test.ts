@@ -106,6 +106,56 @@ it('never admits B and C while A resumes a stale reclaim judgment', async () => 
   }
 });
 
+it('acquires when the holder releases and exits between the record read and pid probe', async () => {
+  const owner = await acquireIndexLock(dir);
+  let releasedDuringProbe = false;
+  const probe = vi.spyOn(process, 'kill').mockImplementation((pid) => {
+    expect(pid).toBe(owner.record.pid);
+    expect(fs.existsSync(guardPath)).toBe(true);
+    owner.release();
+    releasedDuringProbe = true;
+    throw Object.assign(new Error('holder exited'), { code: 'ESRCH' });
+  });
+  try {
+    const successor = await acquireIndexLock(dir);
+    try {
+      expect(releasedDuringProbe).toBe(true);
+      expect(successor.lockFree).toBeUndefined();
+      expect(fs.existsSync(guardPath)).toBe(false);
+      owner.release();
+      expect(JSON.parse(fs.readFileSync(lockPath, 'utf8')).token).toBe(successor.record.token);
+    } finally {
+      successor.release();
+    }
+  } finally {
+    probe.mockRestore();
+    owner.release();
+  }
+});
+
+it.each(['EACCES', 'EIO'])(
+  'refuses acquisition when stale-lock removal fails with %s',
+  async (code) => {
+    const contents = JSON.stringify({
+      v: 1,
+      pid: 999999999,
+      hostname: os.hostname(),
+      startTime: null,
+      token: 'dead-holder',
+      invocationId: 'dead-holder',
+      acquiredAt: '',
+    });
+    fs.writeFileSync(lockPath, contents);
+    vi.mocked(fs.unlinkSync).mockImplementation((p) => {
+      if (p === lockPath) throw Object.assign(new Error('stale-lock removal failed'), { code });
+      actual.unlinkSync(p);
+    });
+    await expect(acquireIndexLock(dir)).rejects.toMatchObject({ code });
+    expect(fs.readFileSync(lockPath, 'utf8')).toBe(contents);
+    expect(fs.existsSync(guardPath)).toBe(false);
+  },
+);
+
 it('keeps an incomplete creator excluded beyond the old malformed grace', async () => {
   // A stopped after O_EXCL creation, before either metadata write completed.
   fs.writeFileSync(guardPath, '');

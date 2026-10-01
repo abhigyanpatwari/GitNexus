@@ -90,7 +90,11 @@ function parseStdout(result: ReturnType<typeof runCliRaw>): unknown {
 // ─── Typed result shapes (avoid `any`; just the fields these tests read) ──────
 type CallBuckets = { calls?: unknown[]; accesses?: unknown[] };
 type ContextResult = { incoming?: CallBuckets; outgoing?: CallBuckets; processes?: unknown[] };
-type ImpactResult = { affected_processes?: unknown[]; affected_modules?: unknown[] };
+type ImpactResult = {
+  affected_processes?: unknown[];
+  affected_modules?: unknown[];
+  affected_routes?: Array<{ url: string; method?: string }>;
+};
 type CypherTabular = { markdown?: string; row_count?: number };
 type QueryResult = { processes?: unknown[] };
 
@@ -124,6 +128,24 @@ beforeAll(() => {
   suiteGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-limit-home-'));
   MINI_REPO = path.join(tmpParent, 'mini-repo');
   fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
+  // A separate handler serves two routes so the route cap cannot pass vacuously.
+  // Keep it independent of logMessage's existing caller/process baselines.
+  fs.writeFileSync(
+    path.join(MINI_REPO, 'routes.go'),
+    `package routes
+
+import "github.com/gin-gonic/gin"
+
+func RegisterRoutes(r *gin.Engine) {
+  r.GET("/health", Health)
+  r.GET("/ready", Health)
+}
+
+func Health(c *gin.Context) {
+  c.String(200, "ok")
+}
+`,
+  );
 
   // Initialize as git repo
   spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
@@ -250,6 +272,25 @@ describe('CLI --limit flag E2E', () => {
   // ─── impact ─────────────────────────────────────────────────────────────
 
   describe('impact --limit', () => {
+    it('caps affected_routes at --limit 1 while omitted and zero limits retain both routes', () => {
+      const args = ['impact', 'Health', '--direction', 'upstream', '--repo', 'mini-repo'];
+      const base = runJson<ImpactResult>(args);
+      expect(base.affected_routes).toHaveLength(2);
+      expect(base.affected_routes).toEqual(
+        expect.arrayContaining([
+          { url: '/health', method: 'GET' },
+          { url: '/ready', method: 'GET' },
+        ]),
+      );
+
+      const limited = runJson<ImpactResult>([...args, '--limit', '1']);
+      expect(limited.affected_routes).toHaveLength(1);
+      expect(base.affected_routes).toContainEqual(limited.affected_routes?.[0]);
+
+      const zero = runJson<ImpactResult>([...args, '--limit', '0']);
+      expect(zero.affected_routes).toEqual(base.affected_routes);
+    });
+
     it('truncates affected_processes/modules to --limit 1', () => {
       const limited = runJson<ImpactResult>([
         'impact',

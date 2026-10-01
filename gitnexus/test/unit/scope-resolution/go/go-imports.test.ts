@@ -6,6 +6,7 @@ import {
 } from '../../../../src/core/ingestion/languages/go/index.js';
 import { getGoParser } from '../../../../src/core/ingestion/languages/go/query.js';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { resolveGoImportBinding } from '../../../../src/core/ingestion/languages/go/import-binding.js';
 
 function parseThenSplit(src: string): CaptureMatch[] {
   const tree = getGoParser().parse(src);
@@ -28,6 +29,20 @@ describe('Go import decomposition', () => {
     expect(matches[0]['@import.source']?.text).toBe('fmt');
     expect(matches[0]['@import.kind']?.text).toBe('namespace');
     expect(matches[0]['@import.name']?.text).toBe('fmt');
+  });
+
+  it.each([
+    ['"example.com/app/handlers/v2"', 'handlers'],
+    ['h "example.com/app/handlers/v2"', 'h'],
+    ['"example.com/app/v2/handlers"', 'handlers'],
+    ['"example.com/app/v2beta"', 'v2beta'],
+    ['"gopkg.in/yaml.v3"', 'yaml'],
+    ['yamlv3 "gopkg.in/yaml.v3"', 'yamlv3'],
+    ['"gopkg.in/yaml.v3beta"', 'yaml.v3beta'],
+  ])('uses the same package qualifier for %s as route extraction', (spec, expected) => {
+    const matches = parseThenSplit(`import ${spec}`);
+    expect(matches[0]['@import.name']?.text).toBe(expected);
+    expect(interpretGoImport(matches[0])?.localName).toBe(expected);
   });
 
   it('decomposes grouped imports', () => {
@@ -71,6 +86,7 @@ describe('Go import interpretation', () => {
       localName: 'models',
       importedName: 'models',
       targetRaw: 'example.com/app/models',
+      implicitLocalName: true,
     });
   });
 
@@ -96,6 +112,51 @@ describe('Go import interpretation', () => {
       '@import.source': capt('@import.source', 'example.com/dsl'),
     });
     expect(result).toEqual({ kind: 'wildcard', targetRaw: 'example.com/dsl' });
+  });
+});
+
+describe('Go import binding names', () => {
+  it.each([
+    ['"example.com/app/api/v2"', 'v2'],
+    ['"example.com/app/storage"', 'endpoints'],
+    ['alias "example.com/app/storage"', 'alias'],
+    ['storage "example.com/app/storage"', 'storage'],
+  ])('resolves %s from the package clause while preserving aliases', (spec, expected) => {
+    const parsed = interpretGoImport(parseThenSplit(`import ${spec}`)[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    const result = resolveGoImportBinding(
+      parsed,
+      () => ['pkg/one.go', 'pkg/two.go'],
+      () => `package ${expected === 'v2' ? 'v2' : 'endpoints'}\n`,
+    );
+    expect(result).toMatchObject({ kind: 'namespace', localName: expected });
+  });
+
+  it('retains only the dependency if package clauses conflict', () => {
+    const parsed = interpretGoImport(parseThenSplit('import "example.com/app/pkg"')[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    expect(
+      resolveGoImportBinding(
+        parsed,
+        () => ['a.go', 'b.go'],
+        (file) => (file === 'a.go' ? 'package a' : 'package b'),
+      ),
+    ).toEqual({ kind: 'side-effect', targetRaw: 'example.com/app/pkg' });
+  });
+
+  it('does not guess a binding from an unreadable target', () => {
+    const parsed = interpretGoImport(parseThenSplit('import "example.com/app/pkg"')[0]);
+    if (!parsed) throw new Error('Expected parsed import');
+    expect(
+      resolveGoImportBinding(
+        parsed,
+        () => ['missing.go'],
+        () => undefined,
+      ),
+    ).toEqual({
+      kind: 'side-effect',
+      targetRaw: 'example.com/app/pkg',
+    });
   });
 });
 
