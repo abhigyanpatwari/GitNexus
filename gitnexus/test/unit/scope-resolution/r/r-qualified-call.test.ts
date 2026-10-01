@@ -228,6 +228,30 @@ describe('loadRPackageConfig: zero packages found', () => {
   });
 });
 
+describe('rQualifierLocality: a <name>/R/ directory is not evidence for a file a discovered package owns', () => {
+  it('does not make `foo` local from pkgs/foo/R/ when that directory is the package `bar`', () => {
+    const cfg = config({ bar: 'pkgs/foo' }, false);
+    expect(rQualifierLocality('foo', cfg, new Set(['pkgs/foo/R/x.R']))).toBe('external');
+    expect(rQualifierLocality('bar', cfg, new Set(['pkgs/foo/R/x.R']))).toBe('local');
+  });
+
+  it('applies to a same-name copy of a package that discovery did not register by name', () => {
+    const cfg: RPackageConfig = {
+      ...config({ bar: 'a/bar' }, false),
+      packageDirs: new Set(['a/bar', 'b/foo']),
+    };
+    expect(rQualifierLocality('foo', cfg, new Set(['b/foo/R/x.R']))).toBe('external');
+  });
+
+  it('still treats an undiscovered <name>/R/ directory as local', () => {
+    const cfg = config({ bar: 'pkgs/bar' }, false);
+    expect(rQualifierLocality('foo', cfg, new Set(['pkgs/foo/R/x.R', 'pkgs/bar/R/y.R']))).toBe(
+      'local',
+    );
+    expect(rQualifierLocality('foo', cfg, new Set(['pkgs\\foo\\R\\x.R']))).toBe('local');
+  });
+});
+
 describe('loadRPackageConfig: truncation only when a skipped subtree hides an undiscovered package', () => {
   // Layout: root/DESCRIPTION (rootpkg). `skipDir` is the first directory below the depth-3
   // limit: root(0) > a(1) > b(2) > c(3) lists d, which is skipped.

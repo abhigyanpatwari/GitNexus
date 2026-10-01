@@ -37,6 +37,7 @@ import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-share
 import type { RPackageConfig } from './package-config.js';
 import {
   parseRQualifier,
+  rOwningPackageDir,
   rPackageDirForFile,
   rRecordQualifiedDefinitionCounts,
   TOP_LEVEL_BINDABLE_TYPES,
@@ -51,10 +52,20 @@ export type RQualifierLocality = 'local' | 'external' | 'unknown';
  * True when `filePath` sits under a `<pkg>/R/` directory: a `/`-delimited path
  * segment equal to `pkg` immediately followed by `R/` (`pkg/R/a.R`,
  * `deep/x/pkg/R/a.R`; not `mypkg/R/a.R`, not `pkg/scripts/a.R`).
+ *
+ * The directory name stands in for the package name only for a file that no discovered
+ * package owns (the fallback for a package whose `DESCRIPTION` discovery missed or that has
+ * none). A file under a discovered package's `R/` belongs to the package its `DESCRIPTION`
+ * names, whatever its directory is called, so it is never evidence for another name.
  */
-function isUnderPackageRDir(pkg: string, filePath: string): boolean {
+function isUnderPackageRDir(
+  pkg: string,
+  filePath: string,
+  cfg: RPackageConfig | null | undefined,
+): boolean {
   const normalized = filePath.replace(/\\/g, '/');
-  return normalized.startsWith(`${pkg}/R/`) || normalized.includes(`/${pkg}/R/`);
+  if (!normalized.startsWith(`${pkg}/R/`) && !normalized.includes(`/${pkg}/R/`)) return false;
+  return rOwningPackageDir(normalized, cfg) === undefined;
 }
 
 /**
@@ -79,7 +90,7 @@ export function rQualifierLocality(
 ): RQualifierLocality {
   if (cfg?.packages.has(pkg) === true) return 'local';
   for (const filePath of parsedFilePaths) {
-    if (isUnderPackageRDir(pkg, filePath)) return 'local';
+    if (isUnderPackageRDir(pkg, filePath, cfg)) return 'local';
   }
   if (cfg === null || cfg === undefined) return 'unknown';
   return cfg.truncated === true ? 'unknown' : 'external';
@@ -168,7 +179,7 @@ export function populateRQualifiedCalls(
         const inPackage =
           cfg?.packages.has(pkg) === true
             ? owner === pkg
-            : isUnderPackageRDir(pkg, parsed.filePath);
+            : isUnderPackageRDir(pkg, parsed.filePath, cfg);
         if (inPackage) files.push(parsed);
       }
     }
