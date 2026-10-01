@@ -3177,64 +3177,6 @@ export const R_QUERIES = `
     (argument
       value: [(identifier) (string)] @import.source))) @import
 
-; ── Heritage: S4 contains= (single parent) ───────────────────────────────────
-(call
-  function: (identifier) @_fn
-  (#match? @_fn "^(setClass|setRefClass)$")
-  arguments: (arguments
-    . (argument
-      value: (string
-        content: (string_content) @heritage.class))
-    (argument
-      name: (identifier) @_arg
-      (#match? @_arg "^(contains|CONTAINS)$")
-      value: (string
-        content: (string_content) @heritage.extends)))) @heritage
-
-; ── Heritage: S4 contains= (multiple parents via c()) ────────────────────────
-(call
-  function: (identifier) @_fn2
-  (#match? @_fn2 "^(setClass|setRefClass)$")
-  arguments: (arguments
-    . (argument
-      value: (string
-        content: (string_content) @heritage.class))
-    (argument
-      name: (identifier) @_arg2
-      (#match? @_arg2 "^(contains|CONTAINS)$")
-      value: (call
-        function: (identifier) @_cfn
-        (#match? @_cfn "^c$")
-        arguments: (arguments
-          (argument
-            value: (string
-              content: (string_content) @heritage.extends))))))) @heritage
-
-; ── Heritage: R6 inherit= via namespace ──────────────────────────────────────
-(binary_operator
-  lhs: (identifier) @heritage.class
-  rhs: (call
-    function: (namespace_operator
-      rhs: (identifier) @_nsfn
-      (#match? @_nsfn "^R6Class$"))
-    arguments: (arguments
-      (argument
-        name: (identifier) @_arg
-        (#match? @_arg "^inherit$")
-        value: (identifier) @heritage.extends)))) @heritage
-
-; ── Heritage: R6 inherit= via bare call ──────────────────────────────────────
-(binary_operator
-  lhs: (identifier) @heritage.class
-  rhs: (call
-    function: (identifier) @_r6fn
-    (#match? @_r6fn "^R6Class$")
-    arguments: (arguments
-      (argument
-        name: (identifier) @_arg
-        (#match? @_arg "^inherit$")
-        value: (identifier) @heritage.extends)))) @heritage
-
 ; ── R6 Fields via namespace (non-function entries in public/private list()) ──
 (binary_operator
   lhs: (identifier) @_class
@@ -3286,9 +3228,6 @@ export const R_QUERIES = `
         arguments: (arguments
           (argument
             name: (identifier) @name) @definition.property)))))
-
-; ── Roxygen2 doc comments ────────────────────────────────────────────────────
-(comment) @comment
 `;
 
 import { SupportedLanguages } from 'gitnexus-shared';

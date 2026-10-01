@@ -4,9 +4,10 @@
  * R has no dedicated class syntax — R6 classes are `R6Class(...)` calls, S4/R5
  * classes are `setClass(...)`/`setRefClass(...)` calls — so this query mirrors
  * the shapes the legacy `R_QUERIES` (`tree-sitter-queries.ts`) already proved
- * queryable for structural extraction, renamed onto the scope-resolution
- * capture vocabulary (`@scope.*`, `@declaration.*`, `@reference.*`,
- * `@import.*`, `@type-binding.*`).
+ * queryable for structural extraction (the heritage shapes below have no
+ * counterpart there), renamed onto the scope-resolution capture vocabulary
+ * (`@scope.*`, `@declaration.*`, `@reference.*`, `@import.*`,
+ * `@type-binding.*`).
  *
  * R specifics encoded here:
  *
