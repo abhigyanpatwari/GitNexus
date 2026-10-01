@@ -127,6 +127,14 @@
     "captureGroups": 9,
     "digest": "c4d442b67247406de3b1158b958f6f3e294f11c0bbb360ed32489582769a1187"
   },
+  "swift-injected-closure-call/Caller.swift": {
+    "captureGroups": 22,
+    "digest": "f6b765b70263b0d8d691bd3340b84d229c7895888a190f2b93d9fa62a7b7208e"
+  },
+  "swift-injected-closure-call/Helpers.swift": {
+    "captureGroups": 20,
+    "digest": "2cbb8f2063f6e08e414fddb729a0ea77ce8f3cd9d42920917bd424bd170884d5"
+  },
   "swift-member-write-access/App.swift": {
     "captureGroups": 14,
     "digest": "7be68b7e510fefac99c94a4ebab3eb96556a0e587155b6c82b7602705e270987"

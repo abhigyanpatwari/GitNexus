@@ -359,6 +359,39 @@ describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)
   });
 });
 
+describe.skipIf(!swiftAvailable)('Swift injected closure property call (#3425)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'swift-injected-closure-call'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not resolve an injected closure call to an unrelated method', () => {
+    expect(
+      getNodesByLabelFull(result, 'Property').some(
+        (node) => node.name === 'clock' && node.properties.filePath === 'Caller.swift',
+      ),
+    ).toBe(true);
+    expect(
+      getNodesByLabelFull(result, 'Function').some(
+        (node) => node.name === 'clock' && node.properties.filePath === 'Helpers.swift',
+      ),
+    ).toBe(true);
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'refreshValue');
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
+  it('still resolves the concrete-type extension call', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'runScenario');
+    expect(
+      calls.some((c) => c.target === 'makeValue' && c.targetFilePath === 'Helpers.swift'),
+    ).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Constructor fallback: Swift constructors look like free function calls
 // (no `new` keyword). The resolver retries with constructor form when
