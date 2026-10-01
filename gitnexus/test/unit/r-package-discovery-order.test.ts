@@ -114,6 +114,18 @@ describe('R package discovery is independent of readdir order', () => {
     }
   });
 
+  it('same-depth duplicates compare as whole paths, not segment by segment', async () => {
+    const root = await newRepo();
+    // '-' (U+002D) sorts before '/' (U+002F), so as whole strings 'a-b/x' < 'a/x',
+    // although the directory 'a' itself sorts before 'a-b'.
+    await write(root, 'a/x/DESCRIPTION', desc('dup'));
+    await write(root, 'a-b/x/DESCRIPTION', desc('dup'));
+    for (const order of ORDERS) {
+      const cfg = await discover(root, order);
+      expect(cfg.packages.get('dup'), `order ${String(order)}`).toBe('a-b/x');
+    }
+  });
+
   it('a root-level package beats a nested package of the same name', async () => {
     const root = await newRepo();
     await write(root, 'DESCRIPTION', desc('dup'));

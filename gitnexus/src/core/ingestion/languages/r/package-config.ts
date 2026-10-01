@@ -20,11 +20,12 @@ export interface RDroppedExportPattern {
 /** R package config parsed from DESCRIPTION files in a multi-package repo */
 export interface RPackageConfig {
   /**
-   * Map of package name to directory path relative to repo root, in discovery
-   * order. When several directories declare the same `Package:` name the
-   * shallowest directory wins and, among equal depths, the path that sorts
-   * first; the others are not entries here (their NAMESPACE is still recorded
-   * in {@link namespaceInfoByPackageDir}, which is keyed by directory).
+   * Map of package name to directory path relative to repo root. When several
+   * directories declare the same `Package:` name the shallowest directory wins
+   * and, among equal depths, the one whose whole path string sorts first by
+   * code unit (so `a-b/x` beats `a/x`: `-` sorts before `/`); the others are
+   * not entries here (their NAMESPACE is still recorded in
+   * {@link namespaceInfoByPackageDir}, which is keyed by directory).
    */
   packages: Map<string, string>;
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
@@ -122,6 +123,17 @@ async function readDirSorted(dir: string): Promise<Dirent[]> {
   return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
+/**
+ * Sort key that ranks the directories declaring one package name: fewer path segments
+ * first, then the whole `/`-separated relative path compared by code unit. Comparing keys
+ * with `<` therefore needs no help from the walk order. The depth is zero-padded so that
+ * it compares as a number; `''` (the repo root) has depth 0.
+ */
+function preferredPackageDir(pkgDir: string): string {
+  const depth = pkgDir === '' ? 0 : pkgDir.split('/').length;
+  return `${String(depth).padStart(6, '0')}\0${pkgDir}`;
+}
+
 /** Global directory budget for {@link hidesUndiscoveredPackage} across all its roots. */
 const HIDDEN_SCAN_BUDGET = 5000;
 
@@ -212,10 +224,13 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
             if (pkgMatch) {
               const pkgName = pkgMatch[1];
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
-              // Same name in several directories: the walk is breadth-first over sorted
-              // entries, so the first one seen is the shallowest and, at equal depth, the
-              // one whose path sorts first. Keep it; never let a later copy replace it.
-              if (!packages.has(pkgName)) {
+              // Same name in several directories: keep the preferred one, whatever the
+              // order the walk met them in (see preferredPackageDir).
+              const current = packages.get(pkgName);
+              if (
+                current === undefined ||
+                preferredPackageDir(pkgDir) < preferredPackageDir(current)
+              ) {
                 packages.set(pkgName, pkgDir);
                 if (isDev) {
                   logger.info(`📦 Found R package: ${pkgName} at ${pkgDir}`);
