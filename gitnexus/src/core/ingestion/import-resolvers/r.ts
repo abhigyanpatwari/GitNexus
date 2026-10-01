@@ -50,7 +50,8 @@ export function resolveRImportInternal(
   // library("pkg") / require("pkg") — resolve to ALL files in the local package
   if (rConfig) {
     const pkgDir = rConfig.packages.get(cleaned);
-    if (pkgDir) {
+    // A root-level package has the directory '' (falsy), so test for absence, not truthiness.
+    if (pkgDir !== undefined) {
       const rDirPrefix = (pkgDir ? pkgDir + '/' : '') + 'R/';
       const files: string[] = [];
       for (let i = 0; i < normalizedFileList.length; i++) {

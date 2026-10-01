@@ -16,7 +16,7 @@
  *
  * NAMESPACE-aware export refinement also runs here — ExportChecker doesn't have
  * a file-path context, so it defaults all R symbols to public. Once we know
- * which package directory each file lives in, we flip `isExported` to false
+ * which package's `R/` directory each file lives in, we flip `isExported` to false
  * for symbols that aren't in the NAMESPACE exports.
  */
 
@@ -26,8 +26,10 @@ import type { PostParseContext } from '../../language-provider.js';
 import {
   loadRPackageConfig,
   reportRExportPatternProblems,
+  type RNamespaceInfo,
   type RPackageConfig,
 } from './package-config.js';
+import { rOwningPackageDir } from './namespace-imports.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
@@ -98,10 +100,13 @@ export const attachDeferredROwners = (
 };
 
 /**
- * Refine R export status based on NAMESPACE files. Nodes whose package has a
- * NAMESPACE file but whose symbol name is not in the exports list get flipped
- * to `isExported: false`. Packages without a NAMESPACE keep the default
- * public behavior.
+ * Refine R export status based on NAMESPACE files. A file belongs to the package whose
+ * `R/` directory contains it (the nearest enclosing discovered package; R loads nothing else
+ * into a package namespace), so only `R/` symbols are tested against that package's NAMESPACE:
+ * a symbol that package does not export is flipped to `isExported: false`. Files outside every
+ * package's `R/` (`tests/`, `vignettes/`, `inst/`, scripts, ...) and packages without a
+ * NAMESPACE file keep the default public behaviour; a nested package without a NAMESPACE does
+ * not inherit its enclosing package's.
  */
 export const refineRExportStatus = (
   graph: KnowledgeGraph,
@@ -109,29 +114,23 @@ export const refineRExportStatus = (
 ): void => {
   if (!rPackageConfig || rPackageConfig.namespaceInfoByPackageDir.size === 0) return;
 
-  // Sort package directories by length descending so the most specific
-  // (deepest) match wins for nested packages.
-  const pkgDirs = [...rPackageConfig.namespaceInfoByPackageDir.keys()].sort(
-    (a, b) => b.length - a.length,
-  );
+  // Nodes of one file share an owner; resolve it once per file.
+  const ownerByFile = new Map<string, RNamespaceInfo | undefined>();
+  const namespaceInfoFor = (filePath: string): RNamespaceInfo | undefined => {
+    if (ownerByFile.has(filePath)) return ownerByFile.get(filePath);
+    const pkgDir = rOwningPackageDir(filePath, rPackageConfig);
+    const info =
+      pkgDir === undefined ? undefined : rPackageConfig.namespaceInfoByPackageDir.get(pkgDir);
+    ownerByFile.set(filePath, info);
+    return info;
+  };
 
   graph.forEachNode((node: GraphNode) => {
     if (node.properties.language !== SupportedLanguages.R) return;
     const filePath = typeof node.properties.filePath === 'string' ? node.properties.filePath : '';
     if (!filePath) return;
 
-    const normalizedPath = filePath.replace(/\\/g, '/');
-    // A root-level package (DESCRIPTION/NAMESPACE at the repo root) is keyed as '';
-    // it contains every repo-relative path. Without this guard the prefix would be
-    // '/', which no repo-relative path starts with. Root sorts last, so a nested
-    // package still wins for files under it.
-    const pkgDir = pkgDirs.find(
-      (dir) => dir === '' || normalizedPath === dir || normalizedPath.startsWith(dir + '/'),
-    );
-    // `find` returns undefined on no match; '' (root package) is a valid, falsy hit.
-    if (pkgDir === undefined) return;
-
-    const nsInfo = rPackageConfig.namespaceInfoByPackageDir.get(pkgDir);
+    const nsInfo = namespaceInfoFor(filePath);
     if (!nsInfo || !nsInfo.hasNamespaceFile) return;
 
     const name = typeof node.properties.name === 'string' ? node.properties.name : '';

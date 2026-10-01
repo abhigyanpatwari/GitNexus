@@ -425,6 +425,33 @@ export function rPackageDirForFile(
   return best;
 }
 
+/**
+ * The directory of the package whose `R/` sources contain `filePath`, or `undefined`.
+ *
+ * Unlike {@link rPackageDirForFile} this considers every directory discovery found a package
+ * in ({@link RPackageConfig.packageDirs}, the directories of `packages` and
+ * `namespaceInfoByPackageDir`), including a same-name copy that is not registered under its
+ * name and a package without a NAMESPACE, so the nearest enclosing package owns a file and a
+ * nested package never inherits the enclosing package's NAMESPACE. The longest matching
+ * directory wins; the root package (`''`) is matched without building a `'' + '/'` prefix.
+ */
+export function rOwningPackageDir(
+  filePath: string,
+  cfg: RPackageConfig | null | undefined,
+): string | undefined {
+  if (cfg === null || cfg === undefined) return undefined;
+  const normalized = filePath.replace(/\\/g, '/');
+  let best: string | undefined;
+  const consider = (dir: string): void => {
+    if (!normalized.startsWith(rRDirPrefix(dir))) return;
+    if (best === undefined || dir.length > best.length) best = dir;
+  };
+  for (const dir of cfg.packages.values()) consider(dir);
+  for (const dir of cfg.namespaceInfoByPackageDir.keys()) consider(dir);
+  if (cfg.packageDirs !== undefined) for (const dir of cfg.packageDirs) consider(dir);
+  return best;
+}
+
 // ─── Top-level definitions of a parsed file ────────────────────────────────
 
 /** Def kinds an R `importFrom()` (or a `pkg::name()` call) can bind to (functions and R6/R5/S4 classes). */

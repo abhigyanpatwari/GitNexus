@@ -33,6 +33,14 @@ export interface RPackageConfig {
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
   namespaceInfoByPackageDir: Map<string, RNamespaceInfo>;
   /**
+   * Every directory (relative to the repo root, `''` for the root) in which discovery read a
+   * `DESCRIPTION` with a `Package:` line: the directories of {@link packages} plus the
+   * directories of same-name copies that lost to them, with or without a NAMESPACE. It decides
+   * which package owns a file. Optional so that hand-built configs read as "the directories of
+   * {@link packages} and {@link namespaceInfoByPackageDir}".
+   */
+  packageDirs?: ReadonlySet<string>;
+  /**
    * True when discovery cannot rule out an undiscovered package: a directory
    * of the main walk could not be read, or a subtree the walk skipped (below
    * the depth limit, or still queued when the directory cap stopped it) may
@@ -218,6 +226,7 @@ export async function hidesUndiscoveredPackage(
 export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConfig> {
   const packages = new Map<string, string>();
   const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
+  const packageDirs = new Set<string>();
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   const maxDepth = 3;
   const maxDirs = 200;
@@ -250,6 +259,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
             if (pkgMatch) {
               const pkgName = pkgMatch[1];
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
+              packageDirs.add(pkgDir);
               // Same name in several directories: keep the preferred one, whatever the
               // order the walk met them in (see preferredPackageDir).
               const current = packages.get(pkgName);
@@ -312,5 +322,5 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   ) {
     truncated = true;
   }
-  return { packages, namespaceInfoByPackageDir, truncated };
+  return { packages, namespaceInfoByPackageDir, packageDirs, truncated };
 }

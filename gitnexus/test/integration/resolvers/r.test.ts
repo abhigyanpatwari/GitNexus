@@ -1261,6 +1261,49 @@ describe('R root-level package NAMESPACE export refinement', () => {
   });
 });
 
+// NAMESPACE refinement is derived from the discovered package directory: only `<pkg>/R/`
+// symbols are package members, and a nested package owns its own files.
+describe('R NAMESPACE export refinement follows the package directory (r-package-layout)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'r-package-layout'), () => {});
+  }, 60000);
+
+  const exported = (name: string) =>
+    getNodesByLabelFull(result, 'Function').find((n) => n.name === name)?.properties.isExported;
+
+  it('marks unexported R/ symbols of the root package and of a nested package', () => {
+    expect(exported('root_exported')).toBe(true);
+    expect(exported('root_hidden')).toBe(false);
+    expect(exported('nested_exported')).toBe(true);
+    expect(exported('nested_hidden')).toBe(false);
+  });
+
+  it('leaves functions outside R/ (tests, vignettes, inst, scripts) exported', () => {
+    for (const name of [
+      'root_test_helper',
+      'root_vignette_helper',
+      'root_inst_script',
+      'root_script_entry',
+      'nested_test_helper',
+    ]) {
+      expect(exported(name), name).toBe(true);
+    }
+  });
+
+  it('keeps a nested package without a NAMESPACE fully public', () => {
+    expect(exported('inner_fn')).toBe(true);
+  });
+
+  it('resolves library() of the root package to its R/ files', () => {
+    const targets = getRelationships(result, 'IMPORTS')
+      .filter((e) => e.sourceFilePath === 'scripts/use.R')
+      .map((e) => e.targetFilePath);
+    expect(targets).toContain('R/root.R');
+  });
+});
+
 // Characterisation of the deferred-owner attach. R classes are calls, so the worker
 // leaves an `ownerNameHint` that the post-parse pass resolves into `ownerId` + HAS_METHOD/HAS_PROPERTY.
 // The counts and the (source, target, type) triples below were measured before that pass moved and must not change
