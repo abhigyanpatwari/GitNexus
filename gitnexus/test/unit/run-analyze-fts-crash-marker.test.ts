@@ -1017,9 +1017,12 @@ describe('runFullAnalysis FTS crash marker', () => {
   );
 
   it('treats a boundary checkpoint failure as best-effort on an in-place plan', async () => {
-    const checkpointOnce = vi.fn(async () => {
-      throw new Error('checkpoint rename failed');
-    });
+    // Only the earlier boundary is best-effort. Publication still requires
+    // its own successful checkpoint through the same policy helper.
+    const checkpointOnce = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('checkpoint rename failed'))
+      .mockResolvedValue(true);
     let stamped: RepoMeta['incrementalInProgress'];
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
@@ -1066,6 +1069,7 @@ describe('runFullAnalysis FTS crash marker', () => {
         { onProgress: () => {}, onLog: () => {} },
       );
       expect(result.ftsSkipped).not.toBe(true);
+      expect(checkpointOnce).toHaveBeenCalledTimes(2);
       expect(stamped).toMatchObject({
         phase: FTS_DIRTY_PHASE,
         writePlan: 'in-place',

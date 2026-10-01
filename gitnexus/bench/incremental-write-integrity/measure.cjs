@@ -120,7 +120,9 @@ const source = (file) => import(pathToFileURL(join(ROOT, file)).href);
           rows.map((r) => JSON.stringify([r.id, r.name, r.filePath, r.startLine, r.endLine])),
         );
         const mismatched = [...wanted].filter((tuple) => !actual.has(tuple)).length;
-        if (rows.length !== size.nodes || mismatched > 0 || actual.size !== wanted.size) {
+        const rejected =
+          rows.length !== size.nodes || mismatched > 0 || actual.size !== wanted.size;
+        if (rejected) {
           await assert.rejects(
             reconcileGraphNodeIdentities(graph, adapter.executeQuery, phase),
             /Graph identity reconciliation/,
@@ -135,7 +137,7 @@ const source = (file) => import(pathToFileURL(join(ROOT, file)).href);
           phase,
           rows: rows.length,
           missing_tuples: mismatched,
-          verdict: mismatched > 0 ? 'rejected' : 'certified',
+          verdict: rejected ? 'rejected' : 'certified',
         });
       };
       await adapter.deleteNodesForFiles([...files]);

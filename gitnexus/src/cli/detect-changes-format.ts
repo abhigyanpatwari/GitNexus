@@ -1,5 +1,6 @@
 import { t } from './i18n/index.js';
 import { formatSymbolLine } from './format-symbol.js';
+import { formatPathForTerminal } from './format-path.js';
 
 type DetectChangesSummary = {
   changed_files?: number;
@@ -50,7 +51,9 @@ export function formatDetectChangesResult(result: unknown): string {
   if (payload.partial) notes.push(t('tool.detectChanges.partial'));
   if (payload.unmapped_files?.length) {
     notes.push(
-      t('tool.detectChanges.unmappedSource', { files: payload.unmapped_files.join(', ') }),
+      t('tool.detectChanges.unmappedSource', {
+        files: payload.unmapped_files.map(formatPathForTerminal).join(', '),
+      }),
     );
   }
   // The plain truncation note reassures that the counts are whole. That is only

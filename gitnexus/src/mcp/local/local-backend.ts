@@ -35,6 +35,7 @@ import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
+import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
@@ -6460,7 +6461,8 @@ export class LocalBackend {
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
-      mappedPaths.add(diffPath);
+      // A suffix fallback is a hint, not proof that this is the changed file.
+      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
       if (changedSymbols.has(sym.id)) continue;
 
       changedSymbols.set(sym.id, {
@@ -6475,9 +6477,19 @@ export class LocalBackend {
     // An empty successful query cannot prove a source diff is safe: its rows
     // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
     // docs/config diffs measurable, but withhold a ranked source-risk verdict.
-    const unmappedFiles = [...new Set(fileDiffs.map((file) => file.filePath))].filter(
-      (file) => !mappedPaths.has(file) && getLanguageFromFilename(file) !== null,
-    );
+    const isSourceFile = (file: string): boolean =>
+      getLanguageFromFilename(file) !== null || isCobolFile(file) || isJclFile(file);
+    const unmappedFiles = [
+      ...new Set(
+        fileDiffs
+          .filter(
+            ({ filePath, oldFilePath }) =>
+              !mappedPaths.has(filePath) &&
+              (isSourceFile(filePath) || (oldFilePath !== undefined && isSourceFile(oldFilePath))),
+          )
+          .map(({ filePath }) => filePath),
+      ),
+    ];
     if (unmappedFiles.length > 0) queryDegraded = true;
 
     // Find affected processes -- batched queries instead of N+1

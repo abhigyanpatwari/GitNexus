@@ -61,7 +61,6 @@ import {
   executeWithReusedStatement,
   closeLbug,
   closeLbugBeforeExit,
-  tryFlushWAL,
   loadCachedEmbeddings,
   deleteNodesForFiles,
   nodeTablesWithRowsForFiles,
@@ -130,6 +129,7 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  isManualCheckpointEnabled,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
@@ -2856,7 +2856,7 @@ async function runFullAnalysisInner(
   // (Bugbot review on PR #1479: a prediction that flipped post-pipeline
   // could skip the embedding cache load and then take the full-rebuild
   // path, silently losing embeddings).
-  const isIncremental =
+  const incrementalEligible =
     !options.force &&
     !!existingMeta &&
     // Belt and braces, not a second gate: the guard above already set `force`
@@ -2868,6 +2868,13 @@ async function runFullAnalysisInner(
     Object.keys(existingMeta.fileHashes).length > 0 &&
     repoHasGit &&
     allFilePaths.length > 0;
+
+  // Select a full build before any selective mutation when the operator has
+  // disabled the checkpoint needed to certify an incremental publication.
+  const isIncremental = incrementalEligible && isManualCheckpointEnabled();
+  if (incrementalEligible && !isIncremental) {
+    log('Manual WAL checkpoints are disabled; switching to a full DB write before mutation.');
+  }
 
   const hashDiff = isIncremental
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
@@ -5007,7 +5014,7 @@ async function runFullAnalysisInner(
       // restoration and the final WAL drain in the certified boundary.
       await markIncrementalGraphVerification();
       await walCheckpointDriver.stop();
-      if (!(await tryFlushWAL())) {
+      if (!(await checkpointOnce())) {
         throw new Error(
           'Graph identity reconciliation failed: final checkpoint could not be verified; run `gitnexus analyze --force`.',
         );

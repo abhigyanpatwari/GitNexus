@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { formatDetectChangesResult } from '../../src/cli/detect-changes-format.js';
 import { setCliLanguage } from '../../src/cli/i18n/index.js';
+import { parseDiffHunks } from '../../src/storage/git.js';
 
 describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
   beforeEach(() => {
@@ -72,6 +73,37 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).toContain('src/index-lock.ts');
     expect(text).toMatch(/rebuild/i);
     expect(text).not.toMatch(/queries failed|No changes detected|no indexed symbols overlap/i);
+  });
+
+  it('escapes Git-decoded terminal controls while leaving structured paths intact', () => {
+    const diff = [
+      'diff --git "a/evil\\033]52;c;VEVTVA==\\007.ts" "b/evil\\033]52;c;VEVTVA==\\007.ts"',
+      'old mode 100644',
+      'new mode 100755',
+    ].join('\n');
+    const paths = parseDiffHunks(diff).map((file) => file.filePath);
+    expect(paths[0]).toContain('\u001b');
+    const text = formatDetectChangesResult({
+      partial: true,
+      unmapped_files: paths,
+      summary: { changed_count: 0, changed_files: 1, risk_level: 'unknown' },
+    });
+    expect(text).toContain('\\u001b]52;c;VEVTVA==\\u0007.ts');
+    expect(text).not.toContain('\u001b');
+    expect(text).not.toContain('\u0007');
+    expect(paths[0]).toContain('\u0007');
+  });
+
+  it('leads a populated summary with the incomplete source-mapping explanation', () => {
+    const text = formatDetectChangesResult({
+      partial: true,
+      unmapped_files: ['other.ts'],
+      summary: { changed_count: 1, changed_files: 2, affected_count: 0, risk_level: 'unknown' },
+      changed_symbols: [{ type: 'Function', name: 'known', filePath: 'code.py' }],
+    });
+    expect(text.indexOf('other.ts')).toBeLessThan(text.indexOf('Changes:'));
+    expect(text).toContain('known');
+    expect(text).toContain('unknown');
   });
 
   it('localizes the production clean-tree payload that carries English summary.message', () => {

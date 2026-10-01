@@ -48,6 +48,7 @@ import {
   isFullSourceAvailable,
 } from '../core/content-retention.js';
 import { t } from './i18n/index.js';
+import { formatPathForTerminal as formatDriftPath } from './format-path.js';
 
 /** How many drifted paths the report names before summarizing the rest. */
 const DRIFT_SAMPLE_LIMIT = 10;
@@ -84,9 +85,6 @@ const describeContentDrift = (drift: IndexContentDrift | undefined) => {
   };
 };
 
-/** Escape control characters in repo-relative paths before printing. */
-const formatDriftPath = (rel: string): string =>
-  /[\u0000-\u001f\u007f]/.test(rel) ? JSON.stringify(rel) : rel;
 const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>): void => {
   console.log(
     t('status.indexContentDrifted', {

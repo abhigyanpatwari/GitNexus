@@ -267,6 +267,50 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result).toHaveProperty('unmapped_files', ['renamed.py']);
   });
 
+  it('recognizes the source side of a pure source-to-text rename', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    execFileSync('git', ['mv', 'code.py', 'code.txt'], { cwd: repoDir });
+    registerRepo(repoDir);
+    const result = await runDetectChanges('staged');
+    expect(result.summary).toMatchObject({
+      changed_files: 1,
+      changed_count: 0,
+      risk_level: 'unknown',
+    });
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['code.txt']);
+  });
+
+  it.each(['.jcl', '.job', '.proc', '.copybook', '.JCL', '.COPYBOOK'])(
+    'withholds ranked risk for an unmapped ingestion-supported %s rename',
+    async (extension) => {
+      const repoDir = makeRepo([`source${extension}`], 2);
+      execFileSync('git', ['mv', `source${extension}`, `renamed${extension}`], { cwd: repoDir });
+      registerRepo(repoDir);
+      const result = await runDetectChanges('staged');
+      expect(result.summary.risk_level).toBe('unknown');
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', [`renamed${extension}`]);
+    },
+  );
+
+  it('retains mapped symbols while withholding ranked risk for an unmapped source', async () => {
+    const repoDir = makeRepo(['code.py', 'other.ts'], 2);
+    writeFileSync(path.join(repoDir, 'code.py'), 'changed\nline 2\n');
+    writeFileSync(path.join(repoDir, 'other.ts'), 'changed\nline 2\n');
+    registerRepo(repoDir);
+    mockSymbolRows([{ name: 'known', startLine: 0, endLine: 1 }]);
+    const result = await runDetectChanges();
+    expect(result.summary).toMatchObject({
+      changed_files: 2,
+      changed_count: 1,
+      risk_level: 'unknown',
+    });
+    expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['known']);
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['other.ts']);
+  });
+
   it('sends the same query for a 3,000-hunk diff as for a 1-hunk diff', async () => {
     const oneHunkRepo = makeRepo(['big.txt'], 12000);
     editEveryNthLine(oneHunkRepo, 'big.txt', 12000, 12000);

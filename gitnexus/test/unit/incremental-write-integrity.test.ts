@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process';
 import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,16 +6,85 @@ import { getStoragePaths, loadMeta, readRegistry } from '../../src/storage/repo-
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import * as fts from '../../src/core/search/fts-indexes.js';
 import * as analyzerIdentity from '../../src/core/analyzer-identity.js';
+import * as checkpoints from '../../src/core/lbug/wal-checkpoint-driver.js';
+import { commitAll } from '../helpers/temp-git-repo.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { reconcileGraphNodeIdentities } from '../../src/core/incremental/write-reconciliation.js';
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 const options = { skipAgentsMd: true, skipSkills: true };
 const callbacks = { onProgress: () => {} };
 
+async function touchHandler(repoPath: string): Promise<void> {
+  await appendFile(path.join(repoPath, 'src/handler.ts'), '\n// integrity probe\n');
+  commitAll(repoPath, 'touch handler');
+}
+
 describe('incremental graph identity before publication', () => {
+  it('chooses a full write before selective mutation when manual checkpoints are disabled', async () => {
+    const repo = await setupMiniRepo('gitnexus-test-checkpoint-opt-out-');
+    const { storagePath } = getStoragePaths(repo.dbPath);
+    try {
+      await runFullAnalysis(repo.dbPath, options, callbacks);
+      await touchHandler(repo.dbPath);
+      vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
+      const deleteNodes = vi.spyOn(adapter, 'deleteNodesForFiles');
+      const flush = vi.spyOn(adapter, 'tryFlushWAL');
+      const logs: string[] = [];
+      const result = await runFullAnalysis(repo.dbPath, options, {
+        ...callbacks,
+        onLog: (line) => logs.push(line),
+      });
+      expect(deleteNodes).not.toHaveBeenCalled();
+      expect(flush).not.toHaveBeenCalled();
+      expect(result.incrementalStats).toBeUndefined();
+      expect(logs).toContain(
+        'Manual WAL checkpoints are disabled; switching to a full DB write before mutation.',
+      );
+      expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
+    } finally {
+      await adapter.closeLbug();
+      await repo.cleanup();
+    }
+  });
+
+  it('retries a transient checkpoint I/O failure at the final publication gate', async () => {
+    const repo = await setupMiniRepo('gitnexus-test-final-checkpoint-retry-');
+    const { storagePath } = getStoragePaths(repo.dbPath);
+    try {
+      await runFullAnalysis(repo.dbPath, options, callbacks);
+      await touchHandler(repo.dbPath);
+      // Isolate the final gate from the periodic driver's independent cadence.
+      vi.spyOn(checkpoints, 'startWalCheckpointDriver').mockReturnValue({ stop: async () => {} });
+      const flush = adapter.tryFlushWAL;
+      const build = fts.buildSearchIndexesOrDegrade;
+      let attempts = 0;
+      vi.spyOn(fts, 'buildSearchIndexesOrDegrade').mockImplementation(async (...args) => {
+        const result = await build(...args);
+        vi.spyOn(adapter, 'tryFlushWAL').mockImplementation(async () => {
+          if (++attempts === 1) {
+            throw new Error(
+              'Runtime exception: IO exception: Error renaming file db.wal to db.wal.checkpoint',
+            );
+          }
+          return flush();
+        });
+        return result;
+      });
+      const result = await runFullAnalysis(repo.dbPath, options, callbacks);
+      expect(attempts).toBe(2);
+      expect(result.incrementalStats?.writeMode).toBe('incremental');
+      expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
+    } finally {
+      await adapter.closeLbug();
+      await repo.cleanup();
+    }
+  });
   it('matches native CSV normalization for nullable, absent-range and Unicode identity fields', async () => {
     const repo = await setupMiniRepo('gitnexus-test-identity-parity-');
     const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
@@ -85,23 +153,7 @@ describe('incremental graph identity before publication', () => {
         );
         expect(victim?.id).toBeTruthy();
 
-        await appendFile(path.join(repo.dbPath, 'src/handler.ts'), '\n// integrity probe\n');
-        execFileSync('git', ['add', 'src/handler.ts'], { cwd: repo.dbPath });
-        execFileSync(
-          'git',
-          [
-            '-c',
-            'user.name=test',
-            '-c',
-            'user.email=t@t',
-            '-c',
-            'commit.gpgsign=false',
-            'commit',
-            '-qm',
-            'touch handler',
-          ],
-          { cwd: repo.dbPath },
-        );
+        await touchHandler(repo.dbPath);
         const damage = async () => {
           await adapter.executePrepared('MATCH (n:Function {id: $id}) DETACH DELETE n', {
             id: victim.id,
@@ -191,6 +243,15 @@ describe('incremental graph identity before publication', () => {
           const recovered = await runFullAnalysis(repo.dbPath, options, callbacks);
           expect(recovered.incrementalStats).toBeUndefined();
           expect((await loadMeta(storagePath))?.incrementalInProgress).toBeUndefined();
+          await adapter.initLbug(lbugPath, { readOnly: true });
+          await expect(
+            reconcileGraphNodeIdentities(
+              recovered.pipelineResult.graph,
+              adapter.executeQuery,
+              'recovered/reopened',
+            ),
+          ).resolves.toMatchObject({ nodes: expect.any(Number) });
+          await adapter.closeLbug();
           expect((await runFullAnalysis(repo.dbPath, options, callbacks)).alreadyUpToDate).toBe(
             true,
           );
