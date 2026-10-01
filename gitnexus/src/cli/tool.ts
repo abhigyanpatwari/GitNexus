@@ -282,6 +282,8 @@ export async function impactCommand(
         result.affected_processes = result.affected_processes.slice(0, parsedLimit);
       if (Array.isArray(result.affected_modules))
         result.affected_modules = result.affected_modules.slice(0, parsedLimit);
+      if (Array.isArray(result.affected_routes))
+        result.affected_routes = result.affected_routes.slice(0, parsedLimit);
     }
     output(result);
   } catch (err: unknown) {

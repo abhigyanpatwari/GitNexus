@@ -8788,6 +8788,54 @@ export class LocalBackend {
       });
     }
 
+    // ── Route enrichment (#3402) ──────────────────────────────────────────
+    // HTTP endpoints served by the target or any impacted symbol, read from
+    // (handler)-[HANDLES_ROUTE]->Route. Reported, not traversed: HANDLES_ROUTE
+    // stays out of the walk's relTypes. The Process path cannot stand in for
+    // this — a handler only heads a Process when its call chain is 3+ steps and
+    // it ranks in the repo-wide entry-point cap, so most handlers of a large
+    // router would never surface.
+    const routesById = new Map<string, Array<{ url: string; method?: string }>>();
+    const affectedRoutes: Array<{ url: string; method?: string }> = [];
+    if (!skipEnrichment) {
+      const routeIds = [
+        String(symId),
+        ...impacted.map((item) => String(item.id ?? '')).filter(Boolean),
+      ].slice(0, MAX_CHUNKS * CHUNK_SIZE);
+      const seenRoutes = new Set<string>();
+      for (const chunkIds of chunk(routeIds, CHUNK_SIZE)) {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (h)-[:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+          WHERE h.id IN $ids
+          RETURN h.id AS hid, route.name AS url, route.method AS method
+          ORDER BY url, method
+        `,
+          { ids: chunkIds },
+        ).catch((err) => {
+          enrichmentDegraded = true;
+          logQueryError('impact:route-chunk', err);
+          return [];
+        });
+        for (const row of rows) {
+          const hid = String(row.hid ?? row[0] ?? '');
+          const url = row.url ?? row[1];
+          if (!hid || typeof url !== 'string') continue;
+          const method = row.method ?? row[2];
+          const route = typeof method === 'string' && method ? { url, method } : { url };
+          const list = routesById.get(hid);
+          if (list) list.push(route);
+          else routesById.set(hid, [route]);
+          const key = `${route.method ?? ''} ${url}`;
+          if (!seenRoutes.has(key)) {
+            seenRoutes.add(key);
+            affectedRoutes.push(route);
+          }
+        }
+      }
+    }
+
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
@@ -8866,6 +8914,7 @@ export class LocalBackend {
       byDepthCounts,
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
+      affected_routes: affectedRoutes,
     };
 
     if (summaryOnly) {
@@ -8950,6 +8999,8 @@ export class LocalBackend {
     for (const items of Object.values(paginatedGrouped)) {
       for (const it of items) {
         it.processes = perSymbolProcesses.get(String(it.id)) ?? [];
+        const routes = routesById.get(String(it.id));
+        if (routes) it.routes = routes;
       }
     }
 
