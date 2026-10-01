@@ -794,6 +794,31 @@ export function runScopeResolution(
   logHeapProbe('sr-post-nodeLookup', `lang=${provider.language}`);
 
   const resolutionConfig = input.resolutionConfig;
+  const resolveImportBinding = provider.resolveImportBinding;
+  if (resolveImportBinding) {
+    for (let i = 0; i < parsedFiles.length; i++) {
+      const parsed = parsedFiles[i];
+      parsedFiles[i] = {
+        ...parsed,
+        parsedImports: parsed.parsedImports.map((parsedImport) => {
+          return resolveImportBinding(
+            parsedImport,
+            () => {
+              const targets = provider.resolveImportTarget(
+                parsedImport.targetRaw ?? '',
+                parsed.filePath,
+                allFilePaths,
+                resolutionConfig,
+                { parsedFiles, parsedImport },
+              );
+              return typeof targets === 'string' ? [targets] : (targets ?? []);
+            },
+            (filePath) => getFileContents().get(filePath),
+          );
+        }),
+      };
+    }
+  }
   const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
       importsBindAtLexicalScope: provider.importsBindAtLexicalScope === true,
