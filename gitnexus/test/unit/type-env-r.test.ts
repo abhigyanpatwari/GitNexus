@@ -156,31 +156,32 @@ save <- function(r) { r }
     });
 
     describe('description prose is not a type', () => {
-      it('does not bind the first word of a description that names an R6 class', () => {
-        const tree = parse(`
-Data <- R6::R6Class("Data", public = list(fit = function() 1))
+      it.each([
+        ['R6', 'Data', 'df', 'Data frame of observations', 'Data <- R6::R6Class("Data")'],
+        ['S4', 'Data', 'df', 'Data frame of observations', 'setClass("Data", representation())'],
+        ['R6', 'Config', 'cfg', 'Config object to read from', 'Config <- R6::R6Class("Config")'],
+        [
+          'S4',
+          'Config',
+          'cfg',
+          'Config object to read from',
+          'setClass("Config", representation())',
+        ],
+      ])(
+        'does not bind the first word of a description that names a %s class %s',
+        (_kind, _className, param, description, definition) => {
+          const tree = parse(`
+${definition}
 
-#' @param df Data frame of observations
-run <- function(df) {
-  df$fit()
+#' @param ${param} ${description}
+run <- function(${param}) {
+  ${param}
 }
 `);
-        const typeEnv = buildTypeEnv(tree, 'r');
-        expect(flatGet(typeEnv, 'df')).toBeUndefined();
-      });
-
-      it('does not bind the first word of a description that names an S4 class', () => {
-        const tree = parse(`
-setClass("Config", representation(path = "character"))
-
-#' @param cfg Config object to read from
-load <- function(cfg) {
-  cfg
-}
-`);
-        const typeEnv = buildTypeEnv(tree, 'r');
-        expect(flatGet(typeEnv, 'cfg')).toBeUndefined();
-      });
+          const typeEnv = buildTypeEnv(tree, 'r');
+          expect(flatGet(typeEnv, param)).toBeUndefined();
+        },
+      );
 
       it('does not bind an article or determiner that happens to be a class name', () => {
         const tree = parse(`
