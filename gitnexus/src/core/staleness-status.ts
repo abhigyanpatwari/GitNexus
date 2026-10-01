@@ -18,21 +18,37 @@
  * provably stale index indistinguishable from a fresh one. `status` is the
  * additive channel that separates them for a caller that wants to act on it:
  *
- * - `current`  — the index is at HEAD: `rev-list` answered 0, or it could not
- *   answer but HEAD alone resolved to the indexed commit.
- * - `behind`   — `rev-list` answered N > 0; `commitsBehind` is N.
- * - `diverged` — `rev-list` could not answer, but HEAD resolved and is not the
- *   indexed commit. The index is provably not at HEAD; only the count is
- *   unknown. A branch-pinned `serve` clone reaches this once git prunes the
- *   commit a failed re-index left behind — the pinned update is a
- *   `fetch --depth 1`, which orphans it — and a rewritten history reaches it
- *   directly. It is the rule the Claude hook already applies:
- *   HEAD !== lastCommit.
+ * - `current`  — the index is at HEAD: `rev-list` answered 0 AND a follow-up
+ *   `rev-parse HEAD` confirms HEAD is the indexed commit, or `rev-list` could
+ *   not answer but HEAD alone resolved to it.
+ * - `behind`   — `rev-list` answered N > 0; `commitsBehind` is N. A positive
+ *   count on its own already proves the index is not at HEAD, so nothing
+ *   further needs confirming here.
+ * - `diverged` — the index is provably not at HEAD, reached two different ways:
+ *     - `rev-list` answered exactly 0, but the `rev-parse HEAD` follow-up that
+ *       answer triggers disagrees with the indexed commit (#3127). A 0 means
+ *       only "HEAD has no commits the indexed commit lacks" — true both when
+ *       HEAD *is* the indexed commit and when HEAD is an *ancestor* of it (the
+ *       working tree checked out an older commit than the one indexed, or a
+ *       release branch behind the indexed tip). A plain count cannot tell
+ *       those apart; confirming by SHA can. Both calls succeeded, so this is
+ *       established, not suspected: `isStale` is `true` and `commitsBehind`
+ *       stays 0 (there is no forward count to report).
+ *     - `rev-list` could not answer at all, but HEAD resolved and is not the
+ *       indexed commit: only the count is unknown. A branch-pinned `serve`
+ *       clone reaches this once git prunes the commit a failed re-index left
+ *       behind — the pinned update is a `fetch --depth 1`, which orphans it —
+ *       and a rewritten history reaches it directly. This arm keeps the
+ *       historical fail-open `isStale: false` (see below).
  * - `unknown`  — HEAD could not be resolved at all: not a git repository, git
  *   timed out, or no commit was recorded.
  *
- * `isStale` and `commitsBehind` keep their historical values in every case, so
- * no existing consumer changes behaviour unless it reads `status`.
+ * `isStale` and `commitsBehind` keep their historical fail-open values
+ * (`false` / `0`) whenever the check could not fully answer — every `unknown`,
+ * and the `rev-list`-failure arm of `diverged` — so no existing consumer
+ * changes behaviour there unless it reads `status`. The other arm of
+ * `diverged` (the confirmed 0-count mismatch) is a successful, computed
+ * answer rather than a failure, so `isStale` reflects it (`true`) instead.
  */
 export type StalenessStatus = 'current' | 'behind' | 'diverged' | 'unknown';
 

@@ -33,12 +33,24 @@ const behindHint = (n: number): string =>
 const DIVERGED_HINT =
   "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update.";
 
+// `rev-list --count lastCommit..HEAD` answering 0 does NOT mean "HEAD is the
+// indexed commit" — it means "HEAD has no commits lastCommit lacks", which is
+// also true when HEAD is an *ancestor* of lastCommit (the working tree checked
+// out an older commit than the one indexed, or switched to a line of history
+// behind it). That read a rollback as `current` until this hint existed.
+const REGRESSED_HINT =
+  '⚠️ Index is not at HEAD — the indexed commit is not reachable from the checked-out commit (the working tree may have checked out an older commit, or a different line of history). Run analyze tool to update.';
+
 const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
 
-const fromCount = (commitsBehind: number): StalenessInfo =>
-  commitsBehind > 0
-    ? { isStale: true, commitsBehind, hint: behindHint(commitsBehind), status: 'behind' }
-    : { isStale: false, commitsBehind: 0, status: 'current' };
+// Called only once a positive count is in hand — a 0 goes through
+// `fromZeroCount` instead, which is why this has no "current" branch of its own.
+const behind = (commitsBehind: number): StalenessInfo => ({
+  isStale: true,
+  commitsBehind,
+  hint: behindHint(commitsBehind),
+  status: 'behind',
+});
 
 /**
  * `rev-list` could not answer. Asking for HEAD alone needs no history walk and
@@ -51,6 +63,24 @@ const fromHead = (head: string | null, lastCommit: string): StalenessInfo => {
   if (!head) return unknown();
   if (head === lastCommit) return { isStale: false, commitsBehind: 0, status: 'current' };
   return { isStale: false, commitsBehind: 0, hint: DIVERGED_HINT, status: 'diverged' };
+};
+
+/**
+ * `rev-list --count lastCommit..HEAD` SUCCEEDED and answered 0 — but that
+ * number alone cannot tell "HEAD is the indexed commit" apart from "HEAD is
+ * an ancestor of it" (#3127, nikolai-vysotskyi on issue #3127): both report
+ * the same 0, because the count only ever looks forward from `lastCommit`.
+ * Confirming by SHA is what tells a real rollback apart from being current.
+ *
+ * Unlike `fromHead` above (which answers for a `rev-list` FAILURE and keeps
+ * the historical fail-open `isStale: false` either way), this runs only after
+ * a successful count of 0, so a mismatch here is an established fact, not a
+ * merely-suspected one — `isStale` reflects that instead.
+ */
+const fromZeroCount = (head: string | null, lastCommit: string): StalenessInfo => {
+  if (!head) return unknown();
+  if (head === lastCommit) return { isStale: false, commitsBehind: 0, status: 'current' };
+  return { isStale: true, commitsBehind: 0, hint: REGRESSED_HINT, status: 'diverged' };
 };
 
 const readHeadSync = (repoPath: string): string | null => {
@@ -96,7 +126,12 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
       windowsHide: true,
     }).trim();
 
-    return fromCount(parseInt(result, 10) || 0);
+    const commitsBehind = parseInt(result, 10) || 0;
+    // Only a 0 needs the extra SHA check (#3127) — a positive count already
+    // proves the index is not at HEAD, so there is nothing to confirm.
+    return commitsBehind > 0
+      ? behind(commitsBehind)
+      : fromZeroCount(readHeadSync(repoPath), lastCommit);
   } catch {
     return fromHead(readHeadSync(repoPath), lastCommit);
   }
@@ -129,7 +164,13 @@ export async function checkStalenessAsync(
       timeout: STALENESS_TIMEOUT_MS,
     });
 
-    return fromCount(parseInt(stdout.trim(), 10) || 0);
+    const commitsBehind = parseInt(stdout.trim(), 10) || 0;
+    // Only a 0 needs the extra SHA check (#3127) — a positive count already
+    // proves the index is not at HEAD, so there is nothing to confirm, and
+    // nothing new is awaited for the (far more common) genuinely-behind case.
+    return commitsBehind > 0
+      ? behind(commitsBehind)
+      : fromZeroCount(await readHeadAsync(repoPath), lastCommit);
   } catch (err) {
     // A rev-list that timed out means the working tree is not answering. Asking
     // it again for HEAD would only double the bound #3232 put on a hung mount.
