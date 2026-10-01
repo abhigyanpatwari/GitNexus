@@ -765,6 +765,46 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     expect(filter.ignored(asPath('app/generated/schema.ts'))).toBe(false);
   });
 
+  it('lets a nested ignore beat a root .gitignore file negation', async () => {
+    await fs.mkdir(path.join(tmpDir, 'pkg'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '*.log\n!pkg/keep.log\n');
+    await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), 'keep.log\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(asPath('pkg/keep.log'))).toBe(true);
+  });
+
+  it('lets a nested ignore beat a root .gitignore directory negation', async () => {
+    await fs.mkdir(path.join(tmpDir, 'app', 'generated'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), '!app/generated/\n');
+    await fs.writeFile(path.join(tmpDir, 'app', '.gitignore'), 'generated/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(asPath('app/generated'))).toBe(true);
+    expect(filter.ignored(asPath('app/generated/schema.ts'))).toBe(true);
+  });
+
+  it('does not let a nested negation rescue hardcoded defaults', async () => {
+    await fs.mkdir(path.join(tmpDir, 'pkg', 'node_modules'), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, 'pkg', '.gitignore'),
+      '!node_modules/\n!package-lock.json\n',
+    );
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(asPath('pkg/node_modules'))).toBe(true);
+    expect(filter.ignored(asPath('pkg/package-lock.json'))).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('ignores a symlinked nested .gitignore', async () => {
+    await fs.mkdir(path.join(tmpDir, 'app'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'rules.txt'), '*.log\n');
+    await fs.symlink(path.join(tmpDir, 'rules.txt'), path.join(tmpDir, 'app', '.gitignore'));
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(asPath('app/debug.log'))).toBe(false);
+  });
+
   it('skips nested .gitignore files when GITNEXUS_NO_GITIGNORE is set', async () => {
     await fs.mkdir(path.join(tmpDir, 'app'), { recursive: true });
     await fs.writeFile(path.join(tmpDir, 'app', '.gitignore'), 'generated/\n');

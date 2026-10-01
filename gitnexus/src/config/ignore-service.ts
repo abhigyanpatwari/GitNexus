@@ -1,5 +1,13 @@
 import ignore, { type Ignore } from 'ignore';
-import { existsSync, lstatSync, readFileSync } from 'fs';
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+} from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
@@ -532,6 +540,29 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
 };
 
 /**
+ * Read a nested `.gitignore` only if it is a regular file, not a symlink.
+ *
+ * git does not follow a symlinked `.gitignore` in the working tree, and
+ * reading one could pull rules from outside the repository. Where the
+ * platform supports it, the file is opened with O_NOFOLLOW (a symlink fails
+ * with ELOOP) and checked through the open descriptor, so it cannot be
+ * swapped between the check and the read. Windows has no O_NOFOLLOW, so it
+ * falls back to an lstat check before reading.
+ */
+const readNestedGitignore = (filePath: string): string | null => {
+  const noFollow = fsConstants.O_NOFOLLOW;
+  if (noFollow === undefined) {
+    return lstatSync(filePath).isFile() ? readFileSync(filePath, 'utf-8') : null;
+  }
+  const fd = openSync(filePath, fsConstants.O_RDONLY | noFollow);
+  try {
+    return fstatSync(fd).isFile() ? readFileSync(fd, 'utf-8') : null;
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/**
  * Resolve `.gitignore` files below the repository root (#2675).
  *
  * `loadIgnoreRules` only reads the root `.gitignore`, so a monorepo package
@@ -556,14 +587,11 @@ const createNestedGitignoreMatcher = (
     let rules: Ignore | null = null;
     const filePath = nodePath.join(repoPath, dirRel, '.gitignore');
     try {
-      // git does not follow a symlinked .gitignore in the working tree, and
-      // reading one here could pull rules from outside the repository.
-      if (lstatSync(filePath).isFile()) {
-        rules = ignore().add(readFileSync(filePath, 'utf-8'));
-      }
+      const content = readNestedGitignore(filePath);
+      if (content !== null) rules = ignore().add(content);
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+      if (code !== 'ENOENT' && code !== 'ENOTDIR' && code !== 'ELOOP') {
         logger.warn(`  Warning: could not read ${filePath}: ${(err as Error).message}`);
       }
     }
@@ -621,6 +649,20 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // native separators on Windows when called through glob.
       const rel = p.relative().replace(/\\/g, '/');
       if (!rel) return false;
+      // Nested .gitignore files below the root (#2675). .gitnexusignore
+      // comes first, then the deepest nested .gitignore, which outranks the
+      // root .gitignore as in git. A nested negation skips the root rules
+      // but never rescues a hardcoded default. With no nested opinion the
+      // original order below applies unchanged.
+      if (nestedIgnores) {
+        if (nexusIgnore) {
+          if (hasExplicitUnignore(nexusIgnore, rel) && !nexusIgnore.ignores(rel)) return false;
+          if (nexusIgnore.ignores(rel)) return true;
+        }
+        const nested = nestedIgnores(rel, false);
+        if (nested === true) return true;
+        if (nested === false) return shouldIgnorePath(rel);
+      }
       // User's .gitnexusignore negation takes precedence over hardcoded
       // rules (#771). If any ancestor or the path itself was explicitly
       // unignored AND no more-specific rule re-ignores this exact path,
@@ -629,11 +671,6 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // by `__tests__/generated/` negates the parent but still blocks
       // the re-ignored child.
       if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel)) return false;
-      // Nested .gitignore files below the root (#2675). A deeper file wins
-      // over the root .gitignore either way; .gitnexusignore still applies.
-      const nested = nestedIgnores?.(rel, false);
-      if (nested === true) return true;
-      if (nested === false) return !!nexusIgnore?.ignores(rel);
       // Check .gitignore / .gitnexusignore patterns
       if (ig && ig.ignores(rel)) return true;
       // Fall back to hardcoded rules
@@ -645,6 +682,21 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // list check below is defense-in-depth — do not remove `dot: false`
       // assuming this covers it.
       const rel = p.relative().replace(/\\/g, '/');
+      // Nested .gitignore files below the root (#2675), same precedence as in
+      // `ignored` above.
+      if (nestedIgnores && rel) {
+        if (nexusIgnore) {
+          if (hasExplicitUnignore(nexusIgnore, rel) && !nexusIgnore.ignores(rel + '/')) {
+            return false;
+          }
+          if (nexusIgnore.ignores(rel + '/')) return true;
+        }
+        const nested = nestedIgnores(rel, true);
+        if (nested === true) return true;
+        if (nested === false) {
+          return isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel));
+        }
+      }
       // User's .gitnexusignore negation takes precedence (#771) — if the
       // user explicitly unignored this directory or any ancestor via a
       // !pattern rule, allow descent even if the directory name is in
@@ -664,11 +716,6 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // Bare-name patterns (e.g. `local`) still match `local/` per gitignore spec:
       // the `ignore` package normalizes `dir` and `dir/` to match directories.
       // See: https://github.com/kaelzhang/node-ignore#2-filenames-and-dirnames
-      // Nested .gitignore files below the root (#2675), same precedence as in
-      // `ignored` above.
-      const nested = rel ? nestedIgnores?.(rel, true) : undefined;
-      if (nested === true) return true;
-      if (nested === false) return !!nexusIgnore?.ignores(rel + '/');
       if (ig && rel && ig.ignores(rel + '/')) return true;
       return false;
     },
