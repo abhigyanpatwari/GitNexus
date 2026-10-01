@@ -1,3 +1,4 @@
+import type { Dirent } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import {
@@ -18,7 +19,13 @@ export interface RDroppedExportPattern {
 
 /** R package config parsed from DESCRIPTION files in a multi-package repo */
 export interface RPackageConfig {
-  /** Map of package name to directory path relative to repo root */
+  /**
+   * Map of package name to directory path relative to repo root, in discovery
+   * order. When several directories declare the same `Package:` name the
+   * shallowest directory wins and, among equal depths, the path that sorts
+   * first; the others are not entries here (their NAMESPACE is still recorded
+   * in {@link namespaceInfoByPackageDir}, which is keyed by directory).
+   */
   packages: Map<string, string>;
   /** Package-scoped NAMESPACE config keyed by package dir relative to repo root. */
   namespaceInfoByPackageDir: Map<string, RNamespaceInfo>;
@@ -105,6 +112,16 @@ export function reportRExportPatternProblems(config: RPackageConfig): void {
 /** Directories never descended into, by the main walk and the hidden-package scan alike. */
 const SKIPPED_DIR_NAMES: ReadonlySet<string> = new Set(['node_modules', '.git', '.Rproj.user']);
 
+/**
+ * Directory entries in code-unit name order. `readdir` order is filesystem-dependent
+ * (and `localeCompare` is locale-dependent), so every walk below reads through this to
+ * make what it visits, and what it finds first, the same on every machine.
+ */
+async function readDirSorted(dir: string): Promise<Dirent[]> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
 /** Global directory budget for {@link hidesUndiscoveredPackage} across all its roots. */
 const HIDDEN_SCAN_BUDGET = 5000;
 
@@ -117,6 +134,9 @@ const HIDDEN_SCAN_BUDGET = 5000;
  * directory or `DESCRIPTION` cannot be read, or when a `DESCRIPTION` declares a
  * `Package:` name that is not in `knownPackageNames`. Returns `false` when every
  * subtree was scanned and holds no such package. Deterministic and read-only.
+ * The answer is a property of the set of directories, not of the order they are
+ * visited in (every `true` condition is order-independent and a `false` means the
+ * whole forest was read), but the walk still reads sorted so that it is reproducible.
  */
 export async function hidesUndiscoveredPackage(
   roots: readonly string[],
@@ -129,7 +149,7 @@ export async function hidesUndiscoveredPackage(
     if (--remaining < 0) return true;
     let entries;
     try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
+      entries = await readDirSorted(dir);
     } catch {
       return true;
     }
@@ -172,7 +192,7 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
     const { dir, depth } = scanQueue.shift()!;
     dirsScanned++;
     try {
-      const entries = await fs.readdir(dir, { withFileTypes: true });
+      const entries = await readDirSorted(dir);
       for (const entry of entries) {
         if (entry.isDirectory()) {
           if (SKIPPED_DIR_NAMES.has(entry.name)) continue;
@@ -192,9 +212,14 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
             if (pkgMatch) {
               const pkgName = pkgMatch[1];
               const pkgDir = path.relative(repoRoot, dir).replace(/\\/g, '/');
-              packages.set(pkgName, pkgDir);
-              if (isDev) {
-                logger.info(`📦 Found R package: ${pkgName} at ${pkgDir}`);
+              // Same name in several directories: the walk is breadth-first over sorted
+              // entries, so the first one seen is the shallowest and, at equal depth, the
+              // one whose path sorts first. Keep it; never let a later copy replace it.
+              if (!packages.has(pkgName)) {
+                packages.set(pkgName, pkgDir);
+                if (isDev) {
+                  logger.info(`📦 Found R package: ${pkgName} at ${pkgDir}`);
+                }
               }
 
               const nsPath = path.join(dir, 'NAMESPACE');
