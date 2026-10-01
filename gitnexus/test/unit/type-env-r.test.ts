@@ -24,6 +24,39 @@ function flatSize(typeEnv: ReturnType<typeof buildTypeEnv>): number {
   return count;
 }
 
+/**
+ * Identifiers named `varName` in the body of the function assigned to `fnName`
+ * (not in its formals, and not inside a function nested in it): the nodes a
+ * receiver lookup starts from.
+ */
+function bodyIdentifiers(tree: ReturnType<typeof parse>, fnName: string, varName: string) {
+  const fnNode = tree.rootNode
+    .descendantsOfType('binary_operator')
+    .find((n) => n.childForFieldName('lhs')?.text === fnName)
+    ?.childForFieldName('rhs');
+  if (fnNode?.type !== 'function_definition') throw new Error(`no function ${fnName}`);
+  return fnNode.descendantsOfType('identifier').filter((id) => {
+    if (id.text !== varName) return false;
+    let current = id.parent;
+    while (current && current.id !== fnNode.id) {
+      if (current.type === 'parameters' || current.type === 'function_definition') return false;
+      current = current.parent;
+    }
+    return true;
+  });
+}
+
+function lookupIn(
+  tree: ReturnType<typeof parse>,
+  typeEnv: ReturnType<typeof buildTypeEnv>,
+  fnName: string,
+  varName: string,
+): string | undefined {
+  const [node] = bodyIdentifiers(tree, fnName, varName);
+  if (!node) throw new Error(`no ${varName} in ${fnName}`);
+  return typeEnv.lookup(varName, node);
+}
+
 describe('buildTypeEnv', () => {
   describe('R roxygen2 annotations', () => {
     it('extracts @param type bindings from roxygen2 comments', () => {
@@ -77,6 +110,8 @@ ${definition}
 `);
       const typeEnv = buildTypeEnv(tree, 'r');
       expect(flatGet(typeEnv, 'repo')).toBe('UserRepo');
+      expect(lookupIn(tree, typeEnv, 'helper', 'repo')).toBe('UserRepo');
+      expect(typeEnv.fileScope().get('repo')).toBeUndefined();
     });
 
     it('returns constructor binding for R6 obj <- ClassName$new()', () => {
@@ -234,6 +269,156 @@ save <- function(repo) {
 `);
       const typeEnv = buildTypeEnv(tree, 'r');
       expect(flatGet(typeEnv, 'repo')).toBeUndefined();
+    });
+
+    it('does not read a tag written mid-line, even when it names a defined class', () => {
+      const tree = parse(`
+UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
+
+#' Write the tag as @param repo UserRepo
+save <- function(repo) {
+  repo
+}
+`);
+      const typeEnv = buildTypeEnv(tree, 'r');
+      expect(flatGet(typeEnv, 'repo')).toBeUndefined();
+    });
+
+    it('does not read a longer tag name that starts with param', () => {
+      const tree = parse(`
+UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))
+
+#' @paramfoo repo UserRepo
+save <- function(repo) {
+  repo
+}
+`);
+      const typeEnv = buildTypeEnv(tree, 'r');
+      expect(flatGet(typeEnv, 'repo')).toBeUndefined();
+    });
+
+    describe('the binding belongs to the documented function', () => {
+      const userRepo = 'UserRepo <- R6::R6Class("UserRepo", public = list(save = function() 1))';
+
+      it('does not bind a name that is not a formal of the documented function', () => {
+        const tree = parse(`
+${userRepo}
+
+#' @param repo UserRepo
+f <- function(x) { x }
+
+g <- function(repo) { repo$save() }
+
+h <- function() {
+  repo <- 1
+  repo$save()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'f', 'x')).toBeUndefined();
+        expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
+        expect(lookupIn(tree, typeEnv, 'h', 'repo')).toBeUndefined();
+        expect(typeEnv.fileScope().get('repo')).toBeUndefined();
+        expect(flatGet(typeEnv, 'repo')).toBeUndefined();
+      });
+
+      it('binds a documented formal inside its function only', () => {
+        const tree = parse(`
+${userRepo}
+
+#' @param repo UserRepo
+f <- function(repo) { repo$save() }
+
+g <- function(repo) { repo$save() }
+
+h <- function() {
+  repo <- 1
+  repo$save()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
+        expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
+        expect(lookupIn(tree, typeEnv, 'h', 'repo')).toBeUndefined();
+        expect(typeEnv.fileScope().get('repo')).toBeUndefined();
+      });
+
+      it('binds a formal that has a default value', () => {
+        const tree = parse(`
+${userRepo}
+
+#' @param repo UserRepo
+f <- function(x, repo = NULL) { repo$save() }
+
+g <- function(repo) { repo$save() }
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
+        expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
+        expect(typeEnv.fileScope().get('repo')).toBeUndefined();
+      });
+
+      it('skips the dots formal and still binds a named formal beside it', () => {
+        const tree = parse(`
+${userRepo}
+
+#' @param ... UserRepo
+#' @param repo UserRepo
+f <- function(..., repo) { repo$save() }
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'f', 'repo')).toBe('UserRepo');
+        expect(flatGet(typeEnv, '...')).toBeUndefined();
+        expect(typeEnv.fileScope().get('repo')).toBeUndefined();
+      });
+
+      it.each([
+        ['a plain value', 'repo <- 1'],
+        ['a call', 'setup()'],
+      ])('binds nothing when the block is followed by %s (guard)', (_label, statement) => {
+        const tree = parse(`
+${userRepo}
+
+#' @param repo UserRepo
+${statement}
+
+g <- function(repo) { repo$save() }
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'g', 'repo')).toBeUndefined();
+        expect(typeEnv.fileScope().get('repo')).toBeUndefined();
+      });
+
+      it('does not carry an outer function documentation into a function nested in it', () => {
+        const tree = parse(`
+${userRepo}
+
+#' @param repo UserRepo
+outer <- function(repo) {
+  inner <- function(repo) { repo$save() }
+  repo$save()
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'outer', 'repo')).toBe('UserRepo');
+        expect(lookupIn(tree, typeEnv, 'inner', 'repo')).toBeUndefined();
+      });
+
+      it('binds a documented nested function only inside itself', () => {
+        const tree = parse(`
+Data <- R6::R6Class("Data", public = list(fit = function() 1))
+
+outer <- function(x) {
+  #' @param y Data
+  inner <- function(y) { y$fit() }
+  y
+}
+`);
+        const typeEnv = buildTypeEnv(tree, 'r');
+        expect(lookupIn(tree, typeEnv, 'inner', 'y')).toBe('Data');
+        expect(lookupIn(tree, typeEnv, 'outer', 'y')).toBeUndefined();
+        expect(typeEnv.fileScope().get('y')).toBeUndefined();
+      });
     });
 
     describe('class definition forms', () => {

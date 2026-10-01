@@ -22,9 +22,11 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
  * Prose that merely starts with a capitalised word (`@param df Data frame of
  * observations`) binds nothing, even when a class called `Data` exists, and a
  * description may run over several lines: it is read up to the next tag.
+ * The type is bound for a formal of the documented function, inside that
+ * function only.
  *
  * Resolution tiers:
- * - Tier 0: roxygen2 @param annotations (extractDeclaration pre-populates env)
+ * - Tier 0: roxygen2 @param annotations (extractParameter binds each documented formal)
  * - Tier 1: Constructor inference via `obj <- ClassName$new()` (R6) or `obj <- new("ClassName")` (S4)
  */
 
@@ -141,14 +143,17 @@ const localClassNames = (node: SyntaxNode): ReadonlySet<string> => {
 };
 
 /**
- * Collect the roxygen2 `@param` types of a function definition.
- * Returns a map of paramName → typeName.
+ * The roxygen2 `@param` types documented for an assigned function: the
+ * comment block directly above `name <- function(...)`, keyed by parameter
+ * name. Returns a map of paramName → typeName.
  */
-const collectRoxygenParams = (node: SyntaxNode): Map<string, string> => {
+const collectRoxygenParams = (assignment: SyntaxNode): Map<string, string> => {
   const params = new Map<string, string>();
-  for (const { name, description } of parseRoxygenParams(collectRoxygenBlock(node))) {
+  for (const { name, description } of parseRoxygenParams(collectRoxygenBlock(assignment))) {
     const typeName = anchoredType(description);
-    if (typeName !== undefined && localClassNames(node).has(typeName)) params.set(name, typeName);
+    if (typeName !== undefined && localClassNames(assignment).has(typeName)) {
+      params.set(name, typeName);
+    }
   }
   return params;
 };
@@ -162,38 +167,44 @@ const collectRoxygenParams = (node: SyntaxNode): Map<string, string> => {
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['binary_operator']);
 
 /**
- * Extract roxygen2 annotations from function definitions.
- * Pre-populates the scope env with parameter types before the
- * standard parameter walk (which won't find types since R has none).
+ * R declaration extraction. Roxygen types are bound per formal by
+ * `extractParameter`, so a function definition binds nothing here: this
+ * hook runs in the scope that CONTAINS the assignment (the file, for a
+ * top-level function), and a type bound there would be visible in every
+ * function of the file.
  */
 const extractDeclaration: TypeBindingExtractor = (
-  node: SyntaxNode,
-  env: Map<string, string>,
-): void => {
-  if (node.type !== 'binary_operator') return;
-  const rhs = node.childForFieldName('rhs');
-  if (!rhs || rhs.type !== 'function_definition') return;
-
-  const roxygenParams = collectRoxygenParams(node);
-  for (const [paramName, typeName] of roxygenParams) {
-    env.set(paramName, typeName);
-  }
-};
-
-/**
- * R parameter extraction.
- * R parameters have no inline type annotations. Roxygen2 types are
- * already populated by extractDeclaration, so this is a no-op — the
- * bindings are already in the env.
- *
- * We still register this to maintain the LanguageTypeConfig contract.
- */
-const extractParameter: ParameterExtractor = (
   _node: SyntaxNode,
   _env: Map<string, string>,
 ): void => {
-  // R parameters have no type annotations.
-  // Roxygen2 types are pre-populated by extractDeclaration.
+  // Constructor bindings are made by extractInitializer; roxygen types by extractParameter.
+};
+
+/**
+ * R parameter extraction: the roxygen2 `@param` type of a formal.
+ *
+ * Runs once per formal with the env of the function that owns it, so the
+ * binding is visible inside that function only. The roxygen block is the one
+ * above the assignment `name <- function(...)` the formal belongs to; a name
+ * the block documents but the function does not have is never visited, and a
+ * function that is not the right-hand side of an assignment (a callback)
+ * is documented by nothing. The `...` formal is not an identifier and is
+ * skipped.
+ */
+const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string, string>): void => {
+  if (node.type !== 'parameter') return;
+  const name = node.childForFieldName('name');
+  if (name?.type !== 'identifier') return;
+
+  const fn = node.parent?.parent;
+  if (fn?.type !== 'function_definition') return;
+  const assignment = fn.parent;
+  if (assignment?.type !== 'binary_operator') return;
+  const rhs = assignment.childForFieldName('rhs');
+  if (rhs?.startIndex !== fn.startIndex || rhs.endIndex !== fn.endIndex) return;
+
+  const typeName = collectRoxygenParams(assignment).get(name.text);
+  if (typeName !== undefined) env.set(name.text, typeName);
 };
 
 /**
