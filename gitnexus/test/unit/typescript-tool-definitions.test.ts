@@ -176,6 +176,40 @@ describe('SDK tool registration extraction', () => {
     ).toEqual([{ toolName: 'visible', description: '' }]);
   });
 
+  describe.each([
+    ['TypeScript', tsParser],
+    ['JavaScript', jsParser],
+  ] as const)('%s destructuring writes', (_language, parser) => {
+    it.each([
+      ['object member', `({ registerTool: server.registerTool } = replacement);`],
+      ['array member', `[server.tool] = replacement;`],
+      ['nested quoted member', `({ nested: [server['registerTool']] } = replacement);`],
+      ['defaulted member', `({ registerTool: server.registerTool = fallback } = replacement);`],
+      ['rest member', `[...server.tool] = replacement;`],
+      ['computed member', `[server[method]] = replacement;`],
+      ['loop target', `for ({ registerTool: server.registerTool } of replacements) {}`],
+      ['constructor member', `[McpServer.prototype.registerTool] = replacement;`],
+    ])('rejects registrations after a write to an %s target', (_name, write) => {
+      expect(
+        extract(`${server}\n${write}\nserver.registerTool('fake', {}, handler);`, parser),
+      ).toEqual([]);
+    });
+
+    it('preserves lifecycle writes and ignores pattern keys and default-value reads', () => {
+      expect(
+        extract(
+          `${server}
+          ({ oninitialized: server.server.oninitialized } = callbacks);
+          ({ [server.registerTool]: ignored } = source);
+          ({ untouched = server.registerTool } = source);
+          server.registerTool('visible', {}, handler);
+        `,
+          parser,
+        ).map((tool) => tool.toolName),
+      ).toEqual(['visible']);
+    });
+  });
+
   it.each([
     [
       'different package',

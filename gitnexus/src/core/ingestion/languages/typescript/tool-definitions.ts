@@ -48,14 +48,17 @@ function lookup(scope: Scope, name: string): Binding | undefined {
   }
 }
 
-/** Only binding/assignment patterns: never descend into keys, types or defaults. */
-function patternNames(pattern: SyntaxNode): SyntaxNode[] {
+/** Only binding/assignment patterns: never descend into keys, types or defaults.
+ * Member assignment targets are reported separately from binding names. */
+function patternNames(pattern: SyntaxNode, onMember?: (member: SyntaxNode) => void): SyntaxNode[] {
   const names: SyntaxNode[] = [];
   const pending = [pattern];
   while (pending.length) {
     const node = pending.pop()!;
     if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
       names.push(node);
+    } else if (node.type === 'member_expression' || node.type === 'subscript_expression') {
+      onMember?.(node);
     } else if (node.type === 'pair_pattern') {
       const value = node.childForFieldName('value');
       if (value) pending.push(value);
@@ -203,7 +206,8 @@ function collectBindings(root: SyntaxNode) {
     }
   }
   // Resolve writes after declarations so later declarations also shadow outer names.
-  for (let target of writes) {
+  while (writes.length) {
+    let target = writes.pop()!;
     const scope = scopes.get(target.id)!;
     const members: Array<string | null> = [];
     while (target.type === 'member_expression' || target.type === 'subscript_expression') {
@@ -214,7 +218,8 @@ function collectBindings(root: SyntaxNode) {
       members.push(property ? propertyName(property) : index ? plainString(index) : null);
       target = object;
     }
-    for (const name of patternNames(target)) {
+    // Nested member targets must pass the same guard as direct property writes.
+    for (const name of patternNames(target, (member) => writes.push(member))) {
       const binding = lookup(scope, name.text);
       // Lifecycle callbacks and other known properties do not replace the receiver
       // or its registration methods. Unknown keys and constructor mutations remain unsafe.

@@ -825,7 +825,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v126 (#3446): SDK positional tool registrations now emit tool definitions,
 // exact handler identities, and an opt-out from unrelated file-level flows.
 // Warm v125 worker results omit these definitions and must be re-extracted.
-const SCHEMA_BUMP = 126;
+// v127 (#3450): Destructured member writes invalidate SDK registration evidence.
+// Warm v126 worker results can retain false tools after a method replacement.
+const SCHEMA_BUMP = 127;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

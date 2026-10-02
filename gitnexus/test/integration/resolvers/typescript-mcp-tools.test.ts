@@ -41,6 +41,31 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-mcp-tools'), () => {});
   }, 60000);
 
+  it.each(['ts', 'js'])(
+    'does not emit tools for a destructured method replacement in %s',
+    async (extension) => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-tool-write-'));
+      try {
+        fs.writeFileSync(
+          path.join(repo, `server.${extension}`),
+          `
+        import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+        const replaced = new McpServer({ name: 'replaced', version: '1' });
+        ({ registerTool: replaced.registerTool } = { registerTool: () => undefined });
+        replaced.registerTool('fake', {}, () => ({ content: [] }));
+        const actual = new McpServer({ name: 'actual', version: '1' });
+        actual.registerTool('real', {}, () => ({ content: [] }));
+      `,
+        );
+        const pipeline = await runPipelineFromRepo(repo, () => {}, { workerPoolSize: 1 });
+        expect(getNodesByLabel(pipeline, 'Tool')).toEqual(['real']);
+        expect(findDanglingEdges(pipeline, ['HANDLES_TOOL', 'ENTRY_POINT_OF'])).toEqual([]);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('discovers ordinary server files alongside deduplicated object manifests', () => {
     expect(getNodesByLabel(result, 'Tool')).toEqual(
       [
