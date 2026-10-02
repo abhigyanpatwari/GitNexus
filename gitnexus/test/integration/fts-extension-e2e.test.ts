@@ -25,6 +25,7 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { inspect } from 'node:util';
 
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
 import {
@@ -144,6 +145,8 @@ const makeFixtureRepo = (label: string): string => {
 
 interface CliResult {
   status: number | null;
+  /** Keep native termination and spawn failures visible in assertion messages. */
+  diagnostics: string;
   /** stdout + stderr combined — warn lines and progress renderer interleave streams. */
   output: string;
 }
@@ -172,7 +175,20 @@ const runCli = (
       NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     },
   });
-  return { status: result.status, output: `${result.stdout ?? ''}\n${result.stderr ?? ''}` };
+  return {
+    status: result.status,
+    diagnostics: inspect(
+      {
+        status: result.status,
+        signal: result.signal,
+        error: result.error,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      },
+      { depth: null, maxStringLength: null },
+    ),
+    output: `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
+  };
 };
 
 beforeAll(() => {
@@ -208,7 +224,7 @@ describe('happy path — extension pre-installed, fully offline (load-only)', ()
 
   it('analyze builds the index with FTS and emits no degradation warning', () => {
     const result = runCli(['analyze'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');
     expect(result.output).not.toContain('search is disabled');
@@ -216,14 +232,14 @@ describe('happy path — extension pre-installed, fully offline (load-only)', ()
 
   it('query finds the symbol via BM25 with no degradation warning', () => {
     const result = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('greetE2eSymbol');
     expect(result.output).not.toContain('keyword search degraded');
   }, 60_000);
 
   it('doctor reports a live-probed available FTS and a resolved LadybugDB version', () => {
     const result = runCli(['doctor'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('Full-text search: available');
     // #2374: version used to print as "unknown" on every platform.
     expect(result.output).toMatch(/LadybugDB:\s*\d+\.\d+\.\d+/);
@@ -231,7 +247,7 @@ describe('happy path — extension pre-installed, fully offline (load-only)', ()
 
   it('analyze --repair-fts rebuilds the search indexes offline', () => {
     const result = runCli(['analyze', '--repair-fts'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('FTS indexes repaired successfully');
   }, 180_000);
 });
@@ -250,7 +266,7 @@ describe('packaged vendor survives a broken or missing home copy', () => {
 
   it('analyze stays FTS-available when ~/.lbdb is broken', () => {
     const result = runCli(['analyze'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');
     expect(result.output).not.toContain('search is disabled');
@@ -258,13 +274,13 @@ describe('packaged vendor survives a broken or missing home copy', () => {
 
   it('analyze --repair-fts succeeds from the packaged artifact', () => {
     const result = runCli(['analyze', '--repair-fts'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('FTS indexes repaired successfully');
   }, 180_000);
 
   it('query finds the symbol with no HOME-copy degradation warning', () => {
     const result = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('greetE2eSymbol');
     expect(result.output).not.toContain('keyword search degraded');
     expect(result.output).not.toContain('FTS extension failed to load');
@@ -272,7 +288,7 @@ describe('packaged vendor survives a broken or missing home copy', () => {
 
   it('doctor reports a live-probed available FTS despite a broken HOME copy', () => {
     const result = runCli(['doctor'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('Full-text search: available');
   }, 60_000);
 
@@ -280,7 +296,7 @@ describe('packaged vendor survives a broken or missing home copy', () => {
     const missing = makeHome('missing');
     const missingRepo = makeFixtureRepo('missing');
     const result = runCli(['analyze'], missingRepo, missing.home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');
     expect(result.output).not.toContain('has not been installed');
@@ -295,7 +311,7 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     // 1. First analyze with the extension in place: the index ends up carrying
     //    an FTS index on every searchable table.
     const first = runCli(['analyze'], repo, home, 'load-only');
-    expect(first.status).toBe(0);
+    expect(first.status, first.diagnostics).toBe(0);
     // This case needs run 1 to actually BUILD the indexes — without them there
     // is nothing for the gate to trip on and the assertions below would be
     // vacuous. When the seeded extension cannot load on this host (the same
@@ -332,7 +348,7 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
     // table File but its extension is not loaded" and no mention of FTS at all.
     // Packaged vendor still loads after HOME vanishes, so incremental stays
     // incremental (no Binder, no full-DB escalation).
-    expect(second.status).toBe(0);
+    expect(second.status, second.diagnostics).toBe(0);
     expect(second.output).not.toContain('its extension is not loaded');
     expect(second.output).not.toContain('full DB write');
     expect(second.output).not.toContain('forcing full rebuild');
@@ -346,15 +362,15 @@ describe('auto policy — packaged vendor does not need a HOME reinstall', () =>
     const repo = makeFixtureRepo('heal');
 
     const first = runCli(['analyze'], repo, home, 'load-only');
-    expect(first.status).toBe(0);
+    expect(first.status, first.diagnostics).toBe(0);
     expect(first.output).not.toContain('FTS extension unavailable');
 
     const repair = runCli(['analyze', '--repair-fts'], repo, home, 'auto');
-    expect(repair.status).toBe(0);
+    expect(repair.status, repair.diagnostics).toBe(0);
     expect(repair.output).toContain('FTS indexes repaired successfully');
 
     const query = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
-    expect(query.status).toBe(0);
+    expect(query.status, query.diagnostics).toBe(0);
     expect(query.output).toContain('greetE2eSymbol');
     expect(query.output).not.toContain('keyword search degraded');
   }, 600_000);
@@ -363,7 +379,7 @@ describe('auto policy — packaged vendor does not need a HOME reinstall', () =>
     const { home } = makeHome('missing');
     const repo = makeFixtureRepo('fresh');
     const result = runCli(['analyze'], repo, home, 'load-only');
-    expect(result.status).toBe(0);
+    expect(result.status, result.diagnostics).toBe(0);
     expect(result.output).toContain('indexed successfully');
     expect(result.output).not.toContain('FTS extension unavailable');
   }, 600_000);
