@@ -41,3 +41,12 @@ server.tool('alias_callback', alias);
 
 const expressionHandler = function () { return 'expression'; };
 server.registerTool('function_expression_tool', {}, expressionHandler);
+
+{
+  const handler = () => lookupSearch('first');
+  server.tool('first_block_callback', handler);
+}
+{
+  const handler = () => lookupFile('second');
+  server.tool('second_block_callback', handler);
+}

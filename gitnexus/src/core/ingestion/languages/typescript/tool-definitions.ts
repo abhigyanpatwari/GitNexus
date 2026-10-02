@@ -205,13 +205,26 @@ function collectBindings(root: SyntaxNode) {
   // Resolve writes after declarations so later declarations also shadow outer names.
   for (let target of writes) {
     const scope = scopes.get(target.id)!;
+    const members: Array<string | null> = [];
     while (target.type === 'member_expression' || target.type === 'subscript_expression') {
       const object = target.childForFieldName('object');
       if (!object) break;
+      const property = target.childForFieldName('property');
+      const index = target.childForFieldName('index');
+      members.push(property ? propertyName(property) : index ? plainString(index) : null);
       target = object;
     }
     for (const name of patternNames(target)) {
       const binding = lookup(scope, name.text);
+      // Lifecycle callbacks and other known properties do not replace the receiver
+      // or its registration methods. Unknown keys and constructor mutations remain unsafe.
+      if (
+        binding?.kind !== 'sdk' &&
+        members.length > 0 &&
+        members.every((member) => member !== null) &&
+        !['tool', 'registerTool', '__proto__'].includes(members[members.length - 1]!)
+      )
+        continue;
       if (binding) binding.invalid = true;
     }
   }

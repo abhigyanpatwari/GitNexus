@@ -33,6 +33,8 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     'reassigned_callback',
     'shadowed_callback',
     'alias_callback',
+    'first_block_callback',
+    'second_block_callback',
   ];
 
   beforeAll(async () => {

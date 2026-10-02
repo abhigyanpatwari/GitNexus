@@ -166,6 +166,16 @@ describe('SDK tool registration extraction', () => {
     ).toEqual([{ toolName: 'typed', description: '' }]);
   });
 
+  it.each(['before', 'after'])('allows SDK lifecycle configuration %s registration', (when) => {
+    const configure = `server.server.oninitialized = () => {}; server.server.onerror = () => {};`;
+    const registration = `server.registerTool('visible', {}, handler);`;
+    expect(
+      metadata(
+        `${server}\n${when === 'before' ? configure + registration : registration + configure}`,
+      ),
+    ).toEqual([{ toolName: 'visible', description: '' }]);
+  });
+
   it.each([
     [
       'different package',
@@ -191,6 +201,8 @@ describe('SDK tool registration extraction', () => {
       `${sdkImport} const Other = class McpServer { install() { const server = new McpServer(); server.tool('fake', h); } };`,
     ],
     ['method write', `${server} server.tool = unrelated; server.tool('fake', h);`],
+    ['quoted method write', `${server} server['tool'] = unrelated; server.tool('fake', h);`],
+    ['computed method write', `${server} server[method] = unrelated; server.tool('fake', h);`],
     ['method delete', `${server} delete server.registerTool; server.registerTool('fake', {}, h);`],
     ['destructured write', `${server} ({ server } = other); server.tool('fake', h);`],
     [
