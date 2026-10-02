@@ -118,8 +118,11 @@ describe('loadGraphToLbug overlap error paths (#2226 F1)', () => {
           }),
         );
       } finally {
-        await adapter.executeQuery('CALL warning_limit=1000');
-        capture.restore();
+        try {
+          await adapter.executeQuery('CALL warning_limit=1000');
+        } finally {
+          capture.restore();
+        }
       }
     },
   );

@@ -7,7 +7,7 @@ import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import * as fts from '../../src/core/search/fts-indexes.js';
 import * as analyzerIdentity from '../../src/core/analyzer-identity.js';
 import * as checkpoints from '../../src/core/lbug/wal-checkpoint-driver.js';
-import { commitAll } from '../helpers/temp-git-repo.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { reconcileGraphNodeIdentities } from '../../src/core/incremental/write-reconciliation.js';
@@ -21,6 +21,7 @@ const options = { skipAgentsMd: true, skipSkills: true };
 const callbacks = { onProgress: () => {} };
 
 async function touchHandler(repoPath: string): Promise<void> {
+  initGitRepo(repoPath);
   await appendFile(path.join(repoPath, 'src/handler.ts'), '\n// integrity probe\n');
   commitAll(repoPath, 'touch handler');
 }
