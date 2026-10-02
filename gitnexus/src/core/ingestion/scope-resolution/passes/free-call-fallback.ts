@@ -84,12 +84,7 @@ export function emitFreeCallFallback(
      *  appended to its reason. See `ScopeResolver.markConstructionSites`. */
     readonly markConstructionSites?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
-    readonly isCallableVisibleFromCaller?: (ctx: {
-      readonly callerParsed: ParsedFile;
-      readonly candidate: SymbolDefinition;
-      readonly callerScope?: ScopeId;
-      readonly scopes?: ScopeResolutionIndexes;
-    }) => boolean;
+    readonly isCallableVisibleFromCaller?: ScopeResolver['isCallableVisibleFromCaller'];
     readonly resolveAdlCandidates?: (
       site: {
         readonly name: string;
@@ -620,6 +615,7 @@ export function emitFreeCallFallback(
                 options.isCallableVisibleFromCaller!({
                   callerParsed: parsed,
                   candidate,
+                  callArity: site.arity,
                   callerScope: site.inScope,
                   scopes,
                 })
@@ -698,6 +694,7 @@ export function emitFreeCallFallback(
         !options.isCallableVisibleFromCaller({
           callerParsed: parsed,
           candidate: fnDef,
+          callArity: site.arity,
           callerScope: site.inScope,
           scopes,
         })
