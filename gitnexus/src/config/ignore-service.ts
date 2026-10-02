@@ -549,10 +549,18 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
  * opening and must be the same regular file as the open descriptor. Either
  * way the content is read through the descriptor that was checked, never by
  * path, so the file cannot be swapped between the check and the read.
+ *
+ * The open also passes O_NONBLOCK where it exists. Opening a FIFO for reading
+ * blocks in open(2) until a writer appears, so a `.gitignore` that is a FIFO
+ * would hang the scan before the isFile() check could reject it (glob's
+ * ignore callback is synchronous). The flag makes that open return at once
+ * and changes nothing for a regular file. Same reasoning as readBoundedFile
+ * in src/core/ingestion/asyncapi/document.ts.
  */
 const readNestedGitignore = (filePath: string): string | null => {
   const noFollow = fsConstants.O_NOFOLLOW;
-  const fd = openSync(filePath, fsConstants.O_RDONLY | (noFollow ?? 0));
+  const nonBlock = fsConstants.O_NONBLOCK;
+  const fd = openSync(filePath, fsConstants.O_RDONLY | (noFollow ?? 0) | (nonBlock ?? 0));
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) return null;
