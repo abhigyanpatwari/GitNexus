@@ -324,6 +324,28 @@ function nonBlankUid(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
+const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
+  'Run gitnexus analyze --force from the affected repository root to rebuild the index.';
+
+class SymbolIdentityError extends Error {
+  constructor() {
+    super('The index returned an invalid symbol identity. ' + SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+    this.name = 'SymbolIdentityError';
+  }
+}
+
+/** Validate database identities before using them as graph traversal anchors. */
+function assertSymbolIdentity(id: unknown, expectedUid?: string): asserts id is string {
+  if (
+    typeof id !== 'string' ||
+    !id.trim() ||
+    id.includes('\0') ||
+    (expectedUid !== undefined && id !== expectedUid)
+  ) {
+    throw new SymbolIdentityError();
+  }
+}
+
 interface StringAliasDefinition {
   canonical: string;
   aliases: readonly string[];
@@ -4549,6 +4571,7 @@ export class LocalBackend {
         endLine: (r.endLine ?? r[5]) as number,
         ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
       };
+      assertSymbolIdentity(symbol.id, uid);
       // Same LadybugDB label-enrichment as the name-based path: a UID
       // pointing at a Class must still surface `type: 'Class'` so impact's
       // Class/Interface BFS seed fires. No-op when type is already set.
@@ -4682,6 +4705,9 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+    // Reject the whole result before narrowing or scoring: dropping a corrupt
+    // candidate could make an unrelated surviving symbol look unambiguous.
+    for (const candidate of normalized) assertSymbolIdentity(candidate.id);
 
     // An exact File path wins over anchored suffix candidates. Without this,
     // `lib/a.ts` and `src/lib/a.ts` both score as File candidates and turn an
@@ -4835,6 +4861,9 @@ export class LocalBackend {
       return await this._contextImpl(repo, params);
     } catch (err: any) {
       const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (err instanceof SymbolIdentityError) {
+        return { error: msg, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,
@@ -7139,8 +7168,16 @@ export class LocalBackend {
       // Return structured error instead of crashing (#321)
       const message =
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
-      const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
-      const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
+      const recoverySuggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : isWalCorruptionError(err)
+            ? WAL_RECOVERY_SUGGESTION
+            : undefined;
+      const suggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : 'The graph query failed — try gitnexus context <symbol> as a fallback';
       if (params.mode === 'pdg') {
         // Symbol resolution never reached the catch with a resolved symbol (the
         // throw can originate before/within resolution), so the envelope carries
@@ -9158,6 +9195,7 @@ export class LocalBackend {
           ];
 
     try {
+      assertSymbolIdentity(sym.id ?? sym[0], uid);
       // skipPerSymbolEnrichment suppresses ONLY the per-symbol STEP_IN_PROCESS
       // enrichment pass while preserving byDepth. Group-mode cross-repo fan-out
       // may fan across many repos; the per-symbol pass adds up to MAX_CHUNKS
