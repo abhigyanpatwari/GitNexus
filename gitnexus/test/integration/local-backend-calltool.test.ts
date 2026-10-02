@@ -956,3 +956,98 @@ withTestLbugDB(
     },
   },
 );
+
+const PYTHON_METHOD_ID = 'Method:tests/test_supervisor.py:Supervisor.run';
+const PYTHON_CALLER_ID = 'Function:tests/test_supervisor.py:test_run';
+const SWIFT_METHOD_ID = 'Method:Sources/Supervisor.swift:Supervisor.run';
+const SWIFT_CALLER_ID = 'Constructor:Sources/Supervisor.swift:Supervisor.init';
+
+withTestLbugDB(
+  'symbol-identity-isolation-3424',
+  (handle) => {
+    describe('mixed Python/Swift symbol identity isolation (#3424)', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      });
+
+      it.each(['name and file', 'UID'])('keeps Python context isolated by %s', async (lookup) => {
+        const params =
+          lookup === 'UID'
+            ? { uid: PYTHON_METHOD_ID }
+            : { name: 'run', file_path: 'tests/test_supervisor.py' };
+        const result = await backend.callTool('context', params);
+        expect(result).not.toHaveProperty('error');
+        expect(result.symbol.uid).toBe(PYTHON_METHOD_ID);
+        expect(result.incoming.calls.map((caller: { uid: string }) => caller.uid)).toEqual([
+          PYTHON_CALLER_ID,
+        ]);
+      });
+
+      it.each(['name and file', 'UID'])('keeps Python impact isolated by %s', async (lookup) => {
+        const params =
+          lookup === 'UID'
+            ? { target_uid: PYTHON_METHOD_ID }
+            : { target: 'run', file_path: 'tests/test_supervisor.py' };
+        const result = await backend.callTool('impact', {
+          ...params,
+          direction: 'upstream',
+          includeTests: true,
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.target.id).toBe(PYTHON_METHOD_ID);
+        expect(result.impactedCount).toBe(1);
+        expect(result.byDepth[1].map((caller: { id: string }) => caller.id)).toEqual([
+          PYTHON_CALLER_ID,
+        ]);
+      });
+
+      it('keeps the unrelated Swift constructor queryable', async () => {
+        const context = await backend.callTool('context', { uid: SWIFT_METHOD_ID });
+        expect(context).not.toHaveProperty('error');
+        expect(context.symbol.uid).toBe(SWIFT_METHOD_ID);
+        expect(context.incoming.calls.map((caller: { uid: string }) => caller.uid)).toEqual([
+          SWIFT_CALLER_ID,
+        ]);
+        const impact = await backend.callTool('impact', {
+          target_uid: SWIFT_METHOD_ID,
+          direction: 'upstream',
+          includeTests: true,
+        });
+        expect(impact).not.toHaveProperty('error');
+        expect(impact.target.id).toBe(SWIFT_METHOD_ID);
+        expect(impact.impactedCount).toBe(1);
+        expect(impact.byDepth[1].map((caller: { id: string }) => caller.id)).toEqual([
+          SWIFT_CALLER_ID,
+        ]);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:Method {id: '${PYTHON_METHOD_ID}', name: 'run', filePath: 'tests/test_supervisor.py', startLine: 3, endLine: 5})`,
+      `CREATE (:Function {id: '${PYTHON_CALLER_ID}', name: 'test_run', filePath: 'tests/test_supervisor.py', startLine: 7, endLine: 9})`,
+      `CREATE (:Method {id: '${SWIFT_METHOD_ID}', name: 'run', filePath: 'Sources/Supervisor.swift', startLine: 3, endLine: 5})`,
+      `CREATE (:Constructor {id: '${SWIFT_CALLER_ID}', name: 'init', filePath: 'Sources/Supervisor.swift', startLine: 7, endLine: 9})`,
+      `MATCH (a:Function), (b:Method) WHERE a.id = '${PYTHON_CALLER_ID}' AND b.id = '${PYTHON_METHOD_ID}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+      `MATCH (a:Constructor), (b:Method) WHERE a.id = '${SWIFT_CALLER_ID}' AND b.id = '${SWIFT_METHOD_ID}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 1.0, reason: 'direct', step: 0}]->(b)`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'mixed-language-repo',
+          path: '/mixed-language/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 2, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
