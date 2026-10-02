@@ -4,7 +4,7 @@ From `gitnexus/`:
 
 ```sh
 node --import tsx bench/incremental-write-integrity/measure.cjs --check
-node bench/incremental-write-integrity/reproduce.cjs --require-corruption
+node bench/incremental-write-integrity/reproduce.cjs
 ```
 
 The first command measures the production reconciliation, including every
@@ -41,7 +41,7 @@ Use `--keep` to retain the synthetic database and CSV files; the JSON output giv
 their directory. `--require-corruption` is a diagnostic assertion, deliberately
 not a CI requirement: it should fail when the native defect is fixed.
 
-With the pinned `@ladybugdb/core` 0.18.3, this reduction produced:
+With the original `@ladybugdb/core` 0.18.3, this reduction produced:
 
 | Phase                     |  Rows | Incorrect tuples |
 | ------------------------- | ----: | ---------------: |
@@ -50,6 +50,11 @@ With the pinned `@ladybugdb/core` 0.18.3, this reduction produced:
 | Incremental COPY          | 8,192 |            3,936 |
 | Explicit checkpoint       | 8,192 |            3,936 |
 | Read-only reopen          | 8,192 |            3,936 |
+
+With `@ladybugdb/core` 0.21.1, the same reduction returns zero incorrect
+tuples in every phase. The production reconciliation and negative controls
+remain required; this result covers the reduced fixture, not a replay of the
+original incident.
 
 For example, the scan returned an empty `id` at native offset 64, while a
 primary-key lookup at that same offset returned

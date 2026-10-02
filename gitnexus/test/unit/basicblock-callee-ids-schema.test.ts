@@ -74,7 +74,7 @@ describe('BasicBlock calleeIds — CSV header + row builder', () => {
     expect(rowCells).toHaveLength(headerCols.length);
     const calleeIdsIdx = headerCols.indexOf('calleeIds');
     const calleesIdx = headerCols.indexOf('callees');
-    // escapeCSVField always wraps the cell in double quotes; the space-joined
+    // Non-empty CSV fields are quoted; the space-joined
     // id list contains no comma, so the cell is a single CSV column.
     expect(rowCells[calleeIdsIdx]).toBe('"id1 id2"');
     expect(rowCells[calleesIdx]).toBe('"foo bar"');
@@ -85,7 +85,8 @@ describe('BasicBlock calleeIds — CSV header + row builder', () => {
     const headerCols = BASICBLOCK_CSV_HEADER.split(',');
     const rowCells = buildBasicBlockRow(node).split(',');
     const calleeIdsIdx = headerCols.indexOf('calleeIds');
-    expect(rowCells[calleeIdsIdx]).toBe('""');
+    // An absent string must stay unquoted so native COPY loads SQL NULL.
+    expect(rowCells[calleeIdsIdx]).toBe('');
     expect(rowCells[calleeIdsIdx]).not.toContain('undefined');
   });
 });
