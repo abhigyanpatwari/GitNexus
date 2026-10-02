@@ -21,3 +21,19 @@ extension DerivedService {
         clock()
     }
 }
+
+extension BaseService {
+    func refreshOwnFromExtension() -> Date {
+        clock()
+    }
+}
+
+final class PrivateDerived: PrivateBase {
+    func clock() -> Int {
+        2
+    }
+
+    func refreshPrivateAncestor() -> Int {
+        clock()
+    }
+}

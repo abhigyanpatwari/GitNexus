@@ -61,6 +61,8 @@ const scopes = {
     scope('class', 'module', 'Class', [classDef, property], classRange),
     scope('function', 'class', 'Function', [method], functionRange),
   ]),
+  defs: buildDefIndex([classDef, property, method]),
+  qualifiedNames: buildQualifiedNameIndex([classDef, property, method]),
   methodDispatch: buildMethodDispatchIndex({
     owners: [classDef.nodeId],
     computeMro: () => [],
@@ -79,6 +81,7 @@ describe('Swift caller-side callable visibility', () => {
           qualifiedName: 'Other.clock',
         },
         callerScope: 'function',
+        callArity: 0,
         scopes,
       }),
     ).toBe(false);
@@ -91,14 +94,89 @@ describe('Swift caller-side callable visibility', () => {
       type: 'Method',
       qualifiedName: 'Other.run',
     };
-    expect(swiftIsCallableVisibleFromCaller({ candidate, callerScope: 'function', scopes })).toBe(
-      true,
-    );
+    expect(
+      swiftIsCallableVisibleFromCaller({
+        candidate,
+        callerScope: 'function',
+        callArity: 0,
+        scopes,
+      }),
+    ).toBe(true);
     expect(
       swiftIsCallableVisibleFromCaller({
         candidate: { ...candidate, qualifiedName: 'Other.clock' },
       }),
     ).toBe(true);
+  });
+
+  it('preserves a selected local function before checking the enclosing property', () => {
+    const local: SymbolDefinition = {
+      nodeId: 'local.clock',
+      filePath,
+      type: 'Function',
+      qualifiedName: 'Service.refresh.clock',
+    };
+    const localScopes = {
+      ...scopes,
+      scopeTree: buildScopeTree([
+        scope('module', null, 'Module', [], moduleRange),
+        scope('class', 'module', 'Class', [classDef, property], classRange),
+        scope('function', 'class', 'Function', [method], functionRange),
+        scope('local', 'function', 'Function', [local], {
+          startLine: 6,
+          startCol: 0,
+          endLine: 7,
+          endCol: 0,
+        }),
+      ]),
+    } as ScopeResolutionIndexes;
+    expect(
+      swiftIsCallableVisibleFromCaller({
+        candidate: local,
+        callerParsed: {
+          filePath,
+          moduleScope: 'module',
+          scopes: [...localScopes.scopeTree.byId.values()],
+          localDefs: [classDef, property, method, local],
+          parsedImports: [],
+          referenceSites: [],
+        },
+        callerScope: 'function',
+        callArity: 0,
+        scopes: localScopes,
+      }),
+    ).toBe(true);
+  });
+
+  it('preserves a selected method owned by the current type', () => {
+    expect(
+      swiftIsCallableVisibleFromCaller({
+        candidate: { ...method, nodeId: 'Service.clock', qualifiedName: 'Service.clock' },
+        callerScope: 'function',
+        callArity: 0,
+        scopes,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not veto a call with arguments or unknown arity', () => {
+    const candidate: SymbolDefinition = {
+      nodeId: 'Other.clock',
+      filePath: 'Other.swift',
+      type: 'Method',
+      qualifiedName: 'Other.clock',
+    };
+    expect(
+      swiftIsCallableVisibleFromCaller({
+        candidate,
+        callerScope: 'function',
+        callArity: 1,
+        scopes,
+      }),
+    ).toBe(true);
+    expect(swiftIsCallableVisibleFromCaller({ candidate, callerScope: 'function', scopes })).toBe(
+      true,
+    );
   });
 
   it('rejects a decoy when a superclass owns the closure property', () => {
@@ -144,6 +222,7 @@ describe('Swift caller-side callable visibility', () => {
           qualifiedName: 'Other.clock',
         },
         callerScope: 'derivedFunction',
+        callArity: 0,
         scopes: inheritedScopes,
       }),
     ).toBe(false);
@@ -180,6 +259,7 @@ describe('Swift caller-side callable visibility', () => {
           qualifiedName: 'Other.clock',
         },
         callerScope: 'extensionFunction',
+        callArity: 0,
         scopes: extensionScopes,
       }),
     ).toBe(false);

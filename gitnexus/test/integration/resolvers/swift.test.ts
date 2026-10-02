@@ -411,11 +411,40 @@ describe.skipIf(!swiftAvailable)('Swift injected closure property call (#3425)',
     expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
   });
 
+  it('keeps same-type closure calls in extensions unlinked', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshOwnFromExtension',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toEqual([]);
+  });
+
   it('still resolves the concrete-type extension call', () => {
     const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'runScenario');
     expect(calls.map((c) => c.rel.targetId)).toEqual([
       'Function:Helpers.swift:Example.makeValue#1',
     ]);
+  });
+
+  it('keeps a nested function that shadows the stored closure', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshWithLocalClock',
+    );
+    expect(calls.filter((c) => c.target === 'clock')).toHaveLength(1);
+    expect(calls.find((c) => c.target === 'clock')?.targetFilePath).toBe('Caller.swift');
+  });
+
+  it('keeps a labeled method selected alongside a same-name property', () => {
+    const calls = getRelationships(result, 'CALLS').filter((c) => c.source === 'refreshLabeled');
+    expect(calls.map((c) => c.target)).toContain('first');
+    expect(calls.find((c) => c.target === 'first')?.targetFilePath).toBe('Caller.swift');
+  });
+
+  it('keeps a derived method despite an inaccessible ancestor property', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'refreshPrivateAncestor',
+    );
+    expect(calls.map((c) => c.target)).toContain('clock');
+    expect(calls.find((c) => c.target === 'clock')?.targetFilePath).toBe('Helpers.swift');
   });
 });
 

@@ -128,12 +128,12 @@
     "digest": "c4d442b67247406de3b1158b958f6f3e294f11c0bbb360ed32489582769a1187"
   },
   "swift-injected-closure-call/Caller.swift": {
-    "captureGroups": 40,
-    "digest": "dc368e82e4d72aaa23e0f37bad35564d8908ae40d18059942ac80a19464f6037"
+    "captureGroups": 69,
+    "digest": "6768d62722a6b173dbe953507fec53661ea6c9786a49d8edf7caedb0a3cef0e4"
   },
   "swift-injected-closure-call/Helpers.swift": {
-    "captureGroups": 27,
-    "digest": "0d72efde56a0d1039548e832097061390793ffd020669ca3cfb74794f4eae877"
+    "captureGroups": 48,
+    "digest": "6e6bfe83084bf189a7789702cfccb5fcc5753986b0de3c0d7f81fc3ae59270b2"
   },
   "swift-member-write-access/App.swift": {
     "captureGroups": 14,
