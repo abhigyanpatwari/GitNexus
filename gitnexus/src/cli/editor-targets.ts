@@ -93,13 +93,48 @@ export interface EditorTargets {
   hooks: HookTarget[];
 }
 
+/** Where Claude Code keeps its config root and its user-scope MCP file. */
+export interface ClaudeConfigPaths {
+  /** Config root: settings.json, skills/, hooks/. */
+  dir: string;
+  /** User-scope MCP config (`mcpServers`). */
+  mcpFile: string;
+}
+
 /**
- * Resolve all editor targets for the given home directory. Defaults to
- * `os.homedir()`; call sites pass it through so tests can point HOME at a temp
- * dir. Paths are computed at call time (not module load) so a test setting
- * `process.env.HOME` before invoking sees the right locations.
+ * Resolve Claude Code's config locations. By default the root is `~/.claude`
+ * and the MCP file sits beside it as `~/.claude.json`. When `CLAUDE_CONFIG_DIR`
+ * is set, Claude Code reads both from that directory instead (the MCP file
+ * becomes `$CLAUDE_CONFIG_DIR/.claude.json`), so writing to the HOME defaults
+ * would install into files Claude Code never reads. An empty value counts as
+ * unset; a relative one is resolved against the working directory.
  */
-export function getEditorTargets(home: string = os.homedir()): EditorTargets {
+export function claudeConfigPaths(
+  home: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): ClaudeConfigPaths {
+  const relocated = env.CLAUDE_CONFIG_DIR;
+  if (relocated) {
+    const dir = path.resolve(relocated);
+    return { dir, mcpFile: path.join(dir, '.claude.json') };
+  }
+  return { dir: path.join(home, '.claude'), mcpFile: path.join(home, '.claude.json') };
+}
+
+/**
+ * Resolve all editor targets for the given home directory and environment.
+ * Defaults to `os.homedir()` and `process.env`; call sites pass them through so
+ * tests can point HOME at a temp dir. Paths are computed at call time (not
+ * module load) so a test setting `process.env.HOME` before invoking sees the
+ * right locations. The environment carries per-editor config-dir overrides
+ * (`CLAUDE_CONFIG_DIR`).
+ */
+export function getEditorTargets(
+  home: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): EditorTargets {
+  const claude = claudeConfigPaths(home, env);
+
   const mcpJsonc: McpJsoncTarget[] = [
     {
       id: 'cursor',
@@ -110,7 +145,7 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
     {
       id: 'claude',
       label: 'Claude Code',
-      file: path.join(home, '.claude.json'),
+      file: claude.mcpFile,
       keyPath: ['mcpServers', 'gitnexus'],
     },
     {
@@ -171,7 +206,7 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
   };
 
   const skills: SkillTarget[] = [
-    { id: 'claude', label: 'Claude Code', dir: path.join(home, '.claude', 'skills') },
+    { id: 'claude', label: 'Claude Code', dir: path.join(claude.dir, 'skills') },
     {
       id: 'antigravity',
       label: 'Antigravity',
@@ -194,10 +229,10 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
     {
       id: 'claude',
       label: 'Claude Code',
-      settingsFile: path.join(home, '.claude', 'settings.json'),
+      settingsFile: path.join(claude.dir, 'settings.json'),
       events: ['PreToolUse', 'PostToolUse'],
       needle: 'gitnexus-hook',
-      scriptDir: path.join(home, '.claude', 'hooks', 'gitnexus'),
+      scriptDir: path.join(claude.dir, 'hooks', 'gitnexus'),
     },
     {
       id: 'codex',
@@ -224,22 +259,22 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
 }
 
 /** Look up a single JSONC MCP target by editor id (throws if unknown). */
-export function mcpTarget(id: EditorId, home?: string): McpJsoncTarget {
-  const t = getEditorTargets(home).mcpJsonc.find((m) => m.id === id);
+export function mcpTarget(id: EditorId, home?: string, env?: NodeJS.ProcessEnv): McpJsoncTarget {
+  const t = getEditorTargets(home, env).mcpJsonc.find((m) => m.id === id);
   if (!t) throw new Error(`No JSONC MCP target for editor "${id}"`);
   return t;
 }
 
 /** Look up a single skill target by editor id (throws if unknown). */
-export function skillTarget(id: EditorId, home?: string): SkillTarget {
-  const t = getEditorTargets(home).skills.find((s) => s.id === id);
+export function skillTarget(id: EditorId, home?: string, env?: NodeJS.ProcessEnv): SkillTarget {
+  const t = getEditorTargets(home, env).skills.find((s) => s.id === id);
   if (!t) throw new Error(`No skill target for editor "${id}"`);
   return t;
 }
 
 /** Look up a single hook target by editor id (throws if unknown). */
-export function hookTarget(id: EditorId, home?: string): HookTarget {
-  const t = getEditorTargets(home).hooks.find((h) => h.id === id);
+export function hookTarget(id: EditorId, home?: string, env?: NodeJS.ProcessEnv): HookTarget {
+  const t = getEditorTargets(home, env).hooks.find((h) => h.id === id);
   if (!t) throw new Error(`No hook target for editor "${id}"`);
   return t;
 }
