@@ -1101,28 +1101,78 @@ export type LbugProgressCallback = (message: string) => void;
 
 /**
  * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
- * errors) on first failure. On a second failure, hand the RAW retry error to
- * `onError` — each call site formats + slices its own message (#2226 F5: node
- * COPY slices to 200 chars and throws; relationship COPY slices to 80 and warns,
- * so the helper must not pre-format and lose that distinction). `onError` may
- * throw to propagate the failure.
+ * errors) on first failure. Log the original failure and native COPY/warning
+ * receipts even when the retry succeeds. Node COPY requires every row; a
+ * skipped-node receipt is a failure. Call sites retain their own message
+ * limits and relationship fallback policy.
  */
 const copyCsvWithRetry = async (
   targetConn: lbug.Connection,
   copyQuery: string,
   onError: (retryErr: unknown) => void,
+  expectedRows?: number,
 ): Promise<void> => {
   try {
     await queryAndDrain(targetConn, copyQuery);
-  } catch {
+  } catch (firstError) {
+    logger.warn(
+      { err: firstError, copyQuery },
+      'First COPY failure; retrying with IGNORE_ERRORS=true',
+    );
     try {
       const retryQuery = copyQuery.replace(
         'auto_detect=false)',
         'auto_detect=false, IGNORE_ERRORS=true)',
       );
-      await queryAndDrain(targetConn, retryQuery);
+      // Keep COPY and its connection-local warning receipt in one critical
+      // section. Only project diagnostics, never skipped_line_or_record: that
+      // column contains source text. Warnings are retained at a bounded native
+      // limit, so their count is a lower bound, not the exact skipped total.
+      const retry = async () => {
+        await drainQueryResult(await targetConn.query('CALL CLEAR_WARNINGS()'));
+        const result = await readQueryRows(await targetConn.query(retryQuery));
+        const warnings = await readQueryRows(
+          await targetConn.query('CALL SHOW_WARNINGS() RETURN message, file_path, line_number'),
+        );
+        // The native warning limit can be zero; warning rows alone cannot
+        // prove that every CSV row landed. Node COPY exposes its copied count
+        // in the result receipt even when warning retention is disabled.
+        const countReceipt = result
+          .map((row) => String(row.result ?? ''))
+          .map((message) => /^(\d+) tuples have been copied/.exec(message))
+          .find(Boolean);
+        const copiedRows = countReceipt ? Number(countReceipt[1]) : undefined;
+        logger.warn(
+          {
+            copyQuery,
+            copyResult: result,
+            expectedRows,
+            copiedRows,
+            skippedRows:
+              expectedRows !== undefined && copiedRows !== undefined
+                ? Math.max(0, expectedRows - copiedRows)
+                : undefined,
+            retainedWarnings: warnings.length,
+            warningSamples: warnings.slice(0, 5),
+          },
+          'COPY retry completed; retained warnings describe skipped rows (a lower bound)',
+        );
+        if (expectedRows !== undefined && (copiedRows !== expectedRows || warnings.length > 0)) {
+          throw new Error(
+            `COPY retry skipped rows or could not verify a complete node load ` +
+              `(copied ${copiedRows ?? 'unknown'} of ${expectedRows}; ${warnings.length} retained warning(s))`,
+          );
+        }
+      };
+      await (isSharedSingletonConn(targetConn) ? withConnLock(retry) : retry());
     } catch (retryErr) {
-      onError(retryErr);
+      const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
+      const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      onError(
+        new Error(`COPY retry failed: ${retryMessage}; first failure: ${firstMessage}`, {
+          cause: retryErr,
+        }),
+      );
     }
   }
 };
@@ -1192,17 +1242,22 @@ const copyNodeCSVs = async (
     if (!(await stagingCsvExists(csvPath))) throw missingStagingCsvError(table, csvPath, rows);
 
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
-    await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
-      const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
-      // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
-      // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
-      // sizing was calibrated for — name the knob and the mechanism.
-      const remedy = bufferPoolExhaustionRemedy(retryMsg);
-      throw new Error(
-        `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
-      );
-    });
+    await copyCsvWithRetry(
+      targetConn,
+      copyQuery,
+      (retryErr) => {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
+        // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
+        // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
+        // sizing was calibrated for — name the knob and the mechanism.
+        const remedy = bufferPoolExhaustionRemedy(retryMsg);
+        throw new Error(
+          `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
+        );
+      },
+      rows,
+    );
   }
 };
 
