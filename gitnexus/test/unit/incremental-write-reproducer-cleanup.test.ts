@@ -25,7 +25,14 @@ type FailurePoint =
 
 // Execute the actual entry point with controlled native and file APIs. Healthy
 // scan tuples allow constructor and cleanup faults in both native sessions.
-async function runReproducer(failures: FailurePoint[] = [], keep = false) {
+async function runReproducer(
+  failures: FailurePoint[] = [],
+  keep = false,
+  options: {
+    requireCorruption?: boolean;
+    copiedScan?: 'missing' | 'duplicate' | 'wrong-field';
+  } = {},
+) {
   const directory = path.join(os.tmpdir(), 'ladybug-copy-identity-controlled');
   const events: string[] = [];
   const diagnostics: unknown[] = [];
@@ -33,10 +40,16 @@ async function runReproducer(failures: FailurePoint[] = [], keep = false) {
   let databases = 0;
   let connections = 0;
   let writes = 0;
+  let scans = 0;
   let indices = Array.from({ length: 8192 }, (_, i) => i);
   const output: string[] = [];
   const processDouble = {
-    argv: keep ? ['node', 'reproduce.cjs', '--keep'] : ['node', 'reproduce.cjs'],
+    argv: [
+      'node',
+      'reproduce.cjs',
+      ...(keep ? ['--keep'] : []),
+      ...(options.requireCorruption ? ['--require-corruption'] : []),
+    ],
     version: process.version,
     exitCode: 0,
     stdout: { write: (value: string) => output.push(value) },
@@ -79,6 +92,11 @@ async function runReproducer(failures: FailurePoint[] = [], keep = false) {
             endLine: (i % 32) * 4 + 2,
           }))
         : [];
+      if (cypher.includes('RETURN id(n)') && ++scans === 3) {
+        if (options.copiedScan === 'missing') rows.pop();
+        if (options.copiedScan === 'duplicate') rows.push({ ...rows[0] });
+        if (options.copiedScan === 'wrong-field') rows[0].name = 'wrong-function';
+      }
       return { getAll: async () => rows, close: async () => {} };
     }
     async close() {
@@ -168,6 +186,32 @@ it('closes both native sessions and removes the directory after a healthy run', 
     true,
   );
   expect(report.directory).toBeUndefined();
+});
+
+it.each([
+  { copiedScan: 'missing', rows: 8191, wrong_tuples: 0, missing_tuples: 1 },
+  { copiedScan: 'duplicate', rows: 8193, wrong_tuples: 0, missing_tuples: 0 },
+  { copiedScan: 'wrong-field', rows: 8192, wrong_tuples: 1, missing_tuples: 1 },
+] as const)(
+  'accepts a $copiedScan scan discrepancy as reproduced corruption',
+  async ({ copiedScan, ...expected }) => {
+    const result = await runReproducer([], false, { requireCorruption: true, copiedScan });
+    const report = JSON.parse(result.output.join(''));
+    expect(
+      report.phases.find((phase: { phase: string }) => phase.phase === 'after-copy'),
+    ).toMatchObject(expected);
+    expect(result.exitCode).toBe(0);
+    expect(result.diagnostics).toEqual([]);
+    expect(result.events.at(-1)).toBe('remove');
+  },
+);
+
+it('rejects --require-corruption when the native scan is healthy', async () => {
+  const result = await runReproducer([], false, { requireCorruption: true });
+  expect(result.exitCode).toBe(1);
+  expect(result.diagnostics).toHaveLength(1);
+  expect((result.diagnostics[0] as Error).message).toContain('Native failure did not reproduce');
+  expect(result.events.at(-1)).toBe('remove');
 });
 
 it('keeps the directory deliberately without retaining native handles for --keep', async () => {

@@ -74,7 +74,7 @@ describe('BasicBlock calleeIds — CSV header + row builder', () => {
     expect(rowCells).toHaveLength(headerCols.length);
     const calleeIdsIdx = headerCols.indexOf('calleeIds');
     const calleesIdx = headerCols.indexOf('callees');
-    // Non-empty CSV fields are quoted; the space-joined
+    // Non-empty string fields are quoted; the space-joined
     // id list contains no comma, so the cell is a single CSV column.
     expect(rowCells[calleeIdsIdx]).toBe('"id1 id2"');
     expect(rowCells[calleesIdx]).toBe('"foo bar"');

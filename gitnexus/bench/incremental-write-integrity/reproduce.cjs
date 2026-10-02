@@ -160,7 +160,7 @@ const lbug = require('@ladybugdb/core');
     );
     if (process.argv.includes('--require-corruption')) {
       assert.ok(
-        copied.bad.length > 0,
+        copied.bad.length > 0 || copied.missing > 0 || copied.rows.length !== count,
         'Native failure did not reproduce; this is a diagnostic, not a passing CI invariant',
       );
     }
