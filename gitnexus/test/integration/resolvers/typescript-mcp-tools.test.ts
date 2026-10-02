@@ -66,6 +66,78 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     },
   );
 
+  it.each(['ts', 'js'])(
+    'preserves namespace registrations through cold/warm %s parsing',
+    async (extension) => {
+      const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-namespace-'));
+      const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-namespace-cache-'));
+      try {
+        fs.writeFileSync(
+          path.join(repo, `server.${extension}`),
+          `
+        import * as SDK from '@modelcontextprotocol/sdk/server/mcp.js';
+        const server = new SDK.McpServer({});
+        function handleNamespace() { return { content: [] }; }
+        server.registerTool('namespace', { description: 'Namespace tool' }, handleNamespace);
+        const replaced = new SDK.McpServer({});
+        ({ method: replaced.registerTool } = other);
+        replaced.registerTool('fake', {}, handleNamespace);
+        ${extension === 'ts' ? "function install(typed: SDK.McpServer) { typed.tool('typed_namespace', handleNamespace); }" : ''}
+      `,
+        );
+        const cache: ParseCache = {
+          version: PARSE_CACHE_VERSION,
+          entries: new Map(),
+          usedKeys: new Set(),
+          storagePath: storageDir,
+          onDiskKeys: new Set(),
+        };
+        const cold = await runPipelineFromRepo(repo, () => {}, {
+          parseCache: cache,
+          workerPoolSize: 1,
+        });
+        expect(cold.usedWorkerPool).toBe(true);
+        pruneCache(cache, cache.usedKeys);
+        const keys = await saveParseCache(storageDir, cache);
+        await pruneAndSaveDurableParsedFileStore(
+          getDurableParsedFileDir(storageDir),
+          PARSE_CACHE_VERSION,
+          new Set(keys),
+        );
+        const warmCache = await loadParseCache(storageDir);
+        expect(warmCache).not.toBeNull();
+        const warm = await runPipelineFromRepo(repo, () => {}, {
+          parseCache: warmCache!,
+          workerPoolSize: 1,
+        });
+        expect(warm.usedWorkerPool).toBe(false);
+        for (const pipeline of [cold, warm]) {
+          expect(getNodesByLabel(pipeline, 'Tool')).toEqual(
+            extension === 'ts' ? ['namespace', 'typed_namespace'] : ['namespace'],
+          );
+          expect(
+            getNodesByLabelFull(pipeline, 'Tool').find((tool) => tool.name === 'namespace')
+              ?.properties.description,
+          ).toBe('Namespace tool');
+          expect(
+            getRelationships(pipeline, 'HANDLES_TOOL').filter(
+              (edge) => edge.target === 'namespace',
+            ),
+          ).toMatchObject([{ source: 'handleNamespace', sourceLabel: 'Function' }]);
+          expect(findDanglingEdges(pipeline, ['HANDLES_TOOL', 'ENTRY_POINT_OF'])).toEqual([]);
+        }
+        expect(getNodesByLabelFull(warm, 'Tool')).toEqual(getNodesByLabelFull(cold, 'Tool'));
+        expect(getRelationships(warm, 'HANDLES_TOOL')).toEqual(
+          getRelationships(cold, 'HANDLES_TOOL'),
+        );
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+        fs.rmSync(storageDir, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
+
   it('discovers ordinary server files alongside deduplicated object manifests', () => {
     expect(getNodesByLabel(result, 'Tool')).toEqual(
       [

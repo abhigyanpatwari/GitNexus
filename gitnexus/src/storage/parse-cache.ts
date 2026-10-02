@@ -827,7 +827,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v125 worker results omit these definitions and must be re-extracted.
 // v127 (#3450): Destructured member writes invalidate SDK registration evidence.
 // Warm v126 worker results can retain false tools after a method replacement.
-const SCHEMA_BUMP = 127;
+// v128 (#3450): SDK namespace imports now prove positional tool receivers.
+// Warm v127 worker results omit these definitions and must be re-extracted.
+const SCHEMA_BUMP = 128;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

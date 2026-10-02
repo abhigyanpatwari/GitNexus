@@ -12,7 +12,7 @@ interface Scope {
 interface Binding {
   name: SyntaxNode;
   scope: Scope;
-  kind: 'unknown' | 'sdk' | 'variable' | 'parameter' | 'function';
+  kind: 'unknown' | 'sdk' | 'sdk-namespace' | 'variable' | 'parameter' | 'function';
   value?: SyntaxNode;
   type?: SyntaxNode;
   typeOnly?: boolean;
@@ -151,7 +151,7 @@ function collectBindings(root: SyntaxNode) {
         if (child.type === 'identifier') declare(scope, child);
         else if (child.type === 'namespace_import') {
           const local = child.namedChildren[0];
-          if (local) declare(scope, local);
+          if (local) declare(scope, local, { kind: sdk ? 'sdk-namespace' : 'unknown', typeOnly });
         } else if (child.type === 'named_imports') {
           for (const specifier of child.namedChildren) {
             const imported = specifier.childForFieldName('name');
@@ -225,6 +225,7 @@ function collectBindings(root: SyntaxNode) {
       // or its registration methods. Unknown keys and constructor mutations remain unsafe.
       if (
         binding?.kind !== 'sdk' &&
+        binding?.kind !== 'sdk-namespace' &&
         members.length > 0 &&
         members.every((member) => member !== null) &&
         !['tool', 'registerTool', '__proto__'].includes(members[members.length - 1]!)
@@ -237,9 +238,17 @@ function collectBindings(root: SyntaxNode) {
 }
 
 function sdkBinding(node: SyntaxNode, scope: Scope, forType = false): boolean {
+  let kind: Binding['kind'] = 'sdk';
+  if (node.type === (forType ? 'nested_type_identifier' : 'member_expression')) {
+    const namespace = node.childForFieldName(forType ? 'module' : 'object');
+    const member = node.childForFieldName(forType ? 'name' : 'property');
+    if (namespace?.type !== 'identifier' || member?.text !== 'McpServer') return false;
+    node = namespace;
+    kind = 'sdk-namespace';
+  }
   if (node.type !== 'identifier' && node.type !== 'type_identifier') return false;
   const binding = lookup(scope, node.text);
-  return binding?.kind === 'sdk' && !binding.invalid && (forType || !binding.typeOnly);
+  return binding?.kind === kind && !binding.invalid && (forType || !binding.typeOnly);
 }
 
 function sdkReceiver(node: SyntaxNode, scope: Scope, scopes: ReadonlyMap<number, Scope>): boolean {

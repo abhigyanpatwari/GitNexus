@@ -42,6 +42,61 @@ describe('SDK tool registration extraction', () => {
     },
   );
 
+  it.each([
+    ['TypeScript', tsParser, 'src/server.ts'],
+    ['JavaScript', jsParser, 'src/server.js'],
+  ] as const)('recognizes namespace imports in %s', (_language, parser, filePath) => {
+    expect(
+      extract(
+        `
+      import * as SDK from '@modelcontextprotocol/sdk/server/mcp.js';
+      const server = new SDK.McpServer({});
+      server.registerTool('modern', { description: 'Namespace tool' }, handler);
+      server.tool('legacy', handler);
+    `,
+        parser,
+        filePath,
+      ).map(({ toolName }) => toolName),
+    ).toEqual(['modern', 'legacy']);
+  });
+
+  it.each(['', 'type '])('recognizes %snamespace imports in directly typed helpers', (typeOnly) => {
+    expect(
+      metadata(`
+      import ${typeOnly}* as SDK from '@modelcontextprotocol/sdk/server/mcp';
+      function install(server: SDK.McpServer) { server.tool('typed', handler); }
+    `),
+    ).toEqual([{ toolName: 'typed', description: '' }]);
+  });
+
+  it.each([
+    "function install(SDK) { const server = new SDK.McpServer({}); server.tool('fake', handler); }",
+    "function install<SDK>(server: SDK.McpServer) { server.tool('fake', handler); }",
+    "SDK = other; const server = new SDK.McpServer({}); server.tool('fake', handler);",
+    "SDK.McpServer = other; const server = new SDK.McpServer({}); server.tool('fake', handler);",
+    "({ value: SDK.McpServer } = other); const server = new SDK.McpServer({}); server.tool('fake', handler);",
+    "SDK.McpServer.prototype.tool = other; const server = new SDK.McpServer({}); server.tool('fake', handler);",
+    "SDK[key] = other; const server = new SDK.McpServer({}); server.tool('fake', handler);",
+    "const server = new SDK.McpServer({}); ({ method: server.tool } = other); server.tool('fake', handler);",
+    "const alias = SDK; const server = new alias.McpServer({}); server.tool('fake', handler);",
+    "const server = new SDK.OtherServer({}); server.tool('fake', handler);",
+  ])('rejects unproven namespace receivers: %s', (source) => {
+    expect(
+      metadata(`import * as SDK from '@modelcontextprotocol/sdk/server/mcp.js'; ${source}`),
+    ).toEqual([]);
+  });
+
+  it('rejects type-only namespace construction and unrelated namespace imports', () => {
+    expect(
+      metadata(`
+      import type * as SDK from '@modelcontextprotocol/sdk/server/mcp.js';
+      import * as Other from 'unrelated';
+      const first = new SDK.McpServer({}); first.tool('type-only', handler);
+      const second = new Other.McpServer({}); second.tool('unrelated', handler);
+    `),
+    ).toEqual([]);
+  });
+
   it('does not require description or inputSchema, and ignores nested descriptions', () => {
     expect(
       metadata(`${server}
