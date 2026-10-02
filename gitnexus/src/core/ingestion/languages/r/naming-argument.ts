@@ -1,11 +1,13 @@
 /**
- * Which argument of an R S4 call names what the call defines.
+ * Which argument of an R call names what the call defines or imports.
  *
  * `R_QUERIES` captures every string-valued argument of `setClass`,
- * `setRefClass`, `setGeneric` and `setMethod`. Only one of them is the
- * definition's name; the rest are `contains = "VIRTUAL"`,
+ * `setRefClass`, `setGeneric` and `setMethod`, and the scope query captures every
+ * identifier- or string-valued argument of `library`, `require` and `source` and
+ * every string argument of `setClass`/`setRefClass`. Only one of them is the
+ * definition's name or the import's source; the rest are `contains = "VIRTUAL"`,
  * `valueClass = "numeric"`, the class slot of `setMethod("show", "Foo", ...)`,
- * and so on. The choice is made here, in code, rather than in the
+ * `lib.loc = libO`, and so on. The choice is made here, in code, rather than in the
  * query: a tree-sitter query can only skip an unbounded run of leading
  * comments and named arguments with a repeated sibling group, and that costs
  * time quadratic in the argument count on every call in the file (a single
@@ -28,12 +30,15 @@
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { CaptureMap } from '../../language-provider.js';
 
-/** The first formal of each call whose first argument names what it defines. */
+/** The first formal of each call whose first argument names what it defines or imports. */
 const NAMING_FORMAL: Readonly<Record<string, string>> = {
   setClass: 'Class',
   setRefClass: 'Class',
   setGeneric: 'name',
   setMethod: 'f',
+  library: 'package',
+  require: 'package',
+  source: 'file',
 };
 
 /** An argument's name with one pair of surrounding backticks or quotes removed. */
@@ -111,6 +116,38 @@ export function isRNonNamingArgumentCapture(captureMap: CaptureMap): boolean {
   const captured = captureMap['name'];
   if (captured === undefined || captured.type !== 'string_content') return false;
   const argument = captured.parent?.parent;
+  if (argument === undefined || argument === null || argument.type !== 'argument') return false;
+
+  return !isRNamingArgument(argument, formal);
+}
+
+/** The captures of a raw tree-sitter match, as the scope emitter sees them. */
+interface RawCapture {
+  readonly name: string;
+  readonly node: SyntaxNode;
+}
+
+/** Callee captures of the scope query's naming-argument patterns (`r/query.ts`). */
+const SCOPE_CALLEE_CAPTURES: ReadonlySet<string> = new Set(['_s4_decl', '_srcfn', '_libfn']);
+
+/**
+ * True when a scope-query match captured an argument of `setClass` /
+ * `setRefClass` (`@declaration.name`), `library` / `require` or `source`
+ * (`@import.source`) that is NOT the naming argument. The scope query captures
+ * every such argument; the emitter drops these matches.
+ */
+export function isRNonNamingScopeMatch(captures: readonly RawCapture[]): boolean {
+  const fn = captures.find((c) => SCOPE_CALLEE_CAPTURES.has(c.name));
+  if (fn === undefined) return false;
+  const formal = NAMING_FORMAL[fn.node.text];
+  if (formal === undefined) return false;
+
+  const captured = captures.find(
+    (c) => c.name === 'declaration.name' || c.name === 'import.source',
+  );
+  if (captured === undefined) return false;
+  const argument =
+    captured.node.type === 'string_content' ? captured.node.parent?.parent : captured.node.parent;
   if (argument === undefined || argument === null || argument.type !== 'argument') return false;
 
   return !isRNamingArgument(argument, formal);

@@ -1,6 +1,7 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture } from '../../utils/ast-helpers.js';
 import { getRParser, getRScopeQuery } from './query.js';
+import { isRNonNamingScopeMatch } from './naming-argument.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
@@ -28,6 +29,9 @@ export function emitRScopeCaptures(
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
+    // The scope query captures every candidate argument of setClass/library/require/
+    // source; keep only the one that names the class or import.
+    if (isRNonNamingScopeMatch(m.captures)) continue;
     const grouped: Record<string, Capture> = {};
     let hasRealCapture = false;
     for (const c of m.captures) {

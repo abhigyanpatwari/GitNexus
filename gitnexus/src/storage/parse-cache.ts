@@ -836,9 +836,13 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v128: the R provider keeps only the argument that names an S4 definition
 // (shouldSkipDefinitionCapture), so `setClass("A", contains = "VIRTUAL")` no
 // longer defines a Class `VIRTUAL`, `setGeneric(..., valueClass = "numeric")` a
-// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`.
-// Definitions are parse-time captures replayed verbatim from the warm cache, so
-// the spurious nodes would persist on unchanged files.
+// Function `numeric`, nor `setMethod("show", "Foo", ...)` a Method `Foo`. The R
+// scope emitter likewise keeps only the argument that names a `setClass` class
+// or a `library`/`require`/`source` import, so `library(lib.loc = libO, pkgP)`
+// no longer imports `libO` and a comment before the first argument no longer
+// hides the class or import. Definitions and scope captures are parse-time
+// facts replayed verbatim from the warm cache, so stale ones would persist on
+// unchanged files. (One bump covers both: v128 has not shipped.)
 const SCHEMA_BUMP = 128;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

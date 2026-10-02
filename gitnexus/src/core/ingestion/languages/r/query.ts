@@ -127,6 +127,15 @@ export const R_SCOPE_QUERY = `
   rhs: (function_definition)) @scope.function
 
 ;; ── Declarations — classes (name only; no qualified_name, see file header) ─
+;;
+;; The setClass/setRefClass declaration and the source/library/require imports
+;; below capture EVERY string (imports: identifier or string) argument of the call.
+;; \`emitRScopeCaptures\` keeps only the one that names the class or import
+;; (\`isRNonNamingScopeMatch\`): the argument spelled with the first formal, else the
+;; first unnamed one, so a leading comment or a named \`lib.loc =\` / \`local =\` does
+;; not change the answer. A query-level anchor cannot skip an unbounded run of
+;; leading comments and named arguments without a repeated sibling group, which
+;; is quadratic in the argument count on every call.
 
 (binary_operator
   lhs: (identifier) @declaration.name
@@ -145,7 +154,7 @@ export const R_SCOPE_QUERY = `
   function: (identifier) @_s4_decl
   (#match? @_s4_decl "^(setClass|setRefClass)$")
   arguments: (arguments
-    . (argument
+    (argument
       value: (string
         content: (string_content) @declaration.name)))) @declaration.class
 
@@ -225,7 +234,7 @@ export const R_SCOPE_QUERY = `
   function: (identifier) @_srcfn
   (#match? @_srcfn "^source$")
   arguments: (arguments
-    . (argument
+    (argument
       value: [(identifier) (string)] @import.source))) @import.side-effect
 
 ;; library("pkg") / require("pkg") — wildcard: every top-level name of the
@@ -234,7 +243,7 @@ export const R_SCOPE_QUERY = `
   function: (identifier) @_libfn
   (#match? @_libfn "^(library|require)$")
   arguments: (arguments
-    . (argument
+    (argument
       value: [(identifier) (string)] @import.source))) @import.wildcard
 
 ;; ── Type bindings — R6 constructor (x <- Type$new(...)) ───────────────────
