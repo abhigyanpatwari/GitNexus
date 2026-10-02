@@ -22,6 +22,7 @@ export interface ToolDef {
   filePath: string;
   description: string;
   handlerNodeId?: string;
+  allowFileFallback?: false;
 }
 
 export interface ToolsOutput {
@@ -51,6 +52,7 @@ export const toolsPhase: PipelinePhase<ToolsOutput> = {
         filePath: td.filePath,
         description: td.description,
         ...(handlerNodeId !== undefined ? { handlerNodeId } : {}),
+        ...(td.allowFileFallback === false ? { allowFileFallback: false as const } : {}),
       });
     }
 

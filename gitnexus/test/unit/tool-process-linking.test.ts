@@ -55,41 +55,50 @@ function addCall(graph: KnowledgeGraph, sourceId: string, targetId: string) {
 }
 
 describe('Tool handler and process linking phases', () => {
-  it('falls back to the file node when a parsed tool handler is missing from the graph', async () => {
-    const graph = createKnowledgeGraph();
-    addNode(graph, 'File:src/tools.py', 'File', 'tools.py', 'src/tools.py');
+  it.each([undefined, false] as const)(
+    'retains file attribution policy %s when a parsed handler is missing',
+    async (allowFileFallback) => {
+      const graph = createKnowledgeGraph();
+      addNode(graph, 'File:src/tools.py', 'File', 'tools.py', 'src/tools.py');
 
-    const output = await toolsPhase.execute(
-      makeCtx(graph),
-      new Map([
-        [
-          'parse',
-          phaseResult('parse', {
-            allToolDefs: [
-              {
-                filePath: 'src/tools.py',
-                toolName: 'stale_tool',
-                description: 'Stale handler',
-                lineNumber: 1,
-                handlerNodeId: 'Function:src/tools.py:missing',
-              },
-            ],
-            allPaths: [],
-          }),
-        ],
-      ]),
-    );
+      const output = await toolsPhase.execute(
+        makeCtx(graph),
+        new Map([
+          [
+            'parse',
+            phaseResult('parse', {
+              allToolDefs: [
+                {
+                  filePath: 'src/tools.py',
+                  toolName: 'stale_tool',
+                  description: 'Stale handler',
+                  lineNumber: 1,
+                  handlerNodeId: 'Function:src/tools.py:missing',
+                  ...(allowFileFallback === false ? { allowFileFallback } : {}),
+                },
+              ],
+              allPaths: [],
+            }),
+          ],
+        ]),
+      );
 
-    expect(output.toolDefs).toEqual([
-      { name: 'stale_tool', filePath: 'src/tools.py', description: 'Stale handler' },
-    ]);
+      expect(output.toolDefs).toEqual([
+        {
+          name: 'stale_tool',
+          filePath: 'src/tools.py',
+          description: 'Stale handler',
+          ...(allowFileFallback === false ? { allowFileFallback } : {}),
+        },
+      ]);
 
-    const edge = graph.relationships.find((rel) => rel.type === 'HANDLES_TOOL');
-    expect(edge).toMatchObject({
-      sourceId: 'File:src/tools.py',
-      targetId: 'Tool:stale_tool',
-    });
-  });
+      const edge = graph.relationships.find((rel) => rel.type === 'HANDLES_TOOL');
+      expect(edge).toMatchObject({
+        sourceId: 'File:src/tools.py',
+        targetId: 'Tool:stale_tool',
+      });
+    },
+  );
 
   it('does not attach file-level fallback tools to handler-specific processes', async () => {
     const graph = createKnowledgeGraph();
@@ -110,6 +119,7 @@ describe('Tool handler and process linking phases', () => {
     addNode(graph, fileLeaf, 'Function', 'fileLeaf', filePath);
     addNode(graph, 'Tool:alpha', 'Tool', 'alpha', filePath);
     addNode(graph, 'Tool:fallback_tool', 'Tool', 'fallback_tool', filePath);
+    addNode(graph, 'Tool:unresolved_tool', 'Tool', 'unresolved_tool', filePath);
     addCall(graph, alpha, alphaHelper);
     addCall(graph, alphaHelper, alphaLeaf);
     addCall(graph, fileEntry, fileHelper);
@@ -127,6 +137,7 @@ describe('Tool handler and process linking phases', () => {
             toolDefs: [
               { name: 'alpha', filePath, description: '', handlerNodeId: alpha },
               { name: 'fallback_tool', filePath, description: '' },
+              { name: 'unresolved_tool', filePath, description: '', allowFileFallback: false },
             ],
           }),
         ],
@@ -147,5 +158,6 @@ describe('Tool handler and process linking phases', () => {
 
     expect(linkedEntriesByTool.get('Tool:alpha')).toEqual([alpha]);
     expect(linkedEntriesByTool.get('Tool:fallback_tool')).toEqual([fileEntry]);
+    expect(linkedEntriesByTool.has('Tool:unresolved_tool')).toBe(false);
   });
 });
