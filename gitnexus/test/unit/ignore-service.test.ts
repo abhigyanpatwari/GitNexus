@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } 
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { execFileSync } from 'child_process';
 import {
   shouldIgnorePath,
   isHardcodedIgnoredDirectory,
@@ -694,8 +695,11 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
   const asPath = (rel: string) => ({ name: path.basename(rel), relative: () => rel }) as any;
 
   beforeEach(async () => {
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-nested-ignore-test-'));
     originalNoGitignore = process.env.GITNEXUS_NO_GITIGNORE;
+    // These tests expect nested rules to apply, so a value inherited from the
+    // invoking shell must not switch them off. afterEach restores it.
+    delete process.env.GITNEXUS_NO_GITIGNORE;
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-nested-ignore-test-'));
   });
 
   afterEach(async () => {
@@ -850,6 +854,48 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     expect(scanned).toContain('app/src/index.ts');
     expect(scanned).not.toContain('app/public/generated/bundle.js');
   });
+
+  it('follows git when a nested file negates a path inside an ignored directory', async () => {
+    // git cannot re-include a file whose parent directory is excluded, so
+    // `gen/` + `!gen/keep.ts` leaves keep.ts out, while `gen/*` excludes only
+    // the contents and lets the negation bring keep.ts back. Root rules behave
+    // the same way. (`gen`, not `build`: `build` is a hardcoded default.)
+    const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
+    for (const [pkg, rules] of [
+      ['dir', 'gen/\n!gen/keep.ts\n'],
+      ['star', 'gen/*\n!gen/keep.ts\n'],
+    ]) {
+      await fs.mkdir(path.join(tmpDir, pkg, 'gen'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, pkg, '.gitignore'), rules);
+      await fs.writeFile(path.join(tmpDir, pkg, 'gen', 'keep.ts'), 'export {};\n');
+      await fs.writeFile(path.join(tmpDir, pkg, 'gen', 'drop.ts'), 'export {};\n');
+    }
+
+    const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
+
+    expect(scanned).not.toContain('dir/gen/keep.ts');
+    expect(scanned).not.toContain('dir/gen/drop.ts');
+    expect(scanned).toContain('star/gen/keep.ts');
+    expect(scanned).not.toContain('star/gen/drop.ts');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'does not hang on a nested .gitignore that is a FIFO',
+    async () => {
+      // Opening a FIFO for reading blocks until a writer appears. Without
+      // O_NONBLOCK the walk would stop in open(2), before the regular-file
+      // check, and never return.
+      await fs.mkdir(path.join(tmpDir, 'pkg', 'src'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'pkg', 'src', 'index.ts'), 'export {};\n');
+      execFileSync('mkfifo', [path.join(tmpDir, 'pkg', '.gitignore')]);
+
+      const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
+      const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
+
+      expect(scanned).toContain('pkg/src/index.ts');
+    },
+    10_000,
+  );
 });
 
 describe('loadIgnoreRules — error handling', () => {
