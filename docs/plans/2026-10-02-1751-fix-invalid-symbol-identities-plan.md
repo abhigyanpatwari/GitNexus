@@ -114,7 +114,7 @@ The new checks are bounded by the existing candidate window and add no database 
 
 **Dependencies:** U1.
 
-**Files:** `gitnexus/test/integration/symbol-identity-isolation.test.ts`; existing `gitnexus/test/helpers/test-indexed-db.ts` is the harness reference.
+**Files:** `gitnexus/test/integration/local-backend-calltool.test.ts`; existing `gitnexus/test/helpers/test-indexed-db.ts` is the harness reference.
 
 **Approach:** Follow KTD4. Seed distinct Python and Swift symbols with intentionally colliding names and separate call edges. Query context and upstream impact through `LocalBackend.callTool` using file hints and returned UIDs.
 
