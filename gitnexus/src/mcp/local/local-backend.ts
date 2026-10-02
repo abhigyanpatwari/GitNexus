@@ -38,6 +38,7 @@ import { pathSuffixOf } from './path-predicate.js';
 import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
+import { isTemplateRouteCandidate } from '../../core/ingestion/utils/template-file.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -6478,7 +6479,10 @@ export class LocalBackend {
     // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
     // docs/config diffs measurable, but withhold a ranked source-risk verdict.
     const isSourceFile = (file: string): boolean =>
-      getLanguageFromFilename(file) !== null || isCobolFile(file) || isJclFile(file);
+      getLanguageFromFilename(file) !== null ||
+      isCobolFile(file) ||
+      isJclFile(file) ||
+      isTemplateRouteCandidate(file);
     const unmappedFiles = [
       ...new Set(
         fileDiffs

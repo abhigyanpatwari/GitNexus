@@ -20,7 +20,7 @@
  * and the behavioral contract is held on every pin by the mocked
  * forced-refusal suites instead.
  */
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -78,11 +78,8 @@ async function plantInterruptedCheckpoint(dbPath: string): Promise<void> {
     ]);
     expect(walBuffer.byteLength).toBeGreaterThan(0);
   } finally {
-    try {
-      await conn?.close();
-    } finally {
-      await db.close();
-    }
+    await conn?.close().catch(() => {});
+    await db.close().catch(() => {});
   }
   // A separate process must acquire the native writer lock before the
   // fixture files are restored. A byte-zero file read cannot test that lock.
@@ -120,6 +117,38 @@ describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
   afterAll(async () => {
     await closeLbug(REPO).catch(() => {});
     if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it('preserves the setup error when both native closes reject', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-lbug-cp-cleanup-'));
+    const setupError = new Error('injected query failure');
+    const closeConnection = lbug.Connection.prototype.close;
+    const closeDatabase = lbug.Database.prototype.close;
+    const query = vi.spyOn(lbug.Connection.prototype, 'query').mockRejectedValueOnce(setupError);
+    const connectionClose = vi
+      .spyOn(lbug.Connection.prototype, 'close')
+      .mockImplementation(async function (this: lbug.Connection) {
+        await closeConnection.call(this);
+        throw new Error('injected connection close failure');
+      });
+    const databaseClose = vi
+      .spyOn(lbug.Database.prototype, 'close')
+      .mockImplementation(async function (this: lbug.Database) {
+        await closeDatabase.call(this);
+        throw new Error('injected database close failure');
+      });
+    try {
+      await expect(plantInterruptedCheckpoint(path.join(directory, 'lbug'))).rejects.toBe(
+        setupError,
+      );
+      expect(connectionClose).toHaveBeenCalledOnce();
+      expect(databaseClose).toHaveBeenCalledOnce();
+    } finally {
+      query.mockRestore();
+      connectionClose.mockRestore();
+      databaseClose.mockRestore();
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('opens read-only through the pool refusal and answers queries', async (ctx) => {

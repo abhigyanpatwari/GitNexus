@@ -247,13 +247,69 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result).toHaveProperty('unmapped_files', ['code.py']);
   });
 
-  it('keeps ordinary non-source changes measurable with zero symbols', async () => {
-    const repoDir = makeRepo(['notes.txt'], 2);
-    writeFileSync(path.join(repoDir, 'notes.txt'), 'changed\nline 2\n');
+  it.each(['notes.txt', 'README.md', 'config.json', 'config.yaml'])(
+    'keeps ordinary non-source changes in %s measurable with zero symbols',
+    async (filePath) => {
+      const repoDir = makeRepo([filePath], 2);
+      writeFileSync(path.join(repoDir, filePath), 'changed\nline 2\n');
+      registerRepo(repoDir);
+      const result = await runDetectChanges();
+      expect(result.summary.risk_level).toBe('low');
+      expect(result.partial).toBeUndefined();
+    },
+  );
+
+  it.each(['.html', '.htm', '.ejs', '.hbs', '.blade.php'])(
+    'withholds ranked risk when a changed %s template maps to no symbols',
+    async (extension) => {
+      const filePath = `views/orders${extension}`;
+      const repoDir = makeRepo([filePath], 2);
+      writeFileSync(path.join(repoDir, filePath), '<form action="/orders/new"></form>\n');
+      registerRepo(repoDir);
+      const result = await runDetectChanges();
+      expect(result.summary).toMatchObject({
+        changed_files: 1,
+        changed_count: 0,
+        risk_level: 'unknown',
+      });
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', [filePath]);
+    },
+  );
+
+  it.each(['.html', '.htm', '.ejs', '.hbs', '.blade.php'])(
+    'recognizes the template side of a pure %s-to-text rename',
+    async (extension) => {
+      const filePath = `orders${extension}`;
+      const repoDir = makeRepo([filePath], 2);
+      execFileSync('git', ['mv', filePath, 'orders.txt'], { cwd: repoDir });
+      registerRepo(repoDir);
+      const result = await runDetectChanges('staged');
+      expect(result.summary).toMatchObject({
+        changed_files: 1,
+        changed_count: 0,
+        risk_level: 'unknown',
+      });
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', ['orders.txt']);
+    },
+  );
+
+  it('keeps mapped template changes measurable', async () => {
+    const filePath = 'views/orders.blade.php';
+    const repoDir = makeRepo([filePath], 2);
+    writeFileSync(path.join(repoDir, filePath), '<form action="/orders/new"></form>\nline 2\n');
     registerRepo(repoDir);
+    mockSymbolRows([{ name: 'orders', filePath, startLine: 0, endLine: 1 }]);
     const result = await runDetectChanges();
-    expect(result.summary.risk_level).toBe('low');
+    expect(result.summary).toMatchObject({
+      changed_files: 1,
+      changed_count: 1,
+      risk_level: 'low',
+    });
+    expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['orders']);
     expect(result.partial).toBeUndefined();
+    expect(result).not.toHaveProperty('unmapped_files');
   });
 
   it('withholds a low-risk verdict for an unmapped source rename without hunks', async () => {

@@ -181,10 +181,13 @@ it('closes both native sessions and removes the directory after a healthy run', 
     'remove',
   ]);
   const report = JSON.parse(result.output.join(''));
-  expect(report.phases).toHaveLength(5);
-  expect(report.phases.every((phase: { wrong_tuples: number }) => phase.wrong_tuples === 0)).toBe(
-    true,
-  );
+  expect(report.phases).toEqual([
+    { phase: 'baseline', rows: 8192, wrong_tuples: 0, missing_tuples: 0, examples: [] },
+    { phase: 'after-delete', rows: 8128, wrong_tuples: 0, missing_tuples: 64, examples: [] },
+    { phase: 'after-copy', rows: 8192, wrong_tuples: 0, missing_tuples: 0, examples: [] },
+    { phase: 'after-checkpoint', rows: 8192, wrong_tuples: 0, missing_tuples: 0, examples: [] },
+    { phase: 'reopened', rows: 8192, wrong_tuples: 0, missing_tuples: 0, examples: [] },
+  ]);
   expect(report.directory).toBeUndefined();
 });
 

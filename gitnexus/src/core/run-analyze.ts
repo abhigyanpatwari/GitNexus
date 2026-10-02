@@ -5000,15 +5000,6 @@ async function runFullAnalysisInner(
     // Parse-cache publish waits until after that swap + saveMeta so a failed
     // registerRepo / close / swap cannot replace live shards (#3153).
 
-    // Forward the --name alias and the registry-collision bypass bit.
-    // `allowDuplicateName` is its own concern — independent from the
-    // pipeline `force` above. The CLI maps it from
-    // `--allow-duplicate-name` only; `--force` and `--skills` both
-    // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
     if (wroteChangedSubgraphOnly) {
       // Registry freshness must not advance either. Include FTS, embedding
       // restoration and the final WAL drain in the certified boundary.
@@ -5025,86 +5016,8 @@ async function runFullAnalysisInner(
         'pre-publish/checkpoint',
       );
     }
-    const projectName = await registerRepo(repoPath, meta, {
-      name: options.registryName,
-      onRename: (previousName, nextName) =>
-        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
-      allowDuplicateName: options.allowDuplicateName,
-      // Non-primary branch runs upsert into the entry's branches[]; the
-      // primary/flat run (placement.branch === undefined) refreshes the
-      // top-level fields (#2106).
-      branch: placement.branch,
-      storagePath,
-    });
-
-    // ── #2354: the flat workspace slot has adopted this run's branch ──────
-    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
-    // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort (#2364 review F5): the index is
-    // complete and registered, and a failure
-    // here leaves only a stale registry label / undeleted shadowed dir —
-    // never wrong routing, because the flat meta this run already stamped is
-    // what applyBranchScope trusts. Retried by the next content-changing run
-    // (same-commit fast-path runs skip it: their guard compares the
-    // already-stamped meta label).
-    if (!placement.branch && branchLabel) {
-      try {
-        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
-      } catch (e) {
-        log(
-          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
-        );
-      }
-    }
-
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath, storagePath);
-
-    // ── Generate AI context files (best-effort) ───────────────────────
-    let aggregatedClusterCount = 0;
-    if (pipelineResult.communityResult?.communities) {
-      const groups = new Map<string, number>();
-      for (const c of pipelineResult.communityResult.communities) {
-        const label = c.heuristicLabel || c.label || 'Unknown';
-        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-      }
-      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-    }
-
-    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
-    // skills) for the primary/flat index (#2106). A non-primary branch analyze
-    // must not churn the repo's committed AGENTS.md with branch-specific stats.
-    if (!placement.branch) {
-      try {
-        await generateAIContextFiles(
-          repoPath,
-          storagePath,
-          projectName,
-          {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities:
-              pipelineResult.communityResult?.stats.totalCommunities ??
-              existingMeta?.stats?.communities,
-            clusters: aggregatedClusterCount,
-            processes:
-              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
-          },
-          undefined,
-          {
-            skipAgentsMd: options.skipAgentsMd,
-            skipSkills: options.skipSkills,
-            noStats: options.noStats,
-            defaultBranch: options.defaultBranch,
-            hasPdg: options.pdg === true,
-            hasSpringActuator: options.springActuatorPath !== undefined,
-          },
-        );
-      } catch {
-        // Best-effort — don't fail the entire analysis for context file issues
-      }
-    }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     // Stop the manual checkpoint driver before closeLbug so its
@@ -5168,6 +5081,96 @@ async function runFullAnalysisInner(
     // is a crash-safety improvement: a failed swap leaves the previous index
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
+
+    // Registry freshness is published only after the graph and its metadata.
+    // A failed close, swap, or metadata save must leave the previous registry
+    // receipt intact, just as it leaves the cache unpublished.
+    // Forward the --name alias and the registry-collision bypass bit.
+    // `allowDuplicateName` is its own concern — independent from the
+    // pipeline `force` above. The CLI maps it from
+    // `--allow-duplicate-name` only; `--force` and `--skills` both
+    // trigger pipeline re-run but never bypass the registry guard.
+    // The returned name is the one actually written to the registry
+    // (after applying the precedence chain in registerRepo) — reuse it
+    // so AGENTS.md / skill files reference the same name MCP clients
+    // will look up (#979).
+    const projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      onRename: (previousName, nextName) =>
+        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
+      allowDuplicateName: options.allowDuplicateName,
+      // Non-primary branch runs upsert into the entry's branches[]; the
+      // primary/flat run (placement.branch === undefined) refreshes the
+      // top-level fields (#2106).
+      branch: placement.branch,
+      storagePath,
+    });
+
+    // ── #2354: the flat workspace slot has adopted this run's branch ──────
+    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+    // (unreachable once the flat slot serves it) and align the registry's
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
+    // here leaves only a stale registry label / undeleted shadowed dir —
+    // never wrong routing, because the flat meta this run already stamped is
+    // what applyBranchScope trusts. Retried by the next content-changing run
+    // (same-commit fast-path runs skip it: their guard compares the
+    // already-stamped meta label).
+    if (!placement.branch && branchLabel) {
+      try {
+        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
+      } catch (e) {
+        log(
+          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+        );
+      }
+    }
+
+    // ── Generate AI context files (best-effort) ───────────────────────
+    let aggregatedClusterCount = 0;
+    if (pipelineResult.communityResult?.communities) {
+      const groups = new Map<string, number>();
+      for (const c of pipelineResult.communityResult.communities) {
+        const label = c.heuristicLabel || c.label || 'Unknown';
+        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+      }
+      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
+    }
+
+    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
+    // skills) for the primary/flat index (#2106). A non-primary branch analyze
+    // must not churn the repo's committed AGENTS.md with branch-specific stats.
+    if (!placement.branch) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities:
+              pipelineResult.communityResult?.stats.totalCommunities ??
+              existingMeta?.stats?.communities,
+            clusters: aggregatedClusterCount,
+            processes:
+              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
+          },
+          undefined,
+          {
+            skipAgentsMd: options.skipAgentsMd,
+            skipSkills: options.skipSkills,
+            noStats: options.noStats,
+            defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
+          },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
+    }
 
     // Persist the incremental parse cache only after a successful graph
     // publish (#3153). try/catch so a cache-write failure never breaks an
