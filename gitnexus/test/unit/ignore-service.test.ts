@@ -746,6 +746,29 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     expect(filter.childrenIgnored(asPath('reports'))).toBe(true);
   });
 
+  it('re-includes the files inside a directory a nested negation un-ignores', async () => {
+    await fs.mkdir(path.join(tmpDir, 'pkg', 'reports', 'daily'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'reports/\n');
+    await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!reports/\n');
+    await fs.writeFile(path.join(tmpDir, 'pkg', 'reports', 'summary.ts'), 'export {};\n');
+    await fs.writeFile(path.join(tmpDir, 'pkg', 'reports', 'daily', 'run.ts'), 'export {};\n');
+    await fs.mkdir(path.join(tmpDir, 'reports'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'reports', 'top.ts'), 'export {};\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(asPath('pkg/reports/summary.ts'))).toBe(false);
+    expect(filter.childrenIgnored(asPath('pkg/reports/daily'))).toBe(false);
+    expect(filter.ignored(asPath('pkg/reports/daily/run.ts'))).toBe(false);
+    expect(filter.ignored(asPath('reports/top.ts'))).toBe(true);
+
+    const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
+    const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
+
+    expect(scanned).toContain('pkg/reports/summary.ts');
+    expect(scanned).toContain('pkg/reports/daily/run.ts');
+    expect(scanned).not.toContain('reports/top.ts');
+  });
+
   it('keeps .gitnexusignore above a nested negation', async () => {
     await fs.mkdir(path.join(tmpDir, 'pkg'), { recursive: true });
     await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!keep.log\n');

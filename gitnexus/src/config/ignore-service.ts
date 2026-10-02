@@ -603,7 +603,7 @@ const createNestedGitignoreMatcher = (
     return rules;
   };
 
-  return (rel: string, isDirectory: boolean): boolean | undefined => {
+  const match = (rel: string, isDirectory: boolean): boolean | undefined => {
     const parts = rel.split('/');
     // Deepest directory first: a deeper .gitignore overrides a shallower one.
     // The root (i === 0) is covered by loadIgnoreRules.
@@ -614,6 +614,22 @@ const createNestedGitignoreMatcher = (
       const result = rules.test(isDirectory ? `${sub}/` : sub);
       if (result.ignored) return true;
       if (result.unignored) return false;
+    }
+    return undefined;
+  };
+
+  return (rel: string, isDirectory: boolean): boolean | undefined => {
+    const own = match(rel, isDirectory);
+    if (own !== undefined) return own;
+    // A nested `!dir/` matches the directory but not a direct test of the
+    // files inside it (see hasExplicitUnignore), so with no rule for the
+    // path itself, the deepest ancestor directory with a nested opinion
+    // decides. Otherwise a root rule such as `reports/` would still drop
+    // `pkg/reports/file.ts` after `pkg/.gitignore` re-included the folder.
+    const parts = rel.split('/');
+    for (let i = parts.length - 1; i > 1; i--) {
+      const ancestor = match(parts.slice(0, i).join('/'), true);
+      if (ancestor !== undefined) return ancestor;
     }
     return undefined;
   };
