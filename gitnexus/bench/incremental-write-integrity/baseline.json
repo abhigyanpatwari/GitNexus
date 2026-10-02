@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "linear_scaling_budget": 2,
+  "sizes": [
+    {
+      "nodes": 16384,
+      "fingerprint": "17aa2ded124af9cbd15a9fe13013410e92a478f88e63a2ad9859a05aacef8efe"
+    },
+    {
+      "nodes": 65536,
+      "fingerprint": "a6ce82aa1d07804d16b916892dfb6ca0e6f5ce5ed606f47cb1321eb124c6ac44"
+    }
+  ]
+}
