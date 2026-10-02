@@ -1,0 +1,29 @@
+gitnexus/src/core/ingestion/languages/typescript/tool-definitions.ts
+  s_ba814c0e0bbca8::t_026112ea770bfd 51-53,60-61,209-210,221-222
+gitnexus/src/storage/parse-cache.ts
+  s_ba814c0e0bbca8::t_026112ea770bfd 828-830
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_ba814c0e0bbca8::t_026112ea770bfd 306-308,318
+gitnexus/test/integration/resolvers/typescript-mcp-tools.test.ts
+  s_ba814c0e0bbca8::t_7956b5e5cb666f 44-62
+  s_ba814c0e0bbca8::t_4515aef107ad24 63-68
+gitnexus/test/unit/typescript-tool-definitions.test.ts
+  s_ba814c0e0bbca8::t_7956b5e5cb666f 179-209
+  s_ba814c0e0bbca8::t_82261d93318294 210-212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e33aefba32724e7ae711f35c89bff51ab6791eba",
+  "prompts": {},
+  "sessions": {
+    "s_ba814c0e0bbca8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0fdff-ee57-7c51-bead-db693c37e7ea",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
