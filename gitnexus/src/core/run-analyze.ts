@@ -51,6 +51,7 @@ import {
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -128,6 +129,7 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  isManualCheckpointEnabled,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
@@ -2854,7 +2856,7 @@ async function runFullAnalysisInner(
   // (Bugbot review on PR #1479: a prediction that flipped post-pipeline
   // could skip the embedding cache load and then take the full-rebuild
   // path, silently losing embeddings).
-  const isIncremental =
+  const incrementalEligible =
     !options.force &&
     !!existingMeta &&
     // Belt and braces, not a second gate: the guard above already set `force`
@@ -2866,6 +2868,13 @@ async function runFullAnalysisInner(
     Object.keys(existingMeta.fileHashes).length > 0 &&
     repoHasGit &&
     allFilePaths.length > 0;
+
+  // Select a full build before any selective mutation when the operator has
+  // disabled the checkpoint needed to certify an incremental publication.
+  const isIncremental = incrementalEligible && isManualCheckpointEnabled();
+  if (incrementalEligible && !isIncremental) {
+    log('Manual WAL checkpoints are disabled; switching to a full DB write before mutation.');
+  }
 
   const hashDiff = isIncremental
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
@@ -3112,6 +3121,24 @@ async function runFullAnalysisInner(
     // collapse check compares the whole in-memory graph against the whole DB,
     // which is only a like-for-like comparison on a full rebuild.
     let wroteChangedSubgraphOnly = false;
+    const markIncrementalGraphVerification = async (): Promise<void> => {
+      if (buildPath !== lbugPath) return;
+      const latest = await loadMeta(metaDir);
+      if (!latest?.incrementalInProgress) {
+        throw new Error('Cannot certify incremental graph without its dirty metadata marker.');
+      }
+      // A failed or aborted identity scan is a graph failure. FTS-only repair
+      // and FTS crash recovery must not clear it while retaining these rows.
+      await saveMeta(metaDir, {
+        ...latest,
+        incrementalInProgress: {
+          ...latest.incrementalInProgress,
+          phase: 'graph-reconciliation',
+          updatedAt: Date.now(),
+          checkpointSucceeded: false,
+        },
+      });
+    };
     let incrementalFtsRebuildTables: Set<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
@@ -3163,6 +3190,8 @@ async function runFullAnalysisInner(
         phase: string,
         extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
       ): Promise<void> => {
+        // Do not stamp live metadata while writing a staging database.
+        if (buildPath !== lbugPath) return;
         await saveMeta(metaDir, {
           ...existingMeta!,
           incrementalInProgress: {
@@ -3906,6 +3935,14 @@ async function runFullAnalysisInner(
           'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
       );
     }
+    if (wroteChangedSubgraphOnly) {
+      await markIncrementalGraphVerification();
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'post-COPY/checkpoint',
+      );
+    }
     if (shouldStampFtsDirtyPhase(ftsWritePlan)) {
       // Lift the prior-meta precondition: a first-ever in-place run (Windows
       // full rebuild, or any in-place incremental) must stamp too. Staging
@@ -4002,6 +4039,7 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
+      if (wroteChangedSubgraphOnly) await markIncrementalGraphVerification();
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
       } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
@@ -4052,6 +4090,12 @@ async function runFullAnalysisInner(
           : FTS_UNAVAILABLE_MESSAGE,
       );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
+    }
+
+    if (wroteChangedSubgraphOnly) {
+      // FTS has returned. Later embedding/finalization failures must require
+      // graph recovery, since post-FTS node identities are not yet certified.
+      await markIncrementalGraphVerification();
     }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
@@ -4956,95 +5000,24 @@ async function runFullAnalysisInner(
     // Parse-cache publish waits until after that swap + saveMeta so a failed
     // registerRepo / close / swap cannot replace live shards (#3153).
 
-    // Forward the --name alias and the registry-collision bypass bit.
-    // `allowDuplicateName` is its own concern — independent from the
-    // pipeline `force` above. The CLI maps it from
-    // `--allow-duplicate-name` only; `--force` and `--skills` both
-    // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
-      name: options.registryName,
-      onRename: (previousName, nextName) =>
-        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
-      allowDuplicateName: options.allowDuplicateName,
-      // Non-primary branch runs upsert into the entry's branches[]; the
-      // primary/flat run (placement.branch === undefined) refreshes the
-      // top-level fields (#2106).
-      branch: placement.branch,
-      storagePath,
-    });
-
-    // ── #2354: the flat workspace slot has adopted this run's branch ──────
-    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
-    // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort (#2364 review F5): the index is
-    // complete and registered, and a failure
-    // here leaves only a stale registry label / undeleted shadowed dir —
-    // never wrong routing, because the flat meta this run already stamped is
-    // what applyBranchScope trusts. Retried by the next content-changing run
-    // (same-commit fast-path runs skip it: their guard compares the
-    // already-stamped meta label).
-    if (!placement.branch && branchLabel) {
-      try {
-        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
-      } catch (e) {
-        log(
-          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+    if (wroteChangedSubgraphOnly) {
+      // Registry freshness must not advance either. Include FTS, embedding
+      // restoration and the final WAL drain in the certified boundary.
+      await markIncrementalGraphVerification();
+      await walCheckpointDriver.stop();
+      if (!(await checkpointOnce())) {
+        throw new Error(
+          'Graph identity reconciliation failed: final checkpoint could not be verified; run `gitnexus analyze --force`.',
         );
       }
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'pre-publish/checkpoint',
+      );
     }
-
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath, storagePath);
-
-    // ── Generate AI context files (best-effort) ───────────────────────
-    let aggregatedClusterCount = 0;
-    if (pipelineResult.communityResult?.communities) {
-      const groups = new Map<string, number>();
-      for (const c of pipelineResult.communityResult.communities) {
-        const label = c.heuristicLabel || c.label || 'Unknown';
-        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-      }
-      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-    }
-
-    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
-    // skills) for the primary/flat index (#2106). A non-primary branch analyze
-    // must not churn the repo's committed AGENTS.md with branch-specific stats.
-    if (!placement.branch) {
-      try {
-        await generateAIContextFiles(
-          repoPath,
-          storagePath,
-          projectName,
-          {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities:
-              pipelineResult.communityResult?.stats.totalCommunities ??
-              existingMeta?.stats?.communities,
-            clusters: aggregatedClusterCount,
-            processes:
-              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
-          },
-          undefined,
-          {
-            skipAgentsMd: options.skipAgentsMd,
-            skipSkills: options.skipSkills,
-            noStats: options.noStats,
-            defaultBranch: options.defaultBranch,
-            hasPdg: options.pdg === true,
-            hasSpringActuator: options.springActuatorPath !== undefined,
-          },
-        );
-      } catch {
-        // Best-effort — don't fail the entire analysis for context file issues
-      }
-    }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     // Stop the manual checkpoint driver before closeLbug so its
@@ -5108,6 +5081,96 @@ async function runFullAnalysisInner(
     // is a crash-safety improvement: a failed swap leaves the previous index
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
+
+    // Registry freshness is published only after the graph and its metadata.
+    // A failed close, swap, or metadata save must leave the previous registry
+    // receipt intact, just as it leaves the cache unpublished.
+    // Forward the --name alias and the registry-collision bypass bit.
+    // `allowDuplicateName` is its own concern — independent from the
+    // pipeline `force` above. The CLI maps it from
+    // `--allow-duplicate-name` only; `--force` and `--skills` both
+    // trigger pipeline re-run but never bypass the registry guard.
+    // The returned name is the one actually written to the registry
+    // (after applying the precedence chain in registerRepo) — reuse it
+    // so AGENTS.md / skill files reference the same name MCP clients
+    // will look up (#979).
+    const projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      onRename: (previousName, nextName) =>
+        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
+      allowDuplicateName: options.allowDuplicateName,
+      // Non-primary branch runs upsert into the entry's branches[]; the
+      // primary/flat run (placement.branch === undefined) refreshes the
+      // top-level fields (#2106).
+      branch: placement.branch,
+      storagePath,
+    });
+
+    // ── #2354: the flat workspace slot has adopted this run's branch ──────
+    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+    // (unreachable once the flat slot serves it) and align the registry's
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
+    // here leaves only a stale registry label / undeleted shadowed dir —
+    // never wrong routing, because the flat meta this run already stamped is
+    // what applyBranchScope trusts. Retried by the next content-changing run
+    // (same-commit fast-path runs skip it: their guard compares the
+    // already-stamped meta label).
+    if (!placement.branch && branchLabel) {
+      try {
+        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
+      } catch (e) {
+        log(
+          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+        );
+      }
+    }
+
+    // ── Generate AI context files (best-effort) ───────────────────────
+    let aggregatedClusterCount = 0;
+    if (pipelineResult.communityResult?.communities) {
+      const groups = new Map<string, number>();
+      for (const c of pipelineResult.communityResult.communities) {
+        const label = c.heuristicLabel || c.label || 'Unknown';
+        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+      }
+      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
+    }
+
+    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
+    // skills) for the primary/flat index (#2106). A non-primary branch analyze
+    // must not churn the repo's committed AGENTS.md with branch-specific stats.
+    if (!placement.branch) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities:
+              pipelineResult.communityResult?.stats.totalCommunities ??
+              existingMeta?.stats?.communities,
+            clusters: aggregatedClusterCount,
+            processes:
+              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
+          },
+          undefined,
+          {
+            skipAgentsMd: options.skipAgentsMd,
+            skipSkills: options.skipSkills,
+            noStats: options.noStats,
+            defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
+          },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
+    }
 
     // Persist the incremental parse cache only after a successful graph
     // publish (#3153). try/catch so a cache-write failure never breaks an

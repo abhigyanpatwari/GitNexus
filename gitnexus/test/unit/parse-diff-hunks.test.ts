@@ -164,7 +164,30 @@ describe('parseDiffHunks', () => {
       'rename from src/old.ts',
       'rename to src/new.ts',
     ].join('\n');
-    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'src/new.ts', hunks: [] }]);
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'src/new.ts', oldFilePath: 'src/old.ts', hunks: [] },
+    ]);
+  });
+
+  it('decodes the source of a C-quoted rename and preserves it through content headers', () => {
+    const diff = [
+      'diff --git "a/src/old\\040name.py" b/src/new.txt',
+      'similarity index 80%',
+      'rename from "src/old\\040name.py"',
+      'rename to src/new.txt',
+      '--- "a/src/old\\040name.py"',
+      '+++ b/src/new.txt',
+      '@@ -1 +1 @@',
+      '-old',
+      '+new',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      {
+        filePath: 'src/new.txt',
+        oldFilePath: 'src/old name.py',
+        hunks: [{ startLine: 1, endLine: 1 }],
+      },
+    ]);
   });
 
   it('keeps line ranges for whitespace-only hunks', () => {
@@ -241,7 +264,9 @@ describe('parseDiffHunks', () => {
       'rename from plain.ts',
       'rename to foo b/plain.ts',
     ].join('\n');
-    expect(parseDiffHunks(diff)).toEqual([{ filePath: 'foo b/plain.ts', hunks: [] }]);
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: 'foo b/plain.ts', oldFilePath: 'plain.ts', hunks: [] },
+    ]);
   });
 
   it('keeps one FileDiff when a content line repeats +++ b/<same-path>', () => {
@@ -278,7 +303,7 @@ describe('parseDiffHunks', () => {
       'rename to new.ts',
     ].join('\n');
     expect(parseDiffHunksResult(diff)).toEqual({
-      files: [{ filePath: 'new.ts', hunks: [] }],
+      files: [{ filePath: 'new.ts', oldFilePath: 'old name.ts', hunks: [] }],
       unparsedGitHeaders: 0,
     });
   });
@@ -291,7 +316,7 @@ describe('parseDiffHunks', () => {
       'rename to new name.ts',
     ].join('\n');
     expect(parseDiffHunksResult(diff)).toEqual({
-      files: [{ filePath: 'new name.ts', hunks: [] }],
+      files: [{ filePath: 'new name.ts', oldFilePath: 'old.ts', hunks: [] }],
       unparsedGitHeaders: 0,
     });
   });

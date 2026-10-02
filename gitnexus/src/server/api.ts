@@ -550,7 +550,7 @@ const mapGraphRelationshipRow = (row: any): GraphRelationship => ({
   sourceId: row.sourceId,
   targetId: row.targetId,
   confidence: row.confidence,
-  reason: row.reason,
+  reason: row.reason ?? '',
   step: row.step,
 });
 
