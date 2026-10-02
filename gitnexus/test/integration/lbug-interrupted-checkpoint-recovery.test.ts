@@ -21,57 +21,27 @@
  * forced-refusal suites instead.
  */
 import { afterAll, describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { closeLbug, executeQuery, initLbug } from '../../src/core/lbug/pool-adapter.js';
 import lbug from '@ladybugdb/core';
+import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 
 const REPO = 'test-interrupted-checkpoint';
 const ROWS = 300;
 
 /**
- * Windows: the native close() resolves before the kernel releases the file's
- * handles and byte-range locks — the next open then dies with Win32 Error 33
- * ("another process has locked a portion of the file"), which is exactly how
- * this fixture failed its first hosted run. Probe-read both the db and its
- * residual WAL until the engine's locks are gone. Bounded, so a real handle
- * leak fails loudly instead of hanging; a pass-through on POSIX (first probe
- * always succeeds).
- */
-async function waitForFixtureRelease(dbPath: string): Promise<void> {
-  for (const target of [dbPath, `${dbPath}.wal`]) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const fh = await fs.open(target, 'r');
-        try {
-          await fh.read(Buffer.alloc(1), 0, 1, 0);
-        } finally {
-          await fh.close();
-        }
-        break;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') break; // nothing planted there
-        if (attempt >= 40) throw err; // ~6s of retries: report the leak
-        await new Promise((resolve) => setTimeout(resolve, 150));
-      }
-    }
-  }
-}
-
-/**
- * Deterministic interrupted-checkpoint signature: build rows on a writable
- * session with AUTO-CHECKPOINT DISABLED and close WITHOUT checkpointing, so —
- * exactly like a CHECKPOINT killed mid-flight — the main file is stale and
- * every row lives only in the WAL. Then rename that WAL to the
- * `lbug.wal.checkpoint` name the engine gives it during checkpoint, and plant
- * the shadow + intent/apply lock files it leaves behind.
+ * Preserve the main file and WAL before native close forces a checkpoint.
+ * Restoring both snapshots models a killed checkpoint with every row still
+ * WAL-only. All query results must be closed before releasing the database:
+ * native results retain the database and its writer lock until closed or GC'd.
  */
 async function plantInterruptedCheckpoint(dbPath: string): Promise<void> {
-  // Raw constructor (positional args mirror createLbugDatabase) because the
-  // autoCheckpoint toggle is not exposed through the config helpers — and
-  // auto-checkpoint-on-close is precisely what must NOT happen here.
+  // Disable automatic checkpoints while building the WAL. Native close still
+  // forces a checkpoint, so the pre-close main file must also be preserved.
   const db = new lbug.Database(
     dbPath,
     128 * 1024 * 1024, // bufferManagerSize
@@ -83,40 +53,64 @@ async function plantInterruptedCheckpoint(dbPath: string): Promise<void> {
     false, // throwOnWalReplayFailure
     true, // enableChecksums
   );
-  await db.init();
-  const conn = new lbug.Connection(db);
+  let conn: lbug.Connection | undefined;
+  let mainBuffer: Buffer;
+  let walBuffer: Buffer;
   try {
-    await conn.query('CREATE NODE TABLE Person (name STRING, PRIMARY KEY(name))');
+    await db.init();
+    conn = new lbug.Connection(db);
+    const statements = ['CREATE NODE TABLE Person (name STRING, PRIMARY KEY(name))'];
     for (let i = 0; i < ROWS; i += 100) {
       const batch = Array.from({ length: 100 }, (_, j) => `{name: 'p${i + j}'}`).join(', ');
-      await conn.query(`UNWIND [${batch}] AS r CREATE (:Person {name: r.name})`);
+      statements.push(`UNWIND [${batch}] AS r CREATE (:Person {name: r.name})`);
     }
-    const walBuffer = await fs.readFile(`${dbPath}.wal`);
-    // Honesty check: the rows must actually LIVE in the WAL — on an engine
-    // that tolerates the planted state this is the only proof the plant is
-    // not an empty shell (review finding: unused walBuffer).
+    for (const statement of statements) {
+      const result = await conn.query(statement);
+      try {
+        for (const cursor of Array.isArray(result) ? result : [result]) await cursor.getAll();
+      } finally {
+        await closeQueryResults(result);
+      }
+    }
+    [mainBuffer, walBuffer] = await Promise.all([
+      fs.readFile(dbPath),
+      fs.readFile(`${dbPath}.wal`),
+    ]);
     expect(walBuffer.byteLength).toBeGreaterThan(0);
-    // Close WITHOUT checkpoint: rows stay WAL-only, main file stays stale.
-    // Explicitly awaited release BEFORE the rename/reopen — on Windows the
-    // kernel releases the engine's handles/locks asynchronously and the WAL
-    // rename + pooled reopen race them (Win32 Error 33, seen in CI).
-    await conn.close().catch(() => {});
-    await db.close().catch(() => {});
-    await waitForFixtureRelease(dbPath);
-    // Re-plant the captured WAL bytes rather than renaming the original: a
-    // close-time auto-checkpoint can consume the live .wal file out from
-    // under the rename (ENOENT — the fixture's other CI flake), while the
-    // captured buffer is what a killed checkpoint would have left behind.
-    await fs.writeFile(`${dbPath}.wal.checkpoint`, walBuffer);
-    await fs.writeFile(`${dbPath}.wal`, '');
-    await fs.writeFile(`${dbPath}.shadow`, '');
-    await fs.writeFile(`${dbPath}.checkpoint.intent.lock`, '');
-    await fs.writeFile(`${dbPath}.checkpoint.apply.lock`, '');
-  } catch (err) {
-    await conn.close().catch(() => {});
-    await db.close().catch(() => {});
-    throw err;
+  } finally {
+    try {
+      await conn?.close();
+    } finally {
+      await db.close();
+    }
   }
+  // A separate process must acquire the native writer lock before the
+  // fixture files are restored. A byte-zero file read cannot test that lock.
+  const probe = spawnSync(
+    process.execPath,
+    [
+      '-e',
+      `const lbug = require(process.argv[1]);
+       const db = new lbug.Database(process.argv[2], 128 * 1024 * 1024, false,
+         false, 16 * 1024 * 1024 * 1024);
+       db.init().then(() => db.close()).catch((error) => {
+         console.error(error);
+         process.exitCode = 1;
+       });`,
+      fileURLToPath(new URL('../../node_modules/@ladybugdb/core', import.meta.url)),
+      dbPath,
+    ],
+    { encoding: 'utf8', timeout: 15_000 },
+  );
+  expect(probe.error).toBeUndefined();
+  expect(probe.status, probe.stderr).toBe(0);
+
+  await fs.writeFile(dbPath, mainBuffer);
+  await fs.writeFile(`${dbPath}.wal.checkpoint`, walBuffer);
+  await fs.writeFile(`${dbPath}.wal`, '');
+  await fs.writeFile(`${dbPath}.shadow`, '');
+  await fs.writeFile(`${dbPath}.checkpoint.intent.lock`, '');
+  await fs.writeFile(`${dbPath}.checkpoint.apply.lock`, '');
 }
 
 describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
@@ -180,9 +174,6 @@ describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
         }
       })(),
     ).rejects.toThrow(/checkpoint is in progress/i);
-    // The probe's native close is best-effort; its handles must be gone
-    // before the pooled open below (Windows Error 33 otherwise).
-    await waitForFixtureRelease(dbPath);
 
     // The wiki path: pooled READ-ONLY open. Before the fix this refused with
     // "Cannot open database in read-only mode while checkpoint is in
@@ -212,7 +203,6 @@ describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
 
     // A second open must answer without needing recovery again.
     await closeLbug(REPO);
-    await waitForFixtureRelease(dbPath);
     await initLbug(REPO, dbPath);
     const again = await executeQuery(REPO, 'MATCH (n:Person) RETURN count(n) AS c');
     expect(again.length).toBe(1);
