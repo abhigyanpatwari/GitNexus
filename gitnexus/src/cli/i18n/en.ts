@@ -137,7 +137,9 @@ export const en = {
   'tool.detectChanges.noOverlappingSymbols':
     'Diff touched {{files}} file(s) but no indexed symbols overlap those hunks — not a clean tree.',
   'tool.detectChanges.partial':
-    'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
+    'PARTIAL RESULT: changed-symbol or process mapping is incomplete. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.unmappedSource':
+    'No symbols mapped for changed source files: {{files}}. Rebuild the index and inspect the diff; retry alone may not resolve missing or out-of-range symbols.',
   'tool.detectChanges.truncated':
     'LISTING CAPPED: the changed-symbol list was capped, so it does not name every changed symbol. The counts and risk level still cover all of them.',
   // The reassurance above is only true on its own. When the run also degraded,
