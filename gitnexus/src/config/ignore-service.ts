@@ -545,18 +545,22 @@ const hasExplicitUnignore = (ig: Ignore, rel: string): boolean => {
  * git does not follow a symlinked `.gitignore` in the working tree, and
  * reading one could pull rules from outside the repository. Where the
  * platform supports it, the file is opened with O_NOFOLLOW (a symlink fails
- * with ELOOP) and checked through the open descriptor, so it cannot be
- * swapped between the check and the read. Windows has no O_NOFOLLOW, so it
- * falls back to an lstat check before reading.
+ * with ELOOP). Windows has no O_NOFOLLOW, so there the path is lstat'ed after
+ * opening and must be the same regular file as the open descriptor. Either
+ * way the content is read through the descriptor that was checked, never by
+ * path, so the file cannot be swapped between the check and the read.
  */
 const readNestedGitignore = (filePath: string): string | null => {
   const noFollow = fsConstants.O_NOFOLLOW;
-  if (noFollow === undefined) {
-    return lstatSync(filePath).isFile() ? readFileSync(filePath, 'utf-8') : null;
-  }
-  const fd = openSync(filePath, fsConstants.O_RDONLY | noFollow);
+  const fd = openSync(filePath, fsConstants.O_RDONLY | (noFollow ?? 0));
   try {
-    return fstatSync(fd).isFile() ? readFileSync(fd, 'utf-8') : null;
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return null;
+    if (noFollow === undefined) {
+      const link = lstatSync(filePath);
+      if (!link.isFile() || link.ino !== stat.ino || link.dev !== stat.dev) return null;
+    }
+    return readFileSync(fd, 'utf-8');
   } finally {
     closeSync(fd);
   }
