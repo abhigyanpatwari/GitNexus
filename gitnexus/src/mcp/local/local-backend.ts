@@ -10,7 +10,12 @@ import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskResult } from 'gitnexus-shared';
+import {
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+  getLanguageFromFilename,
+  type ImpactRiskResult,
+} from 'gitnexus-shared';
 import {
   initLbug,
   executeQuery,
@@ -30,8 +35,10 @@ import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
+import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
+import { isTemplateRouteCandidate } from '../../core/ingestion/utils/template-file.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -6445,6 +6452,7 @@ export class LocalBackend {
     // throwaway arrays the size of the row set (40k rows 11.4ms → 4.5ms, 200k
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
+    const mappedPaths = new Set<string>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
     }
@@ -6454,6 +6462,8 @@ export class LocalBackend {
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+      // A suffix fallback is a hint, not proof that this is the changed file.
+      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
       if (changedSymbols.has(sym.id)) continue;
 
       changedSymbols.set(sym.id, {
@@ -6464,6 +6474,27 @@ export class LocalBackend {
         change_type: 'touched',
       });
     }
+
+    // An empty successful query cannot prove a source diff is safe: its rows
+    // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
+    // docs/config diffs measurable, but withhold a ranked source-risk verdict.
+    const isSourceFile = (file: string): boolean =>
+      getLanguageFromFilename(file) !== null ||
+      isCobolFile(file) ||
+      isJclFile(file) ||
+      isTemplateRouteCandidate(file);
+    const unmappedFiles = [
+      ...new Set(
+        fileDiffs
+          .filter(
+            ({ filePath, oldFilePath }) =>
+              !mappedPaths.has(filePath) &&
+              (isSourceFile(filePath) || (oldFilePath !== undefined && isSourceFile(oldFilePath))),
+          )
+          .map(({ filePath }) => filePath),
+      ),
+    ];
+    if (unmappedFiles.length > 0) queryDegraded = true;
 
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
@@ -6565,8 +6596,9 @@ export class LocalBackend {
       },
       changed_symbols: listedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
-      // A swallowed query failure makes the counts/risk above incomplete — tell
-      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
+      // Failed queries or unmapped source files leave counts/risk incomplete;
+      // the safety gate must not treat that as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
       ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
     };

@@ -1,6 +1,6 @@
 {
-  "coreVersion": "0.18.3",
-  "extensionVersion": "0.18.1",
+  "coreVersion": "0.21.1",
+  "extensionVersion": "0.21.0",
   "filename": "libfts.lbug_extension",
   "officialRepo": "https://extension.ladybugdb.com/",
   "urlTemplate": "{officialRepo}v{extensionVersion}/{upstreamPlatform}/fts/{filename}",
