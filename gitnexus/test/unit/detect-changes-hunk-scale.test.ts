@@ -133,11 +133,11 @@ interface DetectChangesResult {
   partial?: boolean;
 }
 
-async function runDetectChanges(): Promise<DetectChangesResult> {
+async function runDetectChanges(scope = 'unstaged'): Promise<DetectChangesResult> {
   const backend = new LocalBackend();
   await backend.init();
   return (await backend.callTool('detect_changes', {
-    scope: 'unstaged',
+    scope,
     repo: 'hunk-scale-repo',
   })) as DetectChangesResult;
 }
@@ -238,6 +238,135 @@ beforeEach(() => {
 });
 
 describe('#2915 detect_changes hunk scaling', () => {
+  it('withholds a low-risk verdict when a changed source file maps to no symbols', async () => {
+    const result = await detectChangesForCodePy('def vanished():\n    return 2\n');
+    expect(result.summary.changed_files).toBe(1);
+    expect(result.summary.changed_count).toBe(0);
+    expect(result.summary.risk_level).toBe('unknown');
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['code.py']);
+  });
+
+  it.each(['notes.txt', 'README.md', 'config.json', 'config.yaml'])(
+    'keeps ordinary non-source changes in %s measurable with zero symbols',
+    async (filePath) => {
+      const repoDir = makeRepo([filePath], 2);
+      writeFileSync(path.join(repoDir, filePath), 'changed\nline 2\n');
+      registerRepo(repoDir);
+      const result = await runDetectChanges();
+      expect(result.summary.risk_level).toBe('low');
+      expect(result.partial).toBeUndefined();
+    },
+  );
+
+  it.each(['.html', '.htm', '.ejs', '.hbs', '.blade.php'])(
+    'withholds ranked risk when a changed %s template maps to no symbols',
+    async (extension) => {
+      const filePath = `views/orders${extension}`;
+      const repoDir = makeRepo([filePath], 2);
+      writeFileSync(path.join(repoDir, filePath), '<form action="/orders/new"></form>\n');
+      registerRepo(repoDir);
+      const result = await runDetectChanges();
+      expect(result.summary).toMatchObject({
+        changed_files: 1,
+        changed_count: 0,
+        risk_level: 'unknown',
+      });
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', [filePath]);
+    },
+  );
+
+  it.each(['.html', '.htm', '.ejs', '.hbs', '.blade.php'])(
+    'recognizes the template side of a pure %s-to-text rename',
+    async (extension) => {
+      const filePath = `orders${extension}`;
+      const repoDir = makeRepo([filePath], 2);
+      execFileSync('git', ['mv', filePath, 'orders.txt'], { cwd: repoDir });
+      registerRepo(repoDir);
+      const result = await runDetectChanges('staged');
+      expect(result.summary).toMatchObject({
+        changed_files: 1,
+        changed_count: 0,
+        risk_level: 'unknown',
+      });
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', ['orders.txt']);
+    },
+  );
+
+  it('keeps mapped template changes measurable', async () => {
+    const filePath = 'views/orders.blade.php';
+    const repoDir = makeRepo([filePath], 2);
+    writeFileSync(path.join(repoDir, filePath), '<form action="/orders/new"></form>\nline 2\n');
+    registerRepo(repoDir);
+    mockSymbolRows([{ name: 'orders', filePath, startLine: 0, endLine: 1 }]);
+    const result = await runDetectChanges();
+    expect(result.summary).toMatchObject({
+      changed_files: 1,
+      changed_count: 1,
+      risk_level: 'low',
+    });
+    expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['orders']);
+    expect(result.partial).toBeUndefined();
+    expect(result).not.toHaveProperty('unmapped_files');
+  });
+
+  it('withholds a low-risk verdict for an unmapped source rename without hunks', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    execFileSync('git', ['mv', 'code.py', 'renamed.py'], { cwd: repoDir });
+    registerRepo(repoDir);
+    const result = await runDetectChanges('staged');
+    expect(result.summary.changed_files).toBe(1);
+    expect(result.summary.risk_level).toBe('unknown');
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['renamed.py']);
+  });
+
+  it('recognizes the source side of a pure source-to-text rename', async () => {
+    const repoDir = makeRepo(['code.py'], 2);
+    execFileSync('git', ['mv', 'code.py', 'code.txt'], { cwd: repoDir });
+    registerRepo(repoDir);
+    const result = await runDetectChanges('staged');
+    expect(result.summary).toMatchObject({
+      changed_files: 1,
+      changed_count: 0,
+      risk_level: 'unknown',
+    });
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['code.txt']);
+  });
+
+  it.each(['.jcl', '.job', '.proc', '.copybook', '.JCL', '.COPYBOOK'])(
+    'withholds ranked risk for an unmapped ingestion-supported %s rename',
+    async (extension) => {
+      const repoDir = makeRepo([`source${extension}`], 2);
+      execFileSync('git', ['mv', `source${extension}`, `renamed${extension}`], { cwd: repoDir });
+      registerRepo(repoDir);
+      const result = await runDetectChanges('staged');
+      expect(result.summary.risk_level).toBe('unknown');
+      expect(result.partial).toBe(true);
+      expect(result).toHaveProperty('unmapped_files', [`renamed${extension}`]);
+    },
+  );
+
+  it('retains mapped symbols while withholding ranked risk for an unmapped source', async () => {
+    const repoDir = makeRepo(['code.py', 'other.ts'], 2);
+    writeFileSync(path.join(repoDir, 'code.py'), 'changed\nline 2\n');
+    writeFileSync(path.join(repoDir, 'other.ts'), 'changed\nline 2\n');
+    registerRepo(repoDir);
+    mockSymbolRows([{ name: 'known', startLine: 0, endLine: 1 }]);
+    const result = await runDetectChanges();
+    expect(result.summary).toMatchObject({
+      changed_files: 2,
+      changed_count: 1,
+      risk_level: 'unknown',
+    });
+    expect(result.changed_symbols.map((symbol) => symbol.name)).toEqual(['known']);
+    expect(result.partial).toBe(true);
+    expect(result).toHaveProperty('unmapped_files', ['other.ts']);
+  });
+
   it('sends the same query for a 3,000-hunk diff as for a 1-hunk diff', async () => {
     const oneHunkRepo = makeRepo(['big.txt'], 12000);
     editEveryNthLine(oneHunkRepo, 'big.txt', 12000, 12000);

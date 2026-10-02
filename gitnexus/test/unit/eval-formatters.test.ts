@@ -641,7 +641,7 @@ describe('formatDetectChangesResult', () => {
     // counts at zero. Without the note the pre-commit gate reads as "clean".
     const result = formatDetectChangesResult({ partial: true, summary: { changed_count: 0 } });
     expect(result).toContain('PARTIAL RESULT');
-    expect(result).toContain('a graph query failed');
+    expect(result).toContain('mapping is incomplete');
     expect(result).not.toContain('No changes detected.');
   });
 
