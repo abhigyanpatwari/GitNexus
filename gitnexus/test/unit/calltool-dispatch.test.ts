@@ -624,8 +624,8 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('reports UNKNOWN instead of a blast radius when the target resolves without a node id (#3354)', async () => {
-    // Every query returns the same id-less row: the resolver picks it as the
-    // single match, and the frontier query would answer for no symbol at all.
+    // Every query returns the same id-less row: resolution must reject it
+    // before a frontier query could answer for no symbol at all.
     (executeParameterized as any).mockResolvedValue([{ name: 'runSweep', type: 'Function' }]);
 
     const result = await backend.callTool('impact', { target: 'runSweep', direction: 'upstream' });
@@ -635,7 +635,8 @@ describe('LocalBackend.callTool', () => {
       impactedCount: null,
       risk: 'UNKNOWN',
     });
-    expect(result.error).toMatch(/without a node id/);
+    expect(result.error).toMatch(/invalid symbol identity/);
+    expect(result.recoverySuggestion).toContain('gitnexus analyze --force');
     expect(result).not.toHaveProperty('byDepthCounts');
   });
 
@@ -2466,7 +2467,7 @@ describe('LocalBackend.callTool', () => {
       },
     ]);
 
-    const result = await backend.impactByUid('test-project', 'uid:main', 'upstream', {
+    const result = await backend.impactByUid('test-project', 'func:main', 'upstream', {
       maxDepth: 5,
       relationTypes: ['CALLS'],
       minConfidence: 0,
