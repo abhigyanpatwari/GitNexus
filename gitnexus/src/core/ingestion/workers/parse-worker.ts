@@ -439,6 +439,8 @@ export interface ExtractedToolDef {
   description: string;
   lineNumber: number;
   handlerNodeId?: string;
+  /** Unresolved registrations must not inherit unrelated same-file flows. */
+  allowFileFallback?: false;
 }
 
 export interface ExtractedORMQuery {
@@ -1685,6 +1687,7 @@ const processFileGroup = (
     // node id → graph node id for classes THIS file's capture loop materialized.
     // Keyed by in-memory AST identity (never persisted); filled below.
     const classOwnersByNodeId = new Map<number, string>();
+    const callableBindings = new Map<number, string>();
 
     // #2687: ONE pass over `matches` yields both suppression sets — the
     // definition-name claims by rank (callable > Property > value), so the dedup
@@ -3123,6 +3126,11 @@ const processFileGroup = (
         }),
       });
 
+      // Keep actual emitted identities; providers must not reconstruct graph IDs.
+      if (nameNode && (nodeLabel === 'Function' || nodeLabel === 'Method')) {
+        callableBindings.set(nameNode.id, nodeId);
+      }
+
       // enclosingClassId already computed above (before nodeId generation)
       const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
@@ -3223,6 +3231,12 @@ const processFileGroup = (
           });
         }
       }
+    }
+
+    if (provider.extractToolDefinitions) {
+      result.toolDefs.push(
+        ...provider.extractToolDefinitions(tree, file.path, lineOffset, callableBindings),
+      );
     }
 
     // Extract framework routes via provider detection (e.g., Laravel routes.php)
