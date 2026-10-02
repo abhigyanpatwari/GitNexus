@@ -721,6 +721,22 @@ describe('FTS index completeness', () => {
       expect(JSON.stringify(result)).not.toContain('/home/alice');
     });
 
+    it(`${mode}: retains both failure causes when no configured index query succeeds`, async () => {
+      await useOutcome(async (table, indexName) => {
+        if (table === 'Function') throw missing(table, indexName);
+        throw new Error('connection reset at /home/alice/private/index.lbug');
+      });
+
+      const result = await searchFTSFromLbug('auth', 5, repo);
+
+      expect(result.ftsAvailable).toBe(false);
+      expect(result.results).toEqual([]);
+      expect(result.missingIndexes).toEqual(['Function.function_fts']);
+      expect(result.nonBenignErrors).toEqual(
+        Array(FTS_INDEXES.length - 1).fill('connection reset at <path>'),
+      );
+    });
+
     it(`${mode}: clears missing-index diagnostics after a repaired query`, async () => {
       await useOutcome(async (table, indexName) => {
         if (table === 'Function') throw missing(table, indexName);

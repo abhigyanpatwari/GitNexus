@@ -3633,13 +3633,15 @@ export class LocalBackend {
         branch: repo.branch,
         indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
       };
-      // tri-review NEW-1: every table failing for a REAL error (timeout,
-      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
-      // "run --repair-fts" headline won't fix it. Route to a dedicated message
-      // instead of burying the real cause as a trailing suffix on bad advice.
+      // Real errors (timeout, connection reset) need their own diagnosis.
+      // When some indexes are also missing, preserve both causes and append
+      // their repair guidance below even though no FTS query succeeded.
       warnings.push(
         ftsQueryErrors
-          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
+          ? ftsQueryFailedWarning(
+              { ...warningContext, lastErrorRedacted: ftsQueryErrors[0] },
+              !!ftsMissingIndexes?.length,
+            )
           : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
@@ -3652,7 +3654,7 @@ export class LocalBackend {
         `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
       );
     }
-    if (ftsUsed && ftsMissingIndexes?.length) {
+    if (ftsMissingIndexes?.length && (ftsUsed || ftsQueryErrors)) {
       warnings.push(
         `FTS keyword search is incomplete: missing configured indexes (${ftsMissingIndexes.join(', ')}). ` +
           'Results may be missing matches from those node types. Run `gitnexus analyze --repair-fts`.',
