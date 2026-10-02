@@ -827,6 +827,8 @@ export interface DiffHunk {
 
 export interface FileDiff {
   filePath: string;
+  /** Decoded pre-rename path; either side can identify a source-file change. */
+  oldFilePath?: string;
   hunks: DiffHunk[];
 }
 
@@ -1061,7 +1063,10 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
       } else {
         unparsedGitHeaders++;
       }
-    } else if (line.startsWith('rename to ')) {
+    } else if (!inHunk && line.startsWith('rename from ')) {
+      const oldFilePath = decodeGitPathToken(line.slice('rename from '.length));
+      if (current && oldFilePath) current.oldFilePath = oldFilePath;
+    } else if (!inHunk && line.startsWith('rename to ')) {
       const filePath = pathFromRenameTo(line);
       if (!filePath) continue;
       if (current) current.filePath = filePath;
