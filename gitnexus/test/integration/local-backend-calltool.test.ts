@@ -1051,3 +1051,134 @@ withTestLbugDB(
     },
   },
 );
+
+// Schema-error hints must run without the optional FTS extension, including on
+// offline installs. Exercise the public dispatch and the real native binder.
+withTestLbugDB(
+  'cypher-schema-hints',
+  (handle) => {
+    let backend: LocalBackend;
+    beforeAll(() => {
+      backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+    });
+
+    it.each([
+      ['Functon', 'Function', 'MATCH (n:Functon) RETURN n'],
+      ['Protocool', 'Protocol', 'MATCH (n:Protocool) RETURN n'],
+      ['CodeRelaton', 'CodeRelation', 'MATCH ()-[r:CodeRelaton]->() RETURN r.type'],
+    ])(
+      'suggests the schema table for %s without replacing the error',
+      async (typo, table, statement) => {
+        const result = await backend.callTool('cypher', { statement });
+        expect(result.error).toBe(
+          `Prepare failed: Binder exception: Table ${typo} does not exist.`,
+        );
+        expect(result.hint).toContain(`Did you mean '${table}'?`);
+        expect(result.hint).toContain('gitnexus://repo/schema-hints-repo/schema');
+        expect(result).not.toHaveProperty('recoverySuggestion');
+        const corrected = await backend.callTool('cypher', {
+          statement: statement.replace(typo, table),
+        });
+        expect(corrected).not.toHaveProperty('error');
+        expect(corrected).not.toHaveProperty('hint');
+      },
+    );
+
+    it.each([
+      ['MATCH (n:Function) RETURN n.filePth', 'filePth', 'filePath', 'n'],
+      ['MATCH (n:Method) RETURN n.parameterCont', 'parameterCont', 'parameterCount', 'n'],
+      ['MATCH ()-[r:CodeRelation]->() RETURN r.confidnce', 'confidnce', 'confidence', 'r'],
+    ])('suggests an actual schema property for %s', async (statement, typo, property, alias) => {
+      const result = await backend.callTool('cypher', { statement });
+      expect(result.error).toBe(
+        `Prepare failed: Binder exception: Cannot find property ${typo} for ${alias}.`,
+      );
+      expect(result.hint).toContain(`Did you mean '${property}'?`);
+      expect(result.hint).toContain('properties vary by table');
+    });
+
+    it('explains relationship values used as relationship tables', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH ()-[:CALLS]->() RETURN count(*)',
+      });
+      expect(result.error).toBe('Prepare failed: Binder exception: Table CALLS does not exist.');
+      expect(result.hint).toContain(":CodeRelation {type: 'CALLS'}");
+    });
+
+    it.each([
+      'MATCH (n:UnrelatedMissingThing) RETURN n',
+      'MATCH (n:FunctionWithAnUnrelatedSuffix) RETURN n',
+      'MATCH (n:Function) RETURN n.unrelatedMissingProperty',
+      'MATCH (n:Function) RETURN n.heuristicLabel',
+      'MATCH (n:Stait) RETURN n',
+      'MATCH (n:Function) RETURN n.lebel',
+      'MATCH (n:Function) RETURN n.ix',
+      `MATCH (n:${'F'.repeat(65)}) RETURN n`,
+    ])('points to the schema without guessing for %s', async (statement) => {
+      const result = await backend.callTool('cypher', { statement });
+      expect(result.error).toContain('Binder exception:');
+      expect(result.hint).toContain('gitnexus://repo/schema-hints-repo/schema');
+      expect(result.hint).not.toContain('Did you mean');
+      expect(result.hint).not.toContain('analyze');
+    });
+
+    it('preserves the executeCypher entrypoint used by internal callers', async () => {
+      const result = await backend.executeCypher('schema-hints-repo', 'MATCH (n:Functon) RETURN n');
+      expect(result.error).toBe('Prepare failed: Binder exception: Table Functon does not exist.');
+      expect(result.hint).toContain("Did you mean 'Function'?");
+    });
+
+    it('keeps corrected queries and statement precedence unchanged', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:Function {name: $name}) RETURN n.filePath AS filePath',
+        query: 'MATCH (n:Functon) RETURN n',
+        params: { name: 'login' },
+      });
+      expect(result.row_count).toBe(1);
+      expect(result.markdown).toContain('src/auth.ts');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it.each([
+      "MATCH (n:Function) WHERE n.name = '__missing__' RETURN n.name",
+      "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALS' RETURN r.type",
+    ])('does not diagnose a successful empty result for %s', async (statement) => {
+      expect(await backend.callTool('cypher', { statement })).toEqual([]);
+    });
+
+    it('preserves native case-insensitive names', async () => {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:function) RETURN n.FilePath AS filePath',
+      });
+      expect(result.row_count).toBeGreaterThan(0);
+      expect(result).not.toHaveProperty('error');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it('leaves parser and out-of-scope variable errors unchanged', async () => {
+      for (const statement of ['NOT CYPHER', 'MATCH (n:Function) RETURN missing']) {
+        const result = await backend.callTool('cypher', { statement });
+        expect(result.error).toBeDefined();
+        expect(result).not.toHaveProperty('hint');
+      }
+    });
+  },
+  {
+    seed: LOCAL_BACKEND_SEED_DATA,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'schema-hints-repo',
+          path: handle.tmpHandle.dbPath,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
