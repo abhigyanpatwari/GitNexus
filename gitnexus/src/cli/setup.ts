@@ -16,6 +16,7 @@ import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from '
 import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import {
+  claudeConfigPaths,
   getEditorTargets,
   mcpTarget,
   skillTarget,
@@ -318,13 +319,13 @@ async function setupCursor(result: SetupResult): Promise<void> {
 }
 
 async function setupClaudeCode(result: SetupResult): Promise<void> {
-  const claudeDir = path.join(os.homedir(), '.claude');
-  if (!(await dirExists(claudeDir))) {
+  // Gate on the config root Claude Code actually reads ($CLAUDE_CONFIG_DIR or ~/.claude).
+  if (!(await dirExists(claudeConfigPaths().dir))) {
     result.skipped.push('Claude Code (not installed)');
     return;
   }
 
-  // Claude Code stores MCP config in ~/.claude.json
+  // Claude Code stores MCP config in ~/.claude.json ($CLAUDE_CONFIG_DIR/.claude.json when set)
   const { file: mcpPath, keyPath } = mcpTarget('claude');
   try {
     const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
@@ -341,17 +342,16 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
 }
 
 /**
- * Install GitNexus skills to ~/.claude/skills/ for Claude Code.
+ * Install GitNexus skills to ~/.claude/skills/ (or $CLAUDE_CONFIG_DIR/skills/) for Claude Code.
  */
 async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
-  const claudeDir = path.join(os.homedir(), '.claude');
-  if (!(await dirExists(claudeDir))) return;
+  if (!(await dirExists(claudeConfigPaths().dir))) return;
 
   const skillsDir = skillTarget('claude').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
-      result.configured.push(`Claude Code skills (${installed.length} skills → ~/.claude/skills/)`);
+      result.configured.push(`Claude Code skills (${installed.length} skills → ${skillsDir})`);
     }
   } catch (err: any) {
     result.errors.push(`Claude Code skills: ${err.message}`);
@@ -492,7 +492,8 @@ export async function copyHookHelpers(
 /**
  * Install GitNexus hooks for editors that use Claude Code's hooks schema.
  *
- * Claude Code registers hooks in ~/.claude/settings.json; Codex uses a
+ * Claude Code registers hooks in ~/.claude/settings.json (under $CLAUDE_CONFIG_DIR when
+ * set); Codex uses a
  * dedicated ~/.codex/hooks.json with the identical {hooks: {Event: [...]}}
  * JSON shape, stdin payload, and hookSpecificOutput response contract
  * (https://developers.openai.com/codex/hooks), so both runtimes share this
