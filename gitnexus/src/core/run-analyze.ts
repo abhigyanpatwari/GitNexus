@@ -4493,9 +4493,6 @@ async function runFullAnalysisInner(
     // (the clean-run contract). Built inside Phase 4 so it carries the identity
     // of the run that actually wrote it — see the assignment below (#2790).
     let pendingEmbeddingCheckpoint: RepoMeta['embeddingCheckpoint'];
-    // A staged measurement is useful at publication, but cannot describe the
-    // live database while the replacement is still unpublished (#3456).
-    let lastMeasuredCheckpointEmbeddingCount: number | undefined;
 
     if (shouldGenerateEmbeddings) {
       const { skipForCap, capDisabled, nodeLimit } = deriveEmbeddingCap(
@@ -4557,6 +4554,7 @@ async function runFullAnalysisInner(
       semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
+    let stagedCheckpointEmbeddingCount: number | undefined;
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();
@@ -4628,6 +4626,9 @@ async function runFullAnalysisInner(
         pendingNodeIds: string[],
         embeddings?: number,
       ): Promise<void> => {
+        if (embeddings !== undefined && buildPath !== lbugPath) {
+          stagedCheckpointEmbeddingCount = embeddings;
+        }
         const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
         // The supported manual-checkpoint opt-out cannot prove durability of
         // this stage. Keep an earlier proven generation and its original
@@ -4656,7 +4657,7 @@ async function runFullAnalysisInner(
         );
         await saveMeta(metaDir, {
           ...base,
-          ...(embeddings === undefined || useAtomicSwap
+          ...(embeddings === undefined || buildPath !== lbugPath
             ? {}
             : { stats: { ...base.stats, embeddings } }),
           // Written by a run that is still IN FLIGHT — see the `kind` doc in
@@ -4730,8 +4731,6 @@ async function runFullAnalysisInner(
             for (const id of activeWindowNodeIds) unsafeRecoveryNodeIds.delete(id);
             activeWindowNodeIds = [];
             const measured = await measurePersistedEmbeddingCount(executeQuery);
-            const measuredCount = persistedEmbeddingCountOrUndefined(measured);
-            if (measuredCount !== undefined) lastMeasuredCheckpointEmbeddingCount = measuredCount;
             if (measured.kind === 'unknown') {
               log(
                 `Warning: could not measure persisted embeddings at the embedding checkpoint ` +
@@ -4896,7 +4895,7 @@ async function runFullAnalysisInner(
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
     const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
       measuredEmbeddingCount,
-      lastMeasuredCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
+      stagedCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
     );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
