@@ -3,7 +3,7 @@
  * OTHER than a timeout. `staleness.test.ts` reaches `diverged` and `unknown`
  * against real repositories, but not the third arm of `fromHead`: HEAD still
  * resolves to the indexed commit, so the index is at HEAD however `rev-list`
- * failed. Real git cannot fail `<sha>..HEAD` while HEAD prints that same SHA
+ * failed. Real git cannot fail `<sha>...HEAD` while HEAD prints that same SHA
  * without a corrupted object store, so this drives it through a mock.
  *
  * Its own file for the same reason as `staleness-timeout.test.ts`: the mock
@@ -61,7 +61,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { checkStaleness, checkStalenessAsync } from '../../src/core/git-staleness.js';
 
 const INDEXED_COMMIT = 'a'.repeat(40);
-const REV_LIST = ['rev-list', '--count', `${INDEXED_COMMIT}..HEAD`];
+const REV_LIST = ['rev-list', '--left-right', '--count', `${INDEXED_COMMIT}...HEAD`];
 const REV_PARSE = ['rev-parse', 'HEAD'];
 
 const bothHelpers = {
