@@ -448,12 +448,22 @@ module.exports = {
       const second = await processCommunities(graph);
 
       expect(second.memberships).toEqual(first.memberships);
+      expect(second.rawMemberships).toEqual(first.rawMemberships);
       expect(second.stats.modularity).toBe(first.stats.modularity);
     });
   });
 });
 
 describe('community membership integrity', () => {
+  it('returns empty raw and retained memberships for an empty graph', async () => {
+    const result = await processCommunities(createKnowledgeGraph());
+
+    expect(result.communities).toEqual([]);
+    expect(result.memberships).toEqual([]);
+    expect(result.rawMemberships).toEqual([]);
+    expect(result.stats).toMatchObject({ totalCommunities: 0, modularity: 0, nodesProcessed: 0 });
+  });
+
   it('retains connected members without emitting memberships for a filtered singleton', async () => {
     const graph = createKnowledgeGraph();
     for (const id of ['fn:a', 'fn:b', 'fn:c', 'fn:singleton']) {
@@ -472,6 +482,7 @@ describe('community membership integrity', () => {
 
     expect(result.communities).toHaveLength(1);
     expect(result.communities[0].symbolCount).toBe(3);
+    expect(result.stats).toMatchObject({ totalCommunities: 2, nodesProcessed: 4 });
     expect(result.memberships.map((membership) => membership.nodeId).sort()).toEqual([
       'fn:a',
       'fn:b',
@@ -480,6 +491,15 @@ describe('community membership integrity', () => {
     expect(result.memberships.every((membership) => communityIds.has(membership.communityId))).toBe(
       true,
     );
+    expect(result.rawMemberships?.map((membership) => membership.nodeId)).toEqual([
+      'fn:a',
+      'fn:b',
+      'fn:c',
+      'fn:singleton',
+    ]);
+    expect(
+      result.rawMemberships?.filter((membership) => communityIds.has(membership.communityId)),
+    ).toEqual(result.memberships);
   });
 
   it('returns no memberships when every detected community is a filtered singleton', async () => {
@@ -494,6 +514,10 @@ describe('community membership integrity', () => {
 
     expect(result.communities).toEqual([]);
     expect(result.memberships).toEqual([]);
-    expect(result.stats.nodesProcessed).toBe(2);
+    expect(result.rawMemberships).toEqual([
+      { nodeId: 'fn:a', communityId: 'comm_0' },
+      { nodeId: 'fn:b', communityId: 'comm_1' },
+    ]);
+    expect(result.stats).toMatchObject({ totalCommunities: 2, nodesProcessed: 2 });
   });
 });
