@@ -4,10 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`setup` / `uninstall` honour `CLAUDE_CONFIG_DIR`** — with the variable set, Claude Code reads its MCP servers from `$CLAUDE_CONFIG_DIR/.claude.json` and its settings, skills and hooks from `$CLAUDE_CONFIG_DIR`, but GitNexus wrote to `~/.claude.json` and `~/.claude/`, so the install was invisible to Claude Code (or skipped as "not installed" when `~/.claude` did not exist). Both commands now resolve the same root Claude Code does; with the variable unset nothing changes
-
 ### Changed
 
 - **MCP `query` / `context` / `impact` / `cypher` always attach a ref-carrying `staleness` field** — object results include it even when `status` is `current`. Absence is no longer the freshness signal: read `staleness.status` (`behind`/`diverged` vs `current`/`unknown`) and `branch`/`lastCommit` for which index answered. `list_repos` and the HTTP repo routes are unchanged (still omit `staleness` when current; the ref is top-level) (#3291, #3293)
