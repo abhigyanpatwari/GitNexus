@@ -91,18 +91,18 @@ describe('staleness after a successful zero-count rev-list (#3127)', () => {
         expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
         expect(invocations.map(({ args }) => args)).toEqual([REV_LIST, REV_PARSE]);
       });
+
+      it('bounds the HEAD command and reports unknown without retrying after its timeout', async () => {
+        plan.head = 'timeout';
+
+        const result = await check('/repo', INDEXED_COMMIT);
+
+        expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
+        expect(invocations.map(({ args }) => args)).toEqual([REV_LIST, REV_PARSE]);
+        const timeout = invocations[1].options.timeout;
+        expect(Number.isFinite(timeout)).toBe(true);
+        expect(timeout).toBeGreaterThan(0);
+      });
     });
   }
-
-  it('bounds the async HEAD command and reports unknown without retrying after its timeout', async () => {
-    plan.head = 'timeout';
-
-    const result = await checkStalenessAsync('/repo', INDEXED_COMMIT);
-
-    expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
-    expect(invocations.map(({ args }) => args)).toEqual([REV_LIST, REV_PARSE]);
-    const timeout = invocations[1].options.timeout;
-    expect(Number.isFinite(timeout)).toBe(true);
-    expect(timeout).toBeGreaterThan(0);
-  });
 });
