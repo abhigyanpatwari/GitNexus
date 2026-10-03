@@ -134,6 +134,40 @@ describe('setupClaudeCode', () => {
     expect(config.mcpServers.gitnexus).toBeDefined();
   });
 
+  it('keeps existing Claude and Cursor HTTP MCP entries while installing skills', async () => {
+    const claudePath = path.join(tempHome, '.claude.json');
+    const cursorDir = path.join(tempHome, '.cursor');
+    const cursorPath = path.join(cursorDir, 'mcp.json');
+    await fs.mkdir(cursorDir, { recursive: true });
+    const claudeRaw = `{
+  // Shared GitNexus server
+  "mcpServers": {
+    "gitnexus": { "type": "http", "url": "http://127.0.0.1:4748/mcp", "headers": { "Authorization": "Bearer $GITNEXUS_TOKEN" } }
+  }
+}`;
+    const cursorRaw = JSON.stringify({
+      mcpServers: {
+        gitnexus: {
+          url: 'http://127.0.0.1:4748/mcp',
+          headers: { Authorization: 'Bearer $GITNEXUS_TOKEN' },
+        },
+      },
+    });
+    await fs.writeFile(claudePath, claudeRaw, 'utf-8');
+    await fs.writeFile(cursorPath, cursorRaw, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: ['claude', 'cursor'] });
+
+    expect(await fs.readFile(claudePath, 'utf-8')).toBe(claudeRaw);
+    expect(await fs.readFile(cursorPath, 'utf-8')).toBe(cursorRaw);
+    expect(logLines()).toContain('Claude Code (existing HTTP MCP entry kept)');
+    expect(logLines()).toContain('Cursor (existing HTTP MCP entry kept)');
+    expect(
+      await fs.stat(path.join(tempHome, '.claude', 'skills', 'gitnexus-guide', 'SKILL.md')),
+    ).toBeDefined();
+  });
+
   it('handles missing ~/.claude.json (creates fresh)', async () => {
     setPlatform('linux');
 

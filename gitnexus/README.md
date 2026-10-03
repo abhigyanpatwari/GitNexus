@@ -36,6 +36,8 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once. To configure only selected integrations, pass `--coding-agent`/`-c` with a comma-separated list or repeat the option, for example `gitnexus setup -c cursor,codex`.
 
+For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus` MCP entry and its authentication settings; skills and hooks are still installed.
+
 ### Editor Support
 
 | Editor                   | MCP | Skills | Hooks (auto-augment)                                                                       | Support      |
@@ -398,7 +400,7 @@ An operation must name a protocol, either through its own `bindings` or through 
 
 Like Actuator snapshots, documents are external to git freshness — replacing one moves no commit and dirties no file — so an enabled run always rebuilds, and the first later run without the option rebuilds once to remove document-derived evidence. There is no glob-based auto-discovery, and the option is unsupported with `--watch`.
 
-> **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
+> **`gitnexus uninstall`** removes the named GitNexus MCP entries, hooks, and skill directories from detected editors. This includes a URL-based MCP entry you configured yourself, even if setup preserved it. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
 ## Remote Embeddings
 
