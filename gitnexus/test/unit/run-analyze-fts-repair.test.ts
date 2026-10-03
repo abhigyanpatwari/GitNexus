@@ -1,5 +1,6 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
+import { basename } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   getStoragePaths,
@@ -3357,7 +3358,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           pipeline: async (options) => {
             if (failure === 'metadata') {
               vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
-                if (String(destination).endsWith('/gitnexus.json'))
+                if (basename(String(destination)) === 'gitnexus.json')
                   throw new Error('metadata write failed');
                 return rename(source, destination);
               });
