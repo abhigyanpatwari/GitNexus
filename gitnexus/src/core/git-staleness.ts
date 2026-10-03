@@ -17,8 +17,8 @@ export type { StalenessInfo, StalenessStatus } from './staleness-status.js';
 const execFileAsync = promisify(execFile);
 
 /**
- * Ceiling for one `git rev-list` staleness probe. Generous for the local
- * history walk this is, and short enough that an unresponsive working tree
+ * Per-command ceiling for async `git rev-list` and both HEAD probes.
+ * Generous for local Git queries, and short enough that an unresponsive working tree
  * degrades to "not stale" quickly rather than holding a request open.
  */
 const STALENESS_TIMEOUT_MS = 5_000;
@@ -33,12 +33,23 @@ const behindHint = (n: number): string =>
 const DIVERGED_HINT =
   "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update.";
 
+// `rev-list --count lastCommit..HEAD` answering 0 does NOT mean "HEAD is the
+// indexed commit" — it means "HEAD has no commits lastCommit lacks", which is
+// also true when HEAD is an *ancestor* of lastCommit (the working tree checked
+// out an older commit than the one indexed, or switched to a line of history
+// behind it). That read a rollback as `current` until this hint existed.
+const REGRESSED_HINT =
+  '⚠️ Index is not at HEAD — the indexed commit is not reachable from the checked-out commit (the working tree may have checked out an older commit, or a different line of history). Run analyze tool to update.';
+
 const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
 
-const fromCount = (commitsBehind: number): StalenessInfo =>
-  commitsBehind > 0
-    ? { isStale: true, commitsBehind, hint: behindHint(commitsBehind), status: 'behind' }
-    : { isStale: false, commitsBehind: 0, status: 'current' };
+// Called only once a positive HEAD-only count is in hand.
+const behind = (commitsBehind: number): StalenessInfo => ({
+  isStale: true,
+  commitsBehind,
+  hint: behindHint(commitsBehind),
+  status: 'behind',
+});
 
 /**
  * `rev-list` could not answer. Asking for HEAD alone needs no history walk and
@@ -53,6 +64,26 @@ const fromHead = (head: string | null, lastCommit: string): StalenessInfo => {
   return { isStale: false, commitsBehind: 0, hint: DIVERGED_HINT, status: 'diverged' };
 };
 
+/**
+ * `rev-list --left-right --count lastCommit...HEAD` measures both sides in
+ * one process, so a later HEAD change cannot mix two snapshots. The left
+ * count identifies a rollback even when the HEAD-only (right) count is 0.
+ * Positive right counts keep the existing `behind` behavior, including when
+ * both sides have commits (divergent branches or a re-shallowed clone).
+ */
+const fromCounts = (output: string): StalenessInfo => {
+  const counts = /^(\d+)\s+(\d+)$/.exec(output.trim());
+  if (!counts) return unknown();
+  const indexedOnly = Number(counts[1]);
+  const headOnly = Number(counts[2]);
+  if (!Number.isSafeInteger(indexedOnly) || !Number.isSafeInteger(headOnly)) return unknown();
+  if (headOnly > 0) return behind(headOnly);
+  if (indexedOnly > 0) {
+    return { isStale: true, commitsBehind: 0, hint: REGRESSED_HINT, status: 'diverged' };
+  }
+  return { isStale: false, commitsBehind: 0, status: 'current' };
+};
+
 const readHeadSync = (repoPath: string): string | null => {
   try {
     return (
@@ -61,6 +92,7 @@ const readHeadSync = (repoPath: string): string | null => {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        timeout: STALENESS_TIMEOUT_MS,
       }).trim() || null
     );
   } catch {
@@ -89,14 +121,18 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
   // No recorded commit is not "at HEAD": there is nothing to measure against.
   if (!lastCommit) return unknown();
   try {
-    const result = execFileSync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    }).trim();
+    const result = execFileSync(
+      'git',
+      ['rev-list', '--left-right', '--count', `${lastCommit}...HEAD`],
+      {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
 
-    return fromCount(parseInt(result, 10) || 0);
+    return fromCounts(result);
   } catch {
     return fromHead(readHeadSync(repoPath), lastCommit);
   }
@@ -115,21 +151,25 @@ export async function checkStalenessAsync(
   try {
     // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
     // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
-    const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      windowsHide: true,
-      // The catch below fails closed on every git ERROR, but a hang is not an
-      // error — it is silence, and without a bound this await never settles.
-      // A working tree on a disconnected network mount or behind a stuck lock
-      // does exactly that, and `/api/repos` fans this out once per registered
-      // repo, so one unreachable mount could hold the whole listing open
-      // (#3232 review). The timeout kills the child and rejects, and the catch
-      // below reports it as `unknown` — still the fail-closed `isStale: false`.
-      timeout: STALENESS_TIMEOUT_MS,
-    });
+    const { stdout } = await execFileAsync(
+      'git',
+      ['rev-list', '--left-right', '--count', `${lastCommit}...HEAD`],
+      {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        windowsHide: true,
+        // The catch below fails closed on every git ERROR, but a hang is not an
+        // error — it is silence, and without a bound this await never settles.
+        // A working tree on a disconnected network mount or behind a stuck lock
+        // does exactly that, and `/api/repos` fans this out once per registered
+        // repo, so one unreachable mount could hold the whole listing open
+        // (#3232 review). The timeout kills the child and rejects, and the catch
+        // below reports it as `unknown` — still the fail-closed `isStale: false`.
+        timeout: STALENESS_TIMEOUT_MS,
+      },
+    );
 
-    return fromCount(parseInt(stdout.trim(), 10) || 0);
+    return fromCounts(stdout);
   } catch (err) {
     // A rev-list that timed out means the working tree is not answering. Asking
     // it again for HEAD would only double the bound #3232 put on a hung mount.
