@@ -43,8 +43,7 @@ const REGRESSED_HINT =
 
 const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
 
-// Called only once a positive count is in hand — a 0 goes through
-// `fromZeroCount` instead, which is why this has no "current" branch of its own.
+// Called only once a positive HEAD-only count is in hand.
 const behind = (commitsBehind: number): StalenessInfo => ({
   isStale: true,
   commitsBehind,
@@ -66,21 +65,23 @@ const fromHead = (head: string | null, lastCommit: string): StalenessInfo => {
 };
 
 /**
- * `rev-list --count lastCommit..HEAD` SUCCEEDED and answered 0 — but that
- * number alone cannot tell "HEAD is the indexed commit" apart from "HEAD is
- * an ancestor of it" (#3127, nikolai-vysotskyi on issue #3127): both report
- * the same 0, because the count only ever looks forward from `lastCommit`.
- * Confirming by SHA is what tells a real rollback apart from being current.
- *
- * Unlike `fromHead` above (which answers for a `rev-list` FAILURE and keeps
- * the historical fail-open `isStale: false` either way), this runs only after
- * a successful count of 0, so a mismatch here is an established fact, not a
- * merely-suspected one — `isStale` reflects that instead.
+ * `rev-list --left-right --count lastCommit...HEAD` measures both sides in
+ * one process, so a later HEAD change cannot mix two snapshots. The left
+ * count identifies a rollback even when the HEAD-only (right) count is 0.
+ * Positive right counts keep the existing `behind` behavior, including when
+ * both sides have commits (divergent branches or a re-shallowed clone).
  */
-const fromZeroCount = (head: string | null, lastCommit: string): StalenessInfo => {
-  if (!head) return unknown();
-  if (head === lastCommit) return { isStale: false, commitsBehind: 0, status: 'current' };
-  return { isStale: true, commitsBehind: 0, hint: REGRESSED_HINT, status: 'diverged' };
+const fromCounts = (output: string): StalenessInfo => {
+  const counts = /^(\d+)\s+(\d+)$/.exec(output.trim());
+  if (!counts) return unknown();
+  const indexedOnly = Number(counts[1]);
+  const headOnly = Number(counts[2]);
+  if (!Number.isSafeInteger(indexedOnly) || !Number.isSafeInteger(headOnly)) return unknown();
+  if (headOnly > 0) return behind(headOnly);
+  if (indexedOnly > 0) {
+    return { isStale: true, commitsBehind: 0, hint: REGRESSED_HINT, status: 'diverged' };
+  }
+  return { isStale: false, commitsBehind: 0, status: 'current' };
 };
 
 const readHeadSync = (repoPath: string): string | null => {
@@ -120,19 +121,18 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
   // No recorded commit is not "at HEAD": there is nothing to measure against.
   if (!lastCommit) return unknown();
   try {
-    const result = execFileSync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    }).trim();
+    const result = execFileSync(
+      'git',
+      ['rev-list', '--left-right', '--count', `${lastCommit}...HEAD`],
+      {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
 
-    const commitsBehind = parseInt(result, 10) || 0;
-    // Only a 0 needs the extra SHA check (#3127) — a positive count already
-    // proves the index is not at HEAD, so there is nothing to confirm.
-    return commitsBehind > 0
-      ? behind(commitsBehind)
-      : fromZeroCount(readHeadSync(repoPath), lastCommit);
+    return fromCounts(result);
   } catch {
     return fromHead(readHeadSync(repoPath), lastCommit);
   }
@@ -151,27 +151,25 @@ export async function checkStalenessAsync(
   try {
     // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
     // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
-    const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      windowsHide: true,
-      // The catch below fails closed on every git ERROR, but a hang is not an
-      // error — it is silence, and without a bound this await never settles.
-      // A working tree on a disconnected network mount or behind a stuck lock
-      // does exactly that, and `/api/repos` fans this out once per registered
-      // repo, so one unreachable mount could hold the whole listing open
-      // (#3232 review). The timeout kills the child and rejects, and the catch
-      // below reports it as `unknown` — still the fail-closed `isStale: false`.
-      timeout: STALENESS_TIMEOUT_MS,
-    });
+    const { stdout } = await execFileAsync(
+      'git',
+      ['rev-list', '--left-right', '--count', `${lastCommit}...HEAD`],
+      {
+        cwd: repoPath,
+        encoding: 'utf-8',
+        windowsHide: true,
+        // The catch below fails closed on every git ERROR, but a hang is not an
+        // error — it is silence, and without a bound this await never settles.
+        // A working tree on a disconnected network mount or behind a stuck lock
+        // does exactly that, and `/api/repos` fans this out once per registered
+        // repo, so one unreachable mount could hold the whole listing open
+        // (#3232 review). The timeout kills the child and rejects, and the catch
+        // below reports it as `unknown` — still the fail-closed `isStale: false`.
+        timeout: STALENESS_TIMEOUT_MS,
+      },
+    );
 
-    const commitsBehind = parseInt(stdout.trim(), 10) || 0;
-    // Only a 0 needs the extra SHA check (#3127) — a positive count already
-    // proves the index is not at HEAD, so there is nothing to confirm, and
-    // nothing new is awaited for the (far more common) genuinely-behind case.
-    return commitsBehind > 0
-      ? behind(commitsBehind)
-      : fromZeroCount(await readHeadAsync(repoPath), lastCommit);
+    return fromCounts(stdout);
   } catch (err) {
     // A rev-list that timed out means the working tree is not answering. Asking
     // it again for HEAD would only double the bound #3232 put on a hung mount.
