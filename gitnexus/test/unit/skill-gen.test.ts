@@ -23,6 +23,8 @@ import type {
 } from '../../src/core/ingestion/process-processor.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 import { communitiesPhase } from '../../src/core/ingestion/pipeline-phases/communities.js';
+import { processesPhase } from '../../src/core/ingestion/pipeline-phases/processes.js';
+import type { PhaseResult } from '../../src/core/ingestion/pipeline-phases/types.js';
 
 // ============================================================================
 // FIXTURE HELPERS
@@ -464,6 +466,75 @@ describe('generateSkillFiles — return values', () => {
     for (const name of ['alpha', 'beta', 'gamma']) {
       expect(content).toContain(name);
       expect(content).toContain(`src/auth/${name}.ts`);
+    }
+  });
+
+  it('preserves execution flows for real singleton fallback skills', async () => {
+    const graph = createKnowledgeGraph();
+    // Large-graph projection prunes the degree-one endpoints of each chain,
+    // leaving only its middle function as a singleton community.
+    for (let i = 0; i < 10_001; i++) {
+      graph.addNode(makeNode(`fn:unused${i}`, `unused${i}`, 'Function', 'src/unused.ts', 1, false));
+    }
+    for (let i = 0; i < 4; i++) {
+      const folder = i < 3 ? 'auth' : 'billing';
+      for (const role of ['handle', 'middle', 'end']) {
+        const name = `${role}${i}`;
+        graph.addNode(
+          makeNode(
+            `fn:${name}`,
+            name,
+            'Function',
+            `${tmpDir}/src/${folder}/${name}.ts`,
+            1,
+            role === 'handle',
+          ),
+        );
+      }
+      graph.addRelationship(makeRel(`rel:handle${i}`, `fn:handle${i}`, `fn:middle${i}`, 'CALLS'));
+      graph.addRelationship(makeRel(`rel:middle${i}`, `fn:middle${i}`, `fn:end${i}`, 'CALLS'));
+    }
+
+    const pipeline = await detectCommunities(graph, tmpDir);
+    const { processResult } = await processesPhase.execute(
+      { graph, repoPath: tmpDir, onProgress: () => {}, pipelineStart: Date.now() },
+      new Map<string, PhaseResult<unknown>>([
+        ['structure', { phaseName: 'structure', output: { totalFiles: 0 }, durationMs: 0 }],
+        [
+          'communities',
+          {
+            phaseName: 'communities',
+            output: { communityResult: pipeline.communityResult },
+            durationMs: 0,
+          },
+        ],
+        ['routes', { phaseName: 'routes', output: { routeRegistry: new Map() }, durationMs: 0 }],
+        ['tools', { phaseName: 'tools', output: { toolDefs: [] }, durationMs: 0 }],
+      ]),
+    );
+    pipeline.processResult = processResult;
+
+    expect(pipeline.communityResult?.communities).toEqual([]);
+    expect(pipeline.communityResult?.memberships).toEqual([]);
+    expect(pipeline.communityResult?.rawMemberships).toHaveLength(4);
+    expect(processResult.processes).toHaveLength(4);
+    expect(processResult.processes.every((process) => process.communities.length === 0)).toBe(true);
+    expect([...graph.iterRelationships()].filter((rel) => rel.type === 'MEMBER_OF')).toEqual([]);
+
+    const result = await generateSkillFiles(tmpDir, 'TestProject', pipeline);
+    expect(result.skills).toHaveLength(1);
+    expect(result.skills[0]).toMatchObject({ label: 'Auth', symbolCount: 3 });
+    const content = await fs.readFile(
+      path.join(result.outputPath, result.skills[0].name, 'SKILL.md'),
+      'utf-8',
+    );
+    expect(content).toContain('## Execution Flows');
+    for (const process of processResult.processes) {
+      if (process.entryPointId === 'fn:handle3') {
+        expect(content).not.toContain(process.heuristicLabel);
+      } else {
+        expect(content).toContain(process.heuristicLabel);
+      }
     }
   });
 
