@@ -22,12 +22,14 @@ async function extract(): Promise<void> {
     throw new Error('staged embedding DB is not a regular file');
   const builder = createCachedEmbeddingsBuilder({ inMemoryRowLimit: 0, spillDir: exportDir });
   const rejectedNodeIds = new Set<string>();
-  // Avoid openLbugConnection's test-fixture lock sweep: a recovery source must
-  // never have its WAL removed, even when an external slot resembles a fixture.
-  const db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: true });
-  const handle = { db, conn: new lbug.Connection(db) };
+  let db: lbug.Database | undefined;
+  let conn: lbug.Connection | undefined;
   try {
-    const queried = await handle.conn.query(
+    // Avoid openLbugConnection's test-fixture lock sweep: a recovery source must
+    // never have its WAL removed, even when an external slot resembles a fixture.
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: true });
+    conn = new lbug.Connection(db);
+    const queried = await conn.query(
       'MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash',
     );
     const results = Array.isArray(queried) ? queried : [queried];
@@ -81,8 +83,8 @@ async function extract(): Promise<void> {
       for (const result of results) await result.close();
     }
     // Both closes must succeed. Suppressed native teardown errors are unsafe.
-    await handle.conn.close();
-    await handle.db.close();
+    await conn.close();
+    await db.close();
     const snapshot = finalizeCachedEmbeddingsSnapshot(builder);
     if (snapshot.spill) fs.renameSync(snapshot.spill.path, path.join(exportDir, 'vectors.bin'));
     const manifest: StagedEmbeddingExport = {
@@ -99,12 +101,12 @@ async function extract(): Promise<void> {
     abortCachedEmbeddingsBuilder(builder);
     // Cleanup is best effort on a rejected source, never used to approve output.
     try {
-      await handle.conn.close();
+      await conn?.close();
     } catch {
       /* rejected */
     }
     try {
-      await handle.db.close();
+      await db?.close();
     } catch {
       /* rejected */
     }
