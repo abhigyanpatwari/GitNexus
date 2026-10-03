@@ -485,6 +485,35 @@ describe.skipIf(!pubspecWalkAnchored())('Dart pubspec package discovery', () => 
     ).rejects.toThrow(/Dart pubspec discovery failed \((read-directory|read-pubspec)\)/);
   });
 
+  // Linux lists the opened inode through /proc/self/fd/N. macOS cannot list a
+  // descriptor (opendir on /dev/fd/N is ENOTDIR), so it lists the path and
+  // re-checks the pinned chain afterwards; the swap must fail that check.
+  it('lists the opened directory, or refuses, when its path is replaced before listing', async () => {
+    const outside = await fixture({ 'pubspec.yaml': 'name: foreign' });
+    const root = await fixture({
+      'pkg/pubspec.yaml': 'name: data',
+      'pkg/nested/pubspec.yaml': 'name: nested_data',
+    });
+    const pkg = path.join(root, 'pkg');
+    const load = loadDartPackageConfig(root, {
+      beforeDirectoryList: async (relative) => {
+        if (relative !== 'pkg') return;
+        await rename(pkg, path.join(root, 'pkg-moved'));
+        await symlink(outside, pkg, 'dir');
+      },
+    });
+    if (process.platform === 'darwin') {
+      await expect(load).rejects.toThrow('Dart pubspec discovery failed (read-directory): pkg');
+      return;
+    }
+    expect((await load).packages).toEqual(
+      new Map([
+        ['data', 'pkg/lib'],
+        ['nested_data', 'pkg/nested/lib'],
+      ]),
+    );
+  });
+
   it('reads listed manifests from the opened directory inode after that path is replaced', async () => {
     if (descriptorEntryPath(0, 'pubspec.yaml') === null) return;
     const outside = await fixture({
