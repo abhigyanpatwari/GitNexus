@@ -110,6 +110,22 @@ describe('setupCommand codex execution', () => {
     await expect(fs.access(path.join(tempHome, '.codex', 'config.toml'))).rejects.toThrow();
   });
 
+  it('keeps an existing HTTP entry and its bearer-token setting without invoking codex mcp add', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    const raw =
+      '[mcp_servers.gitnexus]\nurl = "http://127.0.0.1:4748/mcp"\nbearer_token_env_var = "GITNEXUS_TOKEN"\n';
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: 'codex' });
+
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+    expect(
+      await fs.stat(path.join(tempHome, '.agents', 'skills', 'gitnexus-guide', 'SKILL.md')),
+    ).toBeDefined();
+  });
+
   it('skips Codex setup entirely when ~/.codex is missing', async () => {
     await fs.rm(path.join(tempHome, '.codex'), { recursive: true, force: true });
 
