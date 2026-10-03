@@ -404,7 +404,8 @@ Everyday commands:
 gitnexus setup                   # Configure MCP for detected editors (one-time; -c to select)
 gitnexus analyze [path]          # Index a repository (or update a stale index)
 gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
-gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
+gitnexus mcp                     # Start MCP server (stdio; one server PER CLIENT) — all indexed repos
+gitnexus mcp --http              # Start MCP server (Streamable HTTP + SSE) — ONE server, many clients
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus eval-server             # Start lightweight evaluation HTTP tools (loopback by default)
 gitnexus list                    # List all indexed repositories
@@ -413,6 +414,26 @@ gitnexus clean                   # Delete index for current repo
 gitnexus wiki [path]             # Generate repository wiki from knowledge graph
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (--force to apply)
 ```
+
+### Multi-client setups: use `--http`, not stdio
+
+MCP-over-stdio is **one server process per client** by protocol design — every client
+spawns its own `gitnexus mcp` child, with its own copy of the loaded index. If you run N
+concurrent agents/workers, that is N full index servers.
+
+`gitnexus mcp --http` starts **one** server (Streamable HTTP at `POST /mcp`, legacy SSE at
+`GET /sse` + `POST /messages`) that any number of clients can connect to:
+
+```bash
+gitnexus mcp --http --host 127.0.0.1 --port 3111
+```
+
+Point clients at `http://127.0.0.1:3111/mcp`. A non-loopback bind (`--host 0.0.0.0`)
+requires `--auth-token` (or `GITNEXUS_MCP_AUTH_TOKEN`) and refuses to start without it.
+
+Measured on a 5-core host with 3 indexed repos, 5 concurrent clients issuing the same
+query: shared `--http` ran the batch in 7.7 s at a flat 517 MB, versus 30.0 s and
++514 MB (~103 MB per extra client) for per-client stdio — with identical results.
 
 You can also query the graph directly from the terminal — `gitnexus query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` mirror the MCP tools of the same names, and `gitnexus doctor` prints runtime platform capabilities.
 
@@ -1127,7 +1148,7 @@ Built by the community — not officially maintained, but worth checking out.
 | **Database**        | LadybugDB native                      | LadybugDB WASM                          |
 | **Embeddings**      | HuggingFace transformers.js (GPU/CPU) | transformers.js (WebGPU/WASM)           |
 | **Search**          | BM25 + semantic + RRF                 | BM25 + semantic + RRF                   |
-| **Agent Interface** | MCP (stdio)                           | LangChain ReAct agent                   |
+| **Agent Interface** | MCP (stdio, or HTTP for multi-client) | LangChain ReAct agent                   |
 | **Visualization**   | —                                     | Sigma.js + Graphology (WebGL)           |
 | **Frontend**        | —                                     | React 18, TypeScript, Vite, Tailwind v4 |
 | **Clustering**      | Graphology                            | Graphology                              |
