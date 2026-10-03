@@ -3,7 +3,7 @@
  * OTHER than a timeout. `staleness.test.ts` reaches `diverged` and `unknown`
  * against real repositories, but not the third arm of `fromHead`: HEAD still
  * resolves to the indexed commit, so the index is at HEAD however `rev-list`
- * failed. Real git cannot fail `<sha>..HEAD` while HEAD prints that same SHA
+ * failed. Real git cannot fail `<sha>...HEAD` while HEAD prints that same SHA
  * without a corrupted object store, so this drives it through a mock.
  *
  * Its own file for the same reason as `staleness-timeout.test.ts`: the mock
@@ -12,14 +12,21 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { plan, spawnedArgs } = vi.hoisted(() => ({
-  plan: { head: null as string | null },
+  plan: { head: null as string | null, enoent: false },
   spawnedArgs: [] as string[][],
 }));
 
 // `rev-list` exits 128 the way git does for a missing object; `rev-parse HEAD`
-// answers `plan.head`, or fails when it is null.
+// answers `plan.head`, or fails when it is null. `plan.enoent` instead fails
+// every invocation the way Node reports a missing executable (git not on
+// PATH) — no exit code, `code: 'ENOENT'` — to check that shape of failure is
+// caught by the same `catch` as a present-but-failing git (#3127).
 const answer = (args: readonly string[]): { error: Error | null; stdout: string } => {
   spawnedArgs.push([...args]);
+  if (plan.enoent) {
+    const failure = Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' });
+    return { error: failure, stdout: '' };
+  }
   if (args[0] === 'rev-parse' && plan.head) return { error: null, stdout: `${plan.head}\n` };
   const failure = Object.assign(new Error(`Command failed: git ${args.join(' ')}`), {
     code: 128,
@@ -54,7 +61,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { checkStaleness, checkStalenessAsync } from '../../src/core/git-staleness.js';
 
 const INDEXED_COMMIT = 'a'.repeat(40);
-const REV_LIST = ['rev-list', '--count', `${INDEXED_COMMIT}..HEAD`];
+const REV_LIST = ['rev-list', '--left-right', '--count', `${INDEXED_COMMIT}...HEAD`];
 const REV_PARSE = ['rev-parse', 'HEAD'];
 
 const bothHelpers = {
@@ -65,6 +72,7 @@ const bothHelpers = {
 describe('staleness after a failed (not timed-out) rev-list (#3256)', () => {
   beforeEach(() => {
     plan.head = null;
+    plan.enoent = false;
     spawnedArgs.length = 0;
   });
 
@@ -90,6 +98,19 @@ describe('staleness after a failed (not timed-out) rev-list (#3256)', () => {
       });
 
       it('reports unknown when HEAD cannot be read either', async () => {
+        const result = await check('/repo', INDEXED_COMMIT);
+
+        expect(result).toEqual({ isStale: false, commitsBehind: 0, status: 'unknown' });
+        expect(spawnedArgs).toEqual([REV_LIST, REV_PARSE]);
+      });
+
+      it('reports unknown — never current — when git itself is not on PATH', async () => {
+        // nikolai-vysotskyi (#3127): "git not on PATH" specifically, as a
+        // distinct failure shape (ENOENT, no exit code) from a present git
+        // that fails against a bad ref. Same requirement either way: it must
+        // never be silently read as fresh.
+        plan.enoent = true;
+
         const result = await check('/repo', INDEXED_COMMIT);
 
         expect(result).toEqual({ isStale: false, commitsBehind: 0, status: 'unknown' });
