@@ -32,6 +32,7 @@ const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
 type QueryResult = {
   error?: unknown;
   warning?: string;
+  partial?: boolean;
   definitions?: Array<{ id: string }>;
   process_symbols?: Array<{ id: string }>;
 };
@@ -40,7 +41,8 @@ const matchedIds = (r: QueryResult): string[] =>
   [...(r.process_symbols ?? []), ...(r.definitions ?? [])].map((s) => s.id);
 
 const ftsMissing = (r: QueryResult): boolean =>
-  typeof r.warning === 'string' && /FTS indexes missing/i.test(r.warning);
+  typeof r.warning === 'string' &&
+  /FTS indexes missing|missing configured indexes/i.test(r.warning);
 
 /**
  * Poll the SAME warm `LocalBackend` until it stops reporting FTS-missing, or
@@ -90,14 +92,14 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
     await tmpHandle.cleanup();
   });
 
-  it(
-    'a warm session transitions from FTS-unavailable to FTS-available without restarting, after an out-of-band --repair-fts',
+  it.each(['all', 'Function'] as const)(
+    'a warm session repairs missing %s indexes without restarting',
     { timeout: 60_000 },
-    async (ctx) => {
+    async (missing, ctx) => {
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
-      // ── Step 1: build the index WITHOUT FTS (analyzed before repair) ────
+      // ── Step 1: build an index with all or just one FTS index missing ──
       await adapter.initLbug(lbugPath);
 
       const ftsAvailable = await adapter.loadFTSExtension(undefined, {
@@ -118,6 +120,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       await adapter.executeQuery(
         `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 3, content: 'function login() { return true; }'})`,
       );
+      if (missing === 'Function') {
+        await createSearchFTSIndexes();
+        await adapter.dropFTSIndex('Function', 'function_fts');
+      }
       await adapter.flushWAL();
       await adapter.closeLbug();
 
@@ -129,7 +135,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
         stats: { files: 1, nodes: 1 },
         capabilities: {
           graph: { provider: 'ladybugdb', status: 'available' },
-          fts: { provider: 'ladybugdb-fts', status: 'unavailable' },
+          fts: {
+            provider: 'ladybugdb-fts',
+            status: missing === 'all' ? 'unavailable' : 'available',
+          },
           vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
         },
       };
@@ -142,6 +151,10 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       const before = await backend.callTool('query', { query: 'login' });
       expect(before.error).toBeUndefined();
       expect(ftsMissing(before)).toBe(true);
+      if (missing === 'Function') {
+        expect(before.partial).toBe(true);
+        expect(before.warning).toContain('Function.function_fts');
+      }
 
       // ── Step 3: out-of-band --repair-fts (separate writable session) ────
       // Same production functions the repair-fts branch of runFullAnalysis
@@ -163,6 +176,7 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       const after = await waitForFtsRecognized(backend, 'login');
       expect(after.error).toBeUndefined();
       expect(ftsMissing(after)).toBe(false);
+      expect(after.partial).toBeUndefined();
       expect(matchedIds(after)).toContain('func:login');
     },
   );

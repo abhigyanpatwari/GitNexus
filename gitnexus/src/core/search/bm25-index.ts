@@ -47,6 +47,8 @@ export interface FTSSearchResponse {
    * which only does so when every table failed).
    */
   nonBenignErrors?: string[];
+  /** Configured table.index names that could not be queried because their index is missing. */
+  missingIndexes?: string[];
 }
 
 /**
@@ -142,6 +144,7 @@ export const searchFTSFromLbug = async (
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
   const nonBenignErrors: string[] = [];
+  const missingIndexes: string[] = [];
 
   const ftsExtension = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (ftsExtension && !ftsExtension.loaded) {
@@ -171,24 +174,28 @@ export const searchFTSFromLbug = async (
       if (outcome.rows) {
         queriesSucceeded++;
         resultsByIndex.push(outcome.rows);
-      } else if (!outcome.benign) {
+      } else if (outcome.benign) {
+        missingIndexes.push(`${table}.${indexName}`);
+      } else {
         nonBenignErrors.push(redactPaths(outcome.message ?? 'Unknown FTS query error'));
       }
     }
   } else {
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
-    // tri-review Residual-1: `queryFTS` itself only swallows a genuinely-missing
-    // index (via the SAME classifyFtsQueryError this module re-exports); a
-    // missing-table or real query error rethrows here — track it the same way
-    // the MCP pool path does instead of a bare `catch {}` that dropped it.
+    // Opt into missing-index propagation so absent indexes cannot masquerade
+    // as successful zero-match queries. Keep core/pool classification identical.
     for (const { table, indexName } of FTS_INDEXES) {
       try {
-        const result = await queryFTS(table, indexName, searchQuery, limit, false);
+        const result = await queryFTS(table, indexName, searchQuery, limit, false, 'throw');
         queriesSucceeded++;
         resultsByIndex.push(result);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        nonBenignErrors.push(redactPaths(message));
+        if (classifyFtsQueryError(message) === 'missing-index') {
+          missingIndexes.push(`${table}.${indexName}`);
+        } else {
+          nonBenignErrors.push(redactPaths(message));
+        }
       }
     }
   }
@@ -234,5 +241,6 @@ export const searchFTSFromLbug = async (
     })),
     ftsAvailable,
     ...(nonBenignErrors.length > 0 && { nonBenignErrors }),
+    ...(missingIndexes.length > 0 && { missingIndexes }),
   };
 };
