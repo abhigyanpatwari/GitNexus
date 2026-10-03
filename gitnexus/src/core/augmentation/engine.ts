@@ -129,7 +129,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     }
 
     // Step 1: BM25 search (fast, no embeddings)
-    const { results: bm25Results, ftsAvailable } = await searchFTSFromLbug(pattern, 10, repoId);
+    const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
 
     // Step 2: Map BM25 file results to symbols
     const symbolMatches: Array<{
@@ -167,16 +167,18 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       }
     }
 
-    // When FTS indexes are unavailable (read-only DB, first run before indexes are built),
-    // fall back to a direct name CONTAINS query so enrichment still works.
-    if (symbolMatches.length === 0 && !ftsAvailable) {
+    // FTS ranks files by mentions, so a widely referenced symbol's definition
+    // may not be present in the top file results. Fall back to graph names
+    // whenever those files produce no symbol match, regardless of FTS health.
+    if (symbolMatches.length === 0) {
       const fallbackRows = await executeQuery(
         repoId,
         `
         MATCH (n)
         WHERE n.name CONTAINS '${patternFirstWord}'
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
-        ORDER BY id
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+          CASE WHEN n.name = '${patternFirstWord}' THEN 0 ELSE 1 END AS exactRank
+        ORDER BY exactRank, id
         LIMIT 5
       `,
       ).catch(() => []);
