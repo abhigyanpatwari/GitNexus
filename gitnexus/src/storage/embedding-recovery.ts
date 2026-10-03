@@ -2,7 +2,15 @@
  * Filesystem-only staged embedding provenance. Keep this independent of native
  * and model imports: every index-lock caller needs the retention decision.
  */
-import { lstatSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
 import path from 'node:path';
 import type { EmbeddingRecoveryReference } from './repo-meta.js';
 import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
@@ -98,21 +106,54 @@ export const resolveEmbeddingRecovery = (
 /** Synchronous mirror of loadMeta's primary-first, absent-only fallback rule. */
 export const readEmbeddingRecovery = (lockDir: string): ResolvedEmbeddingRecovery | undefined => {
   let metadataPath = path.join(lockDir, INDEX_METADATA_FILE);
+  let descriptor: number | undefined;
+  const noFollow = constants.O_NOFOLLOW ?? 0;
+  const flags = constants.O_RDONLY | noFollow | (constants.O_NONBLOCK ?? 0);
   try {
     try {
-      if (!lstatSync(metadataPath).isFile()) return undefined;
+      descriptor = openSync(metadataPath, flags);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT' && code !== 'ENOTDIR') return undefined;
+      // Windows cannot open with O_NOFOLLOW: an open of a dangling symlink
+      // reports ENOENT, but that existing primary entry must prevent fallback.
+      try {
+        lstatSync(metadataPath);
+        return undefined;
+      } catch (statError) {
+        const statCode = (statError as NodeJS.ErrnoException).code;
+        if (statCode !== 'ENOENT' && statCode !== 'ENOTDIR') return undefined;
+      }
       metadataPath = path.join(lockDir, LEGACY_METADATA_FILE);
-      if (!lstatSync(metadataPath).isFile()) return undefined;
+      descriptor = openSync(metadataPath, flags);
     }
-    const meta: unknown = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    const opened = fstatSync(descriptor, { bigint: true });
+    const entry = lstatSync(metadataPath, { bigint: true });
+    // Check the opened file itself and match the current non-symlink entry.
+    // This also refuses replacement on platforms without O_NOFOLLOW.
+    if (
+      !opened.isFile() ||
+      !entry.isFile() ||
+      (noFollow === 0 && opened.ino === 0n) ||
+      opened.dev !== entry.dev ||
+      opened.ino !== entry.ino
+    ) {
+      return undefined;
+    }
+    const meta: unknown = JSON.parse(readFileSync(descriptor, 'utf8'));
     if (!isRecord(meta)) return undefined;
     // storagePath describes the flat/cache root, including in branch-slot
     // metadata. The current locked directory is the generation boundary.
     return resolveEmbeddingRecovery(lockDir, meta.embeddingCheckpoint);
   } catch {
     return undefined;
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        closeSync(descriptor);
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 };
