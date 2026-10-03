@@ -700,6 +700,12 @@ describe('FTS index completeness', () => {
       const result = await searchFTSFromLbug('auth', 5, repo);
       expect(result.ftsAvailable).toBe(false);
       expect(result.results).toEqual([]);
+      if (!pooled) {
+        const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+        for (const { table, indexName } of FTS_INDEXES) {
+          expect(queryFTS).toHaveBeenCalledWith(table, indexName, 'auth', 5, false, 'throw');
+        }
+      }
       expect(result.missingIndexes).toEqual(
         FTS_INDEXES.map(({ table, indexName }) => `${table}.${indexName}`),
       );
