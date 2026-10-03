@@ -114,21 +114,21 @@ export const generateSkillFiles = async (
     }
   }
 
-  if (!communityResult || !communityResult.memberships.length) {
+  const memberships = communityResult?.rawMemberships ?? communityResult?.memberships ?? [];
+  if (!communityResult || !memberships.length) {
     console.log('\n  Skills: no communities detected, skipping skill generation');
     return { skills: [], outputPath: outputDir };
   }
 
   console.log('\n  Generating repo-specific skills...');
 
-  // Step 1: Build communities from memberships (not the filtered communities array).
-  // The community processor skips singletons from its communities array but memberships
-  // include ALL assignments. For repos with sparse CALLS edges, the communities array
-  // can be empty while memberships still has useful groupings.
+  // Step 1: Use raw assignments for the fallback when all communities were
+  // filtered as singletons. Same-folder aggregation can still produce skills
+  // for these sparse graphs without emitting dangling MEMBER_OF edges.
   const communities =
     communityResult.communities.length > 0
       ? communityResult.communities
-      : buildCommunitiesFromMemberships(communityResult.memberships, graph, repoPath);
+      : buildCommunitiesFromMemberships(memberships, graph, repoPath);
 
   const aggregated = aggregateCommunities(communities);
 
@@ -145,11 +145,8 @@ export const generateSkillFiles = async (
   }
 
   // Step 3: Build lookup maps
-  const membershipsByComm = buildMembershipMap(communityResult.memberships);
-  const nodeIdToCommunityLabel = buildNodeCommunityLabelMap(
-    communityResult.memberships,
-    communities,
-  );
+  const membershipsByComm = buildMembershipMap(memberships);
+  const nodeIdToCommunityLabel = buildNodeCommunityLabelMap(memberships, communities);
 
   // Step 4: Ensure the shared project-skill root exists. Never clear it: it
   // also contains user-authored and standard GitNexus skills.
