@@ -365,8 +365,8 @@ describe('staleness when the checkout has regressed behind the indexed commit (#
         const result = await check(fixture.repo, fixture.c3);
 
         expect(result.status).toBe('diverged');
-        // Established by a successful count of 0 plus a confirmed SHA
-        // mismatch (not a `rev-list` failure), so — unlike the failure-path
+        // Established by a positive indexed-only count and a zero HEAD-only
+        // count (not a `rev-list` failure), so — unlike the failure-path
         // `diverged` above — `isStale` reflects the mismatch instead of the
         // historical fail-open `false`.
         expect(result.isStale).toBe(true);
