@@ -110,19 +110,21 @@ export const ftsDegradedWarning = (
 };
 
 /**
- * Warning for when the FTS extension is loaded and indexes exist, but every
- * configured table's query failed for a real, non-benign reason (timeout,
- * connection reset, native fault) — as opposed to `ftsDegradedWarning`'s
- * missing-index case. `--repair-fts` will not fix a query/connection error,
- * so this deliberately does NOT suggest it: reusing the missing-index
- * message here would reproduce, for this cause, the exact misleading
- * "run --repair-fts" guidance #2767 itself was about (tri-review NEW-1).
+ * Warning when no FTS query succeeded and at least one failed for a real,
+ * non-benign reason (timeout, connection reset, native fault). `--repair-fts`
+ * will not fix those errors. If indexes are also missing, the caller composes
+ * their repair guidance separately; do not deny that additional failure cause.
  */
-export const ftsQueryFailedWarning = (context: FtsWarningContext): string =>
+export const ftsQueryFailedWarning = (
+  context: FtsWarningContext,
+  hasMissingIndexes = false,
+): string =>
   'FTS keyword search failed — every configured index query returned an error' +
   (context.lastErrorRedacted ? ` (${context.lastErrorRedacted})` : '') +
-  '; results do not include keyword matches. This is not a missing-index ' +
-  'condition — see server logs for details.' +
+  '; results do not include keyword matches. ' +
+  (hasMissingIndexes
+    ? 'See server logs for query error details.'
+    : 'This is not a missing-index condition — see server logs for details.') +
   ` (resolved: ${formatResolvedSuffix(context)})`;
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token

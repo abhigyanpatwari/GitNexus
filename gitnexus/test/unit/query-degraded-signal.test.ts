@@ -42,6 +42,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
 });
 
 import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { resetExtensionState } from '../../src/core/lbug/extension-loader.js';
 
 // A backend whose hybrid search yields exactly one matched symbol, so the
 // enrichment chunk loop runs and can be made to fail. `ftsUsed` is parameterized
@@ -414,4 +415,101 @@ describe('query: degraded-enrichment signal', () => {
       cap.restore();
     }
   });
+});
+
+describe('query: partial missing FTS indexes', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loadMetaMock.mockResolvedValue(null);
+    executeParameterizedMock.mockResolvedValue([]);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('returns successful symbols with a repair hint and partial flag when another index is missing', async () => {
+    const b = makeBackend(true) as any;
+    const resultWithMissing = await b.backend.bm25Search();
+    b.backend.bm25Search.mockResolvedValue({
+      ...resultWithMissing,
+      missingIndexes: ['Function.function_fts'],
+    });
+
+    const result = await runQuery(b);
+
+    expect(result.definitions.map((d: any) => d.id)).toContain('func:x');
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+    expect(result.warning).toContain('repair-fts');
+  });
+
+  it('composes missing indexes with real FTS errors and enrichment failures', async () => {
+    const b = makeBackend(true, ['connection reset']) as any;
+    const resultWithMissing = await b.backend.bm25Search();
+    b.backend.bm25Search.mockResolvedValue({
+      ...resultWithMissing,
+      missingIndexes: ['Function.function_fts'],
+    });
+    executeParameterizedMock.mockImplementation(async (_repo: string, cypher: string) => {
+      if (cypher.includes('STEP_IN_PROCESS')) throw new Error('timed out');
+      return [];
+    });
+
+    const result = await runQuery(b);
+
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+    expect(result.warning).toContain('FTS keyword search partially failed');
+    expect(result.warning).toContain('enrichment');
+  });
+});
+
+it('propagates missing-index diagnostics through the real bm25Search helper into query', async () => {
+  vi.clearAllMocks();
+  loadMetaMock.mockResolvedValue(null);
+  executeParameterizedMock.mockResolvedValue([]);
+  const search = await import('../../src/core/search/bm25-index.js');
+  const spy = vi.spyOn(search, 'searchFTSFromLbug').mockResolvedValue({
+    results: [],
+    ftsAvailable: true,
+    missingIndexes: ['Function.function_fts'],
+  });
+  try {
+    const b = makeBackend(true) as any;
+    b.backend.bm25Search = (LocalBackend.prototype as any).bm25Search;
+    const result = await runQuery(b);
+    expect(result.partial).toBe(true);
+    expect(result.warning).toContain('Function.function_fts');
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+it('reports missing indexes and real errors when every FTS query fails through the search boundary', async () => {
+  vi.clearAllMocks();
+  resetExtensionState();
+  loadMetaMock.mockResolvedValue(null);
+  executeParameterizedMock.mockImplementation(async (_repo: string, cypher: string) => {
+    if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
+      throw new Error(
+        "Binder exception: Table Function doesn't have an index with name function_fts.",
+      );
+    }
+    if (cypher.includes('QUERY_FTS_INDEX')) {
+      throw new Error('connection reset at /home/alice/private/index.lbug');
+    }
+    return [];
+  });
+  const b = makeBackend(false) as any;
+  b.backend.bm25Search = (LocalBackend.prototype as any).bm25Search;
+
+  const result = await runQuery(b);
+
+  expect(result.definitions).toEqual([]);
+  expect(result.warning).toContain('FTS keyword search failed');
+  expect(result.warning).toContain('connection reset at <path>');
+  expect(result.warning).toContain('Function.function_fts');
+  expect(result.warning).toContain('gitnexus analyze --repair-fts');
+  expect(result.warning).toContain('resolved: repo1');
+  expect(result.warning).not.toContain('not a missing-index');
+  expect(result.warning).not.toContain('partially failed');
+  expect(JSON.stringify(result)).not.toContain('/home/alice');
 });

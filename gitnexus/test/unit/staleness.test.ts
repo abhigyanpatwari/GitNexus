@@ -335,3 +335,52 @@ describe('branch-pinned serve clone once git prunes the indexed commit (#3256)',
     });
   });
 });
+
+// ── #3127: a 0 forward count is not "the index matches this tree" ───────────
+//
+// nikolai-vysotskyi (issue #3127, comment on the `--stale-policy` proposal):
+// `git rev-list --count lastCommit..HEAD` answers "commits reachable from
+// HEAD but not lastCommit", which is also 0 when HEAD is an *ancestor* of
+// lastCommit — i.e. the working tree checked out an older commit than the one
+// indexed, or a release branch behind the indexed tip. Before this fix that
+// read as `current`; a `--stale-policy error`-style caller would exit 0
+// exactly when the index is provably wrong about the checked-out tree.
+describe('staleness when the checkout has regressed behind the indexed commit (#3127)', () => {
+  let root: string;
+  let fixture: ReturnType<typeof makeRepo>;
+
+  beforeAll(() => {
+    root = mkdtempSync(join(tmpdir(), 'gitnexus-staleness-regressed-'));
+    fixture = makeRepo(root, 'repo');
+    // Roll the working tree back to c1. `rev-list --count c3..HEAD` alone
+    // answers 0 here (HEAD/c1 has no commits c3 lacks) — exactly the count a
+    // pre-fix caller read as "index matches HEAD".
+    git(fixture.repo, 'checkout', '-q', fixture.c1);
+  });
+  afterAll(() => removeTree(root));
+
+  for (const [name, check] of Object.entries(bothHelpers)) {
+    describe(name, () => {
+      it('reports diverged, not current, when HEAD is behind the indexed commit', async () => {
+        const result = await check(fixture.repo, fixture.c3);
+
+        expect(result.status).toBe('diverged');
+        // Established by a positive indexed-only count and a zero HEAD-only
+        // count (not a `rev-list` failure), so — unlike the failure-path
+        // `diverged` above — `isStale` reflects the mismatch instead of the
+        // historical fail-open `false`.
+        expect(result.isStale).toBe(true);
+        expect(result.commitsBehind).toBe(0);
+        expect(result.hint).toContain('not reachable from the checked-out commit');
+      });
+
+      it('still reports current for the commit actually checked out', async () => {
+        expect(await check(fixture.repo, fixture.c1)).toMatchObject({
+          status: 'current',
+          isStale: false,
+          commitsBehind: 0,
+        });
+      });
+    });
+  }
+});

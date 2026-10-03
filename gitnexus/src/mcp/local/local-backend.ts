@@ -324,6 +324,28 @@ function nonBlankUid(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
+const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
+  'Run gitnexus analyze --force from the affected repository root to rebuild the index.';
+
+class SymbolIdentityError extends Error {
+  constructor() {
+    super('The index returned an invalid symbol identity. ' + SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+    this.name = 'SymbolIdentityError';
+  }
+}
+
+/** Validate database identities before using them as graph traversal anchors. */
+function assertSymbolIdentity(id: unknown, expectedUid?: string): asserts id is string {
+  if (
+    typeof id !== 'string' ||
+    !id.trim() ||
+    id.includes('\0') ||
+    (expectedUid !== undefined && id !== expectedUid)
+  ) {
+    throw new SymbolIdentityError();
+  }
+}
+
 interface StringAliasDefinition {
   canonical: string;
   aliases: readonly string[];
@@ -3150,6 +3172,7 @@ export class LocalBackend {
     // regardless of whether OTHER tables succeeded — previously a real error
     // on N-1 of N tables while one succeeded left zero diagnostic trail.
     const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
+    const ftsMissingIndexes = bm25SearchResult?.missingIndexes;
     if (ftsQueryErrors) {
       // tri-review NEW-5: these strings are already classified non-benign by
       // classifyFtsQueryError — do NOT route them through logQueryError,
@@ -3639,13 +3662,15 @@ export class LocalBackend {
         branch: repo.branch,
         indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
       };
-      // tri-review NEW-1: every table failing for a REAL error (timeout,
-      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
-      // "run --repair-fts" headline won't fix it. Route to a dedicated message
-      // instead of burying the real cause as a trailing suffix on bad advice.
+      // Real errors (timeout, connection reset) need their own diagnosis.
+      // When some indexes are also missing, preserve both causes and append
+      // their repair guidance below even though no FTS query succeeded.
       warnings.push(
         ftsQueryErrors
-          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
+          ? ftsQueryFailedWarning(
+              { ...warningContext, lastErrorRedacted: ftsQueryErrors[0] },
+              !!ftsMissingIndexes?.length,
+            )
           : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
@@ -3656,6 +3681,12 @@ export class LocalBackend {
       // that convention instead of only logging server-side.
       warnings.push(
         `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
+      );
+    }
+    if (ftsMissingIndexes?.length && (ftsUsed || ftsQueryErrors)) {
+      warnings.push(
+        `FTS keyword search is incomplete: missing configured indexes (${ftsMissingIndexes.join(', ')}). ` +
+          'Results may be missing matches from those node types. Run `gitnexus analyze --repair-fts`.',
       );
     }
     // #2331: a CJK query against a server process resolving
@@ -3789,7 +3820,7 @@ export class LocalBackend {
     // #2767: a partial FTS failure (some tables ok, one or more real errors)
     // is as much a "results may be incomplete" signal as enrichmentDegraded —
     // flag it the same way rather than only via the warning string.
-    const ftsPartial = ftsUsed && !!ftsQueryErrors;
+    const ftsPartial = ftsUsed && (!!ftsQueryErrors || !!ftsMissingIndexes?.length);
 
     return {
       processes,
@@ -3810,7 +3841,12 @@ export class LocalBackend {
     query: string,
     limit: number,
     disabledReason?: FtsDisabledReason,
-  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+  ): Promise<{
+    results: any[];
+    ftsUsed: boolean;
+    nonBenignErrors?: string[];
+    missingIndexes?: string[];
+  }> {
     if (disabledReason) return { results: [], ftsUsed: false };
     let searchFTSFromLbug;
     try {
@@ -3844,6 +3880,7 @@ export class LocalBackend {
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
     const nonBenignErrors = ftsResponse?.nonBenignErrors;
+    const missingIndexes = ftsResponse?.missingIndexes;
 
     const results: any[] = [];
 
@@ -3917,7 +3954,12 @@ export class LocalBackend {
       }
     }
 
-    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
+    return {
+      results,
+      ftsUsed,
+      ...(nonBenignErrors && { nonBenignErrors }),
+      ...(missingIndexes && { missingIndexes }),
+    };
   }
 
   /**
@@ -4529,6 +4571,7 @@ export class LocalBackend {
         endLine: (r.endLine ?? r[5]) as number,
         ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
       };
+      assertSymbolIdentity(symbol.id, uid);
       // Same LadybugDB label-enrichment as the name-based path: a UID
       // pointing at a Class must still surface `type: 'Class'` so impact's
       // Class/Interface BFS seed fires. No-op when type is already set.
@@ -4662,6 +4705,9 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+    // Reject the whole result before narrowing or scoring: dropping a corrupt
+    // candidate could make an unrelated surviving symbol look unambiguous.
+    for (const candidate of normalized) assertSymbolIdentity(candidate.id);
 
     // An exact File path wins over anchored suffix candidates. Without this,
     // `lib/a.ts` and `src/lib/a.ts` both score as File candidates and turn an
@@ -4815,6 +4861,9 @@ export class LocalBackend {
       return await this._contextImpl(repo, params);
     } catch (err: any) {
       const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (err instanceof SymbolIdentityError) {
+        return { error: msg, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,
@@ -7119,8 +7168,16 @@ export class LocalBackend {
       // Return structured error instead of crashing (#321)
       const message =
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
-      const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
-      const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
+      const recoverySuggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : isWalCorruptionError(err)
+            ? WAL_RECOVERY_SUGGESTION
+            : undefined;
+      const suggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : 'The graph query failed — try gitnexus context <symbol> as a fallback';
       if (params.mode === 'pdg') {
         // Symbol resolution never reached the catch with a resolved symbol (the
         // throw can originate before/within resolution), so the envelope carries
@@ -9138,6 +9195,7 @@ export class LocalBackend {
           ];
 
     try {
+      assertSymbolIdentity(sym.id ?? sym[0], uid);
       // skipPerSymbolEnrichment suppresses ONLY the per-symbol STEP_IN_PROCESS
       // enrichment pass while preserving byDepth. Group-mode cross-repo fan-out
       // may fan across many repos; the per-symbol pass adds up to MAX_CHUNKS
