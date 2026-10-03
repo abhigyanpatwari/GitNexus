@@ -2157,6 +2157,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               slotLock,
               `Cannot acquire the index lock at ${storagePath}; refusing an unlocked embedding run.`,
             );
+            // This writer cannot recover staged generations. Preserve their
+            // receipts, including malformed ones, before any graph/meta write.
+            const recoveryCheckpoint = (await loadMeta(storagePath))?.embeddingCheckpoint;
+            if (recoveryCheckpoint && Object.hasOwn(recoveryCheckpoint, 'recovery')) {
+              throw new Error(
+                'Cannot generate embeddings: the index checkpoint references staged embeddings. ' +
+                  'Run `gitnexus analyze` to recover them first.',
+              );
+            }
             // Writes go to the slot's own graph; a shared-store checkout
             // reading an immutable commit graph (#3352) takes a private copy.
             if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
