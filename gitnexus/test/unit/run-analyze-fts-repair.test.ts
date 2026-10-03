@@ -3259,9 +3259,13 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           return cleanResult();
         },
       });
+      await mockStagedFiles();
       expect(await runAnalyze(tmpRepo.dbPath, { force: true, embeddings: true }, [])).toBeNull();
       expect((await loadMeta(storagePath))?.embeddingCheckpoint).toBeUndefined();
       expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(9);
+      expect(await fs.readFile(getStoragePaths(tmpRepo.dbPath).lbugPath, 'utf8')).toBe(
+        'staged fixture',
+      );
     } finally {
       await tmpRepo.cleanup();
     }
