@@ -43,6 +43,8 @@ describe('checkStalenessAsync — timed-out rev-list (#3256)', () => {
     expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
     // Exactly one spawn. A `rev-parse HEAD` follow-up here is the regression:
     // it doubles the hung-mount bound and can flip this answer.
-    expect(spawnedArgs).toEqual([['rev-list', '--count', `${INDEXED_COMMIT}..HEAD`]]);
+    expect(spawnedArgs).toEqual([
+      ['rev-list', '--left-right', '--count', `${INDEXED_COMMIT}...HEAD`],
+    ]);
   });
 });

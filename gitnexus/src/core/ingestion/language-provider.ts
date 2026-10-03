@@ -46,7 +46,7 @@ import type {
   RepoConstants,
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
-import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
 /** What a provider's {@link LanguageProviderConfig.resolveRouteHandler} can see. */
@@ -545,6 +545,15 @@ interface LanguageProviderConfig {
    * Default: undefined (no text-route extraction).
    */
   readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
+
+  /** Extract tool registrations after captures, using only emitted callable identities.
+   * The map keys are declaration-name AST node IDs, local to this parsed tree. */
+  readonly extractToolDefinitions?: (
+    tree: Parser.Tree,
+    filePath: string,
+    lineOffset: number,
+    callableBindings: ReadonlyMap<number, string>,
+  ) => ExtractedToolDef[];
 
   /**
    * Extract routes that a parsed file declares in its own AST.

@@ -70,6 +70,7 @@ import {
 import { stripSwiftTypePreservingDecoration } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
@@ -155,6 +156,7 @@ const swiftScopeResolver: ScopeResolver = {
   // no-`new` constructor + cross-file free-call shape).
   allowGlobalFreeCallFallback: true,
   isGlobalNameFallbackPlausible: swiftIsGlobalNameFallbackPlausible,
+  isCallableVisibleFromCaller: swiftIsCallableVisibleFromCaller,
 
   // Swift's call graph models `Type(...)` as a reference to the type
   // itself, not its `init` — both the legacy DAG and this test suite link

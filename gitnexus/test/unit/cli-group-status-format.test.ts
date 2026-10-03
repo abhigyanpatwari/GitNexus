@@ -27,6 +27,29 @@ describe('formatIndexStatusCell', () => {
     );
   });
 
+  it.each([0, 3])(
+    'renders a stale diverged row without a commits-behind count of %i',
+    (commitsBehind) => {
+      const row = { indexStale: true, commitsBehind, status: 'diverged' as const };
+      expect(formatIndexStatusCell(row)).toBe('STALE     (index differs from HEAD)');
+    },
+  );
+
+  it('renders an explicit behind status with its counted gap', () => {
+    const row = { indexStale: true, commitsBehind: 3, status: 'behind' as const };
+    expect(formatIndexStatusCell(row)).toBe('STALE     (3 commits behind)');
+  });
+
+  it('renders an explicit current status as OK', () => {
+    const row = { indexStale: false, commitsBehind: 0, status: 'current' as const };
+    expect(formatIndexStatusCell(row)).toBe('OK        ');
+  });
+
+  it('preserves the fail-open cell when a diverged probe did not confirm staleness', () => {
+    const row = { indexStale: false, commitsBehind: 0, status: 'diverged' as const };
+    expect(formatIndexStatusCell(row)).toBe('OK        ');
+  });
+
   it('keeps the OK cell byte-identical, padding included', () => {
     expect(formatIndexStatusCell({ indexStale: false, commitsBehind: 0 })).toBe('OK        ');
   });
