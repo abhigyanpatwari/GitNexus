@@ -54,6 +54,10 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
 // function (`registerAdmin(v1)`) arrives as a parameter and contributes no
 // prefix there, and a receiver bound to anything but a literal-prefix
 // `Group(...)` call contributes none either — the route keeps its literal path.
+// Statement-scoped bindings count too: an `if`/`switch` initializer, a `for`
+// clause (including `range`), a type-switch guard, and declarations inside a
+// switch case all scope over their statement the same way Go scopes them, so
+// they shadow an outer group of the same name instead of being skipped.
 
 const MAX_GROUP_DEPTH = 32;
 
@@ -74,7 +78,15 @@ function asGroupCall(
   }
   const parent = fn.childForFieldName('operand');
   const first = node.childForFieldName('arguments')?.namedChildren[0];
-  if (!parent || first?.type !== 'interpreted_string_literal') return null;
+  // Both string-literal forms are valid Go: "…" and `…`. unquoteLiteral
+  // strips either, and a non-literal argument (a variable, concatenation)
+  // still contributes no prefix.
+  if (
+    !parent ||
+    (first?.type !== 'interpreted_string_literal' && first?.type !== 'raw_string_literal')
+  ) {
+    return null;
+  }
   const prefix = unquoteLiteral(first.text);
   return prefix === null ? null : { parent, prefix };
 }
@@ -112,11 +124,21 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
   }
 }
 
+/** Whether an identifier or expression_list (e.g. a range left side) declares `name`. */
+function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
+  if (!node) return false;
+  if (node.type === 'identifier') return node.text === name;
+  return node.namedChildren.some((n) => n.type === 'identifier' && n.text === name);
+}
+
 /**
  * The value last bound to identifier `ident` before its use: the nearest
- * preceding statement in the enclosing blocks, walking outward through
- * closures up to the enclosing function declaration. Returns null when the
- * name is a parameter, is bound without a value, or is not bound in scope.
+ * binding site in the enclosing scopes, walking outward — preceding statements
+ * in blocks and switch cases (`expression_case`/`type_case` act as statement
+ * containers), then statement-scoped bindings (`if`/`switch` initializers,
+ * `for` clauses including `range`, type-switch guards), up to the enclosing
+ * function declaration. Returns null when the name is a parameter, is bound
+ * without a value, or is not bound in scope.
  */
 function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
   const name = ident.text;
@@ -128,12 +150,46 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
       if (params.some((p) => p.text === name)) return null;
       continue;
     }
-    if (node.type !== 'block') continue;
-    const stmts = node.namedChildren;
-    const useIndex = stmts.findIndex((s) => s.id === child.id);
-    for (const stmt of stmts.slice(0, useIndex).reverse()) {
-      const value = boundValue(stmt, name);
-      if (value !== undefined) return value;
+    if (node.type === 'block' || node.type === 'expression_case' || node.type === 'type_case') {
+      const stmts = node.namedChildren;
+      const useIndex = stmts.findIndex((s) => s.id === child.id);
+      for (const stmt of stmts.slice(0, useIndex).reverse()) {
+        const value = boundValue(stmt, name);
+        if (value !== undefined) return value;
+      }
+      continue;
+    }
+    // Statement-scoped bindings enclose the use the same way Go scopes them.
+    if (node.type === 'if_statement' || node.type === 'expression_switch_statement') {
+      const init = node.childForFieldName('initializer');
+      if (init) {
+        const value = boundValue(init, name);
+        if (value !== undefined) return value;
+      }
+      continue;
+    }
+    if (node.type === 'for_statement') {
+      const clause = node.namedChildren[0];
+      if (clause?.type === 'for_clause') {
+        for (const stmt of clause.namedChildren) {
+          const value = boundValue(stmt, name);
+          if (value !== undefined) return value;
+        }
+      } else if (clause?.type === 'range_clause') {
+        if (declaresName(clause.childForFieldName('left'), name)) {
+          return clause.childForFieldName('right') ?? null;
+        }
+      }
+      continue;
+    }
+    if (node.type === 'type_switch_statement') {
+      // `switch v := x.(type)` — the guard list is the first named child and
+      // only present when a `:=` follows it (bare `switch x.(type)` has none).
+      const guard = node.namedChildren[0];
+      if (guard?.type === 'expression_list' && node.children.some((c) => c.type === ':=')) {
+        if (declaresName(guard, name)) return node.namedChildren[1] ?? null;
+      }
+      continue;
     }
   }
   return null;

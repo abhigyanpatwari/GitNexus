@@ -249,6 +249,128 @@ func routes(r *gin.Engine) {
     ).toEqual([{ method: 'GET', path: '/x', name: 'X' }]);
   });
 
+  it('uses the group bound by an if initializer in the body and in the else branch', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool) {
+	g := r.Group("/outer")
+	if g := r.Group("/inner"); cond {
+		g.GET("/x", h.X)
+	} else {
+		g.GET("/y", h.Y)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/inner/x', name: 'X' },
+      { method: 'GET', path: '/inner/y', name: 'Y' },
+    ]);
+  });
+
+  it('keeps the outer group when an if initializer binds a different name', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool) {
+	g := r.Group("/outer")
+	if x := prepare(); cond {
+		g.GET("/x", h.X)
+	}
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/outer/x', name: 'X' }]);
+  });
+
+  it('stops at an if initializer bound to something other than Group()', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool) {
+	g := r.Group("/outer")
+	if g := build(); cond {
+		g.GET("/x", h.X)
+	}
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'X' }]);
+  });
+
+  it('uses a switch initializer group and a group declared inside a case clause', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool) {
+	g := r.Group("/outer")
+	switch g := r.Group("/s"); g != nil {
+	case cond:
+		g.GET("/x", h.X)
+	}
+	switch {
+	case cond:
+		g := r.Group("/case")
+		g.GET("/y", h.Y)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/s/x', name: 'X' },
+      { method: 'GET', path: '/case/y', name: 'Y' },
+    ]);
+  });
+
+  it('stops at a type-switch guard binding and resolves groups declared in a type case', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, anyVal any) {
+	g := r.Group("/outer")
+	switch g := anyVal.(type) {
+	case *Router:
+		g.GET("/x", h.X)
+	}
+	switch anyVal.(type) {
+	case interface{}:
+		g := r.Group("/t")
+		g.GET("/y", h.Y)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/x', name: 'X' },
+      { method: 'GET', path: '/t/y', name: 'Y' },
+    ]);
+  });
+
+  it('keeps the outer group through a plain for init and stops at a range shadow binding', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, n int, subs []*gin.RouterGroup) {
+	g := r.Group("/outer")
+	for i := 0; i < n; i++ {
+		g.GET("/i", h.I)
+	}
+	for _, g := range subs {
+		g.GET("/r", h.R)
+	}
+	for g := r.Group("/loop"); ; {
+		g.GET("/l", h.L)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/outer/i', name: 'I' },
+      { method: 'GET', path: '/r', name: 'R' },
+      { method: 'GET', path: '/loop/l', name: 'L' },
+    ]);
+  });
+
+  it('accepts a raw-string (backtick) group prefix', () => {
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group(\`/api\`)
+	g.GET("/x", h.X)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/api/x', name: 'X' }]);
+  });
+
   it('applies the same group logic to echo', () => {
     expect(
       providers(`package main
