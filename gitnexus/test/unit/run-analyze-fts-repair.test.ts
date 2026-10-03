@@ -1,6 +1,6 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
-import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   getStoragePaths,
   loadMeta,
@@ -2219,10 +2219,11 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('preserves lastCommit / fileHashes / the dirty flag, and never restates a stale count', async () => {
+  it('keeps staging counts out of published metadata until the index is swapped', async () => {
     const STALE_COMMIT = '1111111111111111111111111111111111111111';
     const STALE_HASHES = { 'src/app.ts': 'stale-hash' };
     const LIVE_EMBEDDING_COUNT = 42;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
 
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -2439,6 +2440,14 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
  * NEXT run does with it).
  */
 describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () => {
+  const actualPlatformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+
+  beforeEach(() => {
+    // These mocked checkpoint tests exercise the atomic rebuild used on POSIX.
+    // Select that same path on Windows; the in-place case below opts out.
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
+  });
+
   const RESILIENCE_NODE_ID = 'Function:src/app.ts:handler:1';
   const stubNode = {
     id: RESILIENCE_NODE_ID,
@@ -2597,6 +2606,9 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
   };
 
   afterEach(() => {
+    if (actualPlatformDescriptor) {
+      Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+    }
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
@@ -2715,6 +2727,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
    */
   it('carries the mid-run count forward, not the run-start snapshot, so --force still loads the cache', async () => {
     const MID_RUN_COUNT = 12;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
     try {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
@@ -3065,6 +3078,144 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       await fs.rm(dbPath, { force: true });
     });
   };
+
+  it.each([
+    { mode: 'staged', atomicSwap: '1', checkpointCount: 7 },
+    { mode: 'in-place', atomicSwap: '0', checkpointCount: 42 },
+  ])(
+    'keeps Windows $mode checkpoint counts consistent with the live index',
+    async ({ mode, atomicSwap, checkpointCount }) => {
+      const tmpRepo = await createTempDir('gitnexus-2790-checkpoint-meta-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 7 } });
+        await fs.writeFile(lbugPath, 'published fixture');
+        const snapshots: Array<RepoMeta | null> = [];
+        mockResilienceHarness({
+          count: [{ cnt: 42 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: [RESILIENCE_NODE_ID],
+            });
+            snapshots.push(await loadMeta(storagePath));
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 3 });
+            snapshots.push(await loadMeta(storagePath));
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        // Load modules on the actual host before changing only the platform
+        // branch exercised by runFullAnalysis; all native DB work is mocked.
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', atomicSwap);
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        await runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {}, onLog: () => {} },
+        );
+
+        expect(snapshots[0]?.stats?.embeddings).toBe(7);
+        expect(snapshots[1]?.stats?.embeddings).toBe(checkpointCount);
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        const buildPath = vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0];
+        if (mode === 'staged') {
+          expect(buildPath).toMatch(/\.staging\.[a-f0-9-]+$/);
+          expect(snapshots[1]?.embeddingCheckpoint?.recovery).toMatchObject({
+            stagingFile: expect.stringMatching(/^lbug\.staging\.[a-f0-9-]+$/),
+            unsafeNodeIds: [],
+          });
+          expect(await fs.readFile(lbugPath, 'utf8')).toBe('staged fixture');
+        } else {
+          expect(buildPath).toBe(lbugPath);
+          expect(snapshots[0]?.embeddingCheckpoint?.recovery).toBeUndefined();
+          expect(snapshots[1]?.embeddingCheckpoint?.recovery).toBeUndefined();
+        }
+        const finalMeta = await loadMeta(storagePath);
+        expect(finalMeta?.stats?.embeddings).toBe(42);
+        expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
+      } finally {
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
+  it.each(['close', 'rename'] as const)(
+    'keeps the published count and database when %s fails before the staged publish',
+    async (failure) => {
+      const tmpRepo = await createTempDir('gitnexus-2790-checkpoint-meta-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 7 } });
+        await fs.writeFile(lbugPath, 'published fixture');
+        const rename = fs.rename.bind(fs);
+        let checkpointMeta: RepoMeta | null = null;
+        let failedPublishRename: Mock | undefined;
+        mockResilienceHarness({
+          count: [{ cnt: 42 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: [RESILIENCE_NODE_ID],
+            });
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 3 });
+            checkpointMeta = await loadMeta(storagePath);
+            if (failure === 'close') {
+              const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+              vi.mocked(adapter.closeLbug).mockRejectedValueOnce(
+                new Error('pre-publish close failed'),
+              );
+            } else {
+              failedPublishRename = vi.fn(async () => {
+                throw Object.assign(new Error('staged publish rename failed'), { code: 'EIO' });
+              });
+              vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+                if (
+                  String(source).startsWith(`${lbugPath}.staging.`) &&
+                  String(destination) === lbugPath
+                ) {
+                  return failedPublishRename?.();
+                }
+                return rename(source, destination);
+              });
+            }
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        expect(
+          await runAnalyze(
+            tmpRepo.dbPath,
+            { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+            [],
+          ),
+        ).toMatchObject({
+          message:
+            failure === 'close' ? 'pre-publish close failed' : 'staged publish rename failed',
+        });
+        expect(checkpointMeta?.stats?.embeddings).toBe(7);
+        expect((await loadMeta(storagePath))?.stats?.embeddings).toBe(7);
+        expect(await fs.readFile(lbugPath, 'utf8')).toBe('published fixture');
+        const recovery = (await loadMeta(storagePath))?.embeddingCheckpoint?.recovery;
+        if (!recovery) throw new Error('expected durable stage after failed publish');
+        expect(await fs.readFile(`${storagePath}/${recovery.stagingFile}`, 'utf8')).toBe(
+          'staged fixture',
+        );
+        if (failure === 'rename') expect(failedPublishRename).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.restoreAllMocks();
+        await tmpRepo.cleanup();
+      }
+    },
+  );
 
   const seedRecovery = async (storagePath: string, repoPath: string) => {
     const stagingFile = 'lbug.staging.11111111-1111-4111-8111-111111111111';
