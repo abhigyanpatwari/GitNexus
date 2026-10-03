@@ -4632,16 +4632,14 @@ async function runFullAnalysisInner(
           stagedCheckpointEmbeddingCount = embeddings;
         }
         const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
-        // The supported manual-checkpoint opt-out cannot prove durability of
-        // this stage. Keep an earlier proven generation and its original
-        // identity/progress intact until the replacement is published.
-        if (
-          useAtomicSwap &&
+        // An in-place write or manual-checkpoint opt-out cannot create a new
+        // recoverable staged generation. Keep the complete previous receipt:
+        // updated progress or unsafe nodes would describe different source bytes.
+        const preservedRecoveryCheckpoint =
           !stagedRecoveryEnabled &&
           resolveEmbeddingRecovery(metaDir, latestMeta?.embeddingCheckpoint)
-        ) {
-          return;
-        }
+            ? latestMeta?.embeddingCheckpoint
+            : undefined;
         // First-ever analyze of this repo: no meta exists on disk yet (the
         // pre-wipe dirty stamp only fires when one does). Mint the minimum
         // RepoMeta requires, with `lastCommit: ''` — never `currentCommit` —
@@ -4664,7 +4662,7 @@ async function runFullAnalysisInner(
             : { stats: { ...base.stats, embeddings } }),
           // Written by a run that is still IN FLIGHT — see the `kind` doc in
           // repo-manager.ts.
-          embeddingCheckpoint: {
+          embeddingCheckpoint: preservedRecoveryCheckpoint ?? {
             ...interrupted,
             ...(stagedRecoveryEnabled
               ? {
