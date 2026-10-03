@@ -22,6 +22,7 @@ import type {
   ProcessDetectionResult,
 } from '../../src/core/ingestion/process-processor.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
+import { communitiesPhase } from '../../src/core/ingestion/pipeline-phases/communities.js';
 
 // ============================================================================
 // FIXTURE HELPERS
@@ -133,6 +134,15 @@ function buildPipelineResult(opts: {
     communityResult,
     processResult,
   };
+}
+
+/** Run the real community phase, including graph node and membership edge emission. */
+async function detectCommunities(graph: KnowledgeGraph, repoPath: string): Promise<PipelineResult> {
+  const { communityResult } = await communitiesPhase.execute(
+    { graph, repoPath, onProgress: () => {}, pipelineStart: Date.now() },
+    new Map([['structure', { phaseName: 'structure', output: { totalFiles: 0 }, durationMs: 0 }]]),
+  );
+  return { graph, repoPath, totalFileCount: 0, communityResult };
 }
 
 // ============================================================================
@@ -405,6 +415,110 @@ describe('generateSkillFiles — return values', () => {
 
     expect(result.skills).toHaveLength(1);
     expect(result.skills[0].label).toBe('Auth');
+  });
+
+  it('generates a folder skill from real singleton assignments without dangling membership edges', async () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(makeNode('file:target', 'target', 'File', `${tmpDir}/target.ts`, 1, false));
+    for (const name of ['gamma', 'alpha', 'beta']) {
+      graph.addNode(
+        makeNode(`fn:${name}`, name, 'Function', `${tmpDir}/src/auth/${name}.ts`, 1, true),
+      );
+      // The File target admits the symbol to the projection, then is excluded
+      // itself, leaving a singleton in the real Leiden result.
+      graph.addRelationship(makeRel(`rel:${name}`, `fn:${name}`, 'file:target', 'CALLS'));
+    }
+
+    const pipeline = await detectCommunities(graph, tmpDir);
+    const result = await generateSkillFiles(tmpDir, 'TestProject', pipeline);
+
+    expect(result.skills).toHaveLength(1);
+    expect(result.skills[0]).toMatchObject({
+      name: 'gitnexus-area-auth',
+      label: 'Auth',
+      symbolCount: 3,
+      fileCount: 3,
+    });
+    expect(pipeline.communityResult?.communities).toEqual([]);
+    expect(pipeline.communityResult?.memberships).toEqual([]);
+    expect(pipeline.communityResult?.rawMemberships).toEqual([
+      { nodeId: 'fn:alpha', communityId: 'comm_0' },
+      { nodeId: 'fn:beta', communityId: 'comm_1' },
+      { nodeId: 'fn:gamma', communityId: 'comm_2' },
+    ]);
+    expect([...graph.iterRelationships()].filter((rel) => rel.type === 'MEMBER_OF')).toEqual([]);
+    const content = await fs.readFile(
+      path.join(result.outputPath, result.skills[0].name, 'SKILL.md'),
+      'utf-8',
+    );
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      expect(content).toContain(name);
+      expect(content).toContain(`src/auth/${name}.ts`);
+    }
+  });
+
+  it.each([0, 2])('skips real singleton fallback below threshold (%i symbols)', async (count) => {
+    const graph = createKnowledgeGraph();
+    if (count > 0) {
+      graph.addNode(makeNode('file:target', 'target', 'File', `${tmpDir}/target.ts`, 1, false));
+    }
+    for (let i = 0; i < count; i++) {
+      graph.addNode(
+        makeNode(`fn:n${i}`, `n${i}`, 'Function', `${tmpDir}/src/auth/f${i}.ts`, 1, true),
+      );
+      graph.addRelationship(makeRel(`rel:${i}`, `fn:n${i}`, 'file:target', 'CALLS'));
+    }
+
+    const pipeline = await detectCommunities(graph, tmpDir);
+    const result = await generateSkillFiles(tmpDir, 'TestProject', pipeline);
+
+    expect(result.skills).toEqual([]);
+    expect(pipeline.communityResult?.rawMemberships).toHaveLength(count);
+    expect(pipeline.communityResult?.memberships).toEqual([]);
+    expect([...graph.iterRelationships()].filter((rel) => rel.type === 'MEMBER_OF')).toEqual([]);
+  });
+
+  it('keeps real retained skills and membership edges separate from filtered singletons', async () => {
+    const graph = createKnowledgeGraph();
+    for (const name of ['alpha', 'beta', 'gamma', 'singleton']) {
+      graph.addNode(
+        makeNode(`fn:${name}`, name, 'Function', `${tmpDir}/src/auth/${name}.ts`, 1, true),
+      );
+    }
+    graph.addNode(makeNode('file:target', 'target', 'File', `${tmpDir}/target.ts`, 1, false));
+    graph.addRelationship(makeRel('rel:ab', 'fn:alpha', 'fn:beta', 'CALLS'));
+    graph.addRelationship(makeRel('rel:bc', 'fn:beta', 'fn:gamma', 'CALLS'));
+    graph.addRelationship(makeRel('rel:ca', 'fn:gamma', 'fn:alpha', 'CALLS'));
+    graph.addRelationship(makeRel('rel:singleton', 'fn:singleton', 'file:target', 'CALLS'));
+
+    const pipeline = await detectCommunities(graph, tmpDir);
+    const result = await generateSkillFiles(tmpDir, 'TestProject', pipeline);
+
+    expect(result.skills).toHaveLength(1);
+    expect(result.skills[0]).toMatchObject({ label: 'Auth', symbolCount: 3, fileCount: 3 });
+    expect(pipeline.communityResult?.rawMemberships).toHaveLength(4);
+    expect(pipeline.communityResult?.memberships.map((membership) => membership.nodeId)).toEqual([
+      'fn:alpha',
+      'fn:beta',
+      'fn:gamma',
+    ]);
+    const membershipEdges = [...graph.iterRelationships()].filter(
+      (rel) => rel.type === 'MEMBER_OF',
+    );
+    expect(membershipEdges).toHaveLength(3);
+    for (const edge of membershipEdges) {
+      expect(graph.getNode(edge.sourceId)).toBeDefined();
+      expect(graph.getNode(edge.targetId)?.label).toBe('Community');
+      expect(edge.sourceId).not.toBe('fn:singleton');
+    }
+    const content = await fs.readFile(
+      path.join(result.outputPath, result.skills[0].name, 'SKILL.md'),
+      'utf-8',
+    );
+    expect(content).not.toContain('singleton');
+    for (const name of ['alpha', 'beta', 'gamma']) {
+      expect(content).toContain(`src/auth/${name}.ts`);
+    }
   });
 
   /**
