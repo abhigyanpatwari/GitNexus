@@ -11,7 +11,7 @@ async function query(cypher) {
     await result.close();
   }
 }
-await query('CREATE NODE TABLE CodeEmbedding (id STRING, nodeId STRING, chunkIndex INT64, startLine INT64, endLine INT64, embedding FLOAT[2], contentHash STRING, PRIMARY KEY(id))');
+await query('CREATE NODE TABLE CodeEmbedding (id STRING, nodeId STRING, chunkIndex INT32, startLine INT64, endLine INT64, embedding FLOAT[2], contentHash STRING, PRIMARY KEY(id))');
 async function row(id, nodeId, chunkIndex, hash = 'same', startLine = 1, endLine = 3) {
   await query(`CREATE (:CodeEmbedding {id: '${id}', nodeId: '${nodeId}', chunkIndex: ${chunkIndex}, startLine: ${startLine}, endLine: ${endLine}, embedding: [1.0, 2.0], contentHash: ${hash === null ? 'NULL' : `'${hash}'`}})`);
 }
