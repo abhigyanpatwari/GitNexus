@@ -751,8 +751,9 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     expect(filter.childrenIgnored(asPath('pkg/reports/__tests__'))).toBe(false);
     expect(filter.ignored(asPath('pkg/reports/__tests__/test.ts'))).toBe(false);
     const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
-    expect((await walkRepositoryPaths(tmpDir)).map((f) => f.path))
-      .toContain('pkg/reports/__tests__/test.ts');
+    expect((await walkRepositoryPaths(tmpDir)).map((f) => f.path)).toContain(
+      'pkg/reports/__tests__/test.ts',
+    );
   });
 
   it('lets a deeper nested negation re-include what an outer nested file ignored', async () => {
@@ -822,7 +823,10 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     await fs.writeFile(path.join(tmpDir, 'app', 'pkg', '.gitignore'), '!reports/\n');
     await fs.writeFile(path.join(tmpDir, 'app', 'pkg', 'reports', 'keep.ts'), 'export {};\n');
     await fs.writeFile(path.join(tmpDir, 'app', 'pkg', 'reports', 'drop.gen.ts'), 'export {};\n');
-    await fs.writeFile(path.join(tmpDir, 'app', 'pkg', 'reports', 'daily', 'run.ts'), 'export {};\n');
+    await fs.writeFile(
+      path.join(tmpDir, 'app', 'pkg', 'reports', 'daily', 'run.ts'),
+      'export {};\n',
+    );
 
     const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
     const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
@@ -832,25 +836,25 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
     expect(scanned).not.toContain('app/pkg/reports/drop.gen.ts');
   });
 
-  it.each([
-    'reports [daily]',
-    ...(process.platform === 'win32' ? [] : ['reports\ndaily']),
-  ])('keeps re-included directory names literal: %j', async (directory) => {
-    await fs.mkdir(path.join(tmpDir, 'pkg', directory), { recursive: true });
-    await fs.mkdir(path.join(tmpDir, 'other', directory), { recursive: true });
-    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'reports*/\n*.ts\n');
-    await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!reports*/\n');
-    await fs.writeFile(path.join(tmpDir, 'pkg', directory, 'keep.js'), 'export {};\n');
-    await fs.writeFile(path.join(tmpDir, 'pkg', directory, 'drop.ts'), 'export {};\n');
-    await fs.writeFile(path.join(tmpDir, 'other', directory, 'drop.js'), 'export {};\n');
+  it.each(['reports [daily]', ...(process.platform === 'win32' ? [] : ['reports\ndaily'])])(
+    'keeps re-included directory names literal: %j',
+    async (directory) => {
+      await fs.mkdir(path.join(tmpDir, 'pkg', directory), { recursive: true });
+      await fs.mkdir(path.join(tmpDir, 'other', directory), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, '.gitignore'), 'reports*/\n*.ts\n');
+      await fs.writeFile(path.join(tmpDir, 'pkg', '.gitignore'), '!reports*/\n');
+      await fs.writeFile(path.join(tmpDir, 'pkg', directory, 'keep.js'), 'export {};\n');
+      await fs.writeFile(path.join(tmpDir, 'pkg', directory, 'drop.ts'), 'export {};\n');
+      await fs.writeFile(path.join(tmpDir, 'other', directory, 'drop.js'), 'export {};\n');
 
-    const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
-    const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
+      const { walkRepositoryPaths } = await import('../../src/core/ingestion/filesystem-walker.js');
+      const scanned = (await walkRepositoryPaths(tmpDir)).map((f) => f.path);
 
-    expect(scanned).toContain(`pkg/${directory}/keep.js`);
-    expect(scanned).not.toContain(`pkg/${directory}/drop.ts`);
-    expect(scanned).not.toContain(`other/${directory}/drop.js`);
-  });
+      expect(scanned).toContain(`pkg/${directory}/keep.js`);
+      expect(scanned).not.toContain(`pkg/${directory}/drop.ts`);
+      expect(scanned).not.toContain(`other/${directory}/drop.js`);
+    },
+  );
 
   it('keeps .gitnexusignore above a nested negation', async () => {
     await fs.mkdir(path.join(tmpDir, 'pkg'), { recursive: true });
@@ -970,18 +974,26 @@ describe('createIgnoreFilter with nested .gitignore files (#2675)', () => {
 
       // A timer in this worker cannot interrupt a blocked synchronous open.
       // Enforce the deadline outside the process that performs the walk.
-      const walkerUrl = new URL('../../src/core/ingestion/filesystem-walker.ts', import.meta.url).href;
-      const output = execFileSync(process.execPath, [
-        '--import', import.meta.resolve('tsx'), '--input-type=module', '--eval',
-        `import { walkRepositoryPaths } from ${JSON.stringify(walkerUrl)};
+      const walkerUrl = new URL('../../src/core/ingestion/filesystem-walker.ts', import.meta.url)
+        .href;
+      const output = execFileSync(
+        process.execPath,
+        [
+          '--import',
+          import.meta.resolve('tsx'),
+          '--input-type=module',
+          '--eval',
+          `import { walkRepositoryPaths } from ${JSON.stringify(walkerUrl)};
          const files = await walkRepositoryPaths(${JSON.stringify(tmpDir)});
          console.log(JSON.stringify(files.map((file) => file.path)));`,
-      ], {
-        encoding: 'utf8',
-        timeout: 5_000,
-        killSignal: 'SIGKILL',
-        env: { ...process.env, GITNEXUS_NO_GLOBAL_IGNORE: '1' },
-      });
+        ],
+        {
+          encoding: 'utf8',
+          timeout: 5_000,
+          killSignal: 'SIGKILL',
+          env: { ...process.env, GITNEXUS_NO_GLOBAL_IGNORE: '1' },
+        },
+      );
 
       expect(JSON.parse(output)).toContain('pkg/src/index.ts');
     },
