@@ -1,3 +1,4 @@
+import type Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import {
   compilePatterns,
@@ -9,19 +10,22 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 
 /**
  * Go HTTP plugin. Handles:
- *   - gin / echo / chi framework routing — `r.GET("/path", handler)`
+ *   - gin / echo framework routing — `r.GET("/path", handler)`, including
+ *     prefixes from route groups bound in the same function (`r.Group("/api")`)
  *   - net/http stdlib — `http.HandleFunc("/path", handler)`
  *   - net/http consumer — `http.Get(...)`, `http.NewRequest("METHOD", ...)`
  *   - resty consumer — `client.R().Delete("/path")`
  */
 
 // ─── Provider: framework routing ──────────────────────────────────────
-// Matches `\w+\.GET(...)` etc. (gin, echo, chi all share this shape).
-// Captures the HTTP method (field name), path literal, and the handler —
-// anchored to the LAST argument (`@handler .`) so a variadic middleware
-// chain (`r.GET("/x", mw, handler)`, gin/echo/chi style) binds the real
+// Matches `\w+\.GET(...)` etc. (gin and echo share this shape).
+// Captures the receiver, the HTTP method (field name), path literal, and the
+// handler — anchored to the LAST argument (`@handler .`) so a variadic
+// middleware chain (`r.GET("/x", mw, handler)`, gin style) binds the real
 // handler, not a middleware identifier (which would otherwise over-match
-// and attach the route to the wrong symbol — see #2276 review).
+// and attach the route to the wrong symbol — see #2276 review). The handler
+// may be a function name, an inline func literal, or a method value /
+// package-qualified function (`h.ListUsers`, `handlers.ListUsers`).
 const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
   name: 'go-framework-route',
   language: Go,
@@ -31,15 +35,118 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
       query: `
         (call_expression
           function: (selector_expression
+            operand: (_) @receiver
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
             (interpreted_string_literal) @path
-            [(identifier) (func_literal)] @handler
+            [(identifier) (func_literal) (selector_expression)] @handler
             .))
       `,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Route groups: `v1 := r.Group("/api/v1")` ─────────────────────────
+// gin (`*gin.RouterGroup`) and echo (`*echo.Group`) routes registered on a
+// group inherit every enclosing `Group(prefix)`. The prefix is recovered by
+// walking the route's receiver back through its bindings, lexically, inside
+// the enclosing function declaration only: a group handed to another
+// function (`registerAdmin(v1)`) arrives as a parameter and contributes no
+// prefix there, and a receiver bound to anything but a literal-prefix
+// `Group(...)` call contributes none either — the route keeps its literal path.
+
+const MAX_GROUP_DEPTH = 32;
+
+function joinRoutePath(prefix: string, relative: string): string {
+  if (!prefix) return relative;
+  if (!relative) return prefix;
+  return `${prefix.replace(/\/+$/, '')}/${relative.replace(/^\/+/, '')}`;
+}
+
+/** `parent.Group("/p", mw...)` → its receiver and literal prefix; null otherwise. */
+function asGroupCall(
+  node: Parser.SyntaxNode,
+): { parent: Parser.SyntaxNode; prefix: string } | null {
+  if (node.type !== 'call_expression') return null;
+  const fn = node.childForFieldName('function');
+  if (fn?.type !== 'selector_expression' || fn.childForFieldName('field')?.text !== 'Group') {
+    return null;
+  }
+  const parent = fn.childForFieldName('operand');
+  const first = node.childForFieldName('arguments')?.namedChildren[0];
+  if (!parent || first?.type !== 'interpreted_string_literal') return null;
+  const prefix = unquoteLiteral(first.text);
+  return prefix === null ? null : { parent, prefix };
+}
+
+/** The expression `name` is assigned by `stmt` (`:=`, `=`, or `var`), if any. */
+function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | null | undefined {
+  const pick = (
+    names: Parser.SyntaxNode[],
+    values: Parser.SyntaxNode | null,
+  ): Parser.SyntaxNode | null | undefined => {
+    const i = names.findIndex((n) => n.type === 'identifier' && n.text === name);
+    if (i < 0) return undefined;
+    return values?.namedChildren[i] ?? null;
+  };
+  switch (stmt.type) {
+    case 'short_var_declaration':
+    case 'assignment_statement':
+      return pick(
+        stmt.childForFieldName('left')?.namedChildren ?? [],
+        stmt.childForFieldName('right'),
+      );
+    case 'var_declaration': {
+      const specs = stmt.namedChildren.flatMap((c) =>
+        c.type === 'var_spec_list' ? c.namedChildren : [c],
+      );
+      for (const spec of specs) {
+        if (spec.type !== 'var_spec') continue;
+        const value = pick(spec.childrenForFieldName('name'), spec.childForFieldName('value'));
+        if (value !== undefined) return value;
+      }
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The value last bound to identifier `ident` before its use: the nearest
+ * preceding statement in the enclosing blocks, walking outward through
+ * closures up to the enclosing function declaration. Returns null when the
+ * name is a parameter, is bound without a value, or is not bound in scope.
+ */
+function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const name = ident.text;
+  let child: Parser.SyntaxNode = ident;
+  for (let node = ident.parent; node; child = node, node = node.parent) {
+    if (node.type === 'function_declaration' || node.type === 'method_declaration') return null;
+    if (node.type === 'func_literal') {
+      const params = node.childForFieldName('parameters')?.descendantsOfType('identifier') ?? [];
+      if (params.some((p) => p.text === name)) return null;
+      continue;
+    }
+    if (node.type !== 'block') continue;
+    const stmts = node.namedChildren;
+    const useIndex = stmts.findIndex((s) => s.id === child.id);
+    for (const stmt of stmts.slice(0, useIndex).reverse()) {
+      const value = boundValue(stmt, name);
+      if (value !== undefined) return value;
+    }
+  }
+  return null;
+}
+
+/** Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced. */
+function groupPrefix(receiver: Parser.SyntaxNode, depth = 0): string {
+  if (depth > MAX_GROUP_DEPTH) return '';
+  const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
+  const group = value ? asGroupCall(value) : null;
+  if (!group) return '';
+  return joinRoutePath(groupPrefix(group.parent, depth + 1), group.prefix);
+}
 
 // ─── Provider: net/http `http.HandleFunc("/p", handler)` ─────────────
 const HANDLE_FUNC_PATTERNS = compilePatterns({
@@ -135,25 +242,36 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
   scan(tree) {
     const out: HttpDetection[] = [];
 
-    // Framework providers: r.GET/POST/... with handler identifier
+    // Framework providers: r.GET/POST/... on an engine or (nested) route group
     for (const match of runCompiledPatterns(FRAMEWORK_ROUTE_PATTERNS, tree)) {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       const handlerNode = match.captures.handler;
+      const receiverNode = match.captures.receiver;
       if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
-      if (path === null) continue;
+      const literalPath = unquoteLiteral(pathNode.text);
+      if (literalPath === null) continue;
+      const path = receiverNode
+        ? joinRoutePath(groupPrefix(receiverNode), literalPath)
+        : literalPath;
       // An inline `func(){…}` handler has no name → emit `name: null` and a
       // `line` so it resolves to its containing/closure symbol by line-span
-      // containment (like a consumer). A named identifier handler keeps its
-      // name and resolves by name; `line` is harmless there.
+      // containment (like a consumer). A named handler keeps its name and
+      // resolves by name; `line` is harmless there. For a method value or a
+      // package-qualified function (`h.List`, `pkg.List`) that name is the
+      // field: the group layer resolves handlers by name alone, and the
+      // operand is usually a local variable rather than the receiver type.
       const isInlineHandler = handlerNode?.type === 'func_literal';
+      const handlerName =
+        handlerNode?.type === 'selector_expression'
+          ? (handlerNode.childForFieldName('field')?.text ?? null)
+          : (handlerNode?.text ?? null);
       out.push({
         role: 'provider',
         framework: 'go-framework',
         method: methodNode.text.toUpperCase(),
         path,
-        name: isInlineHandler ? null : (handlerNode?.text ?? null),
+        name: isInlineHandler ? null : handlerName,
         line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
       });
