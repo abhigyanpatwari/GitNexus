@@ -19,13 +19,15 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 
 // ─── Provider: framework routing ──────────────────────────────────────
 // Matches `\w+\.GET(...)` etc. (gin and echo share this shape).
-// Captures the receiver, the HTTP method (field name), path literal, and the
-// handler — anchored to the LAST argument (`@handler .`) so a variadic
-// middleware chain (`r.GET("/x", mw, handler)`, gin style) binds the real
-// handler, not a middleware identifier (which would otherwise over-match
-// and attach the route to the wrong symbol — see #2276 review). The handler
-// may be a function name, an inline func literal, or a method value /
-// package-qualified function (`h.ListUsers`, `handlers.ListUsers`).
+// Captures the receiver, the HTTP method (field name), and the path literal
+// — anchored as the FIRST argument so the code can pick the handler out of
+// the remaining arguments. Which argument that is depends on the framework:
+// gin is `GET(path, middleware..., handler)` (last), echo is
+// `GET(path, handler, middleware...)` (first) — see importsEchoOnly below.
+// The handler must be an identifier, an inline func literal, or a method
+// value / package-qualified function (`h.ListUsers`, `handlers.ListUsers`);
+// anything else there means the call cannot be attributed to a symbol, so it
+// is dropped rather than guessed (variadic-middleware over-match, #2276).
 const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
   name: 'go-framework-route',
   language: Go,
@@ -38,13 +40,47 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
             operand: (_) @receiver
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
-            (interpreted_string_literal) @path
-            [(identifier) (func_literal) (selector_expression)] @handler
-            .))
+            .
+            (interpreted_string_literal) @path))
       `,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+/** Argument forms a route handler may take. */
+const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
+  'identifier',
+  'func_literal',
+  'selector_expression',
+]);
+
+/**
+ * Whether the file's imports say it routes with echo and not gin: echo
+ * verb calls take the handler as the FIRST argument after the path
+ * (`GET(path, handler, middleware...)`), gin's as the LAST
+ * (`GET(path, middleware..., handler)`). Matched on the import path rather
+ * than the local name, so an aliased import still counts. Both frameworks
+ * or neither → not echo-only → callers keep the last-argument anchor, which
+ * is gin's order and the safer default when the file proves nothing.
+ */
+function importsEchoOnly(root: Parser.SyntaxNode): boolean {
+  // Imports sit only at file scope; skip bodies.
+  const specs = root.namedChildren
+    .filter((node) => node.type === 'import_declaration')
+    .flatMap((decl) => decl.descendantsOfType('import_spec'));
+  let echo = false;
+  let gin = false;
+  for (const spec of specs) {
+    const importPath = stringLiteral(spec.childForFieldName('path'));
+    if (importPath === null) continue;
+    // `_` and `.` imports bind no qualifier this file can route through.
+    const local = spec.childForFieldName('name')?.text;
+    if (local === '_' || local === '.') continue;
+    if (importPath.includes('labstack/echo')) echo = true;
+    else if (importPath.includes('gin-gonic/gin')) gin = true;
+  }
+  return echo && !gin;
+}
 
 // ─── Route groups: `v1 := r.Group("/api/v1")` ─────────────────────────
 // gin (`*gin.RouterGroup`) and echo (`*echo.Group`) routes registered on a
@@ -62,9 +98,17 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
 const MAX_GROUP_DEPTH = 32;
 
 function joinRoutePath(prefix: string, relative: string): string {
-  if (!prefix) return relative;
-  if (!relative) return prefix;
-  return `${prefix.replace(/\/+$/, '')}/${relative.replace(/^\/+/, '')}`;
+  let joined = relative;
+  if (prefix && relative) {
+    joined = `${prefix.replace(/\/+$/, '')}/${relative.replace(/^\/+/, '')}`;
+  } else if (prefix) {
+    joined = prefix;
+  }
+  // Collapse duplicate slashes on the FINAL result — every return branch, not
+  // just the join — because ingestion's normalizeExtractedRoutePath collapses
+  // all "//" while the downstream contract-id normalizer does not: a path
+  // that keeps "//" would split into two contract ids across the strategies.
+  return joined.replace(/\/+/g, '/');
 }
 
 /** `parent.Group("/p", mw...)` → its receiver and literal prefix; null otherwise. */
@@ -167,8 +211,13 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
     if (node.type === 'for_statement') {
       const clause = node.namedChildren[0];
       if (clause?.type === 'for_clause') {
-        for (const stmt of clause.namedChildren) {
-          const value = boundValue(stmt, name);
+        // Only the initializer runs before the body: `condition` and
+        // `update` (`g = r.Group("/post")` in the post slot) evaluate after
+        // it, so they must not shadow what the body sees on entry. An absent
+        // initializer (`for ; c; i++`) binds nothing.
+        const init = clause.childForFieldName('initializer');
+        if (init) {
+          const value = boundValue(init, name);
           if (value !== undefined) return value;
         }
       } else if (clause?.type === 'range_clause') {
@@ -295,14 +344,23 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
     const out: HttpDetection[] = [];
 
     // Framework providers: r.GET/POST/... on an engine or (nested) route group
+    const echoOnly = importsEchoOnly(tree.rootNode);
     for (const match of runCompiledPatterns(FRAMEWORK_ROUTE_PATTERNS, tree)) {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
-      const handlerNode = match.captures.handler;
       const receiverNode = match.captures.receiver;
       if (!methodNode || !pathNode) continue;
       const literalPath = stringLiteral(pathNode);
       if (literalPath === null) continue;
+      const argList = pathNode.parent;
+      if (argList?.type !== 'argument_list') continue;
+      // The path is anchored first, so everything after it is a handler or
+      // middleware candidate: an echo-only file takes the first of those,
+      // any other file the last (see FRAMEWORK_ROUTE_PATTERNS / importsEchoOnly).
+      const rest = argList.namedChildren.slice(1);
+      if (rest.length === 0) continue;
+      const handlerNode = echoOnly ? rest[0] : rest[rest.length - 1];
+      if (!HANDLER_ARG_TYPES.has(handlerNode.type)) continue;
       const path = receiverNode
         ? joinRoutePath(groupPrefix(receiverNode), literalPath)
         : literalPath;

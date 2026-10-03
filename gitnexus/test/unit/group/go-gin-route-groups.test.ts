@@ -360,6 +360,31 @@ func routes(r *gin.Engine, n int, subs []*gin.RouterGroup) {
     ]);
   });
 
+  it('ignores a for-loop post assignment and only honors its initializer', () => {
+    // The post statement runs AFTER each body, so a `g = …` there must not
+    // shadow the group the body sees on entry; an initializer still does.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool, n int) {
+	g := r.Group("/old")
+	for ; cond; g = r.Group("/post") {
+		g.GET("/a", h.A)
+	}
+	for i := 0; i < n; g = r.Group("/post2") {
+		g.GET("/b", h.B)
+	}
+	for g := r.Group("/init"); ; g = r.Group("/post3") {
+		g.GET("/c", h.C)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/old/a', name: 'A' },
+      { method: 'GET', path: '/old/b', name: 'B' },
+      { method: 'GET', path: '/init/c', name: 'C' },
+    ]);
+  });
+
   it('accepts a raw-string (backtick) group prefix', () => {
     expect(
       providers(`package main
@@ -394,6 +419,63 @@ func routes(r *gin.Engine) {
 }
 `),
     ).toEqual([{ method: 'GET', path: '/raw\\x2fy/z', name: 'Z' }]);
+  });
+
+  it('collapses duplicate slashes so the path matches ingestion normalization', () => {
+    // normalizeExtractedRoutePath collapses every "//" run; the downstream
+    // contract-id normalizer does not — a path keeping "//" would get a
+    // different id than the graph's route node for the same route.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/api//v1")
+	g.GET("/a//b", h.A)
+	r.GET("//root", h.R)
+	r.GET("/ok", h.Ok)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/api/v1/a/b', name: 'A' },
+      { method: 'GET', path: '/root', name: 'R' },
+      { method: 'GET', path: '/ok', name: 'Ok' },
+    ]);
+  });
+
+  it("binds echo's handler (first argument) when the file imports echo only", () => {
+    // echo is `GET(path, handler, middleware...)` — the handler is second,
+    // not last, so a middleware selector must not become the route's name.
+    expect(
+      providers(`package main
+import "github.com/labstack/echo/v4"
+
+func routes(e *echo.Echo) {
+	e.GET("/x", h.Handler, auth.Middleware)
+	e.POST("/y", handlerID)
+	e.PUT("/z", func(c echo.Context) error { return nil })
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/x', name: 'Handler' },
+      { method: 'POST', path: '/y', name: 'handlerID' },
+      { method: 'PUT', path: '/z', name: null },
+    ]);
+  });
+
+  it('keeps the last-argument handler when a file imports both gin and echo', () => {
+    // Ambiguous imports prove nothing about argument order → conservative
+    // fallback to the last-argument anchor (gin's order).
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes(e *echo.Echo) {
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
   });
 
   it('applies the same group logic to echo', () => {
