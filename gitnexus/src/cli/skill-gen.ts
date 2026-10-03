@@ -182,7 +182,7 @@ export const generateSkillFiles = async (
     const entryPoints = gatherEntryPoints(members);
 
     // Gather execution flows
-    const flows = gatherFlows(community.rawIds, processResult?.processes || []);
+    const flows = gatherFlows(community.rawIds, members, processResult?.processes || []);
 
     // Gather cross-community connections
     const connections = gatherCrossConnections(
@@ -526,14 +526,26 @@ const gatherEntryPoints = (members: MemberSymbol[]): MemberSymbol[] => {
 /**
  * @brief Gather execution flows touching this community
  * @param {string[]} rawIds - Raw community IDs for this aggregated community
+ * @param {MemberSymbol[]} members - Member symbols, including raw singleton assignments
  * @param {ProcessNode[]} processes - All detected processes
- * @returns {ProcessNode[]} Processes whose communities intersect rawIds, sorted by stepCount
+ * @returns {ProcessNode[]} Processes matching the community IDs or member symbols, sorted by stepCount
  */
-const gatherFlows = (rawIds: string[], processes: ProcessNode[]): ProcessNode[] => {
+const gatherFlows = (
+  rawIds: string[],
+  members: MemberSymbol[],
+  processes: ProcessNode[],
+): ProcessNode[] => {
   const rawIdSet = new Set(rawIds);
+  const memberIds = new Set(members.map((member) => member.id));
 
   return processes
-    .filter((proc) => proc.communities.some((cid) => rawIdSet.has(cid)))
+    .filter(
+      (proc) =>
+        proc.communities.some((cid) => rawIdSet.has(cid)) ||
+        // Filtered singleton communities are absent from process metadata,
+        // but their symbols still participate in detected execution traces.
+        proc.trace.some((nodeId) => memberIds.has(nodeId)),
+    )
     .sort((a, b) => b.stepCount - a.stepCount);
 };
 
