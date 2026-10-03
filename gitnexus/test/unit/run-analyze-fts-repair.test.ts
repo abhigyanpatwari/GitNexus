@@ -2215,10 +2215,11 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('preserves lastCommit / fileHashes / the dirty flag, and never restates a stale count', async () => {
+  it('keeps staging counts out of published metadata until the index is swapped', async () => {
     const STALE_COMMIT = '1111111111111111111111111111111111111111';
     const STALE_HASHES = { 'src/app.ts': 'stale-hash' };
     const LIVE_EMBEDDING_COUNT = 42;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
 
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -2315,15 +2316,14 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
             nodeIds: ['node-1', 'node-2'],
           });
           snapshots.windowStart = await loadMeta(storagePath);
-          // Post-window checkpoint — this one MEASURED the live count.
+          // Post-window checkpoint measures staging, not the published DB.
           await pipelineOptions.onCheckpoint?.({
             nodesProcessed: 2,
             totalNodes: 4,
             chunksProcessed: 4,
           });
           snapshots.postWindow = await loadMeta(storagePath);
-          // Window 2 — the old code restated the PREVIOUS run's count here and
-          // clobbered the live figure the post-window save had just written.
+          // Window 2 must retain the published count too.
           await pipelineOptions.onCheckpointWindowStart?.({
             nodesProcessed: 2,
             totalNodes: 4,
@@ -2375,18 +2375,18 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       });
       expect(snapshots.windowStart?.lastCommit).not.toBe(currentCommit);
 
-      // ── Post-window: the one save that legitimately measured the count ──
+      // ── Post-window: the staged count is not published yet ─────────────
       expect(snapshots.postWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
         fileHashes: STALE_HASHES,
         incrementalInProgress: { phase: 'full-rebuild' },
-        stats: { embeddings: LIVE_EMBEDDING_COUNT },
+        stats: { embeddings: 7 },
       });
 
-      // ── Window 2: no stale restatement over the measured figure ────────
+      // ── Window 2: the published count remains unchanged ────────────────
       expect(snapshots.secondWindow).toMatchObject({
         lastCommit: STALE_COMMIT,
-        stats: { embeddings: LIVE_EMBEDDING_COUNT },
+        stats: { embeddings: 7 },
         embeddingCheckpoint: { pendingNodeIds: ['node-3', 'node-4'] },
       });
 
@@ -2395,7 +2395,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
       const finalMeta = JSON.parse(
         await fs.readFile(`${storagePath}/meta.json`, 'utf-8'),
       ) as RepoMeta;
-      expect(finalMeta).toMatchObject({ lastCommit: currentCommit });
+      expect(finalMeta).toMatchObject({ lastCommit: currentCommit, stats: { embeddings: 42 } });
       expect(finalMeta.embeddingCheckpoint).toBeUndefined();
       expect(finalMeta.incrementalInProgress).toBeUndefined();
     } finally {
@@ -2699,6 +2699,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
    */
   it('carries the mid-run count forward, not the run-start snapshot, so --force still loads the cache', async () => {
     const MID_RUN_COUNT = 12;
+    vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
     try {
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
