@@ -323,6 +323,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       const toolsByHandlerId = new Map<string, string[]>();
       const toolsWithoutHandlerByFile = new Map<string, string[]>();
       for (const td of toolDefs) {
+        if (!td.handlerNodeId && td.allowFileFallback === false) continue;
         const key = td.handlerNodeId ?? td.filePath;
         const targetMap = td.handlerNodeId ? toolsByHandlerId : toolsWithoutHandlerByFile;
         let list = targetMap.get(key);
