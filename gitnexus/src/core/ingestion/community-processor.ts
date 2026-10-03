@@ -176,7 +176,10 @@ export interface CommunityMembership {
 
 export interface CommunityDetectionResult {
   communities: CommunityNode[];
+  /** Assignments to retained communities, safe to emit as MEMBER_OF edges. */
   memberships: CommunityMembership[];
+  /** All Leiden assignments, including filtered singletons. Optional for legacy producers. */
+  rawMemberships?: CommunityMembership[];
   stats: {
     totalCommunities: number;
     modularity: number;
@@ -235,6 +238,7 @@ export const processCommunities = async (
     return {
       communities: [],
       memberships: [],
+      rawMemberships: [],
       stats: {
         totalCommunities: 0,
         modularity: 0,
@@ -267,13 +271,16 @@ export const processCommunities = async (
 
   onProgress?.('Creating membership edges...', 80);
 
-  // Step 4: Create membership mappings
+  // Step 4: Preserve all assignments for skill generation, but only emit
+  // memberships for retained communities with a corresponding graph node.
+  const retainedCommunityIds = new Set(communityNodes.map((community) => community.id));
   const memberships: CommunityMembership[] = [];
+  const rawMemberships: CommunityMembership[] = [];
   Object.entries(details.communities).forEach(([nodeId, communityNum]) => {
-    memberships.push({
-      nodeId,
-      communityId: `comm_${communityNum}`,
-    });
+    const communityId = `comm_${communityNum}`;
+    const membership = { nodeId, communityId };
+    rawMemberships.push(membership);
+    if (retainedCommunityIds.has(communityId)) memberships.push(membership);
   });
 
   onProgress?.('Community detection complete!', 100);
@@ -281,6 +288,7 @@ export const processCommunities = async (
   return {
     communities: communityNodes,
     memberships,
+    rawMemberships,
     stats: {
       totalCommunities: details.count,
       modularity: details.modularity,
