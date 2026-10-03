@@ -7,6 +7,7 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { getCypherErrorHint } from './cypher-error-hint.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
@@ -4220,7 +4221,8 @@ export class LocalBackend {
           recoverySuggestion: WAL_RECOVERY_SUGGESTION,
         };
       }
-      return { error: msg };
+      const hint = getCypherErrorHint(msg, repo.name);
+      return hint ? { error: msg, hint } : { error: msg };
     }
   }
 
