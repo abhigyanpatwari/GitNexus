@@ -56,6 +56,15 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       lock,
       `Cannot acquire the index lock at ${metaDir}; refusing an unlocked embeddings sync.`,
     );
+    // Sync writes the published graph and cannot recover a staged generation.
+    // Reject even malformed receipts before detaching a shared graph or writing.
+    const recoveryCheckpoint = (await loadMeta(metaDir))?.embeddingCheckpoint;
+    if (recoveryCheckpoint && Object.hasOwn(recoveryCheckpoint, 'recovery')) {
+      throw new Error(
+        'Cannot sync embeddings: the index checkpoint references staged embeddings. ' +
+          'Run `gitnexus analyze` to recover them first.',
+      );
+    }
     if (!(await ensurePrivateSharedGraph(metaDir, (m) => console.log(`  ${m}`)))) {
       throw new Error('The shared graph this checkout reads is gone. Run gitnexus analyze first.');
     }
