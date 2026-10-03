@@ -10,7 +10,12 @@ import { resolveGraphPath } from '../../storage/shared-store.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
-import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskResult } from 'gitnexus-shared';
+import {
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+  getLanguageFromFilename,
+  type ImpactRiskResult,
+} from 'gitnexus-shared';
 import {
   initLbug,
   executeQuery,
@@ -30,8 +35,10 @@ import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
+import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
+import { isTemplateRouteCandidate } from '../../core/ingestion/utils/template-file.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -315,6 +322,28 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
  */
 function nonBlankUid(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
+
+const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
+  'Run gitnexus analyze --force from the affected repository root to rebuild the index.';
+
+class SymbolIdentityError extends Error {
+  constructor() {
+    super('The index returned an invalid symbol identity. ' + SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+    this.name = 'SymbolIdentityError';
+  }
+}
+
+/** Validate database identities before using them as graph traversal anchors. */
+function assertSymbolIdentity(id: unknown, expectedUid?: string): asserts id is string {
+  if (
+    typeof id !== 'string' ||
+    !id.trim() ||
+    id.includes('\0') ||
+    (expectedUid !== undefined && id !== expectedUid)
+  ) {
+    throw new SymbolIdentityError();
+  }
 }
 
 interface StringAliasDefinition {
@@ -3143,6 +3172,7 @@ export class LocalBackend {
     // regardless of whether OTHER tables succeeded — previously a real error
     // on N-1 of N tables while one succeeded left zero diagnostic trail.
     const ftsQueryErrors = bm25SearchResult?.nonBenignErrors;
+    const ftsMissingIndexes = bm25SearchResult?.missingIndexes;
     if (ftsQueryErrors) {
       // tri-review NEW-5: these strings are already classified non-benign by
       // classifyFtsQueryError — do NOT route them through logQueryError,
@@ -3632,13 +3662,15 @@ export class LocalBackend {
         branch: repo.branch,
         indexedAt: this.lastObservedPoolState.get(repo.lbugPath)?.indexedAt ?? repo.indexedAt,
       };
-      // tri-review NEW-1: every table failing for a REAL error (timeout,
-      // connection reset) is not a missing-index condition — `ftsDegradedWarning`'s
-      // "run --repair-fts" headline won't fix it. Route to a dedicated message
-      // instead of burying the real cause as a trailing suffix on bad advice.
+      // Real errors (timeout, connection reset) need their own diagnosis.
+      // When some indexes are also missing, preserve both causes and append
+      // their repair guidance below even though no FTS query succeeded.
       warnings.push(
         ftsQueryErrors
-          ? ftsQueryFailedWarning({ ...warningContext, lastErrorRedacted: ftsQueryErrors[0] })
+          ? ftsQueryFailedWarning(
+              { ...warningContext, lastErrorRedacted: ftsQueryErrors[0] },
+              !!ftsMissingIndexes?.length,
+            )
           : ftsDegradedWarning(warningContext, ftsDisabledReason),
       );
     } else if (ftsQueryErrors) {
@@ -3649,6 +3681,12 @@ export class LocalBackend {
       // that convention instead of only logging server-side.
       warnings.push(
         `FTS keyword search partially failed — ${ftsQueryErrors.length} of the configured indexes hit a query error and were skipped; results may be missing matches from those node types (see server logs).`,
+      );
+    }
+    if (ftsMissingIndexes?.length && (ftsUsed || ftsQueryErrors)) {
+      warnings.push(
+        `FTS keyword search is incomplete: missing configured indexes (${ftsMissingIndexes.join(', ')}). ` +
+          'Results may be missing matches from those node types. Run `gitnexus analyze --repair-fts`.',
       );
     }
     // #2331: a CJK query against a server process resolving
@@ -3782,7 +3820,7 @@ export class LocalBackend {
     // #2767: a partial FTS failure (some tables ok, one or more real errors)
     // is as much a "results may be incomplete" signal as enrichmentDegraded —
     // flag it the same way rather than only via the warning string.
-    const ftsPartial = ftsUsed && !!ftsQueryErrors;
+    const ftsPartial = ftsUsed && (!!ftsQueryErrors || !!ftsMissingIndexes?.length);
 
     return {
       processes,
@@ -3803,7 +3841,12 @@ export class LocalBackend {
     query: string,
     limit: number,
     disabledReason?: FtsDisabledReason,
-  ): Promise<{ results: any[]; ftsUsed: boolean; nonBenignErrors?: string[] }> {
+  ): Promise<{
+    results: any[];
+    ftsUsed: boolean;
+    nonBenignErrors?: string[];
+    missingIndexes?: string[];
+  }> {
     if (disabledReason) return { results: [], ftsUsed: false };
     let searchFTSFromLbug;
     try {
@@ -3837,6 +3880,7 @@ export class LocalBackend {
     const bm25Results = ftsResponse?.results ?? [];
     const ftsUsed = ftsResponse?.ftsAvailable ?? false;
     const nonBenignErrors = ftsResponse?.nonBenignErrors;
+    const missingIndexes = ftsResponse?.missingIndexes;
 
     const results: any[] = [];
 
@@ -3910,7 +3954,12 @@ export class LocalBackend {
       }
     }
 
-    return { results, ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) };
+    return {
+      results,
+      ftsUsed,
+      ...(nonBenignErrors && { nonBenignErrors }),
+      ...(missingIndexes && { missingIndexes }),
+    };
   }
 
   /**
@@ -4522,6 +4571,7 @@ export class LocalBackend {
         endLine: (r.endLine ?? r[5]) as number,
         ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
       };
+      assertSymbolIdentity(symbol.id, uid);
       // Same LadybugDB label-enrichment as the name-based path: a UID
       // pointing at a Class must still surface `type: 'Class'` so impact's
       // Class/Interface BFS seed fires. No-op when type is already set.
@@ -4655,6 +4705,9 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+    // Reject the whole result before narrowing or scoring: dropping a corrupt
+    // candidate could make an unrelated surviving symbol look unambiguous.
+    for (const candidate of normalized) assertSymbolIdentity(candidate.id);
 
     // An exact File path wins over anchored suffix candidates. Without this,
     // `lib/a.ts` and `src/lib/a.ts` both score as File candidates and turn an
@@ -4808,6 +4861,9 @@ export class LocalBackend {
       return await this._contextImpl(repo, params);
     } catch (err: any) {
       const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
+      if (err instanceof SymbolIdentityError) {
+        return { error: msg, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
+      }
       if (isWalCorruptionError(err)) {
         return {
           error: msg,
@@ -6445,6 +6501,7 @@ export class LocalBackend {
     // throwaway arrays the size of the row set (40k rows 11.4ms → 4.5ms, 200k
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
+    const mappedPaths = new Set<string>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
     }
@@ -6454,6 +6511,8 @@ export class LocalBackend {
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
+      // A suffix fallback is a hint, not proof that this is the changed file.
+      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
       if (changedSymbols.has(sym.id)) continue;
 
       changedSymbols.set(sym.id, {
@@ -6464,6 +6523,27 @@ export class LocalBackend {
         change_type: 'touched',
       });
     }
+
+    // An empty successful query cannot prove a source diff is safe: its rows
+    // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
+    // docs/config diffs measurable, but withhold a ranked source-risk verdict.
+    const isSourceFile = (file: string): boolean =>
+      getLanguageFromFilename(file) !== null ||
+      isCobolFile(file) ||
+      isJclFile(file) ||
+      isTemplateRouteCandidate(file);
+    const unmappedFiles = [
+      ...new Set(
+        fileDiffs
+          .filter(
+            ({ filePath, oldFilePath }) =>
+              !mappedPaths.has(filePath) &&
+              (isSourceFile(filePath) || (oldFilePath !== undefined && isSourceFile(oldFilePath))),
+          )
+          .map(({ filePath }) => filePath),
+      ),
+    ];
+    if (unmappedFiles.length > 0) queryDegraded = true;
 
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
@@ -6565,8 +6645,9 @@ export class LocalBackend {
       },
       changed_symbols: listedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
-      // A swallowed query failure makes the counts/risk above incomplete — tell
-      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
+      // Failed queries or unmapped source files leave counts/risk incomplete;
+      // the safety gate must not treat that as a clean result (#2283).
       ...(queryDegraded && { partial: true }),
       ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
     };
@@ -7087,8 +7168,16 @@ export class LocalBackend {
       // Return structured error instead of crashing (#321)
       const message =
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
-      const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
-      const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
+      const recoverySuggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : isWalCorruptionError(err)
+            ? WAL_RECOVERY_SUGGESTION
+            : undefined;
+      const suggestion =
+        err instanceof SymbolIdentityError
+          ? SYMBOL_IDENTITY_RECOVERY_SUGGESTION
+          : 'The graph query failed — try gitnexus context <symbol> as a fallback';
       if (params.mode === 'pdg') {
         // Symbol resolution never reached the catch with a resolved symbol (the
         // throw can originate before/within resolution), so the envelope carries
@@ -8788,6 +8877,54 @@ export class LocalBackend {
       });
     }
 
+    // ── Route enrichment (#3402) ──────────────────────────────────────────
+    // HTTP endpoints served by the target or any impacted symbol, read from
+    // (handler)-[HANDLES_ROUTE]->Route. Reported, not traversed: HANDLES_ROUTE
+    // stays out of the walk's relTypes. The Process path cannot stand in for
+    // this — a handler only heads a Process when its call chain is 3+ steps and
+    // it ranks in the repo-wide entry-point cap, so most handlers of a large
+    // router would never surface.
+    const routesById = new Map<string, Array<{ url: string; method?: string }>>();
+    const affectedRoutes: Array<{ url: string; method?: string }> = [];
+    if (!skipEnrichment) {
+      const routeIds = [
+        String(symId),
+        ...impacted.map((item) => String(item.id ?? '')).filter(Boolean),
+      ].slice(0, MAX_CHUNKS * CHUNK_SIZE);
+      const seenRoutes = new Set<string>();
+      for (const chunkIds of chunk(routeIds, CHUNK_SIZE)) {
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (h)-[:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
+          WHERE h.id IN $ids
+          RETURN h.id AS hid, route.name AS url, route.method AS method
+          ORDER BY url, method
+        `,
+          { ids: chunkIds },
+        ).catch((err) => {
+          enrichmentDegraded = true;
+          logQueryError('impact:route-chunk', err);
+          return [];
+        });
+        for (const row of rows) {
+          const hid = String(row.hid ?? row[0] ?? '');
+          const url = row.url ?? row[1];
+          if (!hid || typeof url !== 'string') continue;
+          const method = row.method ?? row[2];
+          const route = typeof method === 'string' && method ? { url, method } : { url };
+          const list = routesById.get(hid);
+          if (list) list.push(route);
+          else routesById.set(hid, [route]);
+          const key = `${route.method ?? ''} ${url}`;
+          if (!seenRoutes.has(key)) {
+            seenRoutes.add(key);
+            affectedRoutes.push(route);
+          }
+        }
+      }
+    }
+
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
@@ -8866,6 +9003,7 @@ export class LocalBackend {
       byDepthCounts,
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
+      affected_routes: affectedRoutes,
     };
 
     if (summaryOnly) {
@@ -8950,6 +9088,8 @@ export class LocalBackend {
     for (const items of Object.values(paginatedGrouped)) {
       for (const it of items) {
         it.processes = perSymbolProcesses.get(String(it.id)) ?? [];
+        const routes = routesById.get(String(it.id));
+        if (routes) it.routes = routes;
       }
     }
 
@@ -9055,6 +9195,7 @@ export class LocalBackend {
           ];
 
     try {
+      assertSymbolIdentity(sym.id ?? sym[0], uid);
       // skipPerSymbolEnrichment suppresses ONLY the per-symbol STEP_IN_PROCESS
       // enrichment pass while preserving byDepth. Group-mode cross-repo fan-out
       // may fan across many repos; the per-symbol pass adds up to MAX_CHUNKS

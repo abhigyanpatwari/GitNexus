@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import type { GraphRelationship } from 'gitnexus-shared';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { lbugMocks } = vi.hoisted(() => ({
@@ -22,6 +23,60 @@ const createMockResponse = (writeImpl?: (chunk: string) => boolean) => {
   response.write = vi.fn((chunk: string) => (writeImpl ? writeImpl(chunk) : true));
   return response;
 };
+
+describe('graph relationship reason contract', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    { stored: null, expected: '' },
+    { stored: undefined, expected: '' },
+    { stored: '', expected: '' },
+    { stored: 'branch → next', expected: 'branch → next' },
+  ])(
+    'returns reason=$expected for stored $stored in JSON and NDJSON',
+    async ({ stored, expected }) => {
+      const row = {
+        sourceId: 'BasicBlock:src/app.ts:1',
+        targetId: 'BasicBlock:src/app.ts:2',
+        type: 'CFG' as const,
+        confidence: 1,
+        reason: stored,
+        step: 0,
+      };
+      lbugMocks.executeQuery.mockImplementation(async (query: string) =>
+        query.includes('CodeRelation') ? [row] : [],
+      );
+      lbugMocks.streamQuery.mockImplementation(
+        async (query: string, onRow: (row: unknown) => Promise<void>) => {
+          if (!query.includes('CodeRelation')) return 0;
+          await onRow(row);
+          return 1;
+        },
+      );
+
+      const buffered = JSON.parse(JSON.stringify(await buildGraph()));
+      const writes: string[] = [];
+      await streamGraphNdjson(
+        createMockResponse((chunk) => {
+          writes.push(chunk);
+          return true;
+        }),
+      );
+      const streamed = writes.map((chunk) => JSON.parse(chunk));
+      const relationship: GraphRelationship = {
+        ...row,
+        id: `${row.sourceId}_${row.type}_${row.targetId}`,
+        reason: expected,
+      };
+      expect({ buffered: buffered.relationships, streamed }).toEqual({
+        buffered: [relationship],
+        streamed: [{ type: 'relationship', data: relationship }],
+      });
+    },
+  );
+});
 
 describe('streamGraphNdjson', () => {
   beforeEach(() => {

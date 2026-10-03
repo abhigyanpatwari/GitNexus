@@ -421,6 +421,16 @@ export interface ScopeResolver {
     context?: ImportResolutionContext,
   ): string | readonly string[] | null;
 
+  /** Resolve names declared by the imported module after its files are known.
+   * Shared by route handlers and ordinary scope bindings. May return the input
+   * unchanged; changed bindings must be copies so extraction output and
+   * parse-cache entries remain unchanged. */
+  readonly resolveImportBinding?: (
+    parsedImport: ParsedImport,
+    resolveTargetFiles: () => readonly string[],
+    sourceTextFor: (filePath: string) => string | undefined,
+  ) => ParsedImport;
+
   /**
    * Optionally reclassify an import as a namespace handle after target
    * resolution proves the imported name is itself a module. Returning false
@@ -1225,6 +1235,9 @@ export interface ScopeResolver {
   readonly isCallableVisibleFromCaller?: (ctx: {
     readonly callerParsed: ParsedFile;
     readonly candidate: SymbolDefinition;
+    /** Arity of the actual call, when known. A visibility veto must not
+     *  infer applicability from a name match alone. */
+    readonly callArity?: number;
     /** Caller's enclosing scope id. Languages that gate visibility on
      *  caller scope (e.g. C++ two-phase template lookup) consult it;
      *  others ignore. Optional so existing implementations stay valid. */

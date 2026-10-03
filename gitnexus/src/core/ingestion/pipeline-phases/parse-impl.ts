@@ -1834,9 +1834,16 @@ export async function runChunkedParseAndResolve(
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
   const routeFilePaths = new Set(allPaths);
+  // Route files whose handlers resolve through imports: data route tables, and
+  // routes of a language that resolves its own handlers (`resolveRouteHandler`).
+  // Both need the file's parsed imports and its language's resolution config.
   const dataRouteFilePaths = new Set(
     allDecoratorRoutes
-      .filter((route) => route.source === DATA_ROUTE_TABLE_SOURCE)
+      .filter(
+        (route) =>
+          route.source === DATA_ROUTE_TABLE_SOURCE ||
+          getProviderForFile(route.filePath)?.resolveRouteHandler !== undefined,
+      )
       .map((route) => route.filePath),
   );
   const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
@@ -1852,12 +1859,12 @@ export async function runChunkedParseAndResolve(
     );
   }
   let routeResolutionFiles = allParsedFiles;
-  const resolveRouteImportTarget = (
+  const resolveRouteImportTargets = (
     parsedImport: ParsedImport,
     fromFile: string,
-  ): string | null => {
+  ): readonly string[] => {
     const language = getLanguageFromFilename(fromFile);
-    if (language === null) return null;
+    if (language === null) return [];
     const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
       parsedImport.targetRaw ?? '',
       fromFile,
@@ -1865,8 +1872,15 @@ export async function runChunkedParseAndResolve(
       routeResolutionConfigs.get(language),
       { parsedFiles: routeResolutionFiles, parsedImport },
     );
-    if (typeof target === 'string') return target;
-    return target?.length === 1 ? target[0] : null;
+    if (typeof target === 'string') return [target];
+    return target ?? [];
+  };
+  const resolveRouteImportTarget = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): string | null => {
+    const targets = resolveRouteImportTargets(parsedImport, fromFile);
+    return targets.length === 1 ? targets[0] : null;
   };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
     const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
@@ -1887,6 +1901,34 @@ export async function runChunkedParseAndResolve(
   }
   // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
   // the model is fully populated and decorator-route prefixes are finalized.
+  const routeSourceTexts = new Map<string, string | undefined>();
+  const routeSourceTextFor = (filePath: string): string | undefined => {
+    if (!routeSourceTexts.has(filePath)) {
+      try {
+        routeSourceTexts.set(filePath, fs.readFileSync(path.join(repoPath, filePath), 'utf-8'));
+      } catch {
+        routeSourceTexts.set(filePath, undefined);
+      }
+    }
+    return routeSourceTexts.get(filePath);
+  };
+  routeResolutionFiles = routeResolutionFiles.map((parsed) => {
+    if (!dataRouteFilePaths.has(parsed.filePath)) return parsed;
+    const language = getLanguageFromFilename(parsed.filePath);
+    const resolveBinding =
+      language === null ? undefined : SCOPE_RESOLVERS.get(language)?.resolveImportBinding;
+    if (!resolveBinding) return parsed;
+    return {
+      ...parsed,
+      parsedImports: parsed.parsedImports.map((parsedImport) =>
+        resolveBinding(
+          parsedImport,
+          () => resolveRouteImportTargets(parsedImport, parsed.filePath),
+          routeSourceTextFor,
+        ),
+      ),
+    };
+  });
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
@@ -1894,6 +1936,8 @@ export async function runChunkedParseAndResolve(
     {
       files: routeResolutionFiles,
       resolveImportTarget: resolveRouteImportTarget,
+      resolveImportTargets: resolveRouteImportTargets,
+      providerRouteHandler: (filePath) => getProviderForFile(filePath)?.resolveRouteHandler,
       isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
       nodeStartLine: (id) => {
         const n = graph.getNode(id);
