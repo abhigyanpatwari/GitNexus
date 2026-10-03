@@ -1235,6 +1235,9 @@ export interface ScopeResolver {
   readonly isCallableVisibleFromCaller?: (ctx: {
     readonly callerParsed: ParsedFile;
     readonly candidate: SymbolDefinition;
+    /** Arity of the actual call, when known. A visibility veto must not
+     *  infer applicability from a name match alone. */
+    readonly callArity?: number;
     /** Caller's enclosing scope id. Languages that gate visibility on
      *  caller scope (e.g. C++ two-phase template lookup) consult it;
      *  others ignore. Optional so existing implementations stay valid. */
