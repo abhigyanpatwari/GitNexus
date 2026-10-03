@@ -722,12 +722,15 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // With no nested opinion the original order below applies unchanged.
       if (nestedIgnores) {
         if (nexusIgnore) {
-          if (hasExplicitUnignore(nexusIgnore, rel) && !nexusIgnore.ignores(rel)) return false;
+          if (hasExplicitUnignore(nexusIgnore, rel) && !ig?.ignores(rel)) return false;
           if (nexusIgnore.ignores(rel)) return true;
         }
         const nested = nestedIgnores(rel, false);
         if (nested === true) return true;
-        if (nested === false) return shouldIgnorePath(rel);
+        if (nested === false) {
+          if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel)) return false;
+          return shouldIgnorePath(rel);
+        }
       }
       // User's .gitnexusignore negation takes precedence over hardcoded
       // rules (#771). If any ancestor or the path itself was explicitly
@@ -752,7 +755,7 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // `ignored` above.
       if (nestedIgnores && rel) {
         if (nexusIgnore) {
-          if (hasExplicitUnignore(nexusIgnore, rel) && !nexusIgnore.ignores(rel + '/')) {
+          if (hasExplicitUnignore(nexusIgnore, rel) && !ig?.ignores(rel + '/')) {
             return false;
           }
           if (nexusIgnore.ignores(rel + '/')) return true;
@@ -760,6 +763,7 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
         const nested = nestedIgnores(rel, true);
         if (nested === true) return true;
         if (nested === false) {
+          if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
           return isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel));
         }
       }
