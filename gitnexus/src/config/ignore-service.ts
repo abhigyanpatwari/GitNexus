@@ -583,19 +583,16 @@ const readNestedGitignore = (filePath: string): string | null => {
  * synchronous) and cached per directory, and its patterns are matched
  * against the path relative to that directory, like git does.
  *
- * Returns `true` when the deepest nested file with a matching rule ignores
- * the path, `false` when that rule is a negation, and `undefined` when no
- * nested file has an opinion. The root rules are left to the caller, so
- * `.gitnexusignore` keeps its current precedence.
+ * Returns the effective decision when nested rules affect the path or an
+ * ancestor, and `undefined` otherwise. Root rules participate so a directory
+ * negation does not erase independent root exclusions for its children.
+ * The caller still gives `.gitnexusignore` its higher precedence.
  */
 const createNestedGitignoreMatcher = (
   repoPath: string,
+  rootRules: Ignore | null,
 ): ((rel: string, isDirectory: boolean) => boolean | undefined) => {
-  const cache = new Map<string, Ignore | null>();
-
   const rulesFor = (dirRel: string): Ignore | null => {
-    const cached = cache.get(dirRel);
-    if (cached !== undefined) return cached;
     let rules: Ignore | null = null;
     const filePath = nodePath.join(repoPath, dirRel, '.gitignore');
     try {
@@ -607,38 +604,79 @@ const createNestedGitignoreMatcher = (
         logger.warn(`  Warning: could not read ${filePath}: ${(err as Error).message}`);
       }
     }
-    cache.set(dirRel, rules);
     return rules;
   };
 
-  const match = (rel: string, isDirectory: boolean): boolean | undefined => {
-    const parts = rel.split('/');
-    // Deepest directory first: a deeper .gitignore overrides a shallower one.
-    // The root (i === 0) is covered by loadIgnoreRules.
-    for (let i = parts.length - 1; i > 0; i--) {
-      const rules = rulesFor(parts.slice(0, i).join('/'));
-      if (!rules) continue;
-      const sub = parts.slice(i).join('/');
+  interface Scope {
+    base: string;
+    rules: Ignore;
+  }
+  interface DirectoryContext {
+    scopes: Scope[];
+    ignored: boolean;
+    nested: boolean;
+  }
+
+  const relativeTo = (base: string, rel: string): string => base ? rel.slice(base.length + 1) : rel;
+  const match = (scopes: Scope[], rel: string, isDirectory: boolean) => {
+    for (let i = scopes.length - 1; i >= 0; i--) {
+      const { base, rules } = scopes[i];
+      const sub = relativeTo(base, rel);
       const result = rules.test(isDirectory ? `${sub}/` : sub);
-      if (result.ignored) return true;
-      if (result.unignored) return false;
+      if (result.ignored || result.unignored) {
+        return { ignored: result.ignored, nested: base !== '' };
+      }
     }
     return undefined;
   };
 
-  return (rel: string, isDirectory: boolean): boolean | undefined => {
-    const own = match(rel, isDirectory);
-    if (own !== undefined) return own;
-    // A nested `!dir/` matches the directory but not a direct test of the
-    // files inside it (see hasExplicitUnignore), so with no rule for the
-    // path itself, the deepest ancestor directory with a nested opinion
-    // decides. Otherwise a root rule such as `reports/` would still drop
-    // `pkg/reports/file.ts` after `pkg/.gitignore` re-included the folder.
-    const parts = rel.split('/');
-    for (let i = parts.length - 1; i > 1; i--) {
-      const ancestor = match(parts.slice(0, i).join('/'), true);
-      if (ancestor !== undefined) return ancestor;
+  const contexts = new Map<string, DirectoryContext>([['', {
+    scopes: rootRules ? [{ base: '', rules: rootRules }] : [],
+    ignored: false,
+    nested: false,
+  }]]);
+
+  const contextFor = (dir: string): DirectoryContext => {
+    const cached = contexts.get(dir);
+    if (cached) return cached;
+    const parentDir = nodePath.posix.dirname(dir);
+    const parent = contextFor(parentDir === '.' ? '' : parentDir);
+    // A .gitignore inside an excluded directory cannot bring that directory
+    // back. Do not read rules below a parent that traversal would prune.
+    if (parent.ignored) {
+      contexts.set(dir, parent);
+      return parent;
     }
+
+    const result = match(parent.scopes, dir, true);
+    const context: DirectoryContext = {
+      scopes: parent.scopes,
+      ignored: result?.ignored ?? false,
+      nested: parent.nested || (result?.nested ?? false),
+    };
+    if (!context.ignored) {
+      context.scopes = parent.scopes.map(({ base, rules }) => {
+        const sub = relativeTo(base, dir);
+        if (!rules.test(`${sub}/`).ignored) return { base, rules };
+        // A deeper rule let us enter this directory. Clear only its inherited
+        // exclusion in the shallower layer; child rules must still be tested.
+        // Keep patterns in their original scope, and escape this literal path.
+        const literal = sub.replace(/[\\*?\[\]]/g, '\\$&');
+        return { base, rules: ignore().add(rules).add({ pattern: `!/${literal}/` }) };
+      });
+      const rules = rulesFor(dir);
+      if (rules) context.scopes.push({ base: dir, rules });
+    }
+    contexts.set(dir, context);
+    return context;
+  };
+
+  return (rel: string, isDirectory: boolean): boolean | undefined => {
+    const parentDir = nodePath.posix.dirname(rel);
+    const parent = contextFor(parentDir === '.' ? '' : parentDir);
+    if (parent.ignored) return parent.nested ? true : undefined;
+    const result = match(parent.scopes, rel, isDirectory);
+    if (parent.nested || result?.nested) return result?.ignored ?? false;
     return undefined;
   };
 };
@@ -664,7 +702,7 @@ const createNestedGitignoreMatcher = (
 export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptions) => {
   const ig = await loadIgnoreRules(repoPath, options);
   const skipGitignore = options?.noGitignore ?? !!process.env.GITNEXUS_NO_GITIGNORE;
-  const nestedIgnores = skipGitignore ? null : createNestedGitignoreMatcher(repoPath);
+  const nestedIgnores = skipGitignore ? null : createNestedGitignoreMatcher(repoPath, ig);
   // A nested negation outranks the root .gitignore, as in git, but not the
   // user's .gitnexusignore, so keep a matcher for that file on its own.
   const nexusIgnore = nestedIgnores
@@ -679,9 +717,9 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       if (!rel) return false;
       // Nested .gitignore files below the root (#2675). .gitnexusignore
       // comes first, then the deepest nested .gitignore, which outranks the
-      // root .gitignore as in git. A nested negation skips the root rules
-      // but never rescues a hardcoded default. With no nested opinion the
-      // original order below applies unchanged.
+      // root .gitignore as in git. The nested matcher preserves independent
+      // root exclusions; a nested negation never rescues a hardcoded default.
+      // With no nested opinion the original order below applies unchanged.
       if (nestedIgnores) {
         if (nexusIgnore) {
           if (hasExplicitUnignore(nexusIgnore, rel) && !nexusIgnore.ignores(rel)) return false;
