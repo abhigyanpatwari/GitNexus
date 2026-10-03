@@ -371,6 +371,31 @@ func routes(r *gin.Engine) {
     ).toEqual([{ method: 'GET', path: '/api/x', name: 'X' }]);
   });
 
+  it('decodes Go string escapes in group prefixes and route paths', () => {
+    // "/api\x2fv1" and "/health\x2fcheck" are `/api/v1` and `/health/check`
+    // once Go processes the escapes — the id must match the registered URL.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/api\\x2fv1")
+	g.GET("/health\\x2fcheck", h.H)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/api/v1/health/check', name: 'H' }]);
+  });
+
+  it('leaves escapes literal inside a raw-string (backtick) prefix', () => {
+    // Go raw strings process no escapes: the prefix is `/raw\x2fy`, backslash included.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group(\`/raw\\x2fy\`)
+	g.GET("/z", h.Z)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/raw\\x2fy/z', name: 'Z' }]);
+  });
+
   it('applies the same group logic to echo', () => {
     expect(
       providers(`package main

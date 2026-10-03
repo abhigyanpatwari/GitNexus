@@ -1,9 +1,9 @@
 import type Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
+import { stringLiteral } from '../../../ingestion/route-extractors/go-shared.js';
 import {
   compilePatterns,
   runCompiledPatterns,
-  unquoteLiteral,
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import type { HttpDetection, HttpLanguagePlugin } from './types.js';
@@ -78,17 +78,13 @@ function asGroupCall(
   }
   const parent = fn.childForFieldName('operand');
   const first = node.childForFieldName('arguments')?.namedChildren[0];
-  // Both string-literal forms are valid Go: "…" and `…`. unquoteLiteral
-  // strips either, and a non-literal argument (a variable, concatenation)
-  // still contributes no prefix.
-  if (
-    !parent ||
-    (first?.type !== 'interpreted_string_literal' && first?.type !== 'raw_string_literal')
-  ) {
-    return null;
-  }
-  const prefix = unquoteLiteral(first.text);
-  return prefix === null ? null : { parent, prefix };
+  // Only a string literal carries a prefix, and it must decode to the text
+  // the runtime registers: stringLiteral applies Go unescaping (both `"…"`
+  // with escapes and raw `` `…` `` strings). A non-literal argument (a
+  // variable, concatenation) or an undecodable string contributes no prefix.
+  const prefix = first ? stringLiteral(first) : null;
+  if (!parent || prefix === null) return null;
+  return { parent, prefix };
 }
 
 /** The expression `name` is assigned by `stmt` (`:=`, `=`, or `var`), if any. */
@@ -305,7 +301,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const handlerNode = match.captures.handler;
       const receiverNode = match.captures.receiver;
       if (!methodNode || !pathNode) continue;
-      const literalPath = unquoteLiteral(pathNode.text);
+      const literalPath = stringLiteral(pathNode);
       if (literalPath === null) continue;
       const path = receiverNode
         ? joinRoutePath(groupPrefix(receiverNode), literalPath)
@@ -338,7 +334,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const pathNode = match.captures.path;
       const handlerNode = match.captures.handler;
       if (!pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = stringLiteral(pathNode);
       if (path === null) continue;
       // Inline `func(){…}` handler → resolve by containment (see go-framework
       // note above); a named handler resolves by name.
@@ -361,7 +357,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!fnNode || !pathNode) continue;
       const httpMethod = HTTP_CLIENT_METHOD_TO_HTTP[fnNode.text];
       if (!httpMethod) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = stringLiteral(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -379,8 +375,8 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
-      const method = unquoteLiteral(methodNode.text);
-      const path = unquoteLiteral(pathNode.text);
+      const method = stringLiteral(methodNode);
+      const path = stringLiteral(pathNode);
       if (method === null || path === null) continue;
       out.push({
         role: 'consumer',
@@ -398,7 +394,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = stringLiteral(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
