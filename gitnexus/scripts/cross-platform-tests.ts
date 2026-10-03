@@ -284,6 +284,10 @@ const SPAWN_CLI = [
   // tree-sitter grammars at import time. The offender regexes match grammar
   // paths with either separator, which only the Windows runner proves.
   'test/integration/optional-grammars/registry-import-closure.test.ts',
+  // Spawns `bash` to exercise the rc-guard release-subject regex under real
+  // nocasematch semantics; bash availability/behavior differs on Windows and
+  // macOS runners, so the suite must cover it beyond the Ubuntu full run.
+  'test/unit/publish-rc-guard.test.ts',
 ];
 
 // Worker threads tests — exercise real worker_threads which have
