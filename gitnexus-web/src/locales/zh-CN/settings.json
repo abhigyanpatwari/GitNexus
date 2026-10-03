@@ -93,6 +93,10 @@
     },
     "glm": {
       "apiKeyPlaceholder": "输入 Z.AI API Key"
+    },
+    "orcarouter": {
+      "apiKeyPlaceholder": "输入 OrcaRouter API Key",
+      "helperLinkLabel": "OrcaRouter"
     }
   },
   "loadingModels": "正在加载模型...",
