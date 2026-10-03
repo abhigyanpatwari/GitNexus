@@ -617,7 +617,8 @@ const createNestedGitignoreMatcher = (
     nested: boolean;
   }
 
-  const relativeTo = (base: string, rel: string): string => base ? rel.slice(base.length + 1) : rel;
+  const relativeTo = (base: string, rel: string): string =>
+    base ? rel.slice(base.length + 1) : rel;
   const match = (scopes: Scope[], rel: string, isDirectory: boolean) => {
     for (let i = scopes.length - 1; i >= 0; i--) {
       const { base, rules } = scopes[i];
@@ -630,11 +631,16 @@ const createNestedGitignoreMatcher = (
     return undefined;
   };
 
-  const contexts = new Map<string, DirectoryContext>([['', {
-    scopes: rootRules ? [{ base: '', rules: rootRules }] : [],
-    ignored: false,
-    nested: false,
-  }]]);
+  const contexts = new Map<string, DirectoryContext>([
+    [
+      '',
+      {
+        scopes: rootRules ? [{ base: '', rules: rootRules }] : [],
+        ignored: false,
+        nested: false,
+      },
+    ],
+  ]);
 
   const contextFor = (dir: string): DirectoryContext => {
     const cached = contexts.get(dir);
@@ -662,7 +668,12 @@ const createNestedGitignoreMatcher = (
         // exclusion in the shallower layer; child rules must still be tested.
         // Keep patterns in their original scope, and escape this literal path.
         const literal = sub.replace(/[\\*?\[\]]/g, '\\$&');
-        return { base, rules: ignore().add(rules).add({ pattern: `!/${literal}/` }) };
+        return {
+          base,
+          rules: ignore()
+            .add(rules)
+            .add({ pattern: `!/${literal}/` }),
+        };
       });
       const rules = rulesFor(dir);
       if (rules) context.scopes.push({ base: dir, rules });
