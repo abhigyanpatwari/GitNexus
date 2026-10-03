@@ -3,13 +3,14 @@
  * index lock, missing-DB preflight, identity fail-closed, tri-state count,
  * closeLbug masking, and hash-only cache load.
  */
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   acquireIndexLockMock,
+  ensurePrivateSharedGraphMock,
   releaseMock,
   getStoragePathsMock,
   loadMetaMock,
@@ -27,6 +28,7 @@ const {
   reapEmbeddingSidecarMock,
 } = vi.hoisted(() => ({
   acquireIndexLockMock: vi.fn(),
+  ensurePrivateSharedGraphMock: vi.fn(),
   releaseMock: vi.fn(),
   getStoragePathsMock: vi.fn(),
   loadMetaMock: vi.fn(),
@@ -46,6 +48,10 @@ const {
 
 vi.mock('../../src/storage/git.js', () => ({
   getGitRoot: () => '/tmp/emb-sync-repo',
+}));
+
+vi.mock('../../src/core/shared-store-analyze.js', () => ({
+  ensurePrivateSharedGraph: (...args: unknown[]) => ensurePrivateSharedGraphMock(...args),
 }));
 
 vi.mock('../../src/storage/index-lock.js', async (importOriginal) => ({
@@ -132,6 +138,7 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
   beforeEach(() => {
     vi.resetModules();
     acquireIndexLockMock.mockReset().mockResolvedValue(lockHandle());
+    ensurePrivateSharedGraphMock.mockReset().mockResolvedValue(true);
     releaseMock.mockReset();
     getStoragePathsMock.mockReset();
     loadMetaMock.mockReset().mockResolvedValue({ ...BASE_META });
@@ -297,6 +304,60 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(initLbugMock).not.toHaveBeenCalled();
     expect(saveMetaMock).not.toHaveBeenCalled();
     expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'valid staged receipt',
+      recovery: {
+        stagingFile: 'lbug.staging.12345678-1234-4123-8123-123456789abc',
+        schemaFingerprint: 'test-schema',
+        unsafeNodeIds: ['n2', 'inherited-window-node'],
+      },
+    },
+    { name: 'null receipt', recovery: null },
+    { name: 'malformed receipt', recovery: { stagingFile: 'invalid' } },
+    { name: 'false receipt', recovery: false },
+  ])('preserves a $name before any writable sync work', async ({ recovery }) => {
+    const { dir, metaPath } = await store();
+    const sourcePath = path.join(dir, 'lbug.staging.12345678-1234-4123-8123-123456789abc');
+    await writeFile(sourcePath, 'completed paid vectors');
+    await writeFile(`${sourcePath}.wal`, 'unfinished window');
+    const metadataBytes = JSON.stringify({
+      ...BASE_META,
+      embeddingCheckpoint: {
+        ...IDENTITY,
+        at: '2026-01-01T00:00:00.000Z',
+        nodesProcessed: 1,
+        totalNodes: 2,
+        chunksProcessed: 1,
+        kind: 'interrupted',
+        pendingNodeIds: ['n2'],
+        recovery,
+      },
+    });
+    await writeFile(metaPath, metadataBytes);
+    loadMetaMock.mockImplementation(async () => JSON.parse(await readFile(metaPath, 'utf8')));
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+
+    await expect(run()).rejects.toThrow(
+      /staged embeddings.*Run `gitnexus analyze` to recover them first/,
+    );
+
+    expect(acquireIndexLockMock).toHaveBeenCalledWith(dir);
+    expect(loadMetaMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      acquireIndexLockMock.mock.invocationCallOrder[0]!,
+    );
+    expect(ensurePrivateSharedGraphMock).not.toHaveBeenCalled();
+    expect(resolveEmbeddingIdentityMock).not.toHaveBeenCalled();
+    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+    expect(initLbugMock).not.toHaveBeenCalled();
+    expect(runEmbeddingPipelineMock).not.toHaveBeenCalled();
+    expect(saveMetaMock).not.toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalledTimes(1);
+    expect(await readFile(metaPath, 'utf8')).toBe(metadataBytes);
+    expect(await readFile(sourcePath, 'utf8')).toBe('completed paid vectors');
+    expect(await readFile(`${sourcePath}.wal`, 'utf8')).toBe('unfinished window');
   });
 
   it('persists an interrupted checkpoint from the pipeline checkpoint callbacks', async () => {

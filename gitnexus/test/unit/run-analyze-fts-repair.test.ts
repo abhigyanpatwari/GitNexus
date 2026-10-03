@@ -3235,6 +3235,157 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     return { checkpoint, stagingFile };
   };
 
+  it.each(
+    ['1', '0'].flatMap((manualCheckpoint) =>
+      (
+        ['window-start crash', 'post-window crash', 'final-metadata failure', 'success'] as const
+      ).map((outcome) => ({ manualCheckpoint, outcome })),
+    ),
+  )(
+    'preserves the in-place recovery receipt with manual checkpoints=$manualCheckpoint through $outcome',
+    async ({ manualCheckpoint, outcome }) => {
+      vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', manualCheckpoint);
+      vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+      const tmpRepo = await createTempDir('gitnexus-3456-opt-out-source-');
+      try {
+        const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+        const { checkpoint, stagingFile } = await seedRecovery(storagePath, tmpRepo.dbPath);
+        const original = {
+          ...checkpoint,
+          pendingNodeIds: ['original-pending'],
+          recovery: {
+            stagingFile,
+            schemaFingerprint: SCHEMA_FINGERPRINT,
+            unsafeNodeIds: ['original-pending', 'original-unsafe'],
+          },
+        } satisfies NonNullable<RepoMeta['embeddingCheckpoint']>;
+        await seedMeta(storagePath, tmpRepo.dbPath, {
+          stats: { nodes: 2, embeddings: 7 },
+          embeddingCheckpoint: original,
+        });
+        const sourceFiles = [
+          { filename: stagingFile, contents: 'previous durable source' },
+          { filename: `${stagingFile}.wal`, contents: 'previous durable WAL' },
+          { filename: `${stagingFile}.shadow`, contents: 'previous durable shadow' },
+        ];
+        for (const source of sourceFiles) {
+          await fs.writeFile(`${storagePath}/${source.filename}`, source.contents);
+        }
+        await fs.writeFile(lbugPath, 'previous published index');
+        const { normalizeCachedEmbeddings } =
+          await import('../../src/core/embeddings/embedding-restore-spill.js');
+        vi.doMock(
+          '../../src/core/embeddings/staged-embedding-recovery.js',
+          async (importActual) => ({
+            ...(await importActual<
+              typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
+            >()),
+            recoverStagedEmbeddings: vi.fn(async () =>
+              normalizeCachedEmbeddings({
+                embeddings: [
+                  {
+                    nodeId: RESILIENCE_NODE_ID,
+                    chunkIndex: 0,
+                    startLine: 1,
+                    endLine: 2,
+                    contentHash: 'current-hash',
+                    embedding: new Array(EMBEDDING_DIMS).fill(0),
+                  },
+                ],
+              }),
+            ),
+          }),
+        );
+        const snapshots: Array<RepoMeta | null> = [];
+        const rename = fs.rename.bind(fs);
+        const { batchInsertEmbeddings } = mockResilienceHarness({
+          count: [{ cnt: 9 }],
+          pipeline: async (options) => {
+            await options.onCheckpointWindowStart?.({
+              nodesProcessed: 0,
+              totalNodes: 3,
+              chunksProcessed: 0,
+              nodeIds: ['current-window'],
+            });
+            snapshots.push(await loadMeta(storagePath));
+            if (outcome === 'window-start crash') throw new Error(outcome);
+            await options.onCheckpoint?.({ nodesProcessed: 3, totalNodes: 3, chunksProcessed: 9 });
+            snapshots.push(await loadMeta(storagePath));
+            if (outcome === 'post-window crash') throw new Error(outcome);
+            if (outcome === 'final-metadata failure') {
+              vi.spyOn(fs, 'rename').mockImplementation(async (source, destination) => {
+                if (basename(String(destination)) === 'gitnexus.json') throw new Error(outcome);
+                return rename(source, destination);
+              });
+            }
+            return cleanResult();
+          },
+        });
+        await mockStagedFiles();
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        vi.mocked(adapter.loadGraphToLbug).mockImplementation(async () => {
+          await fs.writeFile(lbugPath, 'in-place replacement');
+        });
+        // Import on the host first, then choose the Windows default in-place
+        // branch. The native adapter is mocked; source files and lock cleanup are real.
+        await import('../../src/core/run-analyze.js');
+        vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        const error = await runAnalyze(
+          tmpRepo.dbPath,
+          { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
+          [],
+        );
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        expect(batchInsertEmbeddings).toHaveBeenCalled();
+        expect(vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0]).toBe(lbugPath);
+        const finalMeta = await loadMeta(storagePath);
+        // Reacquiring the real lock performs the next retry's orphan sweep.
+        // A lost receipt would delete every byte of the proven old generation here.
+        const { acquireIndexLock } = await import('../../src/storage/index-lock.js');
+        const lock = await acquireIndexLock(storagePath, { timeoutMs: 1000 });
+        try {
+          if (outcome === 'success') {
+            expect(error).toBeNull();
+            expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
+            expect(finalMeta?.stats?.embeddings).toBe(9);
+            expect(await fs.readFile(lbugPath, 'utf8')).toBe('in-place replacement');
+            for (const source of sourceFiles) {
+              await expect(fs.stat(`${storagePath}/${source.filename}`)).rejects.toMatchObject({
+                code: 'ENOENT',
+              });
+            }
+          } else {
+            expect(error).toMatchObject({ message: outcome });
+            for (const source of sourceFiles) {
+              expect(await fs.readFile(`${storagePath}/${source.filename}`, 'utf8')).toBe(
+                source.contents,
+              );
+            }
+            expect(finalMeta?.embeddingCheckpoint).toEqual(original);
+            expect(finalMeta?.stats?.embeddings).toBe(outcome === 'window-start crash' ? 7 : 9);
+          }
+          expect(snapshots[0]?.embeddingCheckpoint).toEqual(original);
+          expect(snapshots[0]?.stats?.embeddings).toBe(7);
+          if (outcome !== 'window-start crash') {
+            expect(snapshots[1]?.embeddingCheckpoint).toEqual(original);
+            expect(snapshots[1]?.stats?.embeddings).toBe(9);
+          }
+        } finally {
+          lock.release();
+        }
+      } finally {
+        if (actualPlatformDescriptor) {
+          Object.defineProperty(process, 'platform', actualPlatformDescriptor);
+        }
+        vi.restoreAllMocks();
+        await tmpRepo.cleanup();
+      }
+    },
+  );
+
   it('finishes a staged embedding run with manual checkpoints disabled', async () => {
     vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '0');
     const tmpRepo = await createTempDir('gitnexus-3456-checkpoint-opt-out-');
