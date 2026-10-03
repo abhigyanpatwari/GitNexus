@@ -142,7 +142,17 @@ async function detectCommunities(graph: KnowledgeGraph, repoPath: string): Promi
     { graph, repoPath, onProgress: () => {}, pipelineStart: Date.now() },
     new Map([['structure', { phaseName: 'structure', output: { totalFiles: 0 }, durationMs: 0 }]]),
   );
-  return { graph, repoPath, totalFileCount: 0, communityResult };
+  return {
+    graph,
+    repoPath,
+    totalFileCount: 0,
+    communityResult,
+    resolutionOutcomes: [],
+    usedWorkerPool: false,
+    reparsedFileCount: 0,
+    scopeExtractionFailures: [],
+    unavailableScopeLanguageFiles: 0,
+  };
 }
 
 // ============================================================================
