@@ -4614,9 +4614,11 @@ async function runFullAnalysisInner(
       // re-read the on-disk meta immediately before writing (the shape the
       // /api/embed checkpoint writer in server/api.ts already uses, which also
       // keeps a concurrent writer's update from being reverted by a stale
-      // snapshot) and replace ONLY `embeddingCheckpoint`. In-place writers
-      // can also publish a measured live count; staged writers keep it in
-      // memory until the replacement is published.
+      // snapshot) and replace ONLY `embeddingCheckpoint` — plus
+      // `stats.embeddings` when the caller actually MEASURED the published
+      // index (the post-window `onCheckpoint` on an in-place build). A staging
+      // build's count is not published until the atomic swap succeeds. The
+      // window-start callback passes nothing, preserving the latest count.
       const saveEmbeddingCheckpoint = async (
         checkpoint: {
           nodesProcessed: number;
@@ -4888,9 +4890,8 @@ async function runFullAnalysisInner(
     // already written to disk: prior meta says 0, a clean run inserts
     // embeddings and checkpoints the real count, the final probe is
     // unavailable, and finalization carries the stale 0 forward while reporting
-    // success. `loadMeta` never throws (it returns null), and the checkpoint
-    // writer already re-reads the same way, so this is the same freshness
-    // discipline applied to the same field.
+    // success. For a staged build, use its last measured count only in the
+    // final meta, written after the swap; never publish it at a checkpoint.
     const latestMetaForCount =
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
     const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
