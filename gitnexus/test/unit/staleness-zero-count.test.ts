@@ -1,18 +1,27 @@
 /**
- * A successful zero count still needs HEAD to establish freshness (#3127).
+ * Count both sides in one Git process to distinguish freshness from rollback
+ * without mixing HEAD snapshots (#3127).
  * Keep the child-process mock isolated from tests that use real repositories.
  */
 import type { ExecFileOptions } from 'node:child_process';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { plan, invocations } = vi.hoisted(() => ({
-  plan: { head: 'failure' as 'failure' | 'empty' | 'timeout' },
+  plan: { counts: '0\t0\n' as string | null, head: 'failure', advanceHead: false },
   invocations: [] as { args: string[]; options: ExecFileOptions }[],
 }));
 
 const answer = (args: readonly string[], options: ExecFileOptions): string => {
   invocations.push({ args: [...args], options });
-  if (args[0] === 'rev-list') return '0\n';
+  if (args[0] === 'rev-list') {
+    if (plan.counts === null) {
+      throw Object.assign(new Error('Command failed: git rev-list'), { code: 128, killed: false });
+    }
+    // Simulate a checkout/commit after Git measured the relationship. A second
+    // process would see this different HEAD and could misclassify the result.
+    if (plan.advanceHead) plan.head = 'b'.repeat(40);
+    return plan.counts;
+  }
   if (plan.head === 'empty') return ' \n';
   if (plan.head === 'timeout') {
     throw Object.assign(new Error('Command failed: git rev-parse HEAD'), {
@@ -20,10 +29,13 @@ const answer = (args: readonly string[], options: ExecFileOptions): string => {
       signal: 'SIGTERM',
     });
   }
-  throw Object.assign(new Error('Command failed: git rev-parse HEAD'), {
-    code: 128,
-    killed: false,
-  });
+  if (plan.head === 'failure') {
+    throw Object.assign(new Error('Command failed: git rev-parse HEAD'), {
+      code: 128,
+      killed: false,
+    });
+  }
+  return `${plan.head}\n`;
 };
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -60,7 +72,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { checkStaleness, checkStalenessAsync } from '../../src/core/git-staleness.js';
 
 const INDEXED_COMMIT = 'a'.repeat(40);
-const REV_LIST = ['rev-list', '--count', `${INDEXED_COMMIT}..HEAD`];
+const REV_LIST = ['rev-list', '--left-right', '--count', `${INDEXED_COMMIT}...HEAD`];
 const REV_PARSE = ['rev-parse', 'HEAD'];
 
 const bothHelpers = {
@@ -68,15 +80,55 @@ const bothHelpers = {
   checkStalenessAsync,
 };
 
-describe('staleness after a successful zero-count rev-list (#3127)', () => {
+describe('staleness from one relationship query (#3127)', () => {
   beforeEach(() => {
+    plan.counts = '0\t0\n';
     plan.head = 'failure';
+    plan.advanceHead = false;
     invocations.length = 0;
   });
 
   for (const [name, check] of Object.entries(bothHelpers)) {
     describe(name, () => {
+      it.each([
+        { counts: '0\t0\n', status: 'current', isStale: false, commitsBehind: 0 },
+        { counts: '2\t0\n', status: 'diverged', isStale: true, commitsBehind: 0 },
+        { counts: '0\t3\n', status: 'behind', isStale: true, commitsBehind: 3 },
+        { counts: '2\t3\n', status: 'behind', isStale: true, commitsBehind: 3 },
+      ])('reports $status from $counts in one process', async ({ counts, ...expected }) => {
+        plan.counts = counts;
+
+        const result = await check('/repo', INDEXED_COMMIT);
+
+        expect(result).toMatchObject(expected);
+        expect(invocations.map(({ args }) => args)).toEqual([REV_LIST]);
+      });
+
+      it('keeps the count snapshot when HEAD advances after the query', async () => {
+        plan.head = INDEXED_COMMIT;
+        plan.advanceHead = true;
+
+        const result = await check('/repo', INDEXED_COMMIT);
+
+        expect(plan.head).not.toBe(INDEXED_COMMIT);
+        expect(result).toEqual({ status: 'current', isStale: false, commitsBehind: 0 });
+        expect(invocations.map(({ args }) => args)).toEqual([REV_LIST]);
+      });
+
+      it.each(['', '0\n', '0\tbogus\n'])(
+        'reports unknown for malformed counts %j',
+        async (counts) => {
+          plan.counts = counts;
+
+          const result = await check('/repo', INDEXED_COMMIT);
+
+          expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
+          expect(invocations.map(({ args }) => args)).toEqual([REV_LIST]);
+        },
+      );
+
       it('reports unknown when the follow-up HEAD command fails', async () => {
+        plan.counts = null;
         const result = await check('/repo', INDEXED_COMMIT);
 
         expect(result).toEqual({ status: 'unknown', isStale: false, commitsBehind: 0 });
@@ -84,6 +136,7 @@ describe('staleness after a successful zero-count rev-list (#3127)', () => {
       });
 
       it('reports unknown when the follow-up HEAD command returns no commit', async () => {
+        plan.counts = null;
         plan.head = 'empty';
 
         const result = await check('/repo', INDEXED_COMMIT);
@@ -93,6 +146,7 @@ describe('staleness after a successful zero-count rev-list (#3127)', () => {
       });
 
       it('bounds the HEAD command and reports unknown without retrying after its timeout', async () => {
+        plan.counts = null;
         plan.head = 'timeout';
 
         const result = await check('/repo', INDEXED_COMMIT);
