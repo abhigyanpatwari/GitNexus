@@ -17,8 +17,8 @@ export type { StalenessInfo, StalenessStatus } from './staleness-status.js';
 const execFileAsync = promisify(execFile);
 
 /**
- * Ceiling for one `git rev-list` staleness probe. Generous for the local
- * history walk this is, and short enough that an unresponsive working tree
+ * Per-command ceiling for async `git rev-list` and both HEAD probes.
+ * Generous for local Git queries, and short enough that an unresponsive working tree
  * degrades to "not stale" quickly rather than holding a request open.
  */
 const STALENESS_TIMEOUT_MS = 5_000;
@@ -91,6 +91,7 @@ const readHeadSync = (repoPath: string): string | null => {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
+        timeout: STALENESS_TIMEOUT_MS,
       }).trim() || null
     );
   } catch {
