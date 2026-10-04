@@ -108,6 +108,8 @@ type Seam =
   | 'typedProperties'
   | 'contextProcess'
   | 'contextRoute'
+  | 'interfaceBoundary'
+  | 'interfaceCount'
   | 'chain'
   | 'seeds'
   | 'members'
@@ -150,6 +152,8 @@ function querySeam(query: string, params: Record<string, any> | undefined): Seam
   if (query.includes('RETURN p.id AS uid')) return 'typedProperties';
   if (query.includes('RETURN p.id AS pid, p.heuristicLabel AS label')) return 'contextProcess';
   if (query.includes('RETURN route.name AS url')) return 'contextRoute';
+  if (query.includes('RETURN DISTINCT iface.id AS id')) return 'interfaceBoundary';
+  if (query.includes('RETURN COUNT(DISTINCT other.id) AS cnt')) return 'interfaceCount';
   if (
     query.includes('RETURN c.id AS id') ||
     query.includes('RETURN f.id AS id') ||
@@ -362,6 +366,85 @@ describe('context detail row integrity', () => {
   });
 });
 
+describe('epistemic boundary row integrity', () => {
+  const iface = { id: 'iface:target', name: 'Target contract', label: 'Interface' };
+
+  function prepareBoundary() {
+    vi.mocked((backend as any).computeEpistemicBoundary).mockRestore();
+    rows.interfaceBoundary = [iface];
+    rows.interfaceCount = [{ cnt: 2 }];
+  }
+
+  for (const tool of ['context', 'impact']) {
+    for (const shape of ['object', 'tuple']) {
+      for (const badRow of [
+        { ...iface, id: undefined },
+        { ...iface, id: '' },
+        { ...iface, id: BAD },
+        { ...iface, id: 42 },
+        { ...iface, name: BAD },
+        { ...iface, name: 42 },
+        { ...iface, label: BAD },
+        { ...iface, label: 42 },
+      ]) {
+        it(
+          'rejects corrupt ' +
+            tool +
+            ' boundary before deduplication: ' +
+            shape +
+            JSON.stringify(badRow),
+          async () => {
+            prepareBoundary();
+            rows.interfaceBoundary = [iface, badRow].map((row) =>
+              shape === 'tuple' ? tuple(row, ['id', 'name', 'label']) : row,
+            );
+            expectIntegrityError(
+              tool === 'context' ? await context() : await impact(),
+              tool === 'impact',
+            );
+          },
+        );
+      }
+    }
+    for (const seam of ['interfaceBoundary', 'interfaceCount'] as const) {
+      for (const corrupt of [true, false]) {
+        it(
+          'distinguishes ' + tool + ' boundary query failure: ' + seam + ' ' + corrupt,
+          async () => {
+            prepareBoundary();
+            db.executeParameterized.mockImplementation(async (_db, query, params) => {
+              const currentSeam = querySeam(query, params);
+              if (currentSeam === seam) {
+                throw corrupt ? new SymbolIdentityError() : new Error('ordinary boundary failure');
+              }
+              return currentSeam ? fixture(currentSeam) : [];
+            });
+            const result = tool === 'context' ? await context() : await impact();
+            if (corrupt) {
+              expectIntegrityError(result, tool === 'impact');
+            } else {
+              expect(result.error).toBeUndefined();
+              expect(result.recoverySuggestion).toBeUndefined();
+              expect(result.epistemic).toBe('lower-bound');
+              if (tool === 'impact') expect(result.impactedCount).toBe(1);
+            }
+          },
+        );
+      }
+    }
+    it('preserves healthy ' + tool + ' boundary descriptions', async () => {
+      prepareBoundary();
+      const result = tool === 'context' ? await context() : await impact();
+      expect(result.error).toBeUndefined();
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries).toContainEqual(
+        expect.stringContaining('Target contract is an interface'),
+      );
+      expect(result.causes.dispatchBoundary).toBe(4);
+    });
+  }
+});
+
 describe('impact detail row integrity', () => {
   for (const seam of ['frontier', 'process'] as const) {
     it(
@@ -477,6 +560,18 @@ describe('impact detail row integrity', () => {
     rows.impactRoute = [{ hid: REF.uid, url: BAD }];
     expectIntegrityError(await impact(), true);
   });
+  for (const shape of ['object', 'tuple']) {
+    for (const hid of [undefined, null, '', ' ', BAD, 42, {}]) {
+      it(
+        'rejects corrupt route handler IDs from ' + shape + ' rows: ' + JSON.stringify(hid),
+        async () => {
+          const route = { hid, url: '/target', method: 'GET' };
+          rows.impactRoute = [shape === 'tuple' ? tuple(route, ['hid', 'url', 'method']) : route];
+          expectIntegrityError(await impact(), true);
+        },
+      );
+    }
+  }
   it('rejects nested AOP paths', async () => {
     aop.mockResolvedValue({
       framework: 'spring',
@@ -536,7 +631,7 @@ describe('healthy and ordinary-failure compatibility', () => {
   });
   it('keeps missing optional route fields as ordinary skipped enrichment', async () => {
     rows.contextRoute = [{}];
-    rows.impactRoute = [{}];
+    rows.impactRoute = [{ hid: REF.uid }];
     expect((await context()).error).toBeUndefined();
     expect((await impact()).error).toBeUndefined();
   });

@@ -104,7 +104,7 @@ function parseCalleeIdsCell(raw: unknown): { ids: string[]; truncated: boolean }
   // them. Producer (calleeIdsOfBlock) joins with the same constant.
   for (const id of String(raw ?? '').split(CALLEE_ID_SEP)) {
     if (id === CALLEES_TRUNCATED_SENTINEL) truncated = true;
-    else if (id) {
+    else {
       assertSymbolIdentity(id);
       ids.push(id);
     }

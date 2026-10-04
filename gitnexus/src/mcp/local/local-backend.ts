@@ -8065,7 +8065,10 @@ export class LocalBackend {
        ORDER BY id
        LIMIT 25`,
       { symId, heritage: HERITAGE_TYPES },
-    ).catch(() => []);
+    ).catch((error) => {
+      rethrowSymbolIdentityError(error);
+      return [];
+    });
     const undecidedSummary = meta?.undecidedInterfaceSatisfaction;
     const undecidedDrops =
       undecidedSummary === undefined
@@ -8104,6 +8107,10 @@ export class LocalBackend {
       }
       const ifaceRows = await interfaceRowsPromise;
       for (const r of ifaceRows) {
+        assertQueryIdentity(r, 'id', 0, [
+          ['name', 1],
+          ['label', 2],
+        ]);
         const id = (r.id ?? r[0]) as string;
         if (id && !boundary.has(id)) {
           boundary.set(id, {
@@ -8129,7 +8136,10 @@ export class LocalBackend {
                WHERE iface.id = $ifaceId AND r.type IN $types
                RETURN COUNT(DISTINCT other.id) AS cnt`,
               { ifaceId, types },
-            ).catch(() => []);
+            ).catch((error) => {
+              rethrowSymbolIdentityError(error);
+              return [];
+            });
             const cnt =
               rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
             m.set(ifaceId, cnt);
@@ -8188,7 +8198,8 @@ export class LocalBackend {
           callableValueReferences: droppedBoundaries.callableValueReferences,
         },
       };
-    } catch {
+    } catch (error) {
+      rethrowSymbolIdentityError(error);
       // Never let the heritage probe's failure suppress a drop we already know
       // about — the whole point is that silence must not read as certainty.
       return epistemicFrom(droppedBoundaries);
@@ -9048,11 +9059,8 @@ export class LocalBackend {
           return [];
         });
         for (const row of rows) {
-          assertIdentityFields(
-            queryRowValue(row, 'hid', 0),
-            queryRowValue(row, 'url', 1),
-            queryRowValue(row, 'method', 2),
-          );
+          assertSymbolIdentity(queryRowValue(row, 'hid', 0));
+          assertIdentityFields(queryRowValue(row, 'url', 1), queryRowValue(row, 'method', 2));
           const hid = String(row.hid ?? row[0] ?? '');
           const url = row.url ?? row[1];
           if (!hid || typeof url !== 'string') continue;

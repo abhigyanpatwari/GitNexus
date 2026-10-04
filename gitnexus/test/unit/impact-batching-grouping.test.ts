@@ -79,6 +79,7 @@ describe('impact: batching and grouping', () => {
     // Handle parameterized calls (including chunked STEP_IN_PROCESS queries)
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       const params = args[2] || {};
       // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
@@ -150,6 +151,7 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       // BFS frontier query (parameterized #1907 U3): return 6 impacted nodes.
       if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
@@ -252,6 +254,7 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       const params = args[2] || {};
       // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
@@ -360,6 +363,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
         return [
           {
@@ -403,6 +407,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('STEP_IN_PROCESS')) {
         throw new Error('process chunk failed');
       }
@@ -452,6 +457,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('MEMBER_OF')) throw new Error('module chunk failed');
       if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
@@ -510,6 +516,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('MIN(r.step) AS minStep') && !query.includes('COUNT(DISTINCT s.id)')) {
         throw new Error('minStep backfill failed');
@@ -570,6 +577,7 @@ describe('impact: batching and grouping', () => {
     let processChunk = 0;
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
         processChunk += 1;
@@ -627,6 +635,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN h.id AS hid')) return [];
       if (query.includes('MEMBER_OF') && query.includes('RETURN DISTINCT c.heuristicLabel')) {
         throw new Error('module classification failed');
       }
