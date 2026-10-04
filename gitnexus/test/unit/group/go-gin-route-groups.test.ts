@@ -337,6 +337,38 @@ func routes(r *gin.Engine, anyVal any) {
     ]);
   });
 
+  it('stops at a select receive binding instead of inheriting an outer group', () => {
+    // The value received from a channel is statically unknown, so a case that
+    // rebinds `g` must shadow the outer group with "nothing traceable" (the
+    // route keeps its literal path) — not leak `/outer` into the id. An
+    // unrebound case still inherits, and a default clause declaring its own
+    // group shadows like any other statement list.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, ch chan *gin.RouterGroup) {
+	g := r.Group("/outer")
+	select {
+	case g := <-ch:
+		g.GET("/x", h.X)
+	}
+	select {
+	case <-ch:
+		g.GET("/y", h.Y)
+	}
+	select {
+	default:
+		g := r.Group("/d")
+		g.GET("/z", h.Z)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/x', name: 'X' },
+      { method: 'GET', path: '/outer/y', name: 'Y' },
+      { method: 'GET', path: '/d/z', name: 'Z' },
+    ]);
+  });
+
   it('keeps the outer group through a plain for init and stops at a range shadow binding', () => {
     expect(
       providers(`package main
@@ -483,9 +515,10 @@ func routes(e *echo.Echo) {
     ]);
   });
 
-  it('keeps the last-argument handler when a file imports both gin and echo', () => {
-    // Ambiguous imports prove nothing about argument order → conservative
-    // fallback to the last-argument anchor (gin's order).
+  it('keeps the last-argument fallback when a mixed file cannot prove the receiver is echo', () => {
+    // A parameter receiver is not a constructor binding (review #7): without
+    // proof of which framework the call belongs to, keep the conservative
+    // last-argument anchor — gin's order — rather than guess.
     expect(
       providers(`package main
 import (
@@ -494,6 +527,48 @@ import (
 )
 
 func routes(e *echo.Echo) {
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
+  });
+
+  it('picks the handler order per receiver constructor in a mixed-import file', () => {
+    // Mixed imports are ambiguous at file scope, but `e := echo.New()` proves
+    // this call follows echo's order (handler FIRST after the path) and
+    // `r := gin.Default()` proves gin's (handler LAST).
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes() {
+	e := echo.New()
+	r := gin.Default()
+	e.GET("/x", h.Handler, auth.Middleware)
+	r.POST("/y", auth.Middleware, h.Post)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/x', name: 'Handler' },
+      { method: 'POST', path: '/y', name: 'Post' },
+    ]);
+  });
+
+  it('does not treat an unrelated New() as a framework constructor', () => {
+    // `wrapper.New()` is neither echo's nor gin's constructor: no proof →
+    // conservative last-argument fallback, not a guessed echo order.
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes() {
+	e := wrapper.New()
 	e.GET("/x", h.Handler, auth.Middleware)
 }
 `),

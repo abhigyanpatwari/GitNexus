@@ -1,5 +1,6 @@
 import type Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
+import { goImportPackageName } from '../../../ingestion/languages/go/import-package-name.js';
 import { stringLiteral } from '../../../ingestion/route-extractors/go-shared.js';
 import {
   compilePatterns,
@@ -23,7 +24,8 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 // — anchored as the FIRST argument so the code can pick the handler out of
 // the remaining arguments. Which argument that is depends on the framework:
 // gin is `GET(path, middleware..., handler)` (last), echo is
-// `GET(path, handler, middleware...)` (first) — see importsEchoOnly below.
+// `GET(path, handler, middleware...)` (first) — see readFrameworkImports and
+// the per-call choice in scan below.
 // The handler must be an identifier, an inline func literal, or a method
 // value / package-qualified function (`h.ListUsers`, `handlers.ListUsers`);
 // anything else there means the call cannot be attributed to a symbol, so it
@@ -55,31 +57,35 @@ const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Whether the file's imports say it routes with echo and not gin: echo
- * verb calls take the handler as the FIRST argument after the path
- * (`GET(path, handler, middleware...)`), gin's as the LAST
- * (`GET(path, middleware..., handler)`). Matched on the import path rather
- * than the local name, so an aliased import still counts. Both frameworks
- * or neither → not echo-only → callers keep the last-argument anchor, which
- * is gin's order and the safer default when the file proves nothing.
+ * The file's framework import aliases: which local qualifiers resolve to
+ * echo and to gin. Matched on the import path rather than the local name, so
+ * an aliased import still counts; an unaliased import is keyed by its
+ * conventional package name (`goImportPackageName`). `_` and `.` imports bind
+ * no qualifier this file can route through. An empty set means the file
+ * proves nothing about that framework. Echo's verb calls take the handler as
+ * the FIRST argument after the path (`GET(path, handler, middleware...)`),
+ * gin's as the LAST (`GET(path, middleware..., handler)`) — `scan` picks the
+ * rule per call from these sets.
  */
-function importsEchoOnly(root: Parser.SyntaxNode): boolean {
+function readFrameworkImports(root: Parser.SyntaxNode): {
+  echo: Set<string>;
+  gin: Set<string>;
+} {
   // Imports sit only at file scope; skip bodies.
   const specs = root.namedChildren
     .filter((node) => node.type === 'import_declaration')
     .flatMap((decl) => decl.descendantsOfType('import_spec'));
-  let echo = false;
-  let gin = false;
+  const echo = new Set<string>();
+  const gin = new Set<string>();
   for (const spec of specs) {
     const importPath = stringLiteral(spec.childForFieldName('path'));
     if (importPath === null) continue;
-    // `_` and `.` imports bind no qualifier this file can route through.
-    const local = spec.childForFieldName('name')?.text;
+    const local = spec.childForFieldName('name')?.text ?? goImportPackageName(importPath);
     if (local === '_' || local === '.') continue;
-    if (importPath.includes('labstack/echo')) echo = true;
-    else if (importPath.includes('gin-gonic/gin')) gin = true;
+    if (importPath.includes('labstack/echo')) echo.add(local);
+    else if (importPath.includes('gin-gonic/gin')) gin.add(local);
   }
-  return echo && !gin;
+  return { echo, gin };
 }
 
 // ─── Route groups: `v1 := r.Group("/api/v1")` ─────────────────────────
@@ -93,7 +99,10 @@ function importsEchoOnly(root: Parser.SyntaxNode): boolean {
 // Statement-scoped bindings count too: an `if`/`switch` initializer, a `for`
 // clause (including `range`), a type-switch guard, and declarations inside a
 // switch case all scope over their statement the same way Go scopes them, so
-// they shadow an outer group of the same name instead of being skipped.
+// they shadow an outer group of the same name instead of being skipped. A
+// select case's receive binding (`case g := <-ch:`) stops the walk entirely:
+// what arrives from the channel is statically unknown, so the route keeps its
+// literal path rather than inheriting an outer group.
 
 const MAX_GROUP_DEPTH = 32;
 
@@ -180,11 +189,14 @@ function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
 /**
  * The value last bound to identifier `ident` before its use: the nearest
  * binding site in the enclosing scopes, walking outward — preceding statements
- * in blocks and switch cases (`expression_case`/`type_case` act as statement
- * containers), then statement-scoped bindings (`if`/`switch` initializers,
- * `for` clauses including `range`, type-switch guards), up to the enclosing
- * function declaration. Returns null when the name is a parameter, is bound
- * without a value, or is not bound in scope.
+ * in blocks and switch/select cases (`expression_case`/`type_case`/
+ * `communication_case`/`default_case` act as statement containers), then
+ * statement-scoped bindings (`if`/`switch` initializers, `for` clauses
+ * including `range`, type-switch guards), up to the enclosing function
+ * declaration. Returns null when the name is a parameter, is bound without a
+ * value, is received from a channel by a select case head (the received value
+ * is statically unknown, so the walk stops instead of escaping to an outer
+ * group), or is not bound in scope.
  */
 function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
   const name = ident.text;
@@ -196,7 +208,28 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
       if (params.some((p) => p.text === name)) return null;
       continue;
     }
-    if (node.type === 'block' || node.type === 'expression_case' || node.type === 'type_case') {
+    if (
+      node.type === 'block' ||
+      node.type === 'expression_case' ||
+      node.type === 'type_case' ||
+      node.type === 'communication_case' ||
+      node.type === 'default_case'
+    ) {
+      // A select case head can rebind the name (`case g := <-ch:` or
+      // `case g = <-ch:`); the received value is statically unknown, so the
+      // walk must STOP with no traceable value — the same decline the
+      // ingestion-side route bindings record (value null) — instead of
+      // escaping to an outer group of the same name.
+      if (node.type === 'communication_case') {
+        for (const head of node.children) {
+          if (
+            head.type === 'receive_statement' &&
+            declaresName(head.childForFieldName('left'), name)
+          ) {
+            return null;
+          }
+        }
+      }
       const stmts = node.namedChildren;
       const useIndex = stmts.findIndex((s) => s.id === child.id);
       for (const stmt of stmts.slice(0, useIndex).reverse()) {
@@ -234,16 +267,42 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
       continue;
     }
     if (node.type === 'type_switch_statement') {
-      // `switch v := x.(type)` — the guard list is the first named child and
-      // only present when a `:=` follows it (bare `switch x.(type)` has none).
-      const guard = node.namedChildren[0];
-      if (guard?.type === 'expression_list' && node.children.some((c) => c.type === ':=')) {
-        if (declaresName(guard, name)) return node.namedChildren[1] ?? null;
+      // `switch g := x.(type)` — the guard list is the `alias` field, which
+      // only the `:=` form has (bare `switch x.(type)` parses with none),
+      // matching how the ingestion-side route-bindings read it. The switched
+      // value is the operand right after the guard list.
+      const guard = node.childForFieldName('alias');
+      if (guard?.type === 'expression_list' && declaresName(guard, name)) {
+        return node.namedChildren[1] ?? null;
       }
       continue;
     }
   }
   return null;
+}
+
+/**
+ * Whether a mixed-import file's route receiver is DIRECTLY bound to echo's
+ * constructor — `e := echo.New()` / `e := echo.Default()` with `echo`
+ * resolving to one of the file's verified echo import aliases (review #7).
+ * Only a direct constructor binding proves which framework's argument order
+ * the call follows: parameters, receivers reached through `Group(...)` or
+ * other calls, and unrelated packages' `New()` all return false so the caller
+ * keeps the conservative last-argument fallback instead of guessing.
+ */
+function receiverBindsToEchoConstructor(
+  receiver: Parser.SyntaxNode,
+  echoAliases: ReadonlySet<string>,
+): boolean {
+  if (receiver.type !== 'identifier') return false;
+  const binding = findBinding(receiver);
+  if (binding?.type !== 'call_expression') return false;
+  const fn = binding.childForFieldName('function');
+  if (fn?.type !== 'selector_expression') return false;
+  const ctor = fn.childForFieldName('field')?.text;
+  if (ctor !== 'New' && ctor !== 'Default') return false;
+  const pkg = fn.childForFieldName('operand');
+  return pkg?.type === 'identifier' && echoAliases.has(pkg.text);
 }
 
 /** Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced. */
@@ -350,7 +409,9 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
     const out: HttpDetection[] = [];
 
     // Framework providers: r.GET/POST/... on an engine or (nested) route group
-    const echoOnly = importsEchoOnly(tree.rootNode);
+    const imports = readFrameworkImports(tree.rootNode);
+    const echoOnly = imports.echo.size > 0 && imports.gin.size === 0;
+    const mixed = imports.echo.size > 0 && imports.gin.size > 0;
     for (const match of runCompiledPatterns(FRAMEWORK_ROUTE_PATTERNS, tree)) {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
@@ -361,11 +422,21 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       const argList = pathNode.parent;
       if (argList?.type !== 'argument_list') continue;
       // The path is anchored first, so everything after it is a handler or
-      // middleware candidate: an echo-only file takes the first of those,
-      // any other file the last (see FRAMEWORK_ROUTE_PATTERNS / importsEchoOnly).
+      // middleware candidate: echo's verb calls take the FIRST of those, gin's
+      // the LAST (see FRAMEWORK_ROUTE_PATTERNS / readFrameworkImports). The
+      // rule is chosen per call: an echo-only file is unambiguous; a
+      // mixed-import file takes the first argument only when the receiver is
+      // provably bound to echo's constructor — everything else keeps the
+      // last-argument anchor, gin's order and the safer default when the
+      // file proves nothing.
       const rest = argList.namedChildren.slice(1);
       if (rest.length === 0) continue;
-      const handlerNode = echoOnly ? rest[0] : rest[rest.length - 1];
+      const echoOrder = mixed
+        ? receiverNode
+          ? receiverBindsToEchoConstructor(receiverNode, imports.echo)
+          : false
+        : echoOnly;
+      const handlerNode = echoOrder ? rest[0] : rest[rest.length - 1];
       if (!HANDLER_ARG_TYPES.has(handlerNode.type)) continue;
       const path = receiverNode
         ? joinRoutePath(groupPrefix(receiverNode), literalPath)
