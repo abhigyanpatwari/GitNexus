@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
 import path from 'node:path';
+import lbug from '@ladybugdb/core';
 import * as adapter from '../../src/core/lbug/lbug-adapter.js';
 import { executeParameterized } from '../../src/core/lbug/pool-adapter.js';
+import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { retryRename } from '../../src/storage/fs-atomic.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
@@ -382,6 +386,291 @@ describe('native impact/context result integrity (#3354)', () => {
       const [beta, alpha] = await Promise.all([read('beta'), read('alpha')]);
       expect(beta).toEqual(expectedRows('beta'));
       expect(alpha).toEqual(expectedRows('alpha'));
+    }
+  });
+});
+
+// Windows graph replacement is opt-in in production. The repeated-read
+// characterization above remains enabled there; only this POSIX swap is skipped.
+describe.skipIf(process.platform === 'win32')('warm backend index replacement (#3354)', () => {
+  it('reads changed callers, processes and a new symbol through the real freshness window', async () => {
+    const temp = await createTempDir();
+    let backend: LocalBackend | undefined;
+    vi.stubEnv('GITNEXUS_HOME', path.join(temp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', path.join(temp.dbPath, 'index'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    const paths = getStoragePaths(temp.dbPath);
+    const stagedPath = `${paths.lbugPath}.replacement`;
+    const replacement = {
+      entry: {
+        id: 'Function:src/replacement-entry.ts:startReplacement',
+        name: 'startReplacement',
+        filePath: 'src/replacement-entry.ts',
+      },
+      caller: {
+        id: 'Function:src/replacement-caller.ts:callReplacement',
+        name: 'callReplacement',
+        filePath: 'src/replacement-caller.ts',
+      },
+      reader: {
+        id: 'Function:src/replacement-reader.ts:readReplacement',
+        name: 'readReplacement',
+        filePath: 'src/replacement-reader.ts',
+      },
+    };
+    const nextProcess = { id: 'process:replacement', label: 'Replacement flow' };
+    const oldProcess = processes.alphaOther;
+
+    const seed = async (dbPath: string, next: boolean) => {
+      await adapter.initLbug(dbPath);
+      try {
+        const caller = next ? replacement.caller : nodes.alphaOtherCaller;
+        const reader = next ? replacement.reader : nodes.alphaReader;
+        const process = next ? nextProcess : oldProcess;
+        const entry = next ? replacement.entry : caller;
+        for (const node of [nodes.alpha, caller, reader, ...(next ? [entry] : [])]) {
+          await adapter.executeQuery(
+            `CREATE (:Function {id: '${node.id}', name: '${node.name}', filePath: '${node.filePath}', startLine: 1, endLine: 3})`,
+          );
+        }
+        await adapter.executeQuery(
+          `CREATE (:Process {id: '${process.id}', label: '${process.label}', heuristicLabel: '${process.label}', processType: 'intra_community', stepCount: ${next ? 3 : 2}, communities: [], entryPointId: '${entry.id}', terminalId: '${nodes.alpha.id}'})`,
+        );
+        await adapter.executeQuery(edge(caller, nodes.alpha, 'CALLS'));
+        await adapter.executeQuery(edge(reader, nodes.alpha, 'ACCESSES'));
+        if (next) await adapter.executeQuery(edge(entry, caller, 'CALLS'));
+        const steps = next ? [entry, caller, nodes.alpha] : [caller, nodes.alpha];
+        for (const [step, node] of steps.entries()) {
+          await adapter.executeQuery(
+            `MATCH (n:Function {id: '${node.id}'}), (p:Process {id: '${process.id}'}) CREATE (n)-[:CodeRelation {type: 'STEP_IN_PROCESS', confidence: 1.0, reason: 'trace-detection', step: ${step}}]->(p)`,
+          );
+        }
+        await adapter.flushWAL();
+      } finally {
+        await adapter.closeLbug();
+      }
+    };
+    const processMembership = (next: boolean, step: number) => ({
+      ...(next ? nextProcess : { id: oldProcess.id, label: oldProcess.label }),
+      processType: 'intra_community',
+      step,
+    });
+    const expectedCaller = (node: NodeIdentity, next: boolean, step: number) => ({
+      ...node,
+      relationType: 'CALLS',
+      confidence: 1,
+      processes: [processMembership(next, step)],
+    });
+    const expectGeneration = (
+      impact: Awaited<ReturnType<LocalBackend['callTool']>>,
+      context: Awaited<ReturnType<LocalBackend['callTool']>>,
+      next: boolean,
+    ) => {
+      const caller = next ? replacement.caller : nodes.alphaOtherCaller;
+      const reader = next ? replacement.reader : nodes.alphaReader;
+      const entry = next ? replacement.entry : caller;
+      const process = next ? nextProcess : oldProcess;
+      expect(impact).not.toHaveProperty('error');
+      expect(impact).not.toHaveProperty('partial');
+      expect(impact.target).toMatchObject(nodes.alpha);
+      expect(impact.risk).toBe('LOW');
+      expect(impact.epistemic).toBe('exact');
+      expect(impact.impactedCount).toBe(next ? 2 : 1);
+      expect(impact.summary).toEqual({ direct: 1, processes_affected: 1, modules_affected: 0 });
+      expect(impact.byDepthCounts).toEqual(next ? { 1: 1, 2: 1 } : { 1: 1 });
+      const byDepth = Object.fromEntries(
+        Object.entries(impact.byDepth).map(([depth, rows]) => [
+          depth,
+          (rows as ImpactRow[]).map(
+            ({ id, name, filePath, relationType, confidence, processes: memberships }) => ({
+              id,
+              name,
+              filePath,
+              relationType,
+              confidence,
+              processes: memberships,
+            }),
+          ),
+        ]),
+      );
+      expect(byDepth).toEqual({
+        1: [expectedCaller(caller, next, next ? 1 : 0)],
+        ...(next ? { 2: [expectedCaller(entry, true, 0)] } : {}),
+      });
+      expect(impact.affected_processes).toEqual([
+        {
+          name: entry.name,
+          type: 'Function',
+          filePath: entry.filePath,
+          affected_process_count: 1,
+          total_hits: next ? 2 : 1,
+          earliest_broken_step: 0,
+        },
+      ]);
+      expect(impact.affected_modules).toEqual([]);
+      expect(impact.affected_routes).toEqual([]);
+      expect(context).not.toHaveProperty('error');
+      expect(context.status).toBe('found');
+      expect(context.epistemic).toBe('exact');
+      expect(context.symbol).toMatchObject({
+        uid: nodes.alpha.id,
+        name: nodes.alpha.name,
+        filePath: nodes.alpha.filePath,
+      });
+      expect(
+        Object.fromEntries(
+          Object.entries(context.incoming).map(([type, refs]) => [
+            type,
+            (refs as ContextRef[]).map(({ uid, name, filePath }) => ({ id: uid, name, filePath })),
+          ]),
+        ),
+      ).toEqual({ calls: [caller], accesses: [reader] });
+      expect(context.outgoing).toEqual({});
+      expect(context.processes).toEqual([
+        {
+          id: process.id,
+          name: process.label,
+          step_index: next ? 2 : 1,
+          step_count: next ? 3 : 2,
+        },
+      ]);
+    };
+
+    try {
+      await seed(paths.lbugPath, false);
+      const meta = {
+        repoPath: temp.dbPath,
+        storagePath: paths.storagePath,
+        lastCommit: 'graph-a',
+        indexedAt: new Date().toISOString(),
+        scopeExtractionReceipt: 1 as const,
+        stats: { files: 3, nodes: 4, processes: 1, communities: 0 },
+      };
+      await saveMeta(paths.storagePath, meta);
+      await registerRepo(temp.dbPath, meta, { name: REPO });
+      const heldBackend = new LocalBackend();
+      backend = heldBackend;
+      expect(await heldBackend.init()).toBe(true);
+      const impact = () =>
+        heldBackend.callTool('impact', {
+          repo: REPO,
+          target: nodes.alpha.name,
+          direction: 'upstream',
+        });
+      const context = () => heldBackend.callTool('context', { repo: REPO, uid: nodes.alpha.id });
+      expectGeneration(await impact(), await context(), false);
+      expect(
+        await heldBackend.callTool('context', { repo: REPO, uid: replacement.entry.id }),
+      ).toHaveProperty('error');
+
+      // Keep this backend and its read pool alive. Publish only after the
+      // separate staged writer has closed, exactly as run-analyze does.
+      await seed(stagedPath, true);
+      for (const suffix of ['.wal', '.shadow', '.wal.checkpoint']) {
+        await expect(fs.stat(`${stagedPath}${suffix}`)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      await retryRename(stagedPath, paths.lbugPath);
+      const nextMeta = {
+        ...meta,
+        lastCommit: 'graph-b',
+        indexedAt: new Date(Date.now() + 1).toISOString(),
+        stats: { files: 4, nodes: 5, processes: 1, communities: 0 },
+      };
+      await saveMeta(paths.storagePath, nextMeta);
+      await registerRepo(temp.dbPath, nextMeta, { name: REPO });
+
+      // An independent native read-only Database opens the published path.
+      // It does not share LocalBackend's pool or trigger its reinitialization.
+      const freshDb = new lbug.Database(paths.lbugPath, 128 * 1024 * 1024, true, true);
+      const freshConn = new lbug.Connection(freshDb);
+      try {
+        const read = async (query: string) => {
+          const result = await freshConn.query(query);
+          try {
+            const cursor = Array.isArray(result) ? result[0] : result;
+            return await cursor.getAll();
+          } finally {
+            await closeQueryResults(result);
+          }
+        };
+        expect(
+          await read(`
+          MATCH (n:Function)
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath
+          ORDER BY id
+        `),
+        ).toEqual(
+          [nodes.alpha, ...Object.values(replacement)].sort((a, b) =>
+            a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+          ),
+        );
+        expect(
+          await read(`
+          MATCH (n:Function)-[r:CodeRelation]->(target:Function {id: '${nodes.alpha.id}'})
+          WHERE r.type IN ['CALLS', 'ACCESSES']
+          RETURN n.id AS id, n.name AS name, n.filePath AS filePath, r.type AS relationType
+          ORDER BY id
+        `),
+        ).toEqual([
+          { ...replacement.caller, relationType: 'CALLS' },
+          { ...replacement.reader, relationType: 'ACCESSES' },
+        ]);
+        expect(
+          await read(`
+          MATCH (n:Function)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+          RETURN n.id AS id, p.id AS processId, p.heuristicLabel AS label,
+                 r.step AS step, p.stepCount AS stepCount, p.entryPointId AS entryPointId
+          ORDER BY step
+        `),
+        ).toEqual(
+          [replacement.entry, replacement.caller, nodes.alpha].map((node, step) => ({
+            id: node.id,
+            processId: nextProcess.id,
+            label: nextProcess.label,
+            step,
+            stepCount: 3,
+            entryPointId: replacement.entry.id,
+          })),
+        );
+      } finally {
+        await freshConn.close();
+        await freshDb.close();
+      }
+
+      // Poll the SAME backend through its unchanged five-second throttle.
+      // No private watermark override, poolInit, reset or restart is used.
+      const deadline = Date.now() + 15_000;
+      let refreshed = await context();
+      while (refreshed.processes?.[0]?.id !== nextProcess.id && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        refreshed = await context();
+      }
+      expectGeneration(await impact(), refreshed, true);
+      for (let repeat = 0; repeat < 3; repeat++) {
+        expectGeneration(await impact(), await context(), true);
+        const introduced = await heldBackend.callTool('context', {
+          repo: REPO,
+          name: replacement.entry.name,
+        });
+        expect(introduced).not.toHaveProperty('error');
+        expect(introduced.status).toBe('found');
+        expect(introduced.symbol).toMatchObject({
+          uid: replacement.entry.id,
+          name: replacement.entry.name,
+          filePath: replacement.entry.filePath,
+        });
+        expect(introduced.processes).toEqual([
+          { id: nextProcess.id, name: nextProcess.label, step_index: 0, step_count: 3 },
+        ]);
+      }
+    } finally {
+      try {
+        await backend?.dispose();
+      } finally {
+        await adapter.closeLbug();
+        vi.unstubAllEnvs();
+        await temp.cleanup();
+      }
     }
   });
 });
