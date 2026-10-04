@@ -7,7 +7,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 const mocks = vi.hoisted(() => ({
   loadMeta: vi.fn(),
+  saveMeta: vi.fn(),
   listRegisteredRepos: vi.fn(),
+  acquireIndexLock: vi.fn(),
+  releaseIndexLock: vi.fn(),
+  ensurePrivateSharedGraph: vi.fn(),
+  runEmbeddingPipeline: vi.fn(),
   withLbugDb: vi.fn(),
   search: vi.fn(),
   updateJob: vi.fn(),
@@ -16,7 +21,18 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
   loadMeta: mocks.loadMeta,
+  saveMeta: mocks.saveMeta,
   listRegisteredRepos: mocks.listRegisteredRepos,
+}));
+vi.mock('../../src/storage/index-lock.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/storage/index-lock.js')>()),
+  acquireIndexLock: mocks.acquireIndexLock,
+}));
+vi.mock('../../src/core/shared-store-analyze.js', () => ({
+  ensurePrivateSharedGraph: mocks.ensurePrivateSharedGraph,
+}));
+vi.mock('../../src/core/embeddings/embedding-pipeline.js', () => ({
+  runEmbeddingPipeline: mocks.runEmbeddingPipeline,
 }));
 vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/storage/storage-resolver.js')>()),
@@ -116,12 +132,164 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.acquireIndexLock.mockResolvedValue({
+    release: mocks.releaseIndexLock,
+    record: {
+      v: 1,
+      pid: process.pid,
+      hostname: 'test-host',
+      startTime: null,
+      token: 'test-lock',
+      invocationId: 'test-run',
+      acquiredAt: '',
+    },
+  });
+  mocks.ensurePrivateSharedGraph.mockResolvedValue(true);
   mocks.listRegisteredRepos.mockResolvedValue([entry]);
   mocks.withLbugDb.mockImplementation(async (_path, callback) => callback());
   mocks.search.mockImplementation(async (_query, _limit, _exec, reason) => ({
     results: [],
     ftsAvailable: !reason,
   }));
+});
+
+describe('POST /api/embed staged recovery preflight', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(entry.storagePath, { recursive: true, force: true });
+    fs.mkdirSync(entry.storagePath, { recursive: true });
+  });
+
+  async function useRealIndexLock() {
+    vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+    const actual = await vi.importActual<typeof import('../../src/storage/index-lock.js')>(
+      '../../src/storage/index-lock.js',
+    );
+    mocks.acquireIndexLock.mockImplementation(
+      async (...args: Parameters<typeof actual.acquireIndexLock>) => {
+        const lock = await actual.acquireIndexLock(...args);
+        return {
+          ...lock,
+          release: () => {
+            lock.release();
+            mocks.releaseIndexLock();
+          },
+        };
+      },
+    );
+  }
+
+  it.each([
+    {
+      name: 'valid staged receipt',
+      recovery: {
+        stagingFile: 'lbug.staging.12345678-1234-4123-8123-123456789abc',
+        schemaFingerprint: 'test-schema',
+        unsafeNodeIds: ['n2', 'inherited-window-node'],
+      },
+    },
+    { name: 'null receipt', recovery: null },
+    { name: 'malformed receipt', recovery: { stagingFile: 'invalid' } },
+    { name: 'false receipt', recovery: false },
+  ])('preserves a $name and releases the job locks', async ({ recovery }) => {
+    await useRealIndexLock();
+    const lockPath = path.join(entry.storagePath, 'analyze.lock');
+    const lbugPath = path.join(entry.storagePath, 'lbug');
+    const metaPath = path.join(entry.storagePath, 'gitnexus.json');
+    const sourcePath = path.join(
+      entry.storagePath,
+      'lbug.staging.12345678-1234-4123-8123-123456789abc',
+    );
+    fs.writeFileSync(lbugPath, 'published graph');
+    fs.writeFileSync(sourcePath, 'completed paid vectors');
+    fs.writeFileSync(`${sourcePath}.wal`, 'unfinished window');
+    const metadataBytes = JSON.stringify({
+      repoPath: entry.path,
+      lastCommit: 'abc123',
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      stats: { embeddings: 7 },
+      embeddingCheckpoint: {
+        at: '2026-01-01T00:00:00.000Z',
+        nodesProcessed: 1,
+        totalNodes: 2,
+        chunksProcessed: 1,
+        model: 'test-model',
+        dimensions: 768,
+        provider: 'local',
+        kind: 'interrupted',
+        pendingNodeIds: ['n2'],
+        recovery,
+      },
+    });
+    fs.writeFileSync(metaPath, metadataBytes);
+    mocks.loadMeta.mockImplementation(async () => {
+      expect(fs.existsSync(lockPath)).toBe(true);
+      return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    });
+    mocks.withLbugDb.mockResolvedValue(undefined);
+
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
+
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({
+        status: 'failed',
+        error: expect.stringMatching(
+          /staged embeddings.*Run `gitnexus analyze` to recover them first/,
+        ),
+      }),
+    );
+    expect(mocks.acquireIndexLock).toHaveBeenCalledWith(entry.storagePath, { sweep: false });
+    expect(mocks.loadMeta.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.acquireIndexLock.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.ensurePrivateSharedGraph).not.toHaveBeenCalled();
+    expect(mocks.withLbugDb).not.toHaveBeenCalled();
+    expect(mocks.runEmbeddingPipeline).not.toHaveBeenCalled();
+    expect(mocks.saveMeta).not.toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(fs.readFileSync(metaPath, 'utf8')).toBe(metadataBytes);
+    expect(fs.readFileSync(lbugPath, 'utf8')).toBe('published graph');
+    expect(fs.readFileSync(sourcePath, 'utf8')).toBe('completed paid vectors');
+    expect(fs.readFileSync(`${sourcePath}.wal`, 'utf8')).toBe('unfinished window');
+
+    // A second accepted job proves the in-memory repo lock was also released.
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(2));
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('sweeps orphaned staging files before a writable job without a recovery receipt', async () => {
+    await useRealIndexLock();
+    const metaPath = path.join(entry.storagePath, 'gitnexus.json');
+    fs.writeFileSync(metaPath, JSON.stringify({ repoPath: entry.path }));
+    const sourcePath = path.join(
+      entry.storagePath,
+      'lbug.staging.12345678-1234-4123-8123-123456789abc',
+    );
+    fs.writeFileSync(sourcePath, 'orphaned database');
+    fs.writeFileSync(`${sourcePath}.wal`, 'orphaned WAL');
+    mocks.loadMeta.mockImplementation(async () => JSON.parse(fs.readFileSync(metaPath, 'utf8')));
+    mocks.ensurePrivateSharedGraph.mockImplementation(async () => {
+      expect(fs.existsSync(path.join(entry.storagePath, 'analyze.lock'))).toBe(true);
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(fs.existsSync(`${sourcePath}.wal`)).toBe(false);
+      return true;
+    });
+    mocks.withLbugDb.mockResolvedValue(undefined);
+
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
+
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'complete' }),
+    );
+    expect(mocks.ensurePrivateSharedGraph).toHaveBeenCalledTimes(1);
+    expect(mocks.withLbugDb).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(entry.storagePath, 'analyze.lock'))).toBe(false);
+  });
 });
 
 async function invoke(route: string, query: Record<string, unknown> = {}) {
@@ -257,7 +425,9 @@ describe('serve uses one metadata-derived FTS mode on every DB-open path', () =>
         expect.any(Function),
         skip ? { skipFts: true } : {},
       );
-      expect(mocks.loadMeta).toHaveBeenCalledExactlyOnceWith(entry.storagePath);
+      expect(mocks.loadMeta).toHaveBeenCalledTimes(2);
+      expect(mocks.loadMeta).toHaveBeenNthCalledWith(1, entry.storagePath);
+      expect(mocks.loadMeta).toHaveBeenNthCalledWith(2, entry.storagePath);
     },
   );
 });
