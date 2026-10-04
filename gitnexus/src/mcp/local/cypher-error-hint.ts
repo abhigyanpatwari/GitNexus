@@ -74,6 +74,9 @@ export function getCypherErrorHint(message: string, repoName: string): string | 
   )?.[1];
   if (!table) return undefined;
   const relation = REL_TYPES.find((type) => type.toLowerCase() === table.toLowerCase());
+  if (relation === 'OVERRIDES') {
+    return `Relationships use :${REL_TABLE_NAME} {type: 'METHOD_OVERRIDES'}, not a '${table}' table. OVERRIDES is a legacy type value used by older indexes. ${schema}`;
+  }
   if (relation) {
     return `Relationships use :${REL_TABLE_NAME} {type: '${relation}'}, not a '${relation}' table. ${schema}`;
   }

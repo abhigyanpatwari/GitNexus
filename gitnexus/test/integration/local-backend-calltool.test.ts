@@ -8,6 +8,7 @@
 import fs from 'fs/promises';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { readResource } from '../../src/mcp/resources.js';
 import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
@@ -1105,6 +1106,69 @@ withTestLbugDB(
       expect(result.hint).toContain(":CodeRelation {type: 'CALLS'}");
     });
 
+    it.each(['OVERRIDES', 'overrides'])(
+      'directs the legacy %s table spelling to current override edges',
+      async function recommendsCurrentOverrideEdges(table) {
+        const result = await backend.callTool('cypher', {
+          statement: `MATCH ()-[:${table}]->() RETURN count(*)`,
+        });
+        expect(result.error).toBe(
+          `Prepare failed: Binder exception: Table ${table} does not exist.`,
+        );
+        expect(result.hint).toContain(":CodeRelation {type: 'METHOD_OVERRIDES'}");
+        expect(result.hint).toMatch(/OVERRIDES.*legacy/);
+        expect(result.hint).toContain('older indexes');
+        const advisedPattern = result.hint.match(/:CodeRelation \{type: '[A-Z_]+'\}/)?.[0];
+        expect(advisedPattern).toBeDefined();
+        const corrected = await backend.callTool('cypher', {
+          statement: `MATCH (a)-[${advisedPattern}]->(b) RETURN a.id AS source, b.id AS target`,
+        });
+        expect(corrected.row_count).toBe(1);
+        expect(corrected.markdown).toContain('method:AuthService.authenticate');
+        expect(corrected.markdown).toContain('method:BaseService.authenticate');
+        expect(corrected).not.toHaveProperty('hint');
+      },
+    );
+
+    it('keeps the canonical METHOD_OVERRIDES hint unchanged', async function preservesCanonicalOverrideHint() {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH ()-[:METHOD_OVERRIDES]->() RETURN count(*)',
+      });
+      expect(result.error).toBe(
+        'Prepare failed: Binder exception: Table METHOD_OVERRIDES does not exist.',
+      );
+      expect(result.hint).toBe(
+        "Relationships use :CodeRelation {type: 'METHOD_OVERRIDES'}, not a 'METHOD_OVERRIDES' table. Read gitnexus://repo/schema-hints-repo/schema for the schema.",
+      );
+    });
+
+    it('preserves a valid explicit legacy-type query instead of rewriting it', async function preservesLegacyOverrideQuery() {
+      const result = await backend.callTool('cypher', {
+        statement: "MATCH ()-[r:CodeRelation {type: 'OVERRIDES'}]->() RETURN r.reason AS reason",
+      });
+      expect(result.row_count).toBe(1);
+      expect(result.markdown).toContain('legacy-index-row');
+      expect(result.markdown).not.toContain('mro-resolution');
+      expect(result).not.toHaveProperty('hint');
+    });
+
+    it('preserves wrong-table property errors and links to accurate per-table columns', async function linksToAccuratePropertyColumns() {
+      const result = await backend.callTool('cypher', {
+        statement: 'MATCH (n:Function) RETURN n.parameterCount',
+      });
+      expect(result.error).toBe(
+        'Prepare failed: Binder exception: Cannot find property parameterCount for n.',
+      );
+      expect(result.hint).not.toContain('Did you mean');
+      expect(result.hint).toContain('properties vary by table');
+      const resourceUri = result.hint.match(/gitnexus:\/\/\S+/)?.[0] ?? '';
+      expect(resourceUri).toBe('gitnexus://repo/schema-hints-repo/schema');
+      const resource = await readResource(resourceUri, backend);
+      const properties = resource.split('node_properties:\n')[1].split('\n\n')[0];
+      expect(properties.match(/^  Function: (.+)$/m)?.[1]).not.toContain('parameterCount');
+      expect(properties.match(/^  Method: (.+)$/m)?.[1]).toContain('parameterCount (INT32)');
+    });
+
     it.each([
       'MATCH (n:UnrelatedMissingThing) RETURN n',
       'MATCH (n:FunctionWithAnUnrelatedSuffix) RETURN n',
@@ -1164,7 +1228,12 @@ withTestLbugDB(
     });
   },
   {
-    seed: LOCAL_BACKEND_SEED_DATA,
+    seed: [
+      ...LOCAL_BACKEND_SEED_DATA,
+      `MATCH (a:Method {id: 'method:AuthService.authenticate'}),
+             (b:Method {id: 'method:BaseService.authenticate'})
+       CREATE (a)-[:CodeRelation {type: 'OVERRIDES', reason: 'legacy-index-row'}]->(b)`,
+    ],
     poolAdapter: true,
     afterSetup: async (handle) => {
       vi.mocked(listRegisteredRepos).mockResolvedValue([

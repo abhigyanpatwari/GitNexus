@@ -16,6 +16,14 @@ import {
   readResource,
 } from '../../src/mcp/resources.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
+import {
+  EMBEDDING_DIMS,
+  EMBEDDING_SCHEMA,
+  EMBEDDING_TABLE_NAME,
+  NODE_SCHEMA_QUERIES,
+  NODE_TABLES,
+  RELATION_SCHEMA,
+} from '../../src/core/lbug/schema.js';
 
 // Mock loadMeta so getContextResource doesn't hit the filesystem (#2438 fix).
 // Default: returns null (simulates no on-disk meta — falls back to cached handle).
@@ -266,6 +274,68 @@ describe('readResource', () => {
     expect(result).toContain('GitNexus Graph Schema');
     expect(result).toContain('CALLS');
     expect(result).toContain('IMPORTS');
+  });
+
+  it('documents every canonical node table and its exact DDL columns', async function documentsCanonicalNodeColumns() {
+    const result = await readResource('gitnexus://repo/any/schema', createMockBackend());
+    const section = result.split('node_properties:\n')[1].split('\n\n')[0];
+    const documented = Object.fromEntries(
+      [...section.matchAll(/^  (\w+): "([^"]*)"$/gm)].map((match) => [match[1], match[2]]),
+    );
+    expect(Object.keys(documented).sort()).toEqual([...NODE_TABLES].sort());
+
+    for (const ddl of NODE_SCHEMA_QUERIES) {
+      const [declaration, ...lines] = ddl
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .trim()
+        .split('\n');
+      const table = declaration.split(/\s+/)[3].replaceAll('`', '');
+      // Independently read declarations, including array types, without the
+      // renderer's column-matching regex or a hand-maintained property list.
+      const expected = lines
+        .map((line) => line.trim().replace(/,$/, ''))
+        .filter((line) => line && line !== ')' && !line.startsWith('PRIMARY KEY'))
+        .map((line) => {
+          const [name, type] = line.split(/\s+/);
+          return `${name} (${type})`;
+        });
+      expect(documented[table].split(', '), table).toEqual(expected);
+    }
+    expect(documented.Function).not.toContain('parameterCount');
+    expect(documented.Constructor).not.toContain('parameterCount');
+    expect(documented.Method).toContain('parameterCount (INT32), returnType (STRING)');
+    expect(documented.BasicBlock).toContain('callees (STRING), calleeIds (STRING)');
+    expect(documented.File).not.toContain('startLine');
+    expect(documented.Function).toContain('startLine (INT64)');
+    expect(result).not.toContain('common:');
+    expect(result).toContain('0-BASED');
+    expect(result).toContain('find_callers:');
+    expect(result).toContain('declaredType');
+  });
+
+  it('documents embedding storage and every relationship column from the DDL', async function documentsEmbeddingAndRelationshipColumns() {
+    const result = await readResource('gitnexus://repo/any/schema', createMockBackend());
+    expect(result).toContain('embedding_storage:\n');
+    const embedding = result.split('embedding_storage:\n')[1].split('\n\n')[0];
+    expect(embedding).toContain(`${EMBEDDING_TABLE_NAME}:`);
+    expect(embedding).toContain(`embedding (FLOAT[${EMBEDDING_DIMS}])`);
+    const relation = result.split('relationship_table: ')[1].split('\n')[0];
+    for (const [ddl, rendered] of [
+      [EMBEDDING_SCHEMA, embedding],
+      [RELATION_SCHEMA, relation],
+    ]) {
+      const declarations = ddl.trim().split('\n').slice(1, -1);
+      const columns = declarations
+        .map((line) => line.trim().replace(/,$/, ''))
+        .filter((line) => !line.startsWith('PRIMARY KEY') && !line.startsWith('FROM '))
+        .map((line) => line.split(/\s+/));
+      const actual = [...rendered.matchAll(/(\w+) \(([^)]+)\)/g)].map((match) => [
+        match[1],
+        match[2],
+      ]);
+      expect(actual).toEqual(columns);
+    }
+    expect(relation).toContain('staticGated (BOOLEAN)');
   });
 
   it('routes gitnexus://repo/{name}/clusters correctly', async () => {
