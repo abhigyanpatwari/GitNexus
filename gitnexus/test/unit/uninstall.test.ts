@@ -23,6 +23,7 @@ describe('uninstallCommand', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalCodexHome: string | undefined;
   let originalSkillsRoot: string | undefined;
   let originalExitCode: typeof process.exitCode;
   let skillsRoot: string;
@@ -35,6 +36,8 @@ describe('uninstallCommand', () => {
 
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
+    delete process.env.CODEX_HOME;
     originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
     originalExitCode = process.exitCode;
 
@@ -57,6 +60,8 @@ describe('uninstallCommand', () => {
     vi.restoreAllMocks();
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     if (originalSkillsRoot === undefined) delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
     else process.env.GITNEXUS_TEST_SKILLS_ROOT = originalSkillsRoot;
     // The command sets process.exitCode=1 on partial failure; restore it so a
@@ -201,6 +206,28 @@ describe('uninstallCommand', () => {
     expect(result).not.toContain('[mcp_servers.gitnexus]');
     expect(result).toContain('[mcp_servers.other]');
     expect(result).toContain('command = "other"');
+  });
+
+  it('dry-runs and removes only the active CODEX_HOME MCP entry', async () => {
+    const activeHome = path.join(tempHome, 'active-codex');
+    const activeConfig = path.join(activeHome, 'config.toml');
+    const defaultConfig = path.join(tempHome, '.codex', 'config.toml');
+    const activeRaw = '[mcp_servers.gitnexus]\ncommand = "active"\n';
+    const defaultRaw = '[mcp_servers.gitnexus]\ncommand = "default"\n';
+    await fs.mkdir(activeHome);
+    await fs.mkdir(path.dirname(defaultConfig));
+    await fs.writeFile(activeConfig, activeRaw);
+    await fs.writeFile(defaultConfig, defaultRaw);
+    process.env.CODEX_HOME = activeHome;
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand();
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain(activeConfig);
+    expect(await fs.readFile(activeConfig, 'utf-8')).toBe(activeRaw);
+
+    await uninstallCommand({ force: true });
+    expect(await fs.readFile(activeConfig, 'utf-8')).not.toContain('[mcp_servers.gitnexus]');
+    expect(await fs.readFile(defaultConfig, 'utf-8')).toBe(defaultRaw);
   });
 
   it('leaves a corrupt JSON config untouched', async () => {

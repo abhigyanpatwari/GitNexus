@@ -1091,16 +1091,13 @@ async function codexHasHttpMcpEntry(configPath: string): Promise<boolean> {
 }
 
 async function setupCodex(result: SetupResult): Promise<void> {
-  const configuredHome = process.env.CODEX_HOME;
-  const codexDir = configuredHome
-    ? path.resolve(configuredHome)
-    : path.join(os.homedir(), '.codex');
-  if (!configuredHome && !(await dirExists(codexDir))) {
+  const configPath = getEditorTargets().codex.configFile;
+  const codexDir = path.dirname(configPath);
+  if (!process.env.CODEX_HOME && !(await dirExists(codexDir))) {
     result.skipped.push('Codex (not installed)');
     return;
   }
 
-  const configPath = path.join(codexDir, 'config.toml');
   try {
     if (await codexHasHttpMcpEntry(configPath)) {
       result.configured.push('Codex (existing HTTP MCP entry kept)');
