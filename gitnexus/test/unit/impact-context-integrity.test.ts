@@ -50,6 +50,7 @@ vi.mock('../../src/storage/git.js', async (importOriginal) => ({
 vi.mock('../../src/mcp/local/aop-metadata.js', () => ({ querySpringAopMetadata: aop }));
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { SymbolIdentityError } from '../../src/mcp/local/query-result-integrity.js';
 
 const TARGET = {
   id: 'func:target',
@@ -91,6 +92,16 @@ const BAD = 'corrupt\0persisted-value';
 
 type Seam =
   | 'target'
+  | 'targetLabels'
+  | 'aopRows'
+  | 'pdgSeed'
+  | 'pdgNeighbor'
+  | 'pdgOwner'
+  | 'pdgStatement'
+  | 'pdgSelf'
+  | 'pdgCalleeBlocks'
+  | 'pdgSummary'
+  | 'pdgSpans'
   | 'incoming'
   | 'classIncoming'
   | 'outgoing'
@@ -118,6 +129,19 @@ function fixture(seam: Seam): unknown[] {
 
 function querySeam(query: string, params: Record<string, any> | undefined): Seam | undefined {
   if (params?.symName || params?.uid) return 'target';
+  if (query.includes("RETURN n.id AS id, 'Class' AS label")) return 'targetLabels';
+  if (query.includes("r.reason STARTS WITH 'spring-aop:v1:'")) return 'aopRows';
+  if (query.includes('RETURN s.id AS id, s.name AS name')) return 'pdgOwner';
+  if (query.includes('RETURN s.id AS id, s.filePath AS filePath')) return 'pdgSpans';
+  if (query.includes('RETURN c.id AS id, r.reason AS reason')) return 'pdgSummary';
+  if (query.includes('RETURN a.id AS id, r.reason AS reason')) return 'pdgSelf';
+  if (query.includes('RETURN a.id AS id ORDER BY a.startLine')) return 'pdgSeed';
+  if (query.includes('RETURN b.id AS id')) {
+    if (query.includes('b.calleeIds AS calleeIds')) return 'pdgCalleeBlocks';
+    if (query.includes('b.text AS text')) return 'pdgStatement';
+    return 'pdgSeed';
+  }
+  if (query.includes('BasicBlock') && query.includes('RETURN DISTINCT')) return 'pdgNeighbor';
   if (query.includes('WITH DISTINCT caller') || query.includes('WITH DISTINCT target'))
     return 'chain';
   if (query.includes('caller.id AS uid'))
@@ -186,6 +210,42 @@ beforeEach(async () => {
 });
 
 describe('identity corruption before target selection', () => {
+  for (const corrupt of [true, false]) {
+    it('distinguishes corrupt and ordinary ambiguous candidate failures: ' + corrupt, async () => {
+      rows.target = [
+        { ...TARGET, id: 'func:one', filePath: 'src/one.ts' },
+        { ...TARGET, id: 'func:two', filePath: 'src/two.ts' },
+      ];
+      vi.spyOn(backend as any, '_runImpactBFS').mockRejectedValue(
+        corrupt ? new SymbolIdentityError() : new Error('ordinary candidate failure'),
+      );
+      const result = await impact();
+      if (corrupt) {
+        expectIntegrityError(result, true);
+      } else {
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe('ambiguous');
+        expect(result.partialProbe).toBe(true);
+      }
+    });
+  }
+  for (const tool of ['context', 'impact']) {
+    for (const badRow of [
+      { id: BAD, label: 'Class' },
+      { id: '', label: 'Class' },
+      { id: 42, label: 'Class' },
+      { id: TARGET.id, label: BAD },
+    ]) {
+      it('rejects corrupt label enrichment for ' + tool + JSON.stringify(badRow), async () => {
+        rows.target = [{ ...TARGET, type: '' }];
+        rows.targetLabels = [badRow, { id: TARGET.id, label: 'Class' }];
+        expectIntegrityError(
+          tool === 'context' ? await context() : await impact(),
+          tool === 'impact',
+        );
+      });
+    }
+  }
   for (const shape of ['object', 'tuple']) {
     for (const field of ['name', 'filePath']) {
       for (const tool of ['context', 'impact', 'pdg impact']) {
@@ -512,5 +572,181 @@ describe('healthy and ordinary-failure compatibility', () => {
     const result = await context();
     expect(result.error).toBeUndefined();
     expect(result.processes).toEqual([]);
+  });
+});
+
+describe('raw PDG identities before coercion, caps, and projection', () => {
+  const seed = 'BasicBlock:src/target.ts:2:0:0';
+  const reached = 'BasicBlock:src/caller.ts:1:0:0';
+
+  function preparePdg() {
+    rows.pdgSeed = [{ id: seed }];
+    rows.pdgNeighbor = [{ id: reached }];
+    rows.pdgOwner = [{ id: REF.uid, name: REF.name, label: 'Function', startLine: 0 }];
+    rows.pdgStatement = [{ id: reached, line: 1, endLine: 1, text: 'value = 1;' }];
+  }
+
+  for (const seam of ['pdgSeed', 'pdgNeighbor', 'pdgOwner', 'pdgStatement'] as const) {
+    for (const bad of [BAD, '', null, 42]) {
+      it('rejects raw ' + seam + ' identity ' + JSON.stringify(bad), async () => {
+        preparePdg();
+        rows[seam] = [{ id: bad, name: 'caller', label: 'Function', line: 1, startLine: 0 }];
+        expectIntegrityError(
+          await impact({ mode: 'pdg', ...(seam === 'pdgStatement' ? { line: 2 } : {}) }),
+          true,
+        );
+      });
+    }
+  }
+  for (const seam of ['pdgSeed', 'pdgNeighbor'] as const) {
+    it('validates ' + seam + ' cap probe rows', async () => {
+      preparePdg();
+      rows[seam] = [{ id: seam === 'pdgSeed' ? seed : reached }, { id: BAD }];
+      expectIntegrityError(await impact({ mode: 'pdg', limit: 1 }), true);
+    });
+  }
+  for (const field of ['name', 'label']) {
+    it('rejects raw owner ' + field + ' before String coercion', async () => {
+      preparePdg();
+      rows.pdgOwner = [{ id: REF.uid, name: 'caller', label: 'Function', [field]: BAD }];
+      expectIntegrityError(await impact({ mode: 'pdg' }), true);
+    });
+  }
+  for (const field of ['seedBlocks', 'reachableBlocks', 'intraReachableBlocks']) {
+    for (const bad of [BAD, '', null, 42]) {
+      it('rejects malformed final ' + field + ' members ' + JSON.stringify(bad), async () => {
+        const healthy = await impact({ mode: 'pdg' });
+        vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValue({
+          ...healthy,
+          [field]: [bad],
+        });
+        expectIntegrityError(await impact({ mode: 'pdg' }), true);
+      });
+    }
+  }
+  it('allows a generated unresolved owner marker', async () => {
+    preparePdg();
+    rows.pdgOwner = [];
+    const result = await impact({ mode: 'pdg' });
+    expect(result.error).toBeUndefined();
+    expect(result.unresolvedBlockCount).toBe(1);
+  });
+  it('preserves Unicode owner tuples and source NUL', async () => {
+    preparePdg();
+    rows.pdgOwner = [[REF.uid, '呼び出し�', 'Function', 0]];
+    expect((await impact({ mode: 'pdg' })).error).toBeUndefined();
+    rows.pdgStatement = [{ id: reached, line: 1, endLine: 1, text: 'value = "source\0text";' }];
+    const result = await impact({ mode: 'pdg', line: 2 });
+    expect(result.error).toBeUndefined();
+    expect(result.affectedStatements.some((s: any) => s.text.includes('\0'))).toBe(true);
+  });
+  for (const field of ['callees', 'calleeIds']) {
+    it('does not swallow a corrupt statement bridge ' + field, async () => {
+      preparePdg();
+      const original = db.executeParameterized.getMockImplementation()!;
+      db.executeParameterized.mockImplementation(async (...args) => {
+        if (args[1].includes('RETURN b.' + field + ' AS ' + field)) {
+          return [{ [field]: BAD }];
+        }
+        return original(...args);
+      });
+      expectIntegrityError(await impact({ mode: 'pdg', direction: 'downstream' }), true);
+    });
+  }
+});
+
+describe('real AOP helper identities before deduplication', () => {
+  const reason =
+    'spring-aop:v1:' +
+    JSON.stringify({
+      kind: 'advice',
+      annotation: 'org.aspectj.lang.annotation.Around',
+      advice: 'around',
+      pointcut: 'execution(*)',
+      match: 'static',
+      activation: 'unknown',
+      proxy: 'possible',
+    });
+  const advice = {
+    sourceId: TARGET.id,
+    sourceName: 'target',
+    sourceFilePath: TARGET.filePath,
+    targetId: 'advice:1',
+    targetName: 'audit',
+    targetFilePath: 'src/audit.ts',
+    reason,
+  };
+  async function useRealAop() {
+    const actual = await vi.importActual<typeof import('../../src/mcp/local/aop-metadata.js')>(
+      '../../src/mcp/local/aop-metadata.js',
+    );
+    aop.mockImplementation(actual.querySpringAopMetadata);
+    rows.target = [{ ...TARGET, type: 'Method' }];
+  }
+  for (const tool of ['context', 'impact']) {
+    for (const field of ['sourceId', 'targetId']) {
+      for (const bad of [BAD, '', null, 42]) {
+        it('rejects raw AOP ' + field + ' for ' + tool + JSON.stringify(bad), async () => {
+          await useRealAop();
+          rows.aopRows = [{ ...advice, [field]: bad }, advice];
+          expectIntegrityError(
+            tool === 'context' ? await context() : await impact(),
+            tool === 'impact',
+          );
+        });
+      }
+    }
+    for (const field of ['sourceName', 'sourceFilePath', 'targetName', 'targetFilePath']) {
+      it('rejects corrupt duplicate AOP ' + field + ' for ' + tool, async () => {
+        await useRealAop();
+        rows.aopRows = [{ ...advice, [field]: BAD }, advice];
+        expectIntegrityError(
+          tool === 'context' ? await context() : await impact(),
+          tool === 'impact',
+        );
+      });
+    }
+  }
+  it('validates the AOP cap-probe row', async () => {
+    await useRealAop();
+    rows.aopRows = [...Array.from({ length: 1000 }, () => advice), { ...advice, targetId: BAD }];
+    expectIntegrityError(await context());
+  });
+  it('preserves Unicode and optional NULL metadata', async () => {
+    await useRealAop();
+    rows.aopRows = [
+      { ...advice, sourceName: '源�', sourceFilePath: null, targetName: '', targetFilePath: null },
+    ];
+    const result = await context();
+    expect(result.error).toBeUndefined();
+    expect(result.symbol.aop.advices[0]).toMatchObject({
+      adviceId: advice.targetId,
+      advisedId: advice.sourceId,
+      advisedName: '源�',
+    });
+  });
+  it('keeps ordinary AOP query failures fail-soft', async () => {
+    await useRealAop();
+    failedSeam = 'aopRows';
+    expect((await context()).error).toBeUndefined();
+    expect((await impact()).error).toBeUndefined();
+  });
+  it('handles early AOP rejection while the frontier is pending', async () => {
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    aop.mockRejectedValue(new SymbolIdentityError());
+    const original = db.executeParameterized.getMockImplementation()!;
+    db.executeParameterized.mockImplementation(async (...args) => {
+      if (querySeam(args[1], args[2]) === 'frontier') {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      return original(...args);
+    });
+    try {
+      expectIntegrityError(await impact(), true);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 });

@@ -28,6 +28,15 @@ import {
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
+import {
+  SYMBOL_IDENTITY_RECOVERY_SUGGESTION,
+  SymbolIdentityError,
+  assertSymbolIdentity,
+  queryRowValue,
+  assertIdentityFields,
+  assertQueryIdentity,
+  rethrowSymbolIdentityError,
+} from './query-result-integrity.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
@@ -324,56 +333,12 @@ function nonBlankUid(value: unknown): string | undefined {
   return typeof value === 'string' ? value.trim() || undefined : undefined;
 }
 
-const SYMBOL_IDENTITY_RECOVERY_SUGGESTION =
-  'Run gitnexus analyze --force from the affected repository root to rebuild the index.';
-
-class SymbolIdentityError extends Error {
-  constructor() {
-    super('The index returned an invalid symbol identity. ' + SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
-    this.name = 'SymbolIdentityError';
-  }
-}
-
-/** Validate database identities before using them as graph traversal anchors. */
-function assertSymbolIdentity(id: unknown, expectedUid?: string): asserts id is string {
-  if (
-    typeof id !== 'string' ||
-    !id.trim() ||
-    id.includes('\0') ||
-    (expectedUid !== undefined && id !== expectedUid)
-  ) {
-    throw new SymbolIdentityError();
-  }
-}
-
-/** Read either native row shape without turning an absent row into a TypeError. */
-function queryRowValue(row: unknown, key: string, index: number): unknown {
-  if (typeof row !== 'object' || row === null) return undefined;
-  const value = row as Record<string, unknown>;
-  return value[key] ?? value[index];
-}
-
-/** Optional labels/paths may be empty or NULL; NUL is never a usable identity. */
-function assertIdentityFields(...values: unknown[]): void {
-  for (const value of values) {
-    if (
-      value !== null &&
-      value !== undefined &&
-      (typeof value !== 'string' || value.includes('\0'))
-    ) {
-      throw new SymbolIdentityError();
-    }
-  }
-}
-
-function assertQueryIdentity(
-  row: unknown,
-  idKey: string,
-  idIndex: number,
-  fields: ReadonlyArray<readonly [string, number]>,
-): void {
-  assertSymbolIdentity(queryRowValue(row, idKey, idIndex));
-  for (const [key, index] of fields) assertIdentityFields(queryRowValue(row, key, index));
+function assertSymbolRowIdentity(row: unknown): void {
+  assertQueryIdentity(row, 'id', 0, [
+    ['name', 1],
+    ['type', 2],
+    ['filePath', 3],
+  ]);
 }
 
 function assertContextRefs(rows: unknown[]): void {
@@ -385,10 +350,6 @@ function assertContextRefs(rows: unknown[]): void {
     ]);
     assertSymbolIdentity(queryRowValue(row, 'relType', 0));
   }
-}
-
-function rethrowSymbolIdentityError(error: unknown): void {
-  if (error instanceof SymbolIdentityError) throw error;
 }
 
 const RESPONSE_IDENTITY_FIELDS = new Set([
@@ -423,6 +384,11 @@ function assertResponseIdentities(value: unknown): void {
     for (const item of value) assertResponseIdentities(item);
   } else if (value !== null && typeof value === 'object') {
     for (const [key, field] of Object.entries(value)) {
+      if (key === 'seedBlocks' || key === 'reachableBlocks' || key === 'intraReachableBlocks') {
+        if (!Array.isArray(field)) throw new SymbolIdentityError();
+        for (const id of field) assertSymbolIdentity(id);
+        continue;
+      }
       if (RESPONSE_IDENTITY_FIELDS.has(key)) assertIdentityFields(field);
       if (key !== 'content' && key !== 'methodMetadata' && key !== 'bean') {
         assertResponseIdentities(field);
@@ -4478,9 +4444,10 @@ export class LocalBackend {
    * "unknown kind" and, worse, makes the `kind` disambiguation hint unable to
    * filter it out (#2687).
    *
-   * Failures are swallowed: label enrichment is an optimisation for
+   * Ordinary query failures are swallowed: label enrichment is an optimisation for
    * downstream scoring and #480 Class/Interface BFS seeding; if it fails
    * the symbol still resolves, just without the kind-priority bonus.
+   * Corrupt identities propagate to the context/impact error envelope.
    */
   private async enrichCandidateLabels(
     repo: RepoHandle,
@@ -4514,6 +4481,7 @@ export class LocalBackend {
       );
       const labelById = new Map<string, string>();
       for (const r of rows as any[]) {
+        assertQueryIdentity(r, 'id', 0, [['label', 1]]);
         const id = (r.id ?? r[0]) as string;
         const label = (r.label ?? r[1]) as string;
         if (id && label && !labelById.has(id)) labelById.set(id, label);
@@ -4521,7 +4489,8 @@ export class LocalBackend {
       for (const c of candidates) {
         if (c.type === '' && labelById.has(c.id)) c.type = labelById.get(c.id) as string;
       }
-    } catch {
+    } catch (error) {
+      rethrowSymbolIdentityError(error);
       /* best-effort — downstream resolvers still work without the label */
     }
   }
@@ -4646,11 +4615,7 @@ export class LocalBackend {
         { uid },
       );
       if (rows.length === 0) return { kind: 'not_found' };
-      assertQueryIdentity(rows[0], 'id', 0, [
-        ['name', 1],
-        ['type', 2],
-        ['filePath', 3],
-      ]);
+      assertSymbolRowIdentity(rows[0]);
       const r = rows[0] as any;
       const symbol = {
         id: (r.id ?? r[0]) as string,
@@ -4787,11 +4752,7 @@ export class LocalBackend {
 
     // Reject every raw candidate before narrowing/scoring can hide a corrupt row.
     for (const row of rows) {
-      assertQueryIdentity(row, 'id', 0, [
-        ['name', 1],
-        ['type', 2],
-        ['filePath', 3],
-      ]);
+      assertSymbolRowIdentity(row);
     }
     // Normalise row shape across object / tuple returns from LadybugDB.
     let normalized = rows.map((r: any) => ({
@@ -5367,6 +5328,7 @@ export class LocalBackend {
     );
     const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
     const aopMetadataPromise = querySpringAopMetadata(repo.lbugPath, symId, epistemicSymType);
+    void aopMetadataPromise.catch(() => undefined);
 
     // R3-1. A `Property` whose name the analyzer declined to link — because
     // every definition of it lives in another language — otherwise returns an
@@ -7908,10 +7870,12 @@ export class LocalBackend {
         { ids: blockIds },
       );
       for (const r of rows as any[]) {
+        assertIdentityFields(r.callees ?? r[0]);
         const raw = String(r.callees ?? r[0] ?? '');
         for (const n of raw.split(' ')) if (n) names.add(n);
       }
     } catch (e) {
+      rethrowSymbolIdentityError(e);
       logQueryError('impact:pdg-slice-callees', e);
     }
     return names;
@@ -7947,6 +7911,7 @@ export class LocalBackend {
         for (const id of splitCalleeIds(r.calleeIds ?? r[0])) ids.add(id);
       }
     } catch (e) {
+      rethrowSymbolIdentityError(e);
       logQueryError('impact:pdg-slice-callee-ids', e);
     }
     return ids;
@@ -8315,11 +8280,7 @@ export class LocalBackend {
         `Impact target '${sym.name || sym[1] || '?'}' resolved without a node id; refusing to report a blast radius`,
       );
     }
-    assertQueryIdentity(sym, 'id', 0, [
-      ['name', 1],
-      ['type', 2],
-      ['filePath', 3],
-    ]);
+    assertSymbolRowIdentity(sym);
 
     // #1858 — kick off the epistemic boundary probe concurrently with the BFS.
     // It depends only on symId/symType/symName (all known now) and touches no
@@ -8355,6 +8316,7 @@ export class LocalBackend {
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
         : querySpringAopMetadata(repo.lbugPath, symId, symType);
+    void aopMetadataPromise.catch(() => undefined);
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
@@ -8399,11 +8361,7 @@ export class LocalBackend {
         ]);
 
         for (const r of ctorRows) {
-          assertQueryIdentity(r, 'id', 0, [
-            ['name', 1],
-            ['type', 2],
-            ['filePath', 3],
-          ]);
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8411,11 +8369,7 @@ export class LocalBackend {
           }
         }
         for (const r of fileRows) {
-          assertQueryIdentity(r, 'id', 0, [
-            ['name', 1],
-            ['type', 2],
-            ['filePath', 3],
-          ]);
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8440,11 +8394,7 @@ export class LocalBackend {
         );
 
         for (const r of typedPropertyRows) {
-          assertQueryIdentity(r, 'id', 0, [
-            ['name', 1],
-            ['type', 2],
-            ['filePath', 3],
-          ]);
+          assertSymbolRowIdentity(r);
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
             visited.add(rid);
@@ -8491,11 +8441,7 @@ export class LocalBackend {
           { symId },
         );
         for (const row of memberRows) {
-          assertQueryIdentity(row, 'id', 0, [
-            ['name', 1],
-            ['type', 2],
-            ['filePath', 3],
-          ]);
+          assertSymbolRowIdentity(row);
         }
         memberRows.sort((a, b) => compareCodeUnits(String(a.id ?? a[0]), String(b.id ?? b[0])));
         if (memberRows.length > OBJECT_CALLABLE_MEMBER_CAP) traversalComplete = false;
@@ -8581,7 +8527,6 @@ export class LocalBackend {
             ['name', 2],
             ['type', 3],
             ['filePath', 4],
-            ['relType', 5],
           ]);
           assertSymbolIdentity(queryRowValue(row, 'relType', 5));
         }
