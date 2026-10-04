@@ -1325,7 +1325,7 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
  * Install global Codex skills to ~/.agents/skills/gitnexus/
  */
 async function installCodexSkills(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
+  const codexDir = path.dirname(getEditorTargets().codex.configFile);
   if (!(await dirExists(codexDir))) return;
 
   const skillsDir = skillTarget('codex').dir;

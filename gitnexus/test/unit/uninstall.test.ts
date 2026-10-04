@@ -212,22 +212,46 @@ describe('uninstallCommand', () => {
     const activeHome = path.join(tempHome, 'active-codex');
     const activeConfig = path.join(activeHome, 'config.toml');
     const defaultConfig = path.join(tempHome, '.codex', 'config.toml');
+    const activeHooks = path.join(activeHome, 'hooks.json');
+    const defaultHooks = path.join(tempHome, '.codex', 'hooks.json');
+    const activeScriptDir = path.join(activeHome, 'hooks', 'gitnexus');
+    const defaultScriptDir = path.join(tempHome, '.codex', 'hooks', 'gitnexus');
     const activeRaw = '[mcp_servers.gitnexus]\ncommand = "active"\n';
     const defaultRaw = '[mcp_servers.gitnexus]\ncommand = "default"\n';
+    const hooksRaw = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'node gitnexus-hook.cjs' }] },
+          { matcher: 'Read', hooks: [{ type: 'command', command: 'user-hook' }] },
+        ],
+      },
+    });
     await fs.mkdir(activeHome);
     await fs.mkdir(path.dirname(defaultConfig));
+    await fs.mkdir(activeScriptDir, { recursive: true });
+    await fs.mkdir(defaultScriptDir, { recursive: true });
     await fs.writeFile(activeConfig, activeRaw);
     await fs.writeFile(defaultConfig, defaultRaw);
+    await fs.writeFile(activeHooks, hooksRaw);
+    await fs.writeFile(defaultHooks, hooksRaw);
     process.env.CODEX_HOME = activeHome;
 
     const uninstallCommand = await importUninstall();
     await uninstallCommand();
     expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain(activeConfig);
+    expect(vi.mocked(console.log).mock.calls.flat().join('\n')).toContain(activeHooks);
     expect(await fs.readFile(activeConfig, 'utf-8')).toBe(activeRaw);
+    expect(await fs.readFile(activeHooks, 'utf-8')).toBe(hooksRaw);
 
     await uninstallCommand({ force: true });
     expect(await fs.readFile(activeConfig, 'utf-8')).not.toContain('[mcp_servers.gitnexus]');
     expect(await fs.readFile(defaultConfig, 'utf-8')).toBe(defaultRaw);
+    const remaining = JSON.parse(await fs.readFile(activeHooks, 'utf-8'));
+    expect(remaining.hooks.PreToolUse).toHaveLength(1);
+    expect(remaining.hooks.PreToolUse[0].hooks[0].command).toBe('user-hook');
+    expect(await fs.readFile(defaultHooks, 'utf-8')).toBe(hooksRaw);
+    await expect(fs.access(activeScriptDir)).rejects.toThrow();
+    await expect(fs.access(defaultScriptDir)).resolves.toBeUndefined();
   });
 
   it('leaves a corrupt JSON config untouched', async () => {

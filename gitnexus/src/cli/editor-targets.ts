@@ -208,10 +208,10 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
       // Codex hooks use Claude Code's exact {hooks: {Event: [...]}} JSON shape
       // and hookSpecificOutput response contract, in a dedicated hooks.json
       // (https://developers.openai.com/codex/hooks).
-      settingsFile: path.join(home, '.codex', 'hooks.json'),
+      settingsFile: path.join(codexHome, 'hooks.json'),
       events: ['PreToolUse', 'PostToolUse'],
       needle: 'gitnexus-hook',
-      scriptDir: path.join(home, '.codex', 'hooks', 'gitnexus'),
+      scriptDir: path.join(codexHome, 'hooks', 'gitnexus'),
     },
     {
       id: 'antigravity',
