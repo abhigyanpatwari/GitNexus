@@ -629,11 +629,17 @@ export class HttpRouteExtractor implements ContractExtractor {
           if (d.strictHandlerResolution) return null;
           return resolveSymbolByNameUnique(d.handlerImport.name);
         }
-        const byName = d.strictHandlerResolution
-          ? resolveFileSymbolByNameUnique(syms, d.name)
-          : resolveSymbolByName(syms, d.name);
-        if (byName) return byName;
-        if (d.strictHandlerResolution) return null;
+        // A qualified designator (`recv.name`) does not prove the handler is
+        // declared in this file, so the file-first rung could bind an
+        // unrelated same-named local symbol: go straight to the unique
+        // repo-wide match.
+        if (!d.qualifiedHandler) {
+          const byName = d.strictHandlerResolution
+            ? resolveFileSymbolByNameUnique(syms, d.name)
+            : resolveSymbolByName(syms, d.name);
+          if (byName) return byName;
+          if (d.strictHandlerResolution) return null;
+        }
         const byGlobal = await resolveSymbolByNameUnique(d.name);
         if (byGlobal) return byGlobal;
         // A NAMED handler we could not resolve by name (neither file-scoped nor
