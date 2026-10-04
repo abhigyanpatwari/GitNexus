@@ -441,6 +441,28 @@ func routes(r *gin.Engine) {
     ]);
   });
 
+  it('forces a leading slash on slashless literals and group prefixes', () => {
+    // Ingestion's normalizeExtractedRoutePath always adds a leading "/" but
+    // normalizeHttpPath (the shared contract-id normalizer) does not — a path
+    // like "x" would become `http::GET::x` here and `http::GET::/x` there,
+    // splitting the id across the two strategies. Gin likewise panics when a
+    // route is registered without one.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	r.GET("x", h.X)
+	g := r.Group("api")
+	g.GET("y", h.Y)
+	r.GET("", h.Root)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/x', name: 'X' },
+      { method: 'GET', path: '/api/y', name: 'Y' },
+      { method: 'GET', path: '/', name: 'Root' },
+    ]);
+  });
+
   it("binds echo's handler (first argument) when the file imports echo only", () => {
     // echo is `GET(path, handler, middleware...)` — the handler is second,
     // not last, so a middleware selector must not become the route's name.

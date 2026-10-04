@@ -108,7 +108,13 @@ function joinRoutePath(prefix: string, relative: string): string {
   // just the join — because ingestion's normalizeExtractedRoutePath collapses
   // all "//" while the downstream contract-id normalizer does not: a path
   // that keeps "//" would split into two contract ids across the strategies.
-  return joined.replace(/\/+/g, '/');
+  const collapsed = joined.replace(/\/+/g, '/');
+  // Force a leading "/" for the same reason: ingestion's
+  // normalizeExtractedRoutePath always adds one, while normalizeHttpPath (the
+  // shared contract-id normalizer) does not — a literal "x" or a slashless
+  // Group("api") prefix would emit `...::x` here and `...::/x` there. Gin
+  // also refuses a registration path that does not start with "/".
+  return collapsed.startsWith('/') ? collapsed : `/${collapsed}`;
 }
 
 /** `parent.Group("/p", mw...)` → its receiver and literal prefix; null otherwise. */
