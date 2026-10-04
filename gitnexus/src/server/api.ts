@@ -12,6 +12,7 @@ import {
   acquireIndexLock,
   IndexLockTimeoutError,
   requireExclusiveIndexLock,
+  sweepStagingArtifacts,
   type IndexLockHandle,
 } from '../storage/index-lock.js';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
@@ -2152,13 +2153,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           // for the whole embedding write, released in the finally below.
           let slotLock: IndexLockHandle | undefined;
           try {
-            slotLock = await acquireIndexLock(storagePath);
+            slotLock = await acquireIndexLock(storagePath, { sweep: false });
             requireExclusiveIndexLock(
               slotLock,
               `Cannot acquire the index lock at ${storagePath}; refusing an unlocked embedding run.`,
             );
             // This writer cannot recover staged generations. Preserve their
-            // receipts, including malformed ones, before any graph/meta write.
+            // receipts, including malformed ones, before sweeping or writing.
             const recoveryCheckpoint = (await loadMeta(storagePath))?.embeddingCheckpoint;
             if (recoveryCheckpoint && Object.hasOwn(recoveryCheckpoint, 'recovery')) {
               throw new Error(
@@ -2166,6 +2167,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   'Run `gitnexus analyze` to recover them first.',
               );
             }
+            sweepStagingArtifacts(storagePath);
             // Writes go to the slot's own graph; a shared-store checkout
             // reading an immutable commit graph (#3352) takes a private copy.
             if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
