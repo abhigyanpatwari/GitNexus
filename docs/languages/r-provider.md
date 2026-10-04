@@ -82,8 +82,17 @@ Not supported:
 - A `pkg::name` whose package does not itself define `name` (for example a re-export) can still bind to a same-file or `importFrom` candidate, a `::` to a name the package does not export still binds to its definition, and `pkg::name` used as a value is not qualifier-resolved. Call sites dropped for certainly-external packages or duplicate definitions leave no recorded outcome.
 - When discovery may have missed a package, a `pkg::name` call keeps the name-based behaviour even if the candidate sits in a different package.
 - Files in `R/` subdirectories are treated as package-owned, although R itself does not load them.
-- NAMESPACE is read from disk during analysis, but it is not a parsed source file. After an edit to NAMESPACE alone, an incremental analyse (no `--force`) leaves the stored export status (`isExported`) of symbols in unchanged `R/` files as it was; `CALLS` and `IMPORTS` edges were unaffected in a test that changed `export(foo)` to `export(bar)`. `analyze --force` recomputes it.
+- NAMESPACE is read from disk during analysis, but neither it nor `DESCRIPTION` is a parsed source file. After an edit to either alone, an incremental analyse (no `--force`) keeps stale manifest-derived data: the persisted `isExported` of symbols in unchanged `R/` files, a `CALLS` edge bound through an `importFrom()` whose target changed, and a `pkg::fn` edge after a `Package:` rename. A full analyse is correct and `analyze --force` recomputes it. This is a limitation of the shared incremental write path (only changed files are re-processed), not of R resolution; other language manifests that feed resolution can be affected in the same way. It is to be addressed in a follow-up.
 - Roxygen `@param` types live in the per-file type environment; no graph edge consumes them.
+
+### Bounds on NAMESPACE exportPattern matching
+
+- Matching work and NFA states are counted in deterministic work units, never wall-clock time, so the outcome is the same on every machine. A NAMESPACE file is still read in full.
+- Caps, in `linear-regex.ts`: `MAX_TOTAL_WORK` (40,000,000 state visits per matcher), `MAX_SHARED_WORK` (100,000,000 matching visits per load), `MAX_PACKAGE_WORK` (30,000,000 per package), `MAX_SHARED_STATES` (500,000 NFA states per load) and `MAX_PACKAGE_STATES` (100,000 per package); a single pattern is also capped by `MAX_PATTERN_LENGTH` (16,384 characters) and `MAX_STATES` (16,384).
+- A pattern that does not fit is dropped, exports nothing and is warned about: at most 50 patterns are named per package (`MAX_LISTED_DROPPED_PATTERNS`), followed by a summary line counting the rest.
+- The first pattern refused for lack of states closes that package's allowance, so later patterns in the package are refused without being parsed.
+- One hostile package cannot exhaust the load budget alone (it is limited to its own share), but several can (three, for matching work); packages processed after that degrade, with warnings. Which package degrades follows graph node order.
+- Explicit `export()` names are unaffected by these bounds.
 
 ## Type annotations
 
