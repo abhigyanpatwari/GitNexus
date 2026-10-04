@@ -14,7 +14,10 @@ import * as path from 'node:path';
 import Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import { GO_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/go.js';
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
+import {
+  HttpRouteExtractor,
+  RESOLVE_BY_NAME_QUERY,
+} from '../../../src/core/group/extractors/http-route-extractor.js';
 import { runExactMatch } from '../../../src/core/group/matching.js';
 import type { RepoHandle, StoredContract } from '../../../src/core/group/types.js';
 
@@ -394,9 +397,12 @@ func routes(r *gin.Engine, n int, subs []*gin.RouterGroup) {
     ]);
   });
 
-  it('ignores a for-loop post assignment and only honors its initializer', () => {
-    // The post statement runs AFTER each body, so a `g = …` there must not
-    // shadow the group the body sees on entry; an initializer still does.
+  it('declines a route whose group a loop reassigns between iterations', () => {
+    // The post statement (or the body) runs between iterations, so from the
+    // second pass on the body sees the reassigned group rather than the one
+    // it entered with: the prefix is control-flow dependent, so the route is
+    // declined instead of emitting either value. A loop that never writes the
+    // name keeps its initializer binding.
     expect(
       providers(`package main
 func routes(r *gin.Engine, cond bool, n int) {
@@ -404,19 +410,15 @@ func routes(r *gin.Engine, cond bool, n int) {
 	for ; cond; g = r.Group("/post") {
 		g.GET("/a", h.A)
 	}
-	for i := 0; i < n; g = r.Group("/post2") {
-		g.GET("/b", h.B)
-	}
 	for g := r.Group("/init"); ; g = r.Group("/post3") {
 		g.GET("/c", h.C)
 	}
+	for k := r.Group("/k"); cond; {
+		k.GET("/d", h.D)
+	}
 }
 `),
-    ).toEqual([
-      { method: 'GET', path: '/old/a', name: 'A' },
-      { method: 'GET', path: '/old/b', name: 'B' },
-      { method: 'GET', path: '/init/c', name: 'C' },
-    ]);
+    ).toEqual([{ method: 'GET', path: '/k/d', name: 'D' }]);
   });
 
   it('accepts a raw-string (backtick) group prefix', () => {
@@ -689,38 +691,138 @@ func routes() {
     ]);
   });
 
-  it('requests in-file-unique resolution when the handler name is declared twice', () => {
-    // `h.List` and `o.List` both emit the field name `List`; with two `List`
-    // methods in this file, first-match resolution could bind either route to
-    // the wrong one, so both are marked strict. A unique name (`Show`) and a
-    // name defined elsewhere (`Remote`) keep the default resolution.
+  it('marks handler resolution by how the handler is designated', () => {
+    // `h.List` / `o.List` emit the field name `List`, but the operand does not
+    // prove where `List` is declared: they are qualifiedHandler (repo-wide
+    // unique match only, never a same-named local method). A bare name
+    // declared more than once in the file (`Show` as function and method)
+    // resolves only when unique in the file; a bare unique name keeps the
+    // default resolution.
     parser.setLanguage(Go);
     const flags = GO_HTTP_PLUGIN.scan(
       parser.parse(`package main
 import "github.com/gin-gonic/gin"
 
 type A struct{}
-type B struct{}
 
 func (a *A) List(c *gin.Context) {}
-func (b *B) List(c *gin.Context) {}
 func (a *A) Show(c *gin.Context) {}
+func Show(c *gin.Context) {}
+func Ping(c *gin.Context) {}
 
 func routes(r *gin.Engine, h *A, o *B) {
 	r.GET("/a", h.List)
 	r.GET("/b", o.List)
-	r.GET("/s", h.Show)
-	r.GET("/r", other.Remote)
+	r.GET("/s", Show)
+	r.GET("/p", Ping)
 }
 `),
     )
       .filter((d) => d.role === 'provider')
-      .map((d) => [d.path, d.name, d.strictHandlerResolution ?? false]);
+      .map((d) => [
+        d.path,
+        d.name,
+        d.qualifiedHandler ?? false,
+        d.strictHandlerResolution ?? false,
+      ]);
     expect(flags).toEqual([
-      ['/a', 'List', true],
-      ['/b', 'List', true],
-      ['/s', 'Show', false],
-      ['/r', 'Remote', false],
+      ['/a', 'List', true, false],
+      ['/b', 'List', true, false],
+      ['/s', 'Show', false, true],
+      ['/p', 'Ping', false, false],
+    ]);
+  });
+
+  it('resolves grouped var specs that precede the use', () => {
+    // Earlier specs in a grouped `var (…)` are in scope for later ones; the
+    // ingestion side emits /api/admin/x for this, so both strategies agree.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	var (
+		api   = r.Group("/api")
+		admin = api.Group("/admin")
+	)
+	admin.GET("/x", handler)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/api/admin/x', name: 'handler' }]);
+  });
+
+  it('declines a route whose group is reassigned in an earlier nested scope', () => {
+    // `{ g = r.Group("/new") }` (or a branch) writes the outer g: which value
+    // reaches the use depends on control flow, and ingestion declines it too,
+    // so emitting the older `/old/x` would invent a route. A nested `:=`
+    // declares a new variable and leaves the outer binding intact.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool) {
+	g := r.Group("/old")
+	{ g = r.Group("/new") }
+	g.GET("/x", handler)
+	k := r.Group("/k")
+	if cond { k = r.Group("/other") }
+	k.GET("/y", handler)
+	m := r.Group("/m")
+	{ m := r.Group("/inner"); m.GET("/i", handler) }
+	m.GET("/z", handler)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/inner/i', name: 'handler' },
+      { method: 'GET', path: '/m/z', name: 'handler' },
+    ]);
+  });
+
+  it('resolves a name used in its own statement initializer to the outer binding', () => {
+    // `if g := g.Group("/inner"); …` — the right-hand g is the OUTER group;
+    // the new g only scopes over what follows. Same for a for initializer.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, enabled bool) {
+	g := r.Group("/api")
+	if g := g.Group("/inner"); enabled {
+		g.GET("/x", handler)
+	}
+	for g := g.Group("/loop"); enabled; {
+		g.GET("/y", handler)
+	}
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/api/inner/x', name: 'handler' },
+      { method: 'GET', path: '/api/loop/y', name: 'handler' },
+    ]);
+  });
+
+  it('skips comments when locating the path and the handler', () => {
+    // tree-sitter names comments, so they must not count as arguments: a
+    // leading comment must not hide the path, and a comment must not be
+    // picked as the echo (first) or gin (last) handler.
+    expect(
+      providers(`package main
+import "github.com/labstack/echo/v4"
+func routes(e *echo.Echo) {
+	e.GET("/users", /* description */ users)
+	e.POST(/* description */ "/posts", posts /* trailing */)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/users', name: 'users' },
+      { method: 'POST', path: '/posts', name: 'posts' },
+    ]);
+    expect(
+      providers(`package main
+import "github.com/gin-gonic/gin"
+func routes(r *gin.Engine) {
+	r.GET(/* description */ "/users", users /* trailing */)
+	g := r.Group(/* c */ "/api")
+	g.GET("/x", h.X)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/users', name: 'users' },
+      { method: 'GET', path: '/api/x', name: 'X' },
     ]);
   });
 
@@ -754,6 +856,50 @@ describe('Go gin provider ↔ fetch() consumer pairing', () => {
     path: id,
     repoPath,
     storagePath: path.join(repoPath, '.gitnexus'),
+  });
+
+  it('does not bind a qualified handler to an unrelated same-named local method', async () => {
+    // routes.go declares A.List; the route's handler is b.List, with B.List in
+    // b.go. The file-first name lookup would pick A.List, so a qualified
+    // handler skips it: a repo-wide unique List resolves, an ambiguous one
+    // keeps the file-level fallback (empty symbolUid) instead of A.List.
+    const repo = path.join(tmpDir, 'repo');
+    fs.mkdirSync(repo, { recursive: true });
+    fs.writeFileSync(
+      path.join(repo, 'routes.go'),
+      `package main
+
+import "github.com/gin-gonic/gin"
+
+type A struct{}
+
+func (a *A) List(c *gin.Context) {}
+
+func routes(r *gin.Engine, b *B) {
+	r.GET("/bs", b.List)
+}
+`,
+    );
+    const aList = {
+      uid: 'Method:routes.go:A.List',
+      name: 'List',
+      filePath: 'routes.go',
+      startLine: 6,
+      endLine: 6,
+      labels: ['Method'],
+    };
+    const bList = { uid: 'Method:b.go:B.List', name: 'List', filePath: 'b.go' };
+    const run = async (repoWide: Record<string, unknown>[]) => {
+      const db = async (query: string, params?: Record<string, unknown>) => {
+        if (query === RESOLVE_BY_NAME_QUERY) return params?.name === 'List' ? repoWide : [];
+        if (query.includes('UNION ALL') && params?.filePath === 'routes.go') return [aList];
+        return [];
+      };
+      const out = await new HttpRouteExtractor().extract(db, repo, repoHandle(repo, 'repo'));
+      return out.find((c) => c.contractId === 'http::GET::/bs')?.symbolUid;
+    };
+    expect(await run([aList, bList])).toBe('');
+    expect(await run([bList])).toBe(bList.uid);
   });
 
   it('cross-links a grouped method-value route to a ${API_BASE}-prefixed fetch', async () => {

@@ -21,9 +21,11 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 // ─── Provider: framework routing ──────────────────────────────────────
 // Matches `\w+\.GET(...)` etc. (gin and echo share this shape).
 // Captures the receiver, the HTTP method (field name), and the path literal
-// — anchored as the FIRST argument (either Go string form; stringLiteral
-// decodes both, as ingestion does) so the code can pick the handler out of
-// the remaining arguments. Which argument that is depends on the framework:
+// (either Go string form; stringLiteral decodes both, as ingestion does). The
+// query does not anchor the path with `.`: tree-sitter counts comments as
+// named children, so `GET(/* c */ "/p", h)` would fail the anchor. scan instead
+// requires the path to be the first argument in code (comments skipped) and
+// picks the handler out of the remaining code arguments. Which argument that is depends on the framework:
 // gin is `GET(path, middleware..., handler)` (last), echo is
 // `GET(path, handler, middleware...)` (first) — see readFrameworkImports and
 // the per-call choice in scan below.
@@ -43,12 +45,16 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
             operand: (_) @receiver
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
-            .
             [(interpreted_string_literal) (raw_string_literal)] @path))
       `,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+/** Named children that are code, not comments (tree-sitter names comments). */
+function codeChildren(node: Parser.SyntaxNode | null | undefined): Parser.SyntaxNode[] {
+  return node ? node.namedChildren.filter((c) => c.type !== 'comment') : [];
+}
 
 /** Argument forms a route handler may take. */
 const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
@@ -137,7 +143,7 @@ function asGroupCall(
     return null;
   }
   const parent = fn.childForFieldName('operand');
-  const first = node.childForFieldName('arguments')?.namedChildren[0];
+  const first = codeChildren(node.childForFieldName('arguments'))[0];
   // Only a string literal carries a prefix, and it must decode to the text
   // the runtime registers: stringLiteral applies Go unescaping (both `"…"`
   // with escapes and raw `` `…` `` strings). A non-literal argument (a
@@ -155,15 +161,14 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
   ): Parser.SyntaxNode | null | undefined => {
     const i = names.findIndex((n) => n.type === 'identifier' && n.text === name);
     if (i < 0) return undefined;
-    return values?.namedChildren[i] ?? null;
+    return codeChildren(values)[i] ?? null;
   };
   switch (stmt.type) {
     case 'short_var_declaration':
     case 'assignment_statement':
-      return pick(
-        stmt.childForFieldName('left')?.namedChildren ?? [],
-        stmt.childForFieldName('right'),
-      );
+      return pick(codeChildren(stmt.childForFieldName('left')), stmt.childForFieldName('right'));
+    case 'var_spec':
+      return pick(stmt.childrenForFieldName('name'), stmt.childForFieldName('value'));
     case 'var_declaration': {
       const specs = stmt.namedChildren.flatMap((c) =>
         c.type === 'var_spec_list' ? c.namedChildren : [c],
@@ -178,6 +183,31 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
     default:
       return undefined;
   }
+}
+
+/**
+ * A binding whose value cannot be established statically: an earlier
+ * statement writes the name inside a nested scope (`{ g = r.Group("/new") }`,
+ * a branch or loop body), so which value reaches the use depends on control
+ * flow. Callers decline the route instead of picking the older binding.
+ */
+const CONFLICT = Symbol('conflicting-binding');
+type Binding = Parser.SyntaxNode | null | undefined | typeof CONFLICT;
+
+/** Whether `inner` lies within `outer`'s source span. */
+function within(outer: Parser.SyntaxNode | null, inner: Parser.SyntaxNode): boolean {
+  return !!outer && outer.startIndex <= inner.startIndex && inner.endIndex <= outer.endIndex;
+}
+
+/**
+ * Whether `stmt` writes `name` with a plain assignment somewhere inside it
+ * (`g = …` in a nested block, branch, loop, or closure body). A nested `:=`
+ * declares a new variable and is not a write to the outer one.
+ */
+function writesNameInside(stmt: Parser.SyntaxNode, name: string): boolean {
+  return [stmt, ...stmt.descendantsOfType('assignment_statement')].some(
+    (a) => a.type === 'assignment_statement' && declaresName(a.childForFieldName('left'), name),
+  );
 }
 
 /** Whether an identifier or expression_list (e.g. a range left side) declares `name`. */
@@ -199,7 +229,7 @@ function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
  * is statically unknown, so the walk stops instead of escaping to an outer
  * group), or is not bound in scope.
  */
-function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
+function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | typeof CONFLICT {
   return lookupBinding(ident) ?? null;
 }
 
@@ -207,8 +237,10 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
  * findBinding's walk, keeping "declared without a traceable value" (null: a
  * `func` literal parameter, `var x T`, a select receive) apart from "not
  * declared before reaching the enclosing function declaration" (undefined).
+ * CONFLICT means a preceding statement writes the name in a nested scope, so
+ * the value at the use is control-flow dependent.
  */
-function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | undefined {
+function lookupBinding(ident: Parser.SyntaxNode): Binding {
   const name = ident.text;
   let child: Parser.SyntaxNode = ident;
   for (let node = ident.parent; node; child = node, node = node.parent) {
@@ -218,6 +250,18 @@ function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | und
     if (node.type === 'func_literal') {
       const params = node.childForFieldName('parameters')?.descendantsOfType('identifier') ?? [];
       if (params.some((p) => p.text === name)) return null;
+      continue;
+    }
+    // Inside a grouped `var ( a = …; b = a.Group(…) )`, the specs before the
+    // one holding the use are already in scope; the current and later specs
+    // are not (`var g = g.Group(…)` reads the outer g).
+    if (node.type === 'var_spec_list') {
+      const specs = codeChildren(node);
+      const useIndex = specs.findIndex((s) => s.id === child.id);
+      for (const spec of specs.slice(0, useIndex).reverse()) {
+        const value = boundValue(spec, name);
+        if (value !== undefined) return value;
+      }
       continue;
     }
     if (
@@ -242,37 +286,55 @@ function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | und
           }
         }
       }
-      const stmts = node.namedChildren;
+      const stmts = codeChildren(node);
       const useIndex = stmts.findIndex((s) => s.id === child.id);
       for (const stmt of stmts.slice(0, useIndex).reverse()) {
         const value = boundValue(stmt, name);
         if (value !== undefined) return value;
+        // A write nested in an earlier statement (block, branch, loop) may or
+        // may not run before the use: the reaching value is unprovable.
+        if (writesNameInside(stmt, name)) return CONFLICT;
       }
       continue;
     }
     // Statement-scoped bindings enclose the use the same way Go scopes them.
     if (node.type === 'if_statement' || node.type === 'expression_switch_statement') {
+      // A use inside the initializer itself (`if g := g.Group(…); …`) reads
+      // the OUTER binding: the new one only scopes over what follows it.
       const init = node.childForFieldName('initializer');
-      if (init) {
+      if (init && !within(init, ident)) {
         const value = boundValue(init, name);
         if (value !== undefined) return value;
       }
       continue;
     }
     if (node.type === 'for_statement') {
-      const clause = node.namedChildren[0];
+      const clause = codeChildren(node)[0];
+      // A write in the loop's post statement, condition, or body runs between
+      // iterations, so from the second pass on the body sees that value
+      // instead of the one it entered with (`for ; c; g = r.Group("/post")`):
+      // the prefix is control-flow dependent, so decline it.
+      if (within(node.childForFieldName('body'), ident)) {
+        const loopParts = [
+          node.childForFieldName('body'),
+          clause?.type === 'for_clause' ? clause.childForFieldName('update') : null,
+          clause?.type === 'for_clause' ? clause.childForFieldName('condition') : null,
+        ];
+        if (loopParts.some((part) => part && writesNameInside(part, name))) return CONFLICT;
+      }
       if (clause?.type === 'for_clause') {
-        // Only the initializer runs before the body: `condition` and
-        // `update` (`g = r.Group("/post")` in the post slot) evaluate after
-        // it, so they must not shadow what the body sees on entry. An absent
-        // initializer (`for ; c; i++`) binds nothing.
+        // Only the initializer binds before the body; an absent initializer
+        // (`for ; c; i++`) binds nothing.
         const init = clause.childForFieldName('initializer');
-        if (init) {
+        if (init && !within(init, ident)) {
           const value = boundValue(init, name);
           if (value !== undefined) return value;
         }
       } else if (clause?.type === 'range_clause') {
-        if (declaresName(clause.childForFieldName('left'), name)) {
+        if (
+          declaresName(clause.childForFieldName('left'), name) &&
+          !within(clause.childForFieldName('right'), ident)
+        ) {
           return clause.childForFieldName('right') ?? null;
         }
       }
@@ -284,8 +346,13 @@ function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | und
       // matching how the ingestion-side route-bindings read it. The switched
       // value is the operand right after the guard list.
       const guard = node.childForFieldName('alias');
-      if (guard?.type === 'expression_list' && declaresName(guard, name)) {
-        return node.namedChildren[1] ?? null;
+      const switched = codeChildren(node)[1] ?? null;
+      if (
+        guard?.type === 'expression_list' &&
+        declaresName(guard, name) &&
+        !within(switched, ident)
+      ) {
+        return switched;
       }
       continue;
     }
@@ -302,8 +369,9 @@ function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | und
  * Provenance must still END at a constructor: parameters, unrelated packages'
  * `New()`, a local that shadows the echo import name, and anything else return
  * false so the caller keeps the conservative last-argument fallback instead of
- * guessing. Returns null when the Group chain exceeds MAX_GROUP_DEPTH: the
- * framework is then unprovable either way, so the caller declines the route.
+ * guessing. Returns null when the Group chain exceeds MAX_GROUP_DEPTH or a
+ * binding on it is control-flow dependent (CONFLICT): the framework is then
+ * unprovable either way, so the caller declines the route.
  */
 function receiverBindsToEchoConstructor(
   receiver: Parser.SyntaxNode,
@@ -314,6 +382,7 @@ function receiverBindsToEchoConstructor(
   // An identifier resolves through its binding; a chained `X.Group(…).Group(…)`
   // operand is already a call and is inspected as-is.
   const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
+  if (value === CONFLICT) return null;
   if (value?.type !== 'call_expression') return false;
   const fn = value.childForFieldName('function');
   if (fn?.type !== 'selector_expression') return false;
@@ -356,12 +425,14 @@ function isLocalName(ident: Parser.SyntaxNode): boolean {
 
 /**
  * Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced.
- * Returns null when the chain exceeds MAX_GROUP_DEPTH: a partial prefix would
- * silently drop the inner groups, so the caller declines the route instead.
+ * Returns null when the chain exceeds MAX_GROUP_DEPTH, or when a binding on it
+ * is control-flow dependent (CONFLICT): a partial or stale prefix would emit
+ * a wrong path, so the caller declines the route instead.
  */
 function groupPrefix(receiver: Parser.SyntaxNode, depth = 0): string | null {
   if (depth > MAX_GROUP_DEPTH) return null;
   const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
+  if (value === CONFLICT) return null;
   const group = value ? asGroupCall(value) : null;
   if (!group) return '';
   const outer = groupPrefix(group.parent, depth + 1);
@@ -486,7 +557,9 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (literalPath === null) continue;
       const argList = pathNode.parent;
       if (argList?.type !== 'argument_list') continue;
-      // The path is anchored first, so everything after it is a handler or
+      const args = codeChildren(argList);
+      if (args[0]?.id !== pathNode.id) continue;
+      // The path is the first code argument, so everything after it is a handler or
       // middleware candidate: echo's verb calls take the FIRST of those, gin's
       // the LAST (see FRAMEWORK_ROUTE_PATTERNS / readFrameworkImports). The
       // rule is chosen per call: an echo-only file is unambiguous; a
@@ -494,7 +567,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       // provably traces to echo's constructor (directly or through enclosing
       // Group() calls) — everything else keeps the last-argument anchor,
       // gin's order and the safer default when the file proves nothing.
-      const rest = argList.namedChildren.slice(1);
+      const rest = args.slice(1);
       if (rest.length === 0) continue;
       const echoOrder = mixed
         ? receiverNode
@@ -514,13 +587,15 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       // containment (like a consumer). A named handler keeps its name and
       // resolves by name; `line` is harmless there. For a method value or a
       // package-qualified function (`h.List`, `pkg.List`) that name is the
-      // field: the group layer resolves handlers by name alone, and the
-      // operand is usually a local variable rather than the receiver type.
+      // field, and the operand (usually a local variable, not the receiver
+      // type) does not prove where `List` is declared — so the detection is
+      // marked qualifiedHandler: resolve only to a repo-wide unique `List`,
+      // never to a same-named local method that merely shares the name.
       const isInlineHandler = handlerNode?.type === 'func_literal';
-      const handlerName =
-        handlerNode?.type === 'selector_expression'
-          ? (handlerNode.childForFieldName('field')?.text ?? null)
-          : (handlerNode?.text ?? null);
+      const isQualified = handlerNode?.type === 'selector_expression';
+      const handlerName = isQualified
+        ? (handlerNode.childForFieldName('field')?.text ?? null)
+        : (handlerNode?.text ?? null);
       out.push({
         role: 'provider',
         framework: 'go-framework',
@@ -529,10 +604,14 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         name: isInlineHandler ? null : handlerName,
         line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
-        // An ambiguous in-file name resolves only when the file holds exactly
-        // one match (otherwise the route keeps a file-level anchor) rather than
-        // binding to whichever same-named method the graph lists first.
-        ...(!isInlineHandler && handlerName && (declaredNames.get(handlerName) ?? 0) > 1
+        ...(isQualified ? { qualifiedHandler: true } : {}),
+        // A bare name declared more than once in this file (a function and a
+        // method of the same name) resolves only when the file holds exactly
+        // one match, rather than binding to whichever row the graph lists first.
+        ...(!isQualified &&
+        !isInlineHandler &&
+        handlerName &&
+        (declaredNames.get(handlerName) ?? 0) > 1
           ? { strictHandlerResolution: true }
           : {}),
       });
