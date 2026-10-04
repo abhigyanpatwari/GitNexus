@@ -16,7 +16,7 @@ vi.mock('../../src/storage/index-lock.js', async (original) => ({
 vi.mock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo: pipeline }));
 vi.mock('../../src/storage/repo-manager.js', async (original) => ({
   ...(await original<typeof import('../../src/storage/repo-manager.js')>()),
-  resolveBranchPlacement: (...args: unknown[]) => resolvePlacement(...args),
+  resolveBranchPlacement: resolvePlacement,
 }));
 
 import { runFullAnalysis } from '../../src/core/run-analyze.js';

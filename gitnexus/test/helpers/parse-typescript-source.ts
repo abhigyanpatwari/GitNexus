@@ -30,10 +30,8 @@ export interface ParsedSource {
 
 const PARSE_PLUGINS: NonNullable<Parameters<typeof parse>[1]>['plugins'] = [
   'typescript',
-  'explicitResourceManagement',
-  'importAttributes',
   'decoratorAutoAccessors',
-  ['decorators', { decoratorsBeforeExport: true }],
+  'decorators',
 ];
 
 export function forEachChild(node: Node, visit: (child: AstNode) => void): void {

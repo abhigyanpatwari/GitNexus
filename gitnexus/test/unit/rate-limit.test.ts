@@ -119,7 +119,7 @@ describe('createRouteLimiter — integration with a real route', () => {
     const res = await fetch(`${baseUrl}/test/file`);
     expect(res.status).toBe(429);
     const body = await res.json();
-    expect(body.error).toContain('Too many');
+    expect(body).toHaveProperty('error', expect.stringContaining('Too many'));
   });
 
   it('emits draft-7 RateLimit response header (combined form), not legacy X-RateLimit-*', async () => {

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
+import type { ForkImpl } from '../../src/core/embeddings/embedding-sidecar-client.js';
 import type { ChildProcess } from 'node:child_process';
 import type {
   SidecarRequest,
@@ -57,7 +59,7 @@ describe('embedding sidecar client', () => {
   const hostPlatform = process.platform;
   const hostArch = process.arch;
 
-  let forkMock: ReturnType<typeof vi.fn>;
+  let forkMock: Mock<ForkImpl>;
   let children: FakeChild[];
 
   beforeEach(async () => {
@@ -66,7 +68,7 @@ describe('embedding sidecar client', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
     Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
     children = [];
-    forkMock = vi.fn((_script: string, _args: string[], _opts: unknown) => {
+    forkMock = vi.fn<ForkImpl>((_script, _args, _opts) => {
       const child = new FakeChild();
       children.push(child);
       return child as unknown as ChildProcess;

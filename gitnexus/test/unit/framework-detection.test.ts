@@ -227,14 +227,14 @@ describe('detectFrameworkFromPath', () => {
     it('detects main.rs', () => {
       const result = detectFrameworkFromPath('src/main.rs');
       expect(result).not.toBeNull();
-      expect(result!.framework).toBe('rust');
+      expect(result!.framework).toBe(SupportedLanguages.Rust);
       expect(result!.entryPointMultiplier).toBe(3.0);
     });
 
     it('detects bin folder', () => {
       const result = detectFrameworkFromPath('src/bin/cli.rs');
       expect(result).not.toBeNull();
-      expect(result!.framework).toBe('rust');
+      expect(result!.framework).toBe(SupportedLanguages.Rust);
     });
   });
 
@@ -325,52 +325,53 @@ describe('detectFrameworkFromPath', () => {
 });
 
 describe('detectFrameworkFromAST', () => {
+  // Deliberately invalid enum inputs exercise runtime tolerance at the public boundary.
   it('returns null for empty inputs', () => {
-    expect(detectFrameworkFromAST('', '')).toBeNull();
-    expect(detectFrameworkFromAST('typescript', '')).toBeNull();
-    expect(detectFrameworkFromAST('', 'some code')).toBeNull();
+    expect(detectFrameworkFromAST('' as SupportedLanguages, '')).toBeNull();
+    expect(detectFrameworkFromAST(SupportedLanguages.TypeScript, '')).toBeNull();
+    expect(detectFrameworkFromAST('' as SupportedLanguages, 'some code')).toBeNull();
   });
 
   it('detects NestJS decorators in TypeScript', () => {
-    const result = detectFrameworkFromAST('typescript', '@Controller("/users")');
+    const result = detectFrameworkFromAST(SupportedLanguages.TypeScript, '@Controller("/users")');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('nestjs');
     expect(result!.entryPointMultiplier).toBe(3.2);
   });
 
   it('detects NestJS decorators in JavaScript', () => {
-    const result = detectFrameworkFromAST('javascript', '@Get("/")');
+    const result = detectFrameworkFromAST(SupportedLanguages.JavaScript, '@Get("/")');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('nestjs');
   });
 
   it('detects FastAPI decorators in Python', () => {
-    const result = detectFrameworkFromAST('python', '@app.get("/users")');
+    const result = detectFrameworkFromAST(SupportedLanguages.Python, '@app.get("/users")');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('fastapi');
   });
 
   it('detects Flask decorators in Python', () => {
-    const result = detectFrameworkFromAST('python', '@app.route("/users")');
+    const result = detectFrameworkFromAST(SupportedLanguages.Python, '@app.route("/users")');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('flask');
   });
 
   it('detects Spring annotations in Java', () => {
-    const result = detectFrameworkFromAST('java', '@RestController');
+    const result = detectFrameworkFromAST(SupportedLanguages.Java, '@RestController');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('spring');
   });
 
   it('detects ASP.NET attributes in C#', () => {
-    const result = detectFrameworkFromAST('csharp', '[ApiController]');
+    const result = detectFrameworkFromAST(SupportedLanguages.CSharp, '[ApiController]');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('aspnet');
   });
 
   it('detects Laravel route definitions in PHP', () => {
     const result = detectFrameworkFromAST(
-      'php',
+      SupportedLanguages.PHP,
       "Route::get('/users', [UserController::class, 'index'])",
     );
     expect(result).not.toBeNull();
@@ -378,27 +379,33 @@ describe('detectFrameworkFromAST', () => {
   });
 
   it('detects Actix-web route attributes in Rust', () => {
-    const result = detectFrameworkFromAST('rust', '#[get("/")]');
+    const result = detectFrameworkFromAST(SupportedLanguages.Rust, '#[get("/")]');
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('actix-web');
   });
 
   it('returns null for language with no matching pattern', () => {
-    expect(detectFrameworkFromAST('c', 'int main() { return 0; }')).toBeNull();
+    expect(detectFrameworkFromAST(SupportedLanguages.C, 'int main() { return 0; }')).toBeNull();
   });
 
   it('is case-insensitive', () => {
-    const result = detectFrameworkFromAST('TypeScript', '@controller("/")');
+    const result = detectFrameworkFromAST('TypeScript' as SupportedLanguages, '@controller("/")');
     expect(result).not.toBeNull();
   });
 
   it('detects Expo Router useRouter hook', () => {
-    const result = detectFrameworkFromAST('typescript', 'const router = useRouter()');
+    const result = detectFrameworkFromAST(
+      SupportedLanguages.TypeScript,
+      'const router = useRouter()',
+    );
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('expo-router');
   });
   it('detects Expo Router router.push', () => {
-    const result = detectFrameworkFromAST('javascript', "router.push('/settings')");
+    const result = detectFrameworkFromAST(
+      SupportedLanguages.JavaScript,
+      "router.push('/settings')",
+    );
     expect(result).not.toBeNull();
     expect(result!.framework).toBe('expo-router');
   });
