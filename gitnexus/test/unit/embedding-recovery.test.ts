@@ -8,6 +8,15 @@ import {
 } from '../../src/storage/embedding-recovery.js';
 
 const stagingFile = 'lbug.staging.6e34c761-bf58-46cc-8b54-78d11607bc46';
+const familySuffixes = [
+  '',
+  '.wal',
+  '.shadow',
+  '.wal.checkpoint',
+  '.lock',
+  '.checkpoint.intent.lock',
+  '.checkpoint.apply.lock',
+];
 const checkpoint = () => ({
   kind: 'interrupted',
   at: '2026-10-03T12:00:00.000Z',
@@ -37,9 +46,7 @@ describe('resolveEmbeddingRecovery', () => {
     expect(resolveEmbeddingRecovery(dir, checkpoint())).toEqual({
       ...checkpoint().recovery,
       dbPath: path.join(dir, stagingFile),
-      familyFiles: ['', '.wal', '.shadow', '.wal.checkpoint', '.lock'].map(
-        (suffix) => stagingFile + suffix,
-      ),
+      familyFiles: familySuffixes.map((suffix) => stagingFile + suffix),
     });
   });
 
@@ -100,20 +107,22 @@ describe('resolveEmbeddingRecovery', () => {
     expect(resolveEmbeddingRecovery(dir, checkpoint())).toBeUndefined();
   });
 
-  it.each(['', '.wal', '.shadow', '.wal.checkpoint', '.lock'])(
-    'rejects a symlink in the staged family: %s',
-    (suffix) => {
-      const target = path.join(dir, 'external-file');
-      writeFileSync(target, 'external');
-      const candidate = path.join(dir, stagingFile + suffix);
-      rmSync(candidate, { force: true });
-      symlinkSync(target, candidate);
-      expect(resolveEmbeddingRecovery(dir, checkpoint())).toBeUndefined();
-    },
-  );
+  it.each(familySuffixes)('rejects a symlink in the staged family: %s', (suffix) => {
+    const target = path.join(dir, 'external-file');
+    writeFileSync(target, 'external');
+    const candidate = path.join(dir, stagingFile + suffix);
+    rmSync(candidate, { force: true });
+    symlinkSync(target, candidate);
+    expect(resolveEmbeddingRecovery(dir, checkpoint())).toBeUndefined();
+  });
 
-  it('rejects a dangling staged sidecar symlink', () => {
-    symlinkSync(path.join(dir, 'missing'), path.join(dir, `${stagingFile}.wal`));
+  it.each(familySuffixes.slice(1))('rejects a dangling staged sidecar symlink: %s', (suffix) => {
+    symlinkSync(path.join(dir, 'missing'), path.join(dir, stagingFile + suffix));
+    expect(resolveEmbeddingRecovery(dir, checkpoint())).toBeUndefined();
+  });
+
+  it.each(familySuffixes.slice(1))('rejects a non-file staged sidecar: %s', (suffix) => {
+    mkdirSync(path.join(dir, stagingFile + suffix));
     expect(resolveEmbeddingRecovery(dir, checkpoint())).toBeUndefined();
   });
 });

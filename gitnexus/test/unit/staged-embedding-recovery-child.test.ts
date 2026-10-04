@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +11,10 @@ const h = vi.hoisted(() => ({
   connClose: vi.fn<() => Promise<void>>(),
   query: vi.fn(),
   abortBuilder: vi.fn(),
+  spawn: vi.fn(),
 }));
+
+vi.mock('node:child_process', () => ({ spawn: h.spawn }));
 
 vi.mock('@ladybugdb/core', () => {
   class Database {
@@ -44,6 +48,15 @@ vi.mock('../../src/core/embeddings/embedding-restore-spill.js', async (importOri
 });
 
 describe('staged embedding recovery child native lifecycle', () => {
+  const suffixes = [
+    '',
+    '.wal',
+    '.shadow',
+    '.wal.checkpoint',
+    '.lock',
+    '.checkpoint.intent.lock',
+    '.checkpoint.apply.lock',
+  ];
   let tmp: string;
   let dbPath: string;
   let exportDir: string;
@@ -76,11 +89,23 @@ describe('staged embedding recovery child native lifecycle', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     process.argv = originalArgv;
     process.exitCode = originalExitCode;
     vi.restoreAllMocks();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
+
+  function sourceFamily() {
+    return Object.fromEntries(
+      suffixes.map((suffix) => [suffix, fs.readFileSync(dbPath + suffix, 'utf8')]),
+    );
+  }
+
+  function seedCompleteFamily() {
+    for (const suffix of suffixes) fs.writeFileSync(dbPath + suffix, `retained ${suffix}`);
+    return sourceFamily();
+  }
 
   async function runRejectedChild(message: string): Promise<void> {
     await import('../../src/core/embeddings/staged-embedding-recovery-child.js');
@@ -134,6 +159,123 @@ describe('staged embedding recovery child native lifecycle', () => {
 
     expect(h.connClose).toHaveBeenCalled();
     expect(h.abortBuilder).toHaveBeenCalledOnce();
+  });
+
+  it('confines writable replay and failed checkpoint close to a separate copied family', async () => {
+    const sourceBefore = seedCompleteFamily();
+    h.dbCtor.mockImplementation((openedPath: string) => {
+      for (const suffix of suffixes) {
+        expect(fs.readFileSync(openedPath + suffix, 'utf8')).toBe(sourceBefore[suffix]);
+        fs.writeFileSync(openedPath + suffix, `replayed ${suffix}`);
+      }
+    });
+    h.dbClose.mockImplementation(async () => {
+      const openedPath = h.dbCtor.mock.calls[0][0] as string;
+      fs.writeFileSync(openedPath, 'partial checkpoint');
+      throw new Error('checkpoint close failed');
+    });
+
+    await import('../../src/core/embeddings/staged-embedding-recovery-child.js');
+    await vi.waitFor(() => expect(process.exitCode).toBe(1));
+
+    expect(h.dbCtor.mock.calls[0][0]).not.toBe(dbPath);
+    expect(path.relative(exportDir, h.dbCtor.mock.calls[0][0] as string)).not.toMatch(/^\.\./);
+    expect(sourceFamily()).toEqual(sourceBefore);
+    expect(fs.existsSync(path.join(exportDir, 'manifest.json'))).toBe(false);
+    expect(process.stderr.write).toHaveBeenCalledWith('checkpoint close failed\n');
+  });
+
+  it('reclaims a timed-out writer copy without changing the retained source', async () => {
+    const sourceBefore = seedCompleteFamily();
+    h.query.mockReturnValue(new Promise(() => {}));
+    h.dbCtor.mockImplementation((openedPath: string) => {
+      for (const suffix of suffixes) fs.writeFileSync(openedPath + suffix, 'writer opened');
+    });
+    let childImport: Promise<unknown> | undefined;
+    const child = Object.assign(new EventEmitter(), {
+      stderr: new EventEmitter(),
+      kill: vi.fn(() => {
+        queueMicrotask(() => child.emit('close', null, 'SIGKILL'));
+        return true;
+      }),
+    });
+    h.spawn.mockImplementation((_command: string, args: string[]) => {
+      process.argv = [process.execPath, 'staged-embedding-recovery-child', ...args.slice(-3)];
+      childImport = import('../../src/core/embeddings/staged-embedding-recovery-child.js');
+      return child;
+    });
+    const { recoverStagedEmbeddings } =
+      await import('../../src/core/embeddings/staged-embedding-recovery.js');
+    vi.useFakeTimers();
+    const recovering = expect(
+      recoverStagedEmbeddings(dbPath, { dimensions: 2, timeoutMs: 500 }),
+    ).rejects.toThrow(/timeout/);
+    await childImport;
+    expect(h.dbCtor).toHaveBeenCalledOnce();
+    const openedPath = h.dbCtor.mock.calls[0][0] as string;
+
+    await vi.advanceTimersByTimeAsync(500);
+    await recovering;
+
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(openedPath).not.toBe(dbPath);
+    expect(fs.existsSync(path.dirname(openedPath))).toBe(false);
+    expect(sourceFamily()).toEqual(sourceBefore);
+    expect(h.dbClose).not.toHaveBeenCalled();
+  });
+
+  it.each(['.wal', '.checkpoint.intent.lock', '.checkpoint.apply.lock'])(
+    'refuses a dangling family symlink before native open: %s',
+    async (suffix) => {
+      fs.rmSync(dbPath + suffix, { force: true });
+      fs.symlinkSync(path.join(tmp, 'missing-sidecar'), dbPath + suffix);
+
+      await import('../../src/core/embeddings/staged-embedding-recovery-child.js');
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+
+      expect(h.dbCtor).not.toHaveBeenCalled();
+      expect(process.stderr.write).toHaveBeenCalledWith(
+        'staged embedding family is not a regular file\n',
+      );
+      expect(fs.existsSync(path.join(exportDir, 'manifest.json'))).toBe(false);
+    },
+  );
+
+  it('refuses a family entry replaced with a symlink between lstat and open', async () => {
+    const foreignPath = path.join(tmp, 'foreign-file');
+    fs.writeFileSync(foreignPath, 'foreign');
+    const open = fs.openSync;
+    const read = vi.spyOn(fs, 'readSync');
+    vi.spyOn(fs, 'openSync').mockImplementation((...args) => {
+      if (args[0] === dbPath) {
+        fs.rmSync(dbPath);
+        fs.symlinkSync(foreignPath, dbPath);
+      }
+      return open(...args);
+    });
+
+    await import('../../src/core/embeddings/staged-embedding-recovery-child.js');
+    await vi.waitFor(() => expect(process.exitCode).toBe(1));
+
+    expect(read).not.toHaveBeenCalled();
+    expect(h.dbCtor).not.toHaveBeenCalled();
+    expect(fs.readFileSync(foreignPath, 'utf8')).toBe('foreign');
+    expect(fs.existsSync(path.join(exportDir, 'manifest.json'))).toBe(false);
+  });
+
+  it('fails closed when copying the complete family runs out of space', async () => {
+    const sourceBefore = seedCompleteFamily();
+    vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+      throw Object.assign(new Error('copy ran out of space'), { code: 'ENOSPC' });
+    });
+
+    await import('../../src/core/embeddings/staged-embedding-recovery-child.js');
+    await vi.waitFor(() => expect(process.exitCode).toBe(1));
+
+    expect(h.dbCtor).not.toHaveBeenCalled();
+    expect(sourceFamily()).toEqual(sourceBefore);
+    expect(fs.existsSync(path.join(exportDir, 'manifest.json'))).toBe(false);
+    expect(process.stderr.write).toHaveBeenCalledWith('copy ran out of space\n');
   });
 
   it('writes the manifest only after both native closes succeed', async () => {

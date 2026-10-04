@@ -3,6 +3,7 @@
  * index lock, missing-DB preflight, identity fail-closed, tri-state count,
  * closeLbug masking, and hash-only cache load.
  */
+import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -119,6 +120,25 @@ async function run(inputPath = '/tmp/emb-sync-repo') {
   await embeddingsSyncCommand(inputPath);
 }
 
+async function useRealIndexLock() {
+  vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+  const actual = await vi.importActual<typeof import('../../src/storage/index-lock.js')>(
+    '../../src/storage/index-lock.js',
+  );
+  acquireIndexLockMock.mockImplementation(
+    async (...args: Parameters<typeof actual.acquireIndexLock>) => {
+      const lock = await actual.acquireIndexLock(...args);
+      return {
+        ...lock,
+        release: () => {
+          lock.release();
+          releaseMock();
+        },
+      };
+    },
+  );
+}
+
 describe('embeddingsSyncCommand writer safety (#3065)', () => {
   const tmpDirs: string[] = [];
   const originalEmbeddingUrl = process.env.GITNEXUS_EMBEDDING_URL;
@@ -163,6 +183,7 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (originalEmbeddingUrl === undefined) delete process.env.GITNEXUS_EMBEDDING_URL;
     else process.env.GITNEXUS_EMBEDDING_URL = originalEmbeddingUrl;
     if (originalEmbeddingModel === undefined) delete process.env.GITNEXUS_EMBEDDING_MODEL;
@@ -190,7 +211,7 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
 
     await run();
 
-    expect(acquireIndexLockMock).toHaveBeenCalledWith(dir);
+    expect(acquireIndexLockMock).toHaveBeenCalledWith(dir, { sweep: false });
     expect(order[0]).toBe('lock');
     expect(order.indexOf('loadMeta')).toBeGreaterThan(order.indexOf('lock'));
     expect(order.indexOf('init')).toBeGreaterThan(order.indexOf('loadMeta'));
@@ -319,7 +340,9 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     { name: 'malformed receipt', recovery: { stagingFile: 'invalid' } },
     { name: 'false receipt', recovery: false },
   ])('preserves a $name before any writable sync work', async ({ recovery }) => {
-    const { dir, metaPath } = await store();
+    const { dir, lbugPath, metaPath } = await store();
+    await useRealIndexLock();
+    const lockPath = path.join(dir, 'analyze.lock');
     const sourcePath = path.join(dir, 'lbug.staging.12345678-1234-4123-8123-123456789abc');
     await writeFile(sourcePath, 'completed paid vectors');
     await writeFile(`${sourcePath}.wal`, 'unfinished window');
@@ -337,14 +360,17 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
       },
     });
     await writeFile(metaPath, metadataBytes);
-    loadMetaMock.mockImplementation(async () => JSON.parse(await readFile(metaPath, 'utf8')));
+    loadMetaMock.mockImplementation(async () => {
+      expect(existsSync(lockPath)).toBe(true);
+      return JSON.parse(await readFile(metaPath, 'utf8'));
+    });
     resolveEmbeddingRuntimeMock.mockReturnValue(null);
 
     await expect(run()).rejects.toThrow(
       /staged embeddings.*Run `gitnexus analyze` to recover them first/,
     );
 
-    expect(acquireIndexLockMock).toHaveBeenCalledWith(dir);
+    expect(acquireIndexLockMock).toHaveBeenCalledWith(dir, { sweep: false });
     expect(loadMetaMock.mock.invocationCallOrder[0]).toBeGreaterThan(
       acquireIndexLockMock.mock.invocationCallOrder[0]!,
     );
@@ -355,9 +381,34 @@ describe('embeddingsSyncCommand writer safety (#3065)', () => {
     expect(runEmbeddingPipelineMock).not.toHaveBeenCalled();
     expect(saveMetaMock).not.toHaveBeenCalled();
     expect(releaseMock).toHaveBeenCalledTimes(1);
+    expect(existsSync(lockPath)).toBe(false);
     expect(await readFile(metaPath, 'utf8')).toBe(metadataBytes);
+    expect(await readFile(lbugPath, 'utf8')).toBe('db');
     expect(await readFile(sourcePath, 'utf8')).toBe('completed paid vectors');
     expect(await readFile(`${sourcePath}.wal`, 'utf8')).toBe('unfinished window');
+  });
+
+  it('sweeps orphaned staging files before writable sync work without a recovery receipt', async () => {
+    const { dir, metaPath } = await store();
+    await useRealIndexLock();
+    await writeFile(metaPath, JSON.stringify(BASE_META));
+    const sourcePath = path.join(dir, 'lbug.staging.12345678-1234-4123-8123-123456789abc');
+    await writeFile(sourcePath, 'orphaned database');
+    await writeFile(`${sourcePath}.wal`, 'orphaned WAL');
+    loadMetaMock.mockImplementation(async () => JSON.parse(await readFile(metaPath, 'utf8')));
+    ensurePrivateSharedGraphMock.mockImplementation(async () => {
+      expect(existsSync(path.join(dir, 'analyze.lock'))).toBe(true);
+      expect(existsSync(sourcePath)).toBe(false);
+      expect(existsSync(`${sourcePath}.wal`)).toBe(false);
+      return true;
+    });
+
+    await run();
+
+    expect(ensurePrivateSharedGraphMock).toHaveBeenCalledTimes(1);
+    expect(runEmbeddingPipelineMock).toHaveBeenCalledTimes(1);
+    expect(releaseMock).toHaveBeenCalledTimes(1);
+    expect(existsSync(path.join(dir, 'analyze.lock'))).toBe(false);
   });
 
   it('persists an interrupted checkpoint from the pipeline checkpoint callbacks', async () => {

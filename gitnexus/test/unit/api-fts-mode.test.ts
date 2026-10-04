@@ -154,6 +154,31 @@ beforeEach(() => {
 });
 
 describe('POST /api/embed staged recovery preflight', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(entry.storagePath, { recursive: true, force: true });
+    fs.mkdirSync(entry.storagePath, { recursive: true });
+  });
+
+  async function useRealIndexLock() {
+    vi.stubEnv('GITNEXUS_INDEX_LOCK_BACKEND', 'file');
+    const actual = await vi.importActual<typeof import('../../src/storage/index-lock.js')>(
+      '../../src/storage/index-lock.js',
+    );
+    mocks.acquireIndexLock.mockImplementation(
+      async (...args: Parameters<typeof actual.acquireIndexLock>) => {
+        const lock = await actual.acquireIndexLock(...args);
+        return {
+          ...lock,
+          release: () => {
+            lock.release();
+            mocks.releaseIndexLock();
+          },
+        };
+      },
+    );
+  }
+
   it.each([
     {
       name: 'valid staged receipt',
@@ -167,11 +192,15 @@ describe('POST /api/embed staged recovery preflight', () => {
     { name: 'malformed receipt', recovery: { stagingFile: 'invalid' } },
     { name: 'false receipt', recovery: false },
   ])('preserves a $name and releases the job locks', async ({ recovery }) => {
+    await useRealIndexLock();
+    const lockPath = path.join(entry.storagePath, 'analyze.lock');
+    const lbugPath = path.join(entry.storagePath, 'lbug');
     const metaPath = path.join(entry.storagePath, 'gitnexus.json');
     const sourcePath = path.join(
       entry.storagePath,
       'lbug.staging.12345678-1234-4123-8123-123456789abc',
     );
+    fs.writeFileSync(lbugPath, 'published graph');
     fs.writeFileSync(sourcePath, 'completed paid vectors');
     fs.writeFileSync(`${sourcePath}.wal`, 'unfinished window');
     const metadataBytes = JSON.stringify({
@@ -193,7 +222,10 @@ describe('POST /api/embed staged recovery preflight', () => {
       },
     });
     fs.writeFileSync(metaPath, metadataBytes);
-    mocks.loadMeta.mockImplementation(async () => JSON.parse(fs.readFileSync(metaPath, 'utf8')));
+    mocks.loadMeta.mockImplementation(async () => {
+      expect(fs.existsSync(lockPath)).toBe(true);
+      return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    });
     mocks.withLbugDb.mockResolvedValue(undefined);
 
     await invoke('/api/embed');
@@ -208,7 +240,7 @@ describe('POST /api/embed staged recovery preflight', () => {
         ),
       }),
     );
-    expect(mocks.acquireIndexLock).toHaveBeenCalledWith(entry.storagePath);
+    expect(mocks.acquireIndexLock).toHaveBeenCalledWith(entry.storagePath, { sweep: false });
     expect(mocks.loadMeta.mock.invocationCallOrder[0]).toBeGreaterThan(
       mocks.acquireIndexLock.mock.invocationCallOrder[0]!,
     );
@@ -216,13 +248,47 @@ describe('POST /api/embed staged recovery preflight', () => {
     expect(mocks.withLbugDb).not.toHaveBeenCalled();
     expect(mocks.runEmbeddingPipeline).not.toHaveBeenCalled();
     expect(mocks.saveMeta).not.toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
     expect(fs.readFileSync(metaPath, 'utf8')).toBe(metadataBytes);
+    expect(fs.readFileSync(lbugPath, 'utf8')).toBe('published graph');
     expect(fs.readFileSync(sourcePath, 'utf8')).toBe('completed paid vectors');
     expect(fs.readFileSync(`${sourcePath}.wal`, 'utf8')).toBe('unfinished window');
 
     // A second accepted job proves the in-memory repo lock was also released.
     await invoke('/api/embed');
     await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(2));
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it('sweeps orphaned staging files before a writable job without a recovery receipt', async () => {
+    await useRealIndexLock();
+    const metaPath = path.join(entry.storagePath, 'gitnexus.json');
+    fs.writeFileSync(metaPath, JSON.stringify({ repoPath: entry.path }));
+    const sourcePath = path.join(
+      entry.storagePath,
+      'lbug.staging.12345678-1234-4123-8123-123456789abc',
+    );
+    fs.writeFileSync(sourcePath, 'orphaned database');
+    fs.writeFileSync(`${sourcePath}.wal`, 'orphaned WAL');
+    mocks.loadMeta.mockImplementation(async () => JSON.parse(fs.readFileSync(metaPath, 'utf8')));
+    mocks.ensurePrivateSharedGraph.mockImplementation(async () => {
+      expect(fs.existsSync(path.join(entry.storagePath, 'analyze.lock'))).toBe(true);
+      expect(fs.existsSync(sourcePath)).toBe(false);
+      expect(fs.existsSync(`${sourcePath}.wal`)).toBe(false);
+      return true;
+    });
+    mocks.withLbugDb.mockResolvedValue(undefined);
+
+    await invoke('/api/embed');
+    await vi.waitFor(() => expect(mocks.releaseIndexLock).toHaveBeenCalledTimes(1));
+
+    expect(mocks.updateJob).toHaveBeenCalledWith(
+      'embed-job',
+      expect.objectContaining({ status: 'complete' }),
+    );
+    expect(mocks.ensurePrivateSharedGraph).toHaveBeenCalledTimes(1);
+    expect(mocks.withLbugDb).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(path.join(entry.storagePath, 'analyze.lock'))).toBe(false);
   });
 });
 

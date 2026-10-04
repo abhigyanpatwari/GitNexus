@@ -205,9 +205,15 @@ describe('sweepStagingArtifacts', () => {
   };
 
   it('retains the checkpoint-referenced family while reclaiming unrelated orphans', () => {
-    const family = ['', '.wal', '.shadow', '.wal.checkpoint', '.lock'].map(
-      (suffix) => recoveryStage + suffix,
-    );
+    const family = [
+      '',
+      '.wal',
+      '.shadow',
+      '.wal.checkpoint',
+      '.lock',
+      '.checkpoint.intent.lock',
+      '.checkpoint.apply.lock',
+    ].map((suffix) => recoveryStage + suffix);
     for (const name of [...family, `${recoveryStage}.unexpected`, 'lbug.staging.orphan']) {
       writeFileSync(path.join(dir, name), 'x');
     }
