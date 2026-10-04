@@ -21,7 +21,7 @@ import {
   ParseError,
   parse as parseJsonc,
 } from 'jsonc-parser';
-import { parse as parseToml } from 'smol-toml';
+import { parse as parseToml, TomlError } from 'smol-toml';
 import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import {
@@ -1091,19 +1091,27 @@ async function codexHasHttpMcpEntry(configPath: string): Promise<boolean> {
 }
 
 async function setupCodex(result: SetupResult): Promise<void> {
-  const codexDir = path.join(os.homedir(), '.codex');
-  if (!(await dirExists(codexDir))) {
+  const configuredHome = process.env.CODEX_HOME;
+  const codexDir = configuredHome
+    ? path.resolve(configuredHome)
+    : path.join(os.homedir(), '.codex');
+  if (!configuredHome && !(await dirExists(codexDir))) {
     result.skipped.push('Codex (not installed)');
     return;
   }
 
+  const configPath = path.join(codexDir, 'config.toml');
   try {
-    if (await codexHasHttpMcpEntry(getEditorTargets().codex.configFile)) {
+    if (await codexHasHttpMcpEntry(configPath)) {
       result.configured.push('Codex (existing HTTP MCP entry kept)');
       return;
     }
   } catch (err) {
-    result.errors.push(`Codex: ${err instanceof Error ? err.message : String(err)}`);
+    result.errors.push(
+      err instanceof TomlError
+        ? `Codex: invalid config.toml (line ${err.line}, column ${err.column}); MCP entry unchanged`
+        : `Codex: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
@@ -1120,9 +1128,8 @@ async function setupCodex(result: SetupResult): Promise<void> {
   }
 
   try {
-    const configPath = getEditorTargets().codex.configFile;
     await upsertCodexConfigToml(configPath);
-    result.configured.push('Codex (MCP added to ~/.codex/config.toml)');
+    result.configured.push('Codex (MCP added to active config.toml)');
   } catch (err: any) {
     result.errors.push(`Codex: ${err.message}`);
   }

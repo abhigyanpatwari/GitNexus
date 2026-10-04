@@ -36,7 +36,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 `gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once. To configure only selected integrations, pass `--coding-agent`/`-c` with a comma-separated list or repeat the option, for example `gitnexus setup -c cursor,codex`.
 
-For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus` MCP entry and its authentication settings; skills and hooks are still installed.
+For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus` MCP entry and its authentication settings. Skills are still installed; setup installs Claude Code and Codex hooks, while Cursor hooks require [manual installation](../gitnexus-cursor-integration/README.md#hook-install).
 
 ### Editor Support
 
