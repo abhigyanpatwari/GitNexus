@@ -390,6 +390,88 @@ describe('native impact/context result integrity (#3354)', () => {
   });
 });
 
+describe('native string projections after checkpointed deletion (#3354)', () => {
+  it('keeps long symbol identities associated with their source rows across segments', async () => {
+    const temp = await createTempDir();
+    const db = new lbug.Database(path.join(temp.dbPath, 'scan.lbug'), 128 * 1024 * 1024);
+    const conn = new lbug.Connection(db, 4);
+    const source = Array.from({ length: 10_000 }, (_, startLine) => ({
+      id: `Function:src/generated/rené-${String(startLine).padStart(5, '0')}.ts:fn${startLine}`,
+      name: `generated_function_${startLine}_é`,
+      filePath: `src/generated/rené-${String(startLine).padStart(5, '0')}.ts`,
+      startLine,
+    }));
+    const projection =
+      'RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine';
+    const read = async (query: string) => {
+      const result = await conn.query(query);
+      try {
+        const cursor = Array.isArray(result) ? result[0] : result;
+        return await cursor.getAll();
+      } finally {
+        await closeQueryResults(result);
+      }
+    };
+
+    try {
+      await read(
+        'CREATE NODE TABLE Function(id STRING, name STRING, filePath STRING, startLine INT64, PRIMARY KEY(id))',
+      );
+      // Separate checkpoints create segment boundaries inside scan vectors.
+      // LadybugDB 0.18.3's filtered STRING scan could retain another row's
+      // printable identities here (LadybugDB/ladybug#678, fixed by #737).
+      for (let batch = 0; batch < 4; batch++) {
+        const csvPath = path.join(temp.dbPath, `rows-${batch}.csv`);
+        const csv = source
+          .slice(batch * 2500, (batch + 1) * 2500)
+          .map((row) =>
+            Object.values(row)
+              .map((value) => JSON.stringify(value))
+              .join(','),
+          )
+          .join('\n');
+        await fs.writeFile(csvPath, `${csv}\n`);
+        await read(
+          `COPY Function FROM ${JSON.stringify(csvPath.replaceAll('\\', '/'))} (HEADER=false)`,
+        );
+        await read('CHECKPOINT');
+      }
+      expect(await read(`MATCH (n:Function) ${projection} ORDER BY n.startLine`)).toEqual(source);
+
+      await read(
+        'MATCH (n:Function) WHERE n.startLine >= 3000 AND n.startLine < 3400 DETACH DELETE n',
+      );
+      await read('CHECKPOINT');
+      const surviving = source.filter((row) => row.startLine < 3000 || row.startLine >= 3400);
+      for (let repeat = 0; repeat < 3; repeat++) {
+        for (const order of ['', ' ORDER BY n.startLine']) {
+          const rows = await read(`MATCH (n:Function) ${projection}${order}`);
+          expect(new Set(rows.map((row) => row.id)).size).toBe(surviving.length);
+          expect(rows.sort((a, b) => a.startLine - b.startLine)).toEqual(surviving);
+        }
+      }
+      // Point lookups independently verify values in the affected segments;
+      // a repeatably wrong scan must never become the test's reference answer.
+      for (const startLine of [1600, 7486]) {
+        expect(
+          await read(`MATCH (n:Function {id: '${source[startLine].id}'}) ${projection}`),
+        ).toEqual([source[startLine]]);
+      }
+      expect(await read(`MATCH (n:Function {id: '${source[3000].id}'}) ${projection}`)).toEqual([]);
+    } finally {
+      try {
+        await conn.close();
+      } finally {
+        try {
+          await db.close();
+        } finally {
+          await temp.cleanup();
+        }
+      }
+    }
+  });
+});
+
 // Windows graph replacement is opt-in in production. The repeated-read
 // characterization above remains enabled there; only this POSIX swap is skipped.
 describe.skipIf(process.platform === 'win32')('warm backend index replacement (#3354)', () => {
