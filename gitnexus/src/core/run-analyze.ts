@@ -4472,6 +4472,7 @@ async function runFullAnalysisInner(
       semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
+    let stagedCheckpointEmbeddingCount: number | undefined;
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();
@@ -4522,11 +4523,10 @@ async function runFullAnalysisInner(
       // /api/embed checkpoint writer in server/api.ts already uses, which also
       // keeps a concurrent writer's update from being reverted by a stale
       // snapshot) and replace ONLY `embeddingCheckpoint` — plus
-      // `stats.embeddings` when the caller actually MEASURED the live count
-      // (the post-window `onCheckpoint`). The window-start callback passes
-      // nothing: restating the previous run's count there both re-published a
-      // stale number and clobbered the live count a preceding `onCheckpoint`
-      // had just written.
+      // `stats.embeddings` when the caller actually MEASURED the published
+      // index (the post-window `onCheckpoint` on an in-place build). A staging
+      // build's count is not published until the atomic swap succeeds. The
+      // window-start callback passes nothing, preserving the latest count.
       const saveEmbeddingCheckpoint = async (
         checkpoint: {
           nodesProcessed: number;
@@ -4536,6 +4536,9 @@ async function runFullAnalysisInner(
         pendingNodeIds: string[],
         embeddings?: number,
       ): Promise<void> => {
+        if (embeddings !== undefined && buildPath !== lbugPath) {
+          stagedCheckpointEmbeddingCount = embeddings;
+        }
         const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
         // First-ever analyze of this repo: no meta exists on disk yet (the
         // pre-wipe dirty stamp only fires when one does). Mint the minimum
@@ -4549,7 +4552,9 @@ async function runFullAnalysisInner(
         };
         await saveMeta(metaDir, {
           ...base,
-          ...(embeddings === undefined ? {} : { stats: { ...base.stats, embeddings } }),
+          ...(embeddings === undefined || buildPath !== lbugPath
+            ? {}
+            : { stats: { ...base.stats, embeddings } }),
           // Written by a run that is still IN FLIGHT — see the `kind` doc in
           // repo-manager.ts.
           embeddingCheckpoint: mintInterruptedCheckpoint(
@@ -4752,14 +4757,13 @@ async function runFullAnalysisInner(
     // already written to disk: prior meta says 0, a clean run inserts
     // embeddings and checkpoints the real count, the final probe is
     // unavailable, and finalization carries the stale 0 forward while reporting
-    // success. `loadMeta` never throws (it returns null), and the checkpoint
-    // writer already re-reads the same way, so this is the same freshness
-    // discipline applied to the same field.
+    // success. For a staged build, use its last measured count only in the
+    // final meta, written after the swap; never publish it at a checkpoint.
     const latestMetaForCount =
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
     const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
       measuredEmbeddingCount,
-      latestMetaForCount?.stats?.embeddings,
+      stagedCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
     );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
