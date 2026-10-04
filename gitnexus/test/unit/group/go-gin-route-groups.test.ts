@@ -39,6 +39,8 @@ function providers(src: string): Provider[] {
 // handlers, and variadic middleware before the handler.
 const GIN_ROUTES = `package handlers
 
+import "github.com/gin-gonic/gin"
+
 func RegisterRoutes(r *gin.Engine, svc *service.Service) {
 	playerHandler := NewPlayerHandler(svc.Player)
 	matchHandler := NewMatchHandler(svc.Match)
@@ -573,6 +575,54 @@ func routes() {
 }
 `),
     ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
+  });
+
+  it('does not mistake a local shadowing the echo import for its constructor', () => {
+    // A parameter named `echo` shadows the package qualifier: `echo.New()`
+    // is then a method on that value, not echo's constructor, so the mixed
+    // file keeps the conservative last-argument fallback.
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes(echo *Factory) {
+	e := echo.New()
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
+  });
+
+  it('declines a route whose Group chain exceeds the depth cap', () => {
+    // Past MAX_GROUP_DEPTH (32) the full prefix — and, in a mixed file, the
+    // framework order — is unprovable: emitting the outer prefixes alone (or
+    // gin's handler order for an echo chain) would be a silent guess.
+    const chain = (ctor: string, imports: string) => {
+      const lines = [`g0 := ${ctor}`];
+      for (let i = 1; i <= 34; i++) lines.push(`g${i} := g${i - 1}.Group("/p${i}")`);
+      return `package main
+${imports}
+
+func routes() {
+	${lines.join('\n\t')}
+	g34.GET("/x", h.Handler, auth.Middleware)
+	g2.GET("/y", h.Handler, auth.Middleware)
+}
+`;
+    };
+    expect(providers(chain('gin.Default()', 'import "github.com/gin-gonic/gin"'))).toEqual([
+      { method: 'GET', path: '/p1/p2/y', name: 'Middleware' },
+    ]);
+    const mixed = `import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)`;
+    expect(providers(chain('echo.New()', mixed))).toEqual([
+      { method: 'GET', path: '/p1/p2/y', name: 'Handler' },
+    ]);
   });
 
   it('traces a grouped receiver back to its framework constructor in a mixed file', () => {

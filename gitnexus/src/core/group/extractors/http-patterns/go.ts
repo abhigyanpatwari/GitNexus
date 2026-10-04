@@ -288,15 +288,17 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
  * enclosing `Group(...)` calls (`users := api.Group(…)` ← `api := e.Group(…)`
  * ← `echo.New()`), the normal shape of grouped routes (review #7, #10).
  * Provenance must still END at a constructor: parameters, unrelated packages'
- * `New()`, and anything else return false so the caller keeps the
- * conservative last-argument fallback instead of guessing.
+ * `New()`, a local that shadows the echo import name, and anything else return
+ * false so the caller keeps the conservative last-argument fallback instead of
+ * guessing. Returns null when the Group chain exceeds MAX_GROUP_DEPTH: the
+ * framework is then unprovable either way, so the caller declines the route.
  */
 function receiverBindsToEchoConstructor(
   receiver: Parser.SyntaxNode,
   echoAliases: ReadonlySet<string>,
   depth = 0,
-): boolean {
-  if (depth > MAX_GROUP_DEPTH) return false;
+): boolean | null {
+  if (depth > MAX_GROUP_DEPTH) return null;
   // An identifier resolves through its binding; a chained `X.Group(…).Group(…)`
   // operand is already a call and is inspected as-is.
   const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
@@ -307,7 +309,7 @@ function receiverBindsToEchoConstructor(
   const operand = fn.childForFieldName('operand');
   if (!operand) return false;
   if (field === 'New' || field === 'Default') {
-    return operand.type === 'identifier' && echoAliases.has(operand.text);
+    return operand.type === 'identifier' && echoAliases.has(operand.text) && !isLocalName(operand);
   }
   if (field === 'Group') {
     return receiverBindsToEchoConstructor(operand, echoAliases, depth + 1);
@@ -315,13 +317,42 @@ function receiverBindsToEchoConstructor(
   return false;
 }
 
-/** Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced. */
-function groupPrefix(receiver: Parser.SyntaxNode, depth = 0): string {
-  if (depth > MAX_GROUP_DEPTH) return '';
+/**
+ * Whether `ident` names a local value rather than an imported package: a
+ * binding in scope or a parameter/receiver of an enclosing function. Go lets
+ * either shadow a package qualifier (`func f(echo *Factory) { echo.New() }`).
+ */
+function isLocalName(ident: Parser.SyntaxNode): boolean {
+  if (findBinding(ident) !== null) return true;
+  for (let node = ident.parent; node; node = node.parent) {
+    if (
+      node.type !== 'func_literal' &&
+      node.type !== 'function_declaration' &&
+      node.type !== 'method_declaration'
+    ) {
+      continue;
+    }
+    const lists = [node.childForFieldName('parameters'), node.childForFieldName('receiver')];
+    for (const list of lists) {
+      if (list?.descendantsOfType('identifier').some((p) => p.text === ident.text)) return true;
+    }
+    if (node.type !== 'func_literal') return false;
+  }
+  return false;
+}
+
+/**
+ * Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced.
+ * Returns null when the chain exceeds MAX_GROUP_DEPTH: a partial prefix would
+ * silently drop the inner groups, so the caller declines the route instead.
+ */
+function groupPrefix(receiver: Parser.SyntaxNode, depth = 0): string | null {
+  if (depth > MAX_GROUP_DEPTH) return null;
   const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
   const group = value ? asGroupCall(value) : null;
   if (!group) return '';
-  return joinRoutePath(groupPrefix(group.parent, depth + 1), group.prefix);
+  const outer = groupPrefix(group.parent, depth + 1);
+  return outer === null ? null : joinRoutePath(outer, group.prefix);
 }
 
 // ─── Provider: net/http `http.HandleFunc("/p", handler)` ─────────────
@@ -446,11 +477,14 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
           ? receiverBindsToEchoConstructor(receiverNode, imports.echo)
           : false
         : echoOnly;
+      // A Group chain deeper than MAX_GROUP_DEPTH proves neither the full
+      // prefix nor the framework order: decline rather than emit a guess.
+      if (echoOrder === null) continue;
+      const prefix = receiverNode ? groupPrefix(receiverNode) : '';
+      if (prefix === null) continue;
       const handlerNode = echoOrder ? rest[0] : rest[rest.length - 1];
       if (!HANDLER_ARG_TYPES.has(handlerNode.type)) continue;
-      const path = receiverNode
-        ? joinRoutePath(groupPrefix(receiverNode), literalPath)
-        : literalPath;
+      const path = receiverNode ? joinRoutePath(prefix, literalPath) : literalPath;
       // An inline `func(){…}` handler has no name → emit `name: null` and a
       // `line` so it resolves to its containing/closure symbol by line-span
       // containment (like a consumer). A named handler keeps its name and
