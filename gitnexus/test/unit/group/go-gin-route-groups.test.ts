@@ -576,6 +576,30 @@ func (s *Server) routes(api *echo.Group) {
     ]);
   });
 
+  it('matches framework imports by exact path, as ingestion does', () => {
+    // `example.com/labstack/echo-wrapper` merely contains "labstack/echo": it
+    // is not echo, so this gin-style call keeps the last-argument handler.
+    expect(
+      providers(`package main
+import "example.com/labstack/echo-wrapper"
+
+func routes(r *Router) {
+	r.GET("/x", auth.Middleware, h.Handler)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Handler' }]);
+    // The versioned module path is echo.
+    expect(
+      providers(`package main
+import "github.com/labstack/echo/v4"
+
+func routes(e *echo.Echo) {
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Handler' }]);
+  });
+
   it('picks the handler order per receiver constructor in a mixed-import file', () => {
     // Mixed imports are ambiguous at file scope, but `e := echo.New()` proves
     // this call follows echo's order (handler FIRST after the path) and
@@ -770,11 +794,12 @@ func routes(r *gin.Engine) {
     ).toEqual([{ method: 'GET', path: '/api/admin/x', name: 'handler' }]);
   });
 
-  it('declines a route whose group is reassigned in an earlier nested scope', () => {
-    // `{ g = r.Group("/new") }` (or a branch) writes the outer g: which value
-    // reaches the use depends on control flow, and ingestion declines it too,
-    // so emitting the older `/old/x` would invent a route. A nested `:=`
-    // declares a new variable and leaves the outer binding intact.
+  it('follows unconditional block writes and declines conditional ones', () => {
+    // A bare `{ … }` always runs, so `{ g = r.Group("/new") }` makes the
+    // route deterministically /new/x. A write in a branch (`if cond { k = … }`,
+    // also when nested inside a bare block) may or may not run, so that
+    // prefix is unprovable and the route is declined. A `:=` in a nested
+    // block declares a new variable: writes after it never reach the outer m.
     expect(
       providers(`package main
 func routes(r *gin.Engine, cond bool) {
@@ -784,13 +809,17 @@ func routes(r *gin.Engine, cond bool) {
 	k := r.Group("/k")
 	if cond { k = r.Group("/other") }
 	k.GET("/y", handler)
+	n := r.Group("/n")
+	{ if cond { n = r.Group("/maybe") } }
+	n.GET("/w", handler)
 	m := r.Group("/m")
-	{ m := r.Group("/inner"); m.GET("/i", handler) }
+	{ m := r.Group("/inner"); m = r.Group("/inner2"); m.GET("/i", handler) }
 	m.GET("/z", handler)
 }
 `),
     ).toEqual([
-      { method: 'GET', path: '/inner/i', name: 'handler' },
+      { method: 'GET', path: '/new/x', name: 'handler' },
+      { method: 'GET', path: '/inner2/i', name: 'handler' },
       { method: 'GET', path: '/m/z', name: 'handler' },
     ]);
   });

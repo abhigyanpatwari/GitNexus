@@ -1,7 +1,11 @@
 import type Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import { goImportPackageName } from '../../../ingestion/languages/go/import-package-name.js';
-import { stringLiteral } from '../../../ingestion/route-extractors/go-shared.js';
+import {
+  isEchoImportPath,
+  isGinImportPath,
+  stringLiteral,
+} from '../../../ingestion/route-extractors/go-shared.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -65,7 +69,8 @@ const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * The file's framework import aliases: which local qualifiers resolve to
- * echo and to gin. Matched on the import path rather than the local name, so
+ * echo and to gin. Matched on the EXACT import path (shared with ingestion via
+ * go-shared.ts) rather than the local name, so
  * an aliased import still counts; an unaliased import is keyed by its
  * conventional package name (`goImportPackageName`). `_` and `.` imports bind
  * no qualifier this file can route through. An empty set means the file
@@ -89,8 +94,8 @@ function readFrameworkImports(root: Parser.SyntaxNode): {
     if (importPath === null) continue;
     const local = spec.childForFieldName('name')?.text ?? goImportPackageName(importPath);
     if (local === '_' || local === '.') continue;
-    if (importPath.includes('labstack/echo')) echo.add(local);
-    else if (importPath.includes('gin-gonic/gin')) gin.add(local);
+    if (isEchoImportPath(importPath)) echo.add(local);
+    else if (isGinImportPath(importPath)) gin.add(local);
   }
   return { echo, gin };
 }
@@ -231,6 +236,37 @@ function writesNameInside(stmt: Parser.SyntaxNode, name: string): boolean {
   );
 }
 
+/**
+ * The effect a bare `{ … }` block placed before the use has on the outer
+ * `name`. A bare block always runs, so its last top-level `name = v` is the
+ * value that reaches the use (`{ g = r.Group("/new") }` → `/new`); a write
+ * nested in a branch, loop, or closure inside it is CONFLICT. A `:=` or `var`
+ * of `name` in the block starts a new variable, so only the statements before
+ * it touch the outer one. undefined when the block leaves `name` alone.
+ */
+function bareBlockWrite(block: Parser.SyntaxNode, name: string): Binding {
+  const stmts = codeChildren(block);
+  const declIndex = stmts.findIndex(
+    (s) =>
+      (s.type === 'short_var_declaration' || s.type === 'var_declaration') &&
+      boundValue(s, name) !== undefined,
+  );
+  const outerRegion = declIndex < 0 ? stmts : stmts.slice(0, declIndex);
+  for (const stmt of outerRegion.reverse()) {
+    if (stmt.type === 'assignment_statement') {
+      const value = boundValue(stmt, name);
+      if (value !== undefined) return value;
+    }
+    if (stmt.type === 'block') {
+      const inner = bareBlockWrite(stmt, name);
+      if (inner !== undefined) return inner;
+      continue;
+    }
+    if (writesNameInside(stmt, name)) return CONFLICT;
+  }
+  return undefined;
+}
+
 /** Whether an identifier or expression_list (e.g. a range left side) declares `name`. */
 function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
   if (!node) return false;
@@ -317,8 +353,14 @@ function lookupBinding(ident: Parser.SyntaxNode): Binding {
       for (const stmt of stmts.slice(0, useIndex).reverse()) {
         const value = boundValue(stmt, name);
         if (value !== undefined) return value;
-        // A write nested in an earlier statement (block, branch, loop) may or
-        // may not run before the use: the reaching value is unprovable.
+        // A bare block always runs: its unconditional writes are bindings.
+        if (stmt.type === 'block') {
+          const written = bareBlockWrite(stmt, name);
+          if (written !== undefined) return written;
+          continue;
+        }
+        // A write nested in an earlier branch, loop, or closure may or may
+        // not run before the use: the reaching value is unprovable.
         if (writesNameInside(stmt, name)) return CONFLICT;
       }
       continue;
