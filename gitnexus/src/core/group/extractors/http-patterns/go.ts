@@ -192,7 +192,28 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
  * flow. Callers decline the route instead of picking the older binding.
  */
 const CONFLICT = Symbol('conflicting-binding');
-type Binding = Parser.SyntaxNode | null | undefined | typeof CONFLICT;
+/** The name is a parameter (or method receiver): its declaration carries a static type. */
+interface ParamBinding {
+  param: Parser.SyntaxNode;
+}
+type Binding = Parser.SyntaxNode | null | undefined | typeof CONFLICT | ParamBinding;
+
+function isParamBinding(b: Binding): b is ParamBinding {
+  return typeof b === 'object' && b !== null && 'param' in b;
+}
+
+/** The parameter_declaration of `fn` (parameters or method receiver) declaring `name`. */
+function paramDeclaring(fn: Parser.SyntaxNode, name: string): Parser.SyntaxNode | null {
+  for (const list of [fn.childForFieldName('parameters'), fn.childForFieldName('receiver')]) {
+    for (const decl of codeChildren(list)) {
+      if (decl.type !== 'parameter_declaration' && decl.type !== 'variadic_parameter_declaration') {
+        continue;
+      }
+      if (decl.childrenForFieldName('name').some((n) => n.text === name)) return decl;
+    }
+  }
+  return null;
+}
 
 /** Whether `inner` lies within `outer`'s source span. */
 function within(outer: Parser.SyntaxNode | null, inner: Parser.SyntaxNode): boolean {
@@ -230,7 +251,8 @@ function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
  * group), or is not bound in scope.
  */
 function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | typeof CONFLICT {
-  return lookupBinding(ident) ?? null;
+  const binding = lookupBinding(ident);
+  return isParamBinding(binding) ? null : (binding ?? null);
 }
 
 /**
@@ -238,19 +260,23 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | typeo
  * `func` literal parameter, `var x T`, a select receive) apart from "not
  * declared before reaching the enclosing function declaration" (undefined).
  * CONFLICT means a preceding statement writes the name in a nested scope, so
- * the value at the use is control-flow dependent.
+ * the value at the use is control-flow dependent. A parameter or method
+ * receiver of the enclosing function returns its declaration (ParamBinding):
+ * no value, but a static type.
  */
 function lookupBinding(ident: Parser.SyntaxNode): Binding {
   const name = ident.text;
   let child: Parser.SyntaxNode = ident;
   for (let node = ident.parent; node; child = node, node = node.parent) {
-    if (node.type === 'function_declaration' || node.type === 'method_declaration') {
+    if (
+      node.type === 'function_declaration' ||
+      node.type === 'method_declaration' ||
+      node.type === 'func_literal'
+    ) {
+      const param = paramDeclaring(node, name);
+      if (param) return { param };
+      if (node.type === 'func_literal') continue;
       return undefined;
-    }
-    if (node.type === 'func_literal') {
-      const params = node.childForFieldName('parameters')?.descendantsOfType('identifier') ?? [];
-      if (params.some((p) => p.text === name)) return null;
-      continue;
     }
     // Inside a grouped `var ( a = …; b = a.Group(…) )`, the specs before the
     // one holding the use are already in scope; the current and later specs
@@ -366,10 +392,12 @@ function lookupBinding(ident: Parser.SyntaxNode): Binding {
  * one of the file's verified echo import aliases — either directly or through
  * enclosing `Group(...)` calls (`users := api.Group(…)` ← `api := e.Group(…)`
  * ← `echo.New()`), the normal shape of grouped routes (review #7, #10).
- * Provenance must still END at a constructor: parameters, unrelated packages'
- * `New()`, a local that shadows the echo import name, and anything else return
- * false so the caller keeps the conservative last-argument fallback instead of
- * guessing. Returns null when the Group chain exceeds MAX_GROUP_DEPTH or a
+ * A parameter or method receiver counts by its declared type instead:
+ * `e *echo.Echo` / `g *echo.Group` (with `echo` one of those aliases) proves
+ * echo; any other type — gin's, or one the file cannot tie to echo — does not.
+ * Unrelated packages' `New()`, a local that shadows the echo import name, and
+ * anything else return false so the caller keeps the conservative
+ * last-argument fallback instead of guessing. Returns null when the Group chain exceeds MAX_GROUP_DEPTH or a
  * binding on it is control-flow dependent (CONFLICT): the framework is then
  * unprovable either way, so the caller declines the route.
  */
@@ -381,8 +409,10 @@ function receiverBindsToEchoConstructor(
   if (depth > MAX_GROUP_DEPTH) return null;
   // An identifier resolves through its binding; a chained `X.Group(…).Group(…)`
   // operand is already a call and is inspected as-is.
-  const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
+  const value = receiver.type === 'identifier' ? lookupBinding(receiver) : receiver;
   if (value === CONFLICT) return null;
+  if (isParamBinding(value))
+    return isEchoRouterType(value.param.childForFieldName('type'), echoAliases);
   if (value?.type !== 'call_expression') return false;
   const fn = value.childForFieldName('function');
   if (fn?.type !== 'selector_expression') return false;
@@ -398,6 +428,18 @@ function receiverBindsToEchoConstructor(
   return false;
 }
 
+/** `*echo.Echo` / `echo.Echo` / `*echo.Group` with `echo` a verified echo import alias. */
+function isEchoRouterType(
+  type: Parser.SyntaxNode | null,
+  echoAliases: ReadonlySet<string>,
+): boolean {
+  const named = type?.type === 'pointer_type' ? codeChildren(type)[0] : type;
+  if (named?.type !== 'qualified_type') return false;
+  const pkg = named.childForFieldName('package')?.text;
+  const typeName = named.childForFieldName('name')?.text;
+  return !!pkg && echoAliases.has(pkg) && (typeName === 'Echo' || typeName === 'Group');
+}
+
 /**
  * Whether `ident` names a local value rather than an imported package: a
  * declaration in scope (with or without a value — `var echo Factory` shadows
@@ -405,22 +447,8 @@ function receiverBindsToEchoConstructor(
  * shadow a package qualifier (`func f(echo *Factory) { echo.New() }`).
  */
 function isLocalName(ident: Parser.SyntaxNode): boolean {
-  if (lookupBinding(ident) !== undefined) return true;
-  for (let node = ident.parent; node; node = node.parent) {
-    if (
-      node.type !== 'func_literal' &&
-      node.type !== 'function_declaration' &&
-      node.type !== 'method_declaration'
-    ) {
-      continue;
-    }
-    const lists = [node.childForFieldName('parameters'), node.childForFieldName('receiver')];
-    for (const list of lists) {
-      if (list?.descendantsOfType('identifier').some((p) => p.text === ident.text)) return true;
-    }
-    if (node.type !== 'func_literal') return false;
-  }
-  return false;
+  // lookupBinding covers parameters and receivers too (ParamBinding).
+  return lookupBinding(ident) !== undefined;
 }
 
 /**

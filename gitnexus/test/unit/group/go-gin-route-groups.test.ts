@@ -537,10 +537,11 @@ func routes(e *echo.Echo) {
     ]);
   });
 
-  it('keeps the last-argument fallback when a mixed file cannot prove the receiver is echo', () => {
-    // A parameter receiver is not a constructor binding (review #7): without
-    // proof of which framework the call belongs to, keep the conservative
-    // last-argument anchor — gin's order — rather than guess.
+  it('picks the handler order from a typed receiver parameter in a mixed-import file', () => {
+    // A parameter's static type proves its framework: `*echo.Echo` /
+    // `*echo.Group` take echo's order (handler FIRST), gin's types and types
+    // the file cannot tie to echo keep the last-argument fallback. Method
+    // receivers and func-literal parameters count the same way.
     expect(
       providers(`package main
 import (
@@ -548,11 +549,31 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func routes(e *echo.Echo) {
-	e.GET("/x", h.Handler, auth.Middleware)
+func routes(e *echo.Echo, g *echo.Group, r *gin.RouterGroup, x *Router) {
+	e.GET("/e", h.Handler, auth.Middleware)
+	g.GET("/g", h.Handler, auth.Middleware)
+	r.GET("/r", auth.Middleware, h.Handler)
+	x.GET("/x", h.Handler, auth.Middleware)
+	register := func(sub *echo.Group) {
+		sub.GET("/f", h.Handler, auth.Middleware)
+	}
+	_ = register
+}
+
+type Server struct{}
+
+func (s *Server) routes(api *echo.Group) {
+	api.GET("/m", h.Handler, auth.Middleware)
 }
 `),
-    ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
+    ).toEqual([
+      { method: 'GET', path: '/e', name: 'Handler' },
+      { method: 'GET', path: '/g', name: 'Handler' },
+      { method: 'GET', path: '/r', name: 'Handler' },
+      { method: 'GET', path: '/x', name: 'Middleware' },
+      { method: 'GET', path: '/f', name: 'Handler' },
+      { method: 'GET', path: '/m', name: 'Handler' },
+    ]);
   });
 
   it('picks the handler order per receiver constructor in a mixed-import file', () => {
