@@ -159,9 +159,8 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
       if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee')];
       }
-      if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
-      // Target resolution (WHERE n.name = $symName) and any other read.
-      return [TARGET_ROW];
+      if (query.includes('WHERE n.name = $symName')) return [TARGET_ROW];
+      return [];
     });
 
     const result = await backend.callTool('impact', {
@@ -195,8 +194,8 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
       if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee')];
       }
-      if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
-      return [TARGET_ROW];
+      if (query.includes('WHERE n.name = $symName')) return [TARGET_ROW];
+      return [];
     });
 
     const result = await backend.callTool('impact', {
@@ -230,8 +229,8 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
       if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee'), frontierRow('func:callee-B', 'callee')];
       }
-      if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
-      return [TARGET_ROW];
+      if (query.includes('WHERE n.name = $symName')) return [TARGET_ROW];
+      return [];
     });
 
     const result = await backend.callTool('impact', {
@@ -266,8 +265,8 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
       if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee'), frontierRow('*', 'callee')];
       }
-      if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
-      return [TARGET_ROW];
+      if (query.includes('WHERE n.name = $symName')) return [TARGET_ROW];
+      return [];
     });
 
     const result = await backend.callTool('impact', {
