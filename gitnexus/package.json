@@ -57,6 +57,8 @@
     "test:integration": "vitest run test/integration",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "typecheck:tests": "node scripts/typecheck-tests.mjs",
+    "typecheck:tests:update": "node scripts/typecheck-tests.mjs --update-baseline",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",

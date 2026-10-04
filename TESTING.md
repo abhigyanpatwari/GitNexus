@@ -25,6 +25,7 @@ From `gitnexus/`:
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
 | `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
+| `npm run typecheck:tests`     | TypeScript checks for source, tests and helpers     | Catch new test type errors before PRs |
 
 ### `gitnexus-web/` commands
 
@@ -41,9 +42,34 @@ From `gitnexus-web/`:
 ```bash
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
-cd gitnexus && npx tsc --noEmit && npm test
+cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
+
+### Test typechecking
+
+Vitest transpiles TypeScript without checking types. A test can pass at runtime
+while its mocks no longer satisfy a production interface, as happened with the
+missing `BM25SearchResult.rank` in PR #3422.
+
+The quality workflow runs `npm run typecheck:tests` using `tsconfig.test.json`.
+It includes source, executable tests and helpers, and excludes `test/fixtures/`:
+those files are parser inputs, often deliberately incomplete programs rather
+than runnable tests. The production typecheck remains a separate gate
+with no baseline allowance.
+
+Existing test errors are recorded in `gitnexus/test/typecheck-baseline.json` so
+the gate can be enabled without a repository-wide test cleanup. New errors fail
+CI. Entries match file, TypeScript error code, full message and occurrence count;
+line numbers are omitted so moving a test does not require a baseline rewrite.
+This is a no-new-errors check, not a claim that the whole test suite is type-clean.
+
+After fixing existing errors, run `npm run typecheck:tests:update` and commit the
+reduced baseline. This command refuses new errors and can only remove resolved
+diagnostics. CI also rejects stale entries, preventing fixed debt from remaining
+available to hide a later regression. Do not add new allowances to make a PR pass.
+Compiler upgrades may change diagnostic wording and require a reviewed baseline
+migration alongside the upgrade.
 
 ## Pre-commit hook
 

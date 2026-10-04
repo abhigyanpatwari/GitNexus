@@ -1,0 +1,1931 @@
+{
+  "version": 1,
+  "diagnostics": [
+    {
+      "file": "test/helpers/cfg-harness.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/parse-source-safe-mock.ts",
+      "code": 2322,
+      "message": "Type 'Mock<Constructable | Procedure>' is not assignable to type '(parser: Parser, sourceText: string, oldTree?: Tree, options?: Options, label?: string) => Tree'.\n  Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' is not assignable to type '(parser: Parser, sourceText: string, oldTree?: Tree, options?: Options, label?: string) => Tree'.\n    Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' provides no match for the signature '(parser: Parser, sourceText: string, oldTree?: Tree, options?: Options, label?: string): Tree'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/parse-typescript-source.ts",
+      "code": 2322,
+      "message": "Type '\"explicitResourceManagement\"' is not assignable to type 'PluginConfig'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/parse-typescript-source.ts",
+      "code": 2322,
+      "message": "Type '\"importAttributes\"' is not assignable to type 'PluginConfig'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/parse-typescript-source.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'decoratorsBeforeExport' does not exist in type 'FlowPluginOptions | PartialApplicationPluginOptions | PipelineOperatorPluginOptions | TypeScriptPluginOptions | { ...; } | { ...; } | { ...; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/perf-sequencer.ts",
+      "code": 2345,
+      "message": "Argument of type '(spec: WeightableSpec) => number' is not assignable to parameter of type '(spec: TestSpecification) => number'.\n  Types of parameters 'spec' and 'spec' are incompatible.\n    Type 'TestSpecification' is not assignable to type 'WeightableSpec'.\n      The types of 'project.config' are incompatible between these types.\n        Type 'ResolvedConfig' has no properties in common with type '{ fileParallelism?: boolean; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/test-graph.ts",
+      "code": 2305,
+      "message": "Module '\"../../src/core/graph/types.js\"' has no exported member 'NodeLabel'.",
+      "count": 1
+    },
+    {
+      "file": "test/helpers/test-graph.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'RelationshipType' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/api-query.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type 'unknown'.",
+      "count": 3
+    },
+    {
+      "file": "test/integration/api-query.test.ts",
+      "code": 2339,
+      "message": "Property 'result' does not exist on type 'unknown'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/cfg/cfg-emit.test.ts",
+      "code": 2741,
+      "message": "Property 'functionEndLine' is missing in type '{ filePath: string; functionStartLine: number; functionStartColumn: number; entryIndex: number; exitIndex: number; blocks: BasicBlockData[]; edges: CfgEdgeData[]; }' but required in type 'FunctionCfg'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/clean-stale-branch-slots.test.ts",
+      "code": 2741,
+      "message": "Property 'repo' is missing in type '{ dir: string; storagePath: string; }' but required in type '{ repo: string; dir: string; storagePath: string; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/data-route-table-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/dispatch-guard-route-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/django-route-extraction-e2e.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/doc-comment-description-e2e.test.ts",
+      "code": 2561,
+      "message": "Object literal may only specify known properties, but 'workerThresholdsForTest' does not exist in type 'PipelineOptions'. Did you mean to write 'workerUrlForTest'?",
+      "count": 2
+    },
+    {
+      "file": "test/integration/expo-routes.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/fastapi-composed-route-constants.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/fastapi-composed-route-constants.test.ts",
+      "code": 2741,
+      "message": "Property 'repoPath' is missing in type '{ files: string[]; parser: Parser; readFile: (r: string) => string; parseSource: (p: Parser, src: string) => Tree; }' but required in type '{ repoPath: string; files: string[]; parser: Parser; readFile: (rel: string) => string; parseSource: (parser: Parser, src: string) => Tree; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/fastapi-prefix-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/fts-repair-warm-session.test.ts",
+      "code": 2339,
+      "message": "Property 'skip' does not exist on type '\"Function\" | \"all\"'.\n  Property 'skip' does not exist on type '\"Function\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/go-multi-name-worker-metadata.test.ts",
+      "code": 2561,
+      "message": "Object literal may only specify known properties, but 'workerThresholdsForTest' does not exist in type 'PipelineOptions'. Did you mean to write 'workerUrlForTest'?",
+      "count": 1
+    },
+    {
+      "file": "test/integration/go-pipeline-benchmark.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'language' does not exist in type 'ParsedFile'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/impact-context-integrity.test.ts",
+      "code": 2362,
+      "message": "The left-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/impact-context-integrity.test.ts",
+      "code": 2363,
+      "message": "The right-hand side of an arithmetic operation must be of type 'any', 'number', 'bigint' or an enum type.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/impact-context-integrity.test.ts",
+      "code": 2365,
+      "message": "Operator '-' cannot be applied to types 'string | number | bigint | boolean | import(\"<node_modules>/@ladybugdb/core/lbug\").LbugValue[] | ... 5 more ... | { ...; }' and 'string | number | bigint | boolean | import(\"<node_modules>/@ladybugdb/core/lbug\").LbugValue[] | ... 5 more ... | { ...; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/impact-epistemic-lower-bound.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ scopeExtractionReceipt: 1; scopeExtractionFailures: { total: number; paths: string[]; }; }' to type 'RepoMeta' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '{ scopeExtractionReceipt: 1; scopeExtractionFailures: { total: number; paths: string[]; }; }' is missing the following properties from type 'RepoMeta': repoPath, lastCommit, indexedAt",
+      "count": 3
+    },
+    {
+      "file": "test/integration/impact-pdg-shape.test.ts",
+      "code": 2345,
+      "message": "Argument of type 'string' is not assignable to parameter of type 'ImpactRisk'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/kotlin-spring-route-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/local-backend-calltool.test.ts",
+      "code": 2339,
+      "message": "Property 'description' does not exist on type 'unknown'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/local-backend-calltool.test.ts",
+      "code": 2339,
+      "message": "Property 'flows' does not exist on type 'unknown'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/mcp/update-notice.test.ts",
+      "code": 2345,
+      "message": "Argument of type 'FakeLogger' is not assignable to parameter of type 'McpUpdateLogger'.\n  Types of property 'info' are incompatible.\n    Type 'Mock<Constructable | Procedure>' is not assignable to type '(bindings: Record<string, unknown>, message: string) => unknown'.\n      Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' is not assignable to type '(bindings: Record<string, unknown>, message: string) => unknown'.\n        Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' provides no match for the signature '(bindings: Record<string, unknown>, message: string): unknown'.",
+      "count": 4
+    },
+    {
+      "file": "test/integration/multi-verb-route-identity.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/pdg-query.test.ts",
+      "code": 2554,
+      "message": "Expected 2 arguments, but got 1.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/resolvers/callable-value-flow.test.ts",
+      "code": 2322,
+      "message": "Type 'unknown[]' is not assignable to type 'string[]'.\n  Type 'unknown' is not assignable to type 'string'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/resolvers/callable-value-flow.test.ts",
+      "code": 2367,
+      "message": "This comparison appears to be unintentional because the types 'SupportedLanguages.JavaScript | SupportedLanguages.Python | SupportedLanguages.Java | SupportedLanguages.CSharp | SupportedLanguages.Go | ... 8 more ... | SupportedLanguages.Zig' and 'SupportedLanguages.ObjectiveC' have no overlap.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/resolvers/cpp.test.ts",
+      "code": 2339,
+      "message": "Property 'candidateIds' does not exist on type 'ResolutionOutcome'.\n  Property 'candidateIds' does not exist on type '{ readonly kind: \"resolved\"; readonly targetId: string; readonly phase: string; readonly filePath: string; readonly name: string; readonly range: Range; }'.",
+      "count": 4
+    },
+    {
+      "file": "test/integration/resolvers/cpp.test.ts",
+      "code": 2339,
+      "message": "Property 'join' does not exist on type 'unknown'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/resolvers/cpp.test.ts",
+      "code": 2339,
+      "message": "Property 'range' does not exist on type 'ResolutionOutcome'.\n  Property 'range' does not exist on type '{ readonly kind: \"reexport-ambiguous\"; readonly candidateIds: readonly string[]; readonly phase: string; readonly filePath: string; readonly name: string; }'.",
+      "count": 4
+    },
+    {
+      "file": "test/integration/resolvers/javascript-object-properties.test.ts",
+      "code": 2339,
+      "message": "Property 'id' does not exist on type 'PropNode'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/resolvers/python.test.ts",
+      "code": 2339,
+      "message": "Property 'candidateIds' does not exist on type 'ResolutionOutcome'.\n  Property 'candidateIds' does not exist on type '{ readonly kind: \"resolved\"; readonly targetId: string; readonly phase: string; readonly filePath: string; readonly name: string; readonly range: Range; }'.",
+      "count": 5
+    },
+    {
+      "file": "test/integration/resolvers/python.test.ts",
+      "code": 2339,
+      "message": "Property 'range' does not exist on type 'ResolutionOutcome'.\n  Property 'range' does not exist on type '{ readonly kind: \"reexport-ambiguous\"; readonly candidateIds: readonly string[]; readonly phase: string; readonly filePath: string; readonly name: string; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/resolvers/python.test.ts",
+      "code": 2339,
+      "message": "Property 'reason' does not exist on type 'ResolutionOutcome'.\n  Property 'reason' does not exist on type '{ readonly kind: \"resolved\"; readonly targetId: string; readonly phase: string; readonly filePath: string; readonly name: string; readonly range: Range; }'.",
+      "count": 14
+    },
+    {
+      "file": "test/integration/resolvers/value-ref-locality.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/shared-store-analyze.test.ts",
+      "code": 2339,
+      "message": "Property 'getAll' does not exist on type 'QueryResult[] | QueryResult'.\n  Property 'getAll' does not exist on type 'QueryResult[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/shared-store-seed.test.ts",
+      "code": 2339,
+      "message": "Property 'getAll' does not exist on type 'QueryResult[] | QueryResult'.\n  Property 'getAll' does not exist on type 'QueryResult[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/skip-fts.test.ts",
+      "code": 2339,
+      "message": "Property 'warning' does not exist on type 'unknown'.",
+      "count": 2
+    },
+    {
+      "file": "test/integration/spring-bean-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/spring-config-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/spring-interface-inheritance-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/spring-route-pipeline.test.ts",
+      "code": 2307,
+      "message": "Cannot find module '../../types/pipeline.js' or its corresponding type declarations.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/taint-explain.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type 'TaintPathDecodeResult'.\n  Property 'error' does not exist on type 'DecodedTaintPath'.",
+      "count": 1
+    },
+    {
+      "file": "test/integration/watch-filesystem.test.ts",
+      "code": 2322,
+      "message": "Type 'Promise<number>' is not assignable to type 'Promise<void>'.\n  Type 'number' is not assignable to type 'void'.",
+      "count": 4
+    },
+    {
+      "file": "test/integration/worker-pool.test.ts",
+      "code": 2339,
+      "message": "Property 'sort' does not exist on type 'readonly string[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/ai-context.test.ts",
+      "code": 2322,
+      "message": "Type '{ label: string; name: string; symbolCount: number; }[]' is not assignable to type 'GeneratedSkillInfo[]'.\n  Property 'fileCount' is missing in type '{ label: string; name: string; symbolCount: number; }' but required in type 'GeneratedSkillInfo'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/analyze-delete-api.test.ts",
+      "code": 2554,
+      "message": "Expected 3 arguments, but got 2.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-gitnexusrc.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '5'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-http-endpoint-error.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-local-embedding-error.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '1'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-local-embedding-error.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-no-stats-bridge.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '5'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-worker-core.test.ts",
+      "code": 2741,
+      "message": "Property 'rebuildReasons' is missing in type '{ repoName: string; repoPath: string; storagePath: string; stats: {}; alreadyUpToDate: false; ftsRepairedOnly: false; }' but required in type 'AnalyzeResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-worker-ipc.test.ts",
+      "code": 2561,
+      "message": "Object literal may only specify known properties, but 'source' does not exist in type 'GraphRelationship'. Did you mean to write 'sourceId'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-worker-ipc.test.ts",
+      "code": 2741,
+      "message": "Property 'rebuildReasons' is missing in type '{ repoName: string; repoPath: string; storagePath: string; stats: { files: number; nodes: number; edges: number; }; alreadyUpToDate: false; ftsSkipped: true; pipelineResult: { graph: Record<string, unknown>; repoPath: string; totalFileCount: number; }; }' but required in type 'AnalyzeResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/analyze-worker-ipc.test.ts",
+      "code": 2741,
+      "message": "Property 'rebuildReasons' is missing in type '{ repoName: string; repoPath: string; storagePath: string; stats: { nodes: number; edges: number; }; pipelineResult: { graph: KnowledgeGraph; repoPath: string; totalFileCount: number; resolutionOutcomes: undefined[]; usedWorkerPool: boolean; }; }' but required in type 'AnalyzeResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/api-analyze-upload.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => { id: string; status: string; }>' is not assignable to type '(params: { repoPath: string; }) => UploadJobRef'.\n  Type '{ id: string; status: string; }' is not assignable to type 'UploadJobRef'.\n    Types of property 'status' are incompatible.\n      Type 'string' is not assignable to type 'AnalyzeJobStatus'.",
+      "count": 7
+    },
+    {
+      "file": "test/unit/api-analyze-upload.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<(_j: any, dir: string) => number>' is not assignable to type '(job: UploadJobRef, targetPath: string, opts: { registryName: string; }) => void | Promise<void>'.\n  Type 'number' is not assignable to type 'void | Promise<void>'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/api-analyze-upload.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '0'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/api-analyze-upload.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[_j: any, dir: string]' of length '2' has no element at index '2'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/api-analyze-upload.test.ts",
+      "code": 2532,
+      "message": "Object is possibly 'undefined'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/api-fts-mode.test.ts",
+      "code": 2554,
+      "message": "Expected 3 arguments, but got 2.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/api-graph-streaming.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }>>' is not assignable to type '(statePath?: string) => Promise<AutoSyncCommitState>'.\n  Type 'Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }>' is not assignable to type 'Promise<AutoSyncCommitState>'.\n    Type '{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }' is not assignable to type 'AutoSyncCommitState'.\n      Property ''/tmp/repos/gitee.com/qts_server/qts_account|master'' is incompatible with index signature.\n        Type '{ codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }' is not assignable to type 'AutoSyncCommitStateEntry'.\n          Types of property 'lastAnalyzeStatus' are incompatible.\n            Type 'string' is not assignable to type 'AutoSyncAnalyzeStatus'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastSyncTime: string; }; }>>' is not assignable to type '(statePath?: string) => Promise<AutoSyncCommitState>'.\n  Type 'Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastSyncTime: string; }; }>' is not assignable to type 'Promise<AutoSyncCommitState>'.\n    Type '{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastSyncTime: string; }; }' is not assignable to type 'AutoSyncCommitState'.\n      Property ''/tmp/repos/gitee.com/qts_server/qts_account|master'' is incompatible with index signature.\n        Type '{ codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastSyncTime: string; }' is not assignable to type 'AutoSyncCommitStateEntry'.\n          Types of property 'lastAnalyzeStatus' are incompatible.\n            Type 'string' is not assignable to type 'AutoSyncAnalyzeStatus'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; groupSyncPending: boolean; lastSyncTime: string; }; }>>' is not assignable to type '(statePath?: string) => Promise<AutoSyncCommitState>'.\n  Type 'Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; groupSyncPending: boolean; lastSyncTime: string; }; }>' is not assignable to type 'Promise<AutoSyncCommitState>'.\n    Type '{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; groupSyncPending: boolean; lastSyncTime: string; }; }' is not assignable to type 'AutoSyncCommitState'.\n      Property ''/tmp/repos/gitee.com/qts_server/qts_account|master'' is incompatible with index signature.\n        Type '{ codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; groupSyncPending: boolean; lastSyncTime: string; }' is not assignable to type 'AutoSyncCommitStateEntry'.\n          Types of property 'lastAnalyzeStatus' are incompatible.\n            Type 'string' is not assignable to type 'AutoSyncAnalyzeStatus'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; lastSyncTime: string; }; }>>' is not assignable to type '(statePath?: string) => Promise<AutoSyncCommitState>'.\n  Type 'Promise<{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; lastSyncTime: string; }; }>' is not assignable to type 'Promise<AutoSyncCommitState>'.\n    Type '{ '/tmp/repos/gitee.com/qts_server/qts_account|master': { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; lastSyncTime: string; }; }' is not assignable to type 'AutoSyncCommitState'.\n      Property ''/tmp/repos/gitee.com/qts_server/qts_account|master'' is incompatible with index signature.\n        Type '{ codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; lastSyncTime: string; }' is not assignable to type 'AutoSyncCommitStateEntry'.\n          Types of property 'lastAnalyzeStatus' are incompatible.\n            Type 'string' is not assignable to type 'AutoSyncAnalyzeStatus'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => Promise<{ \"/tmp/repos/gitee.com/qts_server/qts_account|master\": { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }>>' is not assignable to type '(statePath?: string) => Promise<AutoSyncCommitState>'.\n  Type 'Promise<{ \"/tmp/repos/gitee.com/qts_server/qts_account|master\": { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }>' is not assignable to type 'Promise<AutoSyncCommitState>'.\n    Type '{ \"/tmp/repos/gitee.com/qts_server/qts_account|master\": { codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }; }' is not assignable to type 'AutoSyncCommitState'.\n      Property '\"/tmp/repos/gitee.com/qts_server/qts_account|master\"' is incompatible with index signature.\n        Type '{ codeCommitId: string; analyzedCommitId: string; lastAnalyzeStatus: string; analyzeConsecutiveFailures: number; lastAnalyzeError: string; lastSyncTime: string; }' is not assignable to type 'AutoSyncCommitStateEntry'.\n          Types of property 'lastAnalyzeStatus' are incompatible.\n            Type 'string' is not assignable to type 'AutoSyncAnalyzeStatus'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<() => string>' is not assignable to type '(repoPath: string, timeoutMs: number) => Promise<string>'.\n  Type 'string' is not assignable to type 'Promise<string>'.",
+      "count": 57
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2322,
+      "message": "Type 'Mock<(repoPath: any) => \"one-commit\" | \"two-commit\">' is not assignable to type '(repoPath: string, timeoutMs: number) => Promise<string>'.\n  Type 'string' is not assignable to type 'Promise<string>'.\n    Type 'string' is not assignable to type 'Promise<string>'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/auto-sync-runner.test.ts",
+      "code": 2741,
+      "message": "Property 'overwriteLocalChanges' is missing in type '{ localPath: string; groupName: string; branches: [string]; remoteUrls: [string]; }' but required in type 'AutoSyncProjectConfig'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/auto-sync.test.ts",
+      "code": 2339,
+      "message": "Property 'message' does not exist on type 'AutoSyncConfigLoadResult'.\n  Property 'message' does not exist on type '{ ok: true; config: AutoSyncConfig; }'.",
+      "count": 6
+    },
+    {
+      "file": "test/unit/auto-sync.test.ts",
+      "code": 2339,
+      "message": "Property 'reason' does not exist on type 'AutoSyncConfigLoadResult'.\n  Property 'reason' does not exist on type '{ ok: true; config: AutoSyncConfig; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/call-routing/ruby.test.ts",
+      "code": 2740,
+      "message": "Type 'MockNode' is missing the following properties from type 'SyntaxNode': tree, id, typeId, grammarId, and 36 more.",
+      "count": 39
+    },
+    {
+      "file": "test/unit/calltool-dispatch-id-bridge.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/calltool-dispatch.test.ts",
+      "code": 2339,
+      "message": "Property 'pdgBridge' does not exist on type 'unknown'.",
+      "count": 4
+    },
+    {
+      "file": "test/unit/calltool-dispatch.test.ts",
+      "code": 2345,
+      "message": "Argument of type 'Buffer<ArrayBufferLike>' is not assignable to parameter of type 'string | NonSharedBuffer'.\n  Type 'Buffer<ArrayBufferLike>' is not assignable to type 'NonSharedBuffer'.\n    Type 'ArrayBufferLike' is not assignable to type 'ArrayBuffer'.\n      Type 'SharedArrayBuffer' is not assignable to type 'ArrayBuffer'.\n        Types of property '[Symbol.toStringTag]' are incompatible.\n          Type '\"SharedArrayBuffer\"' is not assignable to type '\"ArrayBuffer\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/calltool-dispatch.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/cfg/c-cpp-visitor.test.ts",
+      "code": 2552,
+      "message": "Cannot find name 'FunctionCfg'. Did you mean 'Function'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cfg/cfg-builder.test.ts",
+      "code": 2345,
+      "message": "Argument of type 'string' is not assignable to parameter of type 'readonly string[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cfg/control-dependence.test.ts",
+      "code": 2741,
+      "message": "Property 'functionEndLine' is missing in type '{ filePath: string; functionStartLine: number; functionStartColumn: number; entryIndex: number; exitIndex: number; blocks: BasicBlockData[]; edges: CfgEdgeData[]; }' but required in type 'FunctionCfg'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cfg/post-dominators.test.ts",
+      "code": 2741,
+      "message": "Property 'functionEndLine' is missing in type '{ filePath: string; functionStartLine: number; functionStartColumn: number; entryIndex: number; exitIndex: number; blocks: BasicBlockData[]; edges: CfgEdgeData[]; }' but required in type 'FunctionCfg'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cfg/synthetic-escape.test.ts",
+      "code": 2741,
+      "message": "Property 'functionEndLine' is missing in type '{ filePath: string; functionStartLine: number; functionStartColumn: number; entryIndex: number; exitIndex: number; blocks: BasicBlockData[]; edges: CfgEdgeData[]; }' but required in type 'FunctionCfg'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cli-commands.test.ts",
+      "code": 2339,
+      "message": "Property 'optionalDependencies' does not exist on type '{ name: string; version: string; description: string; author: string; license: string; homepage: string; repository: { type: string; url: string; directory: string; }; bugs: { url: string; }; keywords: string[]; ... 9 more ...; engines: { ...; }; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/cli-commands.test.ts",
+      "code": 2339,
+      "message": "Property 'scripts' does not exist on type '{ name: string; version: string; description: string; main: string; types: string; license: string; repository: { type: string; url: string; }; _vendoredBy: string; peerDependencies: { \"tree-sitter\": string; }; peerDependenciesMeta: { ...; }; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cli-commands.test.ts",
+      "code": 2339,
+      "message": "Property 'scripts' does not exist on type '{ name: string; version: string; description: string; repository: string; license: string; main: string; types: string; _vendoredBy: string; peerDependencies: { \"tree-sitter\": string; }; peerDependenciesMeta: { ...; }; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/cli-commands.test.ts",
+      "code": 2551,
+      "message": "Property 'dependencies' does not exist on type '{ name: string; version: string; description: string; main: string; types: string; license: string; repository: { type: string; url: string; }; _vendoredBy: string; peerDependencies: { \"tree-sitter\": string; }; peerDependenciesMeta: { ...; }; }'. Did you mean 'peerDependencies'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cli-commands.test.ts",
+      "code": 2551,
+      "message": "Property 'dependencies' does not exist on type '{ name: string; version: string; description: string; repository: string; license: string; main: string; types: string; _vendoredBy: string; peerDependencies: { \"tree-sitter\": string; }; peerDependenciesMeta: { ...; }; }'. Did you mean 'peerDependencies'?",
+      "count": 3
+    },
+    {
+      "file": "test/unit/cohesion-consistency.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphNode' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cohesion-consistency.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphRelationship' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/community-processor.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphNode' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/community-processor.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphRelationship' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/convex-metadata.test.ts",
+      "code": 2322,
+      "message": "Type 'string' is not assignable to type 'NodeLabel'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/convex-metadata.test.ts",
+      "code": 2322,
+      "message": "Type '{ kind: \"alias\" | \"named\"; targetRaw: string; importedName: string; localName: string; alias?: string; }' is not assignable to type 'ParsedImport'.\n  Type '{ kind: \"alias\" | \"named\"; targetRaw: string; importedName: string; localName: string; alias?: string; }' is not assignable to type '({ readonly kind: \"named\"; readonly localName: string; readonly importedName: string; readonly targetRaw: string; readonly importedSymbolKind?: \"const\" | \"function\" | \"type\"; readonly typeOnly?: boolean; readonly runsOnlyWhenCalled?: boolean; readonly targetIncludesImportedName?: boolean; readonly reexportsName?: bo...'.\n    Type '{ kind: \"alias\" | \"named\"; targetRaw: string; importedName: string; localName: string; alias?: string; }' is not assignable to type '{ readonly kind: \"alias\"; readonly localName: string; readonly importedName: string; readonly alias: string; readonly targetRaw: string; readonly importedSymbolKind?: \"const\" | \"function\" | \"type\"; readonly typeOnly?: boolean; readonly runsOnlyWhenCalled?: boolean; readonly targetIncludesImportedName?: boolean; read...'.\n      Type '{ kind: \"alias\" | \"named\"; targetRaw: string; importedName: string; localName: string; alias?: string; }' is not assignable to type '{ readonly kind: \"alias\"; readonly localName: string; readonly importedName: string; readonly alias: string; readonly targetRaw: string; readonly importedSymbolKind?: \"const\" | \"function\" | \"type\"; readonly typeOnly?: boolean; readonly runsOnlyWhenCalled?: boolean; readonly targetIncludesImportedName?: boolean; read...'.\n        Types of property 'kind' are incompatible.\n          Type '\"alias\" | \"named\"' is not assignable to type '\"alias\"'.\n            Type '\"named\"' is not assignable to type '\"alias\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/cpp-ue-preprocessor.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/embedding-restore-spill.test.ts",
+      "code": 2739,
+      "message": "Type '{ path: string; }' is missing the following properties from type 'EmbeddingVectorSpill': dims, rowCount",
+      "count": 1
+    },
+    {
+      "file": "test/unit/embedding-sidecar-client.test.ts",
+      "code": 2345,
+      "message": "Argument of type 'Mock<Constructable | Procedure>' is not assignable to parameter of type 'ForkImpl'.\n  Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' is not assignable to type 'ForkImpl'.\n    Type 'MockInstance<Constructable | Procedure> & (new (...args: any[]) => any) & {}' provides no match for the signature '(modulePath: string, args: readonly string[], options: ForkOptions): ChildProcess'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/embeddings-install-command.test.ts",
+      "code": 2554,
+      "message": "Expected 0 arguments, but got 1.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/ensure-initialized-reinit-watermark.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/mcp/local/local-backend.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"c\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"cpp\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"csharp\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"dart\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"go\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"java\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"javascript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"kotlin\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"php\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"python\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"ruby\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"rust\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"swift\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"typescript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 18
+    },
+    {
+      "file": "test/unit/fetch-reason-parsing.test.ts",
+      "code": 2871,
+      "message": "This expression is always nullish.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/field-extraction.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ lookup: () => any; constructorBindings: undefined[]; fileScope: () => Map<any, any>; allScopes: () => Map<any, any>; constructorTypeMap: Map<any, any>; }' to type 'TypeEnvironment' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Property 'flush' is missing in type '{ lookup: () => any; constructorBindings: undefined[]; fileScope: () => Map<any, any>; allScopes: () => Map<any, any>; constructorTypeMap: Map<any, any>; }' but required in type 'TypeEnvironment'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/field-extraction.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"TypeScript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"c\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"csharp\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"java\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"javascript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"php\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"python\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"rust\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/framework-detection.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"typescript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/git.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ status: null; stdout: string; stderr: string; error: Error & { code: string; }; }' to type 'SpawnSyncReturns<string | NonSharedBuffer>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '{ status: null; stdout: string; stderr: string; error: Error & { code: string; }; }' is missing the following properties from type 'SpawnSyncReturns<string | NonSharedBuffer>': pid, output, signal",
+      "count": 1
+    },
+    {
+      "file": "test/unit/graph-collapse-wiring.test.ts",
+      "code": 2554,
+      "message": "Expected 5 arguments, but got 4.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/graph.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphNode' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/graph.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphRelationship' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/graph.test.ts",
+      "code": 2741,
+      "message": "Property 'filePath' is missing in type '{ name: string; }' but required in type 'NodeProperties'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/cross-impact.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type '{ ok: true; name: string; repoPath: string; target: string; target_uid?: string; file_path?: string; kind?: string; direction: \"downstream\" | \"upstream\"; maxDepth: number; crossDepth: number; crossDepthWarning?: string; ... 5 more ...; timeoutMs: number; } | { ...; }'.\n  Property 'error' does not exist on type '{ ok: true; name: string; repoPath: string; target: string; target_uid?: string; file_path?: string; kind?: string; direction: \"downstream\" | \"upstream\"; maxDepth: number; crossDepth: number; crossDepthWarning?: string; ... 5 more ...; timeoutMs: number; }'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/group/fastapi-composed-provider.test.ts",
+      "code": 2741,
+      "message": "Property 'repoPath' is missing in type '{ files: string[]; parser: Parser; readFile: (rel: string) => string | null; parseSource: (p: Parser, src: string) => Parser.Tree; }' but required in type '{ repoPath: string; files: string[]; parser: Parser; readFile: (rel: string) => string; parseSource: (parser: Parser, src: string) => Tree; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/grpc-extractor.test.ts",
+      "code": 2741,
+      "message": "Property 'javaPackage' is missing in type '{ package: string; serviceName: string; methods: string[]; protoPath: string; }' but required in type 'ProtoServiceInfo'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/java-const-route-parity.test.ts",
+      "code": 2339,
+      "message": "Property 'set' does not exist on type 'RepoConstants'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/java-const-route-parity.test.ts",
+      "code": 2741,
+      "message": "Property 'repoPath' is missing in type '{ files: string[]; parser: Parser; readFile: (rel: string) => string; parseSource: (p: Parser, src: string) => Parser.Tree; }' but required in type '{ repoPath: string; files: string[]; parser: Parser; readFile: (rel: string) => string; parseSource: (parser: Parser, src: string) => Tree; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/kotlin-const-route-fold.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/service.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '1'.",
+      "count": 4
+    },
+    {
+      "file": "test/unit/group/sync-partial-extraction.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '0'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/sync-partial-extraction.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/sync-registry-identity.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/group/sync.test.ts",
+      "code": 2345,
+      "message": "Argument of type '(id: string) => Promise<void>' is not assignable to parameter of type '(repoId: string, dbPath: string) => Promise<boolean>'.\n  Type 'Promise<void>' is not assignable to type 'Promise<boolean>'.\n    Type 'void' is not assignable to type 'boolean'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/has-method.test.ts",
+      "code": 2740,
+      "message": "Type '{ parent: any; }' is missing the following properties from type 'SyntaxNode': tree, id, typeId, grammarId, and 44 more.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/has-method.test.ts",
+      "code": 2740,
+      "message": "Type '{ parent: { type: string; childForFieldName: () => any; children: any[]; parent: any; }; }' is missing the following properties from type 'SyntaxNode': tree, id, typeId, grammarId, and 44 more.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/hook-db-lock-probe.test.ts",
+      "code": 2345,
+      "message": "Argument of type '(p: PathLike, options: { encoding: \"buffer\"; withFileTypes: true; recursive?: boolean; }) => unknown' is not assignable to parameter of type '(path: PathLike, options: { encoding: \"buffer\"; withFileTypes: true; recursive?: boolean; }) => Dirent<NonSharedBuffer>[]'.\n  Type 'unknown' is not assignable to type 'Dirent<NonSharedBuffer>[]'.\n    Type '{}' is missing the following properties from type 'Dirent<NonSharedBuffer>[]': length, pop, push, concat, and 29 more.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-batching-grouping.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/impact-batching-grouping.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/mcp/local/local-backend.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-pagination.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/impact-pagination.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/core/group/cross-impact.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-pagination.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/mcp/local/local-backend.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-pdg-id-bridge-gate.test.ts",
+      "code": 2578,
+      "message": "Unused '@ts-expect-error' directive.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-pdg-id-vs-name-metrics.test.ts",
+      "code": 2578,
+      "message": "Unused '@ts-expect-error' directive.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-pdg-metric-math.test.ts",
+      "code": 2578,
+      "message": "Unused '@ts-expect-error' directive.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/impact-route-enrichment.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/mcp/local/local-backend.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/incremental-parse-cache.test.ts",
+      "code": 2339,
+      "message": "Property 'imports' does not exist on type 'ParseWorkerResult'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/incremental-parse-cache.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'imports' does not exist in type 'ParseWorkerResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/incremental-parse-cache.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'imports' does not exist in type 'Partial<ParseWorkerResult>'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/incremental-write-integrity.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'readOnly' does not exist in type '{ skipFts?: boolean; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/incremental-write-integrity.test.ts",
+      "code": 2741,
+      "message": "Property 'filePath' is missing in type '{ name: string; }' but required in type 'NodeProperties'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/index-repo-command.test.ts",
+      "code": 2749,
+      "message": "'StorageRequirementError' refers to a value, but is being used as a type here. Did you mean 'typeof StorageRequirementError'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/ipynb-python-captures.test.ts",
+      "code": 2339,
+      "message": "Property 'name' does not exist on type 'SymbolDefinition'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/java-runtime-symbol-strategy.test.ts",
+      "code": 2739,
+      "message": "Type '{ parameterCount: number; parameterTypes: string[]; }' is missing the following properties from type 'NodeProperties': name, filePath",
+      "count": 6
+    },
+    {
+      "file": "test/unit/java-runtime-symbol-strategy.test.ts",
+      "code": 2739,
+      "message": "Type '{ parameterCount: number; }' is missing the following properties from type 'NodeProperties': name, filePath",
+      "count": 2
+    },
+    {
+      "file": "test/unit/java-runtime-symbol-strategy.test.ts",
+      "code": 2739,
+      "message": "Type '{ parameterTypes: string[]; }' is missing the following properties from type 'NodeProperties': name, filePath",
+      "count": 1
+    },
+    {
+      "file": "test/unit/java-runtime-symbol-strategy.test.ts",
+      "code": 2739,
+      "message": "Type '{}' is missing the following properties from type 'NodeProperties': name, filePath",
+      "count": 1
+    },
+    {
+      "file": "test/unit/jvm-package-siblings.test.ts",
+      "code": 2305,
+      "message": "Module '\"gitnexus-shared\"' has no exported member 'ScopeResolutionIndexes'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/kotlin-route-const-resolver.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/kotlin-spring-route-ingestion.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/lazy-action.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'message' does not exist in type '{ ok: boolean; }'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/lbug-pool-evict-reopen-race.test.ts",
+      "code": 2739,
+      "message": "Type '{ init: Mock<Procedure>; close: Mock<Procedure>; }' is missing the following properties from type 'Database': initSync, closeSync",
+      "count": 2
+    },
+    {
+      "file": "test/unit/lbug-pool-pinning.test.ts",
+      "code": 2739,
+      "message": "Type '{ init: Mock<Procedure>; close: Mock<Procedure>; }' is missing the following properties from type 'Database': initSync, closeSync",
+      "count": 2
+    },
+    {
+      "file": "test/unit/local-cli-subprocess.test.ts",
+      "code": 2339,
+      "message": "Property 'mock' does not exist on type '((...args: any[]) => unknown) | Mock<Procedure>'.\n  Property 'mock' does not exist on type '(...args: any[]) => unknown'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/local-cli-subprocess.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '1'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/local-cli-subprocess.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '2'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/mcp-context-route-chain.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/mcp-read-file-grep.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/mcp-wal-feedback.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/method-extraction.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 6
+    },
+    {
+      "file": "test/unit/model/owned-members-lookup.test.ts",
+      "code": 2322,
+      "message": "Type '\"Method\"' is not assignable to type 'ScopeKind'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/model/owned-members-lookup.test.ts",
+      "code": 2741,
+      "message": "Property 'moduleScopeId' is missing in type 'Scope' but required in type 'ModuleScopeEntry'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/name-guessed-edges-excluded-from-flows.test.ts",
+      "code": 2339,
+      "message": "Property 'toName' does not exist on type 'ProcessStep'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/objective-c-provider.test.ts",
+      "code": 2322,
+      "message": "Type '{ kind: 'class'; declarationRole: 'implementation'; name: string; qualifiedName: string; nodeId: string; label: 'Class'; filePath: string; startLine: number; endLine: number; protocols: string[]; }' is not assignable to type '{ kind: 'protocol'; declarationRole: 'interface'; name: string; qualifiedName: string; nodeId: string; label: 'Protocol'; filePath: string; startLine: number; endLine: number; protocols: string[]; }'.\n  Types of property 'kind' are incompatible.\n    Type '\"class\"' is not assignable to type '\"protocol\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/objective-c-provider.test.ts",
+      "code": 2322,
+      "message": "Type '{ name: string; selector: string; methodKind: '-'; ownerQualifiedName: string; ownerName: string; ownerKind: 'class'; qualifiedName: string; nodeId: string; filePath: string; startLine: number; endLine: number; declarationRole: 'implementation'; parameterTypes: string[]; parameterNames: string[]; }' is not assignable to type '{ name: string; selector: string; methodKind: '-'; ownerQualifiedName: string; ownerName: string; ownerKind: 'protocol'; qualifiedName: string; nodeId: string; filePath: string; startLine: number; endLine: number; declarationRole: 'implementation'; parameterTypes: string[]; parameterNames: string[]; }'.\n  Types of property 'ownerKind' are incompatible.\n    Type '\"class\"' is not assignable to type '\"protocol\"'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/objective-c-provider.test.ts",
+      "code": 2554,
+      "message": "Expected 5 arguments, but got 2.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/objective-c-provider.test.ts",
+      "code": 2741,
+      "message": "Property 'name' is missing in type '{ filePath: string; qualifiedName: string; }' but required in type 'NodeProperties'.",
+      "count": 5
+    },
+    {
+      "file": "test/unit/ops-snapshot.test.ts",
+      "code": 2339,
+      "message": "Property 'repoPath' does not exist on type 'OpsJobView'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/ops-snapshot.test.ts",
+      "code": 2339,
+      "message": "Property 'repoUrl' does not exist on type 'OpsJobView'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/parse-impl-worker-lazy-cache.test.ts",
+      "code": 2322,
+      "message": "Type '\"typescript\"' is not assignable to type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/parsedfile-store.test.ts",
+      "code": 2352,
+      "message": "Conversion of type 'Scope' to type '{ ownedDefs: object[]; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Types of property 'ownedDefs' are incompatible.\n    The type 'readonly SymbolDefinition[]' is 'readonly' and cannot be assigned to the mutable type 'object[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/parsedfile-store.test.ts",
+      "code": 2352,
+      "message": "Conversion of type 'TypeRef' to type '{ name: string; }' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Property 'name' is missing in type 'TypeRef' but required in type '{ name: string; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/parsedfile-store.test.ts",
+      "code": 2551,
+      "message": "Property 'defId' does not exist on type 'BindingRef'. Did you mean 'def'?",
+      "count": 2
+    },
+    {
+      "file": "test/unit/pdg-callee-id-capture.test.ts",
+      "code": 2741,
+      "message": "Property 'ambiguousWildcardExports' is missing in type '{ totalFiles: number; totalEdges: number; linkedEdges: number; unresolvedEdges: number; sccCount: number; largestSccSize: number; }' but required in type 'FinalizeStats'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/pdg-impact-engine.test.ts",
+      "code": 2339,
+      "message": "Property 'truncated' does not exist on type 'PdgImpactResult'.\n  Property 'truncated' does not exist on type 'PdgImpactDegradedResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/pdg-impact-engine.test.ts",
+      "code": 2339,
+      "message": "Property 'truncatedBy' does not exist on type 'PdgImpactResult'.\n  Property 'truncatedBy' does not exist on type 'PdgImpactDegradedResult'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/publish.test.ts",
+      "code": 2322,
+      "message": "Type 'string | number' is not assignable to type 'number'.\n  Type 'string' is not assignable to type 'number'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/query-degraded-signal.test.ts",
+      "code": 2835,
+      "message": "Relative import paths need explicit file extensions in ECMAScript imports when '--moduleResolution' is 'node16' or 'nodenext'. Did you mean '../../src/mcp/local/local-backend.js'?",
+      "count": 1
+    },
+    {
+      "file": "test/unit/range-binding-parse-timeout.test.ts",
+      "code": 2305,
+      "message": "Module '\"gitnexus-shared\"' has no exported member 'ScopeResolutionIndexes'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/rate-limit.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type 'unknown'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/repo-manager-ensure-ignore-readonly.test.ts",
+      "code": 2339,
+      "message": "Property 'default' does not exist on type 'typeof import(\"fs/promises\")'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/repo-manager-reconcile.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ incrementalInProgress: boolean; }' to type 'Partial<RepoMeta>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Types of property 'incrementalInProgress' are incompatible.\n    Type 'boolean' is not comparable to type '{ startedAt: number; updatedAt?: number; toWriteCount: number; phase?: string; writePlan?: \"in-place\" | \"staging\"; checkpointSucceeded?: boolean; directWriteCount?: number; importerExpansion?: number; ... 4 more ...; reasons?: StoredRebuildReason[]; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/repo-manager-rm-failure.test.ts",
+      "code": 2339,
+      "message": "Property 'default' does not exist on type 'typeof import(\"fs/promises\")'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/repro-3291-staleness-indexed-ref.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"impact\"' is not assignable to parameter of type 'never'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/resolve-enclosing-owner.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/resolve-route-handler-symbols.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'name' does not exist in type 'SymbolDefinition'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/route-constant-baseline-gate.test.ts",
+      "code": 2578,
+      "message": "Unused '@ts-expect-error' directive.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/route-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ communityResult: { memberships: any[]; }; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ communityResult: { memberships: undefined[]; }; }' but required in type '{ totalFiles: number; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/route-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ routeRegistry: Map<string, { filePath: string; source: string; url: string; method: string; }>; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ routeRegistry: Map<string, { filePath: string; source: string; url: string; method: string; }>; }' but required in type '{ totalFiles: number; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/route-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ toolDefs: any[]; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ toolDefs: any[]; }' but required in type '{ totalFiles: number; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/run-analyze-adopt-failure.test.ts",
+      "code": 2741,
+      "message": "Property 'onProgress' is missing in type '{ onLog: (m: string) => number; }' but required in type 'AnalyzeCallbacks'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/run-analyze-adopt-failure.test.ts",
+      "code": 2741,
+      "message": "Property 'onProgress' is missing in type '{}' but required in type 'AnalyzeCallbacks'.",
+      "count": 4
+    },
+    {
+      "file": "test/unit/run-analyze-fts-crash-marker.test.ts",
+      "code": 2741,
+      "message": "Property 'name' is missing in type '{ filePath: string; }' but required in type 'NodeProperties'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/run-analyze-fts-repair.test.ts",
+      "code": 2345,
+      "message": "Argument of type '() => Promise<void>' is not assignable to parameter of type '(graph: KnowledgeGraph, repoPath: string, storagePath: string, onProgress?: LbugProgressCallback, pdgEmitManifest?: PdgEmitManifest, graphEmitManifest?: GraphEmitManifest, contentRetention?: ContentRetention) => Promise<...>'.\n  Type 'Promise<void>' is not assignable to type 'Promise<{ success: boolean; insertedRels: number; skippedRels: number; warnings: string[]; }>'.\n    Type 'void' is not assignable to type '{ success: boolean; insertedRels: number; skippedRels: number; warnings: string[]; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/run-analyze-fts-repair.test.ts",
+      "code": 2345,
+      "message": "Argument of type '(dbPath: string) => Promise<void>' is not assignable to parameter of type '(dbPath: string, options?: { skipFts?: boolean; }) => Promise<{ db: Database; conn: Connection; }>'.\n  Type 'Promise<void>' is not assignable to type 'Promise<{ db: Database; conn: Connection; }>'.\n    Type 'void' is not assignable to type '{ db: lbug.Database; conn: lbug.Connection; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/run-analyze-fts-repair.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'source' does not exist in type 'AnalyzerRunnerIdentity'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/run-analyze-fts-repair.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '0'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/run-analyze-fts-repair.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '1'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/scope-resolution/c/c-workspace.test.ts",
+      "code": 2322,
+      "message": "Type 'string | readonly string[]' is not assignable to type 'string'.\n  Type 'readonly string[]' is not assignable to type 'string'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/callable-value-flow-worklist.test.ts",
+      "code": 2741,
+      "message": "Property 'ambiguousWildcardExports' is missing in type '{ totalFiles: number; totalEdges: number; linkedEdges: number; unresolvedEdges: number; sccCount: number; largestSccSize: number; }' but required in type 'FinalizeStats'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/callable-value-flow-worklist.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Property 'origin' is missing in type '{ def: SymbolDefinition; }' but required in type 'BindingRef'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/scope-resolution/construction-syntax-wiring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"dart\" | \"java\" | \"kotlin\" | \"php\" | \"swift\"' is not assignable to parameter of type 'SupportedLanguages'.\n  Type '\"dart\"' is not assignable to type 'SupportedLanguages'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/cpp/cpp-constraint.test.ts",
+      "code": 2322,
+      "message": "Type '{ nodeId: string; filePath: string; type: \"Function\"; templateConstraints: CppConstraintPayload; parameterTypeClasses?: readonly ParameterTypeClass[]; }' is not assignable to type 'SymbolDefinition'.\n  Types of property 'parameterTypeClasses' are incompatible.\n    The type 'readonly ParameterTypeClass[]' is 'readonly' and cannot be assigned to the mutable type 'ParameterTypeClass[]'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/cpp/cpp-qualified-ns-index.test.ts",
+      "code": 2305,
+      "message": "Module '\"gitnexus-shared\"' has no exported member 'ScopeResolutionIndexes'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/emit-references.test.ts",
+      "code": 2741,
+      "message": "Property 'ambiguousWildcardExports' is missing in type '{ totalFiles: number; totalEdges: number; linkedEdges: number; unresolvedEdges: number; sccCount: number; largestSccSize: number; }' but required in type 'FinalizeStats'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/esm-export-marker.test.ts",
+      "code": 2559,
+      "message": "Type 'ScopeResolver' has no properties in common with type 'ScopeExtractorHooks'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/scope-resolution/go/go-hooks.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ defs: { get: (id: string) => SymbolDefinition; }; qualifiedNames: { get: (name: string) => string[]; }; scopeTree: { getScope: (id: ScopeId) => Scope; }; bindings: Map<any, any>; bindingAugmentations: Map<...> | ReadonlyMap<...>; ... 10 more ...; stats: any; }' to type 'ScopeResolutionIndexes' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Types of property 'scopeTree' are incompatible.\n    Type '{ getScope: (id: ScopeId) => Scope; }' is missing the following properties from type 'ScopeTree': size, byId, getParent, getChildren, and 2 more.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/go/go-hooks.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'name' does not exist in type 'Callsite'.",
+      "count": 5
+    },
+    {
+      "file": "test/unit/scope-resolution/go/go-imports.test.ts",
+      "code": 2339,
+      "message": "Property 'localName' does not exist on type 'ParsedImport'.\n  Property 'localName' does not exist on type '{ readonly kind: \"wildcard\"; readonly targetRaw: string; readonly runsOnlyWhenCalled?: boolean; readonly isSystem?: boolean; } & { readonly declaredAtScope?: string; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/go/go-range-binding-null-guard.test.ts",
+      "code": 2305,
+      "message": "Module '\"gitnexus-shared\"' has no exported member 'ScopeResolutionIndexes'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/import-target-index-parity.test.ts",
+      "code": 2739,
+      "message": "Type '{ id: string; parent: null; kind: \"Module\"; range: { startLine: number; startCol: number; endLine: number; endCol: number; }; filePath: string; bindings: Map<string, { def: SymbolDefinition; origin: \"local\"; }[]>; ownedDefs: [...]; }' is missing the following properties from type 'Scope': imports, typeBindings",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/node-lookup-determinism.test.ts",
+      "code": 2322,
+      "message": "Type '{ id: string; label: NodeLabel; properties: { name: string; qualifiedName: string; filePath: string; startLine?: number; startColumn?: number; }; }[]' is not assignable to type 'ParsedNode[]'.\n  Type '{ id: string; label: NodeLabel; properties: { name: string; qualifiedName: string; filePath: string; startLine?: number; startColumn?: number; }; }' is not assignable to type 'ParsedNode'.\n    Types of property 'properties' are incompatible.\n      Type '{ name: string; qualifiedName: string; filePath: string; startLine?: number; startColumn?: number; }' is missing the following properties from type '{ [key: string]: unknown; name: string; filePath: string; startLine: number; endLine: number; language: SupportedLanguages; isExported: boolean; astFrameworkMultiplier?: number; astFrameworkReason?: string; description?: string; }': endLine, language, isExported",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/node-lookup-determinism.test.ts",
+      "code": 2739,
+      "message": "Type '{ name: string; qualifiedName: string; filePath: string; startLine?: number; startColumn?: number; }' is missing the following properties from type '{ [key: string]: unknown; name: string; filePath: string; startLine: number; endLine: number; language: SupportedLanguages; isExported: boolean; astFrameworkMultiplier?: number; astFrameworkReason?: string; description?: string; }': endLine, language, isExported",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/php-import-target-parity.test.ts",
+      "code": 2352,
+      "message": "Conversion of type '{ filePath: string; localDefs: SymbolDefinition[]; }' to type 'ParsedFile' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.\n  Type '{ filePath: string; localDefs: SymbolDefinition[]; }' is missing the following properties from type 'ParsedFile': moduleScope, scopes, parsedImports, referenceSites",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/property-name-index.test.ts",
+      "code": 2741,
+      "message": "Property 'filePath' is missing in type '{ name: string; startLine: number; endLine: number; }' but required in type 'NodeProperties'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/python/python-hooks.test.ts",
+      "code": 2322,
+      "message": "Type '\"cls\"' is not assignable to type '\"annotation\" | \"assignment-inferred\" | \"constructor-inferred\" | \"decorator-unknown\" | \"parameter-annotation\" | \"receiver-propagated\" | \"return-annotation\" | \"self\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/reconcile-ownership.test.ts",
+      "code": 2322,
+      "message": "Type '\"Const\"' is not assignable to type '\"Property\" | \"Variable\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/reconcile-ownership.test.ts",
+      "code": 2322,
+      "message": "Type '\"Static\"' is not assignable to type '\"Property\" | \"Variable\"'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/references-to-edges-call-form.test.ts",
+      "code": 2741,
+      "message": "Property 'ambiguousWildcardExports' is missing in type '{ totalFiles: number; totalEdges: number; linkedEdges: number; unresolvedEdges: number; sccCount: number; largestSccSize: number; }' but required in type 'FinalizeStats'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/resolve-references.test.ts",
+      "code": 2741,
+      "message": "Property 'ambiguousWildcardExports' is missing in type '{ totalFiles: number; totalEdges: number; linkedEdges: number; unresolvedEdges: number; sccCount: number; largestSccSize: number; }' but required in type 'FinalizeStats'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/resolved-callee-names.test.ts",
+      "code": 2741,
+      "message": "Property 'name' is missing in type '{ filePath: string; }' but required in type 'NodeProperties'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/rust/rust-mod-scope-qualifier.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/rust/rust-range-binding-order.test.ts",
+      "code": 2305,
+      "message": "Module '\"gitnexus-shared\"' has no exported member 'ScopeResolutionIndexes'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/typescript/typescript-imports.test.ts",
+      "code": 2339,
+      "message": "Property 'localName' does not exist on type 'ParsedImport'.\n  Property 'localName' does not exist on type '{ readonly kind: \"wildcard\"; readonly targetRaw: string; readonly runsOnlyWhenCalled?: boolean; readonly isSystem?: boolean; } & { readonly declaredAtScope?: string; }'.",
+      "count": 5
+    },
+    {
+      "file": "test/unit/scope-resolution/typescript/typescript-imports.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'language' does not exist in type 'Partial<TsResolveContext>'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/unresolved-receivers.test.ts",
+      "code": 2322,
+      "message": "Type '{ kind: \"call\"; }' is not assignable to type 'MixedChainStep'.\n  Property 'name' is missing in type '{ kind: \"call\"; }' but required in type '{ kind: \"call\" | \"field\"; name: string; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/scope-resolution/unresolved-receivers.test.ts",
+      "code": 2322,
+      "message": "Type '{ kind: \"field\"; }' is not assignable to type 'MixedChainStep'.\n  Property 'name' is missing in type '{ kind: \"field\"; }' but required in type '{ kind: \"call\" | \"field\"; name: string; }'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/scope-resolution/unresolved-receivers.test.ts",
+      "code": 2739,
+      "message": "Type '{ steps: undefined[]; }' is missing the following properties from type 'DecodedReceiverChain': baseReceiverName, truncated",
+      "count": 1
+    },
+    {
+      "file": "test/unit/scope-resolution/walkers-augmentations.test.ts",
+      "code": 2339,
+      "message": "Property 'set' does not exist on type 'ReadonlyMap<string, ReadonlyMap<string, readonly BindingRef[]>>'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/semantic-search-ready.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/server-api-repo-resolution.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type '{ ok: true; entry: RegistryEntry; } | { ok: false; status: 400 | 404; error: string; }'.\n  Property 'error' does not exist on type '{ ok: true; entry: RegistryEntry; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/server-api-repo-resolution.test.ts",
+      "code": 2339,
+      "message": "Property 'status' does not exist on type '{ ok: true; entry: RegistryEntry; } | { ok: false; status: 400 | 404; error: string; }'.\n  Property 'status' does not exist on type '{ ok: true; entry: RegistryEntry; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/server.test.ts",
+      "code": 2339,
+      "message": "Property 'find' does not exist on type 'unknown'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup-codex.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup-jsonc.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"/usr/local/bin/gitnexus\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup-jsonc.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.ps1\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup-jsonc.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"/usr/local/bin/gitnexus\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.ps1\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\nC:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.CMD\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\nC:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.bat\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\nC:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.cmd\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/setup.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"C:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus\\r\\nC:\\\\Users\\\\dev\\\\AppData\\\\Roaming\\\\npm\\\\gitnexus.cmd\\r\\n\"' is not assignable to parameter of type 'never'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/shard-balance.test.ts",
+      "code": 2345,
+      "message": "Argument of type '(s: { id: string; }) => string' is not assignable to parameter of type '(spec: { w: number; }) => string'.\n  Types of parameters 's' and 'spec' are incompatible.\n    Property 'id' is missing in type '{ w: number; }' but required in type '{ id: string; }'.",
+      "count": 5
+    },
+    {
+      "file": "test/unit/shard-balance.test.ts",
+      "code": 2345,
+      "message": "Argument of type '(s: { id: string; }) => string' is not assignable to parameter of type '(value: { w: number; }, index: number, array: { w: number; }[]) => string'.\n  Types of parameters 's' and 'value' are incompatible.\n    Property 'id' is missing in type '{ w: number; }' but required in type '{ id: string; }'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/skill-gen.test.ts",
+      "code": 2322,
+      "message": "Type '{ processes: ProcessNode[]; steps: undefined[]; stats: { totalProcesses: number; crossCommunityCount: number; avgStepCount: number; entryPointsFound: number; }; }' is not assignable to type 'ProcessDetectionResult'.\n  Types of property 'stats' are incompatible.\n    Property 'truncation' is missing in type '{ totalProcesses: number; crossCommunityCount: number; avgStepCount: number; entryPointsFound: number; }' but required in type '{ totalProcesses: number; crossCommunityCount: number; avgStepCount: number; entryPointsFound: number; truncation: ProcessTruncationStats; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/skill-gen.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphNode' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/skill-gen.test.ts",
+      "code": 2459,
+      "message": "Module '\"../../src/core/graph/types.js\"' declares 'GraphRelationship' locally, but it is not exported.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/skill-gen.test.ts",
+      "code": 2739,
+      "message": "Type '{ graph: KnowledgeGraph; repoPath: string; totalFileCount: number; communityResult: CommunityDetectionResult; processResult: ProcessDetectionResult; }' is missing the following properties from type 'PipelineResult': resolutionOutcomes, usedWorkerPool, reparsedFileCount, scopeExtractionFailures, unavailableScopeLanguageFiles",
+      "count": 1
+    },
+    {
+      "file": "test/unit/skill-gen.test.ts",
+      "code": 2739,
+      "message": "Type '{ graph: KnowledgeGraph; repoPath: string; totalFileCount: number; communityResult: { communities: CommunityNode[]; memberships: CommunityMembership[]; stats: { ...; }; }; processResult: undefined; }' is missing the following properties from type 'PipelineResult': resolutionOutcomes, usedWorkerPool, reparsedFileCount, scopeExtractionFailures, unavailableScopeLanguageFiles",
+      "count": 1
+    },
+    {
+      "file": "test/unit/spring-destinations-phase.test.ts",
+      "code": 2739,
+      "message": "Type '{ name: string; args: [{ name: string; text: string; }]; }' is missing the following properties from type 'JavaAnnotationSyntaxFact': line, text",
+      "count": 16
+    },
+    {
+      "file": "test/unit/spring-destinations-phase.test.ts",
+      "code": 2739,
+      "message": "Type '{ name: string; }' is missing the following properties from type 'JavaAnnotationSyntaxFact': line, text",
+      "count": 1
+    },
+    {
+      "file": "test/unit/stream-graph-emit-config.test.ts",
+      "code": 2304,
+      "message": "Cannot find name 'GraphNode'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/stream-graph-emit-config.test.ts",
+      "code": 2353,
+      "message": "Object literal may only specify known properties, and 'force' does not exist in type 'PipelineOptions'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/symbol-identity-validation.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/taint/path-codec.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type 'TaintPathDecodeResult'.\n  Property 'error' does not exist on type 'DecodedTaintPath'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/taint/propagate.test.ts",
+      "code": 2339,
+      "message": "Property 'property' does not exist on type 'TaintSourceOccurrence'.\n  Property 'property' does not exist on type 'CallResultSourceOccurrence'.",
+      "count": 6
+    },
+    {
+      "file": "test/unit/taint/taint-emit.test.ts",
+      "code": 2339,
+      "message": "Property 'error' does not exist on type 'TaintPathDecodeResult'.\n  Property 'error' does not exist on type 'DecodedTaintPath'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/tool-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ communityResult: { memberships: any[]; }; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ communityResult: { memberships: undefined[]; }; }' but required in type '{ totalFiles: number; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/tool-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ routeRegistry: Map<any, any>; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ routeRegistry: Map<any, any>; }' but required in type '{ totalFiles: number; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/tool-process-linking.test.ts",
+      "code": 2769,
+      "message": "No overload matches this call.\n  The last overload gave the following error.\n    Type 'PhaseResult<{ toolDefs: ({ name: string; filePath: string; description: string; handlerNodeId: string; allowFileFallback?: undefined; } | { handlerNodeId?: undefined; name: string; filePath: string; description: string; allowFileFallback?: undefined; } | { ...; })[]; }>' is not assignable to type 'PhaseResult<{ totalFiles: number; }>'.\n      Property 'totalFiles' is missing in type '{ toolDefs: ({ name: string; filePath: string; description: string; handlerNodeId: string; allowFileFallback?: undefined; } | { handlerNodeId?: undefined; name: string; filePath: string; description: string; allowFileFallback?: undefined; } | { ...; })[]; }' but required in type '{ totalFiles: number; }'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/trace-bfs.test.ts",
+      "code": 2698,
+      "message": "Spread types may only be created from object types.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/trpc-entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"javascript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/trpc-entry-point-scoring.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"typescript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"cpp\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 21
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"csharp\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 24
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"dart\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"go\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 19
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"java\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 29
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"kotlin\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 24
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"php\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 16
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"python\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 37
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"ruby\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 16
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"rust\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 44
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"swift\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 4
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2345,
+      "message": "Argument of type '\"typescript\"' is not assignable to parameter of type 'SupportedLanguages'.",
+      "count": 113
+    },
+    {
+      "file": "test/unit/type-env.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 4
+    },
+    {
+      "file": "test/unit/upload-ingest.test.ts",
+      "code": 2578,
+      "message": "Unused '@ts-expect-error' directive.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/variable-extraction.test.ts",
+      "code": 2694,
+      "message": "Namespace 'Parser' has no exported member 'Language'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/watch-queue.test.ts",
+      "code": 2322,
+      "message": "Type 'Promise<number>' is not assignable to type 'Promise<void>'.\n  Type 'number' is not assignable to type 'void'.",
+      "count": 7
+    },
+    {
+      "file": "test/unit/wiki-db-pin.test.ts",
+      "code": 2739,
+      "message": "Type '{ provider: \"openai\"; model: string; baseUrl: string; apiKey: string; }' is missing the following properties from type 'LLMConfig': maxTokens, temperature",
+      "count": 1
+    },
+    {
+      "file": "test/unit/wiki-flags.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '1'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/wiki-flags.test.ts",
+      "code": 2493,
+      "message": "Tuple type '[]' of length '0' has no element at index '2'.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/worker-pool-ready-timeout-env.test.ts",
+      "code": 2339,
+      "message": "Property 'readinessFailures' does not exist on type 'unknown[] | WorkerPoolInitializationError'.\n  Property 'readinessFailures' does not exist on type 'unknown[]'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/worker-pool-ready-timeout-env.test.ts",
+      "code": 2740,
+      "message": "Type 'Worker' is missing the following properties from type 'import(\"node:worker_threads\").Worker': eventNames, getMaxListeners, stdin, stdout, and 27 more.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/worker-pool-resilience.test.ts",
+      "code": 2339,
+      "message": "Property 'sort' does not exist on type 'readonly string[]'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/worker-pool-startup-stderr.test.ts",
+      "code": 2322,
+      "message": "Type '() => Worker' is not assignable to type '(workerUrl: URL) => Worker'.\n  Type 'Worker' is missing the following properties from type 'import(\"node:worker_threads\").Worker': eventNames, getMaxListeners, stdin, stdout, and 27 more.",
+      "count": 6
+    },
+    {
+      "file": "test/unit/worker-pool-startup-stderr.test.ts",
+      "code": 2339,
+      "message": "Property 'crashClass' does not exist on type 'unknown[] | WorkerPoolInitializationError'.\n  Property 'crashClass' does not exist on type 'unknown[]'.",
+      "count": 3
+    },
+    {
+      "file": "test/unit/worker-pool-startup-stderr.test.ts",
+      "code": 2339,
+      "message": "Property 'pendingStartupTimers' does not exist on type 'WorkerPoolStats'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/worker-pool-startup-stderr.test.ts",
+      "code": 2339,
+      "message": "Property 'readinessFailures' does not exist on type 'unknown[] | WorkerPoolInitializationError'.\n  Property 'readinessFailures' does not exist on type 'unknown[]'.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/worker-pool-startup-stderr.test.ts",
+      "code": 2740,
+      "message": "Type 'Worker' is missing the following properties from type 'import(\"node:worker_threads\").Worker': eventNames, getMaxListeners, stdin, stdout, and 27 more.",
+      "count": 1
+    },
+    {
+      "file": "test/unit/worker-pool-stdout-forward.test.ts",
+      "code": 2740,
+      "message": "Type 'Worker' is missing the following properties from type 'import(\"node:worker_threads\").Worker': eventNames, getMaxListeners, stdin, stdout, and 27 more.",
+      "count": 2
+    },
+    {
+      "file": "test/unit/write-lock-required.test.ts",
+      "code": 2556,
+      "message": "A spread argument must either have a tuple type or be passed to a rest parameter.",
+      "count": 1
+    }
+  ]
+}

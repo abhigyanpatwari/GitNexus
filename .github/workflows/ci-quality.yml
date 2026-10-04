@@ -53,6 +53,12 @@ jobs:
           lifecycle-scripts: 'false'
       - run: npx tsc --noEmit
         working-directory: gitnexus
+      - name: Verify test typecheck gate
+        run: node --test scripts/typecheck-tests.test.mjs
+        working-directory: gitnexus
+      - name: Typecheck tests (no new errors)
+        run: npm run typecheck:tests
+        working-directory: gitnexus
 
   typecheck-web:
     runs-on: ubuntu-latest
