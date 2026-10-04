@@ -575,6 +575,33 @@ func routes() {
     ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
   });
 
+  it('traces a grouped receiver back to its framework constructor in a mixed file', () => {
+    // The normal grouped shape: `users := api.Group(…)` ← `api := e.Group(…)`
+    // ← `echo.New()` proves echo order through the Group chain, while the
+    // gin chain resolves to gin.Default() and keeps the last-argument rule.
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes() {
+	e := echo.New()
+	api := e.Group("/api")
+	users := api.Group("/users")
+	users.GET("/:id", h.Handler, auth.Middleware)
+	r := gin.Default()
+	v1 := r.Group("/v1")
+	v1.POST("/x", auth.Middleware, h.Post)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/api/users/:id', name: 'Handler' },
+      { method: 'POST', path: '/v1/x', name: 'Post' },
+    ]);
+  });
+
   it('applies the same group logic to echo', () => {
     expect(
       providers(`package main

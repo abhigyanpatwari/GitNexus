@@ -282,27 +282,37 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
 }
 
 /**
- * Whether a mixed-import file's route receiver is DIRECTLY bound to echo's
- * constructor — `e := echo.New()` / `e := echo.Default()` with `echo`
- * resolving to one of the file's verified echo import aliases (review #7).
- * Only a direct constructor binding proves which framework's argument order
- * the call follows: parameters, receivers reached through `Group(...)` or
- * other calls, and unrelated packages' `New()` all return false so the caller
- * keeps the conservative last-argument fallback instead of guessing.
+ * Whether a mixed-import file's route receiver traces back to echo's
+ * constructor — `e := echo.New()` / `echo.Default()` with `echo` resolving to
+ * one of the file's verified echo import aliases — either directly or through
+ * enclosing `Group(...)` calls (`users := api.Group(…)` ← `api := e.Group(…)`
+ * ← `echo.New()`), the normal shape of grouped routes (review #7, #10).
+ * Provenance must still END at a constructor: parameters, unrelated packages'
+ * `New()`, and anything else return false so the caller keeps the
+ * conservative last-argument fallback instead of guessing.
  */
 function receiverBindsToEchoConstructor(
   receiver: Parser.SyntaxNode,
   echoAliases: ReadonlySet<string>,
+  depth = 0,
 ): boolean {
-  if (receiver.type !== 'identifier') return false;
-  const binding = findBinding(receiver);
-  if (binding?.type !== 'call_expression') return false;
-  const fn = binding.childForFieldName('function');
+  if (depth > MAX_GROUP_DEPTH) return false;
+  // An identifier resolves through its binding; a chained `X.Group(…).Group(…)`
+  // operand is already a call and is inspected as-is.
+  const value = receiver.type === 'identifier' ? findBinding(receiver) : receiver;
+  if (value?.type !== 'call_expression') return false;
+  const fn = value.childForFieldName('function');
   if (fn?.type !== 'selector_expression') return false;
-  const ctor = fn.childForFieldName('field')?.text;
-  if (ctor !== 'New' && ctor !== 'Default') return false;
-  const pkg = fn.childForFieldName('operand');
-  return pkg?.type === 'identifier' && echoAliases.has(pkg.text);
+  const field = fn.childForFieldName('field')?.text;
+  const operand = fn.childForFieldName('operand');
+  if (!operand) return false;
+  if (field === 'New' || field === 'Default') {
+    return operand.type === 'identifier' && echoAliases.has(operand.text);
+  }
+  if (field === 'Group') {
+    return receiverBindsToEchoConstructor(operand, echoAliases, depth + 1);
+  }
+  return false;
 }
 
 /** Joined `Group(...)` prefix of a route receiver; '' when it cannot be traced. */
@@ -425,10 +435,10 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       // middleware candidate: echo's verb calls take the FIRST of those, gin's
       // the LAST (see FRAMEWORK_ROUTE_PATTERNS / readFrameworkImports). The
       // rule is chosen per call: an echo-only file is unambiguous; a
-      // mixed-import file takes the first argument only when the receiver is
-      // provably bound to echo's constructor — everything else keeps the
-      // last-argument anchor, gin's order and the safer default when the
-      // file proves nothing.
+      // mixed-import file takes the first argument only when the receiver
+      // provably traces to echo's constructor (directly or through enclosing
+      // Group() calls) — everything else keeps the last-argument anchor,
+      // gin's order and the safer default when the file proves nothing.
       const rest = argList.namedChildren.slice(1);
       if (rest.length === 0) continue;
       const echoOrder = mixed
