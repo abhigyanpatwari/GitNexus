@@ -1,12 +1,95 @@
 import { describe, expect, it } from 'vitest';
 import { IMPACT_MAX_DEPTH } from '../../src/mcp/tools.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/callee-cell-format.js';
 import {
   pdgLayerStatus,
   runImpactPDG,
+  splitCalleeIds,
   type RunPdgImpactDeps,
 } from '../../src/mcp/local/pdg-impact.js';
+import { SymbolIdentityError } from '../../src/mcp/local/query-result-integrity.js';
+
+describe('splitCalleeIds', () => {
+  const firstId = 'Function:src/my dir/rené.cpp:unsigned char';
+  const secondId = 'Function:src/my dir/rené.cpp:long double';
+
+  it.each([undefined, null, '', ' ', '\t', '\t \t'])(
+    'preserves an entirely empty optional cell (%j)',
+    (cell) => {
+      expect(splitCalleeIds(cell)).toEqual([]);
+    },
+  );
+
+  it('preserves spaces and Unicode within healthy callee identities', () => {
+    expect(splitCalleeIds(`${firstId}\t${secondId}`)).toEqual([firstId, secondId]);
+  });
+
+  it('drops the generated truncation sentinel without changing resolved identities', () => {
+    expect(splitCalleeIds(CALLEES_TRUNCATED_SENTINEL)).toEqual([]);
+    expect(splitCalleeIds(`${firstId}\t${CALLEES_TRUNCATED_SENTINEL}\t${secondId}`)).toEqual([
+      firstId,
+      secondId,
+    ]);
+  });
+
+  it.each([
+    ['leading', `\t${firstId}`],
+    ['interior', `${firstId}\t\t${secondId}`],
+    ['trailing', `${firstId}\t`],
+    ['whitespace-only token', `${firstId}\t \t${secondId}`],
+    ['before a sentinel', `\t${CALLEES_TRUNCATED_SENTINEL}`],
+    ['after a sentinel', `${CALLEES_TRUNCATED_SENTINEL}\t`],
+    ['mixed with a sentinel', `${firstId}\t\t${CALLEES_TRUNCATED_SENTINEL}\t${secondId}`],
+  ])('rejects a populated cell with an empty identity (%s)', (_case, cell) => {
+    expect(() => splitCalleeIds(cell)).toThrow(SymbolIdentityError);
+  });
+});
 
 describe('runImpactPDG', () => {
+  it.each([
+    ['leading', '\tFunction:src/hot.ts:callee'],
+    ['interior', 'Function:src/hot.ts:a\t\tFunction:src/hot.ts:b'],
+    ['trailing', 'Function:src/hot.ts:callee\t'],
+    ['sentinel-adjacent', `Function:src/hot.ts:callee\t${CALLEES_TRUNCATED_SENTINEL}\t`],
+  ])(
+    'rejects an empty callee identity before interprocedural descent (%s)',
+    async (_case, cell) => {
+      const seed = 'BasicBlock:src/hot.ts:1:0:0';
+      const queries: string[] = [];
+      const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+        queries.push(query);
+        if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed }];
+        if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
+          return [{ id: seed, calleeIds: cell, callees: 'callee' }];
+        }
+        return [];
+      };
+
+      await expect(
+        runImpactPDG({
+          repo: { lbugPath: 'repo' },
+          sym: {
+            id: 'Function:src/hot.ts:hot',
+            name: 'hot',
+            filePath: 'src/hot.ts',
+            startLine: 0,
+            endLine: 3,
+          },
+          symType: 'Function',
+          direction: 'downstream',
+          maxDepth: 2,
+          limit: 50,
+          line: 1,
+          executeParameterized: exec,
+        }),
+      ).rejects.toBeInstanceOf(SymbolIdentityError);
+      expect(
+        queries.some((query) => query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')),
+      ).toBe(true);
+      expect(queries.some((query) => query.includes("r.type = 'CALL_SUMMARY'"))).toBe(false);
+    },
+  );
+
   it('clamps huge maxDepth values to the documented impact traversal cap', async () => {
     let bfsQueries = 0;
     const exec = async (_repo: string, query: string) => {

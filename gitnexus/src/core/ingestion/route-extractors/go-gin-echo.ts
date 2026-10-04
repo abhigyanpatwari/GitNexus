@@ -26,6 +26,7 @@
 import type Parser from 'tree-sitter';
 import { goImportPackageName } from '../languages/go/import-package-name.js';
 import { GoRouteBindings, type GoRouteBinding } from '../languages/go/route-bindings.js';
+import { stringLiteral } from './go-shared.js';
 import { normalizeExtractedRoutePath } from './route-path.js';
 import type { SyntaxNode } from 'tree-sitter';
 import type { ExtractedDecoratorRoute, RouteHandlerReceiver } from '../workers/parse-worker.js';
@@ -57,59 +58,6 @@ interface Framework {
 
 const FUNCTION_TYPE_LIST = ['function_declaration', 'method_declaration', 'func_literal'];
 const FUNCTION_TYPES: ReadonlySet<string> = new Set(FUNCTION_TYPE_LIST);
-
-function stringLiteral(node: SyntaxNode | null | undefined): string | null {
-  if (!node || node.hasError) return null;
-  const body = node.text.slice(1, -1);
-  // Go discards carriage returns in raw strings, including CRLF source files.
-  if (node.type === 'raw_string_literal') return body.replace(/\r/g, '');
-  if (node.type !== 'interpreted_string_literal') return null;
-  if (!body.includes('\\')) return body;
-
-  const simple: Readonly<Record<string, string>> = {
-    a: '\x07',
-    b: '\b',
-    f: '\f',
-    n: '\n',
-    r: '\r',
-    t: '\t',
-    v: '\v',
-    '\\': '\\',
-    '"': '"',
-  };
-  const chunks: Buffer[] = [];
-  const tokens =
-    /\\(?:[abfnrtv\\"]|[0-7]{3}|x[\da-fA-F]{2}|u[\da-fA-F]{4}|U[\da-fA-F]{8})|[^\\"\n]+/g;
-  let consumed = 0;
-  for (const match of body.matchAll(tokens)) {
-    if (match.index !== consumed) return null;
-    const token = match[0];
-    consumed += token.length;
-    if (!token.startsWith('\\')) {
-      chunks.push(Buffer.from(token));
-    } else if (simple[token[1]] !== undefined) {
-      chunks.push(Buffer.from(simple[token[1]]));
-    } else {
-      const octal = /[0-7]/.test(token[1]);
-      const value = Number.parseInt(token.slice(octal ? 1 : 2), octal ? 8 : 16);
-      if (octal || token[1] === 'x') {
-        // Octal and hex escapes encode bytes, not Unicode code points.
-        if (value > 255) return null;
-        chunks.push(Buffer.from([value]));
-      } else {
-        if (value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return null;
-        chunks.push(Buffer.from(String.fromCodePoint(value)));
-      }
-    }
-  }
-  if (consumed !== body.length) return null;
-  try {
-    // Arbitrary non-UTF-8 Go byte strings cannot be represented losslessly in a URL.
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks));
-  } catch {
-    return null;
-  }
-}
 
 /** The framework this file routes with, when exactly one is imported. */
 function readImports(root: SyntaxNode): {
