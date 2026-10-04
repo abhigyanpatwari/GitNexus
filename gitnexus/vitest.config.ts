@@ -68,6 +68,7 @@ export default defineConfig({
           include: [
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-context-integrity.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -162,6 +163,7 @@ export default defineConfig({
           exclude: [
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-context-integrity.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
