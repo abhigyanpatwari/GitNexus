@@ -15,16 +15,25 @@ import {
 // ─── escapeCSVField ──────────────────────────────────────────────────
 
 describe('escapeCSVField', () => {
-  it('returns empty quoted string for null', () => {
-    expect(escapeCSVField(null)).toBe('""');
+  it('returns an unquoted NULL field for null', () => {
+    expect(escapeCSVField(null)).toBe('');
   });
 
-  it('returns empty quoted string for undefined', () => {
-    expect(escapeCSVField(undefined)).toBe('""');
+  it('returns an unquoted NULL field for undefined', () => {
+    expect(escapeCSVField(undefined)).toBe('');
   });
 
-  it('returns quoted empty string for empty input', () => {
-    expect(escapeCSVField('')).toBe('""');
+  it('preserves the legacy NULL meaning of empty input', () => {
+    expect(escapeCSVField('')).toBe('');
+  });
+
+  it('returns a NULL field when sanitization removes the entire value', () => {
+    expect(escapeCSVField('\x00\x01')).toBe('');
+  });
+
+  it('keeps whitespace and zero as quoted non-null values', () => {
+    expect(escapeCSVField(' ')).toBe('" "');
+    expect(escapeCSVField(0)).toBe('"0"');
   });
 
   it('wraps simple string in quotes', () => {

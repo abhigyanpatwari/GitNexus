@@ -113,7 +113,13 @@ const mockLbugAdapter = async () => {
     initLbug: vi.fn(async () => undefined),
     loadGraphToLbug: vi.fn(async () => undefined),
     getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
-    executeQuery: vi.fn(async () => []),
+    // The policy fixture has one stored File row. Publication now reconciles
+    // that identity instead of trusting the synthetic node count alone.
+    executeQuery: vi.fn(async (query: string) =>
+      query.startsWith('MATCH (n:`File`) RETURN n.id AS id')
+        ? [{ id: 'file:src/a.ts', name: '', filePath: REL_FILE }]
+        : [],
+    ),
     executeWithReusedStatement: vi.fn(async () => []),
     closeLbug: vi.fn(async () => undefined),
     wipeLbugDbFiles: vi.fn(async () => undefined),
@@ -1011,9 +1017,12 @@ describe('runFullAnalysis FTS crash marker', () => {
   );
 
   it('treats a boundary checkpoint failure as best-effort on an in-place plan', async () => {
-    const checkpointOnce = vi.fn(async () => {
-      throw new Error('checkpoint rename failed');
-    });
+    // Only the earlier boundary is best-effort. Publication still requires
+    // its own successful checkpoint through the same policy helper.
+    const checkpointOnce = vi
+      .fn<() => Promise<boolean>>()
+      .mockRejectedValueOnce(new Error('checkpoint rename failed'))
+      .mockResolvedValue(true);
     let stamped: RepoMeta['incrementalInProgress'];
     vi.doMock('../../src/core/lbug/wal-checkpoint-driver.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/lbug/wal-checkpoint-driver.js')>()),
@@ -1060,6 +1069,7 @@ describe('runFullAnalysis FTS crash marker', () => {
         { onProgress: () => {}, onLog: () => {} },
       );
       expect(result.ftsSkipped).not.toBe(true);
+      expect(checkpointOnce).toHaveBeenCalledTimes(2);
       expect(stamped).toMatchObject({
         phase: FTS_DIRTY_PHASE,
         writePlan: 'in-place',

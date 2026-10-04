@@ -68,6 +68,7 @@ export default defineConfig({
           include: [
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-context-integrity.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -109,6 +110,7 @@ export default defineConfig({
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
+            'test/integration/lbug-load-overlap-errors.test.ts',
             'test/integration/load-cached-embeddings-spill.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
@@ -130,6 +132,8 @@ export default defineConfig({
             // fake that answers on `query.includes(...)`.
             'test/integration/wiki-graph-queries-engine.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
+            // Publication reconciliation uses real native COPY/checkpoints.
+            'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',
             // #2841. Native @ladybugdb/core: it runs real analyses, reopens the
             // DB under different extension-install policies, and reads
@@ -159,6 +163,7 @@ export default defineConfig({
           exclude: [
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
+            'test/integration/impact-context-integrity.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -190,6 +195,7 @@ export default defineConfig({
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
+            'test/integration/lbug-load-overlap-errors.test.ts',
             'test/integration/load-cached-embeddings-spill.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
@@ -206,6 +212,7 @@ export default defineConfig({
             'test/integration/detect-changes-path-anchoring.test.ts',
             'test/integration/wiki-graph-queries-engine.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
+            'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',
             // Excluded here because it is included by `lbug-db` above; a file
             // in two projects would be collected (and run) twice.

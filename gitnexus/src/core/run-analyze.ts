@@ -36,7 +36,12 @@ import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
-import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
+import {
+  acquireIndexLock,
+  requireExclusiveIndexLock,
+  sweepStagingArtifacts,
+} from '../storage/index-lock.js';
+import { resolveEmbeddingRecovery } from '../storage/embedding-recovery.js';
 import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
 import {
   logNameFallbackSummary,
@@ -51,6 +56,7 @@ import {
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
 import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import type { KnowledgeGraph } from './graph/types.js';
+import { reconcileGraphNodeIdentities } from './incremental/write-reconciliation.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -128,6 +134,7 @@ import { resolveFtsVersionPair } from './lbug/vendored-extension-path.js';
 import {
   startWalCheckpointDriver,
   checkpointOnce,
+  isManualCheckpointEnabled,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import {
@@ -1285,6 +1292,8 @@ export async function runFullAnalysis(
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
     log,
+    // Resolve and validate the canonical slot under the lock before cleanup.
+    sweep: false,
     onWaitStart: () =>
       callbacks.onProgress('lock', 0, 'Waiting for another analyze to finish on this index…'),
   };
@@ -1343,6 +1352,7 @@ export async function runFullAnalysis(
       }
       const flatShared = writeTarget.placement.branch ? undefined : writeTarget.sharedStore;
       if (flatShared) await seedSharedSlot(flatShared, repoPath, log);
+      sweepStagingArtifacts(writeTarget.metaDir, log);
       const slotToLeave = options.noShare ? await optedInSlotToLeave(repoPath) : undefined;
       const result = await runFullAnalysisInner(
         repoPath,
@@ -1840,7 +1850,13 @@ async function runFullAnalysisInner(
       decision = decideEmbeddingResume(checkpoint, embeddingIdentityForRun, resumeOptions);
     }
     if (decision.action === 'abort') throw new Error(decision.error);
-    log(decision.log);
+    log(
+      decision.action === 'resume' && checkpoint.recovery
+        ? `Previous analyze recorded an embedding checkpoint (${checkpoint.nodesProcessed}/` +
+            `${checkpoint.totalNodes} nodes); validating staged vectors before retrying ` +
+            `${decision.pendingNodeIds.size} pending node(s).`
+        : decision.log,
+    );
     if (options.dropEmbeddings) {
       // --drop-embeddings has always implied a rebuild here; the decision only
       // covers the marker.
@@ -2669,6 +2685,74 @@ async function runFullAnalysisInner(
     }
   }
 
+  // A checkpoint's pending decision and its paid, complete vectors are
+  // independent: --force discards the former but can still reuse the latter.
+  // Select only the explicitly referenced generation, never an orphan by age.
+  const stagedRecovery = resolveEmbeddingRecovery(metaDir, existingMeta?.embeddingCheckpoint);
+  const stagedCheckpoint = existingMeta?.embeddingCheckpoint;
+  const inheritedUnsafeNodeIds = new Set([
+    ...pendingEmbeddingNodeIds,
+    ...(stagedRecovery?.unsafeNodeIds ?? []),
+  ]);
+  if (shouldLoadCache && !options.dropEmbeddings && stagedRecovery && stagedCheckpoint) {
+    if (!embeddingIdentityForRun) {
+      const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
+      embeddingIdentityForRun = resolveEmbeddingIdentity();
+    }
+    const marker = stagedCheckpoint;
+    const matchesIdentity =
+      marker.model === embeddingIdentityForRun.model &&
+      marker.dimensions === embeddingIdentityForRun.dimensions &&
+      marker.provider === embeddingIdentityForRun.provider;
+    if (matchesIdentity && stagedRecovery.schemaFingerprint === SCHEMA_FINGERPRINT) {
+      // A force-discarded pending decision must not turn a known incomplete
+      // inherited group into a reusable cache merely because its hash matches.
+      if (inheritedUnsafeNodeIds.size > 0) {
+        const rows = cachedSnapshot.rows.filter((row) => !inheritedUnsafeNodeIds.has(row.nodeId));
+        cachedSnapshot = {
+          ...cachedSnapshot,
+          rows,
+          embeddingNodeIds: new Set(rows.map((row) => row.nodeId)),
+        };
+      }
+      let recovered: CachedEmbeddingsSnapshot | undefined;
+      try {
+        const { recoverStagedEmbeddings, mergeRecoveredEmbeddings } =
+          await import('./embeddings/staged-embedding-recovery.js');
+        recovered = await recoverStagedEmbeddings(stagedRecovery.dbPath, {
+          dimensions: embeddingIdentityForRun.dimensions,
+          excludedNodeIds: stagedRecovery.unsafeNodeIds,
+        });
+        const liveCacheDims = snapshotEmbeddingDims(cachedSnapshot);
+        if (liveCacheDims !== undefined && liveCacheDims !== embeddingIdentityForRun.dimensions) {
+          log(
+            `Embedding dimensions changed (${liveCacheDims}d -> ` +
+              `${embeddingIdentityForRun.dimensions}d), discarding published cache`,
+          );
+          discardCachedEmbeddings();
+        }
+        if (recovered.rows.length > 0) {
+          const merged = mergeRecoveredEmbeddings(cachedSnapshot, recovered);
+          disposeEmbeddingSpill(cachedSnapshot.spill);
+          adoptCachedEmbeddings(merged);
+        }
+        log(
+          `Recovered ${recovered.rows.length} complete staged embedding chunk(s) ` +
+            `for ${recovered.embeddingNodeIds.size} node(s); unchanged content can reuse them.`,
+        );
+      } catch (err) {
+        log(
+          `Warning: could not recover staged embeddings (${(err as Error).message}); ` +
+            'the retry will regenerate missing chunks.',
+        );
+      } finally {
+        disposeEmbeddingSpill(recovered?.spill);
+      }
+    } else {
+      log('Staged embedding identity or schema changed; its vectors will not be reused.');
+    }
+  }
+
   // ── Load incremental parse cache ──────────────────────────────────
   // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
   // stages a new generation under a run-unique parse-rebuild.* dir and publishes
@@ -2854,7 +2938,7 @@ async function runFullAnalysisInner(
   // (Bugbot review on PR #1479: a prediction that flipped post-pipeline
   // could skip the embedding cache load and then take the full-rebuild
   // path, silently losing embeddings).
-  const isIncremental =
+  const incrementalEligible =
     !options.force &&
     !!existingMeta &&
     // Belt and braces, not a second gate: the guard above already set `force`
@@ -2866,6 +2950,13 @@ async function runFullAnalysisInner(
     Object.keys(existingMeta.fileHashes).length > 0 &&
     repoHasGit &&
     allFilePaths.length > 0;
+
+  // Select a full build before any selective mutation when the operator has
+  // disabled the checkpoint needed to certify an incremental publication.
+  const isIncremental = incrementalEligible && isManualCheckpointEnabled();
+  if (incrementalEligible && !isIncremental) {
+    log('Manual WAL checkpoints are disabled; switching to a full DB write before mutation.');
+  }
 
   const hashDiff = isIncremental
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
@@ -3112,6 +3203,24 @@ async function runFullAnalysisInner(
     // collapse check compares the whole in-memory graph against the whole DB,
     // which is only a like-for-like comparison on a full rebuild.
     let wroteChangedSubgraphOnly = false;
+    const markIncrementalGraphVerification = async (): Promise<void> => {
+      if (buildPath !== lbugPath) return;
+      const latest = await loadMeta(metaDir);
+      if (!latest?.incrementalInProgress) {
+        throw new Error('Cannot certify incremental graph without its dirty metadata marker.');
+      }
+      // A failed or aborted identity scan is a graph failure. FTS-only repair
+      // and FTS crash recovery must not clear it while retaining these rows.
+      await saveMeta(metaDir, {
+        ...latest,
+        incrementalInProgress: {
+          ...latest.incrementalInProgress,
+          phase: 'graph-reconciliation',
+          updatedAt: Date.now(),
+          checkpointSucceeded: false,
+        },
+      });
+    };
     let incrementalFtsRebuildTables: Set<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
@@ -3163,6 +3272,8 @@ async function runFullAnalysisInner(
         phase: string,
         extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
       ): Promise<void> => {
+        // Do not stamp live metadata while writing a staging database.
+        if (buildPath !== lbugPath) return;
         await saveMeta(metaDir, {
           ...existingMeta!,
           incrementalInProgress: {
@@ -3906,6 +4017,14 @@ async function runFullAnalysisInner(
           'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
       );
     }
+    if (wroteChangedSubgraphOnly) {
+      await markIncrementalGraphVerification();
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'post-COPY/checkpoint',
+      );
+    }
     if (shouldStampFtsDirtyPhase(ftsWritePlan)) {
       // Lift the prior-meta precondition: a first-ever in-place run (Windows
       // full rebuild, or any in-place incremental) must stamp too. Staging
@@ -4002,6 +4121,7 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
+      if (wroteChangedSubgraphOnly) await markIncrementalGraphVerification();
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
       } else if (ftsFailureIsFatal(ftsResult.failureClass, useAtomicSwap)) {
@@ -4052,6 +4172,12 @@ async function runFullAnalysisInner(
           : FTS_UNAVAILABLE_MESSAGE,
       );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
+    }
+
+    if (wroteChangedSubgraphOnly) {
+      // FTS has returned. Later embedding/finalization failures must require
+      // graph recovery, since post-FTS node identities are not yet certified.
+      await markIncrementalGraphVerification();
     }
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
@@ -4428,6 +4554,7 @@ async function runFullAnalysisInner(
       semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
+    let stagedCheckpointEmbeddingCount: number | undefined;
     if (!embeddingSkipped) {
       const { isHttpMode } = await import('./embeddings/http-client.js');
       const httpMode = isHttpMode();
@@ -4442,6 +4569,16 @@ async function runFullAnalysisInner(
         embeddingIdentityForRun = resolveEmbeddingIdentity();
       }
       const embeddingIdentity = embeddingIdentityForRun;
+      const stagedRecoveryEnabled = useAtomicSwap && isManualCheckpointEnabled();
+      if (useAtomicSwap && !stagedRecoveryEnabled) {
+        log(
+          'Manual WAL checkpoints are disabled; new staged work cannot be recovered after interruption. ' +
+            'Any previous durable recovery source is retained until publication.',
+        );
+      }
+      const unsafeRecoveryNodeIds = new Set([...inheritedUnsafeNodeIds, ...restoreFailedNodeIds]);
+      let activeWindowNodeIds: string[] = [];
+      let recoveryGenerationDurable = false;
       // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
       let existingEmbeddings: Map<string, string> | undefined;
       if (cachedSnapshot.embeddingNodeIds.size > 0) {
@@ -4478,11 +4615,10 @@ async function runFullAnalysisInner(
       // /api/embed checkpoint writer in server/api.ts already uses, which also
       // keeps a concurrent writer's update from being reverted by a stale
       // snapshot) and replace ONLY `embeddingCheckpoint` — plus
-      // `stats.embeddings` when the caller actually MEASURED the live count
-      // (the post-window `onCheckpoint`). The window-start callback passes
-      // nothing: restating the previous run's count there both re-published a
-      // stale number and clobbered the live count a preceding `onCheckpoint`
-      // had just written.
+      // `stats.embeddings` when the caller actually MEASURED the published
+      // index (the post-window `onCheckpoint` on an in-place build). A staging
+      // build's count is not published until the atomic swap succeeds. The
+      // window-start callback passes nothing, preserving the latest count.
       const saveEmbeddingCheckpoint = async (
         checkpoint: {
           nodesProcessed: number;
@@ -4492,7 +4628,18 @@ async function runFullAnalysisInner(
         pendingNodeIds: string[],
         embeddings?: number,
       ): Promise<void> => {
+        if (embeddings !== undefined && buildPath !== lbugPath) {
+          stagedCheckpointEmbeddingCount = embeddings;
+        }
         const latestMeta = (await loadMeta(metaDir)) ?? existingMeta;
+        // An in-place write or manual-checkpoint opt-out cannot create a new
+        // recoverable staged generation. Keep the complete previous receipt:
+        // updated progress or unsafe nodes would describe different source bytes.
+        const preservedRecoveryCheckpoint =
+          !stagedRecoveryEnabled &&
+          resolveEmbeddingRecovery(metaDir, latestMeta?.embeddingCheckpoint)
+            ? latestMeta?.embeddingCheckpoint
+            : undefined;
         // First-ever analyze of this repo: no meta exists on disk yet (the
         // pre-wipe dirty stamp only fires when one does). Mint the minimum
         // RepoMeta requires, with `lastCommit: ''` — never `currentCommit` —
@@ -4503,16 +4650,30 @@ async function runFullAnalysisInner(
           lastCommit: '',
           indexedAt: new Date().toISOString(),
         };
+        const interrupted = mintInterruptedCheckpoint(
+          embeddingIdentity,
+          checkpoint,
+          pendingNodeIds,
+        );
         await saveMeta(metaDir, {
           ...base,
-          ...(embeddings === undefined ? {} : { stats: { ...base.stats, embeddings } }),
+          ...(embeddings === undefined || buildPath !== lbugPath
+            ? {}
+            : { stats: { ...base.stats, embeddings } }),
           // Written by a run that is still IN FLIGHT — see the `kind` doc in
           // repo-manager.ts.
-          embeddingCheckpoint: mintInterruptedCheckpoint(
-            embeddingIdentity,
-            checkpoint,
-            pendingNodeIds,
-          ),
+          embeddingCheckpoint: preservedRecoveryCheckpoint ?? {
+            ...interrupted,
+            ...(stagedRecoveryEnabled
+              ? {
+                  recovery: {
+                    stagingFile: path.basename(buildPath),
+                    schemaFingerprint: SCHEMA_FINGERPRINT,
+                    unsafeNodeIds: [...unsafeRecoveryNodeIds],
+                  },
+                }
+              : {}),
+          },
         });
       };
 
@@ -4535,7 +4696,21 @@ async function runFullAnalysisInner(
         {
           forceReembedNodeIds: pendingEmbeddingNodeIds,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+            const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
+            if (handoff) {
+              if (!(await checkpointOnce())) {
+                throw new Error(
+                  'Could not checkpoint restored embeddings before recovery handoff.',
+                );
+              }
+              recoveryGenerationDurable = true;
+            }
+            activeWindowNodeIds = nodeIds;
+            for (const id of nodeIds) unsafeRecoveryNodeIds.add(id);
             await saveEmbeddingCheckpoint(checkpoint, nodeIds);
+            // Reclaim the old source only after the new durable generation's
+            // reference is saved. Later windows retain this same generation.
+            if (handoff) sweepStagingArtifacts(metaDir, log);
           },
           // ── The mid-run count is a DIAGNOSTIC, not a gate (#2790) ──────
           // This used to run the count query bare. THIS callback's rejection
@@ -4549,7 +4724,12 @@ async function runFullAnalysisInner(
           // touch stats.embeddings" signal — so the checkpoint still lands,
           // with whatever count is already on disk left alone.
           onCheckpoint: async (checkpoint) => {
-            await checkpointOnce();
+            const durable = await checkpointOnce();
+            if (stagedRecoveryEnabled && !durable) {
+              throw new Error('Could not checkpoint the completed embedding window for recovery.');
+            }
+            for (const id of activeWindowNodeIds) unsafeRecoveryNodeIds.delete(id);
+            activeWindowNodeIds = [];
             const measured = await measurePersistedEmbeddingCount(executeQuery);
             if (measured.kind === 'unknown') {
               log(
@@ -4708,14 +4888,13 @@ async function runFullAnalysisInner(
     // already written to disk: prior meta says 0, a clean run inserts
     // embeddings and checkpoints the real count, the final probe is
     // unavailable, and finalization carries the stale 0 forward while reporting
-    // success. `loadMeta` never throws (it returns null), and the checkpoint
-    // writer already re-reads the same way, so this is the same freshness
-    // discipline applied to the same field.
+    // success. For a staged build, use its last measured count only in the
+    // final meta, written after the swap; never publish it at a checkpoint.
     const latestMetaForCount =
       embeddingCount === undefined ? ((await loadMeta(metaDir)) ?? existingMeta) : undefined;
     const persistedEmbeddingCount = resolvePersistedEmbeddingCount(
       measuredEmbeddingCount,
-      latestMetaForCount?.stats?.embeddings,
+      stagedCheckpointEmbeddingCount ?? latestMetaForCount?.stats?.embeddings,
     );
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
@@ -4956,95 +5135,24 @@ async function runFullAnalysisInner(
     // Parse-cache publish waits until after that swap + saveMeta so a failed
     // registerRepo / close / swap cannot replace live shards (#3153).
 
-    // Forward the --name alias and the registry-collision bypass bit.
-    // `allowDuplicateName` is its own concern — independent from the
-    // pipeline `force` above. The CLI maps it from
-    // `--allow-duplicate-name` only; `--force` and `--skills` both
-    // trigger pipeline re-run but never bypass the registry guard.
-    // The returned name is the one actually written to the registry
-    // (after applying the precedence chain in registerRepo) — reuse it
-    // so AGENTS.md / skill files reference the same name MCP clients
-    // will look up (#979).
-    const projectName = await registerRepo(repoPath, meta, {
-      name: options.registryName,
-      onRename: (previousName, nextName) =>
-        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
-      allowDuplicateName: options.allowDuplicateName,
-      // Non-primary branch runs upsert into the entry's branches[]; the
-      // primary/flat run (placement.branch === undefined) refreshes the
-      // top-level fields (#2106).
-      branch: placement.branch,
-      storagePath,
-    });
-
-    // ── #2354: the flat workspace slot has adopted this run's branch ──────
-    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
-    // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort (#2364 review F5): the index is
-    // complete and registered, and a failure
-    // here leaves only a stale registry label / undeleted shadowed dir —
-    // never wrong routing, because the flat meta this run already stamped is
-    // what applyBranchScope trusts. Retried by the next content-changing run
-    // (same-commit fast-path runs skip it: their guard compares the
-    // already-stamped meta label).
-    if (!placement.branch && branchLabel) {
-      try {
-        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
-      } catch (e) {
-        log(
-          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+    if (wroteChangedSubgraphOnly) {
+      // Registry freshness must not advance either. Include FTS, embedding
+      // restoration and the final WAL drain in the certified boundary.
+      await markIncrementalGraphVerification();
+      await walCheckpointDriver.stop();
+      if (!(await checkpointOnce())) {
+        throw new Error(
+          'Graph identity reconciliation failed: final checkpoint could not be verified; run `gitnexus analyze --force`.',
         );
       }
+      await reconcileGraphNodeIdentities(
+        pipelineResult.graph,
+        executeQuery,
+        'pre-publish/checkpoint',
+      );
     }
-
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath, storagePath);
-
-    // ── Generate AI context files (best-effort) ───────────────────────
-    let aggregatedClusterCount = 0;
-    if (pipelineResult.communityResult?.communities) {
-      const groups = new Map<string, number>();
-      for (const c of pipelineResult.communityResult.communities) {
-        const label = c.heuristicLabel || c.label || 'Unknown';
-        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-      }
-      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
-    }
-
-    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
-    // skills) for the primary/flat index (#2106). A non-primary branch analyze
-    // must not churn the repo's committed AGENTS.md with branch-specific stats.
-    if (!placement.branch) {
-      try {
-        await generateAIContextFiles(
-          repoPath,
-          storagePath,
-          projectName,
-          {
-            files: pipelineResult.totalFileCount,
-            nodes: stats.nodes,
-            edges: stats.edges,
-            communities:
-              pipelineResult.communityResult?.stats.totalCommunities ??
-              existingMeta?.stats?.communities,
-            clusters: aggregatedClusterCount,
-            processes:
-              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
-          },
-          undefined,
-          {
-            skipAgentsMd: options.skipAgentsMd,
-            skipSkills: options.skipSkills,
-            noStats: options.noStats,
-            defaultBranch: options.defaultBranch,
-            hasPdg: options.pdg === true,
-            hasSpringActuator: options.springActuatorPath !== undefined,
-          },
-        );
-      } catch {
-        // Best-effort — don't fail the entire analysis for context file issues
-      }
-    }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     // Stop the manual checkpoint driver before closeLbug so its
@@ -5108,6 +5216,97 @@ async function runFullAnalysisInner(
     // is a crash-safety improvement: a failed swap leaves the previous index
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
+    sweepStagingArtifacts(metaDir, log);
+
+    // Registry freshness is published only after the graph and its metadata.
+    // A failed close, swap, or metadata save must leave the previous registry
+    // receipt intact, just as it leaves the cache unpublished.
+    // Forward the --name alias and the registry-collision bypass bit.
+    // `allowDuplicateName` is its own concern — independent from the
+    // pipeline `force` above. The CLI maps it from
+    // `--allow-duplicate-name` only; `--force` and `--skills` both
+    // trigger pipeline re-run but never bypass the registry guard.
+    // The returned name is the one actually written to the registry
+    // (after applying the precedence chain in registerRepo) — reuse it
+    // so AGENTS.md / skill files reference the same name MCP clients
+    // will look up (#979).
+    const projectName = await registerRepo(repoPath, meta, {
+      name: options.registryName,
+      onRename: (previousName, nextName) =>
+        log(`Registry name changed: "${previousName}" -> "${nextName}".`),
+      allowDuplicateName: options.allowDuplicateName,
+      // Non-primary branch runs upsert into the entry's branches[]; the
+      // primary/flat run (placement.branch === undefined) refreshes the
+      // top-level fields (#2106).
+      branch: placement.branch,
+      storagePath,
+    });
+
+    // ── #2354: the flat workspace slot has adopted this run's branch ──────
+    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+    // (unreachable once the flat slot serves it) and align the registry's
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
+    // here leaves only a stale registry label / undeleted shadowed dir —
+    // never wrong routing, because the flat meta this run already stamped is
+    // what applyBranchScope trusts. Retried by the next content-changing run
+    // (same-commit fast-path runs skip it: their guard compares the
+    // already-stamped meta label).
+    if (!placement.branch && branchLabel) {
+      try {
+        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
+      } catch (e) {
+        log(
+          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+        );
+      }
+    }
+
+    // ── Generate AI context files (best-effort) ───────────────────────
+    let aggregatedClusterCount = 0;
+    if (pipelineResult.communityResult?.communities) {
+      const groups = new Map<string, number>();
+      for (const c of pipelineResult.communityResult.communities) {
+        const label = c.heuristicLabel || c.label || 'Unknown';
+        groups.set(label, (groups.get(label) || 0) + c.symbolCount);
+      }
+      aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
+    }
+
+    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
+    // skills) for the primary/flat index (#2106). A non-primary branch analyze
+    // must not churn the repo's committed AGENTS.md with branch-specific stats.
+    if (!placement.branch) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities:
+              pipelineResult.communityResult?.stats.totalCommunities ??
+              existingMeta?.stats?.communities,
+            clusters: aggregatedClusterCount,
+            processes:
+              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
+          },
+          undefined,
+          {
+            skipAgentsMd: options.skipAgentsMd,
+            skipSkills: options.skipSkills,
+            noStats: options.noStats,
+            defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
+          },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
+    }
 
     // Persist the incremental parse cache only after a successful graph
     // publish (#3153). try/catch so a cache-write failure never breaks an
@@ -5227,7 +5426,13 @@ async function runFullAnalysisInner(
     // rethrow below is the surface, and the lock's sweep remains the backstop.
     if (useAtomicSwap && buildPath !== lbugPath) {
       try {
-        await wipeLbugDbFiles(buildPath);
+        const recovery = resolveEmbeddingRecovery(
+          metaDir,
+          (await loadMeta(metaDir))?.embeddingCheckpoint,
+        );
+        // Both paths belong to this locked slot. The validated generation
+        // basename identifies the same file even through a directory alias.
+        if (recovery?.stagingFile !== path.basename(buildPath)) await wipeLbugDbFiles(buildPath);
       } catch {
         /* swallow — orphan reclamation must never mask the real failure */
       }
@@ -5238,6 +5443,12 @@ async function runFullAnalysisInner(
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.
       recordLiveIndexMutationRisk(err);
+    }
+    if (/max(?:imum)?(?: database| db)? size|database size limit|maxDBSize/i.test(String(err))) {
+      log(
+        'The database size limit was reached. Set GITNEXUS_LBUG_MAX_DB_SIZE to a larger ' +
+          'byte limit before retrying analyze; retained complete embeddings can be reused.',
+      );
     }
     throw err;
   }

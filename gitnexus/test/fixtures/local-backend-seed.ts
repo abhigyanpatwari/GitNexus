@@ -1,4 +1,5 @@
 import type { FTSIndexDef } from '../helpers/test-indexed-db.js';
+import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 export const LOCAL_BACKEND_SEED_DATA = [
   // Files
@@ -60,9 +61,8 @@ export const LOCAL_BACKEND_SEED_DATA = [
    CREATE (c)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'class-method', step: 0}]->(m)`,
 ];
 
-export const LOCAL_BACKEND_FTS_INDEXES: FTSIndexDef[] = [
-  { table: 'Function', indexName: 'function_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Class', indexName: 'class_fts', columns: ['name', 'content', 'description'] },
-  { table: 'Method', indexName: 'method_fts', columns: ['name', 'content', 'description'] },
-  { table: 'File', indexName: 'file_fts', columns: ['name', 'content'] },
-];
+// Healthy-backend fixtures must mirror the complete configured search index set.
+// The old four-table subset is now correctly reported as partial FTS coverage.
+export const LOCAL_BACKEND_FTS_INDEXES: FTSIndexDef[] = FTS_INDEXES.map(
+  ({ table, indexName, properties }) => ({ table, indexName, columns: [...properties] }),
+);
