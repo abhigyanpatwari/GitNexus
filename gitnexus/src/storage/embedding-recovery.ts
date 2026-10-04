@@ -17,7 +17,15 @@ import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.j
 
 const STAGING_FILENAME =
   /^lbug\.staging\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const FAMILY_SUFFIXES = ['', '.wal', '.shadow', '.wal.checkpoint', '.lock'] as const;
+export const FAMILY_SUFFIXES = [
+  '',
+  '.wal',
+  '.shadow',
+  '.wal.checkpoint',
+  '.lock',
+  '.checkpoint.intent.lock',
+  '.checkpoint.apply.lock',
+] as const;
 
 export interface ResolvedEmbeddingRecovery extends EmbeddingRecoveryReference {
   dbPath: string;
