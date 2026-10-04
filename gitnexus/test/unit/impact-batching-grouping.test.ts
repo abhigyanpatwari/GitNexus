@@ -79,6 +79,7 @@ describe('impact: batching and grouping', () => {
     // Handle parameterized calls (including chunked STEP_IN_PROCESS queries)
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       const params = args[2] || {};
       // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
       // not the per-symbol enrichment pass added by impact byDepth processes
@@ -91,6 +92,7 @@ describe('impact: batching and grouping', () => {
         const idx = chunkCallIndex++;
         return [
           {
+            pId: 'proc-' + idx,
             entryPointId: `ep-${Math.floor(idx)}`,
             epName: `epName-${idx}`,
             epType: 'Function',
@@ -148,6 +150,7 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       // BFS frontier query (parameterized #1907 U3): return 6 impacted nodes.
       if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
@@ -166,6 +169,7 @@ describe('impact: batching and grouping', () => {
       // For STEP_IN_PROCESS in this test, return grouping rows
       return [
         {
+          pId: 'proc-1a',
           entryPointId: 'ep-1',
           epName: 'EP1',
           epType: 'Function',
@@ -174,6 +178,7 @@ describe('impact: batching and grouping', () => {
           minStep: 1,
         },
         {
+          pId: 'proc-2',
           entryPointId: 'ep-2',
           epName: 'EP2',
           epType: 'Function',
@@ -182,6 +187,7 @@ describe('impact: batching and grouping', () => {
           minStep: 2,
         },
         {
+          pId: 'proc-1b',
           entryPointId: 'ep-1',
           epName: 'EP1',
           epType: 'Function',
@@ -190,6 +196,7 @@ describe('impact: batching and grouping', () => {
           minStep: 3,
         },
         {
+          pId: 'proc-3',
           entryPointId: 'ep-3',
           epName: 'EP3',
           epType: 'Function',
@@ -245,6 +252,7 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       const params = args[2] || {};
       // Match only the aggregation chunk (which uses COUNT(DISTINCT s.id)),
       // not the per-symbol enrichment pass added by impact byDepth processes
@@ -254,6 +262,7 @@ describe('impact: batching and grouping', () => {
         chunkSizes.push(ids.length);
         return [
           {
+            pId: 'proc-x-' + chunkSizes.length,
             entryPointId: 'ep-x',
             epName: 'EPX',
             epType: 'Function',
@@ -443,6 +452,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('MEMBER_OF')) throw new Error('module chunk failed');
       if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
         return [
@@ -500,6 +510,7 @@ describe('impact: batching and grouping', () => {
     executeQueryMock.mockImplementation(async () => []);
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('MIN(r.step) AS minStep') && !query.includes('COUNT(DISTINCT s.id)')) {
         throw new Error('minStep backfill failed');
       }
@@ -559,6 +570,7 @@ describe('impact: batching and grouping', () => {
     let processChunk = 0;
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('RETURN s.id AS sid')) return [];
       if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
         processChunk += 1;
         if (processChunk === 2) throw new Error('later process chunk failed');
