@@ -465,6 +465,17 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
     const imports = readFrameworkImports(tree.rootNode);
     const echoOnly = imports.echo.size > 0 && imports.gin.size === 0;
     const mixed = imports.echo.size > 0 && imports.gin.size > 0;
+    // Handler names declared more than once in this file (`(h *A) List` and
+    // `(o *B) List`): the emitted name is field-only, so these must resolve
+    // only when unique in the file instead of taking the first same-named row.
+    const declaredNames = new Map<string, number>();
+    for (const decl of tree.rootNode.descendantsOfType([
+      'function_declaration',
+      'method_declaration',
+    ])) {
+      const declName = decl.childForFieldName('name')?.text;
+      if (declName) declaredNames.set(declName, (declaredNames.get(declName) ?? 0) + 1);
+    }
     for (const match of runCompiledPatterns(FRAMEWORK_ROUTE_PATTERNS, tree)) {
       const methodNode = match.captures.http_method;
       const pathNode = match.captures.path;
@@ -517,6 +528,12 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         name: isInlineHandler ? null : handlerName,
         line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
+        // An ambiguous in-file name resolves only when the file holds exactly
+        // one match (otherwise the route keeps a file-level anchor) rather than
+        // binding to whichever same-named method the graph lists first.
+        ...(!isInlineHandler && handlerName && (declaredNames.get(handlerName) ?? 0) > 1
+          ? { strictHandlerResolution: true }
+          : {}),
       });
     }
 

@@ -671,6 +671,41 @@ func routes() {
     ]);
   });
 
+  it('requests in-file-unique resolution when the handler name is declared twice', () => {
+    // `h.List` and `o.List` both emit the field name `List`; with two `List`
+    // methods in this file, first-match resolution could bind either route to
+    // the wrong one, so both are marked strict. A unique name (`Show`) and a
+    // name defined elsewhere (`Remote`) keep the default resolution.
+    parser.setLanguage(Go);
+    const flags = GO_HTTP_PLUGIN.scan(
+      parser.parse(`package main
+import "github.com/gin-gonic/gin"
+
+type A struct{}
+type B struct{}
+
+func (a *A) List(c *gin.Context) {}
+func (b *B) List(c *gin.Context) {}
+func (a *A) Show(c *gin.Context) {}
+
+func routes(r *gin.Engine, h *A, o *B) {
+	r.GET("/a", h.List)
+	r.GET("/b", o.List)
+	r.GET("/s", h.Show)
+	r.GET("/r", other.Remote)
+}
+`),
+    )
+      .filter((d) => d.role === 'provider')
+      .map((d) => [d.path, d.name, d.strictHandlerResolution ?? false]);
+    expect(flags).toEqual([
+      ['/a', 'List', true],
+      ['/b', 'List', true],
+      ['/s', 'Show', false],
+      ['/r', 'Remote', false],
+    ]);
+  });
+
   it('applies the same group logic to echo', () => {
     expect(
       providers(`package main
