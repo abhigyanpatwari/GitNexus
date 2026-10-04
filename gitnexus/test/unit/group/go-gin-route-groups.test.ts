@@ -430,6 +430,24 @@ func routes(r *gin.Engine) {
     ).toEqual([{ method: 'GET', path: '/api/x', name: 'X' }]);
   });
 
+  it('accepts a raw-string (backtick) route path, as ingestion does', () => {
+    // Ingestion (Strategy A) decodes both Go string forms for the route path;
+    // the group layer must emit the same contract for a backtick path, both
+    // on a bound group and on a chained `Group(...).GET(...)` receiver.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/api")
+	g.GET(\`/health\`, h.Health)
+	r.Group("/v1").POST(\`/raw\\x2fy\`, h.Raw)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/api/health', name: 'Health' },
+      { method: 'POST', path: '/v1/raw\\x2fy', name: 'Raw' },
+    ]);
+  });
+
   it('decodes Go string escapes in group prefixes and route paths', () => {
     // "/api\x2fv1" and "/health\x2fcheck" are `/api/v1` and `/health/check`
     // once Go processes the escapes — the id must match the registered URL.

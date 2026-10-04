@@ -21,7 +21,8 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 // ─── Provider: framework routing ──────────────────────────────────────
 // Matches `\w+\.GET(...)` etc. (gin and echo share this shape).
 // Captures the receiver, the HTTP method (field name), and the path literal
-// — anchored as the FIRST argument so the code can pick the handler out of
+// — anchored as the FIRST argument (either Go string form; stringLiteral
+// decodes both, as ingestion does) so the code can pick the handler out of
 // the remaining arguments. Which argument that is depends on the framework:
 // gin is `GET(path, middleware..., handler)` (last), echo is
 // `GET(path, handler, middleware...)` (first) — see readFrameworkImports and
@@ -43,7 +44,7 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
             .
-            (interpreted_string_literal) @path))
+            [(interpreted_string_literal) (raw_string_literal)] @path))
       `,
     },
   ],
