@@ -183,6 +183,16 @@ function setupNoRepos() {
   (listRegisteredRepos as any).mockResolvedValue([]);
 }
 
+/** Seed resolver rows without inventing relationship/process rows for other projections. */
+function mockSymbolRows(rows: Record<string, unknown>[]) {
+  (executeParameterized as any).mockImplementation(
+    async (_repo: string, query: string, params: Record<string, unknown>) => {
+      if (query.includes('COUNT(*) AS total')) return [{ total: rows.length }];
+      return params?.symName || params?.uid ? rows : [];
+    },
+  );
+}
+
 const duplicateFixtureDirs: string[] = [];
 
 function makeDuplicateNameFixture() {
@@ -1321,7 +1331,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches context tool', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -1663,27 +1673,22 @@ describe('LocalBackend.callTool', () => {
     });
 
     it('exact File path wins over suffixed matches during qualified resolution (#3084 review P2)', async () => {
-      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
-        if (query.startsWith('MATCH (n)')) {
-          return [
-            {
-              id: 'File:src/lib/a.ts',
-              name: 'a.ts',
-              filePath: 'src/lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-            {
-              id: 'File:lib/a.ts',
-              name: 'a.ts',
-              filePath: 'lib/a.ts',
-              kind: 'File',
-              total_hits: 1,
-            },
-          ];
-        }
-        return [{ total: 2 }];
-      });
+      mockSymbolRows([
+        {
+          id: 'File:src/lib/a.ts',
+          name: 'a.ts',
+          filePath: 'src/lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+        {
+          id: 'File:lib/a.ts',
+          name: 'a.ts',
+          filePath: 'lib/a.ts',
+          kind: 'File',
+          total_hits: 1,
+        },
+      ]);
 
       const result = await backend.callTool('context', { name: 'lib/a.ts' });
       expect(result).toMatchObject({
@@ -2005,7 +2010,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('context tool ranks file_path match higher than non-match (#470)', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:handleConnect:1',
         name: 'handleConnect',
@@ -2044,7 +2049,7 @@ describe('LocalBackend.callTool', () => {
     // review): both candidates satisfy the file_path hint (so DB
     // pre-filter would return both in production), and promotion is
     // determined purely by the combined file_path + kind score.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'fn:App:1',
         name: 'render',
@@ -2135,7 +2140,7 @@ describe('LocalBackend.callTool', () => {
   it('impact tool returns ambiguous shape with ranked candidates when target has multiple matches (#470)', async () => {
     // resolveSymbolCandidates issues a single name query; mock it to return
     // two Function rows in different files with no hints.
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:login:1',
         name: 'login',
@@ -2222,7 +2227,7 @@ describe('LocalBackend.callTool', () => {
     // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -2234,10 +2239,12 @@ describe('LocalBackend.callTool', () => {
           },
         ]);
       }
-      // Symbol resolution.
-      return Promise.resolve([
-        { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-      ]);
+      // Symbol resolution; unseeded enrichment queries return no rows.
+      return Promise.resolve(
+        cypher.includes('$symName')
+          ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+          : [],
+      );
     });
     (executeQuery as any).mockResolvedValue([]);
 
@@ -2974,7 +2981,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('dispatches "explore" as alias for context', async () => {
-    (executeParameterized as any).mockResolvedValue([
+    mockSymbolRows([
       {
         id: 'func:main',
         name: 'main',
@@ -3007,9 +3014,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
   // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
   function resolveSingleTarget() {
-    (executeParameterized as any).mockResolvedValue([
-      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
-    ]);
+    mockSymbolRows([{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]);
     (executeQuery as any).mockResolvedValue([]);
   }
 
@@ -3266,18 +3271,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
     resolveSingleTarget();
-    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
-    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
-    // statement-precise substrate the bridge keys on.
-    (executeParameterized as any).mockResolvedValue([
-      {
-        id: 'func:main',
-        name: 'main',
-        type: 'Function',
-        filePath: 'src/index.ts',
-        callees: 'callee',
-      },
-    ]);
+    // BasicBlock callees and symbol lookup use distinct native projections.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
+    });
     // A line-seeded downstream slice with one reachable block → the dispatch
     // queries that block's callees and seeds the bridge with them.
     const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3402,11 +3402,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // is not built and the inter-procedural reach falls back to callgraph-equal —
     // never surfacing the error or producing a partial proven/unproven labeling.
     resolveSingleTarget();
-    // The slice-callees query (RETURN b.callees) throws; every other query (target
-    // resolution) returns the resolved symbol row.
+    // The slice-callees query throws; lookup returns the target and unseeded
+    // relationship/process projections return no rows.
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     // A line-seeded downstream slice so calleesOfBlocks is attempted.
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
@@ -3461,7 +3463,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     resolveSingleTarget();
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.callees')) throw new Error('Table BasicBlock does not exist');
-      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+      return query.includes('$symName')
+        ? [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }]
+        : [];
     });
     vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
       mode: 'pdg',
