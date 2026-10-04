@@ -4,7 +4,11 @@ import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import path from 'node:path';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
-import { acquireIndexLock, requireExclusiveIndexLock } from '../storage/index-lock.js';
+import {
+  acquireIndexLock,
+  requireExclusiveIndexLock,
+  sweepStagingArtifacts,
+} from '../storage/index-lock.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../storage/repo-manager.js';
 import {
   closeLbug,
@@ -50,14 +54,14 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   // Writes go to the slot's own graph. A shared-store checkout that reads an
   // immutable commit graph (#3352) takes a private copy first.
   const lbugPath = path.join(metaDir, LBUG_DIRECTORY);
-  const lock = await acquireIndexLock(metaDir);
+  const lock = await acquireIndexLock(metaDir, { sweep: false });
   try {
     requireExclusiveIndexLock(
       lock,
       `Cannot acquire the index lock at ${metaDir}; refusing an unlocked embeddings sync.`,
     );
     // Sync writes the published graph and cannot recover a staged generation.
-    // Reject even malformed receipts before detaching a shared graph or writing.
+    // Reject even malformed receipts before sweeping staging files or writing.
     const recoveryCheckpoint = (await loadMeta(metaDir))?.embeddingCheckpoint;
     if (recoveryCheckpoint && Object.hasOwn(recoveryCheckpoint, 'recovery')) {
       throw new Error(
@@ -65,6 +69,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
           'Run `gitnexus analyze` to recover them first.',
       );
     }
+    sweepStagingArtifacts(metaDir);
     if (!(await ensurePrivateSharedGraph(metaDir, (m) => console.log(`  ${m}`)))) {
       throw new Error('The shared graph this checkout reads is gone. Run gitnexus analyze first.');
     }
