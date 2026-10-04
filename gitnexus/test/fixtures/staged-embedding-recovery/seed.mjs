@@ -1,4 +1,5 @@
 import lbug from '@ladybugdb/core';
+import fs from 'node:fs';
 import { createLbugDatabase } from '../../../src/core/lbug/lbug-config.ts';
 
 const [dbPath, mode] = process.argv.slice(2);
@@ -19,7 +20,20 @@ await row('complete-0', 'complete', 0);
 await row('complete-1', 'complete', 1);
 await row('other', 'other', 0);
 await query('CHECKPOINT');
-if (mode === 'hard-kill') {
+if (mode === 'interrupted-checkpoint') {
+  await row('checkpoint-only', 'checkpoint-only', 0);
+  const main = fs.readFileSync(dbPath);
+  const wal = fs.readFileSync(`${dbPath}.wal`);
+  await conn.close();
+  await db.close();
+  // Restore the pre-close bytes: writable close has already checkpointed them.
+  fs.writeFileSync(dbPath, main);
+  fs.writeFileSync(`${dbPath}.wal.checkpoint`, wal);
+  fs.writeFileSync(`${dbPath}.wal`, '');
+  fs.writeFileSync(`${dbPath}.shadow`, '');
+  fs.writeFileSync(`${dbPath}.checkpoint.intent.lock`, '');
+  fs.writeFileSync(`${dbPath}.checkpoint.apply.lock`, '');
+} else if (mode === 'hard-kill') {
   await row('unsafe', 'unsafe-prefix', 0);
   process.kill(process.pid, 'SIGKILL');
 } else {
