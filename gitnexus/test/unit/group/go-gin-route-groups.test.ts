@@ -596,6 +596,25 @@ func routes(echo *Factory) {
     ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
   });
 
+  it('does not mistake a value-less local declaration of echo for the import', () => {
+    // `var echo Factory` declares a local without an initializer; it still
+    // shadows the package qualifier, so `echo.New()` proves nothing.
+    expect(
+      providers(`package main
+import (
+	"github.com/gin-gonic/gin"
+	"github.com/labstack/echo/v4"
+)
+
+func routes() {
+	var echo Factory
+	e := echo.New()
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Middleware' }]);
+  });
+
   it('declines a route whose Group chain exceeds the depth cap', () => {
     // Past MAX_GROUP_DEPTH (32) the full prefix — and, in a mixed file, the
     // framework order — is unprovable: emitting the outer prefixes alone (or

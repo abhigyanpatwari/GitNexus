@@ -199,10 +199,21 @@ function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
  * group), or is not bound in scope.
  */
 function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  return lookupBinding(ident) ?? null;
+}
+
+/**
+ * findBinding's walk, keeping "declared without a traceable value" (null: a
+ * `func` literal parameter, `var x T`, a select receive) apart from "not
+ * declared before reaching the enclosing function declaration" (undefined).
+ */
+function lookupBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | undefined {
   const name = ident.text;
   let child: Parser.SyntaxNode = ident;
   for (let node = ident.parent; node; child = node, node = node.parent) {
-    if (node.type === 'function_declaration' || node.type === 'method_declaration') return null;
+    if (node.type === 'function_declaration' || node.type === 'method_declaration') {
+      return undefined;
+    }
     if (node.type === 'func_literal') {
       const params = node.childForFieldName('parameters')?.descendantsOfType('identifier') ?? [];
       if (params.some((p) => p.text === name)) return null;
@@ -278,7 +289,7 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null {
       continue;
     }
   }
-  return null;
+  return undefined;
 }
 
 /**
@@ -319,11 +330,12 @@ function receiverBindsToEchoConstructor(
 
 /**
  * Whether `ident` names a local value rather than an imported package: a
- * binding in scope or a parameter/receiver of an enclosing function. Go lets
- * either shadow a package qualifier (`func f(echo *Factory) { echo.New() }`).
+ * declaration in scope (with or without a value — `var echo Factory` shadows
+ * too) or a parameter/receiver of an enclosing function. Go lets either
+ * shadow a package qualifier (`func f(echo *Factory) { echo.New() }`).
  */
 function isLocalName(ident: Parser.SyntaxNode): boolean {
-  if (findBinding(ident) !== null) return true;
+  if (lookupBinding(ident) !== undefined) return true;
   for (let node = ident.parent; node; node = node.parent) {
     if (
       node.type !== 'func_literal' &&
