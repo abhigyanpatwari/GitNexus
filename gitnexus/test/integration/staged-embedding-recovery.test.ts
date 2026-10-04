@@ -46,6 +46,17 @@ describe('isolated native staged embedding recovery', () => {
     else expect(result.status, result.stderr).toBe(0);
   }
 
+  function snapshotSourceFamily(dbPath: string) {
+    const basename = path.basename(dbPath);
+    return Object.fromEntries(
+      fs
+        .readdirSync(path.dirname(dbPath))
+        .filter((name) => name === basename || name.startsWith(`${basename}.`))
+        .sort()
+        .map((name) => [name, fs.readFileSync(path.join(path.dirname(dbPath), name))]),
+    );
+  }
+
   it('streams complete same-hash groups and rejects malformed whole nodes', async () => {
     const dbPath = stagePath();
     seed(dbPath);
@@ -75,6 +86,7 @@ describe('isolated native staged embedding recovery', () => {
   it('replays a hard-killed native writer strictly and excludes the incomplete active window', async () => {
     const dbPath = stagePath();
     seed(dbPath, 'hard-kill');
+    const sourceBefore = snapshotSourceFamily(dbPath);
     recovered = await recoverStagedEmbeddings(dbPath, {
       dimensions: 2,
       excludedNodeIds: ['unsafe-prefix', 'other'],
@@ -86,6 +98,7 @@ describe('isolated native staged embedding recovery', () => {
         .map((row) => row.chunkIndex)
         .sort(),
     ).toEqual([0, 1]);
+    expect(snapshotSourceFamily(dbPath)).toEqual(sourceBefore);
   }, 30_000);
 
   it('rejects vectors from a different dimension instead of coercing them', async () => {
@@ -93,6 +106,34 @@ describe('isolated native staged embedding recovery', () => {
     seed(dbPath);
     recovered = await recoverStagedEmbeddings(dbPath, { dimensions: 3 });
     expect(recovered.rows).toEqual([]);
+  }, 30_000);
+
+  it('strictly replays an interrupted checkpoint copy with both checkpoint locks retained', async (ctx) => {
+    const version = JSON.parse(
+      fs.readFileSync(
+        new URL('../../node_modules/@ladybugdb/core/package.json', import.meta.url),
+        'utf8',
+      ),
+    ).version as string;
+    const [major, minor] = version.split('.').map(Number);
+    // Older pins do not support the deterministic interrupted-checkpoint plant.
+    if (Number.isFinite(major) && Number.isFinite(minor) && major === 0 && minor < 19) ctx.skip();
+    const dbPath = stagePath();
+    seed(dbPath, 'interrupted-checkpoint');
+    const sourceBefore = snapshotSourceFamily(dbPath);
+    expect(fs.statSync(`${dbPath}.wal.checkpoint`).size).toBeGreaterThan(0);
+    expect(fs.existsSync(`${dbPath}.checkpoint.intent.lock`)).toBe(true);
+    expect(fs.existsSync(`${dbPath}.checkpoint.apply.lock`)).toBe(true);
+
+    recovered = await recoverStagedEmbeddings(dbPath, { dimensions: 2 });
+
+    expect([...recovered.embeddingNodeIds].sort()).toEqual([
+      'checkpoint-only',
+      'complete',
+      'other',
+    ]);
+    expect(recovered.rows).toHaveLength(4);
+    expect(snapshotSourceFamily(dbPath)).toEqual(sourceBefore);
   }, 30_000);
 
   it('contains a malformed native source in a subprocess and preserves it', async () => {
@@ -109,6 +150,7 @@ describe('isolated native staged embedding recovery', () => {
     seed(dbPath, 'hard-kill');
     const walPath = `${dbPath}.wal`;
     fs.writeFileSync(walPath, Buffer.alloc(128, 0xff));
+    const sourceBefore = snapshotSourceFamily(dbPath);
     await expect(recoverStagedEmbeddings(dbPath, { dimensions: 2 })).rejects.toThrow(
       /extraction failed/,
     );
@@ -116,6 +158,7 @@ describe('isolated native staged embedding recovery', () => {
     expect(fs.readdirSync(path.dirname(dbPath)).some((name) => /bad|quarantine/i.test(name))).toBe(
       false,
     );
+    expect(snapshotSourceFamily(dbPath)).toEqual(sourceBefore);
   }, 30_000);
 
   it('does not create a missing source and refuses a symlink', async () => {
@@ -133,10 +176,12 @@ describe('isolated native staged embedding recovery', () => {
   it('can kill a timed out native subprocess without aborting analyze', async () => {
     const dbPath = stagePath();
     seed(dbPath);
+    const sourceBefore = snapshotSourceFamily(dbPath);
     await expect(recoverStagedEmbeddings(dbPath, { dimensions: 2, timeoutMs: 1 })).rejects.toThrow(
       /timeout/,
     );
     expect(fs.existsSync(dbPath)).toBe(true);
+    expect(snapshotSourceFamily(dbPath)).toEqual(sourceBefore);
   }, 30_000);
 
   it('loads the source child when analyze runs in another repository directory', () => {
