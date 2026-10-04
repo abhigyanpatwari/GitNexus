@@ -80,7 +80,10 @@ async function runImpact(routeRows: readonly RouteRow[], routeQueryFails = false
         : [];
     }
     if (query.includes('STEP_IN_PROCESS') || query.includes('MEMBER_OF')) return [];
-    return [{ id: 'svc', name: 'UnfinalizeRound', filePath: 'svc.go', type: 'Method' }];
+    if (query.includes('n.id AS id')) {
+      return [{ id: 'svc', name: 'UnfinalizeRound', filePath: 'svc.go', type: 'Method' }];
+    }
+    return [];
   });
 
   const backend = new LocalBackend();

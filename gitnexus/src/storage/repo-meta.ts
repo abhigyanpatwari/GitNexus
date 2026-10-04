@@ -43,6 +43,15 @@ export type ContentRetention = 'full' | 'symbol' | 'none';
 export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
 export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
 
+/** Exact staged generation whose completed embedding groups can survive a retry. */
+export interface EmbeddingRecoveryReference {
+  /** A run-minted basename within this metadata file's index slot. */
+  stagingFile: string;
+  schemaFingerprint: string;
+  /** Active-window and inherited incomplete groups: never reusable until completed. */
+  unsafeNodeIds: string[];
+}
+
 /**
  * Versioned receipt for the analyzer process that produced an index.
  *
@@ -521,6 +530,11 @@ export interface RepoMeta {
      * subset of their chunks; for `'partial'` they hold none.
      */
     pendingNodeIds?: string[];
+    /**
+     * Interrupted atomic builds only. This does not publish the staged graph
+     * or advance live embedding statistics; it identifies a recovery source.
+     */
+    recovery?: EmbeddingRecoveryReference;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the
