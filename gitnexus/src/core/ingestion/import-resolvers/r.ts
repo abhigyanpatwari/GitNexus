@@ -7,7 +7,7 @@ import path from 'path';
 import type { SuffixIndex } from './utils.js';
 import { suffixResolve } from './utils.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import type { RPackageConfig } from '../languages/r/package-config.js';
+import { rExportPatternMatches, type RPackageConfig } from '../languages/r/package-config.js';
 import {
   rFileTopLevel,
   rPackageDirForFile,
@@ -175,7 +175,7 @@ function resolveRNamedImport(
     const exported =
       info.namedExports.has(importedName) ||
       [...info.namedExports].some((entry) => stripBackticks(entry) === importedName) ||
-      info.exportPatterns.some((pattern) => pattern.test(importedName));
+      rExportPatternMatches(info, importedName);
     if (!exported) return null;
   }
 

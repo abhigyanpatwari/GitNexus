@@ -1,4 +1,4 @@
-import { compileLinearRegexDetailed } from './linear-regex.js';
+import { compileLinearRegexDetailed, type SharedWorkBudget } from './linear-regex.js';
 
 /**
  * `exportPattern("...")` compilation for R NAMESPACE files.
@@ -112,8 +112,9 @@ export interface RExportMatcher {
   readonly source: string;
   test(name: string): boolean;
   /**
-   * True once the matcher stopped answering because it spent its work budget; names it
-   * had not yet decided were then treated as not matching. Absent on matchers that
+   * True once the matcher stopped answering because it spent its work budget (its own, or
+   * the one shared by a package-config load); names it had not yet decided were then
+   * treated as not matching. Absent on matchers that
    * cannot run out (a plain `RegExp`).
    */
   readonly exhausted?: boolean;
@@ -124,8 +125,16 @@ export type RExportPatternResult =
   | { readonly matcher: RExportMatcher }
   | { readonly matcher: null; readonly reason: string };
 
-/** Compile an `exportPattern()` argument, saying why when it cannot be compiled safely. */
-export function compileRExportPatternDetailed(source: string): RExportPatternResult {
+/**
+ * Compile an `exportPattern()` argument, saying why when it cannot be compiled safely.
+ * Matchers compiled with the same `shared` budget stop together once it is spent (see
+ * `linear-regex.ts`); a package-config load passes one so that the number of patterns a
+ * repository carries cannot multiply the per-matcher cost.
+ */
+export function compileRExportPatternDetailed(
+  source: string,
+  shared?: SharedWorkBudget,
+): RExportPatternResult {
   try {
     let translated = source;
     if (source.includes('[:')) {
@@ -138,7 +147,7 @@ export function compileRExportPatternDetailed(source: string): RExportPatternRes
       }
       translated = posix;
     }
-    const result = compileLinearRegexDetailed(translated);
+    const result = compileLinearRegexDetailed(translated, shared);
     return 'reason' in result
       ? { matcher: null, reason: result.reason }
       : { matcher: result.regex };
@@ -148,8 +157,11 @@ export function compileRExportPatternDetailed(source: string): RExportPatternRes
 }
 
 /** Compile an `exportPattern()` argument; null when it cannot be compiled safely. */
-export function compileRExportPattern(source: string): RExportMatcher | null {
-  return compileRExportPatternDetailed(source).matcher;
+export function compileRExportPattern(
+  source: string,
+  shared?: SharedWorkBudget,
+): RExportMatcher | null {
+  return compileRExportPatternDetailed(source, shared).matcher;
 }
 
 const SIMPLE_R_ESCAPES: Readonly<Record<string, string>> = {

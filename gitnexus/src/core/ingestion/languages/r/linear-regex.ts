@@ -36,6 +36,26 @@
  * Realistic patterns stay far below it: 500 alternated identifiers, anchored or not,
  * cost about 20 visits per name, because alternatives that share a prefix share
  * states. Verdicts are memoised per distinct name, so a repeated name costs one lookup.
+ *
+ * The per-matcher cap does not bound how many matchers there are, and a NAMESPACE can
+ * carry as many `exportPattern()` lines as it likes (200 hostile ones cost ~77 s). So
+ * matchers may also draw on a {@link SharedWorkBudget}, which the caller creates once
+ * for a whole package-config load and hands to every matcher it compiles, across all
+ * the packages it discovers; a matcher stops when its own cap or the shared budget is
+ * spent, whichever comes first. A count cap would not do: a per-package cap still
+ * allows many packages, and a per-run cap would penalise a monorepo whose packages
+ * each carry a few benign patterns, which use next to no work.
+ *
+ * Matching is not the only cost that grows with the number of patterns. Every compiled
+ * pattern keeps an NFA (about 100 bytes a state), and a NAMESPACE can carry hundreds of
+ * thousands of them, so the budget also holds an allowance of NFA states: a pattern that
+ * does not fit in what is left is refused (the build stops at the allowance, so its NFA is
+ * never allocated in full) and, once nothing is left, later patterns are refused without
+ * being parsed (the first pattern that does not fit ends the allowance; a pattern is at most
+ * {@link MAX_STATES} states, so that only happens after the allowance is nearly used up).
+ * Budgets nest: a package's budget is a {@link SharedWorkBudget.child} of the
+ * load's, so one package cannot take the whole load's allowance and leave every other
+ * package's patterns unable to run.
  */
 
 /** Longest pattern accepted: room for an alternation of ~1,000 identifiers. */
@@ -63,6 +83,125 @@ const MAX_BUILD_STEPS = 4 * MAX_STATES;
  * cost model above).
  */
 export const MAX_TOTAL_WORK = 40_000_000;
+
+/**
+ * State visits all the matchers of one package-config load may spend together (the
+ * default limit of a {@link SharedWorkBudget}), in addition to the per-matcher
+ * {@link MAX_TOTAL_WORK}. At 9-10 ns a visit it is about one second: enough for two
+ * and a half pathological patterns to run to their own cap, after which the rest of
+ * the load's patterns stop and are reported, so a hostile NAMESPACE cannot cost more
+ * than that however many patterns it carries. Benign work is a tiny fraction of it: a
+ * 50-package monorepo with three realistic patterns per package and 2,500 functions
+ * spends about 15,000 visits, and one realistic pattern run against 50,000 names
+ * spends 0.2-7 million. Counted in visits, not wall-clock time, so the outcome is the
+ * same on every machine.
+ */
+export const MAX_SHARED_WORK = 100_000_000;
+
+/**
+ * NFA states all the patterns of one load may keep together. A state costs about 700
+ * bytes once compiled (parallel arrays plus a character set per character state;
+ * measured: 2,000,000 states held 1.4 GB), so this bounds what a NAMESPACE can make the
+ * analyzer hold at about 350 MB. A realistic pattern is tens to a few thousand states
+ * (an alternation of 500 identifiers is about 7,500; `[[:alpha:]]{1,2000}` is 4,000), so
+ * the 150 benign patterns of the 50-package monorepo above use under 5,000 states in
+ * total, 1 % of this, and the allowance holds some 65 such alternations.
+ */
+export const MAX_SHARED_STATES = 500_000;
+
+/**
+ * State visits one package may spend on matching, out of {@link MAX_SHARED_WORK} (30 %,
+ * about 0.3 s): one hostile package then cannot take the load's whole budget, so the
+ * packages after it keep their patterns. Three hostile packages spend the load's
+ * budget; the packages after those degrade, with a warning per pattern.
+ */
+export const MAX_PACKAGE_WORK = 30_000_000;
+
+/**
+ * NFA states one package may keep, out of {@link MAX_SHARED_STATES} (20 %, about 70 MB):
+ * six patterns at the {@link MAX_STATES} cap, or some 13 alternations of 500 identifiers,
+ * far beyond what a NAMESPACE writes by hand, while five such packages still cannot
+ * exceed the load's allowance on their own.
+ */
+export const MAX_PACKAGE_STATES = 100_000;
+
+/** Why a pattern was refused because the allowance of states was spent. */
+const STATE_ALLOWANCE_REASON =
+  'the NFA state allowance for this package or repository is spent (too many or too large patterns)';
+
+/**
+ * A work allowance shared by several matchers: state visits spent matching, and NFA
+ * states kept by compiled patterns. Create one per package-config load and give each
+ * package a {@link child}; every matcher compiled with a budget adds the state visits
+ * it spends to {@link spent} (and to every ancestor's), and all of them stop once any
+ * budget up the chain is spent. Counted in work units, never time.
+ */
+export class SharedWorkBudget {
+  /** State visits spent so far by every matcher drawing on this budget. */
+  spent = 0;
+  /** NFA states kept so far by every pattern compiled against this budget. */
+  states = 0;
+  /**
+   * Set by the caller that skipped matching because the budget was spent, so that the
+   * patterns it did not get to run can be reported.
+   */
+  cutShort = false;
+
+  constructor(
+    /** State visits the matchers may spend together. */
+    readonly limit: number = MAX_SHARED_WORK,
+    /** NFA states the compiled patterns may keep together. */
+    readonly stateLimit: number = MAX_SHARED_STATES,
+    private readonly parent?: SharedWorkBudget,
+  ) {}
+
+  /** A sub-budget for one package: it draws on this budget too, and cannot exceed it. */
+  child(
+    limit: number = MAX_PACKAGE_WORK,
+    stateLimit: number = MAX_PACKAGE_STATES,
+  ): SharedWorkBudget {
+    return new SharedWorkBudget(limit, stateLimit, this);
+  }
+
+  /** True once this budget or any ancestor is spent; a matcher then answers false for undecided names. */
+  get isSpent(): boolean {
+    return this.spent >= this.limit || this.parent?.isSpent === true;
+  }
+
+  /**
+   * NFA states that may still be kept, here and in every ancestor (never negative). Zero
+   * once a pattern was refused for not fitting (see {@link closeStates}).
+   */
+  get statesLeft(): number {
+    const own = this.statesClosed ? 0 : Math.max(0, this.stateLimit - this.states);
+    return this.parent === undefined ? own : Math.min(own, this.parent.statesLeft);
+  }
+
+  /**
+   * A pattern was refused because it did not fit in `room` states: close every budget up
+   * the chain whose own allowance is that tight, so later patterns are refused at once,
+   * without being parsed. Otherwise a small remainder that no pattern fits would make
+   * every one of hundreds of thousands of later patterns cost a parse and a partial build.
+   */
+  closeStates(room: number): void {
+    if (Math.max(0, this.stateLimit - this.states) <= room) this.statesClosed = true;
+    this.parent?.closeStates(room);
+  }
+
+  private statesClosed = false;
+
+  /** Add `visits` state visits to this budget and every ancestor. */
+  charge(visits: number): void {
+    this.spent += visits;
+    this.parent?.charge(visits);
+  }
+
+  /** Record `count` NFA states kept by a compiled pattern, here and in every ancestor. */
+  reserveStates(count: number): void {
+    this.states += count;
+    this.parent?.reserveStates(count);
+  }
+}
 
 /** Most distinct names whose verdict a matcher remembers. */
 const MAX_MEMO_ENTRIES = 100_000;
@@ -501,6 +640,12 @@ const ASSERT_CODES = { bol: A_BOL, eol: A_EOL, wordb: A_WORDB, nwordb: A_NWORDB 
 
 /** Thompson NFA over parallel arrays; state `i` is described by index `i` of each. */
 class Nfa {
+  constructor(
+    /** Most states this NFA may have: {@link MAX_STATES}, or less when an allowance is low. */
+    private readonly limit: number = MAX_STATES,
+    private readonly limitReason: string = 'pattern expands beyond the state cap',
+  ) {}
+
   readonly kind: number[] = [];
   readonly out: number[] = [];
   /** Second branch of a split; unused otherwise. */
@@ -510,7 +655,7 @@ class Nfa {
   private steps = 0;
 
   add(kind: number, out: number, out1: number, arg: CharSet | number | null): number {
-    if (this.kind.length >= MAX_STATES) reject('pattern expands beyond the state cap');
+    if (this.kind.length >= this.limit) reject(this.limitReason);
     this.kind.push(kind);
     this.out.push(out);
     this.out1.push(out1);
@@ -633,7 +778,10 @@ interface StartClosure {
 export class LinearRegex {
   /** Number of NFA states, exposed so tests can assert the structural bound. */
   readonly stateCount: number;
-  /** True once the work budget ran out; later unseen names are answered false. */
+  /**
+   * True once the work budget (this matcher's own, or the shared one) ran out; later
+   * unseen names are answered false.
+   */
   exhausted = false;
   /** State visits spent so far, against {@link MAX_TOTAL_WORK}. */
   work = 0;
@@ -656,6 +804,8 @@ export class LinearRegex {
     readonly source: string,
     nfa: Nfa,
     start: number,
+    /** Allowance shared with other matchers; they all stop when it is spent. */
+    private readonly shared?: SharedWorkBudget,
   ) {
     this.kind = nfa.kind;
     this.out = nfa.out;
@@ -670,7 +820,7 @@ export class LinearRegex {
   test(name: string): boolean {
     const known = this.verdicts.get(name);
     if (known !== undefined) return known;
-    if (this.work >= MAX_TOTAL_WORK) {
+    if (this.work >= MAX_TOTAL_WORK || this.shared?.isSpent === true) {
       this.exhausted = true;
       return false;
     }
@@ -680,6 +830,12 @@ export class LinearRegex {
     return verdict;
   }
 
+  /** Count `visits` state visits against this matcher's cap and the shared budget. */
+  private charge(visits: number): void {
+    this.work += visits;
+    this.shared?.charge(visits);
+  }
+
   private search(name: string): boolean {
     const length = name.length;
     let current: number[] = [];
@@ -687,14 +843,14 @@ export class LinearRegex {
     this.stamp++;
     if (this.seed(current, name, 0)) return true;
     for (let p = 0; p < length; p++) {
-      if (this.work > MAX_TOTAL_WORK) {
+      if (this.work > MAX_TOTAL_WORK || this.shared?.isSpent === true) {
         this.exhausted = true;
         return false;
       }
       const c = name.charCodeAt(p);
       this.stamp++;
       following.length = 0;
-      this.work += current.length;
+      this.charge(current.length);
       for (let i = 0; i < current.length; i++) {
         const s = current[i];
         if (inSet(this.arg[s] as CharSet, c) && this.add(following, this.out[s], name, p + 1)) {
@@ -729,7 +885,7 @@ export class LinearRegex {
       states = closure.chars.filter((s) => inSet(this.arg[s] as CharSet, c));
       if (this.startStates.size < 4096) this.startStates.set(key, states);
     }
-    this.work += 1 + states.length;
+    this.charge(1 + states.length);
     for (let i = 0; i < states.length; i++) {
       const s = states[i];
       if (this.mark[s] !== this.stamp) {
@@ -779,7 +935,7 @@ export class LinearRegex {
       const s = stack.pop() as number;
       if (this.mark[s] === this.stamp) continue;
       this.mark[s] = this.stamp;
-      this.work++;
+      this.charge(1);
       switch (this.kind[s]) {
         case K_MATCH:
           return true;
@@ -848,20 +1004,32 @@ export type LinearRegexResult =
 /**
  * Compile a JavaScript-syntax pattern to a linear-time matcher. When the pattern is
  * invalid, unsupported or too large the result carries the reason instead. Never throws.
+ * A `shared` budget makes the matcher draw on it as well as on its own cap, and the
+ * pattern's NFA states count against the budget's allowance of states.
  */
-export function compileLinearRegexDetailed(source: string): LinearRegexResult {
+export function compileLinearRegexDetailed(
+  source: string,
+  shared?: SharedWorkBudget,
+): LinearRegexResult {
+  // With nothing left of the state allowance, refuse without even parsing the pattern.
+  const room = shared?.statesLeft ?? MAX_STATES;
+  if (room <= 0) return { regex: null, reason: STATE_ALLOWANCE_REASON };
   if (source.length > MAX_PATTERN_LENGTH) {
     return { regex: null, reason: `pattern is longer than ${MAX_PATTERN_LENGTH} characters` };
   }
   try {
     const ast = new Parser(source).parse();
-    const nfa = new Nfa();
+    // The build stops at the allowance, so a pattern that does not fit never has its NFA
+    // allocated in full.
+    const nfa = room < MAX_STATES ? new Nfa(room, STATE_ALLOWANCE_REASON) : new Nfa();
     const match = nfa.add(K_MATCH, -1, -1, null);
     const start = nfa.build(ast, match);
-    return { regex: new LinearRegex(source, nfa, start) };
+    shared?.reserveStates(nfa.kind.length);
+    return { regex: new LinearRegex(source, nfa, start, shared) };
   } catch (err) {
     // `Reject` is the expected path; a stack overflow or any other failure also means
     // "cannot match safely", which for an exportPattern is the same as never matching.
+    if (err instanceof Reject && err.message === STATE_ALLOWANCE_REASON) shared?.closeStates(room);
     return {
       regex: null,
       reason: err instanceof Reject ? err.message : 'pattern could not be compiled',
@@ -870,6 +1038,6 @@ export function compileLinearRegexDetailed(source: string): LinearRegexResult {
 }
 
 /** {@link compileLinearRegexDetailed} without the reason: null when there is no matcher. */
-export function compileLinearRegex(source: string): LinearRegex | null {
-  return compileLinearRegexDetailed(source).regex;
+export function compileLinearRegex(source: string, shared?: SharedWorkBudget): LinearRegex | null {
+  return compileLinearRegexDetailed(source, shared).regex;
 }

@@ -26,6 +26,7 @@ import type { PostParseContext } from '../../language-provider.js';
 import {
   loadRPackageConfig,
   reportRExportPatternProblems,
+  rExportPatternMatches,
   type RNamespaceInfo,
   type RPackageConfig,
 } from './package-config.js';
@@ -138,7 +139,7 @@ export const refineRExportStatus = (
 
     if (nsInfo.namedExports.has(name)) return; // explicit export — keep public
     // exportPatterns are precompiled linear-time matchers (see loadRPackageConfig) — no per-node recompile.
-    const matched = nsInfo.exportPatterns.some((pattern) => pattern.test(name));
+    const matched = rExportPatternMatches(nsInfo, name);
     if (matched) return;
 
     // Not in NAMESPACE → not exported.

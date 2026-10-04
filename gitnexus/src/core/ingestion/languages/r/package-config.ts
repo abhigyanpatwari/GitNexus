@@ -7,6 +7,7 @@ import {
   type RNamespaceImportFromEntry,
 } from './namespace-imports.js';
 import { compileRExportPatternDetailed, type RExportMatcher } from './export-pattern.js';
+import { SharedWorkBudget } from './linear-regex.js';
 import { isDev } from '../../utils/env.js';
 import { logger } from '../../../logger.js';
 
@@ -81,8 +82,49 @@ export interface RNamespaceInfo {
    * Optional so that hand-built configs read as "nothing dropped".
    */
   droppedExportPatterns?: readonly RDroppedExportPattern[];
+  /**
+   * How many further non-empty `exportPattern()` arguments were dropped but not listed in
+   * {@link droppedExportPatterns}, which holds at most {@link MAX_LISTED_DROPPED_PATTERNS}
+   * per package so that a NAMESPACE of hundreds of thousands of refused patterns cannot
+   * produce hundreds of thousands of warnings. Reported as one line.
+   */
+  omittedDroppedExportPatterns?: number;
+  /**
+   * The work budget this package's matchers draw on: a sub-budget of the load's. Absent on
+   * hand-built configs. {@link rExportPatternMatches} stops consulting the matchers once it
+   * is spent.
+   */
+  exportPatternBudget?: SharedWorkBudget;
   /** `importFrom(pkg, name)` pairs in NAMESPACE file order (all entries, incl. self-imports and duplicates). */
   importFrom: readonly RNamespaceImportFromEntry[];
+}
+
+/**
+ * Most patterns named in warnings per package, for dropped patterns (the rest are counted,
+ * see `omittedDroppedExportPatterns`) and for patterns cut short by the budget alike, so
+ * that a NAMESPACE of tens of thousands of patterns cannot produce as many warnings.
+ */
+export const MAX_LISTED_DROPPED_PATTERNS = 50;
+
+/**
+ * True when one of the package's `exportPattern()` matchers matches `name`. Once the
+ * package's work budget (or the load's) is spent it stops asking the matchers at all and
+ * answers false, so the cost no longer grows as patterns x names; the patterns it did not
+ * get to run are then reported by {@link reportRExportPatternProblems}.
+ */
+export function rExportPatternMatches(
+  info: Pick<RNamespaceInfo, 'exportPatterns' | 'exportPatternBudget'>,
+  name: string,
+): boolean {
+  const budget = info.exportPatternBudget;
+  for (const pattern of info.exportPatterns) {
+    if (budget?.isSpent === true) {
+      budget.cutShort = true;
+      return false;
+    }
+    if (pattern.test(name)) return true;
+  }
+  return false;
 }
 
 /** Longest pattern prefix quoted in a warning. */
@@ -111,11 +153,34 @@ export function reportRExportPatternProblems(config: RPackageConfig): void {
           `names it would export are treated as not exported`,
       );
     }
+    if ((info.omittedDroppedExportPatterns ?? 0) > 0) {
+      logger.warn(
+        `R package ${where}: ${info.omittedDroppedExportPatterns} further exportPattern() ` +
+          `arguments were ignored as well and are not listed; names they would export are ` +
+          `treated as not exported`,
+      );
+    }
+    const cutShort = info.exportPatternBudget?.cutShort === true;
+    let listed = 0;
+    let unlisted = 0;
     for (const matcher of info.exportPatterns) {
-      if (matcher.exhausted !== true) continue;
+      if (matcher.exhausted !== true && !cutShort) continue;
+      if (listed >= MAX_LISTED_DROPPED_PATTERNS) {
+        unlisted++;
+        continue;
+      }
+      listed++;
       logger.warn(
         `R package ${where}: exportPattern(${quotePattern(matcher.source)}) exceeded its work ` +
-          `budget; names it had not yet been tested against are treated as not exported`,
+          `budget (its own, its package's or the repository's); ` +
+          `names it had not yet been tested against are treated as not exported`,
+      );
+    }
+    if (unlisted > 0) {
+      logger.warn(
+        `R package ${where}: ${unlisted} further exportPattern() arguments exceeded their work ` +
+          `budget as well and are not listed; names they had not yet been tested against are ` +
+          `treated as not exported`,
       );
     }
   }
@@ -228,6 +293,10 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
   const packages = new Map<string, string>();
   const namespaceInfoByPackageDir = new Map<string, RNamespaceInfo>();
   const packageDirs = new Set<string>();
+  // One allowance (matching work and NFA states) for every exportPattern of every package
+  // found by this load, split into a sub-budget per package: the number of patterns a
+  // repository carries must not multiply the per-matcher cost.
+  const loadBudget = new SharedWorkBudget();
   const scanQueue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   const maxDepth = 3;
   const maxDirs = 200;
@@ -283,10 +352,18 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                 // matches) and recorded so the caller can say so.
                 const exportPatterns: RExportMatcher[] = [];
                 const droppedExportPatterns: RDroppedExportPattern[] = [];
+                let omittedDropped = 0;
+                // This package's share of the load's budget: one hostile package cannot
+                // take all of it and leave the packages after it without their patterns.
+                const packageBudget = loadBudget.child();
                 for (const pattern of new Set(parsedExports.exportPatterns)) {
-                  const compiled = compileRExportPatternDetailed(pattern);
+                  const compiled = compileRExportPatternDetailed(pattern, packageBudget);
                   if ('reason' in compiled) {
-                    droppedExportPatterns.push({ pattern, reason: compiled.reason });
+                    if (droppedExportPatterns.length < MAX_LISTED_DROPPED_PATTERNS) {
+                      droppedExportPatterns.push({ pattern, reason: compiled.reason });
+                    } else {
+                      omittedDropped++;
+                    }
                   } else {
                     exportPatterns.push(compiled.matcher);
                   }
@@ -297,6 +374,8 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                   namedExports,
                   exportPatterns,
                   droppedExportPatterns,
+                  omittedDroppedExportPatterns: omittedDropped,
+                  exportPatternBudget: packageBudget,
                   importFrom: parseRNamespaceImportFrom(nsContent),
                 });
               } catch {
