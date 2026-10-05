@@ -4221,7 +4221,7 @@ export class LocalBackend {
           recoverySuggestion: WAL_RECOVERY_SUGGESTION,
         };
       }
-      const hint = getCypherErrorHint(msg, repo.name);
+      const hint = getCypherErrorHint(msg, repo.repoPath);
       return hint ? { error: msg, hint } : { error: msg };
     }
   }

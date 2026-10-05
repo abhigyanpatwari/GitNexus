@@ -6,9 +6,14 @@
  * end-to-end against seeded graph data with FTS indexes.
  */
 import fs from 'fs/promises';
+import path from 'node:path';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { readResource } from '../../src/mcp/resources.js';
+import { parseResourceUri, readResource } from '../../src/mcp/resources.js';
+import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
+import { createMCPServer } from '../../src/mcp/server.js';
 import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
@@ -693,6 +698,105 @@ withTestLbugDB(
   },
 );
 
+// Follow the hint through the real MCP resource handler, including its policy
+// gate, rather than reading the static schema body directly.
+withTestLbugDB(
+  'cypher-schema-hints-duplicate-names',
+  (handle) => {
+    it.each(['duplicate-two', 'duplicate two #% 编码'])(
+      'follows the schema hint for the allowed duplicate clone at %s',
+      async function followsDuplicateRepositorySchemaHint(directory) {
+        const selectedPath = path.join(handle.tmpHandle.dbPath, directory);
+        const deniedPath = path.join(handle.tmpHandle.dbPath, 'duplicate-one');
+        vi.mocked(listRegisteredRepos).mockResolvedValue([
+          {
+            name: 'duplicate',
+            path: deniedPath,
+            storagePath: path.join(deniedPath, '.gitnexus'),
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'denied-clone',
+          },
+          {
+            name: 'duplicate',
+            path: selectedPath,
+            storagePath: handle.tmpHandle.dbPath,
+            indexedAt: new Date().toISOString(),
+            lastCommit: 'selected-clone',
+          },
+        ]);
+        const backend = new LocalBackend();
+        await backend.init();
+        const policy = await createMcpRepositoryPolicy(backend, {
+          GITNEXUS_MCP_ALLOWED_REPOS: selectedPath,
+        });
+        const server = createMCPServer(backend, { repositoryPolicy: policy });
+        const client = new Client({ name: 'schema-hint-client', version: '0.0.0' });
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+        try {
+          await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+          // The implicit single-allowed-repo selection must query the real
+          // selected index, not the first same-named registry entry.
+          const selected = await client.callTool({
+            name: 'cypher',
+            arguments: { statement: 'MATCH (n:Function) RETURN n.name AS name' },
+          });
+          expect(selected.isError).not.toBe(true);
+          expect((selected.content[0] as { text: string }).text).toContain('selectedCloneOnly');
+
+          const response = await client.callTool({
+            name: 'cypher',
+            arguments: { statement: 'MATCH (n:UnrelatedMissingThing) RETURN n' },
+          });
+          const result = JSON.parse(
+            (response.content[0] as { text: string }).text.split('\n\n---\n')[0],
+          );
+          expect(result.error).toBe(
+            'Prepare failed: Binder exception: Table UnrelatedMissingThing does not exist.',
+          );
+          expect(result.hint).not.toContain('Did you mean');
+          const uri = result.hint.match(/gitnexus:\/\/\S+/)?.[0];
+          expect(uri).toBeDefined();
+
+          const schema = await client.readResource({ uri });
+          expect(schema.contents[0].mimeType).toBe('text/yaml');
+          expect((schema.contents[0] as { text: string }).text).toContain('node_properties:');
+          expect(uri).toBe(`gitnexus://repo/${encodeURIComponent(selectedPath)}/schema`);
+          const parsed = parseResourceUri(uri);
+          expect(parsed).toEqual({ kind: 'repo', repoName: selectedPath, resourceType: 'schema' });
+          if (parsed.kind !== 'repo') throw new Error('Expected a repository schema URI');
+          expect((await policy.scopeBackend(backend).resolveRepo(parsed.repoName)).repoPath).toBe(
+            selectedPath,
+          );
+
+          // Neither the ambiguous display name nor the denied peer's encoded
+          // path may become readable as a side effect of fixing the link.
+          for (const specifier of ['duplicate', deniedPath]) {
+            const denied = await client.readResource({
+              uri: `gitnexus://repo/${encodeURIComponent(specifier)}/schema`,
+            });
+            expect((denied.contents[0] as { text: string }).text).toMatch(/not available/i);
+            const deniedQuery = await client.callTool({
+              name: 'cypher',
+              arguments: { repo: specifier, statement: 'MATCH (n:Function) RETURN n' },
+            });
+            expect(deniedQuery.isError).toBe(true);
+            expect((deniedQuery.content[0] as { text: string }).text).toMatch(/not available/i);
+          }
+        } finally {
+          await client.close();
+          await server.close();
+        }
+      },
+    );
+  },
+  {
+    seed: ["CREATE (:Function {id: 'selected-only', name: 'selectedCloneOnly'})"],
+    poolAdapter: true,
+  },
+);
+
 // ─── impact BFS bound parameters (#1907 review F5) ───────────────────────
 // Isolated DB (not the shared seed) with a frontier node whose id contains a
 // single quote. Under the old string-interpolated query this id had to be
@@ -1059,8 +1163,10 @@ withTestLbugDB(
   'cypher-schema-hints',
   (handle) => {
     let backend: LocalBackend;
+    let schemaUri: string;
     beforeAll(() => {
       backend = (handle as typeof handle & { _backend: LocalBackend })._backend;
+      schemaUri = `gitnexus://repo/${encodeURIComponent(handle.tmpHandle.dbPath)}/schema`;
     });
 
     it.each([
@@ -1075,7 +1181,7 @@ withTestLbugDB(
           `Prepare failed: Binder exception: Table ${typo} does not exist.`,
         );
         expect(result.hint).toContain(`Did you mean '${table}'?`);
-        expect(result.hint).toContain('gitnexus://repo/schema-hints-repo/schema');
+        expect(result.hint).toContain(schemaUri);
         expect(result).not.toHaveProperty('recoverySuggestion');
         const corrected = await backend.callTool('cypher', {
           statement: statement.replace(typo, table),
@@ -1138,7 +1244,7 @@ withTestLbugDB(
         'Prepare failed: Binder exception: Table METHOD_OVERRIDES does not exist.',
       );
       expect(result.hint).toBe(
-        "Relationships use :CodeRelation {type: 'METHOD_OVERRIDES'}, not a 'METHOD_OVERRIDES' table. Read gitnexus://repo/schema-hints-repo/schema for the schema.",
+        `Relationships use :CodeRelation {type: 'METHOD_OVERRIDES'}, not a 'METHOD_OVERRIDES' table. Read ${schemaUri} for the schema.`,
       );
     });
 
@@ -1162,7 +1268,7 @@ withTestLbugDB(
       expect(result.hint).not.toContain('Did you mean');
       expect(result.hint).toContain('properties vary by table');
       const resourceUri = result.hint.match(/gitnexus:\/\/\S+/)?.[0] ?? '';
-      expect(resourceUri).toBe('gitnexus://repo/schema-hints-repo/schema');
+      expect(resourceUri).toBe(schemaUri);
       const resource = await readResource(resourceUri, backend);
       const properties = resource.split('node_properties:\n')[1].split('\n\n')[0];
       expect(properties.match(/^  Function: (.+)$/m)?.[1]).not.toContain('parameterCount');
@@ -1181,7 +1287,7 @@ withTestLbugDB(
     ])('points to the schema without guessing for %s', async (statement) => {
       const result = await backend.callTool('cypher', { statement });
       expect(result.error).toContain('Binder exception:');
-      expect(result.hint).toContain('gitnexus://repo/schema-hints-repo/schema');
+      expect(result.hint).toContain(schemaUri);
       expect(result.hint).not.toContain('Did you mean');
       expect(result.hint).not.toContain('analyze');
     });
