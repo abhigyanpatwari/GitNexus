@@ -1,7 +1,11 @@
 import type Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import { goImportPackageName } from '../../../ingestion/languages/go/import-package-name.js';
-import { stringLiteral } from '../../../ingestion/route-extractors/go-shared.js';
+import {
+  isEchoImportPath,
+  isGinImportPath,
+  stringLiteral,
+} from '../../../ingestion/route-extractors/go-shared.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -65,7 +69,8 @@ const HANDLER_ARG_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * The file's framework import aliases: which local qualifiers resolve to
- * echo and to gin. Matched on the import path rather than the local name, so
+ * echo and to gin. Matched on the EXACT import path (shared with ingestion via
+ * go-shared.ts) rather than the local name, so
  * an aliased import still counts; an unaliased import is keyed by its
  * conventional package name (`goImportPackageName`). `_` and `.` imports bind
  * no qualifier this file can route through. An empty set means the file
@@ -89,8 +94,8 @@ function readFrameworkImports(root: Parser.SyntaxNode): {
     if (importPath === null) continue;
     const local = spec.childForFieldName('name')?.text ?? goImportPackageName(importPath);
     if (local === '_' || local === '.') continue;
-    if (importPath.includes('labstack/echo')) echo.add(local);
-    else if (importPath.includes('gin-gonic/gin')) gin.add(local);
+    if (isEchoImportPath(importPath)) echo.add(local);
+    else if (isGinImportPath(importPath)) gin.add(local);
   }
   return { echo, gin };
 }
@@ -153,13 +158,25 @@ function asGroupCall(
   return { parent, prefix };
 }
 
+/** The `var_spec`s of a `var_declaration`, flattened out of a grouped `var (…)`. */
+function varSpecs(decl: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  return decl.namedChildren
+    .flatMap((c) => (c.type === 'var_spec_list' ? c.namedChildren : [c]))
+    .filter((spec) => spec.type === 'var_spec');
+}
+
 /** The expression `name` is assigned by `stmt` (`:=`, `=`, or `var`), if any. */
 function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | null | undefined {
   const pick = (
     names: Parser.SyntaxNode[],
     values: Parser.SyntaxNode | null,
   ): Parser.SyntaxNode | null | undefined => {
-    const i = names.findIndex((n) => n.type === 'identifier' && n.text === name);
+    // Go carries an assignment out left to right, so a repeated target leaves
+    // the LAST one in place (`g, g = a, b` ends with g == b).
+    let i = -1;
+    for (let k = 0; k < names.length; k++) {
+      if (names[k].type === 'identifier' && names[k].text === name) i = k;
+    }
     if (i < 0) return undefined;
     return codeChildren(values)[i] ?? null;
   };
@@ -170,11 +187,7 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
     case 'var_spec':
       return pick(stmt.childrenForFieldName('name'), stmt.childForFieldName('value'));
     case 'var_declaration': {
-      const specs = stmt.namedChildren.flatMap((c) =>
-        c.type === 'var_spec_list' ? c.namedChildren : [c],
-      );
-      for (const spec of specs) {
-        if (spec.type !== 'var_spec') continue;
+      for (const spec of varSpecs(stmt)) {
         const value = pick(spec.childrenForFieldName('name'), spec.childForFieldName('value'));
         if (value !== undefined) return value;
       }
@@ -221,21 +234,206 @@ function within(outer: Parser.SyntaxNode | null, inner: Parser.SyntaxNode): bool
 }
 
 /**
- * Whether `stmt` writes `name` with a plain assignment somewhere inside it
- * (`g = …` in a nested block, branch, loop, or closure body). A nested `:=`
- * declares a new variable and is not a write to the outer one.
+ * Whether `node` is itself a write to `name`: a plain `assignment_statement`
+ * (`g = …`) or the `=` form of a range clause (`for _, g = range xs`) or a
+ * select receive (`case g = <-ch`), which tree-sitter parses as their own node
+ * types. A `:=` declares a new variable — loop- or case-local — and is not a
+ * write to the outer one.
+ */
+function isWriteTo(node: Parser.SyntaxNode, name: string): boolean {
+  if (node.type === 'assignment_statement') {
+    return declaresName(node.childForFieldName('left'), name);
+  }
+  return (
+    (node.type === 'range_clause' || node.type === 'receive_statement') &&
+    assignsExistingName(node) &&
+    declaresName(node.childForFieldName('left'), name)
+  );
+}
+
+/**
+ * Every write to `name` inside `scope` (a statement or a function literal).
+ * With `executedOnly`, a nested function literal is entered only through a
+ * call: one merely stored in a value does not run when its enclosing body
+ * runs.
+ */
+function writesInScope(
+  scope: Parser.SyntaxNode,
+  name: string,
+  executedOnly: boolean,
+): Parser.SyntaxNode[] {
+  const out: Parser.SyntaxNode[] = [];
+  const walk = (node: Parser.SyntaxNode): void => {
+    if (node.type === 'func_literal') {
+      if (executedOnly && !isInvokedLiteral(node)) return;
+      const body = node.childForFieldName('body');
+      if (body) walk(body);
+      return;
+    }
+    if (isWriteTo(node, name)) out.push(node);
+    for (const child of node.namedChildren) walk(child);
+  };
+  walk(scope);
+  return out;
+}
+
+/**
+ * Whether `scope` writes `name` through a binding declared OUTSIDE it: an
+ * assignment (or `=` range/receive) whose target resolves to a name the scope
+ * itself does not declare — a captured outer group rather than a local `:=`,
+ * `var`, or parameter. An unresolvable or conflicting write reaches out
+ * conservatively. With `executedOnly`, writes that only run if a nested
+ * function literal is later called are ignored.
+ */
+function writesOuterName(scope: Parser.SyntaxNode, name: string, executedOnly = false): boolean {
+  for (const write of writesInScope(scope, name, executedOnly)) {
+    const ident = identifierNamed(write.childForFieldName('left'), name);
+    if (!ident) continue;
+    // A range/receive `=` target resolves from OUTSIDE its clause: the
+    // clause's own binding logic describes the loop/case variable, not the
+    // existing name the `=` writes.
+    const from =
+      write.type === 'range_clause' || write.type === 'receive_statement'
+        ? write.parent
+        : undefined;
+    const binding = lookupBinding(ident, from);
+    // null is a declaration without a traceable value; it carries no position
+    // to place, so a write through it reaches out conservatively.
+    if (binding === undefined || binding === null || binding === CONFLICT) return true;
+    const declared = isParamBinding(binding) ? binding.param : binding;
+    if (!within(scope, declared)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether `stmt` writes `name` through a binding declared outside it — a
+ * nested assignment, branch, loop, or closure body. A declaration that
+ * shadows `name` inside the statement (a nested `:=`, a parameter) writes the
+ * local, not the target the use would see, so it does not count.
  */
 function writesNameInside(stmt: Parser.SyntaxNode, name: string): boolean {
-  return [stmt, ...stmt.descendantsOfType('assignment_statement')].some(
-    (a) => a.type === 'assignment_statement' && declaresName(a.childForFieldName('left'), name),
+  return writesOuterName(stmt, name);
+}
+
+/** A range clause or receive that assigns (`=`) rather than declares (`:=`). */
+function assignsExistingName(clause: Parser.SyntaxNode): boolean {
+  return !clause.children.some((c) => c.type === ':=');
+}
+
+/**
+ * Whether `fn` is the callee of a call (`func(){ … }()`), ignoring
+ * parentheses, so its body is known to run.
+ */
+function isInvokedLiteral(fn: Parser.SyntaxNode): boolean {
+  let callee: Parser.SyntaxNode = fn;
+  while (callee.parent?.type === 'parenthesized_expression') callee = callee.parent;
+  const parent = callee.parent;
+  return (
+    !!parent &&
+    parent.type === 'call_expression' &&
+    parent.childForFieldName('function')?.id === callee.id
   );
+}
+
+/**
+ * Whether evaluating `node` executes a write to `name`. A function literal is
+ * only entered when it is the callee of a call: `g := func(){ g = … }` merely
+ * stores the literal, so the outer `g` is untouched, while `func(){ … }()`
+ * runs its body (writes that resolve to the literal's own locals excepted).
+ */
+function executedWritesName(node: Parser.SyntaxNode, name: string): boolean {
+  if (node.type === 'func_literal') {
+    return isInvokedLiteral(node) && writesOuterName(node, name, true);
+  }
+  if (isWriteTo(node, name)) return true;
+  return node.namedChildren.some((child) => executedWritesName(child, name));
+}
+
+/**
+ * Whether the initializer of the declaration that brings `name` into scope in
+ * a block writes the OUTER `name`. The right-hand side runs before the new
+ * variable exists, so `g := func(){ g = … }()` still writes the binding the
+ * use outside the block would inherit — but a literal only stored in a value
+ * never runs its body. Grouped `var` specs up to and including the declaring
+ * one are scanned; later specs read the new local.
+ */
+function initializerWritesName(decl: Parser.SyntaxNode, name: string): boolean {
+  if (decl.type === 'short_var_declaration') {
+    const values = decl.childForFieldName('right');
+    return !!values && executedWritesName(values, name);
+  }
+  if (decl.type === 'var_declaration') {
+    for (const spec of varSpecs(decl)) {
+      const value = spec.childForFieldName('value');
+      if (value && executedWritesName(value, name)) return true;
+      if (boundValue(spec, name) !== undefined) return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether `stmt` holds a function literal that writes the outer `name`. Such
+ * a literal can run after any later direct assignment (`reset := func(){ g = … };
+ * g = …; reset()`), so captured writes are found independently of statement
+ * order instead of being lost behind the last-assignment return. Writes that
+ * resolve to a declaration inside the literal (a parameter, a nested `:=`) are
+ * local and do not count.
+ */
+function closureWritesName(stmt: Parser.SyntaxNode, name: string): boolean {
+  const literals =
+    stmt.type === 'func_literal'
+      ? [stmt, ...stmt.descendantsOfType('func_literal')]
+      : stmt.descendantsOfType('func_literal');
+  return literals.some((fn) => writesOuterName(fn, name));
+}
+
+/**
+ * The effect a bare `{ … }` block placed before the use has on the outer
+ * `name`. A bare block always runs, so its last top-level `name = v` is the
+ * value that reaches the use (`{ g = r.Group("/new") }` → `/new`); a write
+ * nested in a branch, loop, or closure inside it is CONFLICT. A `:=` or `var`
+ * of `name` in the block starts a new variable, so only the statements before
+ * it touch the outer one — but the declaring statement's initializer still
+ * does, because it evaluates before the new variable is in scope. undefined
+ * when the block leaves `name` alone.
+ */
+function bareBlockWrite(block: Parser.SyntaxNode, name: string): Binding {
+  const stmts = codeChildren(block);
+  const declIndex = stmts.findIndex(
+    (s) =>
+      (s.type === 'short_var_declaration' || s.type === 'var_declaration') &&
+      boundValue(s, name) !== undefined,
+  );
+  const outerRegion = declIndex < 0 ? stmts : stmts.slice(0, declIndex);
+  if (declIndex >= 0 && initializerWritesName(stmts[declIndex], name)) return CONFLICT;
+  if (outerRegion.some((stmt) => closureWritesName(stmt, name))) return CONFLICT;
+  for (const stmt of outerRegion.reverse()) {
+    if (stmt.type === 'assignment_statement') {
+      const value = boundValue(stmt, name);
+      if (value !== undefined) return value;
+    }
+    if (stmt.type === 'block') {
+      const inner = bareBlockWrite(stmt, name);
+      if (inner !== undefined) return inner;
+      continue;
+    }
+    if (writesNameInside(stmt, name)) return CONFLICT;
+  }
+  return undefined;
+}
+
+/** The identifier named `name` on an assignment side (or null). */
+function identifierNamed(node: Parser.SyntaxNode | null, name: string): Parser.SyntaxNode | null {
+  if (!node) return null;
+  if (node.type === 'identifier') return node.text === name ? node : null;
+  return node.namedChildren.find((n) => n.type === 'identifier' && n.text === name) ?? null;
 }
 
 /** Whether an identifier or expression_list (e.g. a range left side) declares `name`. */
 function declaresName(node: Parser.SyntaxNode | null, name: string): boolean {
-  if (!node) return false;
-  if (node.type === 'identifier') return node.text === name;
-  return node.namedChildren.some((n) => n.type === 'identifier' && n.text === name);
+  return identifierNamed(node, name) !== null;
 }
 
 /**
@@ -262,12 +460,14 @@ function findBinding(ident: Parser.SyntaxNode): Parser.SyntaxNode | null | typeo
  * CONFLICT means a preceding statement writes the name in a nested scope, so
  * the value at the use is control-flow dependent. A parameter or method
  * receiver of the enclosing function returns its declaration (ParamBinding):
- * no value, but a static type.
+ * no value, but a static type. `from` starts the walk at that node's parent
+ * instead of the identifier's, so an `=` range/receive target can be resolved
+ * outside its own clause.
  */
-function lookupBinding(ident: Parser.SyntaxNode): Binding {
+function lookupBinding(ident: Parser.SyntaxNode, from?: Parser.SyntaxNode | null): Binding {
   const name = ident.text;
-  let child: Parser.SyntaxNode = ident;
-  for (let node = ident.parent; node; child = node, node = node.parent) {
+  let child: Parser.SyntaxNode = from ?? ident;
+  for (let node = child.parent; node; child = node, node = node.parent) {
     if (
       node.type === 'function_declaration' ||
       node.type === 'method_declaration' ||
@@ -317,8 +517,14 @@ function lookupBinding(ident: Parser.SyntaxNode): Binding {
       for (const stmt of stmts.slice(0, useIndex).reverse()) {
         const value = boundValue(stmt, name);
         if (value !== undefined) return value;
-        // A write nested in an earlier statement (block, branch, loop) may or
-        // may not run before the use: the reaching value is unprovable.
+        // A bare block always runs: its unconditional writes are bindings.
+        if (stmt.type === 'block') {
+          const written = bareBlockWrite(stmt, name);
+          if (written !== undefined) return written;
+          continue;
+        }
+        // A write nested in an earlier branch, loop, or closure may or may
+        // not run before the use: the reaching value is unprovable.
         if (writesNameInside(stmt, name)) return CONFLICT;
       }
       continue;
