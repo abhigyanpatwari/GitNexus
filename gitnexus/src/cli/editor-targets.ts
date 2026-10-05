@@ -56,7 +56,7 @@ export interface McpJsoncTarget {
 export interface CodexMcpTarget {
   id: 'codex';
   label: string;
-  /** Absolute path to ~/.codex/config.toml. */
+  /** Absolute path to CODEX_HOME/config.toml (default ~/.codex/config.toml). */
   configFile: string;
   /** The TOML table header (without brackets) setup writes / uninstall strips. */
   tomlSection: string;
@@ -100,6 +100,9 @@ export interface EditorTargets {
  * `process.env.HOME` before invoking sees the right locations.
  */
 export function getEditorTargets(home: string = os.homedir()): EditorTargets {
+  const codexHome = process.env.CODEX_HOME
+    ? path.resolve(process.env.CODEX_HOME)
+    : path.join(home, '.codex');
   const mcpJsonc: McpJsoncTarget[] = [
     {
       id: 'cursor',
@@ -166,7 +169,7 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
   const codex: CodexMcpTarget = {
     id: 'codex',
     label: 'Codex',
-    configFile: path.join(home, '.codex', 'config.toml'),
+    configFile: path.join(codexHome, 'config.toml'),
     tomlSection: 'mcp_servers.gitnexus',
   };
 
@@ -205,10 +208,10 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
       // Codex hooks use Claude Code's exact {hooks: {Event: [...]}} JSON shape
       // and hookSpecificOutput response contract, in a dedicated hooks.json
       // (https://developers.openai.com/codex/hooks).
-      settingsFile: path.join(home, '.codex', 'hooks.json'),
+      settingsFile: path.join(codexHome, 'hooks.json'),
       events: ['PreToolUse', 'PostToolUse'],
       needle: 'gitnexus-hook',
-      scriptDir: path.join(home, '.codex', 'hooks', 'gitnexus'),
+      scriptDir: path.join(codexHome, 'hooks', 'gitnexus'),
     },
     {
       id: 'antigravity',
