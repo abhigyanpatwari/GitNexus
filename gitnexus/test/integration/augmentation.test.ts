@@ -21,6 +21,11 @@ const AUGMENT_SEED_DATA = [
   `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 15, isExported: true, content: 'function login authenticates user credentials', description: 'user login'})`,
   `CREATE (n:Function {id: 'func:validate', name: 'validate', filePath: 'src/auth.ts', startLine: 17, endLine: 25, isExported: true, content: 'function validate checks user input', description: 'input validation'})`,
   `CREATE (n:Function {id: 'func:hash', name: 'hash', filePath: 'src/utils.ts', startLine: 1, endLine: 8, isExported: true, content: 'function hash computes bcrypt hash', description: 'password hashing'})`,
+  ...Array.from(
+    { length: 5 },
+    (_, i) =>
+      `CREATE (n:Function {id: 'a:login-${i}', name: 'loginPartial${i}', filePath: 'src/login-partial-${i}.ts', startLine: 1, endLine: 2, isExported: true, content: 'partial login match ${i}', description: 'login partial'})`,
+  ),
 
   // Class / Method / Interface nodes
   `CREATE (n:Class {id: 'class:AuthService', name: 'AuthService', filePath: 'src/auth.ts', startLine: 30, endLine: 60, isExported: true, content: 'class AuthService handles authentication', description: 'auth service'})`,
@@ -130,23 +135,40 @@ withTestLbugDB(
         expect(result).toBe('');
       });
 
-      // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
-      //
-      // When FTS is available but happens to return zero BM25 hits, the
-      // CONTAINS fallback must NOT fire — preserving the original early-return
-      // semantics. If anyone later loosens the gate to `symbolMatches.length
-      // === 0` alone, this test fails.
-
-      it('does NOT fire CONTAINS fallback when FTS is available but BM25 returns empty', async () => {
+      it('falls back to graph names when FTS is available but BM25 returns empty', async () => {
         const bm25 = await import('../../src/core/search/bm25-index.js');
         const spy = vi
           .spyOn(bm25, 'searchFTSFromLbug')
           .mockResolvedValue({ results: [], ftsAvailable: true });
         try {
-          // 'login' WOULD match a graph node via CONTAINS, but FTS is available
-          // and empty → fallback gate must hold → result must be ''.
+          // FTS health does not imply its top file results contain the symbol's
+          // definition. The graph-name fallback must recover the exact node.
           const result = await augment('login', handle.dbPath);
-          expect(result).toBe('');
+          expect(result).toContain('[GitNexus]');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it('finds an exact-name symbol when FTS ranks only mentioning files', async () => {
+        const bm25 = await import('../../src/core/search/bm25-index.js');
+        const spy = vi.spyOn(bm25, 'searchFTSFromLbug').mockResolvedValue({
+          results: Array.from({ length: 5 }, (_, i) => ({
+            filePath: `src/caller-${i}.ts`,
+            score: 100 - i,
+            rank: i + 1,
+            nodeIds: [`file:caller-${i}`],
+          })),
+          ftsAvailable: true,
+        });
+        try {
+          // Five partial login matches have IDs that sort before func:login, so
+          // the five-row fallback only retains the exact node when exact names
+          // rank ahead of partial matches.
+          const result = await augment('login', handle.dbPath);
+          expect(result).toContain('[GitNexus]');
+          expect(result).toMatch(/^login \(src\/auth\.ts\)$/m);
         } finally {
           spy.mockRestore();
         }
