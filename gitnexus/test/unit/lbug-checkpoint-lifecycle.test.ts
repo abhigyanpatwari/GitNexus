@@ -730,6 +730,68 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
     await adapter.closeLbug();
   });
 
+  it.each([false, true])(
+    'drains every FTS CREATE result and preserves a deferred failure (failure=%s)',
+    async (fails) => {
+      vi.resetModules();
+      const nativeError = new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.');
+      const events: string[] = [];
+      const results = ['first', 'second', 'third'].map((name) => ({
+        getAll: vi.fn(async () => {
+          events.push(`${name}:getAll`);
+          if (fails && name === 'second') throw nativeError;
+          return [];
+        }),
+        close: vi.fn(() => {
+          events.push(`${name}:close`);
+        }),
+      }));
+      const genericResult = { getAll: vi.fn(async () => []), close: vi.fn() };
+      const conn = makeConn(async (sql: string) =>
+        sql.startsWith('CALL CREATE_FTS_INDEX') ? results : genericResult,
+      );
+      const db = { close: vi.fn(async () => {}) };
+      const dbPath = '/tmp/gitnexus-lbug-fts-create-drain/lbug';
+      mockFsForInit(dbPath);
+      vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+        openLbugConnection: vi.fn(async () => ({ db, conn })),
+        closeLbugConnection: vi.fn(async () => {}),
+        isDbBusyError: vi.fn(() => false),
+        isOpenRetryExhausted: vi.fn(() => false),
+        waitForWindowsHandleRelease: vi.fn(async () => true),
+        isStorageVersionMismatchError: vi.fn(() => false),
+        throwIfStorageVersionMismatch: vi.fn(),
+        STORAGE_VERSION_MISMATCH_SUGGESTION: '',
+      }));
+      vi.doMock('../../src/core/lbug/extension-loader.js', () => ({
+        extensionManager: {
+          ensure: vi.fn(async () => true),
+          getCapabilities: vi.fn(() => []),
+          reset: vi.fn(),
+        },
+      }));
+
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      await adapter.initLbug(dbPath);
+      try {
+        const create = adapter.createFTSIndex('Property', 'property_fts', ['name']);
+        if (fails) await expect(create).rejects.toBe(nativeError);
+        else await expect(create).resolves.toBeUndefined();
+        expect(events).toEqual([
+          'first:getAll',
+          'first:close',
+          'second:getAll',
+          'second:close',
+          'third:getAll',
+          'third:close',
+        ]);
+        for (const result of results) expect(result.close).toHaveBeenCalledOnce();
+      } finally {
+        await adapter.closeLbug();
+      }
+    },
+  );
+
   it('closes non-first stream query results when LadybugDB returns an array', async () => {
     vi.resetModules();
 

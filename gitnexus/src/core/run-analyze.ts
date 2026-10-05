@@ -1728,20 +1728,33 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      const missing = await verifySearchFTSIndexes(executeQuery, ftsIndexes);
-      if (missing.length > 0) {
-        // #2889: name WHY each index is missing when the build itself said so.
-        // Repair now rebuilds every table it can before reporting, so the tables
-        // absent from this list were genuinely repaired even on a failed run —
-        // previously the first failure aborted the sweep and the message could
-        // only ever list "missing", never a reason. Same sentence the analyze
-        // degrade path prints, so one failure does not read two ways.
-        const reasons =
+      const catalogDiagnostics: string[] = [];
+      let missing: string[] = [];
+      let catalogError: string | undefined;
+      try {
+        missing = await verifySearchFTSIndexes(executeQuery, ftsIndexes, (diagnostic) => {
+          catalogDiagnostics.push(diagnostic.message);
+        });
+      } catch (error) {
+        // An unreadable catalog is unknown, not proof of missing indexes.
+        // Keep earlier native build errors when this read also fails.
+        catalogError = error instanceof Error ? error.message : String(error);
+      }
+      if (repairFailures.length > 0 || missing.length > 0 || catalogError !== undefined) {
+        // A failed DROP may leave a valid old catalog entry. Its presence must
+        // not certify that this repair succeeded or clear the recovery marker.
+        const reasons = [
+          missing.length > 0 ? `missing indexes after rebuild: ${missing.join(', ')}` : '',
           repairFailures.length > 0
-            ? ` ${summarizeFtsIndexBuildFailures(repairFailures, ftsIndexes)}.`
-            : '';
+            ? summarizeFtsIndexBuildFailures(repairFailures, ftsIndexes)
+            : missing.length > 0
+              ? 'no build error was returned'
+              : '',
+          ...catalogDiagnostics,
+          catalogError !== undefined ? `catalog verification failed: ${catalogError}` : '',
+        ].filter(Boolean);
         throw new Error(
-          `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}.${reasons} ` +
+          `FTS repair failed - ${reasons.join('. ')}. ` +
             'Run `gitnexus analyze --force` to perform a full graph+FTS rebuild; ' +
             'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
         );

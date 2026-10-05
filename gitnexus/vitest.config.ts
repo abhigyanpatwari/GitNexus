@@ -71,6 +71,7 @@ export default defineConfig({
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
+            'test/integration/incremental-worktree-context.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -100,6 +101,7 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
@@ -166,6 +168,7 @@ export default defineConfig({
             'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-context-integrity.test.ts',
+            'test/integration/incremental-worktree-context.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -193,6 +196,7 @@ export default defineConfig({
             'test/integration/class-impact-all-languages.test.ts',
             'test/integration/lbug-orphan-sidecar-recovery.test.ts',
             'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
+            'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
             'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
