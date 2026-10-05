@@ -19,12 +19,18 @@ From `gitnexus/`:
 | Command                       | What it runs                                       | When to use                           |
 | ----------------------------- | -------------------------------------------------- | ------------------------------------- |
 | `npm test`                    | Full suite (all 3 vitest projects)                 | Before opening a PR                   |
+| `npm run typecheck:tests`     | TypeScript checks for source, tests, and helpers   | Before opening a PR                   |
 | `npm run test:unit`           | Unit tests only (`test/unit/`)                     | Tight development loop                |
 | `npm run test:integration`    | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
 | `npm run test:coverage`       | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
 | `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
+
+Vitest transpiles TypeScript without checking types. Run `npm run typecheck:tests`
+in `gitnexus/` to check test code and helpers against the production types. This
+uses `tsc --noEmit -p tsconfig.test.json`; parser input files under `test/fixtures/`
+are excluded because they are sample source code, not part of the test program.
 
 ### `gitnexus-web/` commands
 
@@ -41,7 +47,7 @@ From `gitnexus-web/`:
 ```bash
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
-cd gitnexus && npx tsc --noEmit && npm test
+cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 
@@ -120,6 +126,9 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 | `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
 
 The `CI Gate` job in `ci.yml` is the single required check for branch protection. It requires quality, tests, e2e, and scope-parity to all pass.
+
+The `typecheck` job runs both the production compiler check and
+`npm run typecheck:tests`. A type error in either check fails the job and the CI gate.
 
 ## Regression testing
 
