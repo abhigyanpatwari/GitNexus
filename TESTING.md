@@ -141,6 +141,13 @@ parameterized cases must have unique titles. Missing receipts, missing test file
 unhandled runner errors, failed hooks, failed assertions, and tests with no pass
 all fail the gate. Web tests are checked separately with the same rules.
 
+The locked pytest suite and Linux/Windows containment jobs also upload JUnit
+receipts. The same gate checks every Python test file was collected and every
+case passed in at least one job, while preserving failures from any job. The
+Linux containment job supplies Bubblewrap, the pinned CLI, and built Vitest
+dependencies for tests that cannot run in the basic Python job. Python results
+are included in the combined PR report.
+
 The PR report shows the reconciled result as **Unverified**. Zero means every test
 has execution evidence; individual OS logs still show tests that require another
 OS as skipped. Failed executions remain failures even if another job passes.

@@ -287,6 +287,7 @@ jobs:
           # ── Locate test results ──
           RESULTS_FILE=$(find_first "$DIR/test-reports" "test-results.json")
           WEB_RESULTS_FILE=$(find_first "$DIR/test-reports" "web-test-results.json")
+          PYTEST_RESULTS_FILE=$(find_first "$DIR/test-reports" "pytest-results.json")
 
           sum_results() {
             local file=$1
@@ -303,14 +304,16 @@ jobs:
           # framework, not as a top-line metric).
           read -r CLI_T CLI_P CLI_F CLI_S _ CLI_D <<< "$(sum_results "$RESULTS_FILE")"
           read -r WEB_T WEB_P WEB_F WEB_S _ WEB_D <<< "$(sum_results "$WEB_RESULTS_FILE")"
+          read -r PY_T PY_P PY_F PY_S _ PY_D <<< "$(sum_results "$PYTEST_RESULTS_FILE")"
 
-          TOTAL=$((CLI_T + WEB_T))
-          PASSED=$((CLI_P + WEB_P))
-          FAILED=$((CLI_F + WEB_F))
-          SKIPPED=$((CLI_S + WEB_S))
+          TOTAL=$((CLI_T + WEB_T + PY_T))
+          PASSED=$((CLI_P + WEB_P + PY_P))
+          FAILED=$((CLI_F + WEB_F + PY_F))
+          SKIPPED=$((CLI_S + WEB_S + PY_S))
           DURATION=$((CLI_D > WEB_D ? CLI_D : WEB_D))
+          DURATION=$((DURATION > PY_D ? DURATION : PY_D))
           EXECUTION_ERRORS=0
-          for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE"; do
+          for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE" "$PYTEST_RESULTS_FILE"; do
             if [ -n "$rf" ] && [ -f "$rf" ]; then
               errors=$(jq -r '(.executionFailures // []) | length' "$rf")
               EXECUTION_ERRORS=$((EXECUTION_ERRORS + errors))
@@ -407,7 +410,7 @@ jobs:
                 echo "<details>"
                 echo "<summary>${SKIPPED} test(s) have no recorded pass — expand for details</summary>"
                 echo ""
-                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE"; do
+                for rf in "$RESULTS_FILE" "$WEB_RESULTS_FILE" "$PYTEST_RESULTS_FILE"; do
                   if [ -n "$rf" ] && [ -f "$rf" ]; then
                     jq -r '
                       .testResults[]

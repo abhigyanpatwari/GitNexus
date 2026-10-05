@@ -250,7 +250,11 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Carries the real-CLI identity probe, which needs CLAUDE_CANARY_BIN -
         # set only on this job. Omitted from this list it skipped everywhere.
         "tests/test_mock_provider.py",
+        # These also need runtime dependencies absent from the locked pytest job.
+        "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
+        "tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout",
         "-q",
+        "--junitxml=pytest-ubuntu.xml",
     ]
     bwrap_canary_marker = re.compile(
         r'@pytest\.mark\.skipif\(\s*os\.environ\.get\("GITNEXUS_REQUIRE_BWRAP_CANARY"\)',
@@ -1092,4 +1096,3 @@ def test_an_uninvoked_skill_still_counts_toward_the_arm_median():
     # The invariant that makes the half-fix unsafe: the median and the run count
     # the gate reads must cover the same rows.
     assert agg["valid_runs"] == 2
-

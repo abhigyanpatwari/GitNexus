@@ -1,6 +1,7 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
   getStoragePaths,
@@ -2747,6 +2748,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     vi.doUnmock('../../src/core/embeddings/embedding-identity.js');
     vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
     vi.doUnmock('../../src/core/embeddings/staged-embedding-recovery.js');
+    vi.doUnmock('../../src/core/analyzer-identity.js');
     vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
@@ -3404,6 +3406,32 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
           await fs.writeFile(`${storagePath}/${source.filename}`, source.contents);
         }
         await fs.writeFile(lbugPath, 'previous published index');
+        // This unit fixture switches process.platform to exercise Windows
+        // recovery. Hash an immutable, test-owned analyzer runtime instead of
+        // the shared checkout under concurrent CI activity. Keep the real
+        // identity validation and finalization.
+        const identity = await import('../../src/core/analyzer-identity.js');
+        const runtimeRoot = `${tmpRepo.dbPath}/analyzer-runtime`;
+        await fs.mkdir(`${runtimeRoot}/src`, { recursive: true });
+        await fs.writeFile(
+          `${runtimeRoot}/package.json`,
+          '{"name":"recovery-fixture","version":"1.0.0"}',
+        );
+        await fs.writeFile(`${runtimeRoot}/package-lock.json`, '{"lockfileVersion":3}');
+        await fs.writeFile(`${runtimeRoot}/src/analyzer.ts`, 'export const analyzer = 1;');
+        const runtimeUrl = pathToFileURL(`${runtimeRoot}/src/analyzer.ts`).href;
+        const identityOptions = { cacheDirectory: `${tmpRepo.dbPath}/identity-cache` };
+        const resolveRunnerIdentity = vi.fn(() =>
+          identity.resolveAnalyzerRunnerIdentity(runtimeUrl, identityOptions),
+        );
+        vi.doMock('../../src/core/analyzer-identity.js', () => ({
+          ...identity,
+          resolveAnalyzerRunnerIdentity: resolveRunnerIdentity,
+          finalizeAnalyzerRunnerIdentity: (
+            _url: string,
+            startedWith: NonNullable<RepoMeta['runnerIdentity']>,
+          ) => identity.finalizeAnalyzerRunnerIdentity(runtimeUrl, startedWith, identityOptions),
+        }));
         const { normalizeCachedEmbeddings } =
           await import('../../src/core/embeddings/embedding-restore-spill.js');
         // Resolve the real merge implementation on the host, before selecting
@@ -3478,6 +3506,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         expect(error, logs.join('\n')).toEqual(
           outcome === 'success' ? null : expect.objectContaining({ message: outcome }),
         );
+        expect(resolveRunnerIdentity, logs.join('\n')).toHaveBeenCalledOnce();
         expect(recoverStagedEmbeddings, logs.join('\n')).toHaveBeenCalledOnce();
         expect(logs).toContain(
           'Recovered 1 complete staged embedding chunk(s) for 1 node(s); unchanged content can reuse them.',

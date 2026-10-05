@@ -914,8 +914,16 @@ jobs:
           python-version: '3.13'
           enable-cache: true
           cache-dependency-glob: eval/uv.lock
-      - run: uv run --locked --extra dev python -m pytest tests -q
+      - run: uv run --locked --extra dev python -m pytest tests -q --junitxml=pytest-locked.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-locked
+          path: eval/pytest-locked.xml
+          if-no-files-found: error
+          retention-days: 5
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -936,7 +944,16 @@ jobs:
 
   test-completeness:
     name: every test executed
-    needs: [shard-plan, coverage-merge, cross-platform, benchmarks, eval-tests]
+    needs:
+      [
+        shard-plan,
+        coverage-merge,
+        cross-platform,
+        benchmarks,
+        eval-tests,
+        eval-containment-linux,
+        eval-containment-windows,
+      ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -950,6 +967,7 @@ jobs:
         with:
           name: coverage-reports
       - name: Download all execution receipts
+        if: ${{ !cancelled() }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: execution-*
@@ -962,6 +980,9 @@ jobs:
           cp gitnexus/test-results.json execution-reports/coverage.json
           cd gitnexus
           node --import tsx scripts/test-completeness.ts ../execution-reports test-results.json "$PLATFORM_SHARDS"
+      - name: Require a real pass for every pytest case
+        if: ${{ !cancelled() }}
+        run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
       - name: Upload complete test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -972,6 +993,7 @@ jobs:
             gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
+            eval/pytest-results.json
           if-no-files-found: error
           retention-days: 5
 
@@ -1048,8 +1070,19 @@ jobs:
           tests/test_workflow_bench_sessions.py
           tests/test_ce_plugin_runtime.py
           tests/test_offline_sweep_integration.py
-          tests/test_mock_provider.py -q
+          tests/test_mock_provider.py
+          tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
+          tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
+          -q --junitxml=pytest-ubuntu.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-ubuntu
+          path: eval/pytest-ubuntu.xml
+          if-no-files-found: error
+          retention-days: 5
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
   # the grandchild delayed-write test must execute and pass on this runner.
@@ -1071,5 +1104,13 @@ jobs:
         run: >-
           uv run --locked --extra dev python -m pytest
           tests/test_process_control.py tests/test_model_gateway.py
-          -k "not locked_litellm" -q
+          -k "not locked_litellm" -q --junitxml=pytest-windows.xml
         working-directory: eval
+      - name: Upload pytest execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-pytest-windows
+          path: eval/pytest-windows.xml
+          if-no-files-found: error
+          retention-days: 5
