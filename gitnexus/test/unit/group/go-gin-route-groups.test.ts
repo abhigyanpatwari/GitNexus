@@ -979,6 +979,44 @@ func main() {
 `),
     ).toEqual([{ method: 'GET', path: '/api/users/:id', name: 'Get' }]);
   });
+
+  it('does not decline for a stored closure or a shadowed closure write', () => {
+    // Storing a function literal in a value does not run its body, so a `:=`
+    // whose initializer is an UNCALLED literal leaves the outer group alone;
+    // only an invoked literal (`… }()`), which runs during initialization,
+    // writes it. A closure whose own body declares the name — a nested `:=`
+    // or a parameter — writes that local, not the captured outer group.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/old")
+	{
+		g := func() { g = r.Group("/stored") }
+		_ = g
+	}
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		reset := func() { k := r.Group("/local"); k = r.Group("/local2") }
+		k = r.Group("/new")
+		reset()
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		reset := func(m *gin.RouterGroup) { m = r.Group("/param") }
+		m = r.Group("/new")
+		reset(m)
+	}
+	m.GET("/c", h.C)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/old/a', name: 'A' },
+      { method: 'GET', path: '/new/b', name: 'B' },
+      { method: 'GET', path: '/new/c', name: 'C' },
+    ]);
+  });
 });
 
 describe('Go gin provider ↔ fetch() consumer pairing', () => {
