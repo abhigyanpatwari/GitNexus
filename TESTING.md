@@ -130,6 +130,27 @@ The `CI Gate` job in `ci.yml` is the single required check for branch protection
 The `typecheck` job runs both the production compiler check and
 `npm run typecheck:tests`. A type error in either check fails the job and the CI gate.
 
+### Complete execution, including platform and benchmark tests
+
+The required `every test executed` job reconciles execution receipts from Ubuntu
+coverage, every Windows/macOS shard, the serial benchmark run, and the real Python
+workflow preflight. It requires a recorded pass for every collected test. A skip
+on Linux is satisfied only by a pass of that exact test in another required job.
+Test identities include the file, suite/title and source location; ambiguous
+parameterized cases must have unique titles. Missing receipts, missing test files,
+unhandled runner errors, failed hooks, failed assertions, and tests with no pass
+all fail the gate. Web tests are checked separately with the same rules.
+
+The PR report shows the reconciled result as **Unverified**. Zero means every test
+has execution evidence; individual OS logs still show tests that require another
+OS as skipped. Failed executions remain failures even if another job passes.
+
+`npm run test:benchmarks` discovers all tests gated by `GITNEXUS_BENCH` and runs
+them serially. Keep timing measurements out of parallel coverage workers. The
+`eval-tests` job installs the locked Python dependencies and runs the workflow
+preflight Vitest tests as well as pytest; those tests must exercise real Python
+validation, never a stubbed success.
+
 ## Regression testing
 
 Re-run the full relevant suite when:

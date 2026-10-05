@@ -32,6 +32,7 @@ jobs:
     env:
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_REQUIRE_ZIG: '1'
+      GITNEXUS_REQUIRE_VECTOR: '1'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
@@ -115,7 +116,7 @@ jobs:
         run: >-
           npx vitest --mergeReports
           --reporter=default
-          --reporter=json
+          --reporter=./scripts/execution-reporter.ts
           --outputFile=test-results.json
           --coverage
           --coverage.reporter=json-summary
@@ -131,7 +132,8 @@ jobs:
         run: >-
           npx vitest run
           --reporter=default
-          --reporter=json
+          --reporter=../gitnexus/scripts/execution-reporter.ts
+          --includeTaskLocation
           --outputFile=web-test-results.json
         working-directory: gitnexus-web
       - name: Run docker-server integration tests
@@ -140,7 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: test-reports
+          name: coverage-reports
           path: |
             gitnexus/coverage/coverage-summary.json
             gitnexus/coverage/coverage-final.json
@@ -254,8 +256,17 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+          GITNEXUS_TEST_REPORT: ${{ matrix.os }}-${{ matrix.shard }}.json
         run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
+      - name: Upload platform execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-${{ matrix.os }}-${{ matrix.shard }}
+          path: gitnexus/${{ matrix.os }}-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 5
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:
   #   1. Static, offline: assert every grammar's compiled ABI loads on the
@@ -482,11 +493,8 @@ jobs:
   # heap, so parallel forks both skew the timings and OOM the worker pool — they
   # must run one file at a time.
   #
-  # go-pipeline-benchmark.test.ts is deliberately NOT included: its
-  # worker-pool (#1848) suite spins a real worker pool that exits unexpectedly
-  # under vitest's fork pool (reproduced in validation), which would make this
-  # gate flaky. Go is already guarded by its non-gated O(n^2) tripwire (runs in
-  # the main coverage job) plus its golden capture-parity test.
+  # Every opt-in suite is discovered by run-benchmarks.ts. A failing worker
+  # benchmark is a failure to investigate, never a reason to omit that suite.
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
@@ -876,28 +884,18 @@ jobs:
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
-        # cpp-adl-benchmark.test.ts and csharp-razor-view-components-benchmark.test.ts
-        # are not `*-pipeline-benchmark.test.ts` files but belong here for the
-        # same reason: they are skipIf-gated on GITNEXUS_BENCH, so the scaling
-        # guards they hold never run in the main coverage job.
         env:
-          GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: >-
-          npx vitest run --no-file-parallelism
-          test/integration/cobol-pipeline-benchmark.test.ts
-          test/integration/csharp-pipeline-benchmark.test.ts
-          test/integration/csharp-razor-view-components-benchmark.test.ts
-          test/integration/objective-c-pipeline-benchmark.test.ts
-          test/integration/cpp-adl-benchmark.test.ts
-          test/integration/data-route-table-benchmark.test.ts
-          test/integration/instance-ownership-pipeline-benchmark.test.ts
-          test/integration/spring-bean-resource-benchmark.test.ts
-          test/integration/spring-dynamic-lookup-benchmark.test.ts
-          test/integration/rust-pipeline-benchmark.test.ts
-          test/integration/php-pipeline-benchmark.test.ts
-          test/integration/ruby-pipeline-benchmark.test.ts
+        run: npm run test:benchmarks
         working-directory: gitnexus
+      - name: Upload benchmark execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-benchmarks
+          path: gitnexus/benchmarks.json
+          if-no-files-found: error
+          retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
   # exactly the dependency graph developers run from eval/uv.lock.
@@ -918,6 +916,64 @@ jobs:
           cache-dependency-glob: eval/uv.lock
       - run: uv run --locked --extra dev python -m pytest tests -q
         working-directory: eval
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Exercise real workflow evidence preflight
+        if: ${{ !cancelled() }}
+        run: >-
+          npx vitest run test/unit/skill-evolution-workflow.test.ts
+          --reporter=default --reporter=./scripts/execution-reporter.ts --outputFile=preflight.json
+        working-directory: gitnexus
+      - name: Upload preflight execution report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: execution-preflight
+          path: gitnexus/preflight.json
+          if-no-files-found: error
+          retention-days: 5
+
+  test-completeness:
+    name: every test executed
+    needs: [shard-plan, coverage-merge, cross-platform, benchmarks, eval-tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Download coverage and web reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: coverage-reports
+      - name: Download all execution receipts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: execution-*
+          path: execution-reports
+          merge-multiple: true
+      - name: Require a real pass for every collected test
+        env:
+          PLATFORM_SHARDS: ${{ needs.shard-plan.outputs.total }}
+        run: |
+          cp gitnexus/test-results.json execution-reports/coverage.json
+          cd gitnexus
+          node --import tsx scripts/test-completeness.ts ../execution-reports test-results.json "$PLATFORM_SHARDS"
+      - name: Upload complete test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-reports
+          path: |
+            gitnexus/coverage/coverage-summary.json
+            gitnexus/coverage/coverage-final.json
+            gitnexus/test-results.json
+            gitnexus-web/web-test-results.json
+          if-no-files-found: error
+          retention-days: 5
 
   # Native Linux ownership and Bubblewrap boundary. The environment flag makes
   # the real namespace test mandatory; a missing/blocked bwrap is a failure.

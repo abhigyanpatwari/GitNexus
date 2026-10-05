@@ -80,8 +80,19 @@ console.log(
 );
 
 const startedAt = Date.now();
+const reportName = process.env.GITNEXUS_TEST_REPORT;
+if (reportName && !/^[a-zA-Z0-9_-]+\.json$/.test(reportName)) {
+  throw new Error('GITNEXUS_TEST_REPORT must be a JSON basename');
+}
+const reportArgs = reportName
+  ? [
+      '--reporter=default',
+      '--reporter=./scripts/execution-reporter.ts',
+      `--outputFile=${reportName}`,
+    ]
+  : [];
 try {
-  execFileSync('npx', ['vitest', 'run', ...files], {
+  execFileSync('npx', ['vitest', 'run', ...files, ...reportArgs], {
     cwd: ROOT,
     stdio: 'inherit',
     timeout: timeoutMs,

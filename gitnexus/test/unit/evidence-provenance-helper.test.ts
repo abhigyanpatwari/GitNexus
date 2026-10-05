@@ -953,20 +953,23 @@ SAFE_WRITE_FIXTURES('generated-plan safe writer', () => {
       ['--expected-plan-path', SAFE_PLAN_PATH],
       /--expected-plan-path and --expected-plan-digest require --replace/,
     ],
-  ] as const)('rejects command-inapplicable CLI options for %s', (command, extra, pattern) => {
-    const repo = createBaseRepo('gitnexus-plan-cli-options-');
-    try {
-      const result = spawnSync(
-        process.execPath,
-        [PLAN_HELPER, command, '--repo', repo, '--generated-plan', SAFE_PLAN_PATH, ...extra],
-        { encoding: 'utf8', input: '# plan\n' },
-      );
-      expect(result.status).toBe(1);
-      expect(result.stderr).toMatch(pattern);
-    } finally {
-      fs.rmSync(repo, { recursive: true, force: true });
-    }
-  });
+  ] as const)(
+    'rejects command-inapplicable CLI options for %s (case %#)',
+    (command, extra, pattern) => {
+      const repo = createBaseRepo('gitnexus-plan-cli-options-');
+      try {
+        const result = spawnSync(
+          process.execPath,
+          [PLAN_HELPER, command, '--repo', repo, '--generated-plan', SAFE_PLAN_PATH, ...extra],
+          { encoding: 'utf8', input: '# plan\n' },
+        );
+        expect(result.status).toBe(1);
+        expect(result.stderr).toMatch(pattern);
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('never overwrites a destination created immediately before initial publication', async () => {
     const repo = createBaseRepo('gitnexus-plan-writer-');

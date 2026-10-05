@@ -1959,7 +1959,7 @@ describe('assertSafeStoragePath (#1003)', () => {
     await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it.each([null, 42])('rejects malformed storagePath %p with the safety error', async (value) => {
+  it.each([null, 42])('rejects malformed storagePath %s with the safety error', async (value) => {
     const entry = {
       ...base,
       storagePath: value,
