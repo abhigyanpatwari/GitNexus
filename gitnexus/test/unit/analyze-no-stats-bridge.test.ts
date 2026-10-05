@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock, cliErrorMock } =
   vi.hoisted(() => {
     const runFullAnalysisMock = vi.fn();
-    const generateAIContextFilesMock = vi.fn(async () => ({ files: [] as string[] }));
+    const generateAIContextFilesMock = vi.fn<
+      typeof import('../../src/cli/ai-context.js').generateAIContextFiles
+    >(async () => ({ files: [] as string[] }));
     const generateSkillFilesMock = vi.fn(async () => ({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills',

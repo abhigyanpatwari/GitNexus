@@ -1438,6 +1438,7 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
       const n = (initCounts.get(id) ?? 0) + 1;
       initCounts.set(id, n);
       if (id === 'app-repo-2' && n === 2) throw new Error('window init boom');
+      return true;
     });
     const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
     const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {

@@ -232,7 +232,7 @@ describe('Tier-A predicate registry', () => {
       type: 'Function',
       templateConstraints: payload,
       ...(opts.parameterTypeClasses !== undefined
-        ? { parameterTypeClasses: opts.parameterTypeClasses }
+        ? { parameterTypeClasses: [...opts.parameterTypeClasses] }
         : {}),
     };
     return cppConstraintCompatibility({ arity: argumentTypes.length }, def, {

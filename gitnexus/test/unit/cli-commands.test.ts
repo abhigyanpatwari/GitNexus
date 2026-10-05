@@ -96,7 +96,9 @@ describe('CLI commands', () => {
   describe('optional parser dependencies', () => {
     it('loads vendored grammars from vendor/ — never file: optionalDependencies (#1728) nor a node_modules copy (#2111)', async () => {
       const pkg = await import('../../package.json', { with: { type: 'json' } });
-      const optional = pkg.default.optionalDependencies ?? {};
+      const optional =
+        (pkg.default as { optionalDependencies?: Record<string, string> }).optionalDependencies ??
+        {};
       expect(optional['tree-sitter-dart']).toBeUndefined();
       expect(optional['tree-sitter-proto']).toBeUndefined();
       expect(optional['tree-sitter-swift']).toBeUndefined();
@@ -142,8 +144,12 @@ describe('CLI commands', () => {
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(swiftPkg.default.version).toBe('0.7.1');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
-      expect(swiftPkg.default.scripts?.install).toBeUndefined();
-      expect(swiftPkg.default.dependencies).toBeUndefined();
+      expect(
+        (swiftPkg.default as { scripts?: Record<string, string> }).scripts?.install,
+      ).toBeUndefined();
+      expect(
+        (swiftPkg.default as { dependencies?: Record<string, string> }).dependencies,
+      ).toBeUndefined();
       expect(swiftPkg.default.peerDependencies['tree-sitter']).toContain('^0.21.1');
       // Swift is now unified with Dart/Proto/Kotlin/C: the grammar SOURCE is
       // vendored so build-tree-sitter-grammars.cjs can source-build the binding
@@ -164,7 +170,9 @@ describe('CLI commands', () => {
       const kotlinPkg = await import('../../vendor/tree-sitter-kotlin/package.json', {
         with: { type: 'json' },
       });
-      const optional = pkg.default.optionalDependencies ?? {};
+      const optional =
+        (pkg.default as { optionalDependencies?: Record<string, string> }).optionalDependencies ??
+        {};
       // Kotlin is now VENDORED (like Swift/Dart/Proto), not a third-party npm
       // optionalDependency. Its prebuilds are GitNexus-cross-built (upstream
       // ships source only) and loaded from vendor/ by absolute path (#2111).
@@ -172,8 +180,12 @@ describe('CLI commands', () => {
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(kotlinPkg.default.version).toBe('0.4.0');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
-      expect(kotlinPkg.default.scripts?.install).toBeUndefined();
-      expect(kotlinPkg.default.dependencies).toBeUndefined();
+      expect(
+        (kotlinPkg.default as { scripts?: Record<string, string> }).scripts?.install,
+      ).toBeUndefined();
+      expect(
+        (kotlinPkg.default as { dependencies?: Record<string, string> }).dependencies,
+      ).toBeUndefined();
       expect(kotlinPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
     });
 
@@ -182,15 +194,21 @@ describe('CLI commands', () => {
       const zigPkg = await import('../../vendor/tree-sitter-zig/package.json', {
         with: { type: 'json' },
       });
-      const optional = pkg.default.optionalDependencies ?? {};
+      const optional =
+        (pkg.default as { optionalDependencies?: Record<string, string> }).optionalDependencies ??
+        {};
       expect(optional['@tree-sitter-grammars/tree-sitter-zig']).toBeUndefined();
       expect(Object.keys(pkg.default.overrides ?? {})).not.toContain(
         '@tree-sitter-grammars/tree-sitter-zig',
       );
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(zigPkg.default.version).toBe('1.1.2');
-      expect(zigPkg.default.scripts?.install).toBeUndefined();
-      expect(zigPkg.default.dependencies).toBeUndefined();
+      expect(
+        (zigPkg.default as { scripts?: Record<string, string> }).scripts?.install,
+      ).toBeUndefined();
+      expect(
+        (zigPkg.default as { dependencies?: Record<string, string> }).dependencies,
+      ).toBeUndefined();
       expect(zigPkg.default.peerDependencies['tree-sitter']).toContain('^0.21');
     });
 
@@ -205,8 +223,12 @@ describe('CLI commands', () => {
       expect(pkg.default.dependencies['tree-sitter-c']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
       expect(cPkg.default.version).toBe('0.21.4');
-      expect(cPkg.default.scripts?.install).toBeUndefined();
-      expect(cPkg.default.dependencies).toBeUndefined();
+      expect(
+        (cPkg.default as { scripts?: Record<string, string> }).scripts?.install,
+      ).toBeUndefined();
+      expect(
+        (cPkg.default as { dependencies?: Record<string, string> }).dependencies,
+      ).toBeUndefined();
     });
   });
 

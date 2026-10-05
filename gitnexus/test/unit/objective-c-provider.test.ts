@@ -1,3 +1,5 @@
+import type { ObjCFileFacts } from '../../src/core/ingestion/languages/objective-c/facts.js';
+import { finalizeScopeModel } from '../../src/core/ingestion/finalize-orchestrator.js';
 import { describe, expect, it } from 'vitest';
 import path from 'path';
 import Parser from 'tree-sitter';
@@ -504,27 +506,41 @@ static int helper(void) { return 1; }
       graph.addNode({
         id: container.nodeId,
         label: container.label,
-        properties: { filePath: facts.filePath, qualifiedName: container.qualifiedName },
+        properties: {
+          name: container.name,
+          filePath: facts.filePath,
+          qualifiedName: container.qualifiedName,
+        },
       });
     }
     for (const method of facts.methods) {
       graph.addNode({
         id: method.nodeId,
         label: 'Method',
-        properties: { filePath: facts.filePath, qualifiedName: method.qualifiedName },
+        properties: {
+          name: method.name,
+          filePath: facts.filePath,
+          qualifiedName: method.qualifiedName,
+        },
       });
     }
-    objectiveCScopeResolver.emitPostResolutionEdges?.(graph, [
-      {
-        filePath: facts.filePath,
-        moduleScope: 0,
-        scopes: [],
-        parsedImports: [],
-        localDefs: [],
-        referenceSites: [],
-        captureSideChannel: { kind: 'objective-c', facts },
-      },
-    ]);
+    objectiveCScopeResolver.emitPostResolutionEdges?.(
+      graph,
+      [
+        {
+          filePath: facts.filePath,
+          moduleScope: `scope:${facts.filePath}#module`,
+          scopes: [],
+          parsedImports: [],
+          localDefs: [],
+          referenceSites: [],
+          captureSideChannel: { kind: 'objective-c', facts },
+        },
+      ],
+      new Map(),
+      finalizeScopeModel([]),
+      { fileContents: new Map() },
+    );
 
     const go = facts.methods.find(
       (method) => method.selector === 'go' && method.declarationRole === 'implementation',
@@ -779,7 +795,7 @@ static int helper(void) { return 1; }
       protocols: [] as string[],
     };
     const protocolRunQn = objcMethodQualifiedName(protocolQn, '-', 'run');
-    const factsList = [
+    const factsList: ObjCFileFacts[] = [
       {
         providerVersion: '0',
         grammarPackage: 'tree-sitter-objc',
@@ -893,7 +909,7 @@ static int helper(void) { return 1; }
     const graph = createKnowledgeGraph();
     const parsedFiles = factsList.map((facts) => ({
       filePath: facts.filePath,
-      moduleScope: 0,
+      moduleScope: `scope:${facts.filePath}#module`,
       scopes: [],
       parsedImports: [],
       localDefs: [],
@@ -904,25 +920,43 @@ static int helper(void) { return 1; }
       graph.addNode({
         id: `File:${facts.filePath}`,
         label: 'File',
-        properties: { filePath: facts.filePath, qualifiedName: facts.filePath },
+        properties: {
+          name: facts.filePath,
+          filePath: facts.filePath,
+          qualifiedName: facts.filePath,
+        },
       });
       for (const container of facts.containers) {
         graph.addNode({
           id: container.nodeId,
           label: container.label,
-          properties: { filePath: facts.filePath, qualifiedName: container.qualifiedName },
+          properties: {
+            name: container.name,
+            filePath: facts.filePath,
+            qualifiedName: container.qualifiedName,
+          },
         });
       }
       for (const method of facts.methods) {
         graph.addNode({
           id: method.nodeId,
           label: 'Method',
-          properties: { filePath: facts.filePath, qualifiedName: method.qualifiedName },
+          properties: {
+            name: method.name,
+            filePath: facts.filePath,
+            qualifiedName: method.qualifiedName,
+          },
         });
       }
     }
 
-    objectiveCScopeResolver.emitPostResolutionEdges?.(graph, parsedFiles);
+    objectiveCScopeResolver.emitPostResolutionEdges?.(
+      graph,
+      parsedFiles,
+      new Map(),
+      finalizeScopeModel([]),
+      { fileContents: new Map() },
+    );
 
     let implementerUses = 0;
     let receiverUses = 0;

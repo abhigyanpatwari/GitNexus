@@ -39,7 +39,7 @@ function row(id: string, fill: number, hash = `hash-${id}`) {
 }
 
 describe('embedding-restore-spill (#3306)', () => {
-  const spills: Array<{ path: string }> = [];
+  const spills: Array<Parameters<typeof disposeEmbeddingSpill>[0]> = [];
   afterEach(() => {
     for (const spill of spills) disposeEmbeddingSpill(spill);
     spills.length = 0;
@@ -170,7 +170,7 @@ describe('embedding-restore-spill (#3306)', () => {
 
     const shortPath = path.join(os.tmpdir(), `gitnexus-embed-restore-short-${process.pid}.bin`);
     writeFileSync(shortPath, Buffer.from('NOPE'));
-    spills.push({ path: shortPath });
+    spills.push({ path: shortPath, dims: DIMS, rowCount: 1 });
     expect(() => readSpillVectors({ path: shortPath, dims: DIMS, rowCount: 1 }, [0])).toThrow(
       /invalid embedding spill header/,
     );
@@ -181,7 +181,7 @@ describe('embedding-restore-spill (#3306)', () => {
     badMagic.writeUInt32LE(DIMS, 5);
     const badPath = path.join(os.tmpdir(), `gitnexus-embed-restore-bad-${process.pid}.bin`);
     writeFileSync(badPath, badMagic);
-    spills.push({ path: badPath });
+    spills.push({ path: badPath, dims: DIMS, rowCount: 1 });
     expect(() => readSpillVectors({ path: badPath, dims: DIMS, rowCount: 1 }, [0])).toThrow(
       /invalid embedding spill header/,
     );

@@ -34,6 +34,7 @@ function run(files: Record<string, string>): RunResult {
   };
   const readFile = (rel: string): string | null => files[rel] ?? null;
   const ctx = PYTHON_HTTP_PLUGIN.prepareRepo?.({
+    repoPath: '/repo',
     files: Object.keys(files),
     parser,
     readFile,

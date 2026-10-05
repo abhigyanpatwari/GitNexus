@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const executeParameterizedMock = vi.fn();
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return {
     ...(actual as object),
     initLbug: vi.fn(),
@@ -22,7 +22,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   };
 });
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return {
     ...(actual as object),
     initLbug: vi.fn(),
@@ -33,7 +33,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 const REPO = {
   id: 'repo',

@@ -10,7 +10,6 @@
 // `node --import tsx bench/*/measure.mjs --check`, never in `npm test`.
 
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs pure-JS harness module, no types (intentional; build-free).
 import * as G from '../../bench/lib/route-constant-guard.mjs';
 
 const collectBaselineErrors = G.collectBaselineErrors as (

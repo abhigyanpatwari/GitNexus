@@ -24,7 +24,7 @@ try {
 }
 
 const parser = new Parser();
-if (Kotlin) parser.setLanguage(Kotlin as Parser.Language);
+if (Kotlin) parser.setLanguage(Kotlin);
 
 const parse = (source: string): Parser.Tree => parser.parse(source);
 const describeKotlin = Kotlin ? describe : describe.skip;

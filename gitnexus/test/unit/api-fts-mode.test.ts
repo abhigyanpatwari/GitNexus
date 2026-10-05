@@ -328,7 +328,7 @@ async function invoke(route: string, query: Record<string, unknown> = {}) {
       this.emit('finish');
     },
   });
-  await handler(req, res);
+  await handler(req as unknown as express.Request, res as unknown as express.Response, vi.fn());
   expect(res.statusCode, JSON.stringify(res.body)).toBe(route === '/api/embed' ? 202 : 200);
   return res;
 }
