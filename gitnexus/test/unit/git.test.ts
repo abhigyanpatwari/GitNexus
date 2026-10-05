@@ -196,6 +196,9 @@ describe('git utilities', () => {
         stdout: '',
         stderr: '',
         error: Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }),
+        pid: 0,
+        output: ['', '', ''],
+        signal: null,
       } as ReturnType<typeof spawnSync>);
       expect(listLocalHeads('/missing-git')).toBeNull();
     });

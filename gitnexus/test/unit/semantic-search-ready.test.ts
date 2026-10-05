@@ -15,7 +15,7 @@ vi.mock('../../src/core/embeddings/embedder.js', () => ({
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
-  loadVectorExtension: (...args: unknown[]) => loadVectorExtensionMock(...args),
+  loadVectorExtension: loadVectorExtensionMock,
   createVectorIndex: vi.fn(),
 }));
 

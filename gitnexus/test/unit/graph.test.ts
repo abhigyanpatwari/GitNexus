@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 
 function makeNode(id: string, name: string, filePath: string = 'src/test.ts'): GraphNode {
   return {
@@ -410,8 +410,9 @@ describe('createKnowledgeGraph', () => {
       const node: Parameters<typeof g.addNode>[0] = {
         id: 'cluster:x',
         label: 'Community',
-        properties: { name: 'x' },
+        properties: { name: 'x', filePath: '' },
       };
+      Reflect.deleteProperty(node.properties, 'filePath');
       g.addNode(node);
       g.addNode(makeNode('fn:a', 'a', 'src/a.ts'));
 

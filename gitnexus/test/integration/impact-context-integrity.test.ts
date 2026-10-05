@@ -447,7 +447,14 @@ describe('native string projections after checkpointed deletion (#3354)', () => 
         for (const order of ['', ' ORDER BY n.startLine']) {
           const rows = await read(`MATCH (n:Function) ${projection}${order}`);
           expect(new Set(rows.map((row) => row.id)).size).toBe(surviving.length);
-          expect(rows.sort((a, b) => a.startLine - b.startLine)).toEqual(surviving);
+          expect(
+            rows.sort((a, b) => {
+              if (typeof a.startLine !== 'number' || typeof b.startLine !== 'number') {
+                throw new Error('Expected numeric startLine values from the database');
+              }
+              return a.startLine - b.startLine;
+            }),
+          ).toEqual(surviving);
         }
       }
       // Point lookups independently verify values in the affected segments;

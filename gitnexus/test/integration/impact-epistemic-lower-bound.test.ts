@@ -124,12 +124,15 @@ withTestLbugDB(
 
     it('marks impact as a lower bound when scope extraction omitted files', async () => {
       vi.mocked(loadMeta).mockResolvedValueOnce({
+        repoPath: '/test/repo',
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
         scopeExtractionFailures: {
           total: 2,
           paths: ['src/broken-a.ts', 'src/broken-b.ts'],
         },
-      } as Awaited<ReturnType<typeof loadMeta>>);
+      });
 
       const result = await backend.callTool('impact', {
         target: 'formatDate',
@@ -143,12 +146,15 @@ withTestLbugDB(
 
     it('never renders repository-controlled failure paths in boundary prose', async () => {
       vi.mocked(loadMeta).mockResolvedValueOnce({
+        repoPath: '/test/repo',
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
         scopeExtractionFailures: {
           total: 1,
           paths: ['src/`break`\n\u001b[31m\u202e\u200binject.ts'],
         },
-      } as Awaited<ReturnType<typeof loadMeta>>);
+      });
 
       const result = await backend.callTool('impact', {
         target: 'formatDate',
@@ -239,12 +245,15 @@ withTestLbugDB(
 
     it('context() reports persisted scope extraction omissions as a lower bound', async () => {
       vi.mocked(loadMeta).mockResolvedValueOnce({
+        repoPath: '/test/repo',
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
         scopeExtractionReceipt: 1,
         scopeExtractionFailures: {
           total: 2,
           paths: ['src/broken-a.ts', 'src/broken-b.ts'],
         },
-      } as Awaited<ReturnType<typeof loadMeta>>);
+      });
 
       const result = await backend.callTool('context', {
         name: 'formatDate',

@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import { makeScopeId, type ParsedFile, type SymbolDefinition } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
   emitGoScopeCaptures,
@@ -587,14 +587,17 @@ function generateSyntheticInterfaceData(interfaceCount: number, structCount: num
   return [
     {
       filePath: 'repo.go',
-      language: 'go',
+      moduleScope: makeScopeId({
+        filePath: 'repo.go',
+        range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
+        kind: 'Module',
+      }),
       scopes: [],
-      imports: [],
       parsedImports: [],
       localDefs: defs,
       referenceSites: [],
     },
-  ] as ParsedFile[];
+  ];
 }
 
 /**

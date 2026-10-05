@@ -848,6 +848,8 @@ describe('import-target index hoist — built once per file set, not once per im
             filePath,
             bindings: new Map([[name, [{ def, origin: 'local' }]]]),
             ownedDefs: [def],
+            imports: [],
+            typeBindings: new Map(),
           },
         ],
         parsedImports: [],

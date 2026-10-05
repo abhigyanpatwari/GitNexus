@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { SPRING_CONFIG_DESCRIPTION } from '../../src/core/ingestion/frameworks/spring/config-bindings.js';
-import type { PipelineResult } from '../../types/pipeline.js';
+import type { PipelineResult } from '../../src/types/pipeline.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'spring-config-app');

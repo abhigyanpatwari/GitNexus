@@ -45,8 +45,6 @@ describe('Python notebook scope captures', () => {
     expect(fnCapture?.['@scope.function']?.range.startLine).toBe(expectedJson + 1);
     const parsed = extractParsedFile(pythonProvider, notebook, 'analysis.ipynb');
     expect(parsed).toBeDefined();
-    expect(parsed!.localDefs.some((d) => d.qualifiedName === 'train' || d.name === 'train')).toBe(
-      true,
-    );
+    expect(parsed!.localDefs.some((d) => d.qualifiedName === 'train')).toBe(true);
   });
 });

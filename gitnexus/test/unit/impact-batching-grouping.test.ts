@@ -9,7 +9,7 @@ const executeParameterizedMock = vi.fn();
 // imports) and the re-export shim (mcp/core/lbug-adapter.js) so the mocks intercept
 // regardless of import path.
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return {
     ...actual,
     initLbug: vi.fn(),
@@ -20,7 +20,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   };
 });
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return {
     ...actual,
     initLbug: vi.fn(),
@@ -31,7 +31,7 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 
 describe('impact: batching and grouping', () => {
   beforeEach(() => {
