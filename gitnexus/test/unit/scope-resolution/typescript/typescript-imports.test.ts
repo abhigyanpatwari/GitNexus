@@ -18,7 +18,6 @@ import * as importResolverUtils from '../../../../src/core/ingestion/import-reso
 import { typescriptScopeResolver } from '../../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
 
 function importsFor(src: string): ParsedImport[] {
   const matches = emitTsScopeCaptures(src, 'test.ts');
@@ -116,17 +115,17 @@ describe('interpretTsImport — static imports', () => {
     expect(imps).toHaveLength(3);
     expect(imps.map((i) => i.kind)).toEqual(['alias', 'named', 'alias']);
 
-    const def = imps.find((i) => i.localName === 'D');
+    const def = imps.find((i) => 'localName' in i && i.localName === 'D');
     expect(def).toMatchObject({ importedName: 'default', targetRaw: './m' });
 
-    const named = imps.find((i) => i.localName === 'X');
+    const named = imps.find((i) => 'localName' in i && i.localName === 'X');
     expect(named).toMatchObject({
       kind: 'named',
       importedName: 'X',
       targetRaw: './m',
     });
 
-    const aliased = imps.find((i) => i.localName === 'Z');
+    const aliased = imps.find((i) => 'localName' in i && i.localName === 'Z');
     expect(aliased).toMatchObject({
       kind: 'alias',
       importedName: 'Y',
@@ -139,11 +138,11 @@ describe('interpretTsImport — static imports', () => {
     const imps = importsFor('import D, * as N from "./m";');
     expect(imps).toHaveLength(2);
 
-    const def = imps.find((i) => i.localName === 'D');
+    const def = imps.find((i) => 'localName' in i && i.localName === 'D');
     expect(def?.kind).toBe('alias');
     expect((def as { importedName: string }).importedName).toBe('default');
 
-    const ns = imps.find((i) => i.localName === 'N');
+    const ns = imps.find((i) => 'localName' in i && i.localName === 'N');
     expect(ns?.kind).toBe('namespace');
     expect((ns as { importedName: string }).importedName).toBe('./m');
   });
@@ -523,19 +522,14 @@ describe('resolveTsImportTarget — standard suffix + alias resolution', () => {
     expect(result).toBe(null);
   });
 
-  it('switches extensions when language=JavaScript', () => {
+  it('resolves JavaScript extensions from a JavaScript source file', () => {
     const parsed: ParsedImport = {
       kind: 'named',
       localName: 'X',
       importedName: 'X',
       targetRaw: './a',
     };
-    const result = resolveTsImportTarget(
-      parsed,
-      ctx('src/main.js', ['src/main.js', 'src/a.js'], {
-        language: SupportedLanguages.JavaScript,
-      }),
-    );
+    const result = resolveTsImportTarget(parsed, ctx('src/main.js', ['src/main.js', 'src/a.js']));
     expect(result).toBe('src/a.js');
   });
 

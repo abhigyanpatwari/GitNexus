@@ -16,6 +16,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import {
   createMCPServer,
   installSignalShutdown,
@@ -60,7 +61,7 @@ async function callToolThroughServer(
 
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-    const response = await client.callTool({ name, arguments: args });
+    const response = CallToolResultSchema.parse(await client.callTool({ name, arguments: args }));
     const text = response.content.find((item) => item.type === 'text')?.text;
     if (typeof text !== 'string') throw new Error('Expected an MCP text response');
     return { text, isError: response.isError === true };

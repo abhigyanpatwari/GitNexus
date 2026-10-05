@@ -1,3 +1,4 @@
+import type { JavaAnnotationSyntaxFact } from '../../src/core/ingestion/languages/java/spring-di.js';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -30,6 +31,19 @@ import { generateId } from '../../src/lib/utils.js';
  */
 
 const OWNER_RANGE = { startLine: 4, startCol: 4, endLine: 6, endCol: 5 } as const;
+
+function annotation(
+  fact: Omit<JavaAnnotationSyntaxFact, 'line' | 'text'>,
+): JavaAnnotationSyntaxFact {
+  const args = fact.args
+    ?.map((arg) => (arg.name ? `${arg.name} = ${arg.text}` : arg.text))
+    .join(', ');
+  return {
+    ...fact,
+    line: OWNER_RANGE.startLine - 1,
+    text: `@${fact.name}${args === undefined ? '' : `(${args})`}`,
+  };
+}
 
 function callableNode(graph: KnowledgeGraph, filePath: string, name: string): void {
   graph.addNode({
@@ -87,10 +101,13 @@ describe('springDestinations phase', () => {
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
         annotations: [
-          { name: 'KafkaListener', args: [{ name: 'topicPattern', text: '"orders.*"' }] },
-          { name: 'KafkaListener', args: [{ name: 'topics', text: '{}' }] },
-          { name: 'KafkaListener', args: [{ name: 'groupId', text: '"g"' }] },
-          { name: 'KafkaListener' },
+          annotation({
+            name: 'KafkaListener',
+            args: [{ name: 'topicPattern', text: '"orders.*"' }],
+          }),
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '{}' }] }),
+          annotation({ name: 'KafkaListener', args: [{ name: 'groupId', text: '"g"' }] }),
+          annotation({ name: 'KafkaListener' }),
         ],
       },
     ]);
@@ -137,7 +154,10 @@ describe('springDestinations phase', () => {
           ownerFilePath: filePath,
           ownerRange: OWNER_RANGE,
           annotations: [
-            { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+            annotation({
+              name: 'KafkaListener',
+              args: [{ name: 'topics', text: '"${app.topic}"' }],
+            }),
           ],
         },
       ]);
@@ -258,14 +278,14 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${filePath}#first` as never,
         ownerFilePath: filePath,
         annotations: [
-          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }),
         ],
       },
       {
         ownerScopeId: `${filePath}#second` as never,
         ownerFilePath: filePath,
         annotations: [
-          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }),
         ],
       },
     ]);
@@ -296,7 +316,10 @@ describe('springDestinations phase', () => {
           ownerFilePath: filePath,
           ownerRange: OWNER_RANGE,
           annotations: [
-            { name: 'KafkaListener', args: [{ name: 'topics', text: `"\${${key}:events}"` }] },
+            annotation({
+              name: 'KafkaListener',
+              args: [{ name: 'topics', text: `"\${${key}:events}"` }],
+            }),
           ],
         },
       ]);
@@ -329,10 +352,10 @@ describe('springDestinations phase', () => {
           ownerFilePath: filePath,
           ownerRange: OWNER_RANGE,
           annotations: [
-            {
+            annotation({
               name: 'KafkaListener',
               args: [{ name: 'topics', text: '"#{@kafkaProps.ordersTopic}"' }],
-            },
+            }),
           ],
         },
       ]);
@@ -361,7 +384,9 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${filePath}#consume` as never,
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${}"' }] }],
+        annotations: [
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"${}"' }] }),
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(filePath, []);
@@ -406,7 +431,9 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${listenerFile}#consume` as never,
         ownerFilePath: listenerFile,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }],
+        annotations: [
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }),
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(listenerFile, []);
@@ -417,7 +444,9 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${strangerFile}#consume` as never,
         ownerFilePath: strangerFile,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }],
+        annotations: [
+          annotation({ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }),
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(strangerFile, []);
@@ -483,7 +512,9 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${filePath}#consume` as never,
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }],
+        annotations: [
+          annotation({ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }),
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(filePath, [
@@ -535,7 +566,9 @@ describe('springDestinations phase', () => {
         ownerScopeId: `${filePath}#consume` as never,
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }],
+        annotations: [
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }),
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(filePath, [
@@ -571,8 +604,8 @@ describe('springDestinations phase', () => {
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
         annotations: [
-          { name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] },
-          { name: 'KafkaListener', args: [{ name: 'topics', text: '"shipments"' }] },
+          annotation({ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }),
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"shipments"' }] }),
         ],
       },
     ]);
@@ -834,7 +867,7 @@ operations:
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
         annotations: [
-          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+          annotation({ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }),
         ],
       },
     ]);

@@ -41,13 +41,13 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { resetExtensionState } from '../../src/core/lbug/extension-loader.js';
 
 // A backend whose hybrid search yields exactly one matched symbol, so the
 // enrichment chunk loop runs and can be made to fail. `ftsUsed` is parameterized
 // so we can exercise the FTS-missing + enrichment-degraded composition.
-function makeBackend(ftsUsed = true, nonBenignErrors?: string[]): LocalBackend {
+function makeBackend(ftsUsed = true, nonBenignErrors?: string[]) {
   const backend = new LocalBackend();
   const repoHandle = {
     id: 'repo1',
@@ -73,7 +73,7 @@ function makeBackend(ftsUsed = true, nonBenignErrors?: string[]): LocalBackend {
     .fn()
     .mockResolvedValue({ results: [sym], ftsUsed, ...(nonBenignErrors && { nonBenignErrors }) });
   (backend as any).semanticSearch = vi.fn().mockResolvedValue([]);
-  return { backend, repoHandle } as any;
+  return { backend, repoHandle };
 }
 
 const runQuery = (b: any, params: any = { query: 'x' }) =>

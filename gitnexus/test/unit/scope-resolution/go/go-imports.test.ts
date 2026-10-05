@@ -42,7 +42,9 @@ describe('Go import decomposition', () => {
   ])('uses the same package qualifier for %s as route extraction', (spec, expected) => {
     const matches = parseThenSplit(`import ${spec}`);
     expect(matches[0]['@import.name']?.text).toBe(expected);
-    expect(interpretGoImport(matches[0])?.localName).toBe(expected);
+    const parsed = interpretGoImport(matches[0]);
+    expect(parsed).not.toBeNull();
+    expect(parsed && 'localName' in parsed ? parsed.localName : undefined).toBe(expected);
   });
 
   it('decomposes grouped imports', () => {

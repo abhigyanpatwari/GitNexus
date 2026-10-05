@@ -16,7 +16,7 @@ import {
 import { couldNameAModule } from '../../../../src/core/ingestion/languages/rust/module-path.js';
 
 const parser = new Parser();
-parser.setLanguage(Rust as unknown as Parser.Language);
+parser.setLanguage(Rust as unknown);
 
 /** First node of `type` in a post-order walk — the innermost such node. */
 function findNode(root: SyntaxNode, type: string): SyntaxNode {

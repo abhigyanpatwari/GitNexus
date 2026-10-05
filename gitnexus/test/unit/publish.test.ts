@@ -113,7 +113,7 @@ describe('understand-quickly helpers (gitnexus-shared)', () => {
 describe('publishCommand (no-token no-op)', () => {
   let tempDir: string;
   let originalToken: string | undefined;
-  let exitCodeBefore: number | undefined;
+  let exitCodeBefore: typeof process.exitCode;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -180,7 +180,7 @@ describe('publishCommand (no-token no-op)', () => {
 describe('publishCommand response branches (MEDIUM 5)', () => {
   let tempDir: string;
   let originalToken: string | undefined;
-  let exitCodeBefore: number | undefined;
+  let exitCodeBefore: typeof process.exitCode;
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(async () => {

@@ -1,4 +1,4 @@
-import { vi } from 'vitest';
+import { vi, type Mock } from 'vitest';
 import type * as SafeParseModule from '../../src/core/tree-sitter/safe-parse.js';
 
 /**
@@ -43,7 +43,7 @@ import type * as SafeParseModule from '../../src/core/tree-sitter/safe-parse.js'
  *   });
  */
 export async function buildSafeParseMock(
-  spy: ReturnType<typeof vi.fn>,
+  spy: Mock<typeof SafeParseModule.parseSourceSafe>,
 ): Promise<typeof SafeParseModule> {
   const actual = await vi.importActual<typeof SafeParseModule>(
     '../../src/core/tree-sitter/safe-parse.js',
