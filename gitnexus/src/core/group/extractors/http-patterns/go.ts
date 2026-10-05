@@ -158,13 +158,25 @@ function asGroupCall(
   return { parent, prefix };
 }
 
+/** The `var_spec`s of a `var_declaration`, flattened out of a grouped `var (…)`. */
+function varSpecs(decl: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  return decl.namedChildren
+    .flatMap((c) => (c.type === 'var_spec_list' ? c.namedChildren : [c]))
+    .filter((spec) => spec.type === 'var_spec');
+}
+
 /** The expression `name` is assigned by `stmt` (`:=`, `=`, or `var`), if any. */
 function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | null | undefined {
   const pick = (
     names: Parser.SyntaxNode[],
     values: Parser.SyntaxNode | null,
   ): Parser.SyntaxNode | null | undefined => {
-    const i = names.findIndex((n) => n.type === 'identifier' && n.text === name);
+    // Go carries an assignment out left to right, so a repeated target leaves
+    // the LAST one in place (`g, g = a, b` ends with g == b).
+    let i = -1;
+    for (let k = 0; k < names.length; k++) {
+      if (names[k].type === 'identifier' && names[k].text === name) i = k;
+    }
     if (i < 0) return undefined;
     return codeChildren(values)[i] ?? null;
   };
@@ -175,11 +187,7 @@ function boundValue(stmt: Parser.SyntaxNode, name: string): Parser.SyntaxNode | 
     case 'var_spec':
       return pick(stmt.childrenForFieldName('name'), stmt.childForFieldName('value'));
     case 'var_declaration': {
-      const specs = stmt.namedChildren.flatMap((c) =>
-        c.type === 'var_spec_list' ? c.namedChildren : [c],
-      );
-      for (const spec of specs) {
-        if (spec.type !== 'var_spec') continue;
+      for (const spec of varSpecs(stmt)) {
         const value = pick(spec.childrenForFieldName('name'), spec.childForFieldName('value'));
         if (value !== undefined) return value;
       }
@@ -227,13 +235,66 @@ function within(outer: Parser.SyntaxNode | null, inner: Parser.SyntaxNode): bool
 
 /**
  * Whether `stmt` writes `name` with a plain assignment somewhere inside it
- * (`g = …` in a nested block, branch, loop, or closure body). A nested `:=`
- * declares a new variable and is not a write to the outer one.
+ * (`g = …` in a nested block, branch, loop, or closure body). The `=` forms of
+ * a range clause (`for _, g = range xs`) and a select receive
+ * (`case g = <-ch`) write the existing name too, but tree-sitter parses them
+ * as `range_clause` / `receive_statement`, not `assignment_statement`. A
+ * nested `:=` declares a new variable — loop- or case-local — and is not a
+ * write to the outer one.
  */
 function writesNameInside(stmt: Parser.SyntaxNode, name: string): boolean {
-  return [stmt, ...stmt.descendantsOfType('assignment_statement')].some(
-    (a) => a.type === 'assignment_statement' && declaresName(a.childForFieldName('left'), name),
-  );
+  if (
+    [stmt, ...stmt.descendantsOfType('assignment_statement')].some(
+      (a) => a.type === 'assignment_statement' && declaresName(a.childForFieldName('left'), name),
+    )
+  ) {
+    return true;
+  }
+  return [
+    ...stmt.descendantsOfType('range_clause'),
+    ...stmt.descendantsOfType('receive_statement'),
+  ].some((w) => assignsExistingName(w) && declaresName(w.childForFieldName('left'), name));
+}
+
+/** A range clause or receive that assigns (`=`) rather than declares (`:=`). */
+function assignsExistingName(clause: Parser.SyntaxNode): boolean {
+  return !clause.children.some((c) => c.type === ':=');
+}
+
+/**
+ * Whether the initializer of the declaration that brings `name` into scope in
+ * a block writes the OUTER `name`. The right-hand side runs before the new
+ * variable exists, so `g := func(){ g = … }()` still writes the binding the
+ * use outside the block would inherit. Grouped `var` specs up to and including
+ * the declaring one are scanned; later specs read the new local.
+ */
+function initializerWritesName(decl: Parser.SyntaxNode, name: string): boolean {
+  if (decl.type === 'short_var_declaration') {
+    const values = decl.childForFieldName('right');
+    return !!values && writesNameInside(values, name);
+  }
+  if (decl.type === 'var_declaration') {
+    for (const spec of varSpecs(decl)) {
+      const value = spec.childForFieldName('value');
+      if (value && writesNameInside(value, name)) return true;
+      if (boundValue(spec, name) !== undefined) return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether `stmt` holds a function literal that writes `name`. Such a literal
+ * can run after any later direct assignment (`reset := func(){ g = … };
+ * g = …; reset()`), so captured writes are found independently of statement
+ * order instead of being lost behind the last-assignment return.
+ */
+function closureWritesName(stmt: Parser.SyntaxNode, name: string): boolean {
+  const literals =
+    stmt.type === 'func_literal'
+      ? [stmt, ...stmt.descendantsOfType('func_literal')]
+      : stmt.descendantsOfType('func_literal');
+  return literals.some((fn) => writesNameInside(fn, name));
 }
 
 /**
@@ -242,7 +303,9 @@ function writesNameInside(stmt: Parser.SyntaxNode, name: string): boolean {
  * value that reaches the use (`{ g = r.Group("/new") }` → `/new`); a write
  * nested in a branch, loop, or closure inside it is CONFLICT. A `:=` or `var`
  * of `name` in the block starts a new variable, so only the statements before
- * it touch the outer one. undefined when the block leaves `name` alone.
+ * it touch the outer one — but the declaring statement's initializer still
+ * does, because it evaluates before the new variable is in scope. undefined
+ * when the block leaves `name` alone.
  */
 function bareBlockWrite(block: Parser.SyntaxNode, name: string): Binding {
   const stmts = codeChildren(block);
@@ -252,6 +315,8 @@ function bareBlockWrite(block: Parser.SyntaxNode, name: string): Binding {
       boundValue(s, name) !== undefined,
   );
   const outerRegion = declIndex < 0 ? stmts : stmts.slice(0, declIndex);
+  if (declIndex >= 0 && initializerWritesName(stmts[declIndex], name)) return CONFLICT;
+  if (outerRegion.some((stmt) => closureWritesName(stmt, name))) return CONFLICT;
   for (const stmt of outerRegion.reverse()) {
     if (stmt.type === 'assignment_statement') {
       const value = boundValue(stmt, name);

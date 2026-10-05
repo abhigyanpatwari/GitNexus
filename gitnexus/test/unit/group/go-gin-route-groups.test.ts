@@ -824,6 +824,97 @@ func routes(r *gin.Engine, cond bool) {
     ]);
   });
 
+  it('declines a route whose group a shadowing initializer or a later closure writes', () => {
+    // A `:=`/`var` shadowing the name runs its initializer BEFORE the new
+    // variable is in scope, so a closure body there writes the OUTER group
+    // and the prefix of a use outside the block is unprovable. A closure
+    // declared before a direct assignment can also run AFTER it (`reset()`),
+    // so captured writes are checked independently of statement order rather
+    // than being hidden behind the block's last direct assignment. Both
+    // shapes were declined before bare-block writes were followed, and a
+    // closure that only READS the group must not decline anything.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/old")
+	{
+		g := func() *gin.RouterGroup {
+			g = r.Group("/new")
+			return r.Group("/inner")
+		}()
+		_ = g
+	}
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		var k = func() *gin.RouterGroup {
+			k = r.Group("/k2")
+			return r.Group("/k3")
+		}()
+		_ = k
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		reset := func() { m = r.Group("/closure") }
+		m = r.Group("/new")
+		reset()
+	}
+	m.GET("/c", h.C)
+	n := r.Group("/n")
+	{
+		n = r.Group("/n2")
+		register := func() { n.GET("/registered", h.R) }
+		register()
+	}
+	n.GET("/d", h.D)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/n2/registered', name: 'R' },
+      { method: 'GET', path: '/n2/d', name: 'D' },
+    ]);
+  });
+
+  it('takes the last target of a repeated assignment and declines range and receive writes', () => {
+    // Go carries an assignment out left to right, so `g, g = a, b` leaves the
+    // LAST value in place. `for _, g = range xs` and `case g = <-ch` write the
+    // existing name — the range only when its body runs, the receive with a
+    // statically unknown value — so those blocks stay CONFLICT. Their `:=`
+    // forms declare a loop- or case-local variable instead and leave the
+    // outer group alone.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, groups []*gin.RouterGroup, ch chan *gin.RouterGroup) {
+	g := r.Group("/old")
+	{ g, g = r.Group("/first"), r.Group("/second") }
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		k = r.Group("/k2")
+		for _, k = range groups {}
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		m = r.Group("/m2")
+		select { case m = <-ch: }
+	}
+	m.GET("/c", h.C)
+	n := r.Group("/n")
+	{
+		n = r.Group("/n2")
+		for _, n := range groups {}
+	}
+	n.GET("/d", h.D)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/second/a', name: 'A' },
+      { method: 'GET', path: '/n2/d', name: 'D' },
+    ]);
+  });
+
   it('resolves a name used in its own statement initializer to the outer binding', () => {
     // `if g := g.Group("/inner"); …` — the right-hand g is the OUTER group;
     // the new g only scopes over what follows. Same for a for initializer.
