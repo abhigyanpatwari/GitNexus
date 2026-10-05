@@ -1017,6 +1017,66 @@ func routes(r *gin.Engine) {
       { method: 'GET', path: '/new/c', name: 'C' },
     ]);
   });
+
+  it('resolves through closure-local range/receive shadows and parenthesized IIFEs', () => {
+    // A range or receive `=` inside a closure writes the name that closure's
+    // own body declares, so an earlier `if` holding it does not make the outer
+    // prefix unprovable — while the same `=` against the captured outer name
+    // does. A parenthesized immediately-invoked literal still runs its body,
+    // so it writes the outer group exactly like the unparenthesized form,
+    // whereas a stored parenthesized literal does not.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool, groups []*gin.RouterGroup, ch chan *gin.RouterGroup) {
+	g := r.Group("/old")
+	{
+		if cond {
+			func() {
+				g := r.Group("/local")
+				for _, g = range groups {}
+			}()
+		}
+		g.GET("/a", h.A)
+	}
+	k := r.Group("/k")
+	{
+		if cond {
+			func() {
+				k := r.Group("/local")
+				select { case k = <-ch: _ = k }
+			}()
+		}
+		k.GET("/b", h.B)
+	}
+	m := r.Group("/m")
+	{
+		if cond {
+			func() {
+				for _, m = range groups {}
+			}()
+		}
+		m.GET("/c", h.C)
+	}
+	n := r.Group("/n")
+	{
+		n := (func() *gin.RouterGroup { n = r.Group("/paren"); return r.Group("/inner") })()
+		_ = n
+	}
+	n.GET("/d", h.D)
+	p := r.Group("/p")
+	{
+		p := (func() { p = r.Group("/stored") })
+		_ = p
+	}
+	p.GET("/e", h.E)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/old/a', name: 'A' },
+      { method: 'GET', path: '/k/b', name: 'B' },
+      { method: 'GET', path: '/p/e', name: 'E' },
+    ]);
+  });
 });
 
 describe('Go gin provider ↔ fetch() consumer pairing', () => {
