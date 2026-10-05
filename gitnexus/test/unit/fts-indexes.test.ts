@@ -34,13 +34,19 @@ const {
   getSearchFTSStemmer,
   initialiseSearchFTSStemmer,
   missingSearchFTSIndexTables,
+  verifySearchFTSIndexes,
 } = await import('../../src/core/search/fts-indexes.js');
 const { FTS_INDEXES, getFtsIndexes } = await import('../../src/core/search/fts-schema.js');
 const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
 /** SHOW_INDEXES rows covering every configured FTS index's expected properties. */
 const fullCoverageRows = () =>
-  FTS_INDEXES.map((i) => ({ index_name: i.indexName, property_names: [...i.properties] }));
+  FTS_INDEXES.map((i) => ({
+    table_name: i.table,
+    index_name: i.indexName,
+    index_type: 'FTS',
+    property_names: [...i.properties],
+  }));
 
 /** The row-level tokenizer error of #2544/#2546/#2889, verbatim. */
 const POISON = 'Runtime exception: Failed calling LOWER: Invalid UTF-8.';
@@ -141,6 +147,91 @@ describe('createSearchFTSIndexes', () => {
   });
 });
 
+describe('verifySearchFTSIndexes', () => {
+  const propertyIndex = FTS_INDEXES.find((index) => index.table === 'Property')!;
+  const propertyRow = () => fullCoverageRows().find((row) => row.table_name === 'Property')!;
+
+  it('accepts exact identity/type with additional properties, using one catalog read', async () => {
+    const executeQuery = vi.fn(async () => [
+      { ...propertyRow(), property_names: [...propertyIndex.properties, 'extra'] },
+    ]);
+    const onMismatch = vi.fn();
+
+    expect(await verifySearchFTSIndexes(executeQuery, [propertyIndex], onMismatch)).toEqual([]);
+    expect(executeQuery).toHaveBeenCalledExactlyOnceWith('CALL SHOW_INDEXES() RETURN *');
+    expect(onMismatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['wrong table', { table_name: 'Function' }],
+    ['wrong type', { index_type: 'HASH' }],
+    ['missing type', { index_type: undefined }],
+    ['missing properties', { property_names: undefined }],
+    ['non-array properties', { property_names: 'name,content,description' }],
+    ['malformed properties', { property_names: ['name', 'content', 'description', 17] }],
+    ['incomplete properties', { property_names: ['name', 'content'] }],
+  ])('rejects %s without accepting the matching index name', async (_label, mismatch) => {
+    const executeQuery = vi.fn(async () => [{ ...propertyRow(), ...mismatch }]);
+    const onMismatch = vi.fn();
+
+    expect(await verifySearchFTSIndexes(executeQuery, [propertyIndex], onMismatch)).toEqual([
+      'Property.property_fts',
+    ]);
+    expect(onMismatch).toHaveBeenCalledExactlyOnceWith({
+      table: 'Property',
+      indexName: 'property_fts',
+      message: expect.stringContaining('Property.property_fts'),
+    });
+    expect(onMismatch.mock.calls[0][0].message).toContain('observed');
+  });
+
+  it('accepts a valid row even when another table has the same index name', async () => {
+    const executeQuery = vi.fn(async () => [
+      propertyRow(),
+      { ...propertyRow(), table_name: 'Function', property_names: ['name'] },
+    ]);
+
+    expect(await verifySearchFTSIndexes(executeQuery, [propertyIndex])).toEqual([]);
+  });
+
+  it('bounds diagnostic evidence and excludes source and index definitions', async () => {
+    const privateSource = 'PRIVATE_SOURCE_MUST_NOT_APPEAR';
+    const executeQuery = vi.fn(async () =>
+      Array.from({ length: 50 }, (_, i) => ({
+        ...propertyRow(),
+        table_name: `Wrong${i}${'x'.repeat(10_000)}`,
+        property_names: [{ source: privateSource }, ...Array(100).fill('x'.repeat(10_000))],
+        content: privateSource,
+        index_definition: privateSource,
+      })),
+    );
+    const onMismatch = vi.fn();
+
+    expect(await verifySearchFTSIndexes(executeQuery, [propertyIndex], onMismatch)).toEqual([
+      'Property.property_fts',
+    ]);
+    const message = onMismatch.mock.calls[0][0].message as string;
+    expect(message).toContain('Wrong0');
+    expect(message).toContain('truncated');
+    expect(message.length).toBeLessThanOrEqual(2048);
+    expect(message).not.toContain(privateSource);
+    expect(message).not.toContain('index_definition');
+    expect(executeQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves unknown catalog state as an exception, without reporting absence', async () => {
+    const executeQuery = vi.fn(async () => {
+      throw new Error('catalog unavailable');
+    });
+    const onMismatch = vi.fn();
+
+    await expect(verifySearchFTSIndexes(executeQuery, [propertyIndex], onMismatch)).rejects.toThrow(
+      'catalog unavailable',
+    );
+    expect(onMismatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('buildSearchIndexesOrDegrade', () => {
   it('returns ok:true when every index builds and verifies (#2544/#2546)', async () => {
     const executeQuery = vi.fn(async () => fullCoverageRows());
@@ -214,6 +305,42 @@ describe('buildSearchIndexesOrDegrade', () => {
     const failed = `${FTS_INDEXES[0].table}.${FTS_INDEXES[0].indexName}`;
     expect(result.error).toContain(`${failed} (${POISON})`);
     expect(result.error).not.toContain('missing indexes');
+  });
+
+  it('explains missing catalog coverage when CREATE returned no build error', async () => {
+    const executeQuery = vi.fn(async () =>
+      fullCoverageRows().filter((row) => row.table_name !== 'Property'),
+    );
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('capability');
+    expect(result.error).toContain('Property.property_fts');
+    expect(result.error).toContain('no build error was returned');
+    expect(result.error).toContain('observed');
+    expect(result.error).toContain('no matching');
+    expect(executeQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains integrity and tokenizer causes when catalog verification also throws', async () => {
+    const integrityError = 'IO exception: checkpoint failed';
+    vi.mocked(createFTSIndex)
+      .mockRejectedValueOnce(new Error(integrityError))
+      .mockRejectedValueOnce(new Error(POISON));
+    const executeQuery = vi.fn(async () => {
+      throw new Error('catalog unavailable');
+    });
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('integrity');
+    expect(result.error).toContain(integrityError);
+    expect(result.error).toContain(POISON);
+    expect(result.error).toContain('catalog unavailable');
+    expect(result.error).not.toContain('missing indexes');
+    expect(executeQuery).toHaveBeenCalledTimes(1);
   });
 });
 

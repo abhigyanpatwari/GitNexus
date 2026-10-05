@@ -295,6 +295,96 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     ...overrides,
   });
 
+  it.each([
+    { label: 'old catalog entry survives a failed DROP', buildError: true, catalog: 'complete' },
+    { label: 'CREATE succeeds without a catalog entry', buildError: false, catalog: 'missing' },
+    { label: 'build and catalog verification both fail', buildError: true, catalog: 'missing' },
+    { label: 'catalog read throws after a build failure', buildError: true, catalog: 'throws' },
+    { label: 'catalog read alone throws', buildError: false, catalog: 'throws' },
+  ])('keeps repair incomplete when $label', async ({ buildError, catalog }) => {
+    const closeLbug = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () =>
+      mockRepairSuccessLbugAdapter({ closeLbug }),
+    );
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () =>
+        buildError
+          ? [
+              {
+                table: 'Property',
+                indexName: 'property_fts',
+                error: 'DROP failed: native I/O error',
+              },
+            ]
+          : [],
+      ),
+      verifySearchFTSIndexes: vi.fn(async (_query, _indexes, onMismatch) => {
+        if (catalog === 'throws') throw new Error('catalog read unavailable');
+        if (catalog === 'missing') {
+          onMismatch?.({
+            table: 'Property',
+            indexName: 'property_fts',
+            message: 'Property.property_fts: no catalog row returned',
+          });
+          return ['Property.property_fts'];
+        }
+        return [];
+      }),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-repair-incomplete-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const seeded: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'healthy-commit',
+        indexedAt: '2026-01-01T00:00:00.000Z',
+        stats: { files: 7, nodes: 42, edges: 10, embeddings: 3 },
+        capabilities: {
+          graph: { provider: 'ladybugdb', status: 'available' },
+          fts: { provider: 'ladybugdb-fts', status: 'degraded' },
+          vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 500 },
+        },
+      };
+      await saveMeta(storagePath, seeded);
+      await createPlaceholderGraphStore(lbugPath);
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const error = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true },
+        { onProgress: () => {} },
+      ).then(
+        () => null,
+        (cause: unknown) => cause,
+      );
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain('FTS repair failed');
+      if (buildError) expect(message).toContain('DROP failed: native I/O error');
+      if (catalog === 'missing') {
+        expect(message).toContain('Property.property_fts: no catalog row returned');
+        if (!buildError) expect(message).toContain('no build error was returned');
+      }
+      if (catalog === 'throws') {
+        expect(message).toContain('catalog read unavailable');
+        expect(message).not.toContain('missing indexes');
+      }
+      const after = await loadMeta(storagePath);
+      expect(after?.incrementalInProgress).toMatchObject({ phase: 'fts' });
+      expect(after?.capabilities).toEqual(seeded.capabilities);
+      expect(after?.indexedAt).toBe(seeded.indexedAt);
+      expect(after?.lastCommit).toBe(seeded.lastCommit);
+      expect(after?.stats).toEqual(seeded.stats);
+      expect(after?.runnerIdentity).toEqual(seeded.runnerIdentity);
+      expect(closeLbug).toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('--repair-fts stamps capabilities.fts.status while leaving indexedAt/lastCommit/runnerIdentity/stats byte-identical (#2767)', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
