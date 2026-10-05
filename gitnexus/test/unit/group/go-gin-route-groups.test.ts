@@ -576,6 +576,30 @@ func (s *Server) routes(api *echo.Group) {
     ]);
   });
 
+  it('matches framework imports by exact path, as ingestion does', () => {
+    // `example.com/labstack/echo-wrapper` merely contains "labstack/echo": it
+    // is not echo, so this gin-style call keeps the last-argument handler.
+    expect(
+      providers(`package main
+import "example.com/labstack/echo-wrapper"
+
+func routes(r *Router) {
+	r.GET("/x", auth.Middleware, h.Handler)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Handler' }]);
+    // The versioned module path is echo.
+    expect(
+      providers(`package main
+import "github.com/labstack/echo/v4"
+
+func routes(e *echo.Echo) {
+	e.GET("/x", h.Handler, auth.Middleware)
+}
+`),
+    ).toEqual([{ method: 'GET', path: '/x', name: 'Handler' }]);
+  });
+
   it('picks the handler order per receiver constructor in a mixed-import file', () => {
     // Mixed imports are ambiguous at file scope, but `e := echo.New()` proves
     // this call follows echo's order (handler FIRST after the path) and
@@ -770,11 +794,12 @@ func routes(r *gin.Engine) {
     ).toEqual([{ method: 'GET', path: '/api/admin/x', name: 'handler' }]);
   });
 
-  it('declines a route whose group is reassigned in an earlier nested scope', () => {
-    // `{ g = r.Group("/new") }` (or a branch) writes the outer g: which value
-    // reaches the use depends on control flow, and ingestion declines it too,
-    // so emitting the older `/old/x` would invent a route. A nested `:=`
-    // declares a new variable and leaves the outer binding intact.
+  it('follows unconditional block writes and declines conditional ones', () => {
+    // A bare `{ … }` always runs, so `{ g = r.Group("/new") }` makes the
+    // route deterministically /new/x. A write in a branch (`if cond { k = … }`,
+    // also when nested inside a bare block) may or may not run, so that
+    // prefix is unprovable and the route is declined. A `:=` in a nested
+    // block declares a new variable: writes after it never reach the outer m.
     expect(
       providers(`package main
 func routes(r *gin.Engine, cond bool) {
@@ -784,14 +809,109 @@ func routes(r *gin.Engine, cond bool) {
 	k := r.Group("/k")
 	if cond { k = r.Group("/other") }
 	k.GET("/y", handler)
+	n := r.Group("/n")
+	{ if cond { n = r.Group("/maybe") } }
+	n.GET("/w", handler)
 	m := r.Group("/m")
-	{ m := r.Group("/inner"); m.GET("/i", handler) }
+	{ m := r.Group("/inner"); m = r.Group("/inner2"); m.GET("/i", handler) }
 	m.GET("/z", handler)
 }
 `),
     ).toEqual([
-      { method: 'GET', path: '/inner/i', name: 'handler' },
+      { method: 'GET', path: '/new/x', name: 'handler' },
+      { method: 'GET', path: '/inner2/i', name: 'handler' },
       { method: 'GET', path: '/m/z', name: 'handler' },
+    ]);
+  });
+
+  it('declines a route whose group a shadowing initializer or a later closure writes', () => {
+    // A `:=`/`var` shadowing the name runs its initializer BEFORE the new
+    // variable is in scope, so a closure body there writes the OUTER group
+    // and the prefix of a use outside the block is unprovable. A closure
+    // declared before a direct assignment can also run AFTER it (`reset()`),
+    // so captured writes are checked independently of statement order rather
+    // than being hidden behind the block's last direct assignment. Both
+    // shapes were declined before bare-block writes were followed, and a
+    // closure that only READS the group must not decline anything.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/old")
+	{
+		g := func() *gin.RouterGroup {
+			g = r.Group("/new")
+			return r.Group("/inner")
+		}()
+		_ = g
+	}
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		var k = func() *gin.RouterGroup {
+			k = r.Group("/k2")
+			return r.Group("/k3")
+		}()
+		_ = k
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		reset := func() { m = r.Group("/closure") }
+		m = r.Group("/new")
+		reset()
+	}
+	m.GET("/c", h.C)
+	n := r.Group("/n")
+	{
+		n = r.Group("/n2")
+		register := func() { n.GET("/registered", h.R) }
+		register()
+	}
+	n.GET("/d", h.D)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/n2/registered', name: 'R' },
+      { method: 'GET', path: '/n2/d', name: 'D' },
+    ]);
+  });
+
+  it('takes the last target of a repeated assignment and declines range and receive writes', () => {
+    // Go carries an assignment out left to right, so `g, g = a, b` leaves the
+    // LAST value in place. `for _, g = range xs` and `case g = <-ch` write the
+    // existing name — the range only when its body runs, the receive with a
+    // statically unknown value — so those blocks stay CONFLICT. Their `:=`
+    // forms declare a loop- or case-local variable instead and leave the
+    // outer group alone.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, groups []*gin.RouterGroup, ch chan *gin.RouterGroup) {
+	g := r.Group("/old")
+	{ g, g = r.Group("/first"), r.Group("/second") }
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		k = r.Group("/k2")
+		for _, k = range groups {}
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		m = r.Group("/m2")
+		select { case m = <-ch: }
+	}
+	m.GET("/c", h.C)
+	n := r.Group("/n")
+	{
+		n = r.Group("/n2")
+		for _, n := range groups {}
+	}
+	n.GET("/d", h.D)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/second/a', name: 'A' },
+      { method: 'GET', path: '/n2/d', name: 'D' },
     ]);
   });
 
@@ -858,6 +978,104 @@ func main() {
 }
 `),
     ).toEqual([{ method: 'GET', path: '/api/users/:id', name: 'Get' }]);
+  });
+
+  it('does not decline for a stored closure or a shadowed closure write', () => {
+    // Storing a function literal in a value does not run its body, so a `:=`
+    // whose initializer is an UNCALLED literal leaves the outer group alone;
+    // only an invoked literal (`… }()`), which runs during initialization,
+    // writes it. A closure whose own body declares the name — a nested `:=`
+    // or a parameter — writes that local, not the captured outer group.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine) {
+	g := r.Group("/old")
+	{
+		g := func() { g = r.Group("/stored") }
+		_ = g
+	}
+	g.GET("/a", h.A)
+	k := r.Group("/k")
+	{
+		reset := func() { k := r.Group("/local"); k = r.Group("/local2") }
+		k = r.Group("/new")
+		reset()
+	}
+	k.GET("/b", h.B)
+	m := r.Group("/m")
+	{
+		reset := func(m *gin.RouterGroup) { m = r.Group("/param") }
+		m = r.Group("/new")
+		reset(m)
+	}
+	m.GET("/c", h.C)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/old/a', name: 'A' },
+      { method: 'GET', path: '/new/b', name: 'B' },
+      { method: 'GET', path: '/new/c', name: 'C' },
+    ]);
+  });
+
+  it('resolves through closure-local range/receive shadows and parenthesized IIFEs', () => {
+    // A range or receive `=` inside a closure writes the name that closure's
+    // own body declares, so an earlier `if` holding it does not make the outer
+    // prefix unprovable — while the same `=` against the captured outer name
+    // does. A parenthesized immediately-invoked literal still runs its body,
+    // so it writes the outer group exactly like the unparenthesized form,
+    // whereas a stored parenthesized literal does not.
+    expect(
+      providers(`package main
+func routes(r *gin.Engine, cond bool, groups []*gin.RouterGroup, ch chan *gin.RouterGroup) {
+	g := r.Group("/old")
+	{
+		if cond {
+			func() {
+				g := r.Group("/local")
+				for _, g = range groups {}
+			}()
+		}
+		g.GET("/a", h.A)
+	}
+	k := r.Group("/k")
+	{
+		if cond {
+			func() {
+				k := r.Group("/local")
+				select { case k = <-ch: _ = k }
+			}()
+		}
+		k.GET("/b", h.B)
+	}
+	m := r.Group("/m")
+	{
+		if cond {
+			func() {
+				for _, m = range groups {}
+			}()
+		}
+		m.GET("/c", h.C)
+	}
+	n := r.Group("/n")
+	{
+		n := (func() *gin.RouterGroup { n = r.Group("/paren"); return r.Group("/inner") })()
+		_ = n
+	}
+	n.GET("/d", h.D)
+	p := r.Group("/p")
+	{
+		p := (func() { p = r.Group("/stored") })
+		_ = p
+	}
+	p.GET("/e", h.E)
+}
+`),
+    ).toEqual([
+      { method: 'GET', path: '/old/a', name: 'A' },
+      { method: 'GET', path: '/k/b', name: 'B' },
+      { method: 'GET', path: '/p/e', name: 'E' },
+    ]);
   });
 });
 
