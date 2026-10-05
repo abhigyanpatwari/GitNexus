@@ -3406,28 +3406,30 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         await fs.writeFile(lbugPath, 'previous published index');
         const { normalizeCachedEmbeddings } =
           await import('../../src/core/embeddings/embedding-restore-spill.js');
-        vi.doMock(
-          '../../src/core/embeddings/staged-embedding-recovery.js',
-          async (importActual) => ({
-            ...(await importActual<
-              typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
-            >()),
-            recoverStagedEmbeddings: vi.fn(async () =>
-              normalizeCachedEmbeddings({
-                embeddings: [
-                  {
-                    nodeId: RESILIENCE_NODE_ID,
-                    chunkIndex: 0,
-                    startLine: 1,
-                    endLine: 2,
-                    contentHash: 'current-hash',
-                    embedding: new Array(EMBEDDING_DIMS).fill(0),
-                  },
-                ],
-              }),
-            ),
+        // Resolve the real merge implementation on the host, before selecting
+        // the Windows branch. A lazy importActual factory otherwise loads and
+        // transforms real modules while process.platform is temporarily win32.
+        const recovery = await vi.importActual<
+          typeof import('../../src/core/embeddings/staged-embedding-recovery.js')
+        >('../../src/core/embeddings/staged-embedding-recovery.js');
+        const recoverStagedEmbeddings = vi.fn(async () =>
+          normalizeCachedEmbeddings({
+            embeddings: [
+              {
+                nodeId: RESILIENCE_NODE_ID,
+                chunkIndex: 0,
+                startLine: 1,
+                endLine: 2,
+                contentHash: 'current-hash',
+                embedding: new Array(EMBEDDING_DIMS).fill(0),
+              },
+            ],
           }),
         );
+        vi.doMock('../../src/core/embeddings/staged-embedding-recovery.js', () => ({
+          ...recovery,
+          recoverStagedEmbeddings,
+        }));
         const snapshots: Array<RepoMeta | null> = [];
         const rename = fs.rename.bind(fs);
         const { batchInsertEmbeddings } = mockResilienceHarness({
@@ -3463,16 +3465,24 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         // branch. The native adapter is mocked; source files and lock cleanup are real.
         await import('../../src/core/run-analyze.js');
         vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '0');
+        const logs: string[] = [];
         Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
         const error = await runAnalyze(
           tmpRepo.dbPath,
           { force: true, embeddings: true, skipAgentsMd: true, skipSkills: true },
-          [],
+          logs,
         );
         if (actualPlatformDescriptor) {
           Object.defineProperty(process, 'platform', actualPlatformDescriptor);
         }
-        expect(batchInsertEmbeddings).toHaveBeenCalled();
+        expect(error, logs.join('\n')).toEqual(
+          outcome === 'success' ? null : expect.objectContaining({ message: outcome }),
+        );
+        expect(recoverStagedEmbeddings, logs.join('\n')).toHaveBeenCalledOnce();
+        expect(logs).toContain(
+          'Recovered 1 complete staged embedding chunk(s) for 1 node(s); unchanged content can reuse them.',
+        );
+        expect(batchInsertEmbeddings, logs.join('\n')).toHaveBeenCalled();
         expect(vi.mocked(adapter.initLbug).mock.calls.at(-1)?.[0]).toBe(lbugPath);
         const finalMeta = await loadMeta(storagePath);
         // Reacquiring the real lock performs the next retry's orphan sweep.
@@ -3481,7 +3491,6 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         const lock = await acquireIndexLock(storagePath, { timeoutMs: 1000 });
         try {
           if (outcome === 'success') {
-            expect(error).toBeNull();
             expect(finalMeta?.embeddingCheckpoint).toBeUndefined();
             expect(finalMeta?.stats?.embeddings).toBe(9);
             expect(await fs.readFile(lbugPath, 'utf8')).toBe('in-place replacement');
@@ -3491,7 +3500,6 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
               });
             }
           } else {
-            expect(error).toMatchObject({ message: outcome });
             for (const source of sourceFiles) {
               expect(await fs.readFile(`${storagePath}/${source.filename}`, 'utf8')).toBe(
                 source.contents,

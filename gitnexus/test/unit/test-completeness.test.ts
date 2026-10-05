@@ -101,6 +101,17 @@ describe('required test execution across CI jobs', () => {
     expect(() => reconcileTestReports([input])).toThrow(/ambiguous/i);
   });
 
+  it('requires an unambiguous title and a real pass for helper-generated tests without locations', () => {
+    const input = report('/repo/gitnexus/test/unit/a.test.ts', ['pending']);
+    Reflect.deleteProperty(input.testResults[0].assertionResults[0], 'location');
+    expect(reconcileTestReports([input]).unverified).toHaveLength(1);
+    const passing = structuredClone(input);
+    passing.testResults[0].assertionResults[0].status = 'passed';
+    expect(reconcileTestReports([input, passing]).report.success).toBe(true);
+    passing.testResults[0].assertionResults.push({ ...passing.testResults[0].assertionResults[0] });
+    expect(() => reconcileTestReports([passing])).toThrow(/ambiguous/i);
+  });
+
   it('reconciles source-adjacent web tests on Linux and Windows', () => {
     const result = reconcileTestReports(
       [

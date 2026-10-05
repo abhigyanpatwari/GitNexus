@@ -8,7 +8,7 @@ type Assertion = {
   title: string;
   fullName: string;
   status: string;
-  location: { line: number; column: number };
+  location?: { line: number; column: number };
 };
 type Suite = {
   name: string;
@@ -90,19 +90,22 @@ export function reconcileTestReports(
           ) ||
           !Array.isArray(assertion.ancestorTitles) ||
           typeof assertion.title !== 'string' ||
-          !Number.isInteger(assertion.location?.line) ||
-          !Number.isInteger(assertion.location?.column)
+          (assertion.location !== undefined &&
+            (!Number.isInteger(assertion.location.line) ||
+              !Number.isInteger(assertion.location.column)))
         ) {
           throw new Error(`Malformed assertion in ${file}`);
         }
         // Collection order differs across platforms. Source location, not an
         // ordinal, distinguishes equal titles declared at different locations.
+        // Helper-generated tests may have no location; their complete title
+        // must then be unique within the file (the duplicate check still applies).
         const title = JSON.stringify([...assertion.ancestorTitles, assertion.title]);
         const key = JSON.stringify([
           file,
           title,
-          assertion.location.line,
-          assertion.location.column,
+          assertion.location?.line ?? null,
+          assertion.location?.column ?? null,
         ]);
         if (seen.has(key))
           throw new Error(
