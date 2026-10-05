@@ -1,3 +1,4 @@
+import { SupportedLanguages } from 'gitnexus-shared';
 import type { NodeLabel } from 'gitnexus-shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -25,20 +26,28 @@ interface Candidate {
 
 function buildLookup(candidates: readonly Candidate[]) {
   const graph = createKnowledgeGraph();
-  const nodes = candidates.map(
-    (candidate) =>
-      ({
-        id: candidate.id,
-        label: candidate.label ?? ('Method' as NodeLabel),
-        properties: {
-          name: candidate.name ?? 'save',
-          qualifiedName: candidate.qualifiedName ?? 'Service.save',
-          filePath: FILE,
-          ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
-          ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
-        },
-      }) satisfies ParseWorkerResult['nodes'][number],
-  );
+  const nodes = candidates.map((candidate) => {
+    const node = {
+      id: candidate.id,
+      label: candidate.label ?? ('Method' as NodeLabel),
+      properties: {
+        name: candidate.name ?? 'save',
+        qualifiedName: candidate.qualifiedName ?? 'Service.save',
+        filePath: FILE,
+        startLine: candidate.startLine,
+        endLine: candidate.startLine,
+        language: SupportedLanguages.TypeScript,
+        isExported: false,
+        ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
+      },
+    } satisfies ParseWorkerResult['nodes'][number];
+    // Missing positions deliberately exercise legacy worker-result tolerance.
+    if (candidate.startLine === undefined) {
+      Reflect.deleteProperty(node.properties, 'startLine');
+      Reflect.deleteProperty(node.properties, 'endLine');
+    }
+    return node;
+  });
   const result: ParseWorkerResult = {
     nodes,
     relationships: [],

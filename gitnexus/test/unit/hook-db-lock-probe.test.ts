@@ -738,7 +738,7 @@ describe.skipIf(!isLinux)('Linux cmdline-first DB-owner scan (#2180)', () => {
           err.code = code;
           throw err;
         }
-        return (realReaddir as (...a: unknown[]) => unknown)(p, ...rest);
+        return realReaddir(p, ...rest);
       });
       cleanups.push(() => spy.mockRestore());
       // White-box: assert the exported tri-state verdict directly (the

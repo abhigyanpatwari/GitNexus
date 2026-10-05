@@ -72,13 +72,14 @@ function scope(id: ScopeId, bindings = new Map<string, readonly BindingRef[]>())
 function indexesForScopeLookup(
   moduleScope: Scope,
   augmented: Map<string, readonly BindingRef[]>,
+  bindings: ScopeResolutionIndexes['bindings'] = new Map(),
 ): ScopeResolutionIndexes {
   const scopeTree = {
     getScope: (id: ScopeId) => (id === moduleScope.id ? moduleScope : undefined),
   } as unknown as ScopeTree;
   return {
     scopeTree,
-    bindings: new Map(),
+    bindings,
     bindingAugmentations: new Map([[moduleScope.id, augmented]]),
   } as unknown as ScopeResolutionIndexes;
 }
@@ -225,8 +226,11 @@ describe('walker helpers read bindingAugmentations', () => {
       origin: 'import',
       visibility: 'static-member-import',
     } as BindingRef;
-    const indexes = indexesForScopeLookup(moduleScope, new Map([['callMe', [staticImport]]]));
-    indexes.bindings.set(SCOPE, new Map([['callMe', [finalized]]]));
+    const indexes = indexesForScopeLookup(
+      moduleScope,
+      new Map([['callMe', [staticImport]]]),
+      new Map([[SCOPE, new Map([['callMe', [finalized]]])]]),
+    );
 
     const candidates = findAllCallableBindingCandidatesInScope(SCOPE, 'callMe', indexes);
 

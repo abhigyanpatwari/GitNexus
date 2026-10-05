@@ -10,7 +10,7 @@ const { lbugMocks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
   return { ...actual, ...lbugMocks };
 });
 

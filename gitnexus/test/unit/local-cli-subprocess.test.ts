@@ -56,7 +56,7 @@ describe('Claude CLI subprocess contract', () => {
   beforeEach(() => {
     vi.resetModules();
     fakeChild = makeFakeChild({ stdout: 'Claude response text' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
   });
 
   afterEach(() => {
@@ -147,7 +147,7 @@ describe('Claude CLI subprocess contract', () => {
 
   it('rejects with exit code and stderr on non-zero exit', async () => {
     fakeChild = makeFakeChild({ exitCode: 1, stderr: 'auth required' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('claude 1.0.0'),
@@ -162,7 +162,7 @@ describe('Claude CLI subprocess contract', () => {
 
   it('rejects with actionable error on empty stdout', async () => {
     fakeChild = makeFakeChild({ stdout: '' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('claude 1.0.0'),
@@ -183,7 +183,7 @@ describe('Codex CLI subprocess contract', () => {
   beforeEach(() => {
     vi.resetModules();
     fakeChild = makeFakeChild({ stdout: 'codex response' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
   });
 
   afterEach(() => {
@@ -435,7 +435,7 @@ describe('Codex output file fallback', () => {
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
-      spawn: vi.fn(() => fakeChild.child),
+      spawn: vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child),
     }));
     const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
 
@@ -448,7 +448,7 @@ describe('Codex output file fallback', () => {
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
-      spawn: vi.fn(() => fakeChild.child),
+      spawn: vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child),
     }));
     const { callCodexLLM } = await import('../../src/core/wiki/local-cli-client.js');
 
@@ -563,7 +563,7 @@ describe('Codex CLI flag contract snapshot', () => {
 
   it('spawn args match the exact expected contract (flag rename = test failure)', async () => {
     const fakeChild = makeFakeChild({ stdout: 'codex output' });
-    const spawnSpy = vi.fn(() => fakeChild.child);
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
@@ -608,7 +608,7 @@ describe('Codex CLI flag contract snapshot', () => {
 
   it('--model appears before - (stdin marker) and after --output-last-message', async () => {
     const fakeChild = makeFakeChild({ stdout: 'codex output' });
-    const spawnSpy = vi.fn(() => fakeChild.child);
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => fakeChild.child);
 
     vi.doMock('child_process', () => ({
       execFileSync: vi.fn().mockReturnValue('codex 0.1.0'),
@@ -1070,13 +1070,14 @@ describe('Grok CLI timeout', () => {
   }
 
   async function loadGrokWithChild(child: any, execFileSyncImpl?: (...args: any[]) => unknown) {
-    const spawnSpy = vi.fn(() => child);
-    const execFileSync =
+    const spawnSpy = vi.fn<typeof import('node:child_process').spawn>(() => child);
+    const execFileSync = vi.fn(
       execFileSyncImpl ??
-      vi.fn().mockImplementation((cmd: string) => {
-        if (cmd === 'taskkill') return '';
-        return 'grok 1.0.5';
-      });
+        ((cmd: string) => {
+          if (cmd === 'taskkill') return '';
+          return 'grok 1.0.5';
+        }),
+    );
     vi.doMock('../../src/core/logger.js', () => ({
       logger: { info: vi.fn(), warn: vi.fn() },
     }));

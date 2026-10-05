@@ -30,7 +30,7 @@ const parseRuby = (code: string) => {
 };
 
 const parseKotlin = (code: string) => {
-  parser.setLanguage(Kotlin as Parser.Language);
+  parser.setLanguage(Kotlin);
   return parser.parse(code);
 };
 

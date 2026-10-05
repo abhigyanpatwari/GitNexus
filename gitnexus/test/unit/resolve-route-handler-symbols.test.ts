@@ -237,7 +237,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     const owner = model.symbols.add('src/handlers.js', 'auth', 'object:auth', 'Variable');
     model.methods.register(owner.nodeId, 'getCurrentUser', {
       filePath: 'src/handlers.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:auth.getCurrentUser',
       type: 'Method',
       ownerId: owner.nodeId,
@@ -281,7 +281,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     model.symbols.add('src/routes.js', 'auth', 'object:auth', 'Variable');
     model.methods.register('object:auth', 'getCurrentUser', {
       filePath: 'src/routes.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:auth.getCurrentUser',
       type: 'Method',
       ownerId: 'object:auth',
@@ -326,7 +326,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     model.symbols.add('src/routes.js', 'services', 'object:services', 'Variable');
     model.methods.register('object:services', 'getCurrentUser', {
       filePath: 'src/routes.js',
-      name: 'getCurrentUser',
+      qualifiedName: 'getCurrentUser',
       nodeId: 'method:decoy',
       type: 'Method',
       ownerId: 'object:services',
