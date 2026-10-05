@@ -287,7 +287,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('analyze_failure_threshold must be an integer >= 2');
   });
 
@@ -307,7 +307,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.reason).toBe('invalid');
     expect(loaded.message).toContain('[auto-sync] Invalid watch_config.yml:');
     expect(loaded.message).toContain('sync_interval_minutes must be a positive integer');
@@ -330,7 +330,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('local_path must be an absolute path');
   });
 
@@ -740,7 +740,7 @@ describe('auto-sync', () => {
     const loaded = await loadAutoSyncConfig();
 
     expect(loaded.ok).toBe(false);
-    if (loaded.ok) throw new Error('expected invalid config');
+    if (loaded.ok !== false) throw new Error('expected invalid config');
     expect(loaded.message).toContain('must not set both branch and branches');
   });
 

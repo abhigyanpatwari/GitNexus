@@ -23,6 +23,7 @@ import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-lock.js';
 
 const baseResult: AnalyzeResult = {
+  rebuildReasons: [],
   repoName: 'repo',
   repoPath: '/repo',
   storagePath: '/repo/.gitnexus',

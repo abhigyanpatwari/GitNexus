@@ -465,25 +465,47 @@ describe('classifyReceiverShape', () => {
   });
 
   it('reports no-chain for a chain with no steps', () => {
-    expect(classifyReceiverShape({ steps: [] })).toBe('no-chain');
+    expect(
+      classifyReceiverShape({ baseReceiverName: 'receiver', truncated: false, steps: [] }),
+    ).toBe('no-chain');
   });
 
   it('reports chain-call when every step is a call', () => {
-    expect(classifyReceiverShape({ steps: [{ kind: 'call' }, { kind: 'call' }] })).toBe(
-      'chain-call',
-    );
+    expect(
+      classifyReceiverShape({
+        baseReceiverName: 'receiver',
+        truncated: false,
+        steps: [
+          { kind: 'call', name: 'method' },
+          { kind: 'call', name: 'method' },
+        ],
+      }),
+    ).toBe('chain-call');
   });
 
   it('reports chain-field when every step is a field', () => {
-    expect(classifyReceiverShape({ steps: [{ kind: 'field' }] })).toBe('chain-field');
+    expect(
+      classifyReceiverShape({
+        baseReceiverName: 'receiver',
+        truncated: false,
+        steps: [{ kind: 'field', name: 'property' }],
+      }),
+    ).toBe('chain-field');
   });
 
   // The distinction that makes the census actionable: a mixed chain fails for
   // different reasons than a pure one, so collapsing it into either bucket
   // would misattribute the population a fix has to target.
   it('reports chain-mixed when the chain interleaves calls and fields', () => {
-    expect(classifyReceiverShape({ steps: [{ kind: 'call' }, { kind: 'field' }] })).toBe(
-      'chain-mixed',
-    );
+    expect(
+      classifyReceiverShape({
+        baseReceiverName: 'receiver',
+        truncated: false,
+        steps: [
+          { kind: 'call', name: 'method' },
+          { kind: 'field', name: 'property' },
+        ],
+      }),
+    ).toBe('chain-mixed');
   });
 });

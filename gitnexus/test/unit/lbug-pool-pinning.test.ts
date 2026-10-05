@@ -264,6 +264,8 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
   it('a pin acquired while closeOne awaits db.close() does not survive teardown', async () => {
     vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
       init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
       close: vi.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }),
@@ -284,6 +286,8 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
   it('initLbugWithDb waits for an in-flight closeOne before registering', async () => {
     vi.mocked(createLbugDatabase).mockImplementationOnce(() => ({
       init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
       close: vi.fn().mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }),
@@ -294,6 +298,8 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
     await Promise.resolve();
     const injected = {
       init: vi.fn().mockResolvedValue(undefined),
+      initSync: vi.fn(),
+      closeSync: vi.fn(),
       close: vi.fn().mockResolvedValue(undefined),
     };
     const injecting = initLbugWithDb(

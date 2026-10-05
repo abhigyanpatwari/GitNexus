@@ -6,5 +6,5 @@
     "types": ["node", "vitest/globals"]
   },
   "include": ["src/**/*", "test/**/*"],
-  "exclude": ["test/fixtures/mini-repo/**", "test/fixtures/sample-code/**"]
+  "exclude": ["node_modules", "test/fixtures/**"]
 }

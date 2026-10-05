@@ -894,7 +894,7 @@ describeKotlin('VariableExtractor — Kotlin (F51 destructuring)', () => {
 
   /** The first property_declaration whose text starts with `prefix`. */
   function propertyDecl(src: string, prefix: string): SyntaxNode {
-    parser.setLanguage(Kotlin as Parser.Language);
+    parser.setLanguage(Kotlin);
     const tree = parser.parse(src);
     let found: SyntaxNode | undefined;
     const walk = (n: SyntaxNode) => {

@@ -81,7 +81,9 @@ describe('watch filesystem integration', () => {
     const loop = await startWatchFileLoop(
       repo,
       30,
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       (error) => {
         throw error;
       },
@@ -166,7 +168,9 @@ describe('watch filesystem integration', () => {
     const loop = await startWatchFileLoop(
       repo,
       25,
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       (error) => {
         throw error;
       },
@@ -224,7 +228,9 @@ describe('watch filesystem integration', () => {
     const loop = await startWatchFileLoop(
       repo,
       25,
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       (_error, paths) => errors.push([...paths]),
     );
     loops.push(loop);
@@ -252,7 +258,9 @@ describe('watch filesystem integration', () => {
     const loop = await startWatchFileLoop(
       repo,
       25,
-      async (paths) => batches.push([...paths]),
+      async (paths) => {
+        batches.push([...paths]);
+      },
       (error) => {
         throw error;
       },

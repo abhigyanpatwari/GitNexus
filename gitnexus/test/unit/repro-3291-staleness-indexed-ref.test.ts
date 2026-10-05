@@ -162,9 +162,10 @@ describe('#3291 — tool staleness names the indexed ref', () => {
 
     // The graph answer itself is held constant so the only thing that can differ
     // between the two responses is the freshness signalling under test.
-    vi.spyOn(backend as unknown as { impact: unknown }, 'impact').mockResolvedValue(
-      IMPACT_RESULT as never,
-    );
+    vi.spyOn(
+      backend as unknown as { impact: () => Promise<typeof IMPACT_RESULT> },
+      'impact',
+    ).mockResolvedValue(IMPACT_RESULT as never);
 
     const fromMain = (await backend.callTool('impact', {
       target: 'doWork',
@@ -218,9 +219,10 @@ describe('#3291 — tool staleness names the indexed ref', () => {
     vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(
       handleFor(mainClone, twoBack, 'main') as never,
     );
-    vi.spyOn(backend as unknown as { impact: unknown }, 'impact').mockResolvedValue(
-      IMPACT_RESULT as never,
-    );
+    vi.spyOn(
+      backend as unknown as { impact: () => Promise<typeof IMPACT_RESULT> },
+      'impact',
+    ).mockResolvedValue(IMPACT_RESULT as never);
 
     const result = (await backend.callTool('impact', {
       target: 'doWork',
@@ -244,9 +246,10 @@ describe('#3291 — tool staleness names the indexed ref', () => {
     const { branch: _unlabelled, ...unlabelledHandle } = handleFor(mainClone, head, 'main');
 
     vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(unlabelledHandle as never);
-    vi.spyOn(backend as unknown as { impact: unknown }, 'impact').mockResolvedValue(
-      IMPACT_RESULT as never,
-    );
+    vi.spyOn(
+      backend as unknown as { impact: () => Promise<typeof IMPACT_RESULT> },
+      'impact',
+    ).mockResolvedValue(IMPACT_RESULT as never);
 
     const result = (await backend.callTool('impact', {
       target: 'doWork',
