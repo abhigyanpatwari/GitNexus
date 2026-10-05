@@ -15,7 +15,7 @@ const execFileMock = vi.fn((...args: any[]) => {
   }
 });
 
-const execFileSyncMock = vi.fn(() => {
+const execFileSyncMock = vi.fn((): string => {
   throw new Error('not found');
 });
 

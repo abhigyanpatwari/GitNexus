@@ -318,7 +318,17 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         indexedAt: seededIndexedAt,
         stats: { files: 7, nodes: 42, edges: 10 },
         runnerIdentity: {
-          source: { kind: 'source' as const, digest: 'src-digest' },
+          schemaVersion: 4,
+          runtime: {
+            executablePath: '/usr/bin/node',
+            version: 'v24.11.0',
+            platform: 'linux',
+            architecture: 'x64',
+            modulesAbi: '137',
+            libc: 'glibc',
+          },
+          cliVersion: '1.0.0',
+          invokedArtifact: { path: '/x/cli/index.ts', digest: 'src-digest' },
           build: {
             kind: 'source' as const,
             rootPath: '/x',
@@ -1108,7 +1118,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       properties: { filePath: 'src/app.ts' },
     };
     const buildVectorIndex = vi.fn(async () => false);
-    const executeWithReusedStatement = vi.fn(async () => []);
+    const executeWithReusedStatement = vi.fn<
+      typeof import('../../src/core/lbug/lbug-adapter.js').executeWithReusedStatement
+    >(async () => {});
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -1239,7 +1251,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       name: 'handler',
       properties: { filePath: 'src/app.ts' },
     };
-    const executeWithReusedStatement = vi.fn(async () => []);
+    const executeWithReusedStatement = vi.fn<
+      typeof import('../../src/core/lbug/lbug-adapter.js').executeWithReusedStatement
+    >(async () => {});
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -3073,6 +3087,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
       if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+      return { db: null, conn: null };
     });
     vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
       await fs.rm(dbPath, { force: true });
@@ -3325,6 +3340,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
         const adapter = await import('../../src/core/lbug/lbug-adapter.js');
         vi.mocked(adapter.loadGraphToLbug).mockImplementation(async () => {
           await fs.writeFile(lbugPath, 'in-place replacement');
+          return { success: true, insertedRels: 0, skippedRels: 0, warnings: [] };
         });
         // Import on the host first, then choose the Windows default in-place
         // branch. The native adapter is mocked; source files and lock cleanup are real.
@@ -3629,6 +3645,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
         if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+        return { db: null, conn: null };
       });
       vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
         await fs.rm(dbPath, { force: true });
@@ -3670,6 +3687,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       vi.mocked(adapter.initLbug).mockImplementation(async (dbPath) => {
         if (dbPath.includes('.staging.')) await fs.writeFile(dbPath, 'staged fixture');
+        return { db: null, conn: null };
       });
       vi.mocked(adapter.wipeLbugDbFiles).mockImplementation(async (dbPath) => {
         await fs.rm(dbPath, { force: true });

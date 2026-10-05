@@ -4,7 +4,7 @@ const executeQueryMock = vi.fn();
 const executeParameterizedMock = vi.fn();
 
 vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>();
   return {
     ...actual,
     initLbug: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
   };
 });
 vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
+  const actual = await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>();
   return {
     ...actual,
     initLbug: vi.fn(),
@@ -26,8 +26,8 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   };
 });
 
-import { LocalBackend } from '../../src/mcp/local/local-backend';
-import { collectImpactSymbolUids } from '../../src/core/group/cross-impact';
+import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { collectImpactSymbolUids } from '../../src/core/group/cross-impact.js';
 
 function makeBackend() {
   const backend = new LocalBackend();

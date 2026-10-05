@@ -211,7 +211,7 @@ describe('stripUeMacros — tree-sitter extraction (end-to-end)', () => {
    */
   function extractClassNames(source: string): string[] {
     const parser = new Parser();
-    parser.setLanguage(CPP as unknown as Parser.Language);
+    parser.setLanguage(CPP);
     const tree = parser.parse(source);
     const names: string[] = [];
     const stack: Parser.SyntaxNode[] = [tree.rootNode];
@@ -249,7 +249,7 @@ describe('stripUeMacros — tree-sitter extraction (end-to-end)', () => {
     const src = `UCLASS()\nclass BRAWLUI_API UMyClass : public UObject\n{\n  GENERATED_BODY()\n public:\n  void Run();\n};`;
     const out = stripUeMacros(src);
     const parser = new Parser();
-    parser.setLanguage(CPP as unknown as Parser.Language);
+    parser.setLanguage(CPP);
     const tree = parser.parse(out);
     const stack: Parser.SyntaxNode[] = [tree.rootNode];
     let runLine: number | undefined;

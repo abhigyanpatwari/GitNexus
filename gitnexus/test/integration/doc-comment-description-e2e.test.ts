@@ -59,7 +59,6 @@ describe('doc-comment description end-to-end (issue #2270)', () => {
   it('surfaces an exported function JSDoc as its node description through the pipeline', async () => {
     const result: PipelineResult = await runPipelineFromRepo(createTsRepo(), () => {}, {
       skipGraphPhases: true,
-      workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
       workerPoolSize: 2,
     });
 
@@ -79,7 +78,6 @@ describe('doc-comment description end-to-end (issue #2270)', () => {
     async () => {
       const result: PipelineResult = await runPipelineFromRepo(createSwiftRepo(), () => {}, {
         skipGraphPhases: true,
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
         workerPoolSize: 2,
       });
 

@@ -23,7 +23,7 @@ const execFileMock = vi.fn((...args: any[]) => {
 
 // By default, execFileSync throws (simulating `which gitnexus` not found)
 // so getMcpEntry() falls back to the npx path.
-const execFileSyncMock = vi.fn(() => {
+const execFileSyncMock = vi.fn((): string => {
   throw new Error('not found');
 });
 

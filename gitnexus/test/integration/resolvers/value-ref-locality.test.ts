@@ -47,7 +47,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../../types/pipeline.js';
+import type { PipelineResult } from '../../../src/types/pipeline.js';
 
 const LANG_FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
 
