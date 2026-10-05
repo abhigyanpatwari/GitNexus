@@ -343,6 +343,33 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
         lastCommit: 'healthy-commit',
         indexedAt: '2026-01-01T00:00:00.000Z',
         stats: { files: 7, nodes: 42, edges: 10, embeddings: 3 },
+        runnerIdentity: {
+          schemaVersion: 4,
+          runtime: {
+            executablePath: '/usr/bin/node',
+            version: 'v24.11.0',
+            platform: 'linux',
+            architecture: 'x64',
+            modulesAbi: '137',
+            libc: 'glibc',
+          },
+          cliVersion: '1.0.0',
+          invokedArtifact: { path: '/x/cli/index.ts', digest: 'src-digest' },
+          build: {
+            kind: 'source' as const,
+            rootPath: '/x',
+            canonicalization: 'gitnexus-analyzer-build-v2',
+            digest: 'build-digest',
+          },
+          dependencyRuntime: {
+            manifestPath: '/x/package.json',
+            lockfilePath: null,
+            canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
+            packageCount: 1,
+            artifactCount: 1,
+            digest: 'dep-digest',
+          },
+        },
         capabilities: {
           graph: { provider: 'ladybugdb', status: 'available' },
           fts: { provider: 'ladybugdb-fts', status: 'degraded' },

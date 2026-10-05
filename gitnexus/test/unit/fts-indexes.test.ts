@@ -323,6 +323,33 @@ describe('buildSearchIndexesOrDegrade', () => {
     expect(executeQuery).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ['integrity', 'IO exception: checkpoint failed', 'integrity'],
+    ['capability', POISON, 'capability'],
+    ['unknown', 'catalog unavailable', 'capability'],
+  ])(
+    'classifies a catalog-only %s error after every index builds',
+    async (_label, error, failureClass) => {
+      const onIndexReady = vi.fn();
+      const executeQuery = vi.fn(async () => {
+        throw new Error(error);
+      });
+
+      const result = await buildSearchIndexesOrDegrade(executeQuery, { onIndexReady });
+
+      expect(createFTSIndex).toHaveBeenCalledTimes(FTS_INDEXES.length);
+      expect(onIndexReady.mock.calls).toEqual(
+        FTS_INDEXES.map(({ table, indexName }) => [table, indexName]),
+      );
+      expect(executeQuery).toHaveBeenCalledExactlyOnceWith('CALL SHOW_INDEXES() RETURN *');
+      expect(result).toEqual({
+        ok: false,
+        error: `FTS catalog verification failed: ${error}`,
+        failureClass,
+      });
+    },
+  );
+
   it('retains integrity and tokenizer causes when catalog verification also throws', async () => {
     const integrityError = 'IO exception: checkpoint failed';
     vi.mocked(createFTSIndex)
