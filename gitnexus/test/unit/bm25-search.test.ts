@@ -45,7 +45,9 @@ describe('BM25 search', () => {
       // One SHOW_INDEXES call returns a catalog row per configured index, each
       // covering exactly its expected properties.
       const showIndexesRows = FTS_INDEXES.map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
@@ -62,7 +64,9 @@ describe('BM25 search', () => {
       // missing `description`. Every other index covers its columns.
       const staleIndex = 'function_fts';
       const showIndexesRows = FTS_INDEXES.map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: i.indexName === staleIndex ? ['name', 'content'] : [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
@@ -77,7 +81,9 @@ describe('BM25 search', () => {
       // Every configured index present and covering, except const_fts is missing.
       const absentIndex = 'const_fts';
       const showIndexesRows = FTS_INDEXES.filter((i) => i.indexName !== absentIndex).map((i) => ({
+        table_name: i.table,
         index_name: i.indexName,
+        index_type: 'FTS',
         property_names: [...i.properties],
       }));
       const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
