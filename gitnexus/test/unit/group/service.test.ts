@@ -303,7 +303,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({ name: 'test-group', query: 'auth flow' });
         expect(query).toHaveBeenCalled();
@@ -320,7 +320,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({
           name: 'test-group',
@@ -342,7 +342,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
 
         const infiniteLimit = await svc.groupQuery({
@@ -403,7 +403,7 @@ describe('GroupService', () => {
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const query = vi.fn(async () => ({ processes: [] }));
+        const query = vi.fn<GroupToolPort['query']>(async () => ({ processes: [] }));
         const svc = new GroupService(makePort({ query }));
         await svc.groupQuery({ name: 'test-group', query: 'auth flow', chain_depth: 2 });
         expect(query).toHaveBeenCalled();
@@ -575,7 +575,7 @@ repos:
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const context = vi.fn(async () => ({ status: 'found' }));
+        const context = vi.fn<GroupToolPort['context']>(async () => ({ status: 'found' }));
         const svc = new GroupService(makePort({ context }));
         const r = await svc.groupContext({
           name: 'test-group',
@@ -594,7 +594,7 @@ repos:
       const { cleanup, tmpDir } = makeTmpGroup();
       try {
         vi.stubEnv('GITNEXUS_HOME', tmpDir);
-        const context = vi.fn(async () => ({
+        const context = vi.fn<GroupToolPort['context']>(async () => ({
           status: 'found',
           symbol: { filePath: 'services/auth/x.ts', uid: 'u1', name: 'X' },
         }));

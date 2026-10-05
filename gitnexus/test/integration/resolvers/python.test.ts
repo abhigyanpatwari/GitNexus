@@ -1146,6 +1146,7 @@ describe('Python mixin self-dispatch', () => {
     expect(
       getResolutionOutcomes(result).some(
         (outcome) =>
+          outcome.kind === 'suppressed' &&
           outcome.filePath === 'mixins.py' &&
           outcome.name === 'class_only' &&
           outcome.reason === 'receiver-unresolved',
@@ -1202,11 +1203,9 @@ describe('Python mixin self-dispatch', () => {
 
   it('records only the expected mixin dispatch gaps and partial coverage', () => {
     const unresolvedSites = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
       .filter(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.reason === 'receiver-unresolved' &&
-          outcome.filePath === 'mixins.py',
+        (outcome) => outcome.reason === 'receiver-unresolved' && outcome.filePath === 'mixins.py',
       )
       .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
       .sort();
@@ -1325,6 +1324,7 @@ describe('Python mixin self-dispatch', () => {
     expect(
       getResolutionOutcomes(result).some(
         (outcome) =>
+          outcome.kind === 'suppressed' &&
           outcome.filePath === 'mixins.py' &&
           outcome.name === 'duplicate_hook' &&
           outcome.reason === 'member-lookup-ambiguous',
@@ -1378,12 +1378,9 @@ describe('Python unproven subtype methods', () => {
       expect(calls.map((call) => call.rel.targetId)).toEqual([
         expect.stringContaining('Concrete.hook'),
       ]);
-      const unresolved = getResolutionOutcomes(result).filter(
-        (outcome) =>
-          outcome.kind === 'suppressed' &&
-          outcome.name === 'hook' &&
-          outcome.reason === 'receiver-unresolved',
-      );
+      const unresolved = getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
+        .filter((outcome) => outcome.name === 'hook' && outcome.reason === 'receiver-unresolved');
       expect(unresolved.flatMap((outcome) => outcome.candidateIds).sort()).toEqual([
         // AbstractWorker.hook (line 10) and Receiverless.hook (line 13).
         'def:worker.py#10:4:Method:hook',
@@ -1419,6 +1416,7 @@ describe('Python unproven subtype methods', () => {
       ]);
       expect(
         getResolutionOutcomes(result)
+          .filter((outcome) => outcome.kind === 'suppressed')
           .filter((outcome) => outcome.name === 'hook' && outcome.reason === 'receiver-unresolved')
           .flatMap((outcome) => outcome.candidateIds),
       ).toEqual([expect.stringMatching(/:Class:Base$/)]);
@@ -1459,6 +1457,7 @@ class MissingHook(Mixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.name === 'hook' &&
             outcome.reason === 'receiver-unresolved' &&
             outcome.candidateIds.some((id) => id.endsWith(':Class:MissingHook')),
@@ -1547,7 +1546,10 @@ class Mixin:
         );
         expect(
           getResolutionOutcomes(result).some(
-            (outcome) => outcome.name === target && outcome.reason === 'receiver-unresolved',
+            (outcome) =>
+              outcome.kind === 'suppressed' &&
+              outcome.name === target &&
+              outcome.reason === 'receiver-unresolved',
           ),
         ).toBe(true);
       }
@@ -1647,7 +1649,10 @@ class ReboundProperty:
         );
         expect(
           getResolutionOutcomes(result).some(
-            (outcome) => outcome.name === target && outcome.reason === 'receiver-unresolved',
+            (outcome) =>
+              outcome.kind === 'suppressed' &&
+              outcome.name === target &&
+              outcome.reason === 'receiver-unresolved',
           ),
         ).toBe(true);
       }
@@ -1660,13 +1665,17 @@ class ReboundProperty:
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
-            outcome.name === 'wrapped_helper' && outcome.reason === 'receiver-unresolved',
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'wrapped_helper' &&
+            outcome.reason === 'receiver-unresolved',
         ),
       ).toBe(true);
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
-            outcome.name === 'rebound_helper' && outcome.reason === 'receiver-unresolved',
+            outcome.kind === 'suppressed' &&
+            outcome.name === 'rebound_helper' &&
+            outcome.reason === 'receiver-unresolved',
         ),
       ).toBe(true);
     } finally {
@@ -1752,6 +1761,7 @@ class Worker(Mixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.filePath === 'case.py' &&
             outcome.name === 'hook' &&
             outcome.reason === 'receiver-unresolved',
@@ -1760,6 +1770,7 @@ class Worker(Mixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.filePath === 'case.py' &&
             outcome.name === 'own_hook' &&
             outcome.reason === 'receiver-unresolved',
@@ -1768,6 +1779,7 @@ class Worker(Mixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.filePath === 'case.py' &&
             outcome.name === 'unicode_helper' &&
             outcome.reason === 'receiver-unresolved',
@@ -1776,6 +1788,7 @@ class Worker(Mixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.filePath === 'case.py' &&
             outcome.name === 'nested_hook' &&
             outcome.reason === 'receiver-unresolved',
@@ -1855,6 +1868,7 @@ class DirectWorker(HookMixin, external.Parent, First, Second):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.name === 'hook' &&
             outcome.reason === 'receiver-unresolved' &&
             outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),
@@ -1896,6 +1910,7 @@ class DirectWorker(HookMixin):
       expect(
         getResolutionOutcomes(result).some(
           (outcome) =>
+            outcome.kind === 'suppressed' &&
             outcome.name === 'hook' &&
             outcome.reason === 'receiver-unresolved' &&
             outcome.candidateIds.some((id) => id.endsWith(':Class:Worker')),

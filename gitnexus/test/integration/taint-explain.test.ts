@@ -76,7 +76,7 @@ export function handle(req: any, db: any, map: Map<string, string>, task: any, r
         .map((rel) => {
           const sink = result.graph.getNode(rel.targetId);
           const decoded = decodeTaintPath(rel.reason);
-          if (!decoded.ok) {
+          if (decoded.ok === false) {
             throw new Error(`invalid TAINTED reason for ${rel.id}: ${decoded.error}`);
           }
           return {

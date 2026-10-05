@@ -116,6 +116,8 @@ describe('runImpactPDG', () => {
     });
 
     expect(bfsQueries).toBe(IMPACT_MAX_DEPTH);
+    expect('truncated' in result).toBe(true);
+    if (!('truncated' in result)) throw new Error('Expected a successful PDG result');
     expect(result.truncated).toBe(true);
     expect(result.truncatedBy).toBe('depth');
   });

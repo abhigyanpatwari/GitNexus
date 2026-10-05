@@ -1,3 +1,4 @@
+import type { ScopeResolutionIndexes } from '../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 /**
  * #2788 — `resolveCppQualifiedNamespaceMember` serves qualified `ns::member()`
  * lookups from a per-pipeline index instead of rescanning every parsed file per
@@ -15,12 +16,7 @@
  *      This is the failure mode the index introduces; nothing else covers it.
  */
 
-import type {
-  ParsedFile,
-  ScopeId,
-  ScopeResolutionIndexes,
-  SymbolDefinition,
-} from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearCppInlineNamespaces,

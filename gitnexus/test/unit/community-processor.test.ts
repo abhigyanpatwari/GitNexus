@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, it, expect, vi } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
+import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import {
   getCommunityColor,
   COMMUNITY_COLORS,

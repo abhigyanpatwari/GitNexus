@@ -1,5 +1,6 @@
+import type { ScopeResolutionIndexes } from '../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { describe, it, expect, afterEach } from 'vitest';
-import type { ParsedFile, ScopeResolutionIndexes } from 'gitnexus-shared';
+import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-resolver.js';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.js';

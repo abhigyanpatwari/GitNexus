@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createAnalyzerLbugLazyAction, createLazyAction } from '../../src/cli/lazy-action.js';
 
 const { checkLbugNativeMock } = vi.hoisted(() => ({
-  checkLbugNativeMock: vi.fn(() => ({ ok: true })),
+  checkLbugNativeMock: vi.fn<typeof import('../../src/core/lbug/native-check.js').checkLbugNative>(
+    () => ({ ok: true }),
+  ),
 }));
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({

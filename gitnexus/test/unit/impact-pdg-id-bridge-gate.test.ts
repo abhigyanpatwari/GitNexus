@@ -11,7 +11,6 @@
 // `npm test`.
 
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error — .mjs pure-JS harness module, no types (intentional; build-free).
 import * as M from '../../bench/impact-pdg/measure.mjs';
 
 interface ReachedItem {

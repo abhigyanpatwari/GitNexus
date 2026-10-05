@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { assignShards, specWeight } from '../helpers/shard-balance.js';
 
-const key = (s: { id: string }) => s.id;
-const weight = (s: { w: number }) => s.w;
+const key = (s: { id: string; w: number }) => s.id;
+const weight = (s: { id: string; w: number }) => s.w;
 const make = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `f${i}`, w: (i % 5) + 1 }));
 
 describe('assignShards', () => {

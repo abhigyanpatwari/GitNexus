@@ -18,7 +18,7 @@ interface FakeChecker {
 }
 
 interface FakeLogger {
-  info: ReturnType<typeof vi.fn>;
+  info: ReturnType<typeof vi.fn<(bindings: Record<string, unknown>, message: string) => unknown>>;
 }
 
 function checker(initial: UpdateState | null): {
