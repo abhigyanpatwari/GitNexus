@@ -268,6 +268,37 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
+  # Branch protection still requires these six names from the three-shard
+  # matrix. Keep them as aggregate gates as the real matrix grows: every native
+  # shard and the complete execution audit must pass before any gate succeeds.
+  # These jobs only verify dependency results; tests run in cross-platform above.
+  protected-platform-checks:
+    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.check }}/3
+    needs: [cross-platform, test-completeness]
+    if: always()
+    permissions: {}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        check: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all native shards and the execution audit
+        shell: bash
+        env:
+          NATIVE_RESULT: ${{ needs.cross-platform.result }}
+          EXECUTION_RESULT: ${{ needs.test-completeness.result }}
+        run: |
+          echo "Compatibility gate for the former three-shard check name."
+          echo "All native shards: $NATIVE_RESULT"
+          echo "Complete execution audit: $EXECUTION_RESULT"
+          if [[ "$NATIVE_RESULT" != "success" || "$EXECUTION_RESULT" != "success" ]]; then
+            echo "::error::Every native shard and the execution audit must succeed."
+            exit 1
+          fi
+
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:
   #   1. Static, offline: assert every grammar's compiled ABI loads on the
   #      pinned runtime (check-tree-sitter-upgrade-readiness.py --assert-current).

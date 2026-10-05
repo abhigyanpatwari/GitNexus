@@ -125,7 +125,14 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 | `ci-scope-parity.yml` | discover, parity                                                  | Scope-resolution parity for all migrated languages                    |
 | `ci-e2e.yml`          | e2e (chromium)                                                    | Playwright E2E, gated on `gitnexus-web/**` changes                    |
 
-The `CI Gate` job in `ci.yml` is the single required check for branch protection. It requires quality, tests, e2e, and scope-parity to all pass.
+The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
+The browser E2E workflow must pass or be skipped because no web files changed.
+
+Branch protection also requires six platform check names from the former
+three-shard matrix. These names remain as aggregate gates: all native shards
+and the `every test executed` audit must succeed before any of them passes.
+Failed, cancelled, skipped, or missing dependency results fail these gates.
+The actual native tests run in the current Windows/macOS shard matrix.
 
 The `typecheck` job runs both the production compiler check and
 `npm run typecheck:tests`. A type error in either check fails the job and the CI gate.

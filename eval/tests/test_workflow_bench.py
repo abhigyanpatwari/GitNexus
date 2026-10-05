@@ -270,6 +270,72 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert "eval-containment-windows:" in workflow
 
 
+@pytest.fixture(scope="module")
+def ci_test_jobs():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((repo_root / ".github" / "workflows" / "ci-tests.yml").read_text())
+    return workflow["jobs"]
+
+
+def test_platform_ci_preserves_required_check_names_with_complete_execution_gates(ci_test_jobs):
+    jobs = ci_test_jobs
+    gate = jobs["protected-platform-checks"]
+    matrix = gate["strategy"]["matrix"]
+    names = {
+        "tests / " + gate["name"].replace("${{ matrix.os }}", platform).replace("${{ matrix.check }}", str(check))
+        for platform in matrix["os"]
+        for check in matrix["check"]
+    }
+    assert names == {
+        f"tests / {platform} (platform-sensitive) {check}/3"
+        for platform in ("windows-latest", "macos-latest")
+        for check in (1, 2, 3)
+    }
+    plan = jobs["shard-plan"]["steps"][0]["run"]
+    total = int(re.search(r"^TOTAL=(\d+)\b", plan, re.MULTILINE)[1])
+    native_names = {
+        "tests / "
+        + jobs["cross-platform"]["name"]
+        .replace("${{ matrix.os }}", platform)
+        .replace("${{ matrix.shard }}", str(shard))
+        .replace("${{ needs.shard-plan.outputs.total }}", str(total))
+        for platform in jobs["cross-platform"]["strategy"]["matrix"]["os"]
+        for shard in range(1, total + 1)
+    }
+    assert names.isdisjoint(native_names)
+    assert set(gate["needs"]) == {"cross-platform", "test-completeness"}
+    assert gate["if"] == "always()"
+    assert not gate.get("continue-on-error", False)
+    assert not jobs["cross-platform"].get("continue-on-error", False)
+    assert not jobs["test-completeness"].get("continue-on-error", False)
+    assert gate["permissions"] == {}
+    assert len(gate["steps"]) == 1
+    step = gate["steps"][0]
+    assert not step.get("continue-on-error", False)
+    assert "if" not in step
+    assert step["shell"] == "bash"
+    assert step["env"] == {
+        "NATIVE_RESULT": "${{ needs.cross-platform.result }}",
+        "EXECUTION_RESULT": "${{ needs.test-completeness.result }}",
+    }
+
+
+@pytest.mark.parametrize("native_result", ["success", "failure", "cancelled", "skipped", ""])
+@pytest.mark.parametrize("execution_result", ["success", "failure", "cancelled", "skipped", ""])
+def test_required_platform_check_fails_unless_every_dependency_passed(ci_test_jobs, native_result, execution_result):
+    step = ci_test_jobs["protected-platform-checks"]["steps"][0]
+    result = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", step["run"]],
+        env={**os.environ, "NATIVE_RESULT": native_result, "EXECUTION_RESULT": execution_result},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    expected = 0 if native_result == execution_result == "success" else 1
+    assert result.returncode == expected, result.stdout + result.stderr
+
+
 def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_assets():
     task_file = Path(__file__).resolve().parents[1] / "workflow_bench" / "tasks.scenarios.yaml"
     tasks = yaml.safe_load(task_file.read_text())["tasks"]
