@@ -157,6 +157,7 @@ withTestLbugDB(
           results: Array.from({ length: 5 }, (_, i) => ({
             filePath: `src/caller-${i}.ts`,
             score: 100 - i,
+            rank: i + 1,
             nodeIds: [`file:caller-${i}`],
           })),
           ftsAvailable: true,
