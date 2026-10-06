@@ -101,10 +101,7 @@ export const walkRepositoryPaths = async (
   options: WalkRepositoryOptions = {},
 ): Promise<ScannedFile[]> => {
   await assertWalkRootIsDirectory(repoPath);
-  const ignoreFilter = await createIgnoreFilter(
-    repoPath,
-    options.onPathsDiscovered === undefined ? undefined : { strictRepoControlFiles: true },
-  );
+  const ignoreFilter = await createIgnoreFilter(repoPath);
   const maxFileSizeBytes = options.maxFileSizeBytes ?? getMaxFileSizeBytes();
   let enumerationError: NodeJS.ErrnoException | undefined;
 
