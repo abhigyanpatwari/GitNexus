@@ -2,6 +2,7 @@ import type { BigIntStats } from 'node:fs';
 import { constants, lstat, open, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { JSON_SCHEMA, load } from 'js-yaml';
+import { loadIgnoreRules } from '../../../../config/ignore-service.js';
 import { logger } from '../../../logger.js';
 import { walkRepositoryPaths } from '../../filesystem-walker.js';
 import { getMaxFileSizeBytes } from '../../utils/max-file-size.js';
@@ -113,6 +114,11 @@ export async function captureDartPackageConfig(
     }
     manifests.add(filePath);
     if (manifests.size > limit) return incomplete('manifest-limit');
+  }
+  try {
+    await loadIgnoreRules(repoPath, { strictRepoControlFiles: true, noGlobalIgnore: true });
+  } catch {
+    return incomplete('scan-inputs');
   }
   const packages = new Map<string, string>();
   const manifestsByName = new Map<string, string[]>();
