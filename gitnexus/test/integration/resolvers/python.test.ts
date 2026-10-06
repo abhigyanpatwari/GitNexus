@@ -81,10 +81,7 @@ describe('Python nested declarations stay in their lexical scope (#3499)', () =>
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(
-      path.join(FIXTURES, 'python-nested-def-scope'),
-      () => {},
-    );
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'python-nested-def-scope'), () => {});
   }, 60000);
 
   it('does not expose a nested function to sibling callers', () => {

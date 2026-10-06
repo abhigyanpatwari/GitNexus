@@ -810,9 +810,9 @@ describe('finalize', () => {
 
       const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
 
-      expect(bindingsFor(out, a.moduleScope, 'outer').map((binding) => binding.def.nodeId)).toEqual([
-        'def:a.outer',
-      ]);
+      expect(bindingsFor(out, a.moduleScope, 'outer').map((binding) => binding.def.nodeId)).toEqual(
+        ['def:a.outer'],
+      );
       expect(bindingsFor(out, a.moduleScope, 'target')).toEqual([]);
     });
 
