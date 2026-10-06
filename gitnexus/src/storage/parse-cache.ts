@@ -829,7 +829,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // Warm v126 worker results can retain false tools after a method replacement.
 // v128 (#3450): SDK namespace imports now prove positional tool receivers.
 // Warm v127 worker results omit these definitions and must be re-extracted.
-const SCHEMA_BUMP = 128;
+// v129 (#3487): Express route captures require a handler and preserve app.all
+// as method-agnostic. Warm v128 worker results can carry false GET routes.
+const SCHEMA_BUMP = 129;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

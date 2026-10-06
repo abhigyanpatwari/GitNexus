@@ -62,3 +62,38 @@ describe('Express/Hono route detection', () => {
     expect(healthEdge!.sourceFilePath).toContain('server.ts');
   });
 });
+
+describe('Express route identity and source priority', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'express-route-priority'), () => {});
+  }, 60000);
+
+  it('keeps production handlers when test stubs register the same route', () => {
+    const handled = getRelationships(result, 'HANDLES_ROUTE');
+    for (const route of ['/api/info', '/api/query']) {
+      const sources = handled
+        .filter((edge) => edge.target === route)
+        .map((edge) => edge.sourceFilePath);
+      expect(sources).toContain('src/server.ts');
+      expect(sources).not.toContain('test/stubs.test.ts');
+    }
+  });
+
+  it('models app.all as method-agnostic, not GET', () => {
+    const mcpRoutes = getNodesByLabelFull(result, 'Route').filter(
+      (node) => node.name === '/api/mcp',
+    );
+    expect(mcpRoutes).toHaveLength(1);
+    expect(mcpRoutes[0].properties.method).toBe('*');
+  });
+
+  it('does not classify a one-argument Map.get lookup as a route', () => {
+    expect(getNodesByLabel(result, 'Route')).not.toContain('/ghost');
+  });
+
+  it('still indexes a test-only route when there is no production collision', () => {
+    expect(getNodesByLabel(result, 'Route')).toContain('/test-only');
+  });
+});

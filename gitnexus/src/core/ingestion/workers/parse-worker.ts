@@ -2042,6 +2042,8 @@ const processFileGroup = (
           // HTTP client calls like axios.get('/api/users') that match the same pattern
           // as Express route registrations.
           const callNode = captureMap['express_route'];
+          const argumentsNode = callNode.childForFieldName?.('arguments');
+          if ((argumentsNode?.namedChildCount ?? 0) < 2) continue;
           const funcNode = callNode.childForFieldName?.('function') ?? callNode.children?.[0];
           // Walk through nested member_expressions and call_expressions to
           // reach the innermost receiver identifier.  Handles chains like:
@@ -2080,9 +2082,11 @@ const processFileGroup = (
           }
 
           const httpMethod =
-            method === 'all' || method === 'use' || method === 'route'
-              ? 'GET'
-              : method.toUpperCase();
+            method === 'all'
+              ? '*'
+              : method === 'use' || method === 'route'
+                ? 'GET'
+                : method.toUpperCase();
           result.decoratorRoutes.push({
             filePath: file.path,
             routePath,

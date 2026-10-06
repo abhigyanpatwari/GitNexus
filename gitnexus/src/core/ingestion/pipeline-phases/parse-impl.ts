@@ -102,7 +102,7 @@ import {
   mergeMountPrefixes,
   resolveFastAPIRouterPrefixes,
 } from '../route-extractors/fastapi-router-prefixes.js';
-import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
+import { isTestRouteFile, normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
 import { prepareRouteConstantsByProvider } from '../language-provider.js';
@@ -1929,6 +1929,13 @@ export async function runChunkedParseAndResolve(
       ),
     };
   });
+  // Both the handler resolver and routes phase use first-writer-wins for a
+  // (method, URL) identity. Give production declarations the first claim.
+  const routePriority = (a: { filePath: string }, b: { filePath: string }): number =>
+    Number(isTestRouteFile(a.filePath)) - Number(isTestRouteFile(b.filePath));
+  allExtractedRoutes.sort(routePriority);
+  allDecoratorRoutes.sort(routePriority);
+
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
