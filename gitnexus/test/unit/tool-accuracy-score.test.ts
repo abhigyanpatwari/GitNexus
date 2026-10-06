@@ -81,6 +81,16 @@ describe('deterministic tool-accuracy scoring and release gate', () => {
     expect(report.gate.unexpectedFailures).toEqual(['api.literal-control']);
   });
 
+  it('escapes existing backslashes before pipes in failed Markdown answers', () => {
+    const report = scoreAccuracy(
+      { ...perfect(), 'python.module-chain': ['path\\|column'] },
+      EMPTY,
+      SOURCE,
+    );
+    // JSON adds two backslashes; Markdown must escape both plus the pipe.
+    expect(formatAccuracyMarkdown(report)).toContain('path' + '\\'.repeat(5) + '|column');
+  });
+
   it.each([undefined, null, 'exact', [null], [1]])(
     'cannot use an allowance to hide malformed/missing observations (%j)',
     (value) => {

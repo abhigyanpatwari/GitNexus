@@ -739,7 +739,7 @@ def _create_gitnexus_wrapper(private_root: Path) -> Path:
 
 
 _GITNEXUS_TOOL_GUIDANCE = re.compile(
-    r"(?:\.gitnexus/run\.cjs|\b(?:npx|bunx|pnpm\s+dlx)\s+(?:--?[\w-]+(?:=[^\s`]+)?\s+)*gitnexus(?:@|\b)|"
+    r"(?:\.gitnexus/run\.cjs|\b(?:npx|bunx|pnpm\s+dlx)\s+(?:--?\w[\w-]*(?:=[^\s`]+)?\s+)*gitnexus(?:@|\b)|"
     r"\bmcp__gitnexus(?:__|\b)|\bgitnexus:(?:start|end)\b|"
     r"\bgitnexus-(?:plan|work|review|lfg|exploring|impact-analysis|debugging|refactoring|guide|cli)\b|"
     r"\b(?:use|run|bootstrap|invoke)\s+(?:\*\*|`)?gitnexus\b|"

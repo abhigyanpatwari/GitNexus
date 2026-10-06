@@ -134,7 +134,7 @@ export type AccuracyReport = ReturnType<typeof scoreAccuracy>;
 
 export function formatAccuracyMarkdown(report: AccuracyReport): string {
   const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
-  const cell = (value: string) => value.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  const cell = (value: string) => value.replace(/[\\|]/g, '\\$&').replace(/\n/g, ' ');
   const lines = [
     '# Deterministic tool accuracy',
     '',

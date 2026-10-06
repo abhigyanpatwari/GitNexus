@@ -149,6 +149,29 @@ def test_nomcp_sandbox_requires_containment(tmp_path):
             pass
 
 
+@pytest.mark.parametrize("launcher", ["npx", "bunx", "pnpm dlx"])
+def test_repository_guidance_filters_launcher_flags_without_hiding_ordinary_tests(launcher):
+    guidance = (
+        f"Bootstrap with {launcher} --yes --package=gitnexus gitnexus@1.6.12.\n"
+        f"Validate with {launcher} --yes vitest run.\n"
+    )
+    assert proposer_sandbox._ordinary_repository_guidance(guidance) == f"Validate with {launcher} --yes vitest run.\n"
+
+
+def test_repository_guidance_does_not_backtrack_on_malformed_launcher_options():
+    # The old overlapping dash quantifiers take exponential time on this input.
+    # A subprocess deadline makes a recurrence fail without hanging pytest.
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "from workflow_bench.proposer_sandbox import _ordinary_repository_guidance; "
+            "text = 'npx ' + '-- -' * 10000 + '\\n'; "
+            "assert _ordinary_repository_guidance(text) == text"
+        )],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(
     "target", ["/opt/gitnexus/dist", "/opt/gitnexus-shared/dist", "/opt/gitnexus-registry", "/workspace/.gitnexus/lbug"]
 )
@@ -302,10 +325,21 @@ def test_real_claude_nomcp_loads_ordinary_context_without_skills_hooks_or_gitnex
         assert record["ok"] is True, record.get("error_detail")
         assert record["authored_tests_passed"] is True, record.get("authored_test_output")
         first = provider.requests[0].body
-        context = json.dumps(first.get("system", ""))
+        # Claude 2.1.214 sends CLAUDE.md/imported AGENTS.md as a startup
+        # system-reminder text block in its first user message.
+        initial_user = first["messages"][0]
+        assert initial_user["role"] == "user"
+        reminders = [
+            block["text"] for block in initial_user["content"]
+            if block.get("type") == "text" and "<system-reminder>" in block.get("text", "")
+            and "Contents of /workspace/CLAUDE.md (" in block["text"]
+        ]
+        assert len(reminders) == 1
+        context = reminders[0]
+        assert "Contents of /workspace/AGENTS.md" in context
         assert "ordinary-npm-test-guidance-canary" in context
         assert "ordinary-provider-guidance-canary" in context
-        assert "forbidden-skill-discovery-canary" not in context
+        assert "forbidden-skill-discovery-canary" not in json.dumps(first)
         advertised = {tool["name"] for tool in first.get("tools", [])}
         assert "Read" in advertised and "Bash" in advertised
         assert advertised <= {tool for tool in runner.BUILTIN_AGENT_TOOLS if tool != "Skill"}
